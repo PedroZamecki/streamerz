@@ -1,0 +1,234 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+//! Streamer.bot rebuilt small: actions, triggers and Streamer.bot's servers for Twitch, Kick, YouTube,
+//! OBS Studio and Streamlabs Desktop. See PLAN.md.
+
+mod tray;
+mod ui;
+
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+use std::collections::VecDeque;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct Config {
+    dark: bool,
+    start_hidden: bool,
+    autostart: bool,
+    /// Fields this build doesn't know (e.g. written by a newer one): kept, so a save loses nothing.
+    #[serde(flatten)]
+    rest: Map<String, Value>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            dark: true,
+            start_hidden: true,
+            autostart: false,
+            rest: Map::new(),
+        }
+    }
+}
+
+/// What the window and tray show. Shared by the tasks.
+struct Status {
+    /// The last LOG_LINES log lines, and how many were ever logged (so the window knows what's new).
+    log: VecDeque<String>,
+    logged: u64,
+}
+
+const LOG_LINES: usize = 200;
+
+static STATUS: Mutex<Status> = Mutex::new(Status {
+    log: VecDeque::new(),
+    logged: 0,
+});
+
+fn status(f: impl FnOnce(&mut Status)) {
+    if let Ok(mut s) = STATUS.lock() {
+        f(&mut s);
+    }
+}
+
+/// Print and keep for the window's log.
+fn say(line: String) {
+    println!("{line}");
+    status(|s| {
+        if s.log.len() == LOG_LINES {
+            s.log.pop_front();
+        }
+        s.log.push_back(line);
+        s.logged += 1;
+    });
+    ui::logged();
+}
+
+fn version() -> String {
+    // Set by the release build from the git tag; local builds say "dev".
+    format!("streamerz {}", option_env!("STREAMERZ_VERSION").unwrap_or("dev"))
+}
+
+fn config_path() -> PathBuf {
+    let exe = std::env::current_exe().unwrap_or_default();
+    exe.parent()
+        .map_or_else(|| "streamerz.json".into(), |d| d.join("streamerz.json"))
+}
+
+/// `path` with `ext` added: streamerz.json -> streamerz.json.bak.
+fn with(path: &Path, ext: &str) -> PathBuf {
+    let mut p = path.as_os_str().to_owned();
+    p.push(ext);
+    p.into()
+}
+
+/// Written to a temp file and renamed over the old one, so a crash never leaves half a file; the
+/// previous version is kept as `.bak`.
+fn save_to(path: &Path, c: &Config) -> std::io::Result<()> {
+    let tmp = with(path, ".tmp");
+    let mut f = std::fs::File::create(&tmp)?;
+    f.write_all(serde_json::to_string_pretty(c).unwrap_or_default().as_bytes())?;
+    f.sync_all()?;
+    match std::fs::copy(path, with(path, ".bak")) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    std::fs::rename(&tmp, path)
+}
+
+fn save(c: &Config) -> std::io::Result<()> {
+    let r = save_to(&config_path(), c);
+    if let Err(e) = &r {
+        say(format!("can't save streamerz.json ({e})"));
+    }
+    r
+}
+
+/// The config, else its `.bak`, else the defaults. Written back, so new settings show up in the
+/// file; an invalid file is left alone.
+fn load_from(path: &Path) -> Config {
+    let read = |p: &Path| std::fs::read_to_string(p).map(|s| serde_json::from_str::<Config>(&s));
+    let c = match read(path) {
+        Ok(Ok(c)) => c,
+        Err(_) => Config::default(),
+        Ok(Err(e)) => {
+            say(format!("{} is invalid ({e})", path.display()));
+            return match read(&with(path, ".bak")) {
+                Ok(Ok(c)) => {
+                    say("using its .bak, the previous version".into());
+                    c
+                }
+                _ => {
+                    say("using the defaults".into());
+                    Config::default()
+                }
+            };
+        }
+    };
+    let _ = save_to(path, &c);
+    c
+}
+
+/// Start with Windows: a value under the user's Run registry key.
+#[cfg(windows)]
+fn autostart(on: bool) -> std::io::Result<()> {
+    use windows_sys::Win32::System::Registry::{RegDeleteKeyValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
+    let w = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let (key, name) = (w(r"Software\Microsoft\Windows\CurrentVersion\Run"), w("streamerz"));
+    let exe = w(&format!("\"{}\"", std::env::current_exe()?.display()));
+    // SAFETY: NUL-terminated UTF-16 strings that outlive the calls; size is in bytes.
+    let err = unsafe {
+        if on {
+            let size = (exe.len() * 2) as u32;
+            RegSetKeyValueW(
+                HKEY_CURRENT_USER,
+                key.as_ptr(),
+                name.as_ptr(),
+                REG_SZ,
+                exe.as_ptr().cast(),
+                size,
+            )
+        } else {
+            RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr())
+        }
+    };
+    // 2 = not found: already off.
+    match err {
+        0 | 2 => Ok(()),
+        e => Err(std::io::Error::from_raw_os_error(e as i32)),
+    }
+}
+
+/// Start at login: an XDG autostart entry.
+#[cfg(not(windows))]
+fn autostart(on: bool) -> std::io::Result<()> {
+    use std::io::ErrorKind::NotFound;
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .ok_or(NotFound)?;
+    let file = config.join("autostart/streamerz.desktop");
+    if !on {
+        return match std::fs::remove_file(file) {
+            Err(e) if e.kind() == NotFound => Ok(()),
+            r => r,
+        };
+    }
+    std::fs::create_dir_all(config.join("autostart"))?;
+    let exe = std::env::current_exe()?;
+    std::fs::write(
+        file,
+        format!(
+            "[Desktop Entry]\nType=Application\nName=streamerz\nExec=\"{}\"\n",
+            exe.display()
+        ),
+    )
+}
+
+fn main() {
+    say(version());
+    let cfg = load_from(&config_path());
+    say(format!("config: {}", config_path().display()));
+    let app = ui::app();
+    let (ui_tx, ui_rx) = fltk::app::channel();
+    // ponytail: one runtime thread is plenty for a few sockets, and lighter than one per core.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.spawn(tray::run(ui_tx));
+    std::thread::spawn(move || rt.block_on(std::future::pending::<()>()));
+    ui::run(app, cfg, ui_tx, ui_rx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn save_keeps_bak_and_unknown_fields() {
+        let dir = std::env::temp_dir().join(format!("streamerz-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("streamerz.json");
+        // Missing: defaults, written out.
+        assert!(load_from(&path).dark);
+        assert!(path.exists() && !with(&path, ".bak").exists());
+        // Unknown fields survive a save; the previous version becomes the .bak.
+        std::fs::write(&path, r#"{"dark":false,"actions":[1,2]}"#).unwrap();
+        let c = load_from(&path);
+        assert!(!c.dark && c.rest["actions"] == serde_json::json!([1, 2]));
+        assert!(std::fs::read_to_string(with(&path, ".bak"))
+            .unwrap()
+            .contains("actions"));
+        assert!(std::fs::read_to_string(&path).unwrap().contains("actions"));
+        assert!(!with(&path, ".tmp").exists());
+        // Broken: the .bak is used and the broken file left alone.
+        std::fs::write(&path, "{broken").unwrap();
+        assert!(!load_from(&path).dark);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{broken");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
