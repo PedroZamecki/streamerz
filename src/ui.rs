@@ -14,7 +14,8 @@ use fltk::{app, dialog};
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
+use tokio::sync::{oneshot, watch};
 
 #[derive(Clone, Copy)]
 pub enum Msg {
@@ -24,6 +25,8 @@ pub enum Msg {
     NoTray,
     /// New log lines (sent only while the window is up).
     Log,
+    /// A Get Input sub-action wants an answer (see `input`).
+    Input,
 }
 
 const ROW: i32 = 26;
@@ -33,6 +36,67 @@ const H: i32 = 640;
 /// Where `logged` wakes the window, and whether it's up (no wakeups while hidden).
 static UI: OnceLock<app::Sender<Msg>> = OnceLock::new();
 static SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// Get Input's questions: title, prompt, starting text, and where the answer goes.
+type Question = (String, String, String, oneshot::Sender<Option<String>>);
+static QUESTIONS: Mutex<Vec<Question>> = Mutex::new(Vec::new());
+
+/// Ask in a dialog (Get Input). The answer, or None when cancelled (or there's no window).
+pub fn input(title: String, prompt: String, text: String) -> oneshot::Receiver<Option<String>> {
+    let (tx, rx) = oneshot::channel();
+    if let (Some(ui), Ok(mut q)) = (UI.get(), QUESTIONS.lock()) {
+        q.push((title, prompt, text, tx));
+        ui.send(Msg::Input);
+    }
+    rx
+}
+
+/// A modal text question. Not dialog::input: on Wayland it focuses its input before the window
+/// exists and crashes FLTK.
+fn ask(title: &str, prompt: &str, text: &str) -> Option<String> {
+    let mut win = Window::default().with_size(420, 130).with_label(title);
+    win.set_xclass("streamerz");
+    let mut col = Flex::new(10, 10, 400, 110, None).column();
+    col.set_pad(6);
+    let p = Frame::default()
+        .with_label(&prompt.replace('@', "@@"))
+        .with_align(Align::Left | Align::Inside | Align::Wrap);
+    let mut input = fltk::input::Input::default();
+    input.set_value(text);
+    col.fixed(&input, ROW);
+    let mut bar = Flex::default().row();
+    Frame::default();
+    let mut ok = button(&mut bar, "OK", 90);
+    let mut cancel = button(&mut bar, "Cancel", 90);
+    bar.end();
+    col.fixed(&bar, ROW + 4);
+    let _ = p;
+    col.end();
+    win.end();
+    win.make_modal(true);
+    let answer = Rc::new(Cell::new(None::<bool>));
+    ok.set_shortcut(Shortcut::from_key(fltk::enums::Key::Enter));
+    ok.set_callback({
+        let a = answer.clone();
+        move |_| a.set(Some(true))
+    });
+    cancel.set_callback({
+        let a = answer.clone();
+        move |_| a.set(Some(false))
+    });
+    win.set_callback({
+        let a = answer.clone();
+        move |_| a.set(Some(false))
+    });
+    win.show();
+    while win.shown() && answer.get().is_none() {
+        if !app::wait() {
+            break;
+        }
+    }
+    win.hide();
+    answer.get().unwrap_or(false).then(|| input.value())
+}
 
 /// A line was logged: refresh the log, if the window is up.
 pub fn logged() {
@@ -143,9 +207,14 @@ impl Log {
     }
 }
 
-pub fn run(_app: app::App, c: Config, tx: app::Sender<Msg>, rx: app::Receiver<Msg>) {
+pub fn run(_app: app::App, cfg: Arc<watch::Sender<Config>>, tx: app::Sender<Msg>, rx: app::Receiver<Msg>) {
+    let c = {
+        let c = cfg.borrow();
+        (c.dark, c.start_hidden, c.autostart)
+    };
+    let (c_dark, c_hidden, c_autostart) = c;
     let _ = UI.set(tx);
-    theme(c.dark);
+    theme(c_dark);
     let mut win = Window::default().with_size(W, H).with_label(&crate::version());
     win.set_xclass("streamerz");
     use crate::tray::{ICON, SIZE};
@@ -157,8 +226,8 @@ pub fn run(_app: app::App, c: Config, tx: app::Sender<Msg>, rx: app::Receiver<Ms
     // Settings
     let mut col = tab(&tabs, "Settings");
     text(&mut col, "Window", true);
-    let dark = check(&mut col, "Dark theme", c.dark);
-    let hidden = check(&mut col, "Start hidden in the tray", c.start_hidden);
+    let dark = check(&mut col, "Dark theme", c_dark);
+    let hidden = check(&mut col, "Start hidden in the tray", c_hidden);
     let autostart = check(
         &mut col,
         if cfg!(windows) {
@@ -166,7 +235,7 @@ pub fn run(_app: app::App, c: Config, tx: app::Sender<Msg>, rx: app::Receiver<Ms
         } else {
             "Start when I log in"
         },
-        c.autostart,
+        c_autostart,
     );
     Frame::default();
     text(
@@ -208,13 +277,15 @@ pub fn run(_app: app::App, c: Config, tx: app::Sender<Msg>, rx: app::Receiver<Ms
             win.clone().redraw();
         }
     });
-    let show = !c.start_hidden;
-    let mut cfg = c;
+    let show = !c_hidden;
     save.set_callback(move |_| {
-        cfg.dark = dark.is_checked();
-        cfg.start_hidden = hidden.is_checked();
-        cfg.autostart = autostart.is_checked();
-        let done = crate::save(&cfg).and_then(|()| crate::autostart(cfg.autostart));
+        cfg.send_modify(|c| {
+            c.dark = dark.is_checked();
+            c.start_hidden = hidden.is_checked();
+            c.autostart = autostart.is_checked();
+        });
+        let c = cfg.borrow();
+        let done = crate::save(&c).and_then(|()| crate::autostart(c.autostart));
         saved.set_label(&match done {
             Ok(()) => "Saved, applied.".to_string(),
             Err(e) => format!("Can't save: {e}"),
@@ -267,6 +338,15 @@ pub fn run(_app: app::App, c: Config, tx: app::Sender<Msg>, rx: app::Receiver<Ms
                     open(&mut win, &mut log);
                 }
                 Msg::Log => log.refresh(),
+                Msg::Input => {
+                    let asked = QUESTIONS
+                        .lock()
+                        .map(|mut q| std::mem::take(&mut *q))
+                        .unwrap_or_default();
+                    for (title, prompt, text, answer) in asked {
+                        let _ = answer.send(ask(&title, &prompt, &text));
+                    }
+                }
             }
         }
     }

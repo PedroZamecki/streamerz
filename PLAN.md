@@ -23,7 +23,7 @@ phase, following `CLAUDE.md`.
 | Type codes | Built from Streamer.bot.exe's .NET metadata (sub-action/trigger enums and their property names), read with a decompiler, for interoperability only. Only the code↔name/field mapping goes into the repo; no Streamer.bot code or data. |
 | Unsupported on import | Kept untouched (so a re-export loses nothing), shown disabled, logged once, skipped at run. This applies to C# code, out-of-scope integrations and the later extras. |
 | Scripting | No C#. The "Run a Program" sub-action is extended: it runs any exe/script, passes the arguments as JSON on stdin, and reads `key=value` lines or a JSON object from stdout back into arguments. No embedded interpreter. |
-| Variables | Full Streamer.bot parity: `%arg%`, `~global~`, persisted and temporary globals, user globals, inline functions (`$math()$` style, same names and syntax as the docs), same argument names per trigger. |
+| Variables | Full Streamer.bot parity: `%arg%`, `~global~`, persisted and temporary globals, user globals, inline functions (`$math()$` style, same names and syntax as the docs), same argument names per trigger. `$math()$` covers a common subset of mXparser: numbers, `+ - * / ^ %`, parentheses, comparisons, `& | ~`, abs round floor ceil min max sqrt exp ln log log10 sin cos tan asin acos atan sign rand/rnd, pi and e; anything else gives NaN with a log line, as Streamer.bot does. `%x:format%` follows .NET format strings in the OS locale (glibc locale data on Linux, Windows' own on Windows). |
 | Editor | Native FLTK window + tray (starts hidden), with the same tabs and panes as Streamer.bot: Actions (groups tree, sub-actions list, triggers list), Commands, Platforms, Stream Apps, Integrations, Servers/Clients, Settings, Log. Plain FLTK look with the dark theme. Tools: action history (last N runs with their args, re-run), pending queue view (running/queued per queue, clear), test trigger (fire any trigger with sample args). |
 | Storage | One `streamerz.json` next to the exe: settings, actions, commands, timers, queues, globals, user data and tokens. Gitignored. Written atomically (temp file + rename) with a `.bak` of the previous version. |
 | Twitch | EventSub WebSocket for chat and every event, Helix REST for sub-actions, no IRC. Broadcaster account plus an optional bot account (chat is sent as the bot when set, as in Streamer.bot). Device-code OAuth with our public client ID, so there's no secret in the exe. |
@@ -34,7 +34,7 @@ phase, following `CLAUDE.md`.
 | Integrations | Opt-in and off by default; a disabled one opens nothing. In scope: donations/shops (Ko-fi, StreamElements, Streamlabs, Patreon, Fourthwall, Throne, Tipeee, Treatstream, DonorDrive, Pally, Shopify, Streamloots) and webhooks/remote (Discord, IFTTT, pronouns, Streamer.bot remote instances). |
 | OS | Windows + Linux (Wayland, ksni tray). CI releases a Windows exe and a Linux binary on every release. |
 | Budget | Hidden window, Twitch + OBS connected: < 25 MB RSS and ~0% idle CPU, measured and written in every PR. Streamer.bot uses ~300 MB. |
-| Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, fltk, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only). HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. Anything else needs a question first. |
+| Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, fltk, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only). HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. **regex-lite** (If/Else, While, Switch and regex commands; .NET's backreferences and lookaround aren't supported). Anything else needs a question first. |
 | Not in scope | TikTok (that's tikstream), Meld, PolyPop, Elgato, VTube Studio/Voicemod/Speaker.bot/TITS/Crowd Control/HypeRate/Pulsoid/Lumia/Streamfog/mtion, the Streamer.bot website integration/cloud, C# and plugins. |
 | Later (own phases, after phase 14) | Quotes, credits, points, users/first words; sounds and TTS; file I/O, file tail, folder watcher, process triggers; hotkeys/inputs, MIDI, voice control; Decks, HTML overlay, multi-platform chat window. |
 
@@ -154,11 +154,16 @@ platform handles through channels, never through shared locks held across awaits
   - Tests: hand-made fixtures of each export version (v3, v10, v23) and of actions.json, committed; the
     docs' sample exports (all 10) and the real Streamer.bot's actions.json through `STREAMERZ_SAMPLES`,
     not committed (the docs have no license; actions.json is user data).
-- [ ] 3. Engine core:
+- [x] 3a. Engine core:
+  - Sub-action field table (code → name, category, JSON fields) from the metadata, next to the type codes.
   - Triggers, actions, queues, history, pending and test trigger (no UI yet).
-  - Variables and inline functions, commands (permissions, cooldowns, aliases, regex), timers.
-  - Every core sub-action, plus the extended Run a Program.
-  - Tick COVERAGE "Phase 3".
+  - Variables, formatting (OS locale) and inline functions.
+  - Sub-actions: action queues, actions, arguments, delay, globals, logic, misc, signals, triggers; C# kept
+    and skipped. Triggers: Custom, Test, Streamer.bot Started, global variables.
+- [ ] 3b. Engine, the rest:
+  - Commands (permissions, cooldowns, aliases, regex) and their sub-actions and triggers.
+  - Timers and cron, Fetch URL, UDP Broadcast, user groups, and the extended Run a Program.
+  - Tick the rest of COVERAGE "Phase 3".
 - [ ] 4. Servers:
   - WebSocket, HTTP and UDP drop-ins.
   - WebSocket clients and custom servers, with their triggers.
@@ -203,7 +208,6 @@ platform handles through channels, never through shared locks held across awaits
 
 - Phase 5: imports of old export versions (v3/v10: sub-actions under `actions`, random groups in
   `actionGroups`) need upgrading to the v24 shape. Check how Streamer.bot upgrades them, and ask.
-- Phase 3: inline function list. Take it from the docs and the metadata; anything ambiguous gets asked.
 - Phase 3: user data growth (users seen, user globals) inside the one JSON file. If it gets big, ask
   before splitting.
 - Phase 10: Kick Pusher app key and chatroom id lookup (kick.com's v2 channel endpoint may sit behind
