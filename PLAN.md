@@ -34,7 +34,7 @@ phase, following `CLAUDE.md`.
 | Integrations | Opt-in and off by default; a disabled one opens nothing. In scope: donations/shops (Ko-fi, StreamElements, Streamlabs, Patreon, Fourthwall, Throne, Tipeee, Treatstream, DonorDrive, Pally, Shopify, Streamloots) and webhooks/remote (Discord, IFTTT, pronouns, Streamer.bot remote instances). |
 | OS | Windows + Linux (Wayland, ksni tray). CI releases a Windows exe and a Linux binary on every release. |
 | Budget | Hidden window, Twitch + OBS connected: < 25 MB RSS and ~0% idle CPU, measured and written in every PR. Streamer.bot uses ~300 MB. |
-| Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, fltk, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), and **rsa** (Kick webhooks only). HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. Anything else needs a question first. |
+| Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, fltk, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only). HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. Anything else needs a question first. |
 | Not in scope | TikTok (that's tikstream), Meld, PolyPop, Elgato, VTube Studio/Voicemod/Speaker.bot/TITS/Crowd Control/HypeRate/Pulsoid/Lumia/Streamfog/mtion, the Streamer.bot website integration/cloud, C# and plugins. |
 | Later (own phases, after phase 14) | Quotes, credits, points, users/first words; sounds and TTS; file I/O, file tail, folder watcher, process triggers; hotkeys/inputs, MIDI, voice control; Decks, HTML overlay, multi-platform chat window. |
 
@@ -145,13 +145,15 @@ platform handles through channels, never through shared locks held across awaits
   - CI: `lint` (rust + commits); `build` with the Windows exe and Linux binary on PRs and releases.
   - Add `rust`, `windows` and `linux` to the ruleset's required checks.
   - Measure empty baseline RSS: 10.1 MB hidden, 0 CPU ticks in 30 s idle (Linux, release build).
-- [ ] 2. Data model and import/export:
+- [x] 2. Data model and import/export:
   - The type table from Streamer.bot.exe's metadata (a local extraction step, documented in
-    DEVELOPING.md).
+    DEVELOPING.md; throwaway scripts outside the repo, Python dnfile since there's no .NET SDK).
   - Model types that keep unknown fields.
   - Read Streamer.bot's `actions.json` and import/export strings, both round-trip byte-for-byte on the
     JSON.
-  - Tests: the docs' sample export, plus an action made in the real Streamer.bot.
+  - Tests: hand-made fixtures of each export version (v3, v10, v23) and of actions.json, committed; the
+    docs' sample exports (all 10) and the real Streamer.bot's actions.json through `STREAMERZ_SAMPLES`,
+    not committed (the docs have no license; actions.json is user data).
 - [ ] 3. Engine core:
   - Triggers, actions, queues, history, pending and test trigger (no UI yet).
   - Variables and inline functions, commands (permissions, cooldowns, aliases, regex), timers.
@@ -199,8 +201,8 @@ platform handles through channels, never through shared locks held across awaits
 
 ## Open points (decide when the phase starts, ask first)
 
-- Phase 2: where the extraction tool lives (dotnet is installed; the likely choice is a throwaway script
-  outside the repo).
+- Phase 5: imports of old export versions (v3/v10: sub-actions under `actions`, random groups in
+  `actionGroups`) need upgrading to the v24 shape. Check how Streamer.bot upgrades them, and ask.
 - Phase 3: inline function list. Take it from the docs and the metadata; anything ambiguous gets asked.
 - Phase 3: user data growth (users seen, user globals) inside the one JSON file. If it gets big, ask
   before splitting.

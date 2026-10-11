@@ -1,0 +1,74 @@
+{
+  "version": 3,
+  "importVersion": 1,
+  "minimumVersion": null,
+  "meta": {
+    "name": "Older",
+    "author": "streamerz",
+    "version": "0.0.1",
+    "description": "",
+    "autoRunAction": null
+  },
+  "data": {
+    "actions": [
+      {
+        "id": "33333333-0000-0000-0000-000000000001",
+        "queue": null,
+        "enabled": true,
+        "excludeFromHistory": false,
+        "name": "Say hello",
+        "group": "Greetings",
+        "alwaysRun": false,
+        "randomAction": false,
+        "concurrent": false,
+        "triggers": [
+          {
+            "timerId": "55555555-0000-0000-0000-000000000001",
+            "id": "11111111-0000-0000-0000-000000000003",
+            "type": 701,
+            "enabled": true,
+            "exclusions": []
+          }
+        ],
+        "actions": [
+          {
+            "text": "hi",
+            "id": "22222222-0000-0000-0000-000000000009",
+            "weight": 0.5,
+            "type": 10,
+            "group": "Random hi",
+            "enabled": true,
+            "index": 0
+          }
+        ],
+        "actionGroups": [
+          {
+            "id": "66666666-0000-0000-0000-000000000001",
+            "weight": 0.0,
+            "name": "Random hi",
+            "random": true,
+            "index": 0
+          }
+        ],
+        "collapsedGroups": []
+      }
+    ],
+    "queues": [],
+    "commands": [],
+    "websocketServers": [],
+    "websocketClients": [],
+    "timers": [
+      {
+        "id": "55555555-0000-0000-0000-000000000001",
+        "name": "Every minute",
+        "enabled": false,
+        "repeat": true,
+        "interval": 60,
+        "randomInterval": false,
+        "upperInterval": 0,
+        "lines": 0,
+        "counter": 0
+      }
+    ]
+  }
+}

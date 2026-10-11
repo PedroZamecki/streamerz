@@ -1,0 +1,95 @@
+{
+  "meta": {
+    "name": "Hello",
+    "author": "streamerz",
+    "version": "1.0.0",
+    "description": "Says hello.\nTwo lines.",
+    "autoRunAction": null,
+    "minimumVersion": null
+  },
+  "data": {
+    "actions": [
+      {
+        "id": "33333333-0000-0000-0000-000000000001",
+        "queue": null,
+        "enabled": true,
+        "excludeFromHistory": false,
+        "excludeFromPending": false,
+        "name": "Say hello",
+        "group": "Greetings",
+        "alwaysRun": false,
+        "randomAction": false,
+        "concurrent": false,
+        "triggers": [
+          {
+            "commandId": "44444444-0000-0000-0000-000000000001",
+            "id": "11111111-0000-0000-0000-000000000002",
+            "type": 401,
+            "enabled": true,
+            "exclusions": []
+          }
+        ],
+        "subActions": [
+          {
+            "text": "Welcome %user%! éç █",
+            "pin": false,
+            "pinToStreamEnd": false,
+            "useBot": true,
+            "fallback": true,
+            "id": "22222222-0000-0000-0000-000000000000",
+            "weight": 0.0,
+            "type": 10,
+            "parentId": null,
+            "enabled": true,
+            "index": 0
+          },
+          {
+            "text": "line\r\nbreak \"quoted\" \\ tab\t",
+            "pin": false,
+            "pinToStreamEnd": false,
+            "useBot": true,
+            "fallback": true,
+            "id": "22222222-0000-0000-0000-000000000001",
+            "weight": 0.0,
+            "type": 10,
+            "parentId": null,
+            "enabled": true,
+            "index": 1
+          }
+        ],
+        "collapsedGroups": []
+      }
+    ],
+    "queues": [],
+    "commands": [
+      {
+        "permittedUsers": [],
+        "permittedGroups": [],
+        "id": "44444444-0000-0000-0000-000000000001",
+        "name": "hello",
+        "enabled": true,
+        "include": false,
+        "mode": 0,
+        "command": "!hello",
+        "regexExplicitCapture": false,
+        "location": 0,
+        "ignoreBotAccount": true,
+        "ignoreInternal": true,
+        "sources": 1,
+        "persistCounter": false,
+        "persistUserCounter": false,
+        "caseSensitive": false,
+        "globalCooldown": 0,
+        "userCooldown": 0,
+        "group": "",
+        "grantType": 0
+      }
+    ],
+    "websocketServers": [],
+    "websocketClients": [],
+    "timers": []
+  },
+  "version": 23,
+  "exportedFrom": "1.0.1",
+  "minimumVersion": "1.0.0-alpha.1"
+}

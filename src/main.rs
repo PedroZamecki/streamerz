@@ -2,7 +2,9 @@
 //! Streamer.bot rebuilt small: actions, triggers and Streamer.bot's servers for Twitch, Kick, YouTube,
 //! OBS Studio and Streamlabs Desktop. See PLAN.md.
 
+mod model;
 mod tray;
+mod types;
 mod ui;
 
 use serde::{Deserialize, Serialize};

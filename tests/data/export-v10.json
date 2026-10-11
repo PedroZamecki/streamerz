@@ -1,0 +1,55 @@
+{
+  "meta": {
+    "name": "Old",
+    "author": "streamerz",
+    "version": "0.1.0",
+    "description": "",
+    "autoRunAction": null,
+    "minimumVersion": null
+  },
+  "data": {
+    "actions": [
+      {
+        "id": "33333333-0000-0000-0000-000000000001",
+        "queue": null,
+        "enabled": true,
+        "excludeFromHistory": false,
+        "name": "Say hello",
+        "group": "Greetings",
+        "alwaysRun": false,
+        "randomAction": false,
+        "concurrent": false,
+        "triggers": [
+          {
+            "commandId": "44444444-0000-0000-0000-000000000001",
+            "id": "11111111-0000-0000-0000-000000000002",
+            "type": 401,
+            "enabled": true,
+            "exclusions": []
+          }
+        ],
+        "actions": [
+          {
+            "text": "hi",
+            "id": "22222222-0000-0000-0000-000000000009",
+            "weight": 0.5,
+            "type": 10,
+            "group": "",
+            "enabled": true,
+            "index": 0
+          }
+        ],
+        "actionGroups": [],
+        "collapsedGroups": []
+      }
+    ],
+    "queues": [],
+    "commands": [],
+    "websocketServers": [],
+    "websocketClients": [],
+    "timers": []
+  },
+  "version": 10,
+  "exportedFrom": "0.2.4",
+  "minimumVersion": "0.2.4-beta.6"
+}
