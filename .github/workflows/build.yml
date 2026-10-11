@@ -1,0 +1,100 @@
+# Pull requests: build streamerz.exe (Windows) and streamerz (Linux) as checks.
+# Merges to main: pick the next version from the commits since the last tag
+# (breaking "type!:" -> major, feat -> minor, fix/perf -> patch), build both and publish the release.
+# Merges with only chore/ci/docs/... commits don't release.
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency: build-${{ github.ref }}
+
+jobs:
+  version:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.next.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: next
+        shell: bash
+        run: |
+          # No tag yet: the whole history counts, from v0.0.0.
+          last=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          log=$(git log ${last:+"$last.."}HEAD --format=%s)
+          last=${last:-v0.0.0}
+          IFS=. read -r major minor patch <<< "${last#v}"
+          if grep -qE '^[a-z]+(\([^)]*\))?!:' <<< "$log"; then major=$((major + 1)) minor=0 patch=0
+          elif grep -qE '^feat(\([^)]*\))?:' <<< "$log"; then minor=$((minor + 1)) patch=0
+          elif grep -qE '^(fix|perf)(\([^)]*\))?:' <<< "$log"; then patch=$((patch + 1))
+          else echo "no feat/fix since $last: no release"; exit 0
+          fi
+          echo "next release: v$major.$minor.$patch"
+          echo "tag=v$major.$minor.$patch" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: version
+    # Runs on PRs (version is skipped there) and on main only when there's a release to make.
+    if: always() && (github.event_name != 'push' || needs.version.outputs.tag != '')
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: |
+          cargo fetch --locked
+          # FLTK's CMake defaults to the DLL C runtime, overriding fltk-sys's static one
+          # (.cargo/config.toml): without this the link fails.
+          f=$(ls "${CARGO_HOME:-$HOME/.cargo}"/registry/src/*/fltk-sys-*/cfltk/fltk/CMake/options.cmake)
+          perl -pi -e 's/(option\(FLTK_MSVC_RUNTIME_DLL .*)ON\)/${1}OFF)/' $f
+          grep -q 'FLTK_MSVC_RUNTIME_DLL .*OFF)' $f
+      - run: cargo build --release --locked
+        env:
+          STREAMERZ_VERSION: ${{ needs.version.outputs.tag || 'dev' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: streamerz-windows
+          path: target/release/streamerz.exe
+
+  linux:
+    needs: version
+    if: always() && (github.event_name != 'push' || needs.version.outputs.tag != '')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      # Same packages as the lint workflow's rust job.
+      - run: >
+          sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxft-dev libxinerama-dev
+          libxcursor-dev libxrender-dev libxfixes-dev libpango1.0-dev libgl1-mesa-dev libglu1-mesa-dev
+          libwayland-dev wayland-protocols libdbus-1-dev libxkbcommon-dev libegl-dev libopengl-dev
+      - run: cargo build --release --locked
+        env:
+          STREAMERZ_VERSION: ${{ needs.version.outputs.tag || 'dev' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: streamerz-linux
+          path: target/release/streamerz
+
+  release:
+    needs: [version, windows, linux]
+    if: needs.version.outputs.tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+      - run: >
+          gh release create "${{ needs.version.outputs.tag }}" streamerz-windows/streamerz.exe
+          streamerz-linux/streamerz --repo "${{ github.repository }}" --target "${{ github.sha }}" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
