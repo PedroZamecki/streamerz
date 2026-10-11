@@ -5,7 +5,10 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1", features = ["rt"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+base64 = "0.22"
+# Import/export strings are gzipped; miniz_oxide is pure Rust.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 serde = { version = "1.0.229", features = ["derive"] }
 fltk = { version = "1.5.23", features = ["no-images"] }
 
