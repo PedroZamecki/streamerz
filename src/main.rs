@@ -2,24 +2,34 @@
 //! Streamer.bot rebuilt small: actions, triggers and Streamer.bot's servers for Twitch, Kick, YouTube,
 //! OBS Studio and Streamlabs Desktop. See PLAN.md.
 
+mod engine;
+mod fmt;
+mod math;
 mod model;
 mod tray;
 mod types;
 mod ui;
+mod vars;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::VecDeque;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use tokio::sync::watch;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(default)]
-struct Config {
+pub struct Config {
     dark: bool,
     start_hidden: bool,
     autostart: bool,
+    /// Actions, groups and queues, in Streamer.bot's actions.json shape.
+    actions: model::ActionsFile,
+    /// Persisted globals, and persisted user globals by user ("platform:id", then name).
+    globals: model::Obj,
+    user_globals: model::Obj,
     /// Fields this build doesn't know (e.g. written by a newer one): kept, so a save loses nothing.
     #[serde(flatten)]
     rest: Map<String, Value>,
@@ -31,6 +41,9 @@ impl Default for Config {
             dark: true,
             start_hidden: true,
             autostart: false,
+            actions: model::ActionsFile::default(),
+            globals: Map::new(),
+            user_globals: Map::new(),
             rest: Map::new(),
         }
     }
@@ -202,9 +215,24 @@ fn main() {
         .build()
         .unwrap();
     rt.spawn(tray::run(ui_tx));
-    std::thread::spawn(move || rt.block_on(std::future::pending::<()>()));
+    let cfg = Arc::new(watch::channel(cfg).0);
+    let engine_cfg = cfg.clone();
+    // The engine isn't Send (one thread, no locks): it lives in a LocalSet on the runtime thread.
+    std::thread::spawn(move || {
+        tokio::task::LocalSet::new().block_on(&rt, async move {
+            let e = engine::Engine::new(engine_cfg, |c| {
+                let _ = save(c);
+            });
+            e.started();
+            std::future::pending::<()>().await
+        })
+    });
     ui::run(app, cfg, ui_tx, ui_rx);
 }
+
+/// Tests that use the shared log run one at a time.
+#[cfg(test)]
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(test)]
 mod tests {
@@ -219,13 +247,11 @@ mod tests {
         assert!(load_from(&path).dark);
         assert!(path.exists() && !with(&path, ".bak").exists());
         // Unknown fields survive a save; the previous version becomes the .bak.
-        std::fs::write(&path, r#"{"dark":false,"actions":[1,2]}"#).unwrap();
+        std::fs::write(&path, r#"{"dark":false,"future":[1,2]}"#).unwrap();
         let c = load_from(&path);
-        assert!(!c.dark && c.rest["actions"] == serde_json::json!([1, 2]));
-        assert!(std::fs::read_to_string(with(&path, ".bak"))
-            .unwrap()
-            .contains("actions"));
-        assert!(std::fs::read_to_string(&path).unwrap().contains("actions"));
+        assert!(!c.dark && c.rest["future"] == serde_json::json!([1, 2]));
+        assert!(std::fs::read_to_string(with(&path, ".bak")).unwrap().contains("future"));
+        assert!(std::fs::read_to_string(&path).unwrap().contains("future"));
         assert!(!with(&path, ".tmp").exists());
         // Broken: the .bak is used and the broken file left alone.
         std::fs::write(&path, "{broken").unwrap();
