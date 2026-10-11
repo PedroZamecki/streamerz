@@ -139,12 +139,12 @@ platform handles through channels, never through shared locks held across awaits
 
 - [x] 0. Plan, rules (`CLAUDE.md`/`AGENTS.md`), commit hooks, the `commits` CI check, coverage list.
   Public repo with the songrequestz settings (squash only, delete branch on merge, "protect main" ruleset).
-- [ ] 1. Scaffold:
+- [x] 1. Scaffold:
   - Cargo, single-thread runtime, `streamerz.json` (atomic save + `.bak`), shared status, log.
   - Window and tray skeleton from songrequestz (starts hidden, autostart, dark theme), with the icon.
   - CI: `lint` (rust + commits); `build` with the Windows exe and Linux binary on PRs and releases.
   - Add `rust`, `windows` and `linux` to the ruleset's required checks.
-  - Measure the empty baseline RSS.
+  - Measure empty baseline RSS: 10.1 MB hidden, 0 CPU ticks in 30 s idle (Linux, release build).
 - [ ] 2. Data model and import/export:
   - The type table from Streamer.bot.exe's metadata (a local extraction step, documented in
     DEVELOPING.md).
