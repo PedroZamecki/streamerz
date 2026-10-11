@@ -6,23 +6,23 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Sub-actions: action-queues** (3)
 
-- [ ] Clear Action Queue
-- [ ] Set Action Queue Blocking State
-- [ ] Set Action Queue Pause State
+- [x] Clear Action Queue
+- [x] Set Action Queue Blocking State
+- [x] Set Action Queue Pause State
 
 **Sub-actions: actions** (7)
 
-- [ ] Get Action Group State
-- [ ] Get Action State
-- [ ] Run Action
-- [ ] Set Action Group State
-- [ ] Set Action State
-- [ ] Set Sub-Action State
-- [ ] Set Sub-Action Weight
+- [x] Get Action Group State
+- [x] Get Action State
+- [x] Run Action
+- [x] Set Action Group State
+- [x] Set Action State
+- [x] Set Sub-Action State
+- [x] Set Sub-Action Weight
 
 **Sub-actions: arguments** (1)
 
-- [ ] Set Argument
+- [x] Set Argument
 
 **Sub-actions: commands** (5)
 
@@ -34,30 +34,30 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Sub-actions: delay** (1)
 
-- [ ] Delay
+- [x] Delay
 
 **Sub-actions: globals** (4)
 
-- [ ] Clear Non-Persisted Globals
-- [ ] Clear Non-Persisted User Globals
-- [ ] Get Global Variable
-- [ ] Set Global Variable
+- [x] Clear Non-Persisted Globals
+- [x] Clear Non-Persisted User Globals
+- [x] Get Global Variable
+- [x] Set Global Variable
 
 **Sub-actions: logic** (8)
 
-- [ ] Break
-- [ ] Get Input
-- [ ] Get Random Number
-- [ ] If / Else
-- [ ] Loop Break
-- [ ] Loop Continue
-- [ ] Switch
-- [ ] While
+- [x] Break
+- [x] Get Input
+- [x] Get Random Number
+- [x] If / Else
+- [x] Loop Break
+- [x] Loop Continue
+- [x] Switch
+- [x] While
 
 **Sub-actions: misc** (2)
 
-- [ ] Comment
-- [ ] Log
+- [x] Comment
+- [x] Log
 
 **Sub-actions: network** (2)
 
@@ -66,8 +66,8 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Sub-actions: signals** (2)
 
-- [ ] Send Local Signal
-- [ ] Wait for Local Signal
+- [x] Send Local Signal
+- [x] Wait for Local Signal
 
 **Sub-actions: timers** (1)
 
@@ -75,8 +75,8 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Sub-actions: triggers** (2)
 
-- [ ] Trigger Custom Event
-- [ ] Set Trigger State
+- [x] Trigger Custom Event
+- [x] Set Trigger State
 
 **Sub-actions: users** (1)
 
@@ -84,8 +84,8 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Sub-actions: csharp** (2)
 
-- [ ] Execute C# Code
-- [ ] Execute C# Method
+- [x] ~~Execute C# Code~~ (no C#, by design: kept on import, skipped at run with a log line; Run a Program replaces it)
+- [x] ~~Execute C# Method~~ (no C#, by design: kept on import, skipped at run with a log line; Run a Program replaces it)
 
 **Run a Program (replaces C#)** (1)
 
@@ -98,10 +98,10 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Triggers: global-variables** (4)
 
-- [ ] Global Variable Created
-- [ ] Global Variable Deleted
-- [ ] Global Variable Updated
-- [ ] User Global Variable Updated
+- [x] Global Variable Created
+- [x] Global Variable Deleted
+- [x] Global Variable Updated
+- [x] User Global Variable Updated
 
 **Triggers: groups** (5)
 
@@ -118,16 +118,16 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Triggers: streamerbot-started** (1)
 
-- [ ] Streamer.bot Started
+- [x] Streamer.bot Started
 
 **Triggers: test** (1)
 
-- [ ] Test
+- [x] Test
 
 **Triggers** (2)
 
-- [ ] Custom Code Event
-- [ ] Custom
+- [ ] Custom Code Event (fired by the WebSocket's ExecuteCodeTrigger: phase 4)
+- [x] Custom
 
 
 ## Phase 4: servers
