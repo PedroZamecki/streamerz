@@ -18,4 +18,5 @@ streamerz answers on Streamer.bot's WebSocket server (`ws://127.0.0.1:8080/`, on
 server (port 7474) and its UDP server (port 4242), both off by default, with the same requests, events
 and authentication, so tools made for Streamer.bot (songrequestz, overlays, Stream Deck) connect without
 changes. Until the editor exists, change them in `streamerz.json` under `websockets`, `http` and `udp`
-(the same fields as Streamer.bot's settings).
+(the same fields as Streamer.bot's settings). WebSocket clients and custom servers go in
+`websockets.connections` and `websockets.servers`.

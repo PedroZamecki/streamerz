@@ -270,7 +270,9 @@ matching ignores case and reports the alias as configured; rawInput is trimmed b
 input# splits on single spaces (two spaces give an empty word, no input gives an empty input0); Regex
 mode's words come from the message without its leading `!`; URL encoding is WebUtility's (`+`, `%XX`
 uppercase); Get Commands sorts the aliases and joins them with `, `; Clear Users From Group fires only
-Cleared; Fetch URL's JSON becomes `var.key`, `var.key.inner`, `var.list[0]` (null as empty, nothing set
+Cleared; WebSocket client triggers carry only `message`, custom server ones `sessionId`, `ip` and `data`
+(cases take `ws_clients` and `ws_servers`, written into settings.json), and a client fires Closed on
+every failed reconnect attempt; Fetch URL's JSON becomes `var.key`, `var.key.inner`, `var.list[0]` (null as empty, nothing set
 on an HTTP error); Run a Program's lines are output0..N split on `\n` (keeping `\r`). The
 broadcaster skips cooldowns and permissions, so those follow the docs. The cases also accept `commands`,
 `groups` and `timers`, written into commands.json, users.dat and settings.json.
@@ -319,6 +321,8 @@ ids['C2'] = sid()
 ids['C3'] = sid()
 ids['C4'] = sid()
 ids['T'] = sid()
+ids['WC'] = sid()
+ids['WS'] = sid()
 data['queues'] = [q for q in data['queues'] if not q.get('name','').startswith('szt')] + [{'id': ids['Q'], 'name': 'sztQ', 'blocking': True}]
 def refs(o):
     if isinstance(o, dict): return {k: refs(v) for k, v in o.items()}
@@ -341,6 +345,14 @@ for fname, key in (('users.dat', 'groups'), ('commands.json', 'commands')):
         dd = json.load(open(fp, encoding='utf-8-sig'))
         dd[key] = [x for x in dd[key] if not x.get('name', '').startswith('szt')] + extra
         open(fp, 'w', encoding='utf-8-sig').write(json.dumps(dd, ensure_ascii=False, separators=(',', ':')))
+wsc = [refs(x) for c in cases for x in c.get('ws_clients', [])]
+wss = [refs(x) for c in cases for x in c.get('ws_servers', [])]
+if wsc or wss:
+    fp = f'{SB}/data/settings.json'
+    dd = json.load(open(fp, encoding='utf-8-sig'))
+    dd['websockets']['connections'] += wsc
+    dd['websockets']['servers'] += wss
+    open(fp, 'w', encoding='utf-8-sig').write(json.dumps(dd, ensure_ascii=False, separators=(',', ':')))
 tim = [refs(x) for c in cases for x in c.get('timers', [])]
 if tim:
     fp = f'{SB}/data/settings.json'

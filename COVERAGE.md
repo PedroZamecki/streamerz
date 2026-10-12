@@ -134,12 +134,12 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **WebSocket client/server triggers** (6)
 
-- [ ] client: Websocket Client Closed
-- [ ] client: Websocket Client Message
-- [ ] client: Websocket Client Open
-- [ ] custom-server: WebSocket Custom Server Connection Closed
-- [ ] custom-server: WebSocket Custom Server Connection Opened
-- [ ] custom-server: WebSocket Custom Server Message
+- [x] client: Websocket Client Closed
+- [x] client: Websocket Client Message
+- [x] client: Websocket Client Open
+- [x] custom-server: WebSocket Custom Server Connection Closed
+- [x] custom-server: WebSocket Custom Server Connection Opened
+- [x] custom-server: WebSocket Custom Server Message
 
 **HTTP requests** (6)
 
@@ -178,7 +178,7 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] TwitchGetUserGlobal
 - [x] SendMessage (auth as Streamer.bot; "<platform> is not connected" until phase 6+)
 - [x] GetUserPronouns (Streamer.bot's answer for an unknown user until the pronouns integration (phase 14))
-- [ ] Events: every category/event the real Streamer.bot lists in `GetEvents`, emitted as its trigger fires (core ones done: Raw, Misc, Command, Group, General; the platforms' own come with their phases)
+- [ ] Events: every category/event the real Streamer.bot lists in `GetEvents`, emitted as its trigger fires (core ones done: Raw, Misc, Command, Group, WebsocketClient, WebsocketCustomServer; the platforms' own come with their phases)
 
 
 ## Phase 6-8: Twitch
