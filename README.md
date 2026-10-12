@@ -11,3 +11,11 @@ first (`chmod +x streamerz`). It starts hidden in the tray: click the icon to op
 are kept in `streamerz.json` next to it (and the previous version in `streamerz.json.bak`).
 
 Settings → Window: dark theme, start hidden in the tray, and start with Windows / when you log in.
+
+## Streamer.bot's servers
+
+streamerz answers on Streamer.bot's WebSocket server (`ws://127.0.0.1:8080/`, on by default), its HTTP
+server (port 7474) and its UDP server (port 4242), both off by default, with the same requests, events
+and authentication, so tools made for Streamer.bot (songrequestz, overlays, Stream Deck) connect without
+changes. Until the editor exists, change them in `streamerz.json` under `websockets`, `http` and `udp`
+(the same fields as Streamer.bot's settings).

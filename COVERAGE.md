@@ -126,7 +126,7 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Triggers** (2)
 
-- [ ] Custom Code Event (fired by the WebSocket's ExecuteCodeTrigger: phase 4)
+- [x] Custom Code Event (fired by the WebSocket's ExecuteCodeTrigger)
 - [x] Custom
 
 
@@ -143,42 +143,42 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **HTTP requests** (6)
 
-- [ ] ClearCredits
-- [ ] ClearFirstWordsCache
-- [ ] DoAction
-- [ ] GetActions
-- [ ] GetCredits
-- [ ] TestCredits
+- [x] ClearCredits
+- [x] ClearFirstWordsCache
+- [x] DoAction
+- [x] GetActions
+- [x] GetCredits (empty, like a fresh Streamer.bot: credits are a later phase)
+- [x] TestCredits (empty: credits are a later phase)
 
 **UDP requests** (1)
 
-- [ ] DoAction (UDP)
+- [x] DoAction (UDP)
 
 **WebSocket requests** (22)
 
-- [ ] Subscribe
-- [ ] UnSubscribe
-- [ ] GetEvents
-- [ ] GetActions
-- [ ] DoAction
-- [ ] GetBroadcaster
-- [ ] GetCredits
-- [ ] TestCredits
-- [ ] ClearCredits
-- [ ] GetInfo
-- [ ] GetActiveViewers
-- [ ] GetCodeTriggers
-- [ ] ExecuteCodeTrigger
-- [ ] GetCommands
-- [ ] TwitchGetEmotes
-- [ ] YouTubeGetEmotes
-- [ ] GetGlobals
-- [ ] GetGlobal
-- [ ] TwitchGetUserGlobals
-- [ ] TwitchGetUserGlobal
-- [ ] SendMessage
-- [ ] GetUserPronouns
-- [ ] Events: every category/event the real Streamer.bot lists in `GetEvents`, emitted as its trigger fires
+- [x] Subscribe
+- [x] UnSubscribe
+- [x] GetEvents
+- [x] GetActions
+- [x] DoAction
+- [x] GetBroadcaster (no platform yet: answers as Streamer.bot with them disconnected; filled in as each connects (phase 6+))
+- [x] GetCredits (empty, like a fresh Streamer.bot: credits are a later phase)
+- [x] TestCredits (empty: credits are a later phase)
+- [x] ClearCredits
+- [x] GetInfo
+- [x] GetActiveViewers (empty until the platforms (phase 6+))
+- [x] GetCodeTriggers (always empty: code triggers are registered by C#)
+- [x] ExecuteCodeTrigger
+- [x] GetCommands
+- [x] TwitchGetEmotes ("Twitch is not connected" until phase 6)
+- [x] YouTubeGetEmotes ("YouTube is not connected" until phase 11)
+- [x] GetGlobals
+- [x] GetGlobal
+- [x] TwitchGetUserGlobals
+- [x] TwitchGetUserGlobal
+- [x] SendMessage (auth as Streamer.bot; "<platform> is not connected" until phase 6+)
+- [x] GetUserPronouns (Streamer.bot's answer for an unknown user until the pronouns integration (phase 14))
+- [ ] Events: every category/event the real Streamer.bot lists in `GetEvents`, emitted as its trigger fires (core ones done: Raw, Misc, Command, Group, General; the platforms' own come with their phases)
 
 
 ## Phase 6-8: Twitch
