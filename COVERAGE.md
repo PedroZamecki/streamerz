@@ -467,41 +467,41 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Triggers** (18)
 
-- [ ] channel-reward: Reward Redemption
-- [ ] channel: Follow
-- [ ] channel: Stream Offline
-- [ ] channel: Stream Online
-- [ ] channel: Viewer Count Update
-- [ ] chat: First Words
-- [ ] chat: Chat Message
-- [ ] emotes: SevenTV Emote Added
-- [ ] emotes: SevenTV Emote Removed
-- [ ] general: Channel Update
-- [ ] general: Present Viewers
-- [ ] kicks: Kicks Gifted
-- [ ] moderation: User Banned
-- [ ] moderation: User Timed Out
-- [ ] subscriptions: Gift Subscription
-- [ ] subscriptions: Mass Gift Subscription
-- [ ] subscriptions: Gift Resubscription
-- [ ] subscriptions: Subscription
+- [x] channel-reward: Reward Redemption
+- [x] channel: Follow
+- [x] channel: Stream Offline
+- [x] channel: Stream Online
+- [x] channel: Viewer Count Update
+- [x] chat: First Words
+- [x] chat: Chat Message
+- [x] emotes: SevenTV Emote Added
+- [x] emotes: SevenTV Emote Removed
+- [x] general: Channel Update
+- [x] general: Present Viewers
+- [x] kicks: Kicks Gifted
+- [x] moderation: User Banned
+- [x] moderation: User Timed Out
+- [x] subscriptions: Gift Subscription
+- [x] subscriptions: Mass Gift Subscription
+- [x] subscriptions: Gift Resubscription
+- [x] subscriptions: Subscription
 
 **Sub-actions** (14)
 
-- [ ] channel: Set Channel Category
-- [ ] channel: Set Channel Title
-- [ ] chat: Reply to Message
-- [ ] chat: Send Message
-- [ ] moderation: Ban User
-- [ ] moderation: Timeout User
-- [ ] moderation: Unban User
-- [ ] moderation: UnTimeout User
-- [ ] user-groups: Add User To Group
-- [ ] user-groups: Remove User From Group
-- [ ] user-groups: User in Group
-- [ ] user: Add Broadcaster Information
-- [ ] user: Add Random Users
-- [ ] user: Get User Info for Target Info
+- [x] channel: Set Channel Category
+- [x] channel: Set Channel Title
+- [x] chat: Reply to Message
+- [x] chat: Send Message
+- [x] moderation: Ban User
+- [x] moderation: Timeout User
+- [x] moderation: Unban User
+- [x] moderation: UnTimeout User
+- [x] user-groups: Add User To Group
+- [x] user-groups: Remove User From Group
+- [x] user-groups: User in Group
+- [x] user: Add Broadcaster Information
+- [x] user: Add Random Users
+- [x] user: Get User Info for Target Info
 
 
 ## Phase 11: YouTube

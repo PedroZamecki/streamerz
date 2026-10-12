@@ -530,6 +530,62 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("connectionId", "Connection", ObsConnection),
             ("chapterName", "Chapter name", Text),
         ],
+        35001 => &[
+            ("text", "Message", Text),
+            ("useBot", "Use Bot Account", Bool),
+            ("fallback", "Fallback to Broadcaster", Bool),
+        ],
+        35002 => &[
+            ("text", "Message", Text),
+            ("useBot", "Use Bot Account", Bool),
+            ("fallback", "Fallback to Broadcaster", Bool),
+            ("replyId", "Reply Message ID", Text),
+        ],
+        35010 => &[],
+        35011 => &[("userLogin", "User login", Text)],
+        35012 => &[
+            ("present", "Present users only", Bool),
+            ("count", "Count", Int),
+            ("includeFrom", "Include from", Int),
+            ("groups", "Groups (one per line)", Lines),
+        ],
+        35020..=35022 => &[("userLogin", "User login", Text), ("groupName", "Group name", Text)],
+        35030 => &[("title", "Title", Text)],
+        35031 => &[
+            ("source", "Source", Int),
+            ("categoryName", "Category name", Text),
+            ("categoryId", "Category ID", Text),
+        ],
+        35040 => &[("userLogin", "User login", Text), ("reason", "Reason", Text)],
+        35041 | 35043 => &[("userLogin", "User login", Text)],
+        35042 => &[
+            ("userLogin", "User login", Text),
+            ("duration", "Duration (seconds)", Int),
+            ("reason", "Reason", Text),
+        ],
+        35101 | 35102 => &[("rewardId", "Reward ID", Text), ("state", "State", Bool)],
+        35103 => &[
+            ("rewardId", "Reward ID", Text),
+            ("cost", "Cost", Int),
+            ("operator", "Operator", Int),
+        ],
+        35104 => &[("disableNotConfigured", "Disable not configured", Bool)],
+        35105 => &[("rewardId", "Reward ID", Text), ("title", "Title", Text)],
+        35106 => &[("rewardId", "Reward ID", Text), ("description", "Description", Text)],
+        35107 => &[
+            ("rewardId", "Reward ID", Text),
+            ("title", "Title", Text),
+            ("description", "Description", Text),
+            ("cost", "Cost", Int),
+            ("operator", "Operator", Int),
+        ],
+        35108..=35110 => &[("rewardId", "Reward ID", Text)],
+        35111 | 35112 => &[("groupName", "Group name", Text), ("state", "State", Bool)],
+        35113 => &[
+            ("rewardId", "Reward ID", Text),
+            ("backgroundColor", "Background color", Text),
+            ("random", "Random", Bool),
+        ],
         99901 | 99902 | 99904 => &[("random", "Random", Bool)],
         99903 => &[
             ("values", "Values (one per line)", Lines),
@@ -575,7 +631,7 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
             ("vendorName", "Vendor (empty: any)", Text),
             ("eventType", "Event type (empty: any)", Text),
         ],
-        101..=196 | 451..=498 => &[],
+        101..=196 | 451..=498 | 35001..=35003 | 35008..=35025 => &[],
         _ => return None,
     })
 }
@@ -987,6 +1043,8 @@ mod tests {
         .chain(101..=196)
         .chain(451..=498)
         .chain(14001..=14009)
+        .chain([35001, 35002, 35003, 35008, 35009])
+        .chain(35010..=35025)
         {
             assert!(trigger_fields(k).is_some(), "trigger {k} has no form");
         }

@@ -6,6 +6,7 @@ mod edit;
 pub mod engine;
 mod fmt;
 pub mod http;
+pub mod kick;
 mod math;
 pub mod model;
 pub mod obs;
@@ -57,6 +58,9 @@ pub struct Config {
     /// OBS Studio configuration.
     #[serde(default)]
     pub obs: obs::ObsConfig,
+    /// Kick configuration.
+    #[serde(default)]
+    pub kick: kick::KickConfig,
     /// Fields this build doesn't know (e.g. written by a newer one): kept, so a save loses nothing.
     #[serde(flatten)]
     rest: Map<String, Value>,
@@ -83,6 +87,7 @@ impl Default for Config {
             counters: Map::new(),
             twitch: twitch::TwitchConfig::default(),
             obs: obs::ObsConfig::default(),
+            kick: kick::KickConfig::default(),
             rest: Map::new(),
         }
     }
@@ -279,6 +284,11 @@ fn main() {
                 .any(|c| c.get("autoConnect").and_then(Value::as_bool).unwrap_or(false))
             {
                 e.obs_start();
+            }
+            // Opt-in: Kick auto-connect if channel is set and auto_connect is true.
+            let kick_cfg = engine_cfg.borrow().kick.clone();
+            if kick_cfg.auto_connect && !kick_cfg.channel.trim().is_empty() {
+                e.kick_start();
             }
             tokio::task::spawn_local(servers::run(e.clone()));
             e.started();

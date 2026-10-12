@@ -100,6 +100,7 @@ pub struct Engine {
     hub: RefCell<Vec<events::Listener>>,
     twitch: RefCell<Option<crate::twitch::TwitchHandle>>,
     obs: RefCell<Option<crate::obs::ObsHandle>>,
+    kick: RefCell<Option<crate::kick::KickHandle>>,
 }
 
 /// A running action's context.
@@ -138,7 +139,8 @@ pub fn supported(kind: u32) -> bool {
         kind,
         2 | 4 | 6 | 8 | 9 | 10..=29 | 30..=49 | 50..=52 | 120..=130 | 200..=215 | 251..=254 | 321..=329 | 500..=531 | 550..=573 | 575..=580
             | 1001..=1005 | 1007 | 1009..=1011 | 1013..=1017 | 1020 | 1022 | 1023 | 1028
-            | 1031..=1034 | 1038 | 10001 | 99900..=99904
+            | 1031..=1034 | 1038 | 10001 | 35001 | 35002 | 35010..=35012 | 35020..=35022 | 35030 | 35031
+            | 35040..=35043 | 35101..=35113 | 99900..=99904
     )
 }
 
@@ -229,7 +231,29 @@ impl Engine {
             hub: RefCell::default(),
             twitch: RefCell::default(),
             obs: RefCell::default(),
+            kick: RefCell::default(),
         })
+    }
+
+    pub fn set_kick(&self, handle: crate::kick::KickHandle) {
+        *self.kick.borrow_mut() = Some(handle);
+    }
+
+    pub fn kick(&self) -> Option<crate::kick::KickHandle> {
+        self.kick.borrow().clone()
+    }
+
+    pub fn kick_start(self: &Rc<Self>) -> crate::kick::KickHandle {
+        if let Some(k) = self.kick() {
+            return k;
+        }
+        let k = crate::kick::start(self.clone(), &self.cfg);
+        self.set_kick(k.clone());
+        k
+    }
+
+    pub fn kick_connected(&self) -> bool {
+        self.kick().is_some_and(|k| k.is_connected())
     }
 
     pub fn set_obs(&self, handle: crate::obs::ObsHandle) {
@@ -636,7 +660,15 @@ impl Engine {
                 | 1013
                 | 1014
                 | 1015
-                | 10001 => self.rest(ctx, o, kind).await,
+                | 10001
+                | 35001
+                | 35002
+                | 35010..=35012
+                | 35020..=35022
+                | 35030
+                | 35031
+                | 35040..=35043
+                | 35101..=35113 => self.rest(ctx, o, kind).await,
                 // Set Argument
                 123 => {
                     let k = self.simple(ctx, s(o, "variableName"));
