@@ -127,6 +127,23 @@ fn subs(o: &Obj) -> &[Value] {
     o.get("subActions").and_then(Value::as_array).map_or(&[], Vec::as_slice)
 }
 
+/// What the window asks of the engine.
+pub enum UiCmd {
+    /// Run an action as its Test trigger does.
+    Test(String),
+    /// Run an action with these arguments (testing a trigger).
+    Run(String, Obj),
+}
+
+/// Whether the engine runs this sub-action type (the rest are kept, logged once and skipped).
+pub fn supported(kind: u32) -> bool {
+    matches!(
+        kind,
+        2 | 4 | 6 | 8 | 9 | 120..=130 | 1001..=1005 | 1007 | 1009..=1011 | 1013..=1017 | 1020 | 1022 | 1023 | 1028
+            | 1031..=1034 | 1038 | 10001 | 99900..=99904
+    )
+}
+
 /// A random version 4 UUID.
 pub fn uuid() -> String {
     let r = |bits: u32| crate::math::secure_u64() >> (64 - bits);
@@ -218,6 +235,7 @@ impl Engine {
     /// Run `f` on the config, and save it soon (once for a burst of changes).
     pub fn change(self: &Rc<Self>, f: impl FnOnce(&mut Config)) {
         self.cfg.send_modify(f);
+        crate::ui::changed();
         let mut st = self.st.borrow_mut();
         if st.save_pending {
             return;

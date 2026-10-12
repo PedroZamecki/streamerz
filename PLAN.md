@@ -171,11 +171,12 @@ platform handles through channels, never through shared locks held across awaits
   - Answers match the real Streamer.bot's byte-for-byte where it can be compared (captured from it).
   - On 8090, songrequestz and real Streamer.bot clients must work unchanged.
 - [x] 4b. WebSocket clients and custom servers, with their triggers. Tick the rest of COVERAGE "Phase 4".
-- [ ] 5. Editor UI:
-  - All tabs, the actions tree with drag-reorder, the sub-action list (enable/disable, nesting for logic).
-  - Trigger and command editors, timers, queues, globals viewer.
-  - Server settings, import/export dialogs, history, pending, test trigger.
-  - Forms for the core sub-actions.
+- [x] 5a. Editor, actions: the Actions tab (groups tree, drag-reorder, sub-action list with enable/disable
+  and nesting for logic, triggers list), import/export dialogs, test trigger. Sub-actions and triggers
+  without their own form open as editable JSON (validated on save).
+- [ ] 5b. Editor, forms: a form for every core sub-action and trigger.
+- [ ] 5c. Editor, the rest: Commands, timers, queues, globals viewer, server settings, history and
+  pending views.
 - [ ] 6. Twitch A:
   - Login (broadcaster + bot) and the EventSub session.
   - Chat in and out: messages, whispers, announcements.
