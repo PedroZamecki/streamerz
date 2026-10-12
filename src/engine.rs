@@ -17,6 +17,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{oneshot, watch};
 
+mod rest;
+
 pub const DEFAULT_QUEUE: &str = "00000000-0000-0000-0000-000000000000";
 const HISTORY: usize = 100;
 
@@ -80,6 +82,14 @@ struct State {
     /// Sub-action types already reported as unsupported.
     warned: HashSet<u64>,
     save_pending: bool,
+    /// Command cooldowns: when each command (id) and each command per user ("id:user id") is
+    /// usable again; the non-persisted counters, keyed like Config.counters.
+    cooldowns: HashMap<String, std::time::Instant>,
+    counters: Obj,
+    /// Chat lines seen, for timers' Lines.
+    chat_lines: u64,
+    /// The running timers, stopped when timers change.
+    timers: Vec<tokio::task::AbortHandle>,
 }
 
 pub struct Engine {
@@ -148,7 +158,7 @@ fn compare(a: &str, b2: &str, auto: bool) -> std::cmp::Ordering {
 }
 
 /// .NET regexes are mostly this syntax; (?'name') becomes (?<name>).
-fn regex(p: &str) -> Option<regex_lite::Regex> {
+pub fn regex(p: &str) -> Option<regex_lite::Regex> {
     let p = p.replace("(?'", "(?<").replace("'>", ">");
     let p = fix_named(&p);
     match regex_lite::Regex::new(&p) {
@@ -182,7 +192,7 @@ fn fix_named(p: &str) -> String {
 
 /// Regex Match's arguments: match.count, match[i] numbered like .NET (unnamed groups first, then
 /// named ones), and one argument per named group.
-fn match_args(r: &regex_lite::Regex, text: &str, args: &mut Obj) -> bool {
+pub fn match_args(r: &regex_lite::Regex, text: &str, args: &mut Obj) -> bool {
     let Some(c) = r.captures(text) else { return false };
     let names: Vec<Option<&str>> = r.capture_names().collect();
     let order = (0..names.len())
@@ -474,7 +484,7 @@ impl Engine {
                         self.queue(&id, ctx.args.clone());
                     }
                 }
-                // Set Timer State, Set Command State: phase 3b.
+                2 | 6 | 8 | 9 | 1007 | 1010 | 1013 | 1014 | 1015 | 10001 => self.rest(ctx, o, kind).await,
                 // Set Argument
                 123 => {
                     let k = self.simple(ctx, s(o, "variableName"));
@@ -1129,11 +1139,11 @@ fn with_sub(list: &mut [Obj], id: &str, f: &mut dyn FnMut(&mut Obj)) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::model::ActionsFile;
 
-    fn engine(actions: Value) -> Rc<Engine> {
+    pub(super) fn engine(actions: Value) -> Rc<Engine> {
         let c = Config {
             actions: serde_json::from_value::<ActionsFile>(actions).unwrap(),
             ..Default::default()
@@ -1141,16 +1151,16 @@ mod tests {
         Engine::new(Arc::new(watch::channel(c).0), |_| {})
     }
 
-    fn action(id: &str, name: &str, subs: Value) -> Value {
+    pub(super) fn action(id: &str, name: &str, subs: Value) -> Value {
         json!({"id": id, "name": name, "enabled": true, "queue": DEFAULT_QUEUE, "subActions": subs, "triggers": []})
     }
 
-    fn log(msg: &str) -> Value {
+    pub(super) fn log(msg: &str) -> Value {
         json!({"type": 1020, "logLevel": 1, "message": msg})
     }
 
     /// Run a test body on a LocalSet, then return the log lines that start with "T ".
-    fn run(f: impl Future<Output = ()>) -> Vec<String> {
+    pub(super) fn run(f: impl Future<Output = ()>) -> Vec<String> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
