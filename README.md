@@ -20,3 +20,13 @@ and authentication, so tools made for Streamer.bot (songrequestz, overlays, Stre
 changes. Until the editor exists, change them in `streamerz.json` under `websockets`, `http` and `udp`
 (the same fields as Streamer.bot's settings). WebSocket clients and custom servers go in
 `websockets.connections` and `websockets.servers`.
+
+## The editor
+
+Click the tray icon to open the window. The Actions tab lists your actions by group; select one to see
+its triggers and sub-actions. Add, edit, enable/disable and delete them with the buttons; drag an action
+onto a group to move it there, and drag sub-actions to reorder them or into a group, If/Else branch or
+loop. Double-click anything to edit it. Sub-actions and triggers without their own form yet open as
+JSON. **Import** takes a Streamer.bot import string (pasted or from a file); **Export** makes one from
+the actions you tick, with the commands, timers and queues they use. Sub-actions that don't run in
+streamerz are kept, shown greyed out with "(not supported)", and skipped.

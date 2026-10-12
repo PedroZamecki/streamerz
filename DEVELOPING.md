@@ -471,6 +471,22 @@ async def main():
 asyncio.run(main())
 ```
 
+## Driving the window in tests
+
+On Wayland, nothing can click another app's window, so run streamerz on X11 (Xwayland) and use xdotool,
+with coordinates from Hyprland (xdotool's own window position is off under Xwayland):
+
+```
+FLTK_BACKEND=x11 ./target/debug/streamerz &
+read X Y W H < <(hyprctl clients -j | python3 -c "import json,sys; [print(*c['at'],*c['size']) for c in json.load(sys.stdin) if c['class']=='Streamerz' and c['xwayland']]")
+xdotool mousemove $((X+130)) $((Y+108)) click 1        # a click at window coordinates 130,108
+grim -g "$X,$Y ${W}x$H" shot.png                     # a screenshot
+```
+
+Typing needs the window focused; don't focus it with `hyprctl dispatch focuswindow` while someone is
+using the machine (their keys go to streamerz then), and type long text in chunks (one long burst stops
+FLTK's input until restart).
+
 ## Memory and CPU
 
 Every PR measures the hidden window (start hidden, wait a few seconds):
