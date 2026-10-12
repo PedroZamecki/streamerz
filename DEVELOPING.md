@@ -490,6 +490,18 @@ Without a window manager keys go to the window under the pointer, and windows op
 onto a dialog (and click its input) before typing. Type long text in chunks (one long burst stops FLTK's
 input until restart).
 
+## The window and the engine
+
+The engine lives on the runtime thread and isn't `Send`; the window talks to it with closures
+(`UiCmd`): `tell` runs one there, `query` runs one and waits for its answer (history, pending, temporary
+globals, queue state). The engine never waits on the window, so `query` can't deadlock, but don't hold
+a `cfg.borrow()` across it. The engine calls `ui::changed()` after config changes, runs and temporary
+global writes; it only wakes the window while it's up, and the live tabs (Queues, History, Globals)
+only ask the engine when they're the tab on screen.
+
+Streamer.bot splits multi-line text (command aliases) on `\r\n` only: `!a\n!b` is one alias `!a!b`
+there. Its text boxes write `\r\n`, and so do the forms' multi-line fields.
+
 ## Memory and CPU
 
 Every PR measures the hidden window (start hidden, wait a few seconds):

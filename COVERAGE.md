@@ -105,11 +105,11 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Triggers: groups** (5)
 
-- [ ] Added (engine fires it; called by the editor's groups, phase 5, and the platforms' user group sub-actions, phase 6+)
+- [x] Added (the editor's Groups tab; the platforms' user group sub-actions call it too, phase 6+)
 - [x] Cleared
-- [ ] Removed (engine fires it; called by the editor's groups, phase 5, and the platforms' user group sub-actions, phase 6+)
-- [ ] Users Added (engine fires it; called by the editor's groups, phase 5, and the platforms' user group sub-actions, phase 6+)
-- [ ] Users Removed (engine fires it; called by the editor's groups, phase 5, and the platforms' user group sub-actions, phase 6+)
+- [x] Removed (the editor's Groups tab; the platforms' user group sub-actions call it too, phase 6+)
+- [ ] Users Added (engine fires it; called by the platforms' user group sub-actions, phase 6+)
+- [ ] Users Removed (engine fires it; called by the platforms' user group sub-actions, phase 6+)
 
 **Triggers: schedule** (2)
 
