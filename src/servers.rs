@@ -19,7 +19,7 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
 
 /// The Streamer.bot API level copied (GetInfo/Hello report it, so version-checking clients work).
-const API_VERSION: &str = "1.0.7";
+pub const API_VERSION: &str = "1.0.7";
 const EVENTS: &str = include_str!("events.json");
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]

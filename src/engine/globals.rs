@@ -46,8 +46,8 @@ fn put(values: &mut Obj, writes: &mut Obj, name: &str, v: &Option<Value>, now: &
             writes.insert(name.into(), now.into());
         }
         None => {
-            values.remove(name);
-            writes.remove(name);
+            values.shift_remove(name);
+            writes.shift_remove(name);
         }
     }
 }
