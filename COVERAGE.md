@@ -420,47 +420,47 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Triggers** (9)
 
-- [ ] OBS Connected
-- [ ] OBS Disconnected
-- [ ] OBS Event
-- [ ] OBS Recording Started
-- [ ] OBS Recording Stopped
-- [ ] OBS Scene Changed
-- [ ] OBS Streaming Started
-- [ ] OBS Streaming Stopped
-- [ ] Vendor Event
+- [x] OBS Connected
+- [x] OBS Disconnected
+- [x] OBS Event
+- [x] OBS Recording Started
+- [x] OBS Recording Stopped
+- [x] OBS Scene Changed
+- [x] OBS Streaming Started
+- [x] OBS Streaming Stopped
+- [x] Vendor Event
 
 **Sub-actions** (29)
 
-- [ ] Create Record Chapter
-- [ ] filters: Set State of a Random Filter
-- [ ] Get Current Scene
-- [ ] Get Status
-- [ ] groups: Set Random Group Source Visible
-- [ ] OBS Raw
-- [ ] Recording
-- [ ] replay: Set Replay Buffer State
-- [ ] scenes: Get Scene Item Properties
-- [ ] scenes: Hide Scene's Sources
-- [ ] scenes: Set Random Scene Source Visible
-- [ ] scenes: Set Scene Filter State
-- [ ] Set Active Scene
-- [ ] sources: Flip Source
-- [ ] sources: Hide Group's Sources
-- [ ] sources: Hide Source's Filters
-- [ ] sources: Rotate Source
-- [ ] sources: Set Browser Source Url
-- [ ] sources: Set Color Source Color
-- [ ] sources: Set GDI Text
-- [ ] sources: Set Image Source File
-- [ ] sources: Set Media Source File
-- [ ] sources: Set Media State
-- [ ] sources: Set Source Audio Track State
-- [ ] sources: Set Source Filter State
-- [ ] sources: Set Source Mute State
-- [ ] sources: Set Source Visibility State
-- [ ] Streaming
-- [ ] Take Screenshot
+- [x] Create Record Chapter
+- [x] filters: Set State of a Random Filter
+- [x] Get Current Scene
+- [x] Get Status
+- [x] groups: Set Random Group Source Visible
+- [x] OBS Raw
+- [x] Recording
+- [x] replay: Set Replay Buffer State
+- [x] scenes: Get Scene Item Properties
+- [x] scenes: Hide Scene's Sources
+- [x] scenes: Set Random Scene Source Visible
+- [x] scenes: Set Scene Filter State
+- [x] Set Active Scene
+- [x] sources: Flip Source
+- [x] sources: Hide Group's Sources
+- [x] sources: Hide Source's Filters
+- [x] sources: Rotate Source
+- [x] sources: Set Browser Source Url
+- [x] sources: Set Color Source Color
+- [x] sources: Set GDI Text
+- [x] sources: Set Image Source File
+- [x] sources: Set Media Source File
+- [x] sources: Set Media State
+- [x] sources: Set Source Audio Track State
+- [x] sources: Set Source Filter State
+- [x] sources: Set Source Mute State
+- [x] sources: Set Source Visibility State
+- [x] Streaming
+- [x] Take Screenshot
 
 
 ## Phase 10: Kick

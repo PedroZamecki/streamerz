@@ -1628,6 +1628,847 @@ impl Engine {
                     self.group_event(T_GROUP_CLEARED, "Cleared", &g, &[]);
                 }
             }
+            // OBS Studio sub-actions (30..=49, 321..=329)
+            // 30: Set Source Visibility State
+            30 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let scene = self.expand(ctx, s(o, "sceneName"));
+                let source = self.expand(ctx, s(o, "sourceName"));
+                let state = n(o, "state") as i64;
+                let obs = self.obs_start();
+                if let Ok(res) = obs
+                    .send_request(
+                        conn_ref,
+                        "GetSceneItemId",
+                        json!({"sceneName": scene, "sourceName": source}),
+                    )
+                    .await
+                {
+                    if let Some(item_id) = res.get("sceneItemId").and_then(Value::as_i64) {
+                        let target = match state {
+                            0 => false,
+                            1 => true,
+                            _ => {
+                                let cur = obs
+                                    .send_request(
+                                        conn_ref,
+                                        "GetSceneItemEnabled",
+                                        json!({"sceneName": scene, "sceneItemId": item_id}),
+                                    )
+                                    .await
+                                    .ok()
+                                    .and_then(|r| r.get("sceneItemEnabled").and_then(Value::as_bool))
+                                    .unwrap_or(false);
+                                !cur
+                            }
+                        };
+                        let _ = obs
+                            .send_request(
+                                conn_ref,
+                                "SetSceneItemEnabled",
+                                json!({
+                                    "sceneName": scene,
+                                    "sceneItemId": item_id,
+                                    "sceneItemEnabled": target
+                                }),
+                            )
+                            .await;
+                    }
+                }
+            }
+            // 31: Set Random Group Source Visible
+            31 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let group = self.expand(ctx, s(o, "groupName"));
+                let obs = self.obs_start();
+                if let Ok(res) = obs
+                    .send_request(conn_ref, "GetGroupSceneItemList", json!({"sceneName": group}))
+                    .await
+                {
+                    if let Some(items) = res.get("sceneItems").and_then(Value::as_array) {
+                        if !items.is_empty() {
+                            let chosen_idx = crate::math::secure_u64() as usize % items.len();
+                            for (idx, item) in items.iter().enumerate() {
+                                if let Some(item_id) = item.get("sceneItemId").and_then(Value::as_i64) {
+                                    let _ = obs
+                                        .send_request(
+                                            conn_ref,
+                                            "SetSceneItemEnabled",
+                                            json!({
+                                                "sceneName": group,
+                                                "sceneItemId": item_id,
+                                                "sceneItemEnabled": idx == chosen_idx,
+                                            }),
+                                        )
+                                        .await;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // 32: Hide Group's Sources
+            32 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let group = self.expand(ctx, s(o, "groupName"));
+                let obs = self.obs_start();
+                if let Ok(res) = obs
+                    .send_request(conn_ref, "GetGroupSceneItemList", json!({"sceneName": group}))
+                    .await
+                {
+                    if let Some(items) = res.get("sceneItems").and_then(Value::as_array) {
+                        for item in items {
+                            if let Some(item_id) = item.get("sceneItemId").and_then(Value::as_i64) {
+                                let _ = obs
+                                    .send_request(
+                                        conn_ref,
+                                        "SetSceneItemEnabled",
+                                        json!({
+                                            "sceneName": group,
+                                            "sceneItemId": item_id,
+                                            "sceneItemEnabled": false,
+                                        }),
+                                    )
+                                    .await;
+                            }
+                        }
+                    }
+                }
+            }
+            // 33: Streaming
+            33 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let state = n(o, "state") as i64;
+                let obs = self.obs_start();
+                match state {
+                    0 => {
+                        let _ = obs.send_request(conn_ref, "StopStream", json!({})).await;
+                    }
+                    1 => {
+                        let _ = obs.send_request(conn_ref, "StartStream", json!({})).await;
+                    }
+                    _ => {
+                        let _ = obs.send_request(conn_ref, "ToggleStream", json!({})).await;
+                    }
+                }
+            }
+            // 34: Set Active Scene
+            34 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let scene = self.expand(ctx, s(o, "sceneName"));
+                let obs = self.obs_start();
+                let _ = obs
+                    .send_request(conn_ref, "SetCurrentProgramScene", json!({"sceneName": scene}))
+                    .await;
+            }
+            // 35: Set Source Filter State
+            35 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let source = self.expand(ctx, s(o, "sourceName"));
+                let filter = self.expand(ctx, s(o, "filterName"));
+                let state = n(o, "state") as i64;
+                let obs = self.obs_start();
+                let target = match state {
+                    0 => false,
+                    1 => true,
+                    _ => {
+                        let cur = obs
+                            .send_request(
+                                conn_ref,
+                                "GetSourceFilter",
+                                json!({"sourceName": source, "filterName": filter}),
+                            )
+                            .await
+                            .ok()
+                            .and_then(|r| r.get("filterEnabled").and_then(Value::as_bool))
+                            .unwrap_or(false);
+                        !cur
+                    }
+                };
+                let _ = obs
+                    .send_request(
+                        conn_ref,
+                        "SetSourceFilterEnabled",
+                        json!({
+                            "sourceName": source,
+                            "filterName": filter,
+                            "filterEnabled": target
+                        }),
+                    )
+                    .await;
+            }
+            // 36: Flip Source
+            36 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let scene = self.expand(ctx, s(o, "sceneName"));
+                let source = self.expand(ctx, s(o, "sourceName"));
+                let flip_mode = n(o, "flipMode") as i64;
+                let obs = self.obs_start();
+                if let Ok(res) = obs
+                    .send_request(
+                        conn_ref,
+                        "GetSceneItemId",
+                        json!({"sceneName": scene, "sourceName": source}),
+                    )
+                    .await
+                {
+                    if let Some(item_id) = res.get("sceneItemId").and_then(Value::as_i64) {
+                        if let Ok(tr_res) = obs
+                            .send_request(
+                                conn_ref,
+                                "GetSceneItemTransform",
+                                json!({"sceneName": scene, "sceneItemId": item_id}),
+                            )
+                            .await
+                        {
+                            if let Some(tr) = tr_res.get("sceneItemTransform") {
+                                let mut scale_x = tr.get("scaleX").and_then(Value::as_f64).unwrap_or(1.0);
+                                let mut scale_y = tr.get("scaleY").and_then(Value::as_f64).unwrap_or(1.0);
+                                if flip_mode == 0 || flip_mode == 2 {
+                                    scale_x = -scale_x;
+                                }
+                                if flip_mode == 1 || flip_mode == 2 {
+                                    scale_y = -scale_y;
+                                }
+                                let _ = obs
+                                    .send_request(
+                                        conn_ref,
+                                        "SetSceneItemTransform",
+                                        json!({
+                                            "sceneName": scene,
+                                            "sceneItemId": item_id,
+                                            "sceneItemTransform": {
+                                                "scaleX": scale_x,
+                                                "scaleY": scale_y,
+                                            }
+                                        }),
+                                    )
+                                    .await;
+                            }
+                        }
+                    }
+                }
+            }
+            // 37: Rotate Source
+            37 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let scene = self.expand(ctx, s(o, "sceneName"));
+                let source = self.expand(ctx, s(o, "sourceName"));
+                let degrees = n(o, "degrees");
+                let additive = b(o, "additive", false);
+                let obs = self.obs_start();
+                if let Ok(res) = obs
+                    .send_request(
+                        conn_ref,
+                        "GetSceneItemId",
+                        json!({"sceneName": scene, "sourceName": source}),
+                    )
+                    .await
+                {
+                    if let Some(item_id) = res.get("sceneItemId").and_then(Value::as_i64) {
+                        let new_rot = if additive {
+                            let cur_rot = obs
+                                .send_request(
+                                    conn_ref,
+                                    "GetSceneItemTransform",
+                                    json!({"sceneName": scene, "sceneItemId": item_id}),
+                                )
+                                .await
+                                .ok()
+                                .and_then(|r| r.pointer("/sceneItemTransform/rotation").and_then(Value::as_f64))
+                                .unwrap_or(0.0);
+                            (cur_rot + degrees) % 360.0
+                        } else {
+                            degrees % 360.0
+                        };
+                        let _ = obs
+                            .send_request(
+                                conn_ref,
+                                "SetSceneItemTransform",
+                                json!({
+                                    "sceneName": scene,
+                                    "sceneItemId": item_id,
+                                    "sceneItemTransform": { "rotation": new_rot }
+                                }),
+                            )
+                            .await;
+                    }
+                }
+            }
+            // 38: Set Browser Source URL
+            38 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let source = self.expand(ctx, s(o, "sourceName"));
+                let url = self.expand(ctx, s(o, "url"));
+                let obs = self.obs_start();
+                let _ = obs
+                    .send_request(
+                        conn_ref,
+                        "SetInputSettings",
+                        json!({
+                            "inputName": source,
+                            "inputSettings": { "url": url },
+                            "overlay": true
+                        }),
+                    )
+                    .await;
+            }
+            // 39: Set GDI Text
+            39 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let source = self.expand(ctx, s(o, "sourceName"));
+                let text_val = self.expand(ctx, s(o, "text"));
+                let obs = self.obs_start();
+                let _ = obs
+                    .send_request(
+                        conn_ref,
+                        "SetInputSettings",
+                        json!({
+                            "inputName": source,
+                            "inputSettings": { "text": text_val },
+                            "overlay": true
+                        }),
+                    )
+                    .await;
+            }
+            // 40: Set State of a Random Filter
+            40 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let source = self.expand(ctx, s(o, "sourceName"));
+                let state = n(o, "state") as i64;
+                let obs = self.obs_start();
+                if let Ok(res) = obs
+                    .send_request(conn_ref, "GetSourceFilterList", json!({"sourceName": source}))
+                    .await
+                {
+                    if let Some(filters) = res.get("filters").and_then(Value::as_array) {
+                        if !filters.is_empty() {
+                            let chosen_idx = crate::math::secure_u64() as usize % filters.len();
+                            if let Some(f) = filters.get(chosen_idx) {
+                                if let Some(fname) = f.get("filterName").and_then(Value::as_str) {
+                                    let cur_enabled = f.get("filterEnabled").and_then(Value::as_bool).unwrap_or(false);
+                                    let target = match state {
+                                        0 => false,
+                                        1 => true,
+                                        _ => !cur_enabled,
+                                    };
+                                    let _ = obs
+                                        .send_request(
+                                            conn_ref,
+                                            "SetSourceFilterEnabled",
+                                            json!({
+                                                "sourceName": source,
+                                                "filterName": fname,
+                                                "filterEnabled": target
+                                            }),
+                                        )
+                                        .await;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // 41: Hide Source's Filters
+            41 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let source = self.expand(ctx, s(o, "sourceName"));
+                let obs = self.obs_start();
+                if let Ok(res) = obs
+                    .send_request(conn_ref, "GetSourceFilterList", json!({"sourceName": source}))
+                    .await
+                {
+                    if let Some(filters) = res.get("filters").and_then(Value::as_array) {
+                        for f in filters {
+                            if let Some(fname) = f.get("filterName").and_then(Value::as_str) {
+                                let _ = obs
+                                    .send_request(
+                                        conn_ref,
+                                        "SetSourceFilterEnabled",
+                                        json!({
+                                            "sourceName": source,
+                                            "filterName": fname,
+                                            "filterEnabled": false
+                                        }),
+                                    )
+                                    .await;
+                            }
+                        }
+                    }
+                }
+            }
+            // 42: Set Source Mute State
+            42 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let source = self.expand(ctx, s(o, "sourceName"));
+                let state = n(o, "state") as i64;
+                let obs = self.obs_start();
+                match state {
+                    0 => {
+                        let _ = obs
+                            .send_request(
+                                conn_ref,
+                                "SetInputMute",
+                                json!({"inputName": source, "inputMuted": false}),
+                            )
+                            .await;
+                    }
+                    1 => {
+                        let _ = obs
+                            .send_request(
+                                conn_ref,
+                                "SetInputMute",
+                                json!({"inputName": source, "inputMuted": true}),
+                            )
+                            .await;
+                    }
+                    _ => {
+                        let _ = obs
+                            .send_request(conn_ref, "ToggleInputMute", json!({"inputName": source}))
+                            .await;
+                    }
+                }
+            }
+            // 43: Get Current Scene
+            43 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let obs = self.obs_start();
+                if let Ok(res) = obs.send_request(conn_ref, "GetCurrentProgramScene", json!({})).await {
+                    if let Some(scene_name) = res.get("currentProgramSceneName").and_then(Value::as_str) {
+                        ctx.args.insert("obsCurrentScene".into(), scene_name.to_string().into());
+                    }
+                }
+            }
+            // 44: Set Source Audio Track State
+            44 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let source = self.expand(ctx, s(o, "sourceName"));
+                let track = n(o, "track") as i64;
+                let track_str = track.to_string();
+                let state = n(o, "state") as i64;
+                let obs = self.obs_start();
+                if let Ok(res) = obs
+                    .send_request(conn_ref, "GetInputAudioTracks", json!({"inputName": source}))
+                    .await
+                {
+                    let cur = res
+                        .pointer("/inputAudioTracks")
+                        .and_then(|t| t.get(&track_str))
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    let target = match state {
+                        0 => false,
+                        1 => true,
+                        _ => !cur,
+                    };
+                    let _ = obs
+                        .send_request(
+                            conn_ref,
+                            "SetInputAudioTracks",
+                            json!({
+                                "inputName": source,
+                                "inputAudioTracks": {
+                                    &track_str: target
+                                }
+                            }),
+                        )
+                        .await;
+                }
+            }
+            // 45: Recording
+            45 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let state = n(o, "state") as i64;
+                let obs = self.obs_start();
+                match state {
+                    0 => {
+                        let _ = obs.send_request(conn_ref, "StopRecord", json!({})).await;
+                    }
+                    1 => {
+                        let _ = obs.send_request(conn_ref, "StartRecord", json!({})).await;
+                    }
+                    2 => {
+                        let _ = obs.send_request(conn_ref, "ToggleRecord", json!({})).await;
+                    }
+                    3 => {
+                        let _ = obs.send_request(conn_ref, "PauseRecord", json!({})).await;
+                    }
+                    _ => {
+                        let _ = obs.send_request(conn_ref, "ResumeRecord", json!({})).await;
+                    }
+                }
+            }
+            // 46: Raw
+            46 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let req_type = self.simple(ctx, s(o, "name"));
+                let prefix = self.simple(ctx, s(o, "prefix"));
+                let raw_str = self.expand(ctx, s(o, "raw"));
+                let results_to_args = b(o, "resultsToArgs", false);
+                let payload: Value = serde_json::from_str(&raw_str).unwrap_or(json!({}));
+                let obs = self.obs_start();
+                if let Ok(res) = obs.send_request(conn_ref, &req_type, payload).await {
+                    if results_to_args {
+                        if let Some(map) = res.as_object() {
+                            for (k, val) in map {
+                                let key = if prefix.is_empty() {
+                                    k.clone()
+                                } else {
+                                    format!("{prefix}.{k}")
+                                };
+                                ctx.args.insert(key, val.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            // 47: Set Scene Filter State
+            47 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let scene = self.expand(ctx, s(o, "sceneName"));
+                let filter = self.expand(ctx, s(o, "filterName"));
+                let state = n(o, "state") as i64;
+                let obs = self.obs_start();
+                let target = match state {
+                    0 => false,
+                    1 => true,
+                    _ => {
+                        let cur = obs
+                            .send_request(
+                                conn_ref,
+                                "GetSourceFilter",
+                                json!({"sourceName": scene, "filterName": filter}),
+                            )
+                            .await
+                            .ok()
+                            .and_then(|r| r.get("filterEnabled").and_then(Value::as_bool))
+                            .unwrap_or(false);
+                        !cur
+                    }
+                };
+                let _ = obs
+                    .send_request(
+                        conn_ref,
+                        "SetSourceFilterEnabled",
+                        json!({
+                            "sourceName": scene,
+                            "filterName": filter,
+                            "filterEnabled": target
+                        }),
+                    )
+                    .await;
+            }
+            // 48: Take Screenshot
+            48 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let scene = self.expand(ctx, s(o, "sceneName"));
+                let source = self.expand(ctx, s(o, "sourceName"));
+                let path = self.expand(ctx, s(o, "path"));
+                let quality = n(o, "quality") as i64;
+                let target_name = if !source.is_empty() { source } else { scene };
+                let ext = std::path::Path::new(&path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("png");
+                let obs = self.obs_start();
+                let _ = obs
+                    .send_request(
+                        conn_ref,
+                        "SaveSourceScreenshot",
+                        json!({
+                            "sourceName": target_name,
+                            "imageFilePath": path,
+                            "imageFormat": ext,
+                            "imageCompressionQuality": quality
+                        }),
+                    )
+                    .await;
+            }
+            // 49: Set Media State
+            49 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let source = self.expand(ctx, s(o, "sourceName"));
+                let state = n(o, "state") as i64;
+                let action = match state {
+                    0 => "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY",
+                    1 => "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PAUSE",
+                    2 => "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP",
+                    3 => "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART",
+                    4 => "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_NEXT",
+                    _ => "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PREVIOUS",
+                };
+                let obs = self.obs_start();
+                let _ = obs
+                    .send_request(
+                        conn_ref,
+                        "TriggerMediaInputAction",
+                        json!({
+                            "inputName": source,
+                            "mediaAction": action
+                        }),
+                    )
+                    .await;
+            }
+            // 321: Set Replay Buffer State
+            321 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let state = n(o, "state") as i64;
+                let obs = self.obs_start();
+                match state {
+                    0 => {
+                        let _ = obs.send_request(conn_ref, "StopReplayBuffer", json!({})).await;
+                    }
+                    1 => {
+                        let _ = obs.send_request(conn_ref, "StartReplayBuffer", json!({})).await;
+                    }
+                    2 => {
+                        let _ = obs.send_request(conn_ref, "ToggleReplayBuffer", json!({})).await;
+                    }
+                    _ => {
+                        let _ = obs.send_request(conn_ref, "SaveReplayBuffer", json!({})).await;
+                    }
+                }
+            }
+            // 322: Set Media Source File
+            322 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let source = self.expand(ctx, s(o, "sourceName"));
+                let file_name = self.expand(ctx, s(o, "fileName"));
+                let obs = self.obs_start();
+                let _ = obs
+                    .send_request(
+                        conn_ref,
+                        "SetInputSettings",
+                        json!({
+                            "inputName": source,
+                            "inputSettings": { "local_file": file_name },
+                            "overlay": true
+                        }),
+                    )
+                    .await;
+            }
+            // 323: Set Image Source File
+            323 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let source = self.expand(ctx, s(o, "sourceName"));
+                let file_name = self.expand(ctx, s(o, "fileName"));
+                let obs = self.obs_start();
+                let _ = obs
+                    .send_request(
+                        conn_ref,
+                        "SetInputSettings",
+                        json!({
+                            "inputName": source,
+                            "inputSettings": { "file": file_name },
+                            "overlay": true
+                        }),
+                    )
+                    .await;
+            }
+            // 324: Get Scene Item Properties
+            324 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let scene = self.expand(ctx, s(o, "sceneName"));
+                let source = self.expand(ctx, s(o, "sourceName"));
+                let obs = self.obs_start();
+                if let Ok(res) = obs
+                    .send_request(
+                        conn_ref,
+                        "GetSceneItemId",
+                        json!({"sceneName": scene, "sourceName": source}),
+                    )
+                    .await
+                {
+                    if let Some(item_id) = res.get("sceneItemId").and_then(Value::as_i64) {
+                        if let Ok(en_res) = obs
+                            .send_request(
+                                conn_ref,
+                                "GetSceneItemEnabled",
+                                json!({"sceneName": scene, "sceneItemId": item_id}),
+                            )
+                            .await
+                        {
+                            if let Some(enabled) = en_res.get("sceneItemEnabled").and_then(Value::as_bool) {
+                                ctx.args.insert("obsItemEnabled".into(), enabled.into());
+                            }
+                        }
+                        if let Ok(tr_res) = obs
+                            .send_request(
+                                conn_ref,
+                                "GetSceneItemTransform",
+                                json!({"sceneName": scene, "sceneItemId": item_id}),
+                            )
+                            .await
+                        {
+                            if let Some(tr) = tr_res.get("sceneItemTransform") {
+                                if let Some(rot) = tr.get("rotation").and_then(Value::as_f64) {
+                                    ctx.args.insert("obsItemRotation".into(), rot.into());
+                                }
+                                if let Some(sx) = tr.get("scaleX").and_then(Value::as_f64) {
+                                    ctx.args.insert("obsItemScaleX".into(), sx.into());
+                                }
+                                if let Some(sy) = tr.get("scaleY").and_then(Value::as_f64) {
+                                    ctx.args.insert("obsItemScaleY".into(), sy.into());
+                                }
+                                if let Some(px) = tr.get("positionX").and_then(Value::as_f64) {
+                                    ctx.args.insert("obsItemPositionX".into(), px.into());
+                                }
+                                if let Some(py) = tr.get("positionY").and_then(Value::as_f64) {
+                                    ctx.args.insert("obsItemPositionY".into(), py.into());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // 325: Hide Scene's Sources
+            325 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let scene = self.expand(ctx, s(o, "sceneName"));
+                let obs = self.obs_start();
+                if let Ok(res) = obs
+                    .send_request(conn_ref, "GetSceneItemList", json!({"sceneName": scene}))
+                    .await
+                {
+                    if let Some(items) = res.get("sceneItems").and_then(Value::as_array) {
+                        for item in items {
+                            if let Some(item_id) = item.get("sceneItemId").and_then(Value::as_i64) {
+                                let _ = obs
+                                    .send_request(
+                                        conn_ref,
+                                        "SetSceneItemEnabled",
+                                        json!({
+                                            "sceneName": scene,
+                                            "sceneItemId": item_id,
+                                            "sceneItemEnabled": false
+                                        }),
+                                    )
+                                    .await;
+                            }
+                        }
+                    }
+                }
+            }
+            // 326: Set Random Scene Source Visible
+            326 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let scene = self.expand(ctx, s(o, "sceneName"));
+                let obs = self.obs_start();
+                if let Ok(res) = obs
+                    .send_request(conn_ref, "GetSceneItemList", json!({"sceneName": scene}))
+                    .await
+                {
+                    if let Some(items) = res.get("sceneItems").and_then(Value::as_array) {
+                        if !items.is_empty() {
+                            let chosen_idx = crate::math::secure_u64() as usize % items.len();
+                            if let Some(item) = items.get(chosen_idx) {
+                                if let Some(item_id) = item.get("sceneItemId").and_then(Value::as_i64) {
+                                    let _ = obs
+                                        .send_request(
+                                            conn_ref,
+                                            "SetSceneItemEnabled",
+                                            json!({
+                                                "sceneName": scene,
+                                                "sceneItemId": item_id,
+                                                "sceneItemEnabled": true
+                                            }),
+                                        )
+                                        .await;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // 327: Set Color Source Color
+            327 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let source = self.expand(ctx, s(o, "sourceName"));
+                let random = b(o, "random", false);
+                let color_val = if random {
+                    (crate::math::secure_u64() & 0x00FFFFFF) as i64
+                } else {
+                    let col_str = self.expand(ctx, s(o, "color"));
+                    col_str
+                        .trim()
+                        .trim_start_matches('#')
+                        .parse::<i64>()
+                        .or_else(|_| i64::from_str_radix(col_str.trim().trim_start_matches('#'), 16))
+                        .unwrap_or(0)
+                };
+                let obs = self.obs_start();
+                let _ = obs
+                    .send_request(
+                        conn_ref,
+                        "SetInputSettings",
+                        json!({
+                            "inputName": source,
+                            "inputSettings": { "color": color_val },
+                            "overlay": true
+                        }),
+                    )
+                    .await;
+            }
+            // 328: Get Status
+            328 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let obs = self.obs_start();
+                if let Ok(res) = obs.send_request(conn_ref, "GetStreamStatus", json!({})).await {
+                    let streaming = res.get("outputActive").and_then(Value::as_bool).unwrap_or(false);
+                    ctx.args.insert("obsStreaming".into(), streaming.into());
+                }
+                if let Ok(res) = obs.send_request(conn_ref, "GetRecordStatus", json!({})).await {
+                    let recording = res.get("outputActive").and_then(Value::as_bool).unwrap_or(false);
+                    let paused = res.get("outputPaused").and_then(Value::as_bool).unwrap_or(false);
+                    ctx.args.insert("obsRecording".into(), recording.into());
+                    ctx.args.insert("obsRecordingPaused".into(), paused.into());
+                }
+            }
+            // 329: Create Record Chapter
+            329 => {
+                let conn_id = s(o, "connectionId");
+                let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
+                let chapter = self.expand(ctx, s(o, "chapterName"));
+                let obs = self.obs_start();
+                let _ = obs
+                    .send_request(
+                        conn_ref,
+                        "CreateRecordChapter",
+                        json!({
+                            "chapterName": chapter
+                        }),
+                    )
+                    .await;
+            }
+
             _ => {}
         }
     }

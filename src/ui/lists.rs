@@ -201,6 +201,45 @@ pub static CLIENTS: Kind = Kind {
     after: None,
 };
 
+pub static OBS_CONNECTIONS: Kind = Kind {
+    what: "OBS connection",
+    get: |c| &c.obs.connections,
+    get_mut: |c| &mut c.obs.connections,
+    fields: &[
+        ("name", "Name", Text),
+        ("host", "Host", Text),
+        ("port", "Port", Int),
+        ("password", "Password", Text),
+        ("autoConnect", "Connect on start", Bool),
+        ("reconnect", "Reconnect", Bool),
+        ("retryInterval", "Retry interval (s)", Int),
+    ],
+    new: || {
+        json!({
+            "id": crate::engine::uuid(),
+            "name": "OBS",
+            "host": "127.0.0.1",
+            "port": 4455,
+            "password": "",
+            "autoConnect": true,
+            "reconnect": true,
+            "retryInterval": 5,
+            "version": 5,
+        })
+    },
+    columns: &[150, 150, 80, 100],
+    label: |o| {
+        let port = o.get("port").and_then(Value::as_u64).unwrap_or(4455);
+        vec![
+            s(o, "name").into(),
+            format!("{}:{}", s(o, "host"), port),
+            yes(!on(o, "autoConnect"), "manual"),
+            yes(!on(o, "reconnect"), "no retry"),
+        ]
+    },
+    after: Some(|e| e.obs_start().reload()),
+};
+
 pub static SERVERS: Kind = Kind {
     what: "WebSocket server",
     get: |c| &c.websockets.servers,
@@ -478,8 +517,31 @@ pub fn tabs(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Views {
 
     let twitch = twitch_tab(tabs, cfg, cmds);
 
+    let mut col = tab(tabs, "OBS");
+    title(&mut col, "OBS Studio Connections");
+    let obs = list(&mut col, cfg, cmds, &OBS_CONNECTIONS, Some("autoConnect"));
+    let mut b_row = Flex::default().row();
+    let mut b_connect = button(&mut b_row, "Connect All", 120);
+    let mut b_disconnect = button(&mut b_row, "Disconnect All", 120);
+    Frame::default();
+    b_row.end();
+    col.fixed(&b_row, ROW);
+    let cmds_c = cmds.clone();
+    b_connect.set_callback(move |_| {
+        tell(&cmds_c, |e| {
+            e.obs_start().connect(None);
+        });
+    });
+    let cmds_d = cmds.clone();
+    b_disconnect.set_callback(move |_| {
+        tell(&cmds_d, |e| {
+            e.obs_start().disconnect(None);
+        });
+    });
+    col.end();
+
     Views {
-        lists: vec![commands, timers, clients, custom],
+        lists: vec![commands, timers, clients, custom, obs],
         queues,
         history,
         globals,
@@ -1434,7 +1496,7 @@ mod tests {
     /// A new one already has every field its form sets, so none lands out of Streamer.bot's order.
     #[test]
     fn new_objects_have_their_form_fields() {
-        for k in [&COMMANDS, &TIMERS, &CLIENTS, &SERVERS] {
+        for k in [&COMMANDS, &TIMERS, &CLIENTS, &SERVERS, &OBS_CONNECTIONS] {
             let new = (k.new)();
             for f in k.fields {
                 assert!(new.get(f.0).is_some(), "{}: {} missing", k.what, f.0);

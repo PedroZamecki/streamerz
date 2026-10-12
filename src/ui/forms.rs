@@ -37,6 +37,7 @@ pub enum W {
     UserGroup,
     Client,
     Server,
+    ObsConnection,
     /// A sub-action or trigger of the action picked in the `actionId` field.
     Sub,
     Trigger,
@@ -53,6 +54,16 @@ use W::*;
 
 /// (JSON field, label, kind).
 pub type F = (&'static str, &'static str, W);
+
+pub const STATE_HIDE_SHOW_TOGGLE: &[&str] = &["Hide", "Show", "Toggle"];
+pub const STREAM_STATE: &[&str] = &["Stop", "Start", "Toggle"];
+pub const RECORD_STATE: &[&str] = &["Stop", "Start", "Toggle", "Pause", "Resume"];
+pub const REPLAY_STATE: &[&str] = &["Stop", "Start", "Toggle", "Save"];
+pub const FLIP_MODE: &[&str] = &["Horizontal", "Vertical", "Both"];
+pub const FILTER_STATE: &[&str] = &["Disable", "Enable", "Toggle"];
+pub const MUTE_STATE: &[&str] = &["Unmute", "Mute", "Toggle"];
+pub const TRACK_STATE: &[&str] = &["Disable", "Enable", "Toggle"];
+pub const MEDIA_STATE: &[&str] = &["Play", "Pause", "Stop", "Restart", "Next", "Previous"];
 
 pub const OPS: &[&str] = &[
     "Equals",
@@ -367,6 +378,158 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("random", "Random", Bool),
             ("color", "Color (#RRGGBB)", Text),
         ],
+        30 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("sceneName", "Scene", Text),
+            ("sourceName", "Source", Text),
+            ("state", "State", Pick(STATE_HIDE_SHOW_TOGGLE)),
+        ],
+        31 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("sceneName", "Scene", Text),
+            ("groupName", "Group", Text),
+        ],
+        32 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("sceneName", "Scene", Text),
+            ("groupName", "Group", Text),
+        ],
+        33 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("state", "State", Pick(STREAM_STATE)),
+        ],
+        34 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("sceneName", "Scene", Text),
+        ],
+        35 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("sceneName", "Scene", Text),
+            ("sourceName", "Source", Text),
+            ("filterName", "Filter", Text),
+            ("state", "State", Pick(FILTER_STATE)),
+        ],
+        36 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("flipMode", "Flip mode", Pick(FLIP_MODE)),
+            ("sceneName", "Scene", Text),
+            ("sourceName", "Source", Text),
+        ],
+        37 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("degrees", "Degrees", Num),
+            ("additive", "Additive", Bool),
+            ("sceneName", "Scene", Text),
+            ("sourceName", "Source", Text),
+        ],
+        38 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("sceneName", "Scene", Text),
+            ("sourceName", "Source", Text),
+            ("url", "URL", Text),
+        ],
+        39 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("sceneName", "Scene", Text),
+            ("sourceName", "Source", Text),
+            ("text", "Text", Text),
+        ],
+        40 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("sceneName", "Scene", Text),
+            ("sourceName", "Source", Text),
+            ("state", "State", Pick(FILTER_STATE)),
+        ],
+        41 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("sceneName", "Scene", Text),
+            ("sourceName", "Source", Text),
+        ],
+        42 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("sceneName", "Scene", Text),
+            ("sourceName", "Source", Text),
+            ("state", "State", Pick(MUTE_STATE)),
+        ],
+        43 => &[("connectionId", "Connection", ObsConnection)],
+        44 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("sceneName", "Scene", Text),
+            ("sourceName", "Source", Text),
+            ("track", "Track (1-6)", Int),
+            ("state", "State", Pick(TRACK_STATE)),
+        ],
+        45 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("state", "State", Pick(RECORD_STATE)),
+        ],
+        46 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("name", "Request type", Text),
+            ("prefix", "Prefix", Text),
+            ("raw", "Raw JSON", Text),
+            ("resultsToArgs", "Results to args", Bool),
+        ],
+        47 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("sceneName", "Scene", Text),
+            ("filterName", "Filter", Text),
+            ("state", "State", Pick(FILTER_STATE)),
+        ],
+        48 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("sceneName", "Scene", Text),
+            ("sourceName", "Source", Text),
+            ("path", "File path", Text),
+            ("quality", "Quality", Int),
+        ],
+        49 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("sceneName", "Scene", Text),
+            ("sourceName", "Source", Text),
+            ("state", "State", Pick(MEDIA_STATE)),
+        ],
+        321 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("state", "State", Pick(REPLAY_STATE)),
+        ],
+        322 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("sceneName", "Scene", Text),
+            ("sourceName", "Source", Text),
+            ("fileName", "File name", Text),
+        ],
+        323 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("sceneName", "Scene", Text),
+            ("sourceName", "Source", Text),
+            ("fileName", "File name", Text),
+        ],
+        324 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("sceneName", "Scene", Text),
+            ("sourceName", "Source", Text),
+        ],
+        325 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("sceneName", "Scene", Text),
+        ],
+        326 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("sceneName", "Scene", Text),
+        ],
+        327 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("sceneName", "Scene", Text),
+            ("sourceName", "Source", Text),
+            ("color", "Color", Text),
+            ("random", "Random", Bool),
+        ],
+        328 => &[("connectionId", "Connection", ObsConnection)],
+        329 => &[
+            ("connectionId", "Connection", ObsConnection),
+            ("chapterName", "Chapter name", Text),
+        ],
         99901 | 99902 | 99904 => &[("random", "Random", Bool)],
         99903 => &[
             ("values", "Values (one per line)", Lines),
@@ -398,6 +561,20 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
         18001 => &[("eventName", "Event name", Text)],
         18002 => &[("triggerName", "Trigger name", Text)],
         32001..=32005 => &[("groupId", "Group (none: any)", UserGroup)],
+        14001 | 14002 | 14005 | 14006 | 14007 | 14008 => &[("connectionId", "Connection (empty: any)", ObsConnection)],
+        14003 => &[
+            ("connectionId", "Connection (empty: any)", ObsConnection),
+            ("eventType", "Event type (empty: any)", Text),
+        ],
+        14004 => &[
+            ("connectionId", "Connection (empty: any)", ObsConnection),
+            ("sceneName", "Scene (empty: any)", Text),
+        ],
+        14009 => &[
+            ("connectionId", "Connection (empty: any)", ObsConnection),
+            ("vendorName", "Vendor (empty: any)", Text),
+            ("eventType", "Event type (empty: any)", Text),
+        ],
         101..=196 | 451..=498 => &[],
         _ => return None,
     })
@@ -416,6 +593,7 @@ pub struct Lists {
     user_groups: Ids,
     clients: Ids,
     servers: Ids,
+    obs_connections: Ids,
     action_groups: Vec<String>,
     command_groups: Vec<String>,
 }
@@ -465,6 +643,7 @@ impl Lists {
             user_groups: ids(&c.groups),
             clients: ids(&c.websockets.connections),
             servers: ids(&c.websockets.servers),
+            obs_connections: ids(&c.obs.connections),
             action_groups: sorted(c.actions.actions.iter().map(|a| a.group.as_str())),
             command_groups: sorted(c.commands.iter().map(|x| s(x, "group"))),
         }
@@ -608,7 +787,7 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
                 c.set_value(v.and_then(Value::as_i64).unwrap_or(0) as i32);
                 Widget::Pick(c)
             }
-            Action | Queue | Timer | Command | UserGroup | Client | Server | Sub | Trigger => {
+            Action | Queue | Timer | Command | UserGroup | Client | Server | ObsConnection | Sub | Trigger => {
                 let mut c = Choice::default();
                 let list = match w {
                     Action => lists.actions.iter().map(|a| (a.0.clone(), a.1.clone())).collect(),
@@ -618,6 +797,7 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
                     UserGroup => lists.user_groups.clone(),
                     Client => lists.clients.clone(),
                     Server => lists.servers.clone(),
+                    ObsConnection => lists.obs_connections.clone(),
                     _ => lists.of(s(o, "actionId"), matches!(w, Sub)),
                 };
                 let got = fill(&mut c, &list, &text(v));
@@ -806,6 +986,7 @@ mod tests {
         .chain(32001..=32005)
         .chain(101..=196)
         .chain(451..=498)
+        .chain(14001..=14009)
         {
             assert!(trigger_fields(k).is_some(), "trigger {k} has no form");
         }

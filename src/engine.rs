@@ -99,6 +99,7 @@ pub struct Engine {
     /// WebSocket connections listening to events.
     hub: RefCell<Vec<events::Listener>>,
     twitch: RefCell<Option<crate::twitch::TwitchHandle>>,
+    obs: RefCell<Option<crate::obs::ObsHandle>>,
 }
 
 /// A running action's context.
@@ -135,7 +136,7 @@ pub type UiCmd = Box<dyn FnOnce(&Rc<Engine>) + Send>;
 pub fn supported(kind: u32) -> bool {
     matches!(
         kind,
-        2 | 4 | 6 | 8 | 9 | 10..=29 | 50..=52 | 120..=130 | 200..=215 | 251..=254 | 500..=531 | 550..=573 | 575..=580
+        2 | 4 | 6 | 8 | 9 | 10..=29 | 30..=49 | 50..=52 | 120..=130 | 200..=215 | 251..=254 | 321..=329 | 500..=531 | 550..=573 | 575..=580
             | 1001..=1005 | 1007 | 1009..=1011 | 1013..=1017 | 1020 | 1022 | 1023 | 1028
             | 1031..=1034 | 1038 | 10001 | 99900..=99904
     )
@@ -227,7 +228,29 @@ impl Engine {
             st: RefCell::default(),
             hub: RefCell::default(),
             twitch: RefCell::default(),
+            obs: RefCell::default(),
         })
+    }
+
+    pub fn set_obs(&self, handle: crate::obs::ObsHandle) {
+        *self.obs.borrow_mut() = Some(handle);
+    }
+
+    pub fn obs(&self) -> Option<crate::obs::ObsHandle> {
+        self.obs.borrow().clone()
+    }
+
+    pub fn obs_start(self: &Rc<Self>) -> crate::obs::ObsHandle {
+        if let Some(o) = self.obs() {
+            return o;
+        }
+        let o = crate::obs::start(self.clone(), &self.cfg);
+        self.set_obs(o.clone());
+        o
+    }
+
+    pub fn obs_connected(&self, conn_id: Option<&str>) -> bool {
+        self.obs().is_some_and(|o| o.is_connected(conn_id))
     }
 
     pub fn set_twitch(&self, handle: crate::twitch::TwitchHandle) {
@@ -600,9 +623,11 @@ impl Engine {
                 | 8
                 | 9
                 | 10..=29
+                | 30..=49
                 | 50..=52
                 | 200..=215
                 | 251..=254
+                | 321..=329
                 | 500..=531
                 | 550..=573
                 | 575..=580
