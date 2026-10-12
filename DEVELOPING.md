@@ -473,19 +473,22 @@ asyncio.run(main())
 
 ## Driving the window in tests
 
-On Wayland, nothing can click another app's window, so run streamerz on X11 (Xwayland) and use xdotool,
-with coordinates from Hyprland (xdotool's own window position is off under Xwayland):
+Never drive the window on the desktop someone is using: focusing it sends their keys to streamerz. Run it
+in its own X server on a hidden Hyprland workspace instead; it has its own pointer and keyboard focus.
+`dbus-run-session` hides the tray from the desktop's bar, so the window shows and closing it quits.
 
 ```
-FLTK_BACKEND=x11 ./target/debug/streamerz &
-read X Y W H < <(hyprctl clients -j | python3 -c "import json,sys; [print(*c['at'],*c['size']) for c in json.load(sys.stdin) if c['class']=='Streamerz' and c['xwayland']]")
-xdotool mousemove $((X+130)) $((Y+108)) click 1        # a click at window coordinates 130,108
-grim -g "$X,$Y ${W}x$H" shot.png                     # a screenshot
+hyprctl eval 'hl.window_rule({ match = { class = "org.freedesktop.Xwayland" }, workspace = "special:szt silent" })'
+(setsid Xwayland :99 -geometry 1200x800 -noreset >/dev/null 2>&1 &)
+cd /tmp/szform  # a copy of the binary and a throwaway streamerz.json
+(DISPLAY=:99 FLTK_BACKEND=x11 WAYLAND_DISPLAY= setsid dbus-run-session ./streamerz >/dev/null 2>&1 &)
+DISPLAY=:99 xdotool mousemove 130 108 click 1     # a click at window coordinates 130,108
+DISPLAY=:99 import -window root shot.png          # a screenshot
 ```
 
-Typing needs the window focused; don't focus it with `hyprctl dispatch focuswindow` while someone is
-using the machine (their keys go to streamerz then), and type long text in chunks (one long burst stops
-FLTK's input until restart).
+Without a window manager keys go to the window under the pointer, and windows open at 0,0: move the pointer
+onto a dialog (and click its input) before typing. Type long text in chunks (one long burst stops FLTK's
+input until restart).
 
 ## Memory and CPU
 

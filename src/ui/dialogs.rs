@@ -72,7 +72,7 @@ pub fn run(win: &mut Window, answer: &Answer, mut check: impl FnMut() -> bool) -
     }
 }
 
-fn row(label: &str) -> Flex {
+pub fn row(label: &str) -> Flex {
     let mut r = Flex::default().row();
     let l = Frame::default()
         .with_label(label)
