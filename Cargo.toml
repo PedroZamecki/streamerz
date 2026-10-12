@@ -4,12 +4,15 @@ version = "0.0.0" # unused: releases are versioned by git tags (see build workfl
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1", features = ["rt", "sync", "time"] }
+tokio = { version = "1", features = ["rt", "sync", "time", "net", "io-util", "process"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 base64 = "0.22"
 # Import/export strings are gzipped; miniz_oxide is pure Rust.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 regex-lite = "0.1"
+# HTTPS with the OS TLS (SChannel / OpenSSL); the same crates tokio-tungstenite uses for wss://.
+native-tls = "0.2"
+tokio-native-tls = "0.3"
 serde = { version = "1.0.229", features = ["derive"] }
 fltk = { version = "1.5.23", features = ["no-images"] }
 

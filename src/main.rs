@@ -2,8 +2,10 @@
 //! Streamer.bot rebuilt small: actions, triggers and Streamer.bot's servers for Twitch, Kick, YouTube,
 //! OBS Studio and Streamlabs Desktop. See PLAN.md.
 
+mod commands;
 mod engine;
 mod fmt;
+mod http;
 mod math;
 mod model;
 mod tray;
@@ -30,6 +32,14 @@ pub struct Config {
     /// Persisted globals, and persisted user globals by user ("platform:id", then name).
     globals: model::Obj,
     user_globals: model::Obj,
+    /// Commands, in Streamer.bot's commands.json shape.
+    commands: Vec<model::Obj>,
+    /// Timed actions (Streamer.bot's settings.json timedActions.timers) and user groups (its
+    /// users.dat groups: id, name, bots, userIds).
+    timers: Vec<model::Obj>,
+    groups: Vec<model::Obj>,
+    /// Persisted command counters: by command id, and by "command id:user id".
+    counters: model::Obj,
     /// Fields this build doesn't know (e.g. written by a newer one): kept, so a save loses nothing.
     #[serde(flatten)]
     rest: Map<String, Value>,
@@ -44,6 +54,10 @@ impl Default for Config {
             actions: model::ActionsFile::default(),
             globals: Map::new(),
             user_globals: Map::new(),
+            commands: Vec::new(),
+            timers: Vec::new(),
+            groups: Vec::new(),
+            counters: Map::new(),
             rest: Map::new(),
         }
     }
@@ -224,6 +238,7 @@ fn main() {
                 let _ = save(c);
             });
             e.started();
+            e.timers();
             std::future::pending::<()>().await
         })
     });
