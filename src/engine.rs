@@ -237,6 +237,16 @@ impl Engine {
         self.twitch.borrow().clone()
     }
 
+    /// The Twitch runner, started on first use: nothing runs for Twitch until it's turned on.
+    pub fn twitch_start(self: &Rc<Self>) -> crate::twitch::TwitchHandle {
+        if let Some(t) = self.twitch() {
+            return t;
+        }
+        let t = crate::twitch::start(self.clone(), &self.cfg);
+        self.set_twitch(t.clone());
+        t
+    }
+
     pub fn twitch_connected(&self) -> bool {
         self.twitch().is_some_and(|t| t.is_connected())
     }

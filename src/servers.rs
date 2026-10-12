@@ -438,7 +438,7 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
             ok(&id, json!({"commands": cmds, "count": cmds.len()}))
         }
         "TwitchGetEmotes" => {
-            if e.twitch_broadcaster().is_some() {
+            if e.twitch_connected() {
                 ok(&id, json!({"emotes": []}))
             } else {
                 error(&id, "Twitch is not connected")
@@ -476,17 +476,15 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
         "SendMessage" => {
             let platform = get("platform");
             if platform.is_empty() || platform.eq_ignore_ascii_case("twitch") {
-                if e.twitch_broadcaster().is_none() {
-                    error(&id, "Twitch is not connected")
-                } else {
-                    let msg = req
-                        .get("message")
-                        .or_else(|| req.get("text"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("");
-                    let bot = req.get("bot").and_then(Value::as_bool).unwrap_or(false);
-                    let _ = e.send_twitch_message(msg, None, bot, true);
-                    ok(&id, json!({}))
+                let msg = req
+                    .get("message")
+                    .or_else(|| req.get("text"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let bot = req.get("bot").and_then(Value::as_bool).unwrap_or(false);
+                match e.send_twitch_message(msg, None, bot, true) {
+                    Ok(()) => ok(&id, json!({})),
+                    Err(m) => error(&id, &m),
                 }
             } else {
                 let p = match platform {

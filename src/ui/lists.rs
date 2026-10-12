@@ -1405,11 +1405,7 @@ fn twitch_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<TwitchView>> {
         let cmds = cmds.clone();
         let me = me.clone();
         move |_| {
-            tell(&cmds, |e| {
-                if let Some(tw) = e.twitch() {
-                    tw.send(crate::twitch::TwitchCmd::Connect);
-                }
-            });
+            tell(&cmds, |e| e.twitch_start().send(crate::twitch::TwitchCmd::Connect));
             me.borrow_mut().refresh();
         }
     });

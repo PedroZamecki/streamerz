@@ -261,8 +261,11 @@ fn main() {
             let e = engine::Engine::new(engine_cfg.clone(), |c| {
                 let _ = save(c);
             });
-            let twitch_handle = twitch::start(e.clone(), &engine_cfg);
-            e.set_twitch(twitch_handle);
+            // Opt-in: no Twitch task unless an account is set to connect at start.
+            let tw = engine_cfg.borrow().twitch.clone();
+            if tw.auto_connect && tw.broadcaster.is_some() {
+                e.twitch_start();
+            }
             tokio::task::spawn_local(servers::run(e.clone()));
             e.started();
             e.timers();

@@ -437,16 +437,15 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> TwitchHand
         tx,
         connected: is_connected.clone(),
     };
-    let cfg_rx = cfg.subscribe();
     let runner = Runner {
         engine,
         cfg: cfg.clone(),
-        cfg_rx,
         rx,
         speakers: HashSet::new(),
         session_id: None,
-        connected: false,
         is_connected,
+        read_task: None,
+        bot_read_task: None,
     };
     tokio::task::spawn_local(runner.run());
     handle
@@ -455,12 +454,25 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> TwitchHand
 struct Runner {
     engine: Rc<Engine>,
     cfg: Arc<watch::Sender<Config>>,
-    cfg_rx: watch::Receiver<Config>,
     rx: mpsc::UnboundedReceiver<TwitchCmd>,
     speakers: HashSet<String>,
     session_id: Option<String>,
-    connected: bool,
     is_connected: Arc<AtomicBool>,
+    /// The EventSub read loop; aborted on Disconnect, which closes the socket.
+    read_task: Option<tokio::task::JoinHandle<()>>,
+    /// The Bot EventSub read loop for whispers, aborted on Disconnect.
+    bot_read_task: Option<tokio::task::JoinHandle<()>>,
+}
+
+/// A token is refreshed 5 minutes before it expires (or when its expiry is unknown).
+pub fn needs_refresh(t: &TwitchToken, now: u64) -> bool {
+    !t.refresh_token.is_empty() && (t.expires_at == 0 || now + 300 >= t.expires_at)
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 impl Runner {
@@ -471,19 +483,56 @@ impl Runner {
             self.connect_eventsub().await;
         }
 
-        loop {
-            tokio::select! {
-                Some(cmd) = self.rx.recv() => {
-                    self.handle_cmd(cmd).await;
+        while let Some(cmd) = self.rx.recv().await {
+            self.handle_cmd(cmd).await;
+        }
+    }
+
+    /// Refresh the broadcaster's and bot's tokens if they're about to expire, and save them.
+    async fn refresh_if_needed(&self) {
+        let now = now_secs();
+        for bot in [false, true] {
+            let rt = {
+                let c = self.cfg.borrow();
+                let a = if bot { &c.twitch.bot } else { &c.twitch.broadcaster };
+                match a {
+                    Some(a) if needs_refresh(&a.token, now) => a.token.refresh_token.clone(),
+                    _ => continue,
                 }
-                Ok(_) = self.cfg_rx.changed() => {
-                    // Check if config changed
+            };
+            let who = if bot { "bot" } else { "broadcaster" };
+            match refresh_token(CLIENT_ID, &rt).await {
+                Ok(t) => {
+                    let token = TwitchToken {
+                        access_token: t.access_token,
+                        refresh_token: t.refresh_token,
+                        scope: t.scope,
+                        expires_at: now + t.expires_in,
+                    };
+                    self.engine.change(move |c| {
+                        let a = if bot {
+                            &mut c.twitch.bot
+                        } else {
+                            &mut c.twitch.broadcaster
+                        };
+                        if let Some(a) = a {
+                            a.token = token;
+                        }
+                    });
+                    crate::say(format!("Twitch: refreshed the {who} token"));
                 }
+                Err(e) => crate::say(format!("Twitch: can't refresh the {who} token ({e}); log in again")),
             }
         }
     }
 
     async fn handle_cmd(&mut self, cmd: TwitchCmd) {
+        if !matches!(
+            cmd,
+            TwitchCmd::Disconnect | TwitchCmd::ClearFirstWords | TwitchCmd::GetStatus(_)
+        ) {
+            self.refresh_if_needed().await;
+        }
         match cmd {
             TwitchCmd::Connect => {
                 self.connect_eventsub().await;
@@ -498,7 +547,7 @@ impl Runner {
             TwitchCmd::GetStatus(resp) => {
                 let c = self.cfg.borrow();
                 let status = TwitchStatus {
-                    connected: self.connected,
+                    connected: self.is_connected.load(Ordering::Relaxed),
                     broadcaster: c.twitch.broadcaster.as_ref().map(|b| b.login.clone()),
                     bot: c.twitch.bot.as_ref().map(|b| b.login.clone()),
                     session_id: self.session_id.clone(),
@@ -539,10 +588,14 @@ impl Runner {
     }
 
     fn disconnect(&mut self) {
-        if self.connected {
-            self.connected = false;
-            self.is_connected.store(false, Ordering::Relaxed);
-            self.session_id = None;
+        if let Some(t) = self.read_task.take() {
+            t.abort();
+        }
+        if let Some(t) = self.bot_read_task.take() {
+            t.abort();
+        }
+        self.session_id = None;
+        if self.is_connected.swap(false, Ordering::Relaxed) {
             self.engine.fire(
                 T_EVENTSUB_DISCONNECTED,
                 "Broadcaster EventSub Disconnected",
@@ -571,6 +624,7 @@ impl Runner {
                     &Obj::new(),
                     |_| true,
                 );
+                self.engine.emit("Twitch", "BotEventSubDisconnected", || json!({}));
                 self.engine.emit("Twitch", "BotChatDisconnected", || json!({}));
             }
             crate::say("Twitch EventSub disconnected".into());
@@ -579,7 +633,16 @@ impl Runner {
     }
 
     async fn connect_eventsub(&mut self) {
-        let (broadcaster, url) = {
+        if self.is_connected.load(Ordering::Relaxed) {
+            return;
+        }
+        if let Some(t) = self.read_task.take() {
+            t.abort();
+        }
+        if let Some(t) = self.bot_read_task.take() {
+            t.abort();
+        }
+        let (broadcaster, bot, url) = {
             let c = self.cfg.borrow();
             let b = match &c.twitch.broadcaster {
                 Some(b) => b.clone(),
@@ -588,12 +651,13 @@ impl Runner {
                     return;
                 }
             };
+            let bot = c.twitch.bot.clone();
             let u = c
                 .twitch
                 .eventsub_url
                 .clone()
                 .unwrap_or_else(|| DEFAULT_EVENTSUB_URL.into());
-            (b, u)
+            (b, bot, u)
         };
 
         crate::say(format!("Connecting to Twitch EventSub at {url}..."));
@@ -605,7 +669,6 @@ impl Runner {
             }
         };
 
-        self.connected = true;
         self.is_connected.store(true, Ordering::Relaxed);
         crate::say("Twitch EventSub connected, waiting for welcome...".into());
         crate::ui::changed();
@@ -614,9 +677,27 @@ impl Runner {
         let me_engine = self.engine.clone();
         let me_cfg = self.cfg.clone();
         let me_is_conn = self.is_connected.clone();
-        tokio::task::spawn_local(async move {
-            run_eventsub_loop(ws, me_engine, me_cfg, broadcaster, me_is_conn).await;
-        });
+        let b_acct = broadcaster.clone();
+        self.read_task = Some(tokio::task::spawn_local(async move {
+            run_eventsub_loop(ws, me_engine, me_cfg, b_acct, me_is_conn).await;
+        }));
+
+        if let Some(bot_acct) = bot {
+            let bot_engine = self.engine.clone();
+            let bot_cfg = self.cfg.clone();
+            let bot_url = url.clone();
+            let b_acct = broadcaster.clone();
+            self.bot_read_task = Some(tokio::task::spawn_local(async move {
+                match tokio_tungstenite::connect_async(&bot_url).await {
+                    Ok((bot_ws, _)) => {
+                        run_bot_eventsub_loop(bot_ws, bot_engine, bot_cfg, b_acct, bot_acct).await;
+                    }
+                    Err(e) => {
+                        crate::say(format!("Twitch Bot EventSub connection failed: {e}"));
+                    }
+                }
+            }));
+        }
     }
 
     async fn send_chat_message(
@@ -679,8 +760,8 @@ impl Runner {
     }
 
     async fn start_raid(&self, target_login: &str) -> Result<bool, String> {
-        let c = self.cfg.borrow();
-        let broadcaster = c.twitch.broadcaster.as_ref().ok_or("No broadcaster account")?;
+        let broadcaster = self.cfg.borrow().twitch.broadcaster.clone();
+        let broadcaster = broadcaster.as_ref().ok_or("No broadcaster account")?;
         let token = &broadcaster.token.access_token;
         let from_id = &broadcaster.user_id;
 
@@ -711,8 +792,8 @@ impl Runner {
     }
 
     async fn cancel_raid(&self) -> Result<(), String> {
-        let c = self.cfg.borrow();
-        let broadcaster = c.twitch.broadcaster.as_ref().ok_or("No broadcaster account")?;
+        let broadcaster = self.cfg.borrow().twitch.broadcaster.clone();
+        let broadcaster = broadcaster.as_ref().ok_or("No broadcaster account")?;
         let token = &broadcaster.token.access_token;
         let from_id = &broadcaster.user_id;
 
@@ -777,6 +858,7 @@ async fn run_eventsub_loop(
 ) {
     use futures_util::StreamExt;
     let mut speakers = HashSet::new();
+    let mut reconnecting = false;
 
     while let Some(msg) = ws.next().await {
         let raw = match msg {
@@ -798,6 +880,10 @@ async fn run_eventsub_loop(
         match mtype {
             "session_welcome" => {
                 let sid = val.pointer("/payload/session/id").and_then(Value::as_str).unwrap_or("");
+                if std::mem::take(&mut reconnecting) {
+                    crate::say(format!("Twitch EventSub reconnected: {sid}"));
+                    continue;
+                }
                 crate::say(format!("Twitch EventSub session welcome: {sid}"));
                 let mut args = Obj::new();
                 populate_broadcaster_vars(&mut args, &broadcaster);
@@ -829,25 +915,12 @@ async fn run_eventsub_loop(
                 engine.emit("Twitch", "BroadcasterEventSubConnected", || json!(args));
                 engine.emit("Twitch", "BroadcasterChatConnected", || json!(args));
 
-                if cfg.borrow().twitch.bot.is_some() {
-                    engine.fire(
-                        T_BOT_EVENTSUB_CONNECTED,
-                        "Bot EventSub Connected",
-                        "Twitch/Connections",
-                        "twitch",
-                        &args,
-                        |_| true,
-                    );
-                    engine.emit("Twitch", "BotChatConnected", || json!(args));
-                }
-
                 // Create subscriptions via Helix
                 let token = broadcaster.token.access_token.clone();
                 let bid = broadcaster.user_id.clone();
                 let sid = sid.to_string();
-                let bot_id = cfg.borrow().twitch.bot.as_ref().map(|b| b.user_id.clone());
                 tokio::task::spawn_local(async move {
-                    create_all_subscriptions(&sid, &token, &bid, bot_id.as_deref()).await;
+                    create_all_subscriptions(&sid, &token, &bid).await;
                 });
             }
             "notification" => {
@@ -864,7 +937,16 @@ async fn run_eventsub_loop(
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 crate::say(format!("Twitch EventSub reconnect request: {url}"));
-                break;
+                match tokio_tungstenite::connect_async(url).await {
+                    Ok((new_ws, _)) => {
+                        ws = new_ws;
+                        reconnecting = true;
+                    }
+                    Err(e) => {
+                        crate::say(format!("Twitch EventSub reconnect failed: {e}"));
+                        break;
+                    }
+                }
             }
             "revocation" => {
                 let sub_type = val
@@ -877,7 +959,9 @@ async fn run_eventsub_loop(
         }
     }
 
-    is_connected.store(false, Ordering::Relaxed);
+    if !is_connected.swap(false, Ordering::Relaxed) {
+        return;
+    }
     crate::say("Twitch EventSub connection dropped".into());
     let mut args = Obj::new();
     populate_broadcaster_vars(&mut args, &broadcaster);
@@ -899,10 +983,128 @@ async fn run_eventsub_loop(
     );
     engine.emit("Twitch", "BroadcasterEventSubDisconnected", || json!(args));
     engine.emit("Twitch", "BroadcasterChatDisconnected", || json!(args));
+    if cfg.borrow().twitch.bot.is_some() {
+        engine.fire(
+            T_BOT_EVENTSUB_DISCONNECTED,
+            "Bot EventSub Disconnected",
+            "Twitch/Connections",
+            "twitch",
+            &args,
+            |_| true,
+        );
+        engine.emit("Twitch", "BotEventSubDisconnected", || json!(args));
+        engine.emit("Twitch", "BotChatDisconnected", || json!(args));
+    }
     crate::ui::changed();
 }
 
-async fn create_all_subscriptions(sid: &str, token: &str, bid: &str, bot_id: Option<&str>) {
+async fn run_bot_eventsub_loop(
+    mut ws: tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    engine: Rc<Engine>,
+    cfg: Arc<watch::Sender<Config>>,
+    broadcaster: TwitchAccount,
+    bot: TwitchAccount,
+) {
+    use futures_util::StreamExt;
+    let mut reconnecting = false;
+    let mut speakers = HashSet::new();
+
+    while let Some(msg) = ws.next().await {
+        let raw = match msg {
+            Ok(tokio_tungstenite::tungstenite::Message::Text(t)) => t,
+            Ok(tokio_tungstenite::tungstenite::Message::Close(_)) | Err(_) => break,
+            _ => continue,
+        };
+        let val: Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let mtype = val
+            .pointer("/metadata/message_type")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        match mtype {
+            "session_welcome" => {
+                let sid = val.pointer("/payload/session/id").and_then(Value::as_str).unwrap_or("");
+                if std::mem::take(&mut reconnecting) {
+                    crate::say(format!("Twitch Bot EventSub reconnected: {sid}"));
+                    continue;
+                }
+                crate::say(format!("Twitch Bot EventSub session welcome: {sid}"));
+                let mut args = Obj::new();
+                populate_broadcaster_vars(&mut args, &broadcaster);
+                populate_user_vars(&mut args, &bot.user_id, &bot.login, &bot.display_name, 1, false);
+                engine.fire(
+                    T_BOT_EVENTSUB_CONNECTED,
+                    "Bot EventSub Connected",
+                    "Twitch/Connections",
+                    "twitch",
+                    &args,
+                    |_| true,
+                );
+                engine.emit("Twitch", "BotEventSubConnected", || json!(args));
+                engine.emit("Twitch", "BotChatConnected", || json!(args));
+
+                let token = bot.token.access_token.clone();
+                let bid = bot.user_id.clone();
+                let sid = sid.to_string();
+                tokio::task::spawn_local(async move {
+                    create_sub(&sid, &token, "user.whisper.message", "1", json!({"user_id": bid})).await;
+                });
+            }
+            "notification" => {
+                let sub_type = val
+                    .pointer("/metadata/subscription_type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let event = val.pointer("/payload/event").cloned().unwrap_or_default();
+                handle_notification(&engine, &broadcaster, &cfg, &mut speakers, sub_type, &event);
+            }
+            "session_reconnect" => {
+                let url = val
+                    .pointer("/payload/session/reconnect_url")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                crate::say(format!("Twitch Bot EventSub reconnect request: {url}"));
+                match tokio_tungstenite::connect_async(url).await {
+                    Ok((new_ws, _)) => {
+                        ws = new_ws;
+                        reconnecting = true;
+                    }
+                    Err(e) => {
+                        crate::say(format!("Twitch Bot EventSub reconnect failed: {e}"));
+                        break;
+                    }
+                }
+            }
+            "revocation" => {
+                let sub_type = val
+                    .pointer("/payload/subscription/type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                crate::say(format!("Twitch Bot EventSub subscription revoked: {sub_type}"));
+            }
+            _ => {}
+        }
+    }
+
+    crate::say("Twitch Bot EventSub connection dropped".into());
+    let mut args = Obj::new();
+    populate_broadcaster_vars(&mut args, &broadcaster);
+    populate_user_vars(&mut args, &bot.user_id, &bot.login, &bot.display_name, 1, false);
+    engine.fire(
+        T_BOT_EVENTSUB_DISCONNECTED,
+        "Bot EventSub Disconnected",
+        "Twitch/Connections",
+        "twitch",
+        &args,
+        |_| true,
+    );
+    engine.emit("Twitch", "BotEventSubDisconnected", || json!(args));
+    engine.emit("Twitch", "BotChatDisconnected", || json!(args));
+}
+
+async fn create_all_subscriptions(sid: &str, token: &str, bid: &str) {
     let subs = [
         (
             "channel.chat.message",
@@ -924,6 +1126,7 @@ async fn create_all_subscriptions(sid: &str, token: &str, bid: &str, bot_id: Opt
         ("channel.subscription.gift", "1", json!({"broadcaster_user_id": bid})),
         ("channel.cheer", "1", json!({"broadcaster_user_id": bid})),
         ("channel.raid", "1", json!({"to_broadcaster_user_id": bid})),
+        ("channel.raid", "1", json!({"from_broadcaster_user_id": bid})),
         ("stream.online", "1", json!({"broadcaster_user_id": bid})),
         ("stream.offline", "1", json!({"broadcaster_user_id": bid})),
         ("user.whisper.message", "1", json!({"user_id": bid})),
@@ -931,10 +1134,6 @@ async fn create_all_subscriptions(sid: &str, token: &str, bid: &str, bot_id: Opt
 
     for (stype, ver, cond) in subs {
         create_sub(sid, token, stype, ver, cond).await;
-    }
-
-    if let Some(bot) = bot_id {
-        create_sub(sid, token, "user.whisper.message", "1", json!({"user_id": bot})).await;
     }
 }
 
@@ -1366,6 +1565,16 @@ fn handle_notification(
             let viewers = event.pointer("/viewers").and_then(Value::as_u64).unwrap_or(0);
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
+            if raider_id == broadcaster.user_id {
+                let s = |k: &str| event.pointer(k).and_then(Value::as_str).unwrap_or("");
+                args.insert("raidUser".into(), s("/to_broadcaster_user_name").into());
+                args.insert("raidUserName".into(), s("/to_broadcaster_user_login").into());
+                args.insert("raidUserId".into(), s("/to_broadcaster_user_id").into());
+                args.insert("viewers".into(), viewers.into());
+                engine.fire(T_RAID_SEND, "Raid Send", "Twitch/Raid", "twitch", &args, |_| true);
+                engine.emit("Twitch", "RaidSend", || json!(args));
+                return;
+            }
             populate_user_vars(&mut args, raider_id, raider_login, raider_name, 1, false);
             args.insert("viewers".into(), viewers.into());
             engine.fire(T_RAID, "Raid", "Twitch/Raid", "twitch", &args, |_| true);
@@ -1444,6 +1653,19 @@ pub(crate) mod tests {
     use super::*;
 
     #[test]
+    fn refresh_timing() {
+        let t = |rt: &str, exp: u64| TwitchToken {
+            refresh_token: rt.into(),
+            expires_at: exp,
+            ..Default::default()
+        };
+        assert!(!needs_refresh(&t("", 0), 1000));
+        assert!(needs_refresh(&t("r", 0), 1000));
+        assert!(!needs_refresh(&t("r", 2000), 1000));
+        assert!(needs_refresh(&t("r", 1200), 1000));
+    }
+
+    #[test]
     fn parse_colors() {
         assert_eq!(parse_hex_color("#FF8000"), (255, 128, 0));
         assert_eq!(parse_hex_color("1E90FF"), (30, 144, 255));
@@ -1506,5 +1728,108 @@ pub(crate) mod tests {
         assert_eq!(args["colorB"], 0);
         assert_eq!(args["input0"], "hello");
         assert_eq!(args["input1"], "world");
+    }
+
+    #[test]
+    fn whisper_and_bot_whisper_notifications() {
+        let mut cfg_data = Config::default();
+        cfg_data.twitch.bot = Some(TwitchAccount {
+            user_id: "999".into(),
+            login: "botuser".into(),
+            display_name: "BotUser".into(),
+            ..Default::default()
+        });
+        let (tx, _rx) = watch::channel(cfg_data);
+        let cfg = Arc::new(tx);
+        let engine = Engine::new(cfg.clone(), |_| {});
+
+        let broadcaster = TwitchAccount {
+            user_id: "123".into(),
+            login: "streamer".into(),
+            display_name: "Streamer".into(),
+            ..Default::default()
+        };
+
+        // Whisper to broadcaster
+        let event = json!({
+            "from_user_id": "456",
+            "from_user_login": "chatter",
+            "from_user_name": "Chatter",
+            "to_user_id": "123",
+            "whisper": { "text": "hello broadcaster" }
+        });
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "user.whisper.message",
+            &event,
+        );
+
+        // Bot whisper to bot
+        let bot_event = json!({
+            "from_user_id": "456",
+            "from_user_login": "chatter",
+            "from_user_name": "Chatter",
+            "to_user_id": "999",
+            "whisper": { "text": "hello bot" }
+        });
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "user.whisper.message",
+            &bot_event,
+        );
+    }
+
+    #[test]
+    fn raid_send_notification() {
+        let (tx, _rx) = watch::channel(Config::default());
+        let cfg = Arc::new(tx);
+        let engine = Engine::new(cfg.clone(), |_| {});
+
+        let broadcaster = TwitchAccount {
+            user_id: "123".into(),
+            login: "streamer".into(),
+            display_name: "Streamer".into(),
+            ..Default::default()
+        };
+
+        // Outgoing raid (Raid Send)
+        let outgoing = json!({
+            "from_broadcaster_user_id": "123",
+            "to_broadcaster_user_id": "789",
+            "to_broadcaster_user_login": "target",
+            "to_broadcaster_user_name": "Target",
+            "viewers": 42
+        });
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.raid",
+            &outgoing,
+        );
+
+        // Incoming raid
+        let incoming = json!({
+            "from_broadcaster_user_id": "789",
+            "from_broadcaster_user_login": "target",
+            "from_broadcaster_user_name": "Target",
+            "to_broadcaster_user_id": "123",
+            "viewers": 42
+        });
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.raid",
+            &incoming,
+        );
     }
 }
