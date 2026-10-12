@@ -186,15 +186,15 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 **Triggers** (131)
 
 - [ ] ads: Ad Mid-Roll
-- [ ] ads: Ad Run
+- [x] ads: Ad Run
 - [ ] ads: Upcoming Ad
-- [ ] channel-goal: Goal Begin
-- [ ] channel-goal: Goal End
-- [ ] channel-goal: Goal Progress
+- [x] channel-goal: Goal Begin
+- [x] channel-goal: Goal End
+- [x] channel-goal: Goal Progress
 - [ ] channel-power-ups: Custom Power Up Redemption
 - [ ] channel-reward: Automatic Reward Redemption
-- [ ] channel-reward: Reward Redemption Updated
-- [ ] channel-reward: Reward Redemption
+- [x] channel-reward: Reward Redemption Updated
+- [x] channel-reward: Reward Redemption
 - [x] channel: Follow
 - [x] channel: Stream Offline
 - [x] channel: Stream Online
@@ -241,15 +241,15 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] general: Announcement
 - [ ] general: Present Viewers
 - [ ] general: Shoutout Received
-- [ ] general: Stream Update
+- [x] general: Stream Update
 - [ ] guest-star: Guest Star Guest Update
 - [ ] guest-star: Guest Star Session Begin
 - [ ] guest-star: Guest Star Session End
 - [ ] guest-star: Guest Star Settings Update
-- [ ] hype-train: Hype Train End
+- [x] hype-train: Hype Train End
 - [ ] hype-train: Hype Train Level Up
-- [ ] hype-train: Hype Train Starts
-- [ ] hype-train: Hype Train Update
+- [x] hype-train: Hype Train Starts
+- [x] hype-train: Hype Train Update
 - [ ] moderation: AutoMod Message Held
 - [ ] moderation: AutoMod Message Updated
 - [ ] moderation: Blocked Terms Added
@@ -275,16 +275,16 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [ ] moderation: VIP Removed
 - [ ] moderation: Warned User
 - [ ] moderation: Warning Acknowledged
-- [ ] polls: Poll Archived
-- [ ] polls: Poll Completed
-- [ ] polls: Poll Created
-- [ ] polls: Poll Terminated
-- [ ] polls: Poll Updated
-- [ ] predictions: Prediction Canceled
-- [ ] predictions: Prediction Completed
-- [ ] predictions: Prediction Created
-- [ ] predictions: Prediction Locked
-- [ ] predictions: Prediction Updated
+- [x] polls: Poll Archived
+- [x] polls: Poll Completed
+- [x] polls: Poll Created
+- [x] polls: Poll Terminated
+- [x] polls: Poll Updated
+- [x] predictions: Prediction Canceled
+- [x] predictions: Prediction Completed
+- [x] predictions: Prediction Created
+- [x] predictions: Prediction Locked
+- [x] predictions: Prediction Updated
 - [ ] pyramid: Pyramid Broken
 - [ ] pyramid: Pyramid Success
 - [x] raid: Raid Cancelled
@@ -319,16 +319,16 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Sub-actions** (95)
 
-- [ ] ads: Get Ad Schedule
-- [ ] ads: Get Pre-roll Free Time
-- [ ] ads: Run Commercial
-- [ ] ads: Snooze Ad
-- [ ] channel: Add Viewer Count
-- [ ] channel: Create Clip
-- [ ] channel: Create Stream Marker
-- [ ] channel: Set Channel Branded Content
-- [ ] channel: Set Channel Game
-- [ ] channel: Set Channel Title
+- [x] ads: Get Ad Schedule
+- [x] ads: Get Pre-roll Free Time
+- [x] ads: Run Commercial
+- [x] ads: Snooze Ad
+- [x] channel: Add Viewer Count
+- [x] channel: Create Clip
+- [x] channel: Create Stream Marker
+- [x] channel: Set Channel Branded Content
+- [x] channel: Set Channel Game
+- [x] channel: Set Channel Title
 - [ ] charity: Get Latest Charity Campaign
 - [ ] chat: Clear Chat Messages
 - [ ] chat: Get Pinned Chat Message
@@ -369,43 +369,43 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [ ] moderation: Unban User
 - [ ] moderation: UnTimeout User
 - [ ] moderation: Warn User
-- [ ] polls: Archive Active Poll
-- [ ] polls: Create Poll
-- [ ] polls: Get Active Poll
-- [ ] polls: Terminate Active Poll
-- [ ] predictions: Cancel Active Prediction
-- [ ] predictions: Create Prediction
-- [ ] predictions: Get Active Prediction
-- [ ] predictions: Lock Active Prediction
-- [ ] predictions: Resolve Last Prediction by Title
-- [ ] predictions: Resolve Last Prediction
+- [x] polls: Archive Active Poll
+- [x] polls: Create Poll
+- [x] polls: Get Active Poll
+- [x] polls: Terminate Active Poll
+- [x] predictions: Cancel Active Prediction
+- [x] predictions: Create Prediction
+- [x] predictions: Get Active Prediction
+- [x] predictions: Lock Active Prediction
+- [x] predictions: Resolve Last Prediction by Title
+- [x] predictions: Resolve Last Prediction
 - [x] raid: Cancel Raid
 - [x] raid: Start Raid
-- [ ] rewards: Configure Rewards
-- [ ] rewards: Get Reward Info
-- [ ] rewards: Reset Reward Counter
-- [ ] rewards: Reset Reward User Counters
+- [x] rewards: Configure Rewards
+- [x] rewards: Get Reward Info
+- [x] rewards: Reset Reward Counter
+- [x] rewards: Reset Reward User Counters
 - [ ] rewards: Set Background Color
-- [ ] rewards: Set Cost
-- [ ] rewards: Set Enabled State
+- [x] rewards: Set Cost
+- [x] rewards: Set Enabled State
 - [ ] rewards: Set Global Cooldown
 - [ ] rewards: Set Group Enabled State
-- [ ] rewards: Set Group Paused State
+- [x] rewards: Set Group Paused State
 - [ ] rewards: Set Max Per Stream
 - [ ] rewards: Set Max per User Per Stream
-- [ ] rewards: Set Paused State
-- [ ] rewards: Set Prompt
-- [ ] rewards: Set Title
-- [ ] rewards: Update Redemption Status
+- [x] rewards: Set Paused State
+- [x] rewards: Set Prompt
+- [x] rewards: Set Title
+- [x] rewards: Update Redemption Status
 - [ ] rewards: Update
 - [ ] sub-counter: Get Twitch Sub Counter Count
 - [ ] sub-counter: Set Twitch Sub Counter Count
 - [ ] subscribers: Get Latest Subscriber
 - [ ] subscribers: Get Subscriber Count
-- [ ] tags: Add Channel Tag
-- [ ] tags: Clear Channel Tags
-- [ ] tags: Remove Channel Tag
-- [ ] tags: Set Channel Tags
+- [x] tags: Add Channel Tag
+- [x] tags: Clear Channel Tags
+- [x] tags: Remove Channel Tag
+- [x] tags: Set Channel Tags
 - [ ] user-groups: Add User To Group
 - [ ] user-groups: Remove User From Group
 - [ ] user-groups: User in Group
