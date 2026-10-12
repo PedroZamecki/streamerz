@@ -49,15 +49,15 @@ struct Run {
 }
 
 /// One past run, for the history view (newest last).
-#[allow(dead_code)] // ponytail: read by the editor's history (phase 5) and the servers (phase 4).
+#[derive(Clone)]
 pub struct Record {
-    pub run_id: String,
     pub action_id: String,
     pub name: String,
-    /// The arguments it started with.
+    /// The arguments it started with, and those it ended with.
     pub args: Obj,
+    pub after: Obj,
     pub queued_at: String,
-    pub ok: bool,
+    pub ms: f64,
 }
 
 #[derive(Default)]
@@ -127,13 +127,8 @@ fn subs(o: &Obj) -> &[Value] {
     o.get("subActions").and_then(Value::as_array).map_or(&[], Vec::as_slice)
 }
 
-/// What the window asks of the engine.
-pub enum UiCmd {
-    /// Run an action as its Test trigger does.
-    Test(String),
-    /// Run an action with these arguments (testing a trigger).
-    Run(String, Obj),
-}
+/// What the window asks of the engine: run this on the engine's thread.
+pub type UiCmd = Box<dyn FnOnce(&Rc<Engine>) + Send>;
 
 /// Whether the engine runs this sub-action type (the rest are kept, logged once and skipped).
 pub fn supported(kind: u32) -> bool {
@@ -320,7 +315,6 @@ impl Engine {
         self.emit("Misc", "StreamerbotStarted", || json!({}));
     }
 
-    #[allow(dead_code)] // ponytail: used by the servers (phase 4) and the editor (phase 5).
     /// Run an action as its Test trigger does (isTest true). Its arguments, if it ran.
     pub fn test(self: &Rc<Self>, action: &str) -> Option<Obj> {
         let mut args = Obj::new();
@@ -399,6 +393,7 @@ impl Engine {
             .waiting
             .push_back(run);
         self.pump(&queue);
+        crate::ui::changed();
         Some(out)
     }
 
@@ -461,18 +456,23 @@ impl Engine {
                 "excludeFromHistory": self.action(&run.action, |a| a.exclude_from_history).unwrap_or(false),
                 "id": run.id, "actionId": run.action, "name": run.name, "arguments": ctx.args})
         });
+        if self.action(&run.action, |a| a.exclude_from_history).unwrap_or(false) {
+            return;
+        }
         let mut st = self.st.borrow_mut();
         if st.history.len() == HISTORY {
             st.history.pop_front();
         }
         st.history.push_back(Record {
-            run_id: run.id,
             action_id: run.action,
             name: run.name,
             args: start,
+            after: ctx.args,
             queued_at: run.queued_at,
-            ok: true,
+            ms: started.0.elapsed().as_secs_f64() * 1000.0,
         });
+        drop(st);
+        crate::ui::changed();
     }
 
     /// Run a sub-action list: in order, or one of the enabled ones at random (by weight).
@@ -627,19 +627,7 @@ impl Engine {
                 // Set Action Queue Pause State: 0 pause, 1 resume; no queue: all of them.
                 1001 => {
                     let q = self.simple(ctx, s(o, "actionQueueId"));
-                    let pause = n(o, "state") as i64 == 0;
-                    let names: Vec<String> = if q.is_empty() { self.all_queues() } else { vec![q] };
-                    for q in names {
-                        {
-                            let mut st = self.st.borrow_mut();
-                            let e = st.queues.entry(q.clone()).or_default();
-                            e.paused = pause;
-                            if b(o, "clear", false) {
-                                e.waiting.clear();
-                            }
-                        }
-                        self.pump(&q);
-                    }
+                    self.pause(&q, n(o, "state") as i64 == 0, b(o, "clear", false));
                 }
                 // Delay, in ms; Random: between value and maxValue.
                 1002 => {
@@ -676,10 +664,7 @@ impl Engine {
                 }
                 // Clear Action Queue
                 1005 => {
-                    let q = self.simple(ctx, s(o, "actionQueueId"));
-                    if let Some(q) = self.st.borrow_mut().queues.get_mut(&q) {
-                        q.waiting.clear();
-                    }
+                    self.clear_queue(&self.simple(ctx, s(o, "actionQueueId")));
                 }
                 // Comment
                 1009 => {}
@@ -726,15 +711,7 @@ impl Engine {
                 // Set Action Queue Blocking State: 0 blocking, 1 not.
                 1022 => {
                     let q = self.simple(ctx, s(o, "actionQueueId"));
-                    let blocking = n(o, "state") as i64 == 0;
-                    self.change(|c| {
-                        if q == DEFAULT_QUEUE {
-                            c.actions.blocking = blocking;
-                        } else if let Some(x) = c.actions.queues.iter_mut().find(|x| s(x, "id") == q) {
-                            x.insert("blocking".into(), blocking.into());
-                        }
-                    });
-                    self.pump(&q);
+                    self.set_blocking(&q, n(o, "state") as i64 == 0);
                 }
                 // Get Input: a dialog in the window.
                 1023 => {
@@ -941,26 +918,84 @@ impl Engine {
         }
     }
 
-    #[allow(dead_code)] // ponytail: used by the servers (phase 4) and the editor (phase 5).
     /// Past runs, oldest first.
     pub fn history(&self) -> std::cell::Ref<'_, VecDeque<Record>> {
         std::cell::Ref::map(self.st.borrow(), |s| &s.history)
     }
 
-    #[allow(dead_code)] // ponytail: used by the servers (phase 4) and the editor (phase 5).
-    /// What's running and waiting, per queue: (queue id, run id, action name, running).
-    pub fn pending(&self) -> Vec<(String, String, String, bool)> {
+    pub fn clear_history(&self) {
+        self.st.borrow_mut().history.clear();
+    }
+
+    /// What's running and waiting, per queue: (queue id, action name, running), leaving out
+    /// actions set to Exclude from Pending.
+    pub fn pending(&self) -> Vec<(String, String, bool)> {
+        let c = self.cfg.borrow();
+        let shown = |id: &str| !c.actions.actions.iter().any(|a| a.id == id && a.exclude_from_pending);
         let st = self.st.borrow();
         let mut out = Vec::new();
         for (q, x) in &st.queues {
-            out.extend(x.running.iter().map(|(r, nm)| (q.clone(), r.clone(), nm.clone(), true)));
+            // ponytail: running runs only keep their name; Exclude from Pending hides waiting ones.
+            out.extend(x.running.iter().map(|(_, nm)| (q.clone(), nm.clone(), true)));
             out.extend(
                 x.waiting
                     .iter()
-                    .map(|r| (q.clone(), r.id.clone(), r.name.clone(), false)),
+                    .filter(|r| shown(&r.action))
+                    .map(|r| (q.clone(), r.name.clone(), false)),
             );
         }
         out
+    }
+
+    /// The paused queues' ids.
+    pub fn paused(&self) -> Vec<String> {
+        let st = self.st.borrow();
+        st.queues
+            .iter()
+            .filter(|(_, q)| q.paused)
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// Pause or resume a queue (all of them for ""), clearing its waiting runs if `clear`.
+    pub fn pause(self: &Rc<Self>, queue: &str, pause: bool, clear: bool) {
+        let ids = if queue.is_empty() {
+            self.all_queues()
+        } else {
+            vec![queue.to_string()]
+        };
+        for q in ids {
+            {
+                let mut st = self.st.borrow_mut();
+                let e = st.queues.entry(q.clone()).or_default();
+                e.paused = pause;
+                if clear {
+                    e.waiting.clear();
+                }
+            }
+            self.pump(&q);
+        }
+        crate::ui::changed();
+    }
+
+    /// Drop a queue's waiting runs.
+    pub fn clear_queue(&self, queue: &str) {
+        if let Some(q) = self.st.borrow_mut().queues.get_mut(queue) {
+            q.waiting.clear();
+        }
+        crate::ui::changed();
+    }
+
+    /// Set a queue's Blocking (and start what it can run now).
+    pub fn set_blocking(self: &Rc<Self>, queue: &str, blocking: bool) {
+        self.change(|c| {
+            if queue == DEFAULT_QUEUE {
+                c.actions.blocking = blocking;
+            } else if let Some(x) = c.actions.queues.iter_mut().find(|x| s(x, "id") == queue) {
+                x.insert("blocking".into(), blocking.into());
+            }
+        });
+        self.pump(queue);
     }
 }
 
@@ -1083,6 +1118,33 @@ pub(crate) mod tests {
                 "T child sees 15"
             ]
         );
+    }
+
+    #[test]
+    fn pause_clear_pending_history() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        let mut hidden = action("h", "hidden", json!([log("T hidden")]));
+        hidden["excludeFromHistory"] = json!(true);
+        let quick = action("k", "quick", json!([log("T quick")]));
+        let e = engine(json!({"blocking": true, "actions": [hidden, quick]}));
+        let out = run(async move {
+            let waiting = |name: &str| vec![(DEFAULT_QUEUE.to_string(), name.to_string(), false)];
+            e.pause(DEFAULT_QUEUE, true, false);
+            e.queue("k", Obj::new());
+            assert_eq!(e.pending(), waiting("quick"));
+            assert_eq!(e.paused(), [DEFAULT_QUEUE]);
+            e.clear_queue(DEFAULT_QUEUE);
+            assert!(e.pending().is_empty());
+            e.queue("h", Obj::new());
+            e.queue("k", Obj::new());
+            e.pause("", false, false);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(e.pending().is_empty() && e.paused().is_empty());
+            let h = e.history();
+            assert_eq!(h.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["quick"]);
+            assert_eq!(h[0].after["actionName"], "quick");
+        });
+        assert_eq!(out, ["T hidden", "T quick"]);
     }
 
     #[test]

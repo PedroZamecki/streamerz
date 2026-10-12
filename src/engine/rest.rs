@@ -217,7 +217,6 @@ impl Engine {
     }
 
     /// Create a user group (the editor and the platforms' Add User to Group use these).
-    #[allow(dead_code)] // ponytail: called by the editor (phase 5) and the platforms (phase 6+).
     pub fn add_group(self: &Rc<Self>, name: &str, bots: bool) -> String {
         let mut g = Obj::new();
         let id = super::uuid();
@@ -230,7 +229,6 @@ impl Engine {
         id
     }
 
-    #[allow(dead_code)] // ponytail: called by the editor (phase 5).
     pub fn remove_group(self: &Rc<Self>, id: &str) {
         let Some(g) = self.cfg.borrow().groups.iter().find(|g| s(g, "id") == id).cloned() else {
             return;

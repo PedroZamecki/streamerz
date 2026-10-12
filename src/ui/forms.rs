@@ -23,6 +23,8 @@ pub enum W {
     /// Several lines.
     Multi,
     Bool,
+    /// One bit of a number of flags, as a check box.
+    Bit(u64),
     Int,
     Num,
     /// One of these, stored as its index.
@@ -247,6 +249,7 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
 type Ids = Vec<(String, String)>;
 
 /// What the pickers offer, copied out of the config so it isn't held while the form is open.
+#[derive(Default)]
 pub struct Lists {
     /// (id, name, its sub-actions, its triggers).
     actions: Vec<(String, String, Ids, Ids)>,
@@ -345,6 +348,7 @@ enum Widget {
     Text(Input),
     Multi(MultilineInput),
     Bool(CheckButton),
+    Bit(CheckButton, u64),
     Int(IntInput),
     Num(FloatInput),
     Pick(Choice),
@@ -369,9 +373,20 @@ fn text(v: Option<&Value>) -> String {
 /// Edit `o`'s fields `fields`. The result keeps every other field of `o`, in place.
 pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
     let tall = |w: &W| matches!(w, Multi | Map | Lines);
+    let check = |w: &W| matches!(w, Bool | Bit(_));
+    // Check boxes go two to a row: a check box right after one that opened a row shares it.
+    let mut shares = vec![false; fields.len()];
+    for i in 1..fields.len() {
+        shares[i] = check(&fields[i].2) && check(&fields[i - 1].2) && !shares[i - 1];
+    }
     let h = fields
         .iter()
-        .map(|f| if tall(&f.2) { 84 } else { ROW + 4 })
+        .zip(&shares)
+        .map(|(f, &shared)| match () {
+            _ if shared => 0,
+            _ if tall(&f.2) => 84,
+            _ => ROW + 4,
+        })
         .sum::<i32>()
         + ROW
         + 34;
@@ -379,15 +394,33 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
     let mut col = Flex::new(10, 10, 540, h.max(120) - 20, None).column();
     col.set_pad(4);
     let mut ws = Vec::new();
-    for (key, label, w) in fields {
+    let mut half: Option<Flex> = None;
+    for ((key, label, w), &shared) in fields.iter().zip(&shares) {
         let v = o.get(*key);
-        if let Bool = w {
+        if let Bool | Bit(_) = w {
+            let r = match half.take() {
+                Some(r) if shared => r,
+                _ => {
+                    let r = Flex::default().row();
+                    col.fixed(&r, ROW);
+                    r
+                }
+            };
+            r.begin();
             let c = CheckButton::default().with_label(label);
-            c.set_checked(v.and_then(Value::as_bool).unwrap_or(false));
-            col.fixed(&c, ROW);
-            ws.push(Widget::Bool(c));
+            c.set_checked(match w {
+                Bit(bit) => v.and_then(Value::as_u64).unwrap_or(0) & bit != 0,
+                _ => v.and_then(Value::as_bool).unwrap_or(false),
+            });
+            r.end();
+            half = (!shared).then_some(r);
+            ws.push(match w {
+                Bit(bit) => Widget::Bit(c, *bit),
+                _ => Widget::Bool(c),
+            });
             continue;
         }
+        half = None;
         let r = row(label);
         let widget = match w {
             Text => {
@@ -397,7 +430,7 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
             }
             Multi => {
                 let mut i = MultilineInput::default();
-                i.set_value(&text(v));
+                i.set_value(&text(v).replace("\r\n", "\n"));
                 Widget::Multi(i)
             }
             Int => {
@@ -464,7 +497,7 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
                 i.set_value(&lines.join("\n"));
                 Widget::Lines(i)
             }
-            Bool => unreachable!(),
+            Bool | Bit(_) => unreachable!(),
         };
         r.end();
         col.fixed(&r, if tall(w) { 80 } else { ROW });
@@ -521,8 +554,14 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
         for ((key, label, _), w) in fields.iter().zip(&ws) {
             let v = match w {
                 Widget::Text(i) => i.value().into(),
-                Widget::Multi(i) => i.value().into(),
+                // Line breaks as Streamer.bot's text boxes write them (it splits aliases on \r\n only).
+                Widget::Multi(i) => i.value().replace('\n', "\r\n").into(),
                 Widget::Bool(c) => c.is_checked().into(),
+                // Bits not on the form are kept.
+                Widget::Bit(c, bit) => {
+                    let old = out.get(*key).and_then(Value::as_u64).unwrap_or(0) & !bit;
+                    (if c.is_checked() { old | bit } else { old }).into()
+                }
                 Widget::Int(i) => match i.value().trim() {
                     "" => 0.into(),
                     t => match t.parse::<i64>() {
