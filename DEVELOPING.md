@@ -263,6 +263,18 @@ its own (0 equals, 1 not, 2 less, 3 greater); Set Global's source is 0 value, 1 
 arguments and its Break stops the caller too; global variable triggers' `persisted` is 0 either,
 1 yes, 2 no (a bool there crashes Streamer.bot on load).
 
+Commands only run from chat, which the WebSocket can't inject: they were checked by posting test
+messages in the broadcaster's Twitch chat (`SendMessage` with `internal: false`, the test command with
+Ignore Internal off; cases take `"say": [...]`). Found: Start needs a space or the end after the alias;
+matching ignores case and reports the alias as configured; rawInput is trimmed but keeps inner spaces;
+input# splits on single spaces (two spaces give an empty word, no input gives an empty input0); Regex
+mode's words come from the message without its leading `!`; URL encoding is WebUtility's (`+`, `%XX`
+uppercase); Get Commands sorts the aliases and joins them with `, `; Clear Users From Group fires only
+Cleared; Fetch URL's JSON becomes `var.key`, `var.key.inner`, `var.list[0]` (null as empty, nothing set
+on an HTTP error); Run a Program's lines are output0..N split on `\n` (keeping `\r`). The
+broadcaster skips cooldowns and permissions, so those follow the docs. The cases also accept `commands`,
+`groups` and `timers`, written into commands.json, users.dat and settings.json.
+
 `oracle.py`:
 
 ```python
@@ -301,6 +313,12 @@ data['actions'] = [a for a in data['actions'] if not a['name'].startswith('[SZT]
 names = []
 ids = {c['name']: sid() for c in cases}
 ids['Q'] = sid()
+ids['G'] = sid()
+ids['C'] = sid()
+ids['C2'] = sid()
+ids['C3'] = sid()
+ids['C4'] = sid()
+ids['T'] = sid()
 data['queues'] = [q for q in data['queues'] if not q.get('name','').startswith('szt')] + [{'id': ids['Q'], 'name': 'sztQ', 'blocking': True}]
 def refs(o):
     if isinstance(o, dict): return {k: refs(v) for k, v in o.items()}
@@ -313,9 +331,22 @@ for c in cases:
     name = '[SZT] ' + c['name']; names.append(name)
     data['actions'].append({"id": ids[c['name']], "queue": ids[c["queue"]] if c.get("queue") else "00000000-0000-0000-0000-000000000000", "enabled": True,
         "excludeFromHistory": False, "excludeFromPending": False, "name": name, "group": "SZT", "alwaysRun": False,
-        "randomAction": c.get('random', False), "concurrent": c.get('concurrent', False), "triggers": c.get('triggers', []),
+        "randomAction": c.get('random', False), "concurrent": c.get('concurrent', False), "triggers": refs(c.get("triggers", [])),
         "subActions": c['subActions'], "collapsedGroups": []})
 open(path, 'w', encoding='utf-8-sig').write(json.dumps(data, ensure_ascii=False, separators=(',', ':')))
+for fname, key in (('users.dat', 'groups'), ('commands.json', 'commands')):
+    extra = [refs(x) for c in cases for x in c.get(key, [])]
+    if extra:
+        fp = f'{SB}/data/{fname}'
+        dd = json.load(open(fp, encoding='utf-8-sig'))
+        dd[key] = [x for x in dd[key] if not x.get('name', '').startswith('szt')] + extra
+        open(fp, 'w', encoding='utf-8-sig').write(json.dumps(dd, ensure_ascii=False, separators=(',', ':')))
+tim = [refs(x) for c in cases for x in c.get('timers', [])]
+if tim:
+    fp = f'{SB}/data/settings.json'
+    dd = json.load(open(fp, encoding='utf-8-sig'))
+    dd['timedActions']['timers'] = [x for x in dd['timedActions']['timers'] if not x.get('name','').startswith('szt')] + tim
+    open(fp, 'w', encoding='utf-8-sig').write(json.dumps(dd, ensure_ascii=False, separators=(',', ':')))
 subprocess.run(['/tmp/sbx/sb.sh', 'start'])
 log = max(glob.glob(f'{SB}/logs/log_*.log'), key=os.path.getmtime)
 pos = os.path.getsize(log)
@@ -329,6 +360,11 @@ async def run():
             await ws.send(json.dumps({"request": "Authenticate", "id": "a", "authentication": h(h(pw() + a['salt']) + a['challenge'])})); await ws.recv()
         for c, name in zip(cases, names):
             if c.get('run') is False: continue
+            for m in c.get('say', []):
+                await ws.send(json.dumps({"request": "SendMessage", "id": "say", "platform": "twitch", "bot": False, "internal": False, "message": m}))
+                print('say', m, await ws.recv())
+                await asyncio.sleep(2.5)
+            if c.get('say'): continue
             await ws.send(json.dumps({"request": "DoAction", "id": name, "action": {"name": name}, "args": c.get('args', {})}))
             await ws.recv()
             await asyncio.sleep(c.get('wait', 0.7))

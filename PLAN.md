@@ -34,7 +34,7 @@ phase, following `CLAUDE.md`.
 | Integrations | Opt-in and off by default; a disabled one opens nothing. In scope: donations/shops (Ko-fi, StreamElements, Streamlabs, Patreon, Fourthwall, Throne, Tipeee, Treatstream, DonorDrive, Pally, Shopify, Streamloots) and webhooks/remote (Discord, IFTTT, pronouns, Streamer.bot remote instances). |
 | OS | Windows + Linux (Wayland, ksni tray). CI releases a Windows exe and a Linux binary on every release. |
 | Budget | Hidden window, Twitch + OBS connected: < 25 MB RSS and ~0% idle CPU, measured and written in every PR. Streamer.bot uses ~300 MB. |
-| Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, fltk, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only). HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. **regex-lite** (If/Else, While, Switch and regex commands; .NET's backreferences and lookaround aren't supported). Anything else needs a question first. |
+| Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, fltk, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only). HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. **tokio-native-tls** (the crate tokio-tungstenite's native-tls feature uses, for HTTPS), **regex-lite** (If/Else, While, Switch and regex commands; .NET's backreferences and lookaround aren't supported). Anything else needs a question first. |
 | Not in scope | TikTok (that's tikstream), Meld, PolyPop, Elgato, VTube Studio/Voicemod/Speaker.bot/TITS/Crowd Control/HypeRate/Pulsoid/Lumia/Streamfog/mtion, the Streamer.bot website integration/cloud, C# and plugins. |
 | Later (own phases, after phase 14) | Quotes, credits, points, users/first words; sounds and TTS; file I/O, file tail, folder watcher, process triggers; hotkeys/inputs, MIDI, voice control; Decks, HTML overlay, multi-platform chat window. |
 
@@ -160,9 +160,10 @@ platform handles through channels, never through shared locks held across awaits
   - Variables, formatting (OS locale) and inline functions.
   - Sub-actions: action queues, actions, arguments, delay, globals, logic, misc, signals, triggers; C# kept
     and skipped. Triggers: Custom, Test, Streamer.bot Started, global variables.
-- [ ] 3b. Engine, the rest:
+- [x] 3b. Engine, the rest:
   - Commands (permissions, cooldowns, aliases, regex) and their sub-actions and triggers.
-  - Timers and cron, Fetch URL, UDP Broadcast, user groups, and the extended Run a Program.
+  - Timers (cron deferred: see open points), Fetch URL, UDP Broadcast, user groups, and the extended
+    Run a Program.
   - Tick the rest of COVERAGE "Phase 3".
 - [ ] 4. Servers:
   - WebSocket, HTTP and UDP drop-ins.
@@ -206,6 +207,10 @@ platform handles through channels, never through shared locks held across awaits
 
 ## Open points (decide when the phase starts, ask first)
 
+- Cron trigger: new in Streamer.bot 1.1.0. When the real Streamer.bot is updated, read its type code and
+  fields from the metadata, then add it (and a small cron parser).
+- OpenSSL costs ~1.9 MB of hidden RSS on Linux (mapped at start, even unused). If that matters, ask
+  about rustls or loading TLS lazily.
 - Phase 5: imports of old export versions (v3/v10: sub-actions under `actions`, random groups in
   `actionGroups`) need upgrading to the v24 shape. Check how Streamer.bot upgrades them, and ask.
 - Phase 3: user data growth (users seen, user globals) inside the one JSON file. If it gets big, ask

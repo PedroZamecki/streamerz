@@ -26,11 +26,11 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Sub-actions: commands** (5)
 
-- [ ] Get Command Group State
-- [ ] Get Command State
-- [ ] Get Commands
-- [ ] Set Command Group State
-- [ ] Set Command State
+- [x] Get Command Group State
+- [x] Get Command State
+- [x] Get Commands
+- [x] Set Command Group State
+- [x] Set Command State
 
 **Sub-actions: delay** (1)
 
@@ -61,8 +61,8 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Sub-actions: network** (2)
 
-- [ ] Fetch URL
-- [ ] UDP Broadcast
+- [x] Fetch URL
+- [x] UDP Broadcast
 
 **Sub-actions: signals** (2)
 
@@ -71,7 +71,7 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Sub-actions: timers** (1)
 
-- [ ] Set Timer State
+- [x] Set Timer State
 
 **Sub-actions: triggers** (2)
 
@@ -80,7 +80,7 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Sub-actions: users** (1)
 
-- [ ] Clear Users From Group
+- [x] Clear Users From Group
 
 **Sub-actions: csharp** (2)
 
@@ -89,12 +89,12 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Run a Program (replaces C#)** (1)
 
-- [ ] Run a Program
+- [x] Run a Program
 
 **Triggers: commands** (2)
 
-- [ ] Command Cooldown
-- [ ] Command Triggered
+- [x] Command Cooldown
+- [x] Command Triggered
 
 **Triggers: global-variables** (4)
 
@@ -105,16 +105,16 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Triggers: groups** (5)
 
-- [ ] Added
-- [ ] Cleared
-- [ ] Removed
-- [ ] Users Added
-- [ ] Users Removed
+- [ ] Added (engine fires it; called by the editor's groups, phase 5, and the platforms' user group sub-actions, phase 6+)
+- [x] Cleared
+- [ ] Removed (engine fires it; called by the editor's groups, phase 5, and the platforms' user group sub-actions, phase 6+)
+- [ ] Users Added (engine fires it; called by the editor's groups, phase 5, and the platforms' user group sub-actions, phase 6+)
+- [ ] Users Removed (engine fires it; called by the editor's groups, phase 5, and the platforms' user group sub-actions, phase 6+)
 
 **Triggers: schedule** (2)
 
-- [ ] Cron
-- [ ] Timed Actions
+- [ ] Cron (new in Streamer.bot 1.1.0; the installed 1.0.7 has no type code or fields for it: when Streamer.bot is updated)
+- [x] Timed Actions
 
 **Triggers: streamerbot-started** (1)
 
