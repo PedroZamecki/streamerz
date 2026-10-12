@@ -174,7 +174,7 @@ platform handles through channels, never through shared locks held across awaits
 - [x] 5a. Editor, actions: the Actions tab (groups tree, drag-reorder, sub-action list with enable/disable
   and nesting for logic, triggers list), import/export dialogs, test trigger. Sub-actions and triggers
   without their own form open as editable JSON (validated on save).
-- [ ] 5b. Editor, forms: a form for every core sub-action and trigger.
+- [x] 5b. Editor, forms: a form for every core sub-action and trigger.
 - [ ] 5c. Editor, the rest: Commands, timers, queues, globals viewer, server settings, history and
   pending views.
 - [ ] 6. Twitch A:
