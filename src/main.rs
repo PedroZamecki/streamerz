@@ -1,17 +1,17 @@
-#![cfg_attr(windows, windows_subsystem = "windows")]
 //! Streamer.bot rebuilt small: actions, triggers and Streamer.bot's servers for Twitch, Kick, YouTube,
-//! OBS Studio and Streamlabs Desktop. See PLAN.md.
+//! OBS and Streamlabs Desktop, running on ~nothing.
 
 mod commands;
 mod edit;
-mod engine;
+pub mod engine;
 mod fmt;
-mod http;
+pub mod http;
 mod math;
-mod model;
-mod servers;
+pub mod model;
+pub mod servers;
 mod tray;
-mod types;
+pub mod twitch;
+pub mod types;
 mod ui;
 mod vars;
 
@@ -50,6 +50,9 @@ pub struct Config {
     groups: Vec<model::Obj>,
     /// Persisted command counters: by command id, and by "command id:user id".
     counters: model::Obj,
+    /// Twitch configuration (broadcaster, bot, auto-connect, settings).
+    #[serde(default)]
+    pub twitch: twitch::TwitchConfig,
     /// Fields this build doesn't know (e.g. written by a newer one): kept, so a save loses nothing.
     #[serde(flatten)]
     rest: Map<String, Value>,
@@ -74,6 +77,7 @@ impl Default for Config {
             timers: Vec::new(),
             groups: Vec::new(),
             counters: Map::new(),
+            twitch: twitch::TwitchConfig::default(),
             rest: Map::new(),
         }
     }
@@ -254,9 +258,11 @@ fn main() {
     // The engine isn't Send (one thread, no locks): it lives in a LocalSet on the runtime thread.
     std::thread::spawn(move || {
         tokio::task::LocalSet::new().block_on(&rt, async move {
-            let e = engine::Engine::new(engine_cfg, |c| {
+            let e = engine::Engine::new(engine_cfg.clone(), |c| {
                 let _ = save(c);
             });
+            let twitch_handle = twitch::start(e.clone(), &engine_cfg);
+            e.set_twitch(twitch_handle);
             tokio::task::spawn_local(servers::run(e.clone()));
             e.started();
             e.timers();

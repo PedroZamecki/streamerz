@@ -195,19 +195,19 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [ ] channel-reward: Automatic Reward Redemption
 - [ ] channel-reward: Reward Redemption Updated
 - [ ] channel-reward: Reward Redemption
-- [ ] channel: Follow
-- [ ] channel: Stream Offline
-- [ ] channel: Stream Online
+- [x] channel: Follow
+- [x] channel: Stream Offline
+- [x] channel: Stream Online
 - [ ] channel: Viewer Count Update
 - [ ] charity: Charity Completed
 - [ ] charity: Charity Donation
 - [ ] charity: Charity Progress
 - [ ] charity: Charity Started
 - [ ] chat: Bits Badge Tier
-- [ ] chat: Bot Whispers
-- [ ] chat: Cheer
-- [ ] chat: First Words
-- [ ] chat: Chat Message
+- [x] chat: Bot Whispers
+- [x] chat: Cheer
+- [x] chat: First Words
+- [x] chat: Chat Message
 - [ ] chat/mode: Emote Mode Off
 - [ ] chat/mode: Emote Mode On
 - [ ] chat/mode: Follower Mode Changed
@@ -222,23 +222,23 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [ ] chat/mode: Unique Mode On
 - [ ] chat: Modiversary
 - [ ] chat: Watch Streak
-- [ ] chat: Whispers
+- [x] chat: Whispers
 - [ ] community-goal: Community Goal Contribution
 - [ ] community-goal: Community Goal Ended
-- [ ] connections: Bot Chat Connected
-- [ ] connections: Bot Chat Disconnected
-- [ ] connections: Broadcaster Authenticated
-- [ ] connections: Broadcaster Chat Connected
-- [ ] connections: Broadcaster Chat Disconnected
-- [ ] connections: Broadcaster EventSub Connected
-- [ ] connections: Broadcaster EventSub Disconnected
+- [x] connections: Bot Chat Connected
+- [x] connections: Bot Chat Disconnected
+- [x] connections: Broadcaster Authenticated
+- [x] connections: Broadcaster Chat Connected
+- [x] connections: Broadcaster Chat Disconnected
+- [x] connections: Broadcaster EventSub Connected
+- [x] connections: Broadcaster EventSub Disconnected
 - [ ] connections: Broadcaster PubSub Connected
 - [ ] connections: Broadcaster PubSub Disconnected
 - [ ] emotes: BetterTTV Emote Added
 - [ ] emotes: BetterTTV Emote Removed
 - [ ] emotes: SevenTV Emote Added
 - [ ] emotes: SevenTV Emote Removed
-- [ ] general: Announcement
+- [x] general: Announcement
 - [ ] general: Present Viewers
 - [ ] general: Shoutout Received
 - [ ] general: Stream Update
@@ -287,10 +287,10 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [ ] predictions: Prediction Updated
 - [ ] pyramid: Pyramid Broken
 - [ ] pyramid: Pyramid Success
-- [ ] raid: Raid Cancelled
-- [ ] raid: Raid
-- [ ] raid: Raid Send
-- [ ] raid: Raid Start
+- [x] raid: Raid Cancelled
+- [x] raid: Raid
+- [x] raid: Raid Send
+- [x] raid: Raid Start
 - [ ] shared-chat: Shared Announcement
 - [ ] shared-chat: Shared Community Sub Gift
 - [ ] shared-chat: Shared Gift Paid Upgrade
@@ -308,14 +308,14 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [ ] shared-chat: Shared Chat User Timed Out
 - [ ] shared-chat: Shared Chat User Unbanned
 - [ ] shared-chat: Shared Chat User Untimed Out
-- [ ] subscriptions: Gift Bomb
+- [x] subscriptions: Gift Bomb
 - [ ] subscriptions: Gift Paid Upgrade
-- [ ] subscriptions: Gift Subscription
+- [x] subscriptions: Gift Subscription
 - [ ] subscriptions: Pay It Forward
 - [ ] subscriptions: Prime Paid Upgrade
-- [ ] subscriptions: Resubscription
+- [x] subscriptions: Resubscription
 - [ ] subscriptions: Sub Counter Rollover
-- [ ] subscriptions: Subscription
+- [x] subscriptions: Subscription
 
 **Sub-actions** (95)
 
@@ -333,9 +333,9 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [ ] chat: Clear Chat Messages
 - [ ] chat: Get Pinned Chat Message
 - [ ] chat: Pin Chat Message
-- [ ] chat: Reply to Message
-- [ ] chat: Send Announcement to Channel
-- [ ] chat: Send Message
+- [x] chat: Reply to Message
+- [x] chat: Send Announcement to Channel
+- [x] chat: Send Message
 - [ ] chat: Unpin Chat Message
 - [ ] chat: Update Pinned Chat Message Duration
 - [ ] followers: Get Follow Age Info for Target
@@ -379,8 +379,8 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [ ] predictions: Lock Active Prediction
 - [ ] predictions: Resolve Last Prediction by Title
 - [ ] predictions: Resolve Last Prediction
-- [ ] raid: Cancel Raid
-- [ ] raid: Start Raid
+- [x] raid: Cancel Raid
+- [x] raid: Start Raid
 - [ ] rewards: Configure Rewards
 - [ ] rewards: Get Reward Info
 - [ ] rewards: Reset Reward Counter

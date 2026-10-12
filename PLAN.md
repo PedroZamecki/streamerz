@@ -177,7 +177,7 @@ platform handles through channels, never through shared locks held across awaits
 - [x] 5b. Editor, forms: a form for every core sub-action and trigger.
 - [x] 5c. Editor, the rest: Commands, timers, queues, globals viewer, server settings, history and
   pending views.
-- [ ] 6. Twitch A:
+- [x] 6. Twitch A:
   - Login (broadcaster + bot) and the EventSub session.
   - Chat in and out: messages, whispers, announcements.
   - Follows, subs, gifts, cheers, raids, first words, stream online/offline.

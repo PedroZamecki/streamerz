@@ -385,11 +385,29 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
                 }
             }
         }
-        // ponytail: platforms report themselves here as they connect (phase 6+).
-        "GetBroadcaster" => ok(
-            &id,
-            json!({"platforms": {}, "connected": [], "disconnected": ["twitch", "youtube", "kick"]}),
-        ),
+        "GetBroadcaster" => {
+            let tw = e.twitch_broadcaster();
+            let mut platforms = Obj::new();
+            let mut connected: Vec<&str> = Vec::new();
+            let mut disconnected: Vec<&str> = vec!["youtube", "kick"];
+            if let Some(b) = tw {
+                platforms.insert(
+                    "twitch".into(),
+                    json!({
+                        "id": b.user_id,
+                        "userName": b.login,
+                        "user": b.display_name
+                    }),
+                );
+                connected.push("twitch");
+            } else {
+                disconnected.insert(0, "twitch");
+            }
+            ok(
+                &id,
+                json!({"platforms": platforms, "connected": connected, "disconnected": disconnected}),
+            )
+        }
         // Credits are a later phase: empty, like a fresh Streamer.bot.
         "GetCredits" | "TestCredits" => ok(&id, credits()),
         "ClearCredits" => ok(&id, json!({})),
@@ -419,7 +437,13 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
                 .collect();
             ok(&id, json!({"commands": cmds, "count": cmds.len()}))
         }
-        "TwitchGetEmotes" => error(&id, "Twitch is not connected"),
+        "TwitchGetEmotes" => {
+            if e.twitch_broadcaster().is_some() {
+                ok(&id, json!({"emotes": []}))
+            } else {
+                error(&id, "Twitch is not connected")
+            }
+        }
         "YouTubeGetEmotes" => error(&id, "YouTube is not connected"),
         "GetGlobals" => {
             let v = e.globals_list(persisted);
@@ -449,14 +473,29 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
         "SendMessage" if !authed && e.config().websockets.enable_auth => {
             error(&id, "Authentication required to use this method")
         }
-        // ponytail: chat goes out once the platforms are in (phase 6+).
         "SendMessage" => {
-            let p = match get("platform") {
-                "youtube" => "YouTube",
-                "kick" => "Kick",
-                _ => "Twitch",
-            };
-            error(&id, &format!("{p} is not connected"))
+            let platform = get("platform");
+            if platform.is_empty() || platform.eq_ignore_ascii_case("twitch") {
+                if e.twitch_broadcaster().is_none() {
+                    error(&id, "Twitch is not connected")
+                } else {
+                    let msg = req
+                        .get("message")
+                        .or_else(|| req.get("text"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let bot = req.get("bot").and_then(Value::as_bool).unwrap_or(false);
+                    let _ = e.send_twitch_message(msg, None, bot, true);
+                    ok(&id, json!({}))
+                }
+            } else {
+                let p = match platform {
+                    "youtube" => "YouTube",
+                    "kick" => "Kick",
+                    _ => "Platform",
+                };
+                error(&id, &format!("{p} is not connected"))
+            }
         }
         // The pronouns integration is a later phase: Streamer.bot's answer for an unknown user.
         "GetUserPronouns" => ok(
@@ -599,7 +638,11 @@ fn http_answer(e: &Rc<Engine>, method: &str, path: &str, body: &[u8]) -> (u16, O
             (200, Some(json!({"count": actions.len(), "actions": actions})))
         }
         ("GET", "/GetCredits" | "/TestCredits") => (200, Some(credits())),
-        ("GET", "/ClearCredits" | "/ClearFirstWordsCache") => (204, None),
+        ("GET", "/ClearCredits") => (204, None),
+        ("GET", "/ClearFirstWordsCache") => {
+            e.clear_first_words();
+            (204, None)
+        }
         ("GET", "/") => (500, None),
         ("POST", "/DoAction") => {
             let req: Value = match serde_json::from_slice(body) {

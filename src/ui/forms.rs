@@ -90,6 +90,28 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         ],
         8 => &[("timerId", "Timer", Timer), ("state", "State", Pick(STATE))],
         9 => &[("commandId", "Command", Command), ("state", "State", Pick(STATE))],
+        10 => &[
+            ("text", "Message", Multi),
+            ("pin", "Pin message", Bool),
+            ("pinToStreamEnd", "Pin to stream end", Bool),
+            ("useBot", "Send from bot account", Bool),
+            ("fallback", "Fallback to broadcaster", Bool),
+        ],
+        23 => &[
+            ("text", "Announcement", Multi),
+            ("color", "Color (Primary/Blue/Green/Orange/Purple)", Text),
+            ("useBot", "Send from bot account", Bool),
+            ("fallback", "Fallback to broadcaster", Bool),
+        ],
+        500 => &[("userLogin", "Target channel", Text)],
+        501 => &[],
+        560 => &[
+            ("text", "Reply", Multi),
+            ("replyId", "Reply message ID", Text),
+            ("useBot", "Send from bot account", Bool),
+            ("fallback", "Fallback to broadcaster", Bool),
+        ],
+
         120 => &[
             ("input", "Input", Text),
             ("operation", "Operation", Pick(OPS)),
@@ -242,6 +264,7 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
         18001 => &[("eventName", "Event name", Text)],
         18002 => &[("triggerName", "Trigger name", Text)],
         32001..=32005 => &[("groupId", "Group (none: any)", UserGroup)],
+        101..=107 | 119 | 120 | 133 | 138 | 140 | 154 | 155 | 158..=160 | 173..=175 | 178 | 179 | 184 | 185 => &[],
         _ => return None,
     })
 }
@@ -647,7 +670,10 @@ mod tests {
         ]
         .into_iter()
         .chain(32001..=32005)
-        {
+        .chain([
+            101, 102, 103, 104, 105, 106, 107, 119, 120, 133, 138, 140, 154, 155, 158, 159, 160, 173, 174, 175, 178,
+            179, 184, 185,
+        ]) {
             assert!(trigger_fields(k).is_some(), "trigger {k} has no form");
         }
     }
