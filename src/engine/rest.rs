@@ -75,6 +75,7 @@ impl Engine {
                 self.fire(T_COOLDOWN, "Command Cooldown", "Core/Commands", "command", &args, |t| {
                     s(t, "commandId") == id
                 });
+                self.emit("Command", "Cooldown", || Value::Object(args));
                 continue;
             }
             {
@@ -97,6 +98,7 @@ impl Engine {
             };
             commands::input_args(&raw, &words, &mut args);
             args.extend(matched);
+            self.emit("Command", "Triggered", || Value::Object(args.clone()));
             ran += self.fire(T_COMMAND, "Command Triggered", "Core/Commands", "command", &args, |t| {
                 s(t, "commandId") == id
             });
@@ -174,6 +176,7 @@ impl Engine {
             self.fire(T_TIMER, "Timed Actions", "Core", "misc", &args, |x| {
                 s(x, "timerId") == id
             });
+            self.emit("Misc", "TimedAction", || Value::Object(args));
             if !b(&t, "repeat", true) {
                 self.change(|c| {
                     if let Some(x) = c.timers.iter_mut().find(|x| s(x, "id") == id) {
@@ -203,6 +206,13 @@ impl Engine {
         self.fire(kind, name, "Core/Groups", "streamerbot", &args, |t| {
             let want = s(t, "groupId");
             want.is_empty() || want == id
+        });
+        self.emit("Group", &name.replace(' ', ""), || {
+            let mut d = serde_json::json!({"groupId": id, "groupName": s(g, "name"), "groupBots": b(g, "bots", false)});
+            if !users.is_empty() {
+                d["users"] = users.iter().cloned().map(Value::Object).collect();
+            }
+            d
         });
     }
 
