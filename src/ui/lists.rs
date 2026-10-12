@@ -16,6 +16,7 @@ use fltk::prelude::*;
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc::UnboundedSender, watch};
 
@@ -415,6 +416,7 @@ pub struct Views {
     pub globals: Rc<RefCell<Globals>>,
     pub servers: Rc<RefCell<Servers>>,
     pub groups: Rc<RefCell<Groups>>,
+    pub twitch: Rc<RefCell<TwitchView>>,
 }
 
 impl Views {
@@ -429,6 +431,11 @@ impl Views {
             g.refresh();
         }
         let is = |w: &Flex| up == Some(w.as_widget_ptr());
+        if let Ok(mut t) = self.twitch.try_borrow_mut() {
+            if is(&t.tab) {
+                t.refresh();
+            }
+        }
         if let Ok(mut q) = self.queues.try_borrow_mut() {
             if is(&q.tab) {
                 q.refresh();
@@ -469,6 +476,8 @@ pub fn tabs(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Views {
     let custom = list(&mut col, cfg, cmds, &SERVERS, Some("autoStart"));
     col.end();
 
+    let twitch = twitch_tab(tabs, cfg, cmds);
+
     Views {
         lists: vec![commands, timers, clients, custom],
         queues,
@@ -476,6 +485,7 @@ pub fn tabs(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Views {
         globals,
         servers,
         groups,
+        twitch,
     }
 }
 
@@ -1079,6 +1089,340 @@ fn groups_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Groups>> {
             }
         }
     });
+    me.borrow_mut().refresh();
+    me
+}
+
+fn open_browser(url: &str) {
+    #[cfg(windows)]
+    let _ = std::process::Command::new("cmd").args(["/c", "start", "", url]).spawn();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+}
+
+pub struct TwitchView {
+    pub tab: Flex,
+    cfg: Cfg,
+    cmds: Cmds,
+    broadcaster_info: Frame,
+    bot_info: Frame,
+    status_label: Frame,
+    auto_connect: fltk::button::CheckButton,
+}
+
+impl TwitchView {
+    pub fn refresh(&mut self) {
+        let c = self.cfg.borrow();
+        let b_text = match &c.twitch.broadcaster {
+            Some(b) => format!("Broadcaster: {} (@{}) [ID: {}]", b.display_name, b.login, b.user_id),
+            None => "Broadcaster: Not logged in".to_string(),
+        };
+        self.broadcaster_info.set_label(&b_text);
+
+        let bot_text = match &c.twitch.bot {
+            Some(bot) => format!("Bot: {} (@{}) [ID: {}]", bot.display_name, bot.login, bot.user_id),
+            None => "Bot: Not logged in".to_string(),
+        };
+        self.bot_info.set_label(&bot_text);
+
+        self.auto_connect.set_checked(c.twitch.auto_connect);
+
+        let connected = query(&self.cmds, |e| e.twitch_connected()).unwrap_or(false);
+        let st = if connected {
+            "EventSub: Connected"
+        } else if c.twitch.broadcaster.is_none() {
+            "EventSub: Disconnected (No Broadcaster)"
+        } else {
+            "EventSub: Disconnected"
+        };
+        self.status_label.set_label(st);
+    }
+}
+
+fn device_login(cfg: &Cfg, cmds: &Cmds, as_bot: bool) {
+    let who = if as_bot { "Bot" } else { "Broadcaster" };
+    let scopes = if as_bot {
+        crate::twitch::BOT_SCOPES
+    } else {
+        crate::twitch::BROADCASTER_SCOPES
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    tell(cmds, move |_| {
+        tokio::task::spawn_local(async move {
+            let res = crate::twitch::device_flow_start(crate::twitch::CLIENT_ID, scopes).await;
+            let _ = tx.send(res);
+        });
+    });
+
+    let code_resp = match rx.recv() {
+        Ok(Ok(resp)) => resp,
+        Ok(Err(e)) => {
+            dialog::alert_default(&format!("Failed to start login: {e}"));
+            return;
+        }
+        Err(_) => return,
+    };
+
+    let user_code = code_resp.user_code.clone();
+    let device_code = code_resp.device_code.clone();
+    let interval = code_resp.interval.max(1);
+
+    open_browser(&code_resp.verification_uri);
+
+    let (mut win, answer) = dialogs::window(460, 220, &format!("Twitch Login - {who}"));
+    let mut col = Flex::new(10, 10, 440, 200, None).column();
+    col.set_pad(8);
+
+    let msg = format!(
+        "Please authorize streamerz on Twitch.\n\nActivation code:\n  {}\n\nBrowser opened to:\n  {}\n\nWaiting for authorization...",
+        user_code, code_resp.verification_uri
+    );
+    let msg_frame = Frame::default()
+        .with_label(&msg)
+        .with_align(Align::Left | Align::Inside | Align::Wrap);
+    col.fixed(&msg_frame, 140);
+
+    let mut bar = Flex::default().row();
+    let mut open_btn = button(&mut bar, "Open Browser", 110);
+    open_btn.set_callback({
+        let uri = code_resp.verification_uri.clone();
+        move |_| open_browser(&uri)
+    });
+    let mut copy_btn = button(&mut bar, "Copy Code", 90);
+    copy_btn.set_callback({
+        let code = user_code.clone();
+        move |_| fltk::app::copy(&code)
+    });
+    Frame::default();
+    let mut cancel_btn = button(&mut bar, "Cancel", 80);
+    cancel_btn.set_callback({
+        let a = answer.clone();
+        move |_| a.set(Some(false))
+    });
+    bar.end();
+    col.fixed(&bar, ROW + 4);
+    col.end();
+    win.end();
+
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let is_cancelled = cancelled.clone();
+    let cfg_clone = cfg.clone();
+
+    tell(cmds, move |e| {
+        let e = e.clone();
+        tokio::task::spawn_local(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval));
+            for _ in 0..(code_resp.expires_in / interval) {
+                ticker.tick().await;
+                if is_cancelled.load(Ordering::Relaxed) {
+                    break;
+                }
+                match crate::twitch::device_flow_poll(crate::twitch::CLIENT_ID, &device_code).await {
+                    Ok(Some(token)) => {
+                        match crate::twitch::fetch_user(crate::twitch::CLIENT_ID, &token.access_token, None).await {
+                            Ok(mut acct) => {
+                                let expires_at = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map_or(0, |d| d.as_secs())
+                                    + token.expires_in;
+                                acct.token = crate::twitch::TwitchToken {
+                                    access_token: token.access_token,
+                                    refresh_token: token.refresh_token,
+                                    scope: token.scope,
+                                    expires_at,
+                                };
+                                let (name, user_id) = (acct.display_name.clone(), acct.user_id.clone());
+                                save(&cfg_clone, |c| {
+                                    if as_bot {
+                                        c.twitch.bot = Some(acct.clone());
+                                    } else {
+                                        c.twitch.broadcaster = Some(acct.clone());
+                                    }
+                                });
+                                if !as_bot {
+                                    let mut args = Obj::new();
+                                    args.insert("user".into(), name.clone().into());
+                                    args.insert("userId".into(), user_id.into());
+                                    e.fire(
+                                        crate::twitch::T_AUTHED,
+                                        "Broadcaster Authenticated",
+                                        "Twitch/Connections",
+                                        "twitch",
+                                        &args,
+                                        |_| true,
+                                    );
+                                    e.emit("Twitch", "BroadcasterAuthenticated", || json!({"user": name}));
+                                }
+                                crate::say(format!("Twitch {who} logged in as {name}"));
+                                let _ = done_tx.send(Ok(name));
+                            }
+                            Err(e) => {
+                                let _ = done_tx.send(Err(e));
+                            }
+                        }
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        let _ = done_tx.send(Err(e));
+                        break;
+                    }
+                }
+            }
+        });
+    });
+
+    win.show();
+    while win.shown() && answer.get().is_none() {
+        if let Ok(res) = done_rx.try_recv() {
+            match res {
+                Ok(name) => {
+                    win.hide();
+                    dialog::message_default(&format!("Successfully logged in {who} as {name}!"));
+                    break;
+                }
+                Err(e) => {
+                    win.hide();
+                    dialog::alert_default(&format!("Login failed: {e}"));
+                    break;
+                }
+            }
+        }
+        fltk::app::wait();
+    }
+    cancelled.store(true, Ordering::Relaxed);
+    win.hide();
+}
+
+fn twitch_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<TwitchView>> {
+    let mut col = tab(tabs, "Twitch");
+    title(&mut col, "Twitch Broadcaster Account");
+    let broadcaster_info = Frame::default().with_align(Align::Left | Align::Inside);
+    col.fixed(&broadcaster_info, ROW);
+
+    let mut b_row = Flex::default().row();
+    let mut b_login = button(&mut b_row, "Login Broadcaster", 150);
+    let mut b_logout = button(&mut b_row, "Logout", 90);
+    Frame::default();
+    b_row.end();
+    col.fixed(&b_row, ROW);
+
+    title(&mut col, "Twitch Bot Account");
+    let bot_info = Frame::default().with_align(Align::Left | Align::Inside);
+    col.fixed(&bot_info, ROW);
+
+    let mut bot_row = Flex::default().row();
+    let mut bot_login = button(&mut bot_row, "Login Bot", 150);
+    let mut bot_logout = button(&mut bot_row, "Logout", 90);
+    Frame::default();
+    bot_row.end();
+    col.fixed(&bot_row, ROW);
+
+    title(&mut col, "Connection");
+    let status_label = Frame::default().with_align(Align::Left | Align::Inside);
+    col.fixed(&status_label, ROW);
+
+    let mut conn_row = Flex::default().row();
+    let mut auto_connect = fltk::button::CheckButton::default().with_label("Auto-connect on startup");
+    conn_row.fixed(&auto_connect, 180);
+    let mut connect_btn = button(&mut conn_row, "Connect", 90);
+    let mut disconnect_btn = button(&mut conn_row, "Disconnect", 90);
+    Frame::default();
+    conn_row.end();
+    col.fixed(&conn_row, ROW);
+
+    Frame::default();
+    col.end();
+
+    let me = Rc::new(RefCell::new(TwitchView {
+        tab: col,
+        cfg: cfg.clone(),
+        cmds: cmds.clone(),
+        broadcaster_info,
+        bot_info,
+        status_label,
+        auto_connect: auto_connect.clone(),
+    }));
+
+    b_login.set_callback({
+        let cfg = cfg.clone();
+        let cmds = cmds.clone();
+        let me = me.clone();
+        move |_| {
+            device_login(&cfg, &cmds, false);
+            me.borrow_mut().refresh();
+        }
+    });
+
+    b_logout.set_callback({
+        let cfg = cfg.clone();
+        let cmds = cmds.clone();
+        let me = me.clone();
+        move |_| {
+            save(&cfg, |c| c.twitch.broadcaster = None);
+            tell(&cmds, |e| {
+                if let Some(tw) = e.twitch() {
+                    tw.send(crate::twitch::TwitchCmd::Disconnect);
+                }
+            });
+            me.borrow_mut().refresh();
+        }
+    });
+
+    bot_login.set_callback({
+        let cfg = cfg.clone();
+        let cmds = cmds.clone();
+        let me = me.clone();
+        move |_| {
+            device_login(&cfg, &cmds, true);
+            me.borrow_mut().refresh();
+        }
+    });
+
+    bot_logout.set_callback({
+        let cfg = cfg.clone();
+        let me = me.clone();
+        move |_| {
+            save(&cfg, |c| c.twitch.bot = None);
+            me.borrow_mut().refresh();
+        }
+    });
+
+    auto_connect.set_callback({
+        let cfg = cfg.clone();
+        let auto_connect = auto_connect.clone();
+        move |_| {
+            let on = auto_connect.is_checked();
+            save(&cfg, |c| c.twitch.auto_connect = on);
+        }
+    });
+
+    connect_btn.set_callback({
+        let cmds = cmds.clone();
+        let me = me.clone();
+        move |_| {
+            tell(&cmds, |e| e.twitch_start().send(crate::twitch::TwitchCmd::Connect));
+            me.borrow_mut().refresh();
+        }
+    });
+
+    disconnect_btn.set_callback({
+        let cmds = cmds.clone();
+        let me = me.clone();
+        move |_| {
+            tell(&cmds, |e| {
+                if let Some(tw) = e.twitch() {
+                    tw.send(crate::twitch::TwitchCmd::Disconnect);
+                }
+            });
+            me.borrow_mut().refresh();
+        }
+    });
+
     me.borrow_mut().refresh();
     me
 }

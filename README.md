@@ -42,4 +42,5 @@ The other tabs, as in Streamer.bot:
   the same triggers as Global (Set)). User globals are shown only.
 - **Groups**: add and delete user groups (their Added/Removed triggers fire). Users join them from chat.
 - **Servers**: the WebSocket, HTTP and UDP servers, WebSocket clients and custom WebSocket servers.
+- **Twitch**: Broadcaster and Bot account login (Device Code Grant OAuth via browser), auto-connect on startup, and EventSub connection controls.
 - **Settings**: window options and this instance's name (what GetInfo reports).

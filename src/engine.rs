@@ -98,6 +98,7 @@ pub struct Engine {
     st: RefCell<State>,
     /// WebSocket connections listening to events.
     hub: RefCell<Vec<events::Listener>>,
+    twitch: RefCell<Option<crate::twitch::TwitchHandle>>,
 }
 
 /// A running action's context.
@@ -134,7 +135,7 @@ pub type UiCmd = Box<dyn FnOnce(&Rc<Engine>) + Send>;
 pub fn supported(kind: u32) -> bool {
     matches!(
         kind,
-        2 | 4 | 6 | 8 | 9 | 120..=130 | 1001..=1005 | 1007 | 1009..=1011 | 1013..=1017 | 1020 | 1022 | 1023 | 1028
+        2 | 4 | 6 | 8 | 9 | 10 | 23 | 120..=130 | 500 | 501 | 560 | 1001..=1005 | 1007 | 1009..=1011 | 1013..=1017 | 1020 | 1022 | 1023 | 1028
             | 1031..=1034 | 1038 | 10001 | 99900..=99904
     )
 }
@@ -224,7 +225,56 @@ impl Engine {
             save,
             st: RefCell::default(),
             hub: RefCell::default(),
+            twitch: RefCell::default(),
         })
+    }
+
+    pub fn set_twitch(&self, handle: crate::twitch::TwitchHandle) {
+        *self.twitch.borrow_mut() = Some(handle);
+    }
+
+    pub fn twitch(&self) -> Option<crate::twitch::TwitchHandle> {
+        self.twitch.borrow().clone()
+    }
+
+    /// The Twitch runner, started on first use: nothing runs for Twitch until it's turned on.
+    pub fn twitch_start(self: &Rc<Self>) -> crate::twitch::TwitchHandle {
+        if let Some(t) = self.twitch() {
+            return t;
+        }
+        let t = crate::twitch::start(self.clone(), &self.cfg);
+        self.set_twitch(t.clone());
+        t
+    }
+
+    pub fn twitch_connected(&self) -> bool {
+        self.twitch().is_some_and(|t| t.is_connected())
+    }
+
+    pub fn twitch_broadcaster(&self) -> Option<crate::twitch::TwitchAccount> {
+        self.cfg.borrow().twitch.broadcaster.clone()
+    }
+
+    pub fn send_twitch_message(
+        &self,
+        text: &str,
+        reply_id: Option<&str>,
+        use_bot: bool,
+        fallback: bool,
+    ) -> Result<(), String> {
+        let tw = self.twitch().ok_or("Twitch is not connected")?;
+        let text = text.to_string();
+        let reply_id = reply_id.map(String::from);
+        tokio::task::spawn_local(async move {
+            let _ = tw.send_message(text, reply_id, use_bot, fallback).await;
+        });
+        Ok(())
+    }
+
+    pub fn clear_first_words(&self) {
+        if let Some(tw) = self.twitch() {
+            tw.clear_first_words();
+        }
     }
 
     /// Run `f` on the config, and save it soon (once for a burst of changes).
@@ -544,7 +594,9 @@ impl Engine {
                         self.queue(&id, ctx.args.clone());
                     }
                 }
-                2 | 6 | 8 | 9 | 1007 | 1010 | 1013 | 1014 | 1015 | 10001 => self.rest(ctx, o, kind).await,
+                2 | 6 | 8 | 9 | 10 | 23 | 500 | 501 | 560 | 1007 | 1010 | 1013 | 1014 | 1015 | 10001 => {
+                    self.rest(ctx, o, kind).await
+                }
                 // Set Argument
                 123 => {
                     let k = self.simple(ctx, s(o, "variableName"));

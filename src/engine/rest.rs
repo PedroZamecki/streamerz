@@ -316,6 +316,49 @@ impl Engine {
                 let id = self.simple(ctx, s(o, "commandId"));
                 self.set_commands(|c| s(c, "id") == id, n(o, "state"));
             }
+            // Send Message to Channel (Twitch)
+            10 => {
+                let text = self.expand(ctx, s(o, "text"));
+                let use_bot = b(o, "useBot", false);
+                let fallback = b(o, "fallback", false);
+                if let Some(tw) = self.twitch() {
+                    let _ = tw.send_message(text, None, use_bot, fallback).await;
+                }
+            }
+            // Send Announcement to Channel (Twitch)
+            23 => {
+                let text = self.expand(ctx, s(o, "text"));
+                let color = self.simple(ctx, s(o, "color"));
+                let use_bot = b(o, "useBot", false);
+                let fallback = b(o, "fallback", false);
+                if let Some(tw) = self.twitch() {
+                    let _ = tw.send_announcement(text, color, use_bot, fallback).await;
+                }
+            }
+            // Start Raid (Twitch)
+            500 => {
+                let login = self.expand(ctx, s(o, "userLogin"));
+                if let Some(tw) = self.twitch() {
+                    let ok = tw.start_raid(login).await.unwrap_or(false);
+                    ctx.args.insert("startRaidSuccess".into(), ok.into());
+                }
+            }
+            // Cancel Raid (Twitch)
+            501 => {
+                if let Some(tw) = self.twitch() {
+                    let _ = tw.cancel_raid().await;
+                }
+            }
+            // Reply To Message (Twitch)
+            560 => {
+                let text = self.expand(ctx, s(o, "text"));
+                let reply_id = self.expand(ctx, s(o, "replyId"));
+                let use_bot = b(o, "useBot", false);
+                let fallback = b(o, "fallback", false);
+                if let Some(tw) = self.twitch() {
+                    let _ = tw.send_message(text, Some(reply_id), use_bot, fallback).await;
+                }
+            }
             1010 => {
                 let g = self.simple(ctx, s(o, "groupName"));
                 self.set_commands(|c| s(c, "group") == g, n(o, "state"));
