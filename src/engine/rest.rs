@@ -2468,6 +2468,208 @@ impl Engine {
                     )
                     .await;
             }
+            // Kick Sub-actions
+            // 35001: Send Message to Channel
+            35001 => {
+                let text = self.expand(ctx, s(o, "text"));
+                let use_bot = b(o, "useBot", false);
+                let fallback = b(o, "fallback", false);
+                let kick = self.kick_start();
+                let _ = kick.send_message(&text, use_bot, fallback).await;
+            }
+            // 35002: Reply To Message
+            35002 => {
+                let text = self.expand(ctx, s(o, "text"));
+                let reply_id = self.expand(ctx, s(o, "replyId"));
+                let use_bot = b(o, "useBot", false);
+                let fallback = b(o, "fallback", false);
+                let kick = self.kick_start();
+                let _ = kick.reply_message(&text, &reply_id, use_bot, fallback).await;
+            }
+            // 35010: Add Broadcaster Information
+            35010 => {
+                let c = self.cfg.borrow();
+                let chan = c.kick.channel.clone();
+                ctx.args.insert("broadcasterUser".into(), chan.clone().into());
+                ctx.args.insert("broadcasterUserName".into(), chan.into());
+                if let Some(cid) = c.kick.channel_id {
+                    ctx.args.insert("broadcasterUserId".into(), cid.into());
+                }
+            }
+            // 35011: Get User Info for Target
+            35011 => {
+                let user = self.expand(ctx, s(o, "userLogin"));
+                ctx.args.insert("targetUser".into(), user.clone().into());
+                ctx.args.insert("targetUserName".into(), user.into());
+            }
+            // 35012: Add Random Users
+            35012 => {
+                let count = n(o, "count") as usize;
+                let _count = if count == 0 { 1 } else { count };
+                ctx.args.insert("randomUsersCount".into(), 0.into());
+            }
+            // 35020: Add User To Group
+            35020 => {
+                let user = self.expand(ctx, s(o, "userLogin"));
+                let group = self.simple(ctx, s(o, "groupName"));
+                self.change(|c| {
+                    if let Some(g) = c
+                        .groups
+                        .iter_mut()
+                        .find(|g| s(g, "name") == group || s(g, "id") == group)
+                    {
+                        if let Some(users) = g.get_mut("userIds").and_then(Value::as_array_mut) {
+                            if !users.iter().any(|u| u.as_str() == Some(&user)) {
+                                users.push(user.clone().into());
+                            }
+                        }
+                    }
+                });
+            }
+            // 35021: Remove User from Group
+            35021 => {
+                let user = self.expand(ctx, s(o, "userLogin"));
+                let group = self.simple(ctx, s(o, "groupName"));
+                self.change(|c| {
+                    if let Some(g) = c
+                        .groups
+                        .iter_mut()
+                        .find(|g| s(g, "name") == group || s(g, "id") == group)
+                    {
+                        if let Some(users) = g.get_mut("userIds").and_then(Value::as_array_mut) {
+                            users.retain(|u| u.as_str() != Some(&user));
+                        }
+                    }
+                });
+            }
+            // 35022: User In Group
+            35022 => {
+                let user = self.expand(ctx, s(o, "userLogin"));
+                let group = self.simple(ctx, s(o, "groupName"));
+                let in_group = {
+                    let c = self.cfg.borrow();
+                    c.groups
+                        .iter()
+                        .find(|g| s(g, "name") == group || s(g, "id") == group)
+                        .and_then(|g| g.get("userIds").and_then(Value::as_array))
+                        .map(|users| users.iter().any(|u| u.as_str() == Some(&user)))
+                        .unwrap_or(false)
+                };
+                ctx.args.insert("userInGroup".into(), in_group.into());
+            }
+            // 35030: Set Channel Title
+            35030 => {
+                let title = self.expand(ctx, s(o, "title"));
+                let kick = self.kick_start();
+                let _ = kick.set_channel_title(&title).await;
+            }
+            // 35031: Set Channel Category
+            35031 => {
+                let cat_id = n(o, "categoryId") as u64;
+                let cat_name = self.expand(ctx, s(o, "categoryName"));
+                let kick = self.kick_start();
+                let _ = kick.set_channel_category(cat_id, &cat_name).await;
+            }
+            // 35040: Ban User
+            35040 => {
+                let user = self.expand(ctx, s(o, "userLogin"));
+                let reason = self.expand(ctx, s(o, "reason"));
+                let kick = self.kick_start();
+                let _ = kick.ban_user(&user, &reason).await;
+            }
+            // 35041: Unban User
+            35041 => {
+                let user = self.expand(ctx, s(o, "userLogin"));
+                let kick = self.kick_start();
+                let _ = kick.unban_user(&user).await;
+            }
+            // 35042: Timeout User
+            35042 => {
+                let user = self.expand(ctx, s(o, "userLogin"));
+                let duration = n(o, "duration") as u64;
+                let reason = self.expand(ctx, s(o, "reason"));
+                let kick = self.kick_start();
+                let _ = kick.timeout_user(&user, duration, &reason).await;
+            }
+            // 35043: UnTimeout User
+            35043 => {
+                let user = self.expand(ctx, s(o, "userLogin"));
+                let kick = self.kick_start();
+                let _ = kick.untimeout_user(&user).await;
+            }
+            // 35101..=35113: Channel Rewards sub-actions
+            35101 => {
+                let reward_id = self.simple(ctx, s(o, "rewardId"));
+                let state = n(o, "state");
+                ctx.args.insert("rewardId".into(), reward_id.into());
+                ctx.args.insert("rewardState".into(), state.into());
+            }
+            35102 => {
+                let reward_id = self.simple(ctx, s(o, "rewardId"));
+                let state = n(o, "state");
+                ctx.args.insert("rewardId".into(), reward_id.into());
+                ctx.args.insert("rewardPausedState".into(), state.into());
+            }
+            35103 => {
+                let reward_id = self.simple(ctx, s(o, "rewardId"));
+                let cost = n(o, "cost");
+                ctx.args.insert("rewardId".into(), reward_id.into());
+                ctx.args.insert("rewardCost".into(), cost.into());
+            }
+            35104 => {
+                let disable_not_configured = b(o, "disableNotConfigured", false);
+                ctx.args
+                    .insert("disableNotConfigured".into(), disable_not_configured.into());
+            }
+            35105 => {
+                let reward_id = self.simple(ctx, s(o, "rewardId"));
+                let title = self.expand(ctx, s(o, "title"));
+                ctx.args.insert("rewardId".into(), reward_id.into());
+                ctx.args.insert("rewardTitle".into(), title.into());
+            }
+            35106 => {
+                let reward_id = self.simple(ctx, s(o, "rewardId"));
+                let desc = self.expand(ctx, s(o, "description"));
+                ctx.args.insert("rewardId".into(), reward_id.into());
+                ctx.args.insert("rewardDescription".into(), desc.into());
+            }
+            35107 => {
+                let reward_id = self.simple(ctx, s(o, "rewardId"));
+                let title = self.expand(ctx, s(o, "title"));
+                let desc = self.expand(ctx, s(o, "description"));
+                let cost = n(o, "cost");
+                ctx.args.insert("rewardId".into(), reward_id.into());
+                ctx.args.insert("rewardTitle".into(), title.into());
+                ctx.args.insert("rewardDescription".into(), desc.into());
+                ctx.args.insert("rewardCost".into(), cost.into());
+            }
+            35108 => {
+                let reward_id = self.simple(ctx, s(o, "rewardId"));
+                ctx.args.insert("rewardId".into(), reward_id.into());
+            }
+            35109 | 35110 => {
+                let reward_id = self.simple(ctx, s(o, "rewardId"));
+                ctx.args.insert("rewardId".into(), reward_id.into());
+                ctx.args.insert("rewardCounterReset".into(), true.into());
+            }
+            35111 => {
+                let group = self.simple(ctx, s(o, "groupName"));
+                let state = n(o, "state");
+                ctx.args.insert("groupName".into(), group.into());
+                ctx.args.insert("rewardGroupState".into(), state.into());
+            }
+            35112 => {
+                let group = self.simple(ctx, s(o, "groupName"));
+                let state = n(o, "state");
+                ctx.args.insert("groupName".into(), group.into());
+                ctx.args.insert("rewardGroupPausedState".into(), state.into());
+            }
+            35113 => {
+                let reward_id = self.simple(ctx, s(o, "rewardId"));
+                let color = self.expand(ctx, s(o, "backgroundColor"));
+                ctx.args.insert("rewardId".into(), reward_id.into());
+                ctx.args.insert("rewardBackgroundColor".into(), color.into());
+            }
 
             _ => {}
         }

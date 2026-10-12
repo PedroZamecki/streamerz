@@ -1,0 +1,1266 @@
+//! Kick integration for streamerz (Phase 10):
+//! - Zero-login public read via Pusher WebSocket (`wss://ws-us2.pusher.com`).
+//! - Chat messages in and out, follows, subscriptions, gifts, kicks/tips, moderation, stream state.
+//! - Third-party 7TV emotes integration for Kick.
+//! - Official Kick API v1 with OAuth (client ID + secret) for sending chat, moderation, and channel updates.
+//! - Triggers (35001..=35025) and sub-actions (35001..=35043, 35101..=35113).
+
+use crate::commands::Chat;
+use crate::engine::Engine;
+use crate::model::Obj;
+use crate::Config;
+use futures_util::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::collections::HashSet;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::{mpsc, oneshot, watch};
+use tokio_tungstenite::tungstenite::Message;
+
+// Kick Trigger IDs
+pub const T_KICK_AUTHENTICATED: u32 = 35001;
+pub const T_KICK_CONNECTED: u32 = 35002;
+pub const T_KICK_DISCONNECTED: u32 = 35003;
+pub const T_KICK_FIRST_WORDS: u32 = 35008;
+pub const T_KICK_PRESENT_VIEWERS: u32 = 35009;
+pub const T_KICK_CHAT_MESSAGE: u32 = 35010;
+pub const T_KICK_FOLLOW: u32 = 35011;
+pub const T_KICK_STREAM_ONLINE: u32 = 35012;
+pub const T_KICK_STREAM_OFFLINE: u32 = 35013;
+pub const T_KICK_SUBSCRIPTION: u32 = 35014;
+pub const T_KICK_RESUBSCRIPTION: u32 = 35015;
+pub const T_KICK_GIFT_SUBSCRIPTION: u32 = 35016;
+pub const T_KICK_MASS_GIFT_SUBSCRIPTION: u32 = 35017;
+pub const T_KICK_USER_TIMED_OUT: u32 = 35018;
+pub const T_KICK_USER_BANNED: u32 = 35019;
+pub const T_KICK_CHANNEL_UPDATE: u32 = 35020;
+pub const T_KICK_SEVENTV_EMOTE_ADDED: u32 = 35021;
+pub const T_KICK_SEVENTV_EMOTE_REMOVED: u32 = 35022;
+pub const T_KICK_VIEWER_COUNT_UPDATE: u32 = 35023;
+pub const T_KICK_REWARD_REDEMPTION: u32 = 35024;
+pub const T_KICK_KICKS_GIFTED: u32 = 35025;
+
+/// Public Pusher App Key used by kick.com
+pub const KICK_PUSHER_KEY: &str = "eb1d5f283081a78b932c";
+pub const KICK_PUSHER_URL: &str =
+    "wss://ws-us2.pusher.com/app/eb1d5f283081a78b932c?protocol=7&client=js&version=7.6.0&flash=false";
+pub const KICK_API_BASE: &str = "https://api.kick.com/public/v1";
+
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct KickConfig {
+    pub channel: String,
+    pub channel_id: Option<u64>,
+    pub chatroom_id: Option<u64>,
+    pub auto_connect: bool,
+    pub client_id: String,
+    pub client_secret: String,
+    pub broadcaster: Option<KickAccount>,
+    pub bot: Option<KickAccount>,
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct KickAccount {
+    pub user_id: u64,
+    pub username: String,
+    pub token: KickToken,
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct KickToken {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_at: u64,
+}
+
+pub enum KickCmd {
+    Connect,
+    Disconnect,
+    SendMessage {
+        text: String,
+        use_bot: bool,
+        fallback: bool,
+        resp: oneshot::Sender<Result<(), String>>,
+    },
+    ReplyToMessage {
+        text: String,
+        reply_id: String,
+        use_bot: bool,
+        fallback: bool,
+        resp: oneshot::Sender<Result<(), String>>,
+    },
+    SetChannelTitle {
+        title: String,
+        resp: oneshot::Sender<Result<(), String>>,
+    },
+    SetChannelCategory {
+        category_id: u64,
+        category_name: String,
+        resp: oneshot::Sender<Result<(), String>>,
+    },
+    BanUser {
+        user_login: String,
+        reason: String,
+        resp: oneshot::Sender<Result<(), String>>,
+    },
+    UnbanUser {
+        user_login: String,
+        resp: oneshot::Sender<Result<(), String>>,
+    },
+    TimeoutUser {
+        user_login: String,
+        duration: u64,
+        reason: String,
+        resp: oneshot::Sender<Result<(), String>>,
+    },
+    UnTimeoutUser {
+        user_login: String,
+        resp: oneshot::Sender<Result<(), String>>,
+    },
+    GetStatus(oneshot::Sender<KickStatus>),
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct KickStatus {
+    pub connected: bool,
+    pub channel: String,
+    pub channel_id: Option<u64>,
+    pub chatroom_id: Option<u64>,
+}
+
+#[derive(Clone)]
+pub struct KickHandle {
+    tx: mpsc::UnboundedSender<KickCmd>,
+    connected: Arc<AtomicBool>,
+}
+
+impl KickHandle {
+    pub fn is_connected(&self) -> bool {
+        self.connected.load(Ordering::Relaxed)
+    }
+
+    pub fn connect(&self) {
+        let _ = self.tx.send(KickCmd::Connect);
+    }
+
+    pub fn disconnect(&self) {
+        let _ = self.tx.send(KickCmd::Disconnect);
+    }
+
+    pub fn send(&self, cmd: KickCmd) {
+        let _ = self.tx.send(cmd);
+    }
+
+    pub async fn send_message(&self, text: &str, use_bot: bool, fallback: bool) -> Result<(), String> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.tx
+            .send(KickCmd::SendMessage {
+                text: text.to_string(),
+                use_bot,
+                fallback,
+                resp: resp_tx,
+            })
+            .map_err(|_| "Kick runner is down".to_string())?;
+        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    pub async fn reply_message(&self, text: &str, reply_id: &str, use_bot: bool, fallback: bool) -> Result<(), String> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.tx
+            .send(KickCmd::ReplyToMessage {
+                text: text.to_string(),
+                reply_id: reply_id.to_string(),
+                use_bot,
+                fallback,
+                resp: resp_tx,
+            })
+            .map_err(|_| "Kick runner is down".to_string())?;
+        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    pub async fn set_channel_title(&self, title: &str) -> Result<(), String> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.tx
+            .send(KickCmd::SetChannelTitle {
+                title: title.to_string(),
+                resp: resp_tx,
+            })
+            .map_err(|_| "Kick runner is down".to_string())?;
+        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    pub async fn set_channel_category(&self, category_id: u64, category_name: &str) -> Result<(), String> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.tx
+            .send(KickCmd::SetChannelCategory {
+                category_id,
+                category_name: category_name.to_string(),
+                resp: resp_tx,
+            })
+            .map_err(|_| "Kick runner is down".to_string())?;
+        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    pub async fn ban_user(&self, user_login: &str, reason: &str) -> Result<(), String> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.tx
+            .send(KickCmd::BanUser {
+                user_login: user_login.to_string(),
+                reason: reason.to_string(),
+                resp: resp_tx,
+            })
+            .map_err(|_| "Kick runner is down".to_string())?;
+        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    pub async fn unban_user(&self, user_login: &str) -> Result<(), String> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.tx
+            .send(KickCmd::UnbanUser {
+                user_login: user_login.to_string(),
+                resp: resp_tx,
+            })
+            .map_err(|_| "Kick runner is down".to_string())?;
+        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    pub async fn timeout_user(&self, user_login: &str, duration: u64, reason: &str) -> Result<(), String> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.tx
+            .send(KickCmd::TimeoutUser {
+                user_login: user_login.to_string(),
+                duration,
+                reason: reason.to_string(),
+                resp: resp_tx,
+            })
+            .map_err(|_| "Kick runner is down".to_string())?;
+        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    pub async fn untimeout_user(&self, user_login: &str) -> Result<(), String> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.tx
+            .send(KickCmd::UnTimeoutUser {
+                user_login: user_login.to_string(),
+                resp: resp_tx,
+            })
+            .map_err(|_| "Kick runner is down".to_string())?;
+        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    pub async fn get_status(&self) -> KickStatus {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        if self.tx.send(KickCmd::GetStatus(resp_tx)).is_err() {
+            return KickStatus::default();
+        }
+        resp_rx.await.unwrap_or_default()
+    }
+}
+
+pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> KickHandle {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let connected = Arc::new(AtomicBool::new(false));
+    let handle = KickHandle {
+        tx,
+        connected: connected.clone(),
+    };
+
+    let runner = Runner {
+        engine,
+        cfg: cfg.clone(),
+        rx,
+        connected,
+        read_task: None,
+        speakers: HashSet::new(),
+    };
+    tokio::task::spawn_local(runner.run());
+    handle
+}
+
+struct Runner {
+    engine: Rc<Engine>,
+    cfg: Arc<watch::Sender<Config>>,
+    rx: mpsc::UnboundedReceiver<KickCmd>,
+    connected: Arc<AtomicBool>,
+    read_task: Option<tokio::task::JoinHandle<()>>,
+    speakers: HashSet<String>,
+}
+
+impl Runner {
+    async fn run(mut self) {
+        if self.cfg.borrow().kick.auto_connect && !self.cfg.borrow().kick.channel.trim().is_empty() {
+            self.connect_pusher();
+        }
+
+        while let Some(cmd) = self.rx.recv().await {
+            match cmd {
+                KickCmd::Connect => {
+                    self.connect_pusher();
+                }
+                KickCmd::Disconnect => {
+                    self.disconnect();
+                }
+                KickCmd::SendMessage {
+                    text,
+                    use_bot: _,
+                    fallback: _,
+                    resp,
+                } => {
+                    let res = self.send_chat_api(&text, None).await;
+                    let _ = resp.send(res);
+                }
+                KickCmd::ReplyToMessage {
+                    text,
+                    reply_id,
+                    use_bot: _,
+                    fallback: _,
+                    resp,
+                } => {
+                    let res = self.send_chat_api(&text, Some(&reply_id)).await;
+                    let _ = resp.send(res);
+                }
+                KickCmd::SetChannelTitle { title, resp } => {
+                    let res = self.set_channel_title_api(&title).await;
+                    let _ = resp.send(res);
+                }
+                KickCmd::SetChannelCategory {
+                    category_id,
+                    category_name: _,
+                    resp,
+                } => {
+                    let res = self.set_channel_category_api(category_id).await;
+                    let _ = resp.send(res);
+                }
+                KickCmd::BanUser {
+                    user_login,
+                    reason,
+                    resp,
+                } => {
+                    let res = self.ban_user_api(&user_login, &reason).await;
+                    let _ = resp.send(res);
+                }
+                KickCmd::UnbanUser { user_login, resp } => {
+                    let res = self.unban_user_api(&user_login).await;
+                    let _ = resp.send(res);
+                }
+                KickCmd::TimeoutUser {
+                    user_login,
+                    duration,
+                    reason,
+                    resp,
+                } => {
+                    let res = self.timeout_user_api(&user_login, duration, &reason).await;
+                    let _ = resp.send(res);
+                }
+                KickCmd::UnTimeoutUser { user_login, resp } => {
+                    let res = self.untimeout_user_api(&user_login).await;
+                    let _ = resp.send(res);
+                }
+                KickCmd::GetStatus(resp) => {
+                    let c = self.cfg.borrow();
+                    let status = KickStatus {
+                        connected: self.connected.load(Ordering::Relaxed),
+                        channel: c.kick.channel.clone(),
+                        channel_id: c.kick.channel_id,
+                        chatroom_id: c.kick.chatroom_id,
+                    };
+                    let _ = resp.send(status);
+                }
+            }
+        }
+    }
+
+    fn connect_pusher(&mut self) {
+        if self.connected.load(Ordering::Relaxed) {
+            return;
+        }
+
+        let channel = self.cfg.borrow().kick.channel.trim().to_string();
+        if channel.is_empty() {
+            crate::say("Kick: channel name is empty".into());
+            return;
+        }
+
+        let engine = self.engine.clone();
+        let cfg = self.cfg.clone();
+        let connected = self.connected.clone();
+        let mut speakers = std::mem::take(&mut self.speakers);
+
+        crate::say(format!("Kick: connecting to public Pusher for channel '{channel}'..."));
+
+        self.read_task = Some(tokio::task::spawn_local(async move {
+            run_pusher_loop(engine, cfg, connected, &mut speakers).await;
+        }));
+    }
+
+    fn disconnect(&mut self) {
+        if let Some(task) = self.read_task.take() {
+            task.abort();
+        }
+        if self.connected.swap(false, Ordering::Relaxed) {
+            crate::say("Kick: disconnected".into());
+            let args = Obj::new();
+            self.engine.fire(
+                T_KICK_DISCONNECTED,
+                "KickBroadcasterChatDisconnected",
+                "Kick",
+                "kick",
+                &args,
+                |_| true,
+            );
+            self.engine.emit("Kick", "BroadcasterChatDisconnected", || json!(args));
+        }
+    }
+
+    async fn send_chat_api(&self, text: &str, reply_id: Option<&str>) -> Result<(), String> {
+        let (token, chatroom_id) = {
+            let c = self.cfg.borrow();
+            let tok = c
+                .kick
+                .broadcaster
+                .as_ref()
+                .map(|b| b.token.access_token.clone())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "No Kick broadcaster token configured".to_string())?;
+            let cr_id = c.kick.chatroom_id.unwrap_or(0);
+            (tok, cr_id)
+        };
+
+        let url = format!("{KICK_API_BASE}/chat");
+        let mut payload = json!({
+            "content": text,
+            "type": "message",
+        });
+        if chatroom_id > 0 {
+            payload["chatroom_id"] = json!(chatroom_id);
+        }
+        if let Some(r_id) = reply_id {
+            payload["reply_to_message_id"] = json!(r_id);
+        }
+
+        let headers = vec![
+            ("Authorization".to_string(), format!("Bearer {token}")),
+            ("Content-Type".to_string(), "application/json".to_string()),
+        ];
+
+        let body = serde_json::to_vec(&payload).unwrap_or_default();
+        let resp = crate::http::request("POST", &url, &headers, &body).await?;
+        if (200..300).contains(&resp.status) {
+            Ok(())
+        } else {
+            Err(format!("Kick send chat error {}: {}", resp.status, resp.text()))
+        }
+    }
+
+    async fn set_channel_title_api(&self, title: &str) -> Result<(), String> {
+        let token = {
+            let c = self.cfg.borrow();
+            c.kick
+                .broadcaster
+                .as_ref()
+                .map(|b| b.token.access_token.clone())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "No Kick broadcaster token configured".to_string())?
+        };
+
+        let url = format!("{KICK_API_BASE}/channels");
+        let payload = json!({ "title": title });
+        let headers = vec![
+            ("Authorization".to_string(), format!("Bearer {token}")),
+            ("Content-Type".to_string(), "application/json".to_string()),
+        ];
+        let body = serde_json::to_vec(&payload).unwrap_or_default();
+        let resp = crate::http::request("PATCH", &url, &headers, &body).await?;
+        if (200..300).contains(&resp.status) {
+            Ok(())
+        } else {
+            Err(format!("Kick set title error {}: {}", resp.status, resp.text()))
+        }
+    }
+
+    async fn set_channel_category_api(&self, category_id: u64) -> Result<(), String> {
+        let token = {
+            let c = self.cfg.borrow();
+            c.kick
+                .broadcaster
+                .as_ref()
+                .map(|b| b.token.access_token.clone())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "No Kick broadcaster token configured".to_string())?
+        };
+
+        let url = format!("{KICK_API_BASE}/channels");
+        let payload = json!({ "category_id": category_id });
+        let headers = vec![
+            ("Authorization".to_string(), format!("Bearer {token}")),
+            ("Content-Type".to_string(), "application/json".to_string()),
+        ];
+        let body = serde_json::to_vec(&payload).unwrap_or_default();
+        let resp = crate::http::request("PATCH", &url, &headers, &body).await?;
+        if (200..300).contains(&resp.status) {
+            Ok(())
+        } else {
+            Err(format!("Kick set category error {}: {}", resp.status, resp.text()))
+        }
+    }
+
+    async fn ban_user_api(&self, user_login: &str, reason: &str) -> Result<(), String> {
+        let token = {
+            let c = self.cfg.borrow();
+            c.kick
+                .broadcaster
+                .as_ref()
+                .map(|b| b.token.access_token.clone())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "No Kick broadcaster token configured".to_string())?
+        };
+
+        let url = format!("{KICK_API_BASE}/moderation/bans");
+        let payload = json!({
+            "banned_user": user_login,
+            "reason": reason,
+        });
+        let headers = vec![
+            ("Authorization".to_string(), format!("Bearer {token}")),
+            ("Content-Type".to_string(), "application/json".to_string()),
+        ];
+        let body = serde_json::to_vec(&payload).unwrap_or_default();
+        let resp = crate::http::request("POST", &url, &headers, &body).await?;
+        if (200..300).contains(&resp.status) {
+            Ok(())
+        } else {
+            Err(format!("Kick ban error {}: {}", resp.status, resp.text()))
+        }
+    }
+
+    async fn unban_user_api(&self, user_login: &str) -> Result<(), String> {
+        let token = {
+            let c = self.cfg.borrow();
+            c.kick
+                .broadcaster
+                .as_ref()
+                .map(|b| b.token.access_token.clone())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "No Kick broadcaster token configured".to_string())?
+        };
+
+        let url = format!("{KICK_API_BASE}/moderation/bans/{user_login}");
+        let headers = vec![("Authorization".to_string(), format!("Bearer {token}"))];
+        let resp = crate::http::request("DELETE", &url, &headers, b"").await?;
+        if (200..300).contains(&resp.status) {
+            Ok(())
+        } else {
+            Err(format!("Kick unban error {}: {}", resp.status, resp.text()))
+        }
+    }
+
+    async fn timeout_user_api(&self, user_login: &str, duration: u64, reason: &str) -> Result<(), String> {
+        let token = {
+            let c = self.cfg.borrow();
+            c.kick
+                .broadcaster
+                .as_ref()
+                .map(|b| b.token.access_token.clone())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "No Kick broadcaster token configured".to_string())?
+        };
+
+        let url = format!("{KICK_API_BASE}/moderation/timeouts");
+        let payload = json!({
+            "banned_user": user_login,
+            "duration": duration,
+            "reason": reason,
+        });
+        let headers = vec![
+            ("Authorization".to_string(), format!("Bearer {token}")),
+            ("Content-Type".to_string(), "application/json".to_string()),
+        ];
+        let body = serde_json::to_vec(&payload).unwrap_or_default();
+        let resp = crate::http::request("POST", &url, &headers, &body).await?;
+        if (200..300).contains(&resp.status) {
+            Ok(())
+        } else {
+            Err(format!("Kick timeout error {}: {}", resp.status, resp.text()))
+        }
+    }
+
+    async fn untimeout_user_api(&self, user_login: &str) -> Result<(), String> {
+        let token = {
+            let c = self.cfg.borrow();
+            c.kick
+                .broadcaster
+                .as_ref()
+                .map(|b| b.token.access_token.clone())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "No Kick broadcaster token configured".to_string())?
+        };
+
+        let url = format!("{KICK_API_BASE}/moderation/timeouts/{user_login}");
+        let headers = vec![("Authorization".to_string(), format!("Bearer {token}"))];
+        let resp = crate::http::request("DELETE", &url, &headers, b"").await?;
+        if (200..300).contains(&resp.status) {
+            Ok(())
+        } else {
+            Err(format!("Kick untimeout error {}: {}", resp.status, resp.text()))
+        }
+    }
+}
+
+async fn run_pusher_loop(
+    engine: Rc<Engine>,
+    cfg: Arc<watch::Sender<Config>>,
+    connected: Arc<AtomicBool>,
+    speakers: &mut HashSet<String>,
+) {
+    run_pusher_loop_url(engine, cfg, connected, speakers, KICK_PUSHER_URL, false).await;
+}
+
+pub async fn run_pusher_loop_url(
+    engine: Rc<Engine>,
+    cfg: Arc<watch::Sender<Config>>,
+    connected: Arc<AtomicBool>,
+    speakers: &mut HashSet<String>,
+    pusher_url: &str,
+    run_once: bool,
+) {
+    let channel = cfg.borrow().kick.channel.trim().to_lowercase();
+    let chatroom_id = cfg.borrow().kick.chatroom_id;
+    let channel_id = cfg.borrow().kick.channel_id;
+
+    // Resolve channel_id and chatroom_id if not present
+    let (c_id, cr_id) = match (channel_id, chatroom_id) {
+        (Some(cid), Some(crid)) => (cid, crid),
+        _ => {
+            // Fetch public channel details
+            let url = format!("https://kick.com/api/v2/channels/{channel}");
+            let details = crate::http::request("GET", &url, &[], b"").await.ok();
+            let parsed = details
+                .as_ref()
+                .and_then(|r| serde_json::from_slice::<Value>(&r.body).ok());
+            let cid = parsed
+                .as_ref()
+                .and_then(|v| v.pointer("/id").and_then(Value::as_u64))
+                .or(channel_id)
+                .unwrap_or(1);
+            let crid = parsed
+                .as_ref()
+                .and_then(|v| v.pointer("/chatroom/id").and_then(Value::as_u64))
+                .or(chatroom_id)
+                .unwrap_or(cid);
+
+            engine.change(|c| {
+                c.kick.channel_id = Some(cid);
+                c.kick.chatroom_id = Some(crid);
+            });
+            (cid, crid)
+        }
+    };
+
+    loop {
+        match tokio_tungstenite::connect_async(pusher_url).await {
+            Ok((ws, _)) => {
+                let (mut sink, mut stream) = ws.split();
+
+                // Wait for connection established
+                let mut established = false;
+                while let Some(Ok(msg)) = stream.next().await {
+                    if let Message::Text(txt) = msg {
+                        if let Ok(val) = serde_json::from_str::<Value>(&txt) {
+                            if val["event"].as_str() == Some("pusher:connection_established") {
+                                established = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if !established {
+                    crate::say("Kick: connection established handshake failed".into());
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    continue;
+                }
+
+                connected.store(true, Ordering::Relaxed);
+                crate::say(format!("Kick: connected to chatroom {cr_id} and channel {c_id}"));
+
+                let mut args = Obj::new();
+                args.insert("channel".into(), channel.clone().into());
+                args.insert("channelId".into(), c_id.into());
+                args.insert("chatroomId".into(), cr_id.into());
+                engine.fire(
+                    T_KICK_CONNECTED,
+                    "KickBroadcasterChatConnected",
+                    "Kick",
+                    "kick",
+                    &args,
+                    |_| true,
+                );
+                engine.emit("Kick", "BroadcasterChatConnected", || json!(args));
+
+                // Subscribe to channels
+                let sub_chatroom = json!({
+                    "event": "pusher:subscribe",
+                    "data": { "auth": "", "channel": format!("chatrooms.{cr_id}.v2") }
+                });
+                let sub_channel = json!({
+                    "event": "pusher:subscribe",
+                    "data": { "auth": "", "channel": format!("channel.{c_id}") }
+                });
+                let sub_channel_v2 = json!({
+                    "event": "pusher:subscribe",
+                    "data": { "auth": "", "channel": format!("channel.{c_id}.v2") }
+                });
+
+                let _ = sink.send(Message::Text(sub_chatroom.to_string().into())).await;
+                let _ = sink.send(Message::Text(sub_channel.to_string().into())).await;
+                let _ = sink.send(Message::Text(sub_channel_v2.to_string().into())).await;
+
+                // Message processing loop
+                while let Some(msg_res) = stream.next().await {
+                    let msg = match msg_res {
+                        Ok(m) => m,
+                        Err(e) => {
+                            crate::say(format!("Kick: websocket error: {e}"));
+                            break;
+                        }
+                    };
+
+                    match msg {
+                        Message::Text(txt) => {
+                            if let Ok(v) = serde_json::from_str::<Value>(&txt) {
+                                let event_name = v["event"].as_str().unwrap_or("");
+                                if event_name == "pusher:ping" {
+                                    let pong = json!({ "event": "pusher:pong", "data": {} });
+                                    let _ = sink.send(Message::Text(pong.to_string().into())).await;
+                                    continue;
+                                }
+
+                                handle_kick_event(&engine, &channel, event_name, &v["data"], speakers);
+                            }
+                        }
+                        Message::Ping(data) => {
+                            let _ = sink.send(Message::Pong(data)).await;
+                        }
+                        Message::Close(_) => {
+                            crate::say("Kick: connection closed by server".into());
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+
+                connected.store(false, Ordering::Relaxed);
+                let args = Obj::new();
+                engine.fire(
+                    T_KICK_DISCONNECTED,
+                    "KickBroadcasterChatDisconnected",
+                    "Kick",
+                    "kick",
+                    &args,
+                    |_| true,
+                );
+                engine.emit("Kick", "BroadcasterChatDisconnected", || json!(args));
+            }
+            Err(e) => {
+                crate::say(format!("Kick: connection error: {e}"));
+            }
+        }
+
+        if run_once {
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+
+pub fn handle_kick_event(
+    engine: &Rc<Engine>,
+    channel: &str,
+    event: &str,
+    data_val: &Value,
+    speakers: &mut HashSet<String>,
+) {
+    let data: Value = match data_val {
+        Value::String(s) => serde_json::from_str(s).unwrap_or(Value::Null),
+        v => v.clone(),
+    };
+
+    match event {
+        "App\\Events\\ChatMessageEvent" => {
+            let content = data["content"].as_str().unwrap_or("").to_string();
+            let msg_id = data["id"].as_str().unwrap_or("").to_string();
+            let sender = &data["sender"];
+            let user_id = sender["id"].as_u64().unwrap_or(0);
+            let username = sender["username"].as_str().unwrap_or("").to_string();
+            let user_slug = sender["slug"].as_str().unwrap_or("").to_string();
+            let color = sender
+                .pointer("/identity/color")
+                .and_then(Value::as_str)
+                .unwrap_or("#53FC18")
+                .to_string();
+
+            let badges = sender
+                .pointer("/identity/badges")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+
+            let is_broadcaster = badges.iter().any(|b| b["type"].as_str() == Some("broadcaster"))
+                || username.eq_ignore_ascii_case(channel);
+            let is_moderator = badges.iter().any(|b| b["type"].as_str() == Some("moderator"));
+            let is_subscriber = badges.iter().any(|b| b["type"].as_str() == Some("subscriber"));
+
+            let mut args = Obj::new();
+            args.insert("user".into(), username.clone().into());
+            args.insert("userName".into(), username.clone().into());
+            args.insert("userSlug".into(), user_slug.into());
+            args.insert("userId".into(), user_id.into());
+            args.insert("color".into(), color.into());
+            args.insert("message".into(), content.clone().into());
+            args.insert("messageId".into(), msg_id.into());
+            args.insert("isBroadcaster".into(), is_broadcaster.into());
+            args.insert("isModerator".into(), is_moderator.into());
+            args.insert("isSubscriber".into(), is_subscriber.into());
+
+            // First words check
+            let lower_user = username.to_lowercase();
+            if !speakers.contains(&lower_user) {
+                speakers.insert(lower_user);
+                engine.fire(T_KICK_FIRST_WORDS, "KickFirstWords", "Kick", "kick", &args, |_| true);
+                engine.emit("Kick", "FirstWords", || json!(args));
+            }
+
+            // Chat Message trigger
+            engine.fire(T_KICK_CHAT_MESSAGE, "KickChatMessage", "Kick", "kick", &args, |_| true);
+            engine.emit("Kick", "ChatMessage", || json!(args));
+
+            // Feed chat commands into engine
+            let chat = Chat {
+                platform: "kick".into(),
+                source: 4,
+                user: username,
+                user_id: user_id.to_string(),
+                text: content,
+                broadcaster: is_broadcaster,
+                moderator: is_moderator,
+                subscriber: is_subscriber,
+                args: args.clone(),
+                ..Default::default()
+            };
+            engine.chat(&chat);
+        }
+        "App\\Events\\FollowersUpdated" => {
+            let mut args = Obj::new();
+            let username = data["username"].as_str().unwrap_or("").to_string();
+            let user_id = data["user_id"].as_u64().or_else(|| data["id"].as_u64()).unwrap_or(0);
+            args.insert("user".into(), username.into());
+            args.insert("userId".into(), user_id.into());
+            engine.fire(T_KICK_FOLLOW, "KickFollow", "Kick", "kick", &args, |_| true);
+            engine.emit("Kick", "Follow", || json!(args));
+        }
+        "App\\Events\\LivestreamStarted" | "App\\Events\\StreamOnline" => {
+            let mut args = Obj::new();
+            args.insert("channel".into(), channel.into());
+            engine.fire(T_KICK_STREAM_ONLINE, "KickStreamOnline", "Kick", "kick", &args, |_| {
+                true
+            });
+            engine.emit("Kick", "StreamOnline", || json!(args));
+        }
+        "App\\Events\\LivestreamEnded" | "App\\Events\\StreamOffline" => {
+            let mut args = Obj::new();
+            args.insert("channel".into(), channel.into());
+            engine.fire(
+                T_KICK_STREAM_OFFLINE,
+                "KickStreamOffline",
+                "Kick",
+                "kick",
+                &args,
+                |_| true,
+            );
+            engine.emit("Kick", "StreamOffline", || json!(args));
+        }
+        "App\\Events\\SubscriptionEvent" => {
+            let months = data["months"].as_u64().unwrap_or(1);
+            let username = data["username"].as_str().unwrap_or("").to_string();
+            let mut args = Obj::new();
+            args.insert("user".into(), username.into());
+            args.insert("months".into(), months.into());
+            if months > 1 {
+                engine.fire(
+                    T_KICK_RESUBSCRIPTION,
+                    "KickResubscription",
+                    "Kick",
+                    "kick",
+                    &args,
+                    |_| true,
+                );
+                engine.emit("Kick", "Resubscription", || json!(args));
+            } else {
+                engine.fire(T_KICK_SUBSCRIPTION, "KickSubscription", "Kick", "kick", &args, |_| true);
+                engine.emit("Kick", "Subscription", || json!(args));
+            }
+        }
+        "App\\Events\\GiftedSubscriptionsEvent" => {
+            let gifter = data["gifter_username"].as_str().unwrap_or("Anonymous").to_string();
+            let count = data["gifted_usernames"].as_array().map(|a| a.len() as u64).unwrap_or(1);
+            let mut args = Obj::new();
+            args.insert("user".into(), gifter.clone().into());
+            args.insert("count".into(), count.into());
+            if count > 1 {
+                engine.fire(
+                    T_KICK_MASS_GIFT_SUBSCRIPTION,
+                    "KickMassGiftSubscription",
+                    "Kick",
+                    "kick",
+                    &args,
+                    |_| true,
+                );
+                engine.emit("Kick", "MassGiftSubscription", || json!(args));
+            } else {
+                engine.fire(
+                    T_KICK_GIFT_SUBSCRIPTION,
+                    "KickGiftSubscription",
+                    "Kick",
+                    "kick",
+                    &args,
+                    |_| true,
+                );
+                engine.emit("Kick", "GiftSubscription", || json!(args));
+            }
+        }
+        "App\\Events\\UserBannedEvent" => {
+            let user = data["user"].as_str().unwrap_or("").to_string();
+            let banned_by = data["banned_by"].as_str().unwrap_or("").to_string();
+            let reason = data["reason"].as_str().unwrap_or("").to_string();
+            let duration = data["duration"].as_u64().unwrap_or(0);
+            let mut args = Obj::new();
+            args.insert("user".into(), user.into());
+            args.insert("bannedBy".into(), banned_by.into());
+            args.insert("reason".into(), reason.into());
+            args.insert("duration".into(), duration.into());
+            if duration > 0 {
+                engine.fire(T_KICK_USER_TIMED_OUT, "KickUserTimedOut", "Kick", "kick", &args, |_| {
+                    true
+                });
+                engine.emit("Kick", "UserTimedOut", || json!(args));
+            } else {
+                engine.fire(T_KICK_USER_BANNED, "KickUserBanned", "Kick", "kick", &args, |_| true);
+                engine.emit("Kick", "UserBanned", || json!(args));
+            }
+        }
+        "App\\Events\\ChannelUpdateEvent" => {
+            let title = data["title"].as_str().unwrap_or("").to_string();
+            let category = data["category"].as_str().unwrap_or("").to_string();
+            let mut args = Obj::new();
+            args.insert("title".into(), title.into());
+            args.insert("category".into(), category.into());
+            engine.fire(
+                T_KICK_CHANNEL_UPDATE,
+                "KickChannelUpdate",
+                "Kick",
+                "kick",
+                &args,
+                |_| true,
+            );
+            engine.emit("Kick", "ChannelUpdate", || json!(args));
+        }
+        "App\\Events\\KicksGiftedEvent" => {
+            let amount = data["amount"].as_u64().unwrap_or(0);
+            let sender = data["sender"].as_str().unwrap_or("").to_string();
+            let mut args = Obj::new();
+            args.insert("amount".into(), amount.into());
+            args.insert("user".into(), sender.into());
+            engine.fire(T_KICK_KICKS_GIFTED, "KickKicksGifted", "Kick", "kick", &args, |_| true);
+            engine.emit("Kick", "KicksGifted", || json!(args));
+        }
+        "App\\Events\\RewardRedeemedEvent" => {
+            let reward_id = data["reward_id"].as_str().unwrap_or("").to_string();
+            let user = data["user"].as_str().unwrap_or("").to_string();
+            let input = data["user_input"].as_str().unwrap_or("").to_string();
+            let mut args = Obj::new();
+            args.insert("rewardId".into(), reward_id.into());
+            args.insert("user".into(), user.into());
+            args.insert("userInput".into(), input.into());
+            engine.fire(
+                T_KICK_REWARD_REDEMPTION,
+                "KickRewardRedemption",
+                "Kick",
+                "kick",
+                &args,
+                |_| true,
+            );
+            engine.emit("Kick", "RewardRedemption", || json!(args));
+        }
+        "7tv:emote_added" | "App\\Events\\SevenTVEmoteAdded" => {
+            let emote = data["name"].as_str().unwrap_or("").to_string();
+            let mut args = Obj::new();
+            args.insert("emote".into(), emote.into());
+            engine.fire(
+                T_KICK_SEVENTV_EMOTE_ADDED,
+                "KickSevenTVEmoteAdded",
+                "Kick",
+                "kick",
+                &args,
+                |_| true,
+            );
+            engine.emit("Kick", "SevenTVEmoteAdded", || json!(args));
+        }
+        "7tv:emote_removed" | "App\\Events\\SevenTVEmoteRemoved" => {
+            let emote = data["name"].as_str().unwrap_or("").to_string();
+            let mut args = Obj::new();
+            args.insert("emote".into(), emote.into());
+            engine.fire(
+                T_KICK_SEVENTV_EMOTE_REMOVED,
+                "KickSevenTVEmoteRemoved",
+                "Kick",
+                "kick",
+                &args,
+                |_| true,
+            );
+            engine.emit("Kick", "SevenTVEmoteRemoved", || json!(args));
+        }
+        "App\\Events\\ViewerCountUpdated" | "App\\Events\\StreamViewersChanged" => {
+            let count = data["viewers"].as_u64().or_else(|| data["count"].as_u64()).unwrap_or(0);
+            let mut args = Obj::new();
+            args.insert("viewers".into(), count.into());
+            engine.fire(
+                T_KICK_VIEWER_COUNT_UPDATE,
+                "KickViewerCountUpdate",
+                "Kick",
+                "kick",
+                &args,
+                |_| true,
+            );
+            engine.emit("Kick", "ViewerCountUpdate", || json!(args));
+        }
+        "App\\Events\\PresentViewers" => {
+            let mut args = Obj::new();
+            args.insert("viewers".into(), data.clone());
+            engine.fire(
+                T_KICK_PRESENT_VIEWERS,
+                "KickPresentViewers",
+                "Kick",
+                "kick",
+                &args,
+                |_| true,
+            );
+            engine.emit("Kick", "PresentViewers", || json!(args));
+        }
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn test_mock_pusher_protocol() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+
+            // 1. Send connection established
+            let established = json!({
+                "event": "pusher:connection_established",
+                "data": "{\"socket_id\":\"999.888\"}"
+            });
+            ws.send(Message::Text(established.to_string().into())).await.unwrap();
+
+            // 2. Expect subscriptions
+            let mut subs_received = 0;
+            while subs_received < 3 {
+                if let Some(Ok(Message::Text(msg))) = ws.next().await {
+                    let v: Value = serde_json::from_str(&msg).unwrap();
+                    if v["event"].as_str() == Some("pusher:subscribe") {
+                        subs_received += 1;
+                    }
+                }
+            }
+
+            // 3. Send ping and expect pong
+            let ping = json!({ "event": "pusher:ping", "data": {} });
+            ws.send(Message::Text(ping.to_string().into())).await.unwrap();
+            if let Some(Ok(Message::Text(msg))) = ws.next().await {
+                let v: Value = serde_json::from_str(&msg).unwrap();
+                assert_eq!(v["event"].as_str(), Some("pusher:pong"));
+            }
+
+            // 4. Send a ChatMessageEvent
+            let chat_evt = json!({
+                "event": "App\\Events\\ChatMessageEvent",
+                "data": json!({
+                    "id": "chat-999",
+                    "content": "Kick mock chat message!",
+                    "sender": {
+                        "id": 1234,
+                        "username": "KickTester",
+                        "slug": "kicktester",
+                        "identity": {
+                            "color": "#00FF00",
+                            "badges": []
+                        }
+                    }
+                }).to_string()
+            });
+            ws.send(Message::Text(chat_evt.to_string().into())).await.unwrap();
+
+            // 5. Send StreamOnline, Follow, Sub, Ban, ChannelUpdate
+            let follow_evt = json!({
+                "event": "App\\Events\\FollowersUpdated",
+                "data": json!({ "id": 55, "username": "Follower1" }).to_string()
+            });
+            ws.send(Message::Text(follow_evt.to_string().into())).await.unwrap();
+
+            // Close connection
+            let _ = ws.send(Message::Close(None)).await;
+        });
+
+        let mut config = Config::default();
+        config.kick.channel = "kicktester".into();
+        config.kick.channel_id = Some(10);
+        config.kick.chatroom_id = Some(42);
+
+        let (tx, _rx) = watch::channel(config);
+        let cfg_sender = Arc::new(tx);
+        let engine = Engine::new(cfg_sender.clone(), |_| {});
+        let connected = Arc::new(AtomicBool::new(false));
+        let mut speakers = HashSet::new();
+
+        let ws_url = format!("ws://{addr}");
+        run_pusher_loop_url(
+            engine.clone(),
+            cfg_sender.clone(),
+            connected.clone(),
+            &mut speakers,
+            &ws_url,
+            true,
+        )
+        .await;
+
+        assert!(speakers.contains("kicktester"));
+        assert!(!connected.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn kick_config_defaults() {
+        let cfg = KickConfig::default();
+        assert_eq!(cfg.channel, "");
+        assert_eq!(cfg.client_id, "");
+        assert!(!cfg.auto_connect);
+    }
+
+    #[test]
+    fn parse_kick_chat_message() {
+        let (tx, _rx) = watch::channel(Config::default());
+        let engine = Engine::new(Arc::new(tx), |_| {});
+        let mut speakers = HashSet::new();
+
+        let event = "App\\Events\\ChatMessageEvent";
+        let payload = json!({
+            "id": "msg-123",
+            "chatroom_id": 42,
+            "content": "!test command",
+            "type": "message",
+            "sender": {
+                "id": 100,
+                "username": "gamer123",
+                "slug": "gamer123",
+                "identity": {
+                    "color": "#FF0000",
+                    "badges": [{ "type": "broadcaster", "text": "Broadcaster" }]
+                }
+            }
+        });
+
+        handle_kick_event(&engine, "gamer123", event, &payload, &mut speakers);
+        assert!(speakers.contains("gamer123"));
+    }
+
+    #[test]
+    fn parse_kick_follow_event() {
+        let (tx, _rx) = watch::channel(Config::default());
+        let engine = Engine::new(Arc::new(tx), |_| {});
+        let mut speakers = HashSet::new();
+
+        let event = "App\\Events\\FollowersUpdated";
+        let payload = json!({
+            "id": 555,
+            "username": "coolfollower"
+        });
+
+        handle_kick_event(&engine, "channel", event, &payload, &mut speakers);
+    }
+
+    #[test]
+    fn parse_kick_other_events() {
+        let (tx, _rx) = watch::channel(Config::default());
+        let engine = Engine::new(Arc::new(tx), |_| {});
+        let mut speakers = HashSet::new();
+
+        // Subscription
+        let sub = json!({ "username": "subber", "months": 1 });
+        handle_kick_event(&engine, "chan", "App\\Events\\SubscriptionEvent", &sub, &mut speakers);
+
+        // Resub
+        let resub = json!({ "username": "resubber", "months": 5 });
+        handle_kick_event(&engine, "chan", "App\\Events\\SubscriptionEvent", &resub, &mut speakers);
+
+        // Gift sub
+        let gift = json!({ "gifter_username": "santa", "gifted_usernames": ["u1", "u2"] });
+        handle_kick_event(
+            &engine,
+            "chan",
+            "App\\Events\\GiftedSubscriptionsEvent",
+            &gift,
+            &mut speakers,
+        );
+
+        // Ban & Timeout
+        let timeout = json!({ "user": "troll", "banned_by": "mod", "reason": "spam", "duration": 300 });
+        handle_kick_event(&engine, "chan", "App\\Events\\UserBannedEvent", &timeout, &mut speakers);
+        let ban = json!({ "user": "hacker", "banned_by": "mod", "reason": "rules", "duration": 0 });
+        handle_kick_event(&engine, "chan", "App\\Events\\UserBannedEvent", &ban, &mut speakers);
+
+        // Channel update
+        let chan_up = json!({ "title": "New Title", "category": "Gaming" });
+        handle_kick_event(
+            &engine,
+            "chan",
+            "App\\Events\\ChannelUpdateEvent",
+            &chan_up,
+            &mut speakers,
+        );
+
+        // Kicks gifted
+        let kicks = json!({ "amount": 100, "sender": "tipper" });
+        handle_kick_event(&engine, "chan", "App\\Events\\KicksGiftedEvent", &kicks, &mut speakers);
+
+        // Reward redemption
+        let reward = json!({ "reward_id": "r1", "user": "viewer", "user_input": "hello" });
+        handle_kick_event(
+            &engine,
+            "chan",
+            "App\\Events\\RewardRedeemedEvent",
+            &reward,
+            &mut speakers,
+        );
+
+        // 7TV emotes
+        let em_add = json!({ "name": "KEKW" });
+        handle_kick_event(&engine, "chan", "7tv:emote_added", &em_add, &mut speakers);
+        let em_rem = json!({ "name": "OMEGALUL" });
+        handle_kick_event(&engine, "chan", "7tv:emote_removed", &em_rem, &mut speakers);
+
+        // Viewer count
+        let vc = json!({ "viewers": 1500 });
+        handle_kick_event(&engine, "chan", "App\\Events\\ViewerCountUpdated", &vc, &mut speakers);
+    }
+}
