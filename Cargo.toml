@@ -4,7 +4,10 @@ version = "0.0.0" # unused: releases are versioned by git tags (see build workfl
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1", features = ["rt", "sync", "time", "net", "io-util", "process"] }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time", "net", "io-util", "process"] }
+tokio-tungstenite = "0.26"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+sha2 = "0.11"
 serde_json = { version = "1", features = ["preserve_order"] }
 base64 = "0.22"
 # Import/export strings are gzipped; miniz_oxide is pure Rust.
