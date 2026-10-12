@@ -398,6 +398,67 @@ else
 fi
 ```
 
+## Servers side by side
+
+streamerz's servers are compared with the real Streamer.bot's: streamerz on 8090 (HTTP 7475, UDP 4243) with
+the same password and a copy of the real `actions.json` in its own `streamerz.json` (both local, never
+committed), the real one on 8080 (turn its HTTP and UDP servers on for the HTTP comparison, and put its
+settings back after). `cmp.py` sends the same WebSocket requests to both, with and without
+authentication, and reports differences in shape (keys, order, types) and value; HTTP answers are compared
+byte for byte with curl. Differences by design: GetInfo/Hello's extra `streamerz` field, platform data
+until the platforms are in, TestCredits (credits are a later phase), and the JSON parser's error message.
+
+`cmp.py`:
+
+```python
+# Same requests to the real Streamer.bot (8080) and streamerz (8090); report shape differences
+# (keys, key order, value types) and value differences for stable fields.
+import asyncio, json, base64, hashlib, websockets
+PW = json.load(open('/home/zamecki/Games/streamerbot/data/settings.json', encoding='utf-8-sig'))['websockets']['authPassword']
+REQS = [
+ {"request":"GetInfo"}, {"request":"GetEvents"}, {"request":"GetActions"}, {"request":"GetBroadcaster"},
+ {"request":"GetCredits"}, {"request":"ClearCredits"}, {"request":"GetActiveViewers"}, {"request":"GetCodeTriggers"},
+ {"request":"ExecuteCodeTrigger","triggerName":"x","args":{}}, {"request":"GetCommands"},
+ {"request":"GetGlobals","persisted":True}, {"request":"GetGlobals","persisted":False},
+ {"request":"GetGlobal","variable":"nope","persisted":True}, {"request":"TwitchGetUserGlobals","variable":"x","persisted":True},
+ {"request":"TwitchGetUserGlobal","userId":"1","persisted":True}, {"request":"YouTubeGetEmotes"},
+ {"request":"GetUserPronouns","platform":"twitch","userLogin":"nobody_xyz_123"},
+ {"request":"Bogus"}, {"request":"DoAction","action":{"name":"nope"}},
+ {"request":"Subscribe","events":{"General":["Custom"]}}, {"request":"UnSubscribe","events":{"General":["Custom"]}},
+]
+def shape(v):
+    if isinstance(v, dict): return {k: shape(x) for k, x in v.items()}
+    if isinstance(v, list): return [shape(v[0])] if v else []
+    return type(v).__name__
+async def talk(port, auth):
+    out = []
+    async with websockets.connect(f'ws://127.0.0.1:{port}/') as ws:
+        hello = json.loads(await ws.recv()); out.append(('Hello', hello))
+        if auth:
+            a = hello['authentication']; h = lambda x: base64.b64encode(hashlib.sha256(x.encode()).digest()).decode()
+            await ws.send(json.dumps({"request":"Authenticate","id":"auth","authentication":h(h(PW+a['salt'])+a['challenge'])}))
+            out.append(('Authenticate', json.loads(await ws.recv())))
+        for i, r in enumerate(REQS):
+            r = dict(r, id=str(i)); await ws.send(json.dumps(r))
+            out.append((r['request'], json.loads(await ws.recv())))
+        await ws.send('notjson'); out.append(('malformed', await ws.recv()))
+    return out
+async def main():
+    for auth in (True, False):
+        a, b = await talk(8080, auth), await talk(8090, auth)
+        print('=== auth' if auth else '=== no auth')
+        for (n, x), (_, y) in zip(a, b):
+            if isinstance(x, str):
+                print('  ', n, 'SAME' if x == y else f'DIFF {x!r} vs {y!r}'); continue
+            sx, sy = shape(x), shape(y)
+            if json.dumps(sx) != json.dumps(sy):
+                print('  ', n, 'SHAPE', json.dumps(sx)[:300], '\n      vs', json.dumps(sy)[:300])
+            else:
+                vals = {k: (x[k], y[k]) for k in x if x[k] != y[k] and k not in ('id',)}
+                print('  ', n, 'same shape', ('values differ: ' + json.dumps(vals)[:200]) if vals else '')
+asyncio.run(main())
+```
+
 ## Memory and CPU
 
 Every PR measures the hidden window (start hidden, wait a few seconds):

@@ -18,7 +18,7 @@ phase, following `CLAUDE.md`.
 | topic | decision |
 |---|---|
 | Name / repo | `streamerz`, public GitHub `PedroZamecki/streamerz`, MIT. Same rules and CI as songrequestz (`CLAUDE.md`). |
-| Compatibility | Drop-in for Streamer.bot's servers: WebSocket (127.0.0.1:8080, `/`), HTTP (7474), UDP (4242). Same requests, events, auth and JSON. songrequestz stays a separate app with no changes; it connects to streamerz exactly as it does to Streamer.bot. |
+| Compatibility | Drop-in for Streamer.bot's servers: WebSocket (127.0.0.1:8080, `/`), HTTP (7474), UDP (4242). The WebSocket server is on by default (127.0.0.1:8080, no auth); HTTP and UDP are off by default. GetInfo/Hello report version 1.0.7 (the Streamer.bot API level copied), the instance name (default "streamerz"), and an extra `streamerz` field with its own version. Same requests, events, auth and JSON. songrequestz stays a separate app with no changes; it connects to streamerz exactly as it does to Streamer.bot. |
 | Data model | Streamer.bot's own model and field names (`actions.json` v24: actions, `subActions` with numeric `type`, triggers, queues, groups, commands, timers, globals). Import Streamer.bot export strings from day one. Export works too, so actions can go back to Streamer.bot. |
 | Type codes | Built from Streamer.bot.exe's .NET metadata (sub-action/trigger enums and their property names), read with a decompiler, for interoperability only. Only the code↔name/field mapping goes into the repo; no Streamer.bot code or data. |
 | Unsupported on import | Kept untouched (so a re-export loses nothing), shown disabled, logged once, skipped at run. This applies to C# code, out-of-scope integrations and the later extras. |
@@ -165,12 +165,12 @@ platform handles through channels, never through shared locks held across awaits
   - Timers (cron deferred: see open points), Fetch URL, UDP Broadcast, user groups, and the extended
     Run a Program.
   - Tick the rest of COVERAGE "Phase 3".
-- [ ] 4. Servers:
-  - WebSocket, HTTP and UDP drop-ins.
-  - WebSocket clients and custom servers, with their triggers.
-  - On 8090, songrequestz and the real Streamer.bot's own clients must work unchanged; compare responses
-    with the real Streamer.bot.
-  - Tick COVERAGE "Phase 4".
+- [x] 4a. Servers:
+  - WebSocket (requests, auth, events), HTTP and UDP drop-ins. Events are emitted as the engine fires
+    them; the platforms' own events come with their phases.
+  - Answers match the real Streamer.bot's byte-for-byte where it can be compared (captured from it).
+  - On 8090, songrequestz and real Streamer.bot clients must work unchanged.
+- [ ] 4b. WebSocket clients and custom servers, with their triggers. Tick the rest of COVERAGE "Phase 4".
 - [ ] 5. Editor UI:
   - All tabs, the actions tree with drag-reorder, the sub-action list (enable/disable, nesting for logic).
   - Trigger and command editors, timers, queues, globals viewer.

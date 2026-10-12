@@ -8,6 +8,7 @@ mod fmt;
 mod http;
 mod math;
 mod model;
+mod servers;
 mod tray;
 mod types;
 mod ui;
@@ -32,6 +33,14 @@ pub struct Config {
     /// Persisted globals, and persisted user globals by user ("platform:id", then name).
     globals: model::Obj,
     user_globals: model::Obj,
+    /// When each persisted global was last written (ISO 8601).
+    global_writes: model::Obj,
+    /// Streamer.bot's server settings (its settings.json websockets/http/udp), and this instance.
+    websockets: servers::WsSettings,
+    http: servers::HttpSettings,
+    udp: servers::UdpSettings,
+    instance_id: String,
+    instance_name: String,
     /// Commands, in Streamer.bot's commands.json shape.
     commands: Vec<model::Obj>,
     /// Timed actions (Streamer.bot's settings.json timedActions.timers) and user groups (its
@@ -54,6 +63,12 @@ impl Default for Config {
             actions: model::ActionsFile::default(),
             globals: Map::new(),
             user_globals: Map::new(),
+            global_writes: Map::new(),
+            websockets: servers::WsSettings::default(),
+            http: servers::HttpSettings::default(),
+            udp: servers::UdpSettings::default(),
+            instance_id: String::new(),
+            instance_name: "streamerz".into(),
             commands: Vec::new(),
             timers: Vec::new(),
             groups: Vec::new(),
@@ -237,6 +252,7 @@ fn main() {
             let e = engine::Engine::new(engine_cfg, |c| {
                 let _ = save(c);
             });
+            tokio::task::spawn_local(servers::run(e.clone()));
             e.started();
             e.timers();
             std::future::pending::<()>().await

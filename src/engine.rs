@@ -6,7 +6,7 @@
 use crate::model::{Action, Obj};
 use crate::types::{name, SUB_ACTIONS, TRIGGERS};
 use crate::vars::{self, auto_type, text};
-use crate::{fmt, Config};
+use crate::Config;
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -17,6 +17,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{oneshot, watch};
 
+pub mod events;
+pub mod globals;
 mod rest;
 
 pub const DEFAULT_QUEUE: &str = "00000000-0000-0000-0000-000000000000";
@@ -25,10 +27,6 @@ const HISTORY: usize = 100;
 // Trigger types (types.rs TRIGGERS) the engine fires itself.
 pub const T_TEST: u32 = 702;
 pub const T_STARTED: u32 = 706;
-const T_GLOBAL_UPDATED: u32 = 709;
-const T_USER_GLOBAL_UPDATED: u32 = 710;
-const T_GLOBAL_CREATED: u32 = 711;
-const T_GLOBAL_DELETED: u32 = 712;
 const T_CUSTOM: u32 = 18001;
 
 /// How a sub-action list ended (Streamer.bot's own names).
@@ -74,7 +72,8 @@ struct Queue {
 struct State {
     /// Non-persisted globals, and non-persisted user globals by user ("platform:id").
     temp: Obj,
-    user_temp: HashMap<String, Obj>,
+    temp_writes: Obj,
+    user_temp: Obj,
     queues: HashMap<String, Queue>,
     history: VecDeque<Record>,
     waiters: HashMap<String, Vec<oneshot::Sender<Obj>>>,
@@ -97,6 +96,8 @@ pub struct Engine {
     /// Writes the config (a no-op in tests).
     save: fn(&Config),
     st: RefCell<State>,
+    /// WebSocket connections listening to events.
+    hub: RefCell<Vec<events::Listener>>,
 }
 
 /// A running action's context.
@@ -128,7 +129,7 @@ fn subs(o: &Obj) -> &[Value] {
 
 /// A random version 4 UUID.
 pub fn uuid() -> String {
-    let r = |bits: u32| (crate::math::random() * 2f64.powi(bits as i32)) as u64;
+    let r = |bits: u32| crate::math::secure_u64() >> (64 - bits);
     let (a, b2, c, d, e) = (r(32), r(16), r(12), r(14), r(48));
     format!("{a:08x}-{b2:04x}-4{c:03x}-{:04x}-{e:012x}", 0x8000 | d)
 }
@@ -140,11 +141,6 @@ fn new_state(state: f64, on: bool) -> bool {
         1 => false,
         _ => !on,
     }
-}
-
-/// Now, as text (.NET's DateTime.ToString(), "G" in the locale).
-fn now_text() -> String {
-    fmt::date(&fmt::now(), "G")
 }
 
 /// Compare for If/Else and While: numbers when both sides are (with Auto Type), else text.
@@ -215,11 +211,12 @@ impl Engine {
             cfg,
             save,
             st: RefCell::default(),
+            hub: RefCell::default(),
         })
     }
 
     /// Run `f` on the config, and save it soon (once for a burst of changes).
-    fn change(self: &Rc<Self>, f: impl FnOnce(&mut Config)) {
+    pub fn change(self: &Rc<Self>, f: impl FnOnce(&mut Config)) {
         self.cfg.send_modify(f);
         let mut st = self.st.borrow_mut();
         if st.save_pending {
@@ -232,6 +229,14 @@ impl Engine {
             me.st.borrow_mut().save_pending = false;
             (me.save)(&me.cfg.borrow());
         });
+    }
+
+    pub fn config(&self) -> watch::Ref<'_, Config> {
+        self.cfg.borrow()
+    }
+
+    pub fn subscribe(&self) -> watch::Receiver<Config> {
+        self.cfg.subscribe()
     }
 
     fn action<T>(&self, id: &str, f: impl FnOnce(&Action) -> T) -> Option<T> {
@@ -294,11 +299,12 @@ impl Engine {
             &Obj::new(),
             |_| true,
         );
+        self.emit("Misc", "StreamerbotStarted", || json!({}));
     }
 
     #[allow(dead_code)] // ponytail: used by the servers (phase 4) and the editor (phase 5).
-    /// Run an action as its Test trigger does (isTest true). The run's id, if it ran.
-    pub fn test(self: &Rc<Self>, action: &str) -> Option<String> {
+    /// Run an action as its Test trigger does (isTest true). Its arguments, if it ran.
+    pub fn test(self: &Rc<Self>, action: &str) -> Option<Obj> {
         let mut args = Obj::new();
         args.insert("isTest".into(), true.into());
         args.insert("triggerName".into(), "Test".into());
@@ -309,8 +315,9 @@ impl Engine {
     }
 
     /// Queue an action (by id or name) with these arguments; it starts now unless its queue is
-    /// busy (blocking) or paused. The run's id; None when there's no such enabled action.
-    pub fn queue(self: &Rc<Self>, action: &str, args: Obj) -> Option<String> {
+    /// busy (blocking) or paused. Its arguments as queued (with actionId, actionName, queueName,
+    /// runningActionId and actionQueuedAt); None when there's no such enabled action.
+    pub fn queue(self: &Rc<Self>, action: &str, mut args: Obj) -> Option<Obj> {
         let (id, aname, queue, concurrent) = {
             let c = self.cfg.borrow();
             let a = c
@@ -329,19 +336,42 @@ impl Engine {
                 .unwrap_or(DEFAULT_QUEUE.into());
             (a.id.clone(), a.name.clone(), q, a.concurrent)
         };
+        let queue_name = if queue == DEFAULT_QUEUE {
+            "Default".to_string()
+        } else {
+            let c = self.cfg.borrow();
+            c.actions
+                .queues
+                .iter()
+                .find(|q| s(q, "id") == queue)
+                .map(|q| s(q, "name").to_string())
+                .unwrap_or_default()
+        };
+        let rid = uuid();
+        let queued_at = globals::iso_now();
+        // A run queued by another action keeps that one's (Streamer.bot does the same).
+        for (k, v) in [
+            ("actionId", &id),
+            ("actionName", &aname),
+            ("queueName", &queue_name),
+            ("runningActionId", &rid),
+            ("actionQueuedAt", &queued_at),
+        ] {
+            args.entry(k).or_insert_with(|| v.as_str().into());
+        }
+        let out = args.clone();
         let run = Run {
-            id: uuid(),
+            id: rid,
             action: id,
             name: aname,
             args,
-            queued_at: now_text(),
+            queued_at,
         };
-        let rid = run.id.clone();
         if concurrent {
             // Outside any queue.
             let me = self.clone();
             tokio::task::spawn_local(async move { me.execute(run).await });
-            return Some(rid);
+            return Some(out);
         }
         self.st
             .borrow_mut()
@@ -351,7 +381,7 @@ impl Engine {
             .waiting
             .push_back(run);
         self.pump(&queue);
-        Some(rid)
+        Some(out)
     }
 
     fn blocking(&self, queue: &str) -> bool {
@@ -398,19 +428,21 @@ impl Engine {
             return;
         };
         let mut ctx = Ctx { args: run.args };
-        // A run queued by another action keeps that one's (Streamer.bot does the same).
-        let a = &mut ctx.args;
-        for (k, v) in [
-            ("actionId", &run.action),
-            ("actionName", &run.name),
-            ("runningActionId", &run.id),
-            ("actionQueuedAt", &run.queued_at),
-        ] {
-            a.entry(k).or_insert_with(|| v.as_str().into());
-        }
         let start = ctx.args.clone();
+        let started = (std::time::Instant::now(), globals::iso_now());
+        self.emit(
+            "Raw",
+            "Action",
+            || json!({"id": run.id, "actionId": run.action, "name": run.name, "arguments": start}),
+        );
         let subs: Vec<Value> = subs.into_iter().map(Value::Object).collect();
         self.list(&mut ctx, &subs, random).await;
+        self.emit("Raw", "ActionCompleted", || {
+            json!({"duration": started.0.elapsed().as_secs_f64() * 1000.0, "queuedAt": run.queued_at,
+                "startedAt": started.1, "completedAt": globals::iso_now(), "success": true,
+                "excludeFromHistory": self.action(&run.action, |a| a.exclude_from_history).unwrap_or(false),
+                "id": run.id, "actionId": run.action, "name": run.name, "arguments": ctx.args})
+        });
         let mut st = self.st.borrow_mut();
         if st.history.len() == HISTORY {
             st.history.pop_front();
@@ -469,6 +501,16 @@ impl Engine {
     fn one<'a>(self: &'a Rc<Self>, ctx: &'a mut Ctx, o: &'a Obj) -> Fut<'a, Flow> {
         Box::pin(async move {
             let kind = o.get("type").and_then(Value::as_u64).unwrap_or(0);
+            // Containers (If/Else branches, Switch cases, groups) aren't sub-actions of their own.
+            if !(99900..99999).contains(&kind) && self.listening("Raw", "SubAction") {
+                let what = crate::types::SUB_ACTION_INFO
+                    .binary_search_by_key(&(kind as u32), |x| x.0)
+                    .map_or("", |i| crate::types::SUB_ACTION_INFO[i].1);
+                let a = &ctx.args;
+                let data = json!({"parentId": a.get("actionId"), "parentName": a.get("actionName"), "type": kind,
+                    "id": a.get("runningActionId"), "actionId": o.get("id"), "name": what, "arguments": a});
+                self.emit("Raw", "SubAction", || data);
+            }
             match kind {
                 // Run Action
                 4 => {
@@ -881,225 +923,6 @@ impl Engine {
         }
     }
 
-    /// The user a global belongs to: 1 the one who ran the action, 2 the target user.
-    fn user(ctx: &Ctx, source: i64) -> Option<(String, String, String)> {
-        let (id, login) = if source == 2 {
-            ("targetUserId", "targetUser")
-        } else {
-            ("userId", "user")
-        };
-        let platform = ctx.args.get("userType").map(text).unwrap_or_else(|| "twitch".into());
-        let uid = ctx.args.get(id).map(text).filter(|s| !s.is_empty())?;
-        let login = ctx.args.get(login).map(text).unwrap_or_default();
-        Some((format!("{platform}:{uid}"), platform, login))
-    }
-
-    fn global_get(self: &Rc<Self>, ctx: &mut Ctx, o: &Obj) {
-        let name = self.simple(ctx, s(o, "variableName"));
-        let dest = self.simple(ctx, s(o, "destinationVariable"));
-        let persisted = b(o, "persisted", true);
-        let source = n(o, "source") as i64;
-        let user = if source == 0 { None } else { Self::user(ctx, source) };
-        if source != 0 && user.is_none() {
-            ctx.args.insert(dest, Value::Null);
-            return;
-        }
-        let current = {
-            let c = self.cfg.borrow();
-            let st = self.st.borrow();
-            match (&user, persisted) {
-                (None, true) => c.globals.get(&name).cloned(),
-                (None, false) => st.temp.get(&name).cloned(),
-                (Some((k, ..)), true) => c.user_globals.get(k).and_then(|g| g.get(&name)).cloned(),
-                (Some((k, ..)), false) => st.user_temp.get(k).and_then(|g| g.get(&name)).cloned(),
-            }
-        };
-        let v = match current {
-            Some(v) => v,
-            // A default creates the global.
-            None => match o.get("defaultValue").filter(|d| !d.is_null()) {
-                Some(d) => {
-                    let d = match d {
-                        Value::String(t) => auto_type(&self.expand(ctx, t)),
-                        d => d.clone(),
-                    };
-                    self.write_global(ctx, &name, persisted, user.as_ref(), Some(d.clone()));
-                    d
-                }
-                None => Value::Null,
-            },
-        };
-        ctx.args.insert(dest, v);
-    }
-
-    fn global_set(self: &Rc<Self>, ctx: &mut Ctx, o: &Obj) {
-        let name = self.simple(ctx, s(o, "variableName"));
-        let persisted = b(o, "persisted", true);
-        let dest = n(o, "destination") as i64;
-        let user = if dest == 0 { None } else { Self::user(ctx, dest) };
-        if dest != 0 && user.is_none() {
-            return;
-        }
-        let value = self.expand(ctx, s(o, "value"));
-        // Source: 0 the value, 1 add it, 2 subtract it, 3 remove the global.
-        let new = match n(o, "source") as i64 {
-            0 if b(o, "autoType", false) => Some(auto_type(&value)),
-            0 => Some(value.into()),
-            op @ (1 | 2) => {
-                let Some(by) = auto_type(&value).as_f64() else { return };
-                let cur = self
-                    .read_global(&name, persisted, user.as_ref())
-                    .and_then(|v| v.as_f64());
-                let by = if op == 1 { by } else { -by };
-                Some(vars::number(cur.unwrap_or(0.0) + by))
-            }
-            _ => None,
-        };
-        self.write_global(ctx, &name, persisted, user.as_ref(), new);
-    }
-
-    fn read_global(&self, name: &str, persisted: bool, user: Option<&(String, String, String)>) -> Option<Value> {
-        let c = self.cfg.borrow();
-        let st = self.st.borrow();
-        match (user, persisted) {
-            (None, true) => c.globals.get(name).cloned(),
-            (None, false) => st.temp.get(name).cloned(),
-            (Some((k, ..)), true) => c.user_globals.get(k)?.get(name).cloned(),
-            (Some((k, ..)), false) => st.user_temp.get(k)?.get(name).cloned(),
-        }
-    }
-
-    /// Set (Some) or remove (None) a global, and fire its triggers.
-    fn write_global(
-        self: &Rc<Self>,
-        ctx: &Ctx,
-        name: &str,
-        persisted: bool,
-        user: Option<&(String, String, String)>,
-        v: Option<Value>,
-    ) {
-        let old = self.read_global(name, persisted, user);
-        {
-            let mut st = self.st.borrow_mut();
-            let set = |m: &mut Obj| match &v {
-                Some(v) => {
-                    m.insert(name.into(), v.clone());
-                }
-                None => {
-                    m.remove(name);
-                }
-            };
-            match (user, persisted) {
-                (None, false) => set(&mut st.temp),
-                (Some((k, ..)), false) => set(st.user_temp.entry(k.clone()).or_default()),
-                _ => {}
-            }
-        }
-        if persisted {
-            let user = user.map(|u| u.0.clone());
-            self.change(|c| match &user {
-                None => {
-                    match &v {
-                        Some(v) => c.globals.insert(name.into(), v.clone()),
-                        None => c.globals.remove(name),
-                    };
-                }
-                Some(k) => {
-                    let g = c
-                        .user_globals
-                        .entry(k.clone())
-                        .or_insert_with(|| Value::Object(Obj::new()));
-                    if let Some(g) = g.as_object_mut() {
-                        match &v {
-                            Some(v) => g.insert(name.into(), v.clone()),
-                            None => g.remove(name),
-                        };
-                    }
-                }
-            });
-        }
-        // Triggers.
-        let me = self;
-        let mut args = Obj::new();
-        args.insert("global.name".into(), name.into());
-        args.insert("global.persisted".into(), persisted.into());
-        args.insert("global.lastWrite".into(), now_text().into());
-        let filter = |t: &Obj| {
-            let want = s(t, "variableName");
-            let p = n(t, "persisted") as i64;
-            (want.is_empty() || want == name) && (p == 0 || (p == 1) == persisted)
-        };
-        if let Some((_, platform, login)) = user {
-            args.insert("global.newValue".into(), v.clone().unwrap_or(Value::Null));
-            args.insert("global.oldValue".into(), old.unwrap_or(Value::Null));
-            for k in ["user", "userName", "userId", "userType"] {
-                if let Some(x) = ctx.args.get(k) {
-                    args.insert(k.into(), x.clone());
-                }
-            }
-            me.fire(
-                T_USER_GLOBAL_UPDATED,
-                "User Global Variable Updated",
-                "Core",
-                "streamerbot",
-                &args,
-                |t| {
-                    filter(t)
-                        && (s(t, "userLogon").is_empty() || s(t, "userLogon").eq_ignore_ascii_case(login))
-                        && (s(t, "platform").is_empty() || s(t, "platform").eq_ignore_ascii_case(platform))
-                },
-            );
-            return;
-        }
-        match (&old, &v) {
-            (_, None) => {
-                args.insert("global.value".into(), old.clone().unwrap_or(Value::Null));
-                me.fire(
-                    T_GLOBAL_DELETED,
-                    "Global Variable Deleted",
-                    "Core",
-                    "streamerbot",
-                    &args,
-                    filter,
-                );
-            }
-            (None, Some(v)) => {
-                args.insert("global.value".into(), v.clone());
-                me.fire(
-                    T_GLOBAL_CREATED,
-                    "Global Variable Created",
-                    "Core",
-                    "streamerbot",
-                    &args,
-                    filter,
-                );
-                args.insert("global.newValue".into(), v.clone());
-                args.insert("global.oldValue".into(), Value::Null);
-                me.fire(
-                    T_GLOBAL_UPDATED,
-                    "Global Variable Updated",
-                    "Core",
-                    "streamerbot",
-                    &args,
-                    filter,
-                );
-            }
-            (Some(o), Some(v)) => {
-                args.insert("global.value".into(), v.clone());
-                args.insert("global.newValue".into(), v.clone());
-                args.insert("global.oldValue".into(), o.clone());
-                me.fire(
-                    T_GLOBAL_UPDATED,
-                    "Global Variable Updated",
-                    "Core",
-                    "streamerbot",
-                    &args,
-                    filter,
-                );
-            }
-        }
-    }
-
     #[allow(dead_code)] // ponytail: used by the servers (phase 4) and the editor (phase 5).
     /// Past runs, oldest first.
     pub fn history(&self) -> std::cell::Ref<'_, VecDeque<Record>> {
@@ -1139,11 +962,11 @@ fn with_sub(list: &mut [Obj], id: &str, f: &mut dyn FnMut(&mut Obj)) {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::model::ActionsFile;
 
-    pub(super) fn engine(actions: Value) -> Rc<Engine> {
+    pub(crate) fn engine(actions: Value) -> Rc<Engine> {
         let c = Config {
             actions: serde_json::from_value::<ActionsFile>(actions).unwrap(),
             ..Default::default()
@@ -1151,7 +974,7 @@ pub(super) mod tests {
         Engine::new(Arc::new(watch::channel(c).0), |_| {})
     }
 
-    pub(super) fn action(id: &str, name: &str, subs: Value) -> Value {
+    pub(crate) fn action(id: &str, name: &str, subs: Value) -> Value {
         json!({"id": id, "name": name, "enabled": true, "queue": DEFAULT_QUEUE, "subActions": subs, "triggers": []})
     }
 

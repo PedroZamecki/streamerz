@@ -229,6 +229,18 @@ impl Parser<'_> {
     }
 }
 
+/// 64 unpredictable bits (for auth salts and ids): SipHash keyed by the OS's random keys (std's
+/// RandomState), over a counter and the clock.
+pub fn secure_u64() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let mut h = std::hash::RandomState::new().build_hasher();
+    h.write_u64(N.fetch_add(1, Ordering::Relaxed));
+    h.write_u128(crate::fmt::unix_now().as_nanos());
+    h.finish()
+}
+
 /// A random number in [0, 1). ponytail: xorshift seeded from the clock; fine for chat games.
 pub fn random() -> f64 {
     use std::cell::Cell;
