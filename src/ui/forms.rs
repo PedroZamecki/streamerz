@@ -97,12 +97,37 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("useBot", "Send from bot account", Bool),
             ("fallback", "Fallback to broadcaster", Bool),
         ],
+        11 => &[("status", "Status", Pick(&["Fulfilled", "Canceled"]))],
+        15 => &[("title", "Title", Text)],
+        16 => &[
+            ("source", "Source", Pick(&["Manual", "Variable", "Twitch Game ID"])),
+            ("game", "Game", Text),
+            ("gameId", "Game ID", Text),
+        ],
+        17 => &[("description", "Description", Text)],
+        18 => &[("title", "Title", Text), ("duration", "Duration (seconds)", Int)],
+        19 => &[("duration", "Duration (seconds)", Int)],
         23 => &[
             ("text", "Announcement", Multi),
             ("color", "Color (Primary/Blue/Green/Orange/Purple)", Text),
             ("useBot", "Send from bot account", Bool),
             ("fallback", "Fallback to broadcaster", Bool),
         ],
+        24 | 251 | 555..=557 | 562 | 563 | 566 | 567 | 569 | 570 => &[],
+        200 => &[("rewardId", "Reward ID", Text), ("state", "State", Pick(STATE))],
+        201 => &[("rewardId", "Reward ID", Text), ("state", "State", Pick(STATE))],
+        202 => &[
+            ("rewardId", "Reward ID", Text),
+            ("cost", "Cost", Int),
+            ("operator", "Operation", Pick(&["Set", "Add", "Subtract"])),
+        ],
+        203 => &[("disableNotConfigured", "Disable not configured", Bool)],
+        205 => &[("rewardId", "Reward ID", Text), ("title", "Title", Text)],
+        206 => &[("rewardId", "Reward ID", Text), ("prompt", "Prompt", Multi)],
+        208..=210 => &[("rewardId", "Reward ID", Text)],
+        212 => &[("groupName", "Group name", Text), ("state", "State", Pick(STATE))],
+        252 => &[("tags", "Tags", Lines)],
+        253 | 254 => &[("tag", "Tag", Text)],
         500 => &[("userLogin", "Target channel", Text)],
         501 => &[],
         560 => &[
@@ -111,6 +136,21 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("useBot", "Send from bot account", Bool),
             ("fallback", "Fallback to broadcaster", Bool),
         ],
+        561 => &[
+            ("title", "Title", Text),
+            ("duration", "Duration (seconds)", Int),
+            ("channelPointsPerVote", "Points per vote", Int),
+            ("choices", "Choices (one per line)", Lines),
+        ],
+        564 => &[("status", "Branded content", Bool)],
+        568 => &[
+            ("title", "Title", Text),
+            ("predictionWindow", "Prediction window (seconds)", Int),
+            ("outcomes", "Outcomes (one per line)", Lines),
+        ],
+        571 => &[("winningIndex", "Winning outcome index", Int)],
+        572 => &[("outcomeTitle", "Winning outcome title", Text)],
+        573 => &[("clipId", "Clip ID", Text)],
 
         120 => &[
             ("input", "Input", Text),
@@ -264,7 +304,24 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
         18001 => &[("eventName", "Event name", Text)],
         18002 => &[("triggerName", "Trigger name", Text)],
         32001..=32005 => &[("groupId", "Group (none: any)", UserGroup)],
-        101..=107 | 119 | 120 | 133 | 138 | 140 | 154 | 155 | 158..=160 | 173..=175 | 178 | 179 | 184 | 185 => &[],
+        101..=114
+        | 116..=120
+        | 125..=133
+        | 138..=140
+        | 148..=150
+        | 154
+        | 155
+        | 158..=161
+        | 164
+        | 171
+        | 173..=175
+        | 178
+        | 179
+        | 184..=186
+        | 194
+        | 196
+        | 473
+        | 496 => &[],
         _ => return None,
     })
 }
@@ -671,8 +728,9 @@ mod tests {
         .into_iter()
         .chain(32001..=32005)
         .chain([
-            101, 102, 103, 104, 105, 106, 107, 119, 120, 133, 138, 140, 154, 155, 158, 159, 160, 173, 174, 175, 178,
-            179, 184, 185,
+            101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 116, 117, 118, 119, 120, 125, 126,
+            127, 128, 129, 130, 131, 132, 133, 138, 139, 140, 148, 149, 150, 154, 155, 158, 159, 160, 161, 164, 171,
+            173, 174, 175, 178, 179, 184, 185, 186, 194, 196, 473, 496,
         ]) {
             assert!(trigger_fields(k).is_some(), "trigger {k} has no form");
         }

@@ -182,7 +182,7 @@ platform handles through channels, never through shared locks held across awaits
   - Chat in and out: messages, whispers, announcements.
   - Follows, subs, gifts, cheers, raids, first words, stream online/offline.
   - Their sub-actions and forms.
-- [ ] 7. Twitch B:
+- [x] 7. Twitch B:
   - Channel points rewards (create/update/redemptions), power-ups.
   - Polls, predictions, goals, hype train, community goals.
   - Channel info (title, category, tags), clips, markers, ads.

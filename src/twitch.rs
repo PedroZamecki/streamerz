@@ -40,6 +40,19 @@ pub const BROADCASTER_SCOPES: &[&str] = &[
     "moderator:manage:announcements",
     "user:read:whispers",
     "user:manage:whispers",
+    "channel:read:redemptions",
+    "channel:manage:redemptions",
+    "channel:read:polls",
+    "channel:manage:polls",
+    "channel:read:predictions",
+    "channel:manage:predictions",
+    "channel:read:hype_train",
+    "channel:read:goals",
+    "channel:edit:commercial",
+    "channel:read:ads",
+    "channel:manage:ads",
+    "channel:manage:broadcast",
+    "clips:edit",
 ];
 
 pub const BOT_SCOPES: &[&str] = &[
@@ -75,6 +88,39 @@ pub const T_EVENTSUB_CONNECTED: u32 = 178;
 pub const T_EVENTSUB_DISCONNECTED: u32 = 179;
 pub const T_BOT_EVENTSUB_CONNECTED: u32 = 184;
 pub const T_BOT_EVENTSUB_DISCONNECTED: u32 = 185;
+
+// Phase 7 (Twitch B) Trigger codes
+pub const T_HYPE_TRAIN_START: u32 = 108;
+pub const T_HYPE_TRAIN_UPDATE: u32 = 109;
+pub const T_HYPE_TRAIN_LEVEL_UP: u32 = 110;
+pub const T_HYPE_TRAIN_END: u32 = 111;
+pub const T_REWARD_REDEMPTION: u32 = 112;
+pub const T_REWARD_CREATED: u32 = 113;
+pub const T_REWARD_UPDATED: u32 = 114;
+pub const T_REWARD_DELETED: u32 = 115;
+pub const T_COMMUNITY_GOAL_CONTRIBUTION: u32 = 116;
+pub const T_COMMUNITY_GOAL_ENDED: u32 = 117;
+pub const T_STREAM_UPDATE: u32 = 118;
+pub const T_POLL_CREATED: u32 = 125;
+pub const T_POLL_UPDATED: u32 = 126;
+pub const T_POLL_COMPLETED: u32 = 127;
+pub const T_PREDICTION_CREATED: u32 = 128;
+pub const T_PREDICTION_UPDATED: u32 = 129;
+pub const T_PREDICTION_COMPLETED: u32 = 130;
+pub const T_PREDICTION_CANCELED: u32 = 131;
+pub const T_PREDICTION_LOCKED: u32 = 132;
+pub const T_AD_RUN: u32 = 139;
+pub const T_GOAL_BEGIN: u32 = 148;
+pub const T_GOAL_PROGRESS: u32 = 149;
+pub const T_GOAL_END: u32 = 150;
+pub const T_POLL_TERMINATED: u32 = 161;
+pub const T_VIEWER_COUNT_UPDATE: u32 = 164;
+pub const T_REWARD_REDEMPTION_UPDATED: u32 = 171;
+pub const T_UPCOMING_AD: u32 = 186;
+pub const T_AUTOMATIC_REWARD_REDEMPTION: u32 = 194;
+pub const T_POWER_UP_REDEMPTION: u32 = 196;
+pub const T_POLL_ARCHIVED: u32 = 473;
+pub const T_CUSTOM_POWER_UP_REDEMPTION: u32 = 496;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default, rename_all = "camelCase")]
@@ -148,6 +194,15 @@ pub enum TwitchCmd {
     },
     CancelRaid {
         resp: oneshot::Sender<Result<(), String>>,
+    },
+    Helix {
+        method: &'static str,
+        path: String,
+        query: Vec<(String, String)>,
+        body: Option<Value>,
+        use_bot: bool,
+        fallback: bool,
+        resp: oneshot::Sender<Result<Value, String>>,
     },
     ClearFirstWords,
     Connect,
@@ -227,6 +282,28 @@ impl TwitchHandle {
     pub async fn cancel_raid(&self) -> Result<(), String> {
         let (resp_tx, resp_rx) = oneshot::channel();
         self.send(TwitchCmd::CancelRaid { resp: resp_tx });
+        resp_rx.await.map_err(|_| String::from("Twitch task stopped"))?
+    }
+
+    pub async fn helix(
+        &self,
+        method: &'static str,
+        path: &str,
+        query: Vec<(&str, &str)>,
+        body: Option<Value>,
+        use_bot: bool,
+        fallback: bool,
+    ) -> Result<Value, String> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.send(TwitchCmd::Helix {
+            method,
+            path: path.to_string(),
+            query: query.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            body,
+            use_bot,
+            fallback,
+            resp: resp_tx,
+        });
         resp_rx.await.map_err(|_| String::from("Twitch task stopped"))?
     }
 
@@ -584,6 +661,20 @@ impl Runner {
                 let res = self.cancel_raid().await;
                 let _ = resp.send(res);
             }
+            TwitchCmd::Helix {
+                method,
+                path,
+                query,
+                body,
+                use_bot,
+                fallback,
+                resp,
+            } => {
+                let res = self
+                    .run_helix(method, &path, &query, body.as_ref(), use_bot, fallback)
+                    .await;
+                let _ = resp.send(res);
+            }
         }
     }
 
@@ -818,6 +909,56 @@ impl Runner {
             Ok(())
         } else {
             Err(format!("Cancel raid failed: HTTP {} {}", res.status, res.text()))
+        }
+    }
+
+    async fn run_helix(
+        &self,
+        method: &'static str,
+        path: &str,
+        query: &[(String, String)],
+        body: Option<&Value>,
+        use_bot: bool,
+        fallback: bool,
+    ) -> Result<Value, String> {
+        let (token, broadcaster_id, sender_id) = self.pick_account(use_bot, fallback)?;
+        let mut qs = Vec::new();
+        for (k, v) in query {
+            let val = match v.as_str() {
+                "{broadcaster_id}" => broadcaster_id.as_str(),
+                "{sender_id}" => sender_id.as_str(),
+                _ => v.as_str(),
+            };
+            qs.push(format!("{}={}", commands::url_encode(k), commands::url_encode(val)));
+        }
+        let url = if qs.is_empty() {
+            format!("{HELIX_URL}/{path}")
+        } else {
+            format!("{HELIX_URL}/{path}?{}", qs.join("&"))
+        };
+        let mut headers = vec![
+            ("Client-Id".into(), CLIENT_ID.into()),
+            ("Authorization".into(), format!("Bearer {token}")),
+        ];
+        let bytes = if let Some(b) = body {
+            headers.push(("Content-Type".into(), "application/json".into()));
+            serde_json::to_vec(b).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let res = crate::http::request(method, &url, &headers, &bytes).await?;
+        if res.status >= 200 && res.status < 300 {
+            if res.body.is_empty() {
+                Ok(Value::Null)
+            } else {
+                serde_json::from_slice(&res.body).map_err(|e| format!("Invalid JSON from Helix: {e}"))
+            }
+        } else {
+            Err(format!(
+                "Helix {method} {path} failed: HTTP {} {}",
+                res.status,
+                res.text()
+            ))
         }
     }
 
@@ -1130,6 +1271,46 @@ async fn create_all_subscriptions(sid: &str, token: &str, bid: &str) {
         ("stream.online", "1", json!({"broadcaster_user_id": bid})),
         ("stream.offline", "1", json!({"broadcaster_user_id": bid})),
         ("user.whisper.message", "1", json!({"user_id": bid})),
+        (
+            "channel.channel_points_custom_reward.add",
+            "1",
+            json!({"broadcaster_user_id": bid}),
+        ),
+        (
+            "channel.channel_points_custom_reward.update",
+            "1",
+            json!({"broadcaster_user_id": bid}),
+        ),
+        (
+            "channel.channel_points_custom_reward.remove",
+            "1",
+            json!({"broadcaster_user_id": bid}),
+        ),
+        (
+            "channel.channel_points_custom_reward_redemption.add",
+            "1",
+            json!({"broadcaster_user_id": bid}),
+        ),
+        (
+            "channel.channel_points_custom_reward_redemption.update",
+            "1",
+            json!({"broadcaster_user_id": bid}),
+        ),
+        ("channel.poll.begin", "1", json!({"broadcaster_user_id": bid})),
+        ("channel.poll.progress", "1", json!({"broadcaster_user_id": bid})),
+        ("channel.poll.end", "1", json!({"broadcaster_user_id": bid})),
+        ("channel.prediction.begin", "1", json!({"broadcaster_user_id": bid})),
+        ("channel.prediction.progress", "1", json!({"broadcaster_user_id": bid})),
+        ("channel.prediction.lock", "1", json!({"broadcaster_user_id": bid})),
+        ("channel.prediction.end", "1", json!({"broadcaster_user_id": bid})),
+        ("channel.hype_train.begin", "1", json!({"broadcaster_user_id": bid})),
+        ("channel.hype_train.progress", "1", json!({"broadcaster_user_id": bid})),
+        ("channel.hype_train.end", "1", json!({"broadcaster_user_id": bid})),
+        ("channel.goal.begin", "1", json!({"broadcaster_user_id": bid})),
+        ("channel.goal.progress", "1", json!({"broadcaster_user_id": bid})),
+        ("channel.goal.end", "1", json!({"broadcaster_user_id": bid})),
+        ("channel.update", "2", json!({"broadcaster_user_id": bid})),
+        ("channel.ad_break.begin", "1", json!({"broadcaster_user_id": bid})),
     ];
 
     for (stype, ver, cond) in subs {
@@ -1644,6 +1825,443 @@ fn handle_notification(
                 engine.emit("Twitch", "Whisper", || json!(args));
             }
         }
+        "channel.channel_points_custom_reward_redemption.add" => {
+            let id = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
+            let rid = event.pointer("/reward/id").and_then(Value::as_str).unwrap_or("");
+            let rtitle = event.pointer("/reward/title").and_then(Value::as_str).unwrap_or("");
+            let rprompt = event.pointer("/reward/prompt").and_then(Value::as_str).unwrap_or("");
+            let rcost = event.pointer("/reward/cost").and_then(Value::as_u64).unwrap_or(0);
+            let uid = event.pointer("/user_id").and_then(Value::as_str).unwrap_or("");
+            let ulogin = event.pointer("/user_login").and_then(Value::as_str).unwrap_or("");
+            let uname = event.pointer("/user_name").and_then(Value::as_str).unwrap_or("");
+            let input = event.pointer("/user_input").and_then(Value::as_str).unwrap_or("");
+            let status = event
+                .pointer("/status")
+                .and_then(Value::as_str)
+                .unwrap_or("unfulfilled");
+            let redeemed_at = event.pointer("/redeemed_at").and_then(Value::as_str).unwrap_or("");
+
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            populate_user_vars(&mut args, uid, ulogin, uname, 1, false);
+            args.insert("id".into(), id.into());
+            args.insert("redemptionId".into(), id.into());
+            args.insert("rewardId".into(), rid.into());
+            args.insert("rewardTitle".into(), rtitle.into());
+            args.insert("rewardName".into(), rtitle.into());
+            args.insert("rewardPrompt".into(), rprompt.into());
+            args.insert("rewardCost".into(), rcost.into());
+            args.insert("userInput".into(), input.into());
+            args.insert("rawInput".into(), input.into());
+            args.insert("status".into(), status.into());
+            args.insert("redeemedAt".into(), redeemed_at.into());
+
+            engine.fire(
+                T_REWARD_REDEMPTION,
+                "Reward Redemption",
+                "Twitch/Channel Points",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "RewardRedemption", || json!(args));
+        }
+        "channel.channel_points_custom_reward_redemption.update" => {
+            let id = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
+            let rid = event.pointer("/reward/id").and_then(Value::as_str).unwrap_or("");
+            let rtitle = event.pointer("/reward/title").and_then(Value::as_str).unwrap_or("");
+            let rprompt = event.pointer("/reward/prompt").and_then(Value::as_str).unwrap_or("");
+            let rcost = event.pointer("/reward/cost").and_then(Value::as_u64).unwrap_or(0);
+            let uid = event.pointer("/user_id").and_then(Value::as_str).unwrap_or("");
+            let ulogin = event.pointer("/user_login").and_then(Value::as_str).unwrap_or("");
+            let uname = event.pointer("/user_name").and_then(Value::as_str).unwrap_or("");
+            let input = event.pointer("/user_input").and_then(Value::as_str).unwrap_or("");
+            let status = event.pointer("/status").and_then(Value::as_str).unwrap_or("fulfilled");
+            let redeemed_at = event.pointer("/redeemed_at").and_then(Value::as_str).unwrap_or("");
+
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            populate_user_vars(&mut args, uid, ulogin, uname, 1, false);
+            args.insert("id".into(), id.into());
+            args.insert("redemptionId".into(), id.into());
+            args.insert("rewardId".into(), rid.into());
+            args.insert("rewardTitle".into(), rtitle.into());
+            args.insert("rewardName".into(), rtitle.into());
+            args.insert("rewardPrompt".into(), rprompt.into());
+            args.insert("rewardCost".into(), rcost.into());
+            args.insert("userInput".into(), input.into());
+            args.insert("rawInput".into(), input.into());
+            args.insert("status".into(), status.into());
+            args.insert("redeemedAt".into(), redeemed_at.into());
+
+            engine.fire(
+                T_REWARD_REDEMPTION_UPDATED,
+                "Reward Redemption Updated",
+                "Twitch/Channel Points",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "RewardRedemptionUpdated", || json!(args));
+        }
+        "channel.channel_points_custom_reward.add" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let rid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
+            let rtitle = event.pointer("/title").and_then(Value::as_str).unwrap_or("");
+            let rcost = event.pointer("/cost").and_then(Value::as_u64).unwrap_or(0);
+            let rprompt = event.pointer("/prompt").and_then(Value::as_str).unwrap_or("");
+            args.insert("rewardId".into(), rid.into());
+            args.insert("rewardTitle".into(), rtitle.into());
+            args.insert("rewardCost".into(), rcost.into());
+            args.insert("rewardPrompt".into(), rprompt.into());
+            engine.fire(
+                T_REWARD_CREATED,
+                "Reward Created",
+                "Twitch/Channel Points",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "RewardCreated", || json!(args));
+        }
+        "channel.channel_points_custom_reward.update" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let rid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
+            let rtitle = event.pointer("/title").and_then(Value::as_str).unwrap_or("");
+            let rcost = event.pointer("/cost").and_then(Value::as_u64).unwrap_or(0);
+            let rprompt = event.pointer("/prompt").and_then(Value::as_str).unwrap_or("");
+            args.insert("rewardId".into(), rid.into());
+            args.insert("rewardTitle".into(), rtitle.into());
+            args.insert("rewardCost".into(), rcost.into());
+            args.insert("rewardPrompt".into(), rprompt.into());
+            engine.fire(
+                T_REWARD_UPDATED,
+                "Reward Updated",
+                "Twitch/Channel Points",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "RewardUpdated", || json!(args));
+        }
+        "channel.channel_points_custom_reward.remove" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let rid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
+            let rtitle = event.pointer("/title").and_then(Value::as_str).unwrap_or("");
+            args.insert("rewardId".into(), rid.into());
+            args.insert("rewardTitle".into(), rtitle.into());
+            engine.fire(
+                T_REWARD_DELETED,
+                "Reward Deleted",
+                "Twitch/Channel Points",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "RewardDeleted", || json!(args));
+        }
+        "channel.poll.begin" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let pid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
+            let ptitle = event.pointer("/title").and_then(Value::as_str).unwrap_or("");
+            let duration = event.pointer("/duration").and_then(Value::as_u64).unwrap_or(0);
+            args.insert("pollId".into(), pid.into());
+            args.insert("pollTitle".into(), ptitle.into());
+            args.insert("duration".into(), duration.into());
+            args.insert("status".into(), "active".into());
+            engine.fire(T_POLL_CREATED, "Poll Created", "Twitch/Polls", "twitch", &args, |_| {
+                true
+            });
+            engine.emit("Twitch", "PollCreated", || json!(args));
+        }
+        "channel.poll.progress" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let pid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
+            let ptitle = event.pointer("/title").and_then(Value::as_str).unwrap_or("");
+            args.insert("pollId".into(), pid.into());
+            args.insert("pollTitle".into(), ptitle.into());
+            args.insert("status".into(), "active".into());
+            engine.fire(T_POLL_UPDATED, "Poll Updated", "Twitch/Polls", "twitch", &args, |_| {
+                true
+            });
+            engine.emit("Twitch", "PollUpdated", || json!(args));
+        }
+        "channel.poll.end" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let pid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
+            let ptitle = event.pointer("/title").and_then(Value::as_str).unwrap_or("");
+            let status = event.pointer("/status").and_then(Value::as_str).unwrap_or("completed");
+            args.insert("pollId".into(), pid.into());
+            args.insert("pollTitle".into(), ptitle.into());
+            args.insert("status".into(), status.into());
+            if status.eq_ignore_ascii_case("terminated") {
+                engine.fire(
+                    T_POLL_TERMINATED,
+                    "Poll Terminated",
+                    "Twitch/Polls",
+                    "twitch",
+                    &args,
+                    |_| true,
+                );
+                engine.emit("Twitch", "PollTerminated", || json!(args));
+            } else if status.eq_ignore_ascii_case("archived") {
+                engine.fire(
+                    T_POLL_ARCHIVED,
+                    "Poll Archived",
+                    "Twitch/Polls",
+                    "twitch",
+                    &args,
+                    |_| true,
+                );
+                engine.emit("Twitch", "PollArchived", || json!(args));
+            } else {
+                engine.fire(
+                    T_POLL_COMPLETED,
+                    "Poll Completed",
+                    "Twitch/Polls",
+                    "twitch",
+                    &args,
+                    |_| true,
+                );
+                engine.emit("Twitch", "PollCompleted", || json!(args));
+            }
+        }
+        "channel.prediction.begin" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let pid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
+            let ptitle = event.pointer("/title").and_then(Value::as_str).unwrap_or("");
+            args.insert("predictionId".into(), pid.into());
+            args.insert("predictionTitle".into(), ptitle.into());
+            args.insert("status".into(), "active".into());
+            engine.fire(
+                T_PREDICTION_CREATED,
+                "Prediction Created",
+                "Twitch/Predictions",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "PredictionCreated", || json!(args));
+        }
+        "channel.prediction.progress" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let pid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
+            let ptitle = event.pointer("/title").and_then(Value::as_str).unwrap_or("");
+            args.insert("predictionId".into(), pid.into());
+            args.insert("predictionTitle".into(), ptitle.into());
+            args.insert("status".into(), "active".into());
+            engine.fire(
+                T_PREDICTION_UPDATED,
+                "Prediction Updated",
+                "Twitch/Predictions",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "PredictionUpdated", || json!(args));
+        }
+        "channel.prediction.lock" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let pid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
+            let ptitle = event.pointer("/title").and_then(Value::as_str).unwrap_or("");
+            args.insert("predictionId".into(), pid.into());
+            args.insert("predictionTitle".into(), ptitle.into());
+            args.insert("status".into(), "locked".into());
+            engine.fire(
+                T_PREDICTION_LOCKED,
+                "Prediction Locked",
+                "Twitch/Predictions",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "PredictionLocked", || json!(args));
+        }
+        "channel.prediction.end" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let pid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
+            let ptitle = event.pointer("/title").and_then(Value::as_str).unwrap_or("");
+            let status = event.pointer("/status").and_then(Value::as_str).unwrap_or("resolved");
+            let winning_id = event
+                .pointer("/winning_outcome_id")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            args.insert("predictionId".into(), pid.into());
+            args.insert("predictionTitle".into(), ptitle.into());
+            args.insert("status".into(), status.into());
+            args.insert("winningOutcomeId".into(), winning_id.into());
+            if status.eq_ignore_ascii_case("canceled") {
+                engine.fire(
+                    T_PREDICTION_CANCELED,
+                    "Prediction Canceled",
+                    "Twitch/Predictions",
+                    "twitch",
+                    &args,
+                    |_| true,
+                );
+                engine.emit("Twitch", "PredictionCanceled", || json!(args));
+            } else {
+                engine.fire(
+                    T_PREDICTION_COMPLETED,
+                    "Prediction Completed",
+                    "Twitch/Predictions",
+                    "twitch",
+                    &args,
+                    |_| true,
+                );
+                engine.emit("Twitch", "PredictionCompleted", || json!(args));
+            }
+        }
+        "channel.hype_train.begin" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let level = event.pointer("/level").and_then(Value::as_u64).unwrap_or(1);
+            let total = event.pointer("/total").and_then(Value::as_u64).unwrap_or(0);
+            let goal = event.pointer("/goal").and_then(Value::as_u64).unwrap_or(0);
+            args.insert("level".into(), level.into());
+            args.insert("total".into(), total.into());
+            args.insert("goal".into(), goal.into());
+            engine.fire(
+                T_HYPE_TRAIN_START,
+                "Hype Train Starts",
+                "Twitch/Hype Train",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "HypeTrainStart", || json!(args));
+        }
+        "channel.hype_train.progress" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let level = event.pointer("/level").and_then(Value::as_u64).unwrap_or(1);
+            let total = event.pointer("/total").and_then(Value::as_u64).unwrap_or(0);
+            let goal = event.pointer("/goal").and_then(Value::as_u64).unwrap_or(0);
+            args.insert("level".into(), level.into());
+            args.insert("total".into(), total.into());
+            args.insert("goal".into(), goal.into());
+            engine.fire(
+                T_HYPE_TRAIN_UPDATE,
+                "Hype Train Update",
+                "Twitch/Hype Train",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "HypeTrainUpdate", || json!(args));
+        }
+        "channel.hype_train.end" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let level = event.pointer("/level").and_then(Value::as_u64).unwrap_or(1);
+            let total = event.pointer("/total").and_then(Value::as_u64).unwrap_or(0);
+            args.insert("level".into(), level.into());
+            args.insert("total".into(), total.into());
+            engine.fire(
+                T_HYPE_TRAIN_END,
+                "Hype Train End",
+                "Twitch/Hype Train",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "HypeTrainEnd", || json!(args));
+        }
+        "channel.goal.begin" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let gid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
+            let gtype = event.pointer("/type").and_then(Value::as_str).unwrap_or("");
+            let desc = event.pointer("/description").and_then(Value::as_str).unwrap_or("");
+            let curr = event.pointer("/current_amount").and_then(Value::as_u64).unwrap_or(0);
+            let target = event.pointer("/target_amount").and_then(Value::as_u64).unwrap_or(0);
+            args.insert("goalId".into(), gid.into());
+            args.insert("goalType".into(), gtype.into());
+            args.insert("goalDescription".into(), desc.into());
+            args.insert("currentAmount".into(), curr.into());
+            args.insert("targetAmount".into(), target.into());
+            engine.fire(T_GOAL_BEGIN, "Goal Begin", "Twitch/Goals", "twitch", &args, |_| true);
+            engine.emit("Twitch", "GoalBegin", || json!(args));
+        }
+        "channel.goal.progress" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let gid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
+            let gtype = event.pointer("/type").and_then(Value::as_str).unwrap_or("");
+            let desc = event.pointer("/description").and_then(Value::as_str).unwrap_or("");
+            let curr = event.pointer("/current_amount").and_then(Value::as_u64).unwrap_or(0);
+            let target = event.pointer("/target_amount").and_then(Value::as_u64).unwrap_or(0);
+            args.insert("goalId".into(), gid.into());
+            args.insert("goalType".into(), gtype.into());
+            args.insert("goalDescription".into(), desc.into());
+            args.insert("currentAmount".into(), curr.into());
+            args.insert("targetAmount".into(), target.into());
+            engine.fire(
+                T_GOAL_PROGRESS,
+                "Goal Progress",
+                "Twitch/Goals",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "GoalProgress", || json!(args));
+        }
+        "channel.goal.end" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let gid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
+            let gtype = event.pointer("/type").and_then(Value::as_str).unwrap_or("");
+            let desc = event.pointer("/description").and_then(Value::as_str).unwrap_or("");
+            let curr = event.pointer("/current_amount").and_then(Value::as_u64).unwrap_or(0);
+            let target = event.pointer("/target_amount").and_then(Value::as_u64).unwrap_or(0);
+            args.insert("goalId".into(), gid.into());
+            args.insert("goalType".into(), gtype.into());
+            args.insert("goalDescription".into(), desc.into());
+            args.insert("currentAmount".into(), curr.into());
+            args.insert("targetAmount".into(), target.into());
+            engine.fire(T_GOAL_END, "Goal End", "Twitch/Goals", "twitch", &args, |_| true);
+            engine.emit("Twitch", "GoalEnd", || json!(args));
+        }
+        "channel.update" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let title = event.pointer("/title").and_then(Value::as_str).unwrap_or("");
+            let game_name = event.pointer("/category_name").and_then(Value::as_str).unwrap_or("");
+            let game_id = event.pointer("/category_id").and_then(Value::as_str).unwrap_or("");
+            args.insert("status".into(), title.into());
+            args.insert("game".into(), game_name.into());
+            args.insert("gameId".into(), game_id.into());
+            engine.fire(
+                T_STREAM_UPDATE,
+                "Stream Update",
+                "Twitch/Channel",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "StreamUpdate", || json!(args));
+        }
+        "channel.ad_break.begin" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let length = event.pointer("/duration_seconds").and_then(Value::as_u64).unwrap_or(0);
+            let auto = event.pointer("/is_automatic").and_then(Value::as_bool).unwrap_or(false);
+            args.insert("duration".into(), length.into());
+            args.insert("length".into(), length.into());
+            args.insert("isAutomatic".into(), auto.into());
+            engine.fire(T_AD_RUN, "Ad Run", "Twitch/Ads", "twitch", &args, |_| true);
+            engine.emit("Twitch", "AdRun", || json!(args));
+        }
         _ => {}
     }
 }
@@ -1830,6 +2448,127 @@ pub(crate) mod tests {
             &mut HashSet::new(),
             "channel.raid",
             &incoming,
+        );
+    }
+
+    #[test]
+    fn reward_redemption_notifications() {
+        let (tx, _rx) = watch::channel(Config::default());
+        let cfg = Arc::new(tx);
+        let engine = Engine::new(cfg.clone(), |_| {});
+
+        let broadcaster = TwitchAccount {
+            user_id: "123".into(),
+            login: "streamer".into(),
+            display_name: "Streamer".into(),
+            ..Default::default()
+        };
+
+        let redemption = json!({
+            "id": "red-1",
+            "user_id": "456",
+            "user_login": "viewer",
+            "user_name": "Viewer",
+            "user_input": "hydrate!",
+            "status": "unfulfilled",
+            "reward": {
+                "id": "rew-1",
+                "title": "Drink Water",
+                "cost": 500,
+                "prompt": "Stay hydrated"
+            }
+        });
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.channel_points_custom_reward_redemption.add",
+            &redemption,
+        );
+
+        let updated = json!({
+            "id": "red-1",
+            "user_id": "456",
+            "user_login": "viewer",
+            "user_name": "Viewer",
+            "user_input": "hydrate!",
+            "status": "fulfilled",
+            "reward": {
+                "id": "rew-1",
+                "title": "Drink Water",
+                "cost": 500,
+                "prompt": "Stay hydrated"
+            }
+        });
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.channel_points_custom_reward_redemption.update",
+            &updated,
+        );
+    }
+
+    #[test]
+    fn poll_and_prediction_notifications() {
+        let (tx, _rx) = watch::channel(Config::default());
+        let cfg = Arc::new(tx);
+        let engine = Engine::new(cfg.clone(), |_| {});
+
+        let broadcaster = TwitchAccount {
+            user_id: "123".into(),
+            login: "streamer".into(),
+            display_name: "Streamer".into(),
+            ..Default::default()
+        };
+
+        let poll = json!({
+            "id": "poll-1",
+            "title": "Favorite language?",
+            "choices": [{"id": "c1", "title": "Rust", "votes": 10}, {"id": "c2", "title": "Other", "votes": 2}],
+            "status": "completed"
+        });
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.poll.begin",
+            &poll,
+        );
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.poll.end",
+            &poll,
+        );
+
+        let pred = json!({
+            "id": "pred-1",
+            "title": "Will we win?",
+            "winning_outcome_id": "o1",
+            "outcomes": [{"id": "o1", "title": "Yes", "users": 5, "channel_points": 100}],
+            "status": "resolved"
+        });
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.prediction.begin",
+            &pred,
+        );
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.prediction.end",
+            &pred,
         );
     }
 }

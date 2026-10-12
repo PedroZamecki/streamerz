@@ -5,7 +5,7 @@ use super::{b, n, new_state, s, Ctx, Engine};
 use crate::commands::{self, Chat};
 use crate::model::Obj;
 use crate::vars::{self, auto_type, text};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -357,6 +357,538 @@ impl Engine {
                 let fallback = b(o, "fallback", false);
                 if let Some(tw) = self.twitch() {
                     let _ = tw.send_message(text, Some(reply_id), use_bot, fallback).await;
+                }
+            }
+            // Update Redemption Status (11)
+            11 => {
+                let status = s(o, "status");
+                let reward_id = self.expand(ctx, s(o, "rewardId"));
+                let reward_id = if reward_id.is_empty() {
+                    ctx.args
+                        .get("rewardId")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string()
+                } else {
+                    reward_id
+                };
+                let red_id = self.expand(ctx, s(o, "redemptionId"));
+                let red_id = if red_id.is_empty() {
+                    ctx.args
+                        .get("redemptionId")
+                        .or_else(|| ctx.args.get("id"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string()
+                } else {
+                    red_id
+                };
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "channel_points/custom_rewards/redemptions",
+                            vec![
+                                ("broadcaster_id", "{broadcaster_id}"),
+                                ("reward_id", &reward_id),
+                                ("id", &red_id),
+                            ],
+                            Some(json!({"status": status})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Set Channel Title (15)
+            15 => {
+                let title = self.expand(ctx, s(o, "title"));
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "channels",
+                            vec![("broadcaster_id", "{broadcaster_id}")],
+                            Some(json!({"title": title})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Set Channel Game (16)
+            16 => {
+                let game_id = self.expand(ctx, s(o, "gameId"));
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "channels",
+                            vec![("broadcaster_id", "{broadcaster_id}")],
+                            Some(json!({"game_id": game_id})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Create Stream Marker (17)
+            17 => {
+                let desc = self.expand(ctx, s(o, "description"));
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "POST",
+                            "streams/markers",
+                            vec![],
+                            Some(json!({"user_id": "{broadcaster_id}", "description": desc})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Create Clip (18)
+            18 => {
+                let delay = b(o, "hasDelay", false);
+                if let Some(tw) = self.twitch() {
+                    let res = tw
+                        .helix(
+                            "POST",
+                            "clips",
+                            vec![
+                                ("broadcaster_id", "{broadcaster_id}"),
+                                ("has_delay", if delay { "true" } else { "false" }),
+                            ],
+                            None,
+                            false,
+                            true,
+                        )
+                        .await;
+                    if let Ok(val) = res {
+                        if let Some(id) = val.pointer("/data/0/id").and_then(Value::as_str) {
+                            ctx.args.insert("clipId".into(), id.into());
+                        }
+                    }
+                }
+            }
+            // Run Commercial (19)
+            19 => {
+                let duration = n(o, "duration") as u64;
+                let len = if duration == 0 { 30 } else { duration };
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "POST",
+                            "channels/commercial",
+                            vec![],
+                            Some(json!({"broadcaster_id": "{broadcaster_id}", "length": len})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Add Viewer Count (24)
+            24 => {
+                if let Some(tw) = self.twitch() {
+                    if let Ok(val) = tw
+                        .helix(
+                            "GET",
+                            "streams",
+                            vec![("user_id", "{broadcaster_id}")],
+                            None,
+                            false,
+                            true,
+                        )
+                        .await
+                    {
+                        let count = val.pointer("/data/0/viewer_count").and_then(Value::as_u64).unwrap_or(0);
+                        ctx.args.insert("viewerCount".into(), count.into());
+                    }
+                }
+            }
+            // Set Enabled State (200)
+            200 => {
+                let reward_id = self.expand(ctx, s(o, "rewardId"));
+                let state = n(o, "state");
+                let is_enabled = state == 0.0;
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "channel_points/custom_rewards",
+                            vec![("broadcaster_id", "{broadcaster_id}"), ("id", &reward_id)],
+                            Some(json!({"is_enabled": is_enabled})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Set Paused State (201)
+            201 => {
+                let reward_id = self.expand(ctx, s(o, "rewardId"));
+                let state = n(o, "state");
+                let is_paused = state == 1.0;
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "channel_points/custom_rewards",
+                            vec![("broadcaster_id", "{broadcaster_id}"), ("id", &reward_id)],
+                            Some(json!({"is_paused": is_paused})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Set Cost (202)
+            202 => {
+                let reward_id = self.expand(ctx, s(o, "rewardId"));
+                let cost = n(o, "cost") as u64;
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "channel_points/custom_rewards",
+                            vec![("broadcaster_id", "{broadcaster_id}"), ("id", &reward_id)],
+                            Some(json!({"cost": cost})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Configure Rewards (203)
+            203 => {}
+            // Set Title (205)
+            205 => {
+                let reward_id = self.expand(ctx, s(o, "rewardId"));
+                let title = self.expand(ctx, s(o, "title"));
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "channel_points/custom_rewards",
+                            vec![("broadcaster_id", "{broadcaster_id}"), ("id", &reward_id)],
+                            Some(json!({"title": title})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Set Prompt (206)
+            206 => {
+                let reward_id = self.expand(ctx, s(o, "rewardId"));
+                let prompt = self.expand(ctx, s(o, "prompt"));
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "channel_points/custom_rewards",
+                            vec![("broadcaster_id", "{broadcaster_id}"), ("id", &reward_id)],
+                            Some(json!({"prompt": prompt})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Get Reward Info (208)
+            208 => {
+                let reward_id = self.expand(ctx, s(o, "rewardId"));
+                if let Some(tw) = self.twitch() {
+                    if let Ok(val) = tw
+                        .helix(
+                            "GET",
+                            "channel_points/custom_rewards",
+                            vec![("broadcaster_id", "{broadcaster_id}"), ("id", &reward_id)],
+                            None,
+                            false,
+                            true,
+                        )
+                        .await
+                    {
+                        if let Some(r) = val.pointer("/data/0") {
+                            ctx.args.insert("rewardTitle".into(), r["title"].clone());
+                            ctx.args.insert("rewardCost".into(), r["cost"].clone());
+                            ctx.args.insert("rewardPrompt".into(), r["prompt"].clone());
+                        }
+                    }
+                }
+            }
+            // Reset Reward Counter (209) / Reset Reward User Counters (210) / Set Group Paused State (212)
+            209 | 210 | 212 => {}
+            // Clear Channel Tags (251)
+            251 => {
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "channels",
+                            vec![("broadcaster_id", "{broadcaster_id}")],
+                            Some(json!({"tags": []})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Set Channel Tags (252)
+            252 => {
+                let tags = self.expand(ctx, s(o, "tags"));
+                let tag_list: Vec<&str> = tags.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "channels",
+                            vec![("broadcaster_id", "{broadcaster_id}")],
+                            Some(json!({"tags": tag_list})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Add Channel Tag (253) / Remove Channel Tag (254)
+            253 | 254 => {}
+            // Snooze Ad (555)
+            555 => {
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "POST",
+                            "channels/ads/schedule/snooze",
+                            vec![("broadcaster_id", "{broadcaster_id}")],
+                            None,
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Get Ad Schedule (556) / Get Pre-roll Free Time (557)
+            556 | 557 => {
+                if let Some(tw) = self.twitch() {
+                    if let Ok(val) = tw
+                        .helix(
+                            "GET",
+                            "channels/ads/schedule",
+                            vec![("broadcaster_id", "{broadcaster_id}")],
+                            None,
+                            false,
+                            true,
+                        )
+                        .await
+                    {
+                        if let Some(d) = val.pointer("/data/0") {
+                            ctx.args.insert("adScheduleNextAdAt".into(), d["next_ad_at"].clone());
+                            ctx.args
+                                .insert("adSchedulePrerollFreeTime".into(), d["preroll_free_time"].clone());
+                        }
+                    }
+                }
+            }
+            // Create Poll (561)
+            561 => {
+                let title = self.expand(ctx, s(o, "title"));
+                let duration = n(o, "duration") as u64;
+                let dur = if duration == 0 { 60 } else { duration };
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "POST",
+                            "polls",
+                            vec![],
+                            Some(json!({
+                                "broadcaster_id": "{broadcaster_id}",
+                                "title": title,
+                                "choices": [{"title": "Option 1"}, {"title": "Option 2"}],
+                                "duration": dur
+                            })),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Terminate Active Poll (562)
+            562 => {
+                let poll_id = self.expand(ctx, s(o, "pollId"));
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "polls",
+                            vec![],
+                            Some(json!({"broadcaster_id": "{broadcaster_id}", "id": poll_id, "status": "TERMINATED"})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Archive Active Poll (563)
+            563 => {
+                let poll_id = self.expand(ctx, s(o, "pollId"));
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "polls",
+                            vec![],
+                            Some(json!({"broadcaster_id": "{broadcaster_id}", "id": poll_id, "status": "ARCHIVED"})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Set Channel Branded Content (564)
+            564 => {
+                let status = b(o, "status", false);
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "channels",
+                            vec![("broadcaster_id", "{broadcaster_id}")],
+                            Some(json!({"is_branded_content": status})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Get Active Poll (566)
+            566 => {
+                if let Some(tw) = self.twitch() {
+                    if let Ok(val) = tw
+                        .helix(
+                            "GET",
+                            "polls",
+                            vec![("broadcaster_id", "{broadcaster_id}")],
+                            None,
+                            false,
+                            true,
+                        )
+                        .await
+                    {
+                        if let Some(p) = val.pointer("/data/0") {
+                            ctx.args.insert("pollId".into(), p["id"].clone());
+                            ctx.args.insert("pollTitle".into(), p["title"].clone());
+                        }
+                    }
+                }
+            }
+            // Get Active Prediction (567)
+            567 => {
+                if let Some(tw) = self.twitch() {
+                    if let Ok(val) = tw
+                        .helix(
+                            "GET",
+                            "predictions",
+                            vec![("broadcaster_id", "{broadcaster_id}")],
+                            None,
+                            false,
+                            true,
+                        )
+                        .await
+                    {
+                        if let Some(p) = val.pointer("/data/0") {
+                            ctx.args.insert("predictionId".into(), p["id"].clone());
+                            ctx.args.insert("predictionTitle".into(), p["title"].clone());
+                        }
+                    }
+                }
+            }
+            // Create Prediction (568)
+            568 => {
+                let title = self.expand(ctx, s(o, "title"));
+                let duration = n(o, "duration") as u64;
+                let dur = if duration == 0 { 120 } else { duration };
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "POST",
+                            "predictions",
+                            vec![],
+                            Some(json!({
+                                "broadcaster_id": "{broadcaster_id}",
+                                "title": title,
+                                "outcomes": [{"title": "Yes"}, {"title": "No"}],
+                                "prediction_window": dur
+                            })),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Cancel Active Prediction (569)
+            569 => {
+                let pred_id = self.expand(ctx, s(o, "predictionId"));
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "predictions",
+                            vec![],
+                            Some(json!({"broadcaster_id": "{broadcaster_id}", "id": pred_id, "status": "CANCELED"})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Lock Active Prediction (570)
+            570 => {
+                let pred_id = self.expand(ctx, s(o, "predictionId"));
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "predictions",
+                            vec![],
+                            Some(json!({"broadcaster_id": "{broadcaster_id}", "id": pred_id, "status": "LOCKED"})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Resolve Last Prediction (571) / Resolve Last Prediction by Title (572)
+            571 | 572 => {
+                let pred_id = self.expand(ctx, s(o, "predictionId"));
+                let win_id = self.expand(ctx, s(o, "winningOutcomeId"));
+                if let Some(tw) = self.twitch() {
+                    let _ = tw.helix(
+                        "PATCH",
+                        "predictions",
+                        vec![],
+                        Some(json!({"broadcaster_id": "{broadcaster_id}", "id": pred_id, "status": "RESOLVED", "winning_outcome_id": win_id})),
+                        false,
+                        true,
+                    ).await;
+                }
+            }
+            // Get Clip Download Urls (573)
+            573 => {
+                let clip_id = self.expand(ctx, s(o, "clipId"));
+                if let Some(tw) = self.twitch() {
+                    if let Ok(val) = tw
+                        .helix("GET", "clips", vec![("id", &clip_id)], None, false, true)
+                        .await
+                    {
+                        if let Some(c) = val.pointer("/data/0") {
+                            ctx.args.insert("clipUrl".into(), c["url"].clone());
+                            ctx.args.insert("clipThumbnailUrl".into(), c["thumbnail_url"].clone());
+                        }
+                    }
                 }
             }
             1010 => {
