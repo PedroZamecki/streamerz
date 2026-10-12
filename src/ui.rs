@@ -1,6 +1,10 @@
-//! Native window: settings and the log, in tabs. Lives hidden in the tray; while hidden its native
+//! Native window: actions, settings and the log, in tabs. Lives hidden in the tray; while hidden its native
 //! window is destroyed and nothing redraws.
 
+mod actions;
+mod dialogs;
+
+use crate::engine::UiCmd;
 use crate::{status, Config};
 use fltk::button::{Button, CheckButton};
 use fltk::enums::{Align, ColorDepth, Event, Font, Shortcut};
@@ -15,7 +19,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{mpsc::UnboundedSender, oneshot, watch};
 
 #[derive(Clone, Copy)]
 pub enum Msg {
@@ -27,11 +31,13 @@ pub enum Msg {
     Log,
     /// A Get Input sub-action wants an answer (see `input`).
     Input,
+    /// The engine changed the config (an action's state, a global...).
+    Changed,
 }
 
 const ROW: i32 = 26;
-const W: i32 = 820;
-const H: i32 = 640;
+const W: i32 = 1000;
+const H: i32 = 700;
 
 /// Where `logged` wakes the window, and whether it's up (no wakeups while hidden).
 static UI: OnceLock<app::Sender<Msg>> = OnceLock::new();
@@ -96,6 +102,15 @@ fn ask(title: &str, prompt: &str, text: &str) -> Option<String> {
     }
     win.hide();
     answer.get().unwrap_or(false).then(|| input.value())
+}
+
+/// The engine changed the config: redraw what shows it, if the window is up.
+pub fn changed() {
+    if SHOWN.load(Ordering::Relaxed) {
+        if let Some(ui) = UI.get() {
+            ui.send(Msg::Changed);
+        }
+    }
 }
 
 /// A line was logged: refresh the log, if the window is up.
@@ -207,7 +222,13 @@ impl Log {
     }
 }
 
-pub fn run(_app: app::App, cfg: Arc<watch::Sender<Config>>, tx: app::Sender<Msg>, rx: app::Receiver<Msg>) {
+pub fn run(
+    _app: app::App,
+    cfg: Arc<watch::Sender<Config>>,
+    cmds: UnboundedSender<UiCmd>,
+    tx: app::Sender<Msg>,
+    rx: app::Receiver<Msg>,
+) {
     let c = {
         let c = cfg.borrow();
         (c.dark, c.start_hidden, c.autostart)
@@ -222,6 +243,8 @@ pub fn run(_app: app::App, cfg: Arc<watch::Sender<Config>>, tx: app::Sender<Msg>
         win.set_icon(Some(icon));
     }
     let tabs = Tabs::new(5, 5, W - 10, H - 50, None);
+
+    let acts = actions::tab(&tabs, cfg.clone(), cmds);
 
     // Settings
     let mut col = tab(&tabs, "Settings");
@@ -338,6 +361,7 @@ pub fn run(_app: app::App, cfg: Arc<watch::Sender<Config>>, tx: app::Sender<Msg>
                     open(&mut win, &mut log);
                 }
                 Msg::Log => log.refresh(),
+                Msg::Changed => acts.borrow_mut().refresh(),
                 Msg::Input => {
                     let asked = QUESTIONS
                         .lock()

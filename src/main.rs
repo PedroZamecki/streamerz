@@ -3,6 +3,7 @@
 //! OBS Studio and Streamlabs Desktop. See PLAN.md.
 
 mod commands;
+mod edit;
 mod engine;
 mod fmt;
 mod http;
@@ -132,6 +133,9 @@ fn with(path: &Path, ext: &str) -> PathBuf {
 /// Written to a temp file and renamed over the old one, so a crash never leaves half a file; the
 /// previous version is kept as `.bak`.
 fn save_to(path: &Path, c: &Config) -> std::io::Result<()> {
+    // The window and the engine both save: one at a time.
+    static SAVING: Mutex<()> = Mutex::new(());
+    let _one = SAVING.lock();
     let tmp = with(path, ".tmp");
     let mut f = std::fs::File::create(&tmp)?;
     f.write_all(serde_json::to_string_pretty(c).unwrap_or_default().as_bytes())?;
@@ -246,6 +250,7 @@ fn main() {
     rt.spawn(tray::run(ui_tx));
     let cfg = Arc::new(watch::channel(cfg).0);
     let engine_cfg = cfg.clone();
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel();
     // The engine isn't Send (one thread, no locks): it lives in a LocalSet on the runtime thread.
     std::thread::spawn(move || {
         tokio::task::LocalSet::new().block_on(&rt, async move {
@@ -255,10 +260,16 @@ fn main() {
             tokio::task::spawn_local(servers::run(e.clone()));
             e.started();
             e.timers();
+            while let Some(c) = cmd_rx.recv().await {
+                match c {
+                    engine::UiCmd::Test(id) => drop(e.test(&id)),
+                    engine::UiCmd::Run(id, args) => drop(e.queue(&id, args)),
+                }
+            }
             std::future::pending::<()>().await
         })
     });
-    ui::run(app, cfg, ui_tx, ui_rx);
+    ui::run(app, cfg, cmd_tx, ui_tx, ui_rx);
 }
 
 /// Tests that use the shared log run one at a time.
