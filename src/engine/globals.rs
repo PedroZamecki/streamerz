@@ -179,6 +179,7 @@ impl Engine {
                 None => put(&mut st.temp, &mut st.temp_writes, name, &v, &now),
                 Some(u) => in_user(&mut st.user_temp, u),
             }
+            crate::ui::changed();
         }
 
         let mut args = Obj::new();
@@ -265,8 +266,14 @@ impl Engine {
         }
     }
 
+    /// Set a (non-user) global, as the editor's global viewer does: fires the same triggers as
+    /// Global (Set).
+    pub fn put_global(self: &Rc<Self>, name: &str, value: Value, persisted: bool) {
+        let ctx = Ctx { args: Obj::new() };
+        self.write_global(&ctx, name, persisted, None, Some(value));
+    }
+
     /// Delete a (non-user) global, as the editor's global viewer does: fires Deleted.
-    #[allow(dead_code)] // ponytail: called by the editor's globals viewer (phase 5).
     pub fn delete_global(self: &Rc<Self>, name: &str, persisted: bool) {
         let Some(old) = self.read_global(name, persisted, None) else {
             return;

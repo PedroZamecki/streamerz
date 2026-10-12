@@ -250,7 +250,7 @@ fn main() {
     rt.spawn(tray::run(ui_tx));
     let cfg = Arc::new(watch::channel(cfg).0);
     let engine_cfg = cfg.clone();
-    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<engine::UiCmd>();
     // The engine isn't Send (one thread, no locks): it lives in a LocalSet on the runtime thread.
     std::thread::spawn(move || {
         tokio::task::LocalSet::new().block_on(&rt, async move {
@@ -260,11 +260,8 @@ fn main() {
             tokio::task::spawn_local(servers::run(e.clone()));
             e.started();
             e.timers();
-            while let Some(c) = cmd_rx.recv().await {
-                match c {
-                    engine::UiCmd::Test(id) => drop(e.test(&id)),
-                    engine::UiCmd::Run(id, args) => drop(e.queue(&id, args)),
-                }
+            while let Some(f) = cmd_rx.recv().await {
+                f(&e);
             }
             std::future::pending::<()>().await
         })

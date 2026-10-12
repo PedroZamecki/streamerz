@@ -17,9 +17,8 @@ Settings → Window: dark theme, start hidden in the tray, and start with Window
 streamerz answers on Streamer.bot's WebSocket server (`ws://127.0.0.1:8080/`, on by default), its HTTP
 server (port 7474) and its UDP server (port 4242), both off by default, with the same requests, events
 and authentication, so tools made for Streamer.bot (songrequestz, overlays, Stream Deck) connect without
-changes. Until the editor exists, change them in `streamerz.json` under `websockets`, `http` and `udp`
-(the same fields as Streamer.bot's settings). WebSocket clients and custom servers go in
-`websockets.connections` and `websockets.servers`.
+changes. Set them in the Servers tab (changes apply at once), along with WebSocket clients and custom
+servers.
 
 ## The editor
 
@@ -31,3 +30,16 @@ timers and commands picked by name; "Edit JSON" shows the whole thing); the othe
 **Import** takes a Streamer.bot import string (pasted or from a file); **Export** makes one from the
 actions you tick, with the commands, timers and queues they use. Sub-actions that don't run in
 streamerz are kept, shown greyed out with "(not supported)", and skipped.
+
+The other tabs, as in Streamer.bot:
+
+- **Commands** and **Timers**: add, edit (a form), turn on/off and delete them.
+- **Queues**: your queues and Default, with what's running and waiting in each; add, edit, delete,
+  Blocking, pause/resume (one or all) and clear. **Pending** lists the waiting runs.
+- **History**: the last 100 runs (actions set to Exclude from History are left out), with their
+  variables when queued and after the run; **Run again** queues one with the same arguments.
+- **Globals**: every global and user global, persisted or not; add, edit and delete globals (these fire
+  the same triggers as Global (Set)). User globals are shown only.
+- **Groups**: add and delete user groups (their Added/Removed triggers fire). Users join them from chat.
+- **Servers**: the WebSocket, HTTP and UDP servers, WebSocket clients and custom WebSocket servers.
+- **Settings**: window options and this instance's name (what GetInfo reports).

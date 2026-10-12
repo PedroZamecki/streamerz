@@ -527,7 +527,7 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
         &lb[3],
         Box::new(|m| {
             if let Some(id) = m.selected.clone() {
-                let _ = m.cmds.send(UiCmd::Test(id));
+                super::tell(&m.cmds, move |e| drop(e.test(&id)));
             }
         }),
     );
@@ -686,7 +686,7 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
             args.insert("triggerId".into(), s(&t, "id").into());
             args.insert("triggerName".into(), name(TRIGGERS, k).unwrap_or("").into());
             args.insert("isTest".into(), true.into());
-            let _ = m.cmds.send(UiCmd::Run(id, args));
+            super::tell(&m.cmds, move |e| drop(e.queue(&id, args)));
         }),
     );
     on(

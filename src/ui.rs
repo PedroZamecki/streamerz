@@ -4,8 +4,9 @@
 mod actions;
 mod dialogs;
 mod forms;
+mod lists;
 
-use crate::engine::UiCmd;
+use crate::engine::{Engine, UiCmd};
 use crate::{status, Config};
 use fltk::button::{Button, CheckButton};
 use fltk::enums::{Align, ColorDepth, Event, Font, Shortcut};
@@ -103,6 +104,22 @@ fn ask(title: &str, prompt: &str, text: &str) -> Option<String> {
     }
     win.hide();
     answer.get().unwrap_or(false).then(|| input.value())
+}
+
+/// Run `f` on the engine's thread.
+fn tell(cmds: &UnboundedSender<UiCmd>, f: impl FnOnce(&Rc<Engine>) + Send + 'static) {
+    let _ = cmds.send(Box::new(f));
+}
+
+/// Run `f` on the engine's thread and wait for its answer. The engine never waits on the window,
+/// so this can't deadlock.
+fn query<T: Send + 'static>(
+    cmds: &UnboundedSender<UiCmd>,
+    f: impl FnOnce(&Rc<Engine>) -> T + Send + 'static,
+) -> Option<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    tell(cmds, move |e| drop(tx.send(f(e))));
+    rx.recv().ok()
 }
 
 /// The engine changed the config: redraw what shows it, if the window is up.
@@ -230,11 +247,10 @@ pub fn run(
     tx: app::Sender<Msg>,
     rx: app::Receiver<Msg>,
 ) {
-    let c = {
+    let (c_dark, c_hidden, c_autostart, c_instance) = {
         let c = cfg.borrow();
-        (c.dark, c.start_hidden, c.autostart)
+        (c.dark, c.start_hidden, c.autostart, c.instance_name.clone())
     };
-    let (c_dark, c_hidden, c_autostart) = c;
     let _ = UI.set(tx);
     theme(c_dark);
     let mut win = Window::default().with_size(W, H).with_label(&crate::version());
@@ -245,7 +261,8 @@ pub fn run(
     }
     let tabs = Tabs::new(5, 5, W - 10, H - 50, None);
 
-    let acts = actions::tab(&tabs, cfg.clone(), cmds);
+    let acts = actions::tab(&tabs, cfg.clone(), cmds.clone());
+    let views = lists::tabs(&tabs, &cfg, &cmds);
 
     // Settings
     let mut col = tab(&tabs, "Settings");
@@ -261,6 +278,12 @@ pub fn run(
         },
         c_autostart,
     );
+    text(&mut col, "This instance", true);
+    let r = dialogs::row("Name (GetInfo)");
+    let mut instance = fltk::input::Input::default();
+    instance.set_value(&c_instance);
+    r.end();
+    col.fixed(&r, ROW);
     Frame::default();
     text(
         &mut col,
@@ -293,6 +316,11 @@ pub fn run(
     bar.end();
     win.end();
     win.resizable(&tabs);
+    let views = Rc::new(views);
+    tabs.clone().set_callback({
+        let views = views.clone();
+        move |t| views.refresh(t)
+    });
 
     dark.clone().set_callback({
         let win = win.clone();
@@ -307,6 +335,7 @@ pub fn run(
             c.dark = dark.is_checked();
             c.start_hidden = hidden.is_checked();
             c.autostart = autostart.is_checked();
+            c.instance_name = instance.value().trim().to_string();
         });
         let c = cfg.borrow();
         let done = crate::save(&c).and_then(|()| crate::autostart(c.autostart));
@@ -362,7 +391,10 @@ pub fn run(
                     open(&mut win, &mut log);
                 }
                 Msg::Log => log.refresh(),
-                Msg::Changed => acts.borrow_mut().refresh(),
+                Msg::Changed => {
+                    acts.borrow_mut().refresh();
+                    views.refresh(&tabs);
+                }
                 Msg::Input => {
                     let asked = QUESTIONS
                         .lock()
