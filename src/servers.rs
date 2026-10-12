@@ -32,7 +32,8 @@ pub struct WsSettings {
     pub enable_auth: bool,
     pub auth_enforce: bool,
     pub auth_password: String,
-    /// WebSocket clients and custom servers (phase 4b), kept as they are.
+    /// WebSocket clients ({id, name, endpoint, autoConnect, reconnectOnDisconnect, retryInterval, ...})
+    /// and custom servers ({id, name, address, port, endpoint, autoStart, ...}).
     pub connections: Vec<Obj>,
     pub servers: Vec<Obj>,
 }
@@ -94,8 +95,27 @@ pub async fn run(e: Rc<Engine>) {
     }
     let mut rx = e.subscribe();
     let mut running: Vec<tokio::task::AbortHandle> = Vec::new();
+    let mut extra: Vec<tokio::task::AbortHandle> = Vec::new();
     let mut last = None;
+    let mut last_extra = None;
     loop {
+        let now_extra = {
+            let c = rx.borrow();
+            (c.websockets.connections.clone(), c.websockets.servers.clone())
+        };
+        if last_extra.as_ref() != Some(&now_extra) {
+            for h in extra.drain(..) {
+                h.abort();
+            }
+            let (clients, servers) = now_extra.clone();
+            for c in clients.into_iter().filter(|c| flag(c, "autoConnect")) {
+                extra.push(tokio::task::spawn_local(ws_client(e.clone(), c)).abort_handle());
+            }
+            for s in servers.into_iter().filter(|s| flag(s, "autoStart")) {
+                extra.push(tokio::task::spawn_local(custom_server(e.clone(), s)).abort_handle());
+            }
+            last_extra = Some(now_extra);
+        }
         let now = {
             let c = rx.borrow_and_update();
             let mut ws = c.websockets.clone();
@@ -123,6 +143,158 @@ pub async fn run(e: Rc<Engine>) {
             return;
         }
     }
+}
+
+fn flag(o: &Obj, k: &str) -> bool {
+    o.get(k).and_then(Value::as_bool).unwrap_or(false)
+}
+
+fn field<'a>(o: &'a Obj, k: &str) -> &'a str {
+    o.get(k).and_then(Value::as_str).unwrap_or("")
+}
+
+/// Fire a WebSocket client/custom server trigger (filtered by its clientId/serverId) and its event.
+fn ws_event(e: &Rc<Engine>, client: bool, kind: &str, owner: &Obj, args: Obj) {
+    let id = field(owner, "id").to_string();
+    let (code, name) = match (client, kind) {
+        (true, "Open") => (803, "Websocket Client Opened"),
+        (true, "Close") => (804, "Websocket Client Closed"),
+        (true, _) => (805, "Websocket Client Message"),
+        (false, "Open") => (2001, "Custom Server Connection Opened"),
+        (false, "Close") => (2002, "Custom Server Connection Closed"),
+        (false, _) => (2003, "Custom Server Message"),
+    };
+    let (category, source, key, events) = if client {
+        (
+            "Core/Websocket/Client",
+            "websocketclient",
+            "clientId",
+            "WebsocketClient",
+        )
+    } else {
+        (
+            "Core/Websocket/Custom Server",
+            "websocketcustomserver",
+            "serverId",
+            "WebsocketCustomServer",
+        )
+    };
+    e.fire(code, name, category, source, &args, |t| field(t, key) == id);
+    e.emit(events, kind, || {
+        let mut d = json!({"id": id, "name": field(owner, "name")});
+        if let Some(o) = d.as_object_mut() {
+            o.extend(args);
+        }
+        d
+    });
+}
+
+/// A text or binary frame's text; None for the rest (and Some("") never).
+fn frame_text(m: Message) -> Option<Result<String, ()>> {
+    match m {
+        Message::Text(t) => Some(Ok(t.to_string())),
+        Message::Binary(b) => Some(Ok(String::from_utf8_lossy(&b).into_owned())),
+        Message::Close(_) => Some(Err(())),
+        _ => None,
+    }
+}
+
+/// A WebSocket client: connects, fires Opened / Message / Closed; retries every retryInterval
+/// seconds after a failed attempt, and after a disconnect when reconnectOnDisconnect is on (a failed
+/// attempt fires Closed too, as in Streamer.bot).
+async fn ws_client(e: Rc<Engine>, c: Obj) {
+    let url = field(&c, "endpoint").to_string();
+    let secs = c.get("retryInterval").and_then(Value::as_u64).unwrap_or(5).max(1);
+    loop {
+        match tokio_tungstenite::connect_async(url.as_str()).await {
+            Ok((ws, _)) => {
+                crate::say(format!("WebSocket client {}: connected to {url}", field(&c, "name")));
+                ws_event(&e, true, "Open", &c, Obj::new());
+                let (_sink, mut stream) = ws.split();
+                while let Some(Ok(m)) = stream.next().await {
+                    match frame_text(m) {
+                        Some(Ok(text)) => {
+                            let mut args = Obj::new();
+                            args.insert("message".into(), text.into());
+                            ws_event(&e, true, "Message", &c, args);
+                        }
+                        Some(Err(())) => break,
+                        None => {}
+                    }
+                }
+                ws_event(&e, true, "Close", &c, Obj::new());
+                if !flag(&c, "reconnectOnDisconnect") {
+                    return;
+                }
+            }
+            Err(err) => {
+                crate::say(format!("WebSocket client {}: {url}: {err}", field(&c, "name")));
+                ws_event(&e, true, "Close", &c, Obj::new());
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+    }
+}
+
+/// A custom WebSocket server: each connection gets a sessionId; fires Opened / Message (data) /
+/// Closed, with sessionId and ip.
+async fn custom_server(e: Rc<Engine>, s: Obj) {
+    let addr = field(&s, "address").to_string();
+    let port = s.get("port").and_then(Value::as_u64).unwrap_or(0) as u16;
+    let name = field(&s, "name").to_string();
+    let l = match TcpListener::bind((addr.as_str(), port)).await {
+        Ok(l) => l,
+        Err(err) => return crate::say(format!("custom server {name}: can't listen on {addr}:{port} ({err})")),
+    };
+    crate::say(format!(
+        "custom server {name} on ws://{addr}:{port}{}",
+        field(&s, "endpoint")
+    ));
+    loop {
+        let Ok((tcp, peer)) = l.accept().await else { continue };
+        let (e, s) = (e.clone(), s.clone());
+        tokio::task::spawn_local(async move {
+            let Ok(ws) = accept(tcp, field(&s, "endpoint").to_string()).await else {
+                return;
+            };
+            let mut args = Obj::new();
+            args.insert("sessionId".into(), crate::engine::uuid().into());
+            args.insert("ip".into(), peer.ip().to_string().into());
+            ws_event(&e, false, "Open", &s, args.clone());
+            let (_sink, mut stream) = ws.split();
+            while let Some(Ok(m)) = stream.next().await {
+                match frame_text(m) {
+                    Some(Ok(data)) => {
+                        let mut a = args.clone();
+                        a.insert("data".into(), data.into());
+                        ws_event(&e, false, "Message", &s, a);
+                    }
+                    Some(Err(())) => break,
+                    None => {}
+                }
+            }
+            ws_event(&e, false, "Close", &s, args);
+        });
+    }
+}
+
+/// Accept a WebSocket connection on `endpoint` only (404 elsewhere). The handshake callback's error
+/// type is tungstenite's (a whole HTTP response).
+#[allow(clippy::result_large_err)]
+async fn accept(tcp: TcpStream, endpoint: String) -> Result<tokio_tungstenite::WebSocketStream<TcpStream>, String> {
+    use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+    let check = move |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
+        if endpoint.is_empty() || req.uri().path() == endpoint {
+            Ok(resp)
+        } else {
+            let mut r = ErrorResponse::new(None);
+            *r.status_mut() = tokio_tungstenite::tungstenite::http::StatusCode::NOT_FOUND;
+            Err(r)
+        }
+    };
+    tokio_tungstenite::accept_hdr_async(tcp, check)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 fn info(e: &Engine) -> Value {
@@ -328,23 +500,8 @@ async fn websocket(e: Rc<Engine>, s: WsSettings) {
     }
 }
 
-// The handshake callback's error type is tungstenite's (a whole HTTP response).
-#[allow(clippy::result_large_err)]
 async fn connection(e: &Rc<Engine>, s: &WsSettings, tcp: TcpStream, conn: u64) -> Result<(), String> {
-    use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
-    let endpoint = s.endpoint.clone();
-    let check = move |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
-        if req.uri().path() == endpoint {
-            Ok(resp)
-        } else {
-            let mut r = ErrorResponse::new(None);
-            *r.status_mut() = tokio_tungstenite::tungstenite::http::StatusCode::NOT_FOUND;
-            Err(r)
-        }
-    };
-    let ws = tokio_tungstenite::accept_hdr_async(tcp, check)
-        .await
-        .map_err(|e| e.to_string())?;
+    let ws = accept(tcp, s.endpoint.clone()).await?;
     let (mut sink, mut stream) = ws.split();
     let (salt, challenge) = (random_b64(), random_b64());
     let mut hello = json!({"timestamp": crate::engine::globals::iso_now(), "session": crate::engine::uuid(),
@@ -564,6 +721,77 @@ mod tests {
             ),
             "1Ct943GAT+6YQUUX47Ia/ncufilbe6+oD6lY+5kaCu4="
         );
+    }
+
+    #[test]
+    fn client_and_custom_server() {
+        use crate::engine::tests::{action, engine, log};
+        let in_engine = crate::engine::tests::run;
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let watch = |id: &str, kind: u32, key: &str, owner: &str, msg: &str| {
+            let mut a = action(id, id, json!([log(msg)]));
+            a["triggers"] = json!([{key: owner, "id": id, "type": kind, "enabled": true}]);
+            a
+        };
+        let e = engine(json!({"actions": [
+            watch("1", 803, "clientId", "c", "T client open %triggerCategory%"),
+            watch("2", 805, "clientId", "c", "T client got %message%"),
+            watch("3", 2001, "serverId", "s", "T server open %ip%"),
+            watch("4", 2003, "serverId", "s", "T server got %data%"),
+            watch("5", 2002, "serverId", "s", "T server closed"),
+            watch("6", 804, "clientId", "c", "T client closed"),
+        ]}));
+        let out = in_engine(async move {
+            e.change(|c| {
+                c.websockets.auto_start = false;
+                let o = |v: Value| v.as_object().unwrap().clone();
+                c.websockets.servers = vec![o(json!({"id": "s", "name": "S", "address": "127.0.0.1", "port": port,
+                "endpoint": "/x", "autoStart": true}))];
+            });
+            tokio::task::spawn_local(super::run(e.clone()));
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            // An outside client says hello to the custom server.
+            let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/x"))
+                .await
+                .unwrap();
+            ws.send(Message::Text("hi".into())).await.unwrap();
+            ws.close(None).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            // streamerz's own client, talking to a one-shot server.
+            let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let p2 = l.local_addr().unwrap().port();
+            tokio::task::spawn_local(async move {
+                let (tcp, _) = l.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                ws.send(Message::Text("yo".into())).await.unwrap();
+                ws.close(None).await.unwrap();
+            });
+            e.change(|c| {
+                c.websockets.connections = vec![
+                    json!({"id": "c", "name": "C", "endpoint": format!("ws://127.0.0.1:{p2}/"),
+                    "autoConnect": true, "reconnectOnDisconnect": false})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ];
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        });
+        for w in [
+            "T server open 127.0.0.1",
+            "T server got hi",
+            "T server closed",
+            "T client open Core/Websocket/Client",
+            "T client got yo",
+            "T client closed",
+        ] {
+            assert!(out.iter().any(|x| x == w), "{w} missing: {out:?}");
+        }
     }
 
     #[test]

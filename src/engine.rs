@@ -978,12 +978,12 @@ pub(crate) mod tests {
         json!({"id": id, "name": name, "enabled": true, "queue": DEFAULT_QUEUE, "subActions": subs, "triggers": []})
     }
 
-    pub(super) fn log(msg: &str) -> Value {
+    pub(crate) fn log(msg: &str) -> Value {
         json!({"type": 1020, "logLevel": 1, "message": msg})
     }
 
     /// Run a test body on a LocalSet, then return the log lines that start with "T ".
-    pub(super) fn run(f: impl Future<Output = ()>) -> Vec<String> {
+    pub(crate) fn run(f: impl Future<Output = ()>) -> Vec<String> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

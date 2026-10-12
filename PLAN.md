@@ -170,7 +170,7 @@ platform handles through channels, never through shared locks held across awaits
     them; the platforms' own events come with their phases.
   - Answers match the real Streamer.bot's byte-for-byte where it can be compared (captured from it).
   - On 8090, songrequestz and real Streamer.bot clients must work unchanged.
-- [ ] 4b. WebSocket clients and custom servers, with their triggers. Tick the rest of COVERAGE "Phase 4".
+- [x] 4b. WebSocket clients and custom servers, with their triggers. Tick the rest of COVERAGE "Phase 4".
 - [ ] 5. Editor UI:
   - All tabs, the actions tree with drag-reorder, the sub-action list (enable/disable, nesting for logic).
   - Trigger and command editors, timers, queues, globals viewer.
