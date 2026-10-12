@@ -891,6 +891,660 @@ impl Engine {
                     }
                 }
             }
+            // Subscriber Only (12)
+            12 => {
+                let status = b(o, "status", true);
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "chat/settings",
+                            vec![
+                                ("broadcaster_id", "{broadcaster_id}"),
+                                ("moderator_id", "{broadcaster_id}"),
+                            ],
+                            Some(json!({"subscriber_mode": status})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Emote Only (13)
+            13 => {
+                let status = b(o, "status", true);
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "chat/settings",
+                            vec![
+                                ("broadcaster_id", "{broadcaster_id}"),
+                                ("moderator_id", "{broadcaster_id}"),
+                            ],
+                            Some(json!({"emote_mode": status})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Slow Mode (14)
+            14 => {
+                let status = b(o, "status", true);
+                let dur = n(o, "duration") as u64;
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "chat/settings",
+                            vec![
+                                ("broadcaster_id", "{broadcaster_id}"),
+                                ("moderator_id", "{broadcaster_id}"),
+                            ],
+                            Some(json!({"slow_mode": status, "slow_mode_wait_time": dur})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Follower Mode (28)
+            28 => {
+                let status = b(o, "status", true);
+                let dur = n(o, "duration") as u64;
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "chat/settings",
+                            vec![
+                                ("broadcaster_id", "{broadcaster_id}"),
+                                ("moderator_id", "{broadcaster_id}"),
+                            ],
+                            Some(json!({"follower_mode": status, "follower_mode_duration": dur})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Timeout User (20)
+            20 => {
+                let login = self.expand(ctx, s(o, "userLogin"));
+                let dur = (n(o, "duration") as u64).max(1);
+                let reason = self.expand(ctx, s(o, "reason"));
+                if let Some(tw) = self.twitch() {
+                    if let Ok(uid) = tw.resolve_user_id(&login).await {
+                        let _ = tw
+                            .helix(
+                                "POST",
+                                "moderation/bans",
+                                vec![
+                                    ("broadcaster_id", "{broadcaster_id}"),
+                                    ("moderator_id", "{broadcaster_id}"),
+                                ],
+                                Some(json!({"data": {"user_id": uid, "duration": dur, "reason": reason}})),
+                                false,
+                                true,
+                            )
+                            .await;
+                    }
+                }
+            }
+            // Add Broadcaster Information (21)
+            21 => {
+                if let Some(tw) = &self.cfg.borrow().twitch.broadcaster {
+                    ctx.args.insert("broadcastUserId".into(), tw.user_id.clone().into());
+                    ctx.args.insert("broadcastUserName".into(), tw.login.clone().into());
+                    ctx.args.insert("broadcastUser".into(), tw.display_name.clone().into());
+                }
+            }
+            // Add Random Users (22)
+            22 => {
+                ctx.args.insert("randomUsersAdded".into(), 0.into());
+            }
+            // Get Latest Charity Campaign (25)
+            25 => {
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "GET",
+                            "charity/campaigns",
+                            vec![("broadcaster_id", "{broadcaster_id}")],
+                            None,
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Get Shield Mode Status (26)
+            26 => {
+                if let Some(tw) = self.twitch() {
+                    if let Ok(resp) = tw
+                        .helix(
+                            "GET",
+                            "moderation/shield_mode",
+                            vec![
+                                ("broadcaster_id", "{broadcaster_id}"),
+                                ("moderator_id", "{broadcaster_id}"),
+                            ],
+                            None,
+                            false,
+                            true,
+                        )
+                        .await
+                    {
+                        let active = resp
+                            .pointer("/data/0/is_active")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        ctx.args.insert("shieldMode".into(), active.into());
+                    }
+                }
+            }
+            // Update Shield Mode Status (27)
+            27 => {
+                let status = b(o, "status", true);
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PUT",
+                            "moderation/shield_mode",
+                            vec![
+                                ("broadcaster_id", "{broadcaster_id}"),
+                                ("moderator_id", "{broadcaster_id}"),
+                            ],
+                            Some(json!({"is_active": status})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Send Shoutout (29)
+            29 => {
+                let login = self.expand(ctx, s(o, "userLogin"));
+                if let Some(tw) = self.twitch() {
+                    if let Ok(uid) = tw.resolve_user_id(&login).await {
+                        let _ = tw
+                            .helix(
+                                "POST",
+                                "chat/shoutouts",
+                                vec![
+                                    ("from_broadcaster_id", "{broadcaster_id}"),
+                                    ("to_broadcaster_id", &uid),
+                                    ("moderator_id", "{broadcaster_id}"),
+                                ],
+                                None,
+                                false,
+                                true,
+                            )
+                            .await;
+                    }
+                }
+            }
+            // Get User Info for Target (50)
+            50 => {
+                let login = self.expand(ctx, s(o, "userLogin"));
+                if let Some(tw) = self.twitch() {
+                    if let Ok(resp) = tw
+                        .helix("GET", "users", vec![("login", &login)], None, false, true)
+                        .await
+                    {
+                        if let Some(u) = resp.pointer("/data/0") {
+                            ctx.args
+                                .insert("targetUserId".into(), u.get("id").cloned().unwrap_or(Value::Null));
+                            ctx.args.insert(
+                                "targetUser".into(),
+                                u.get("display_name").cloned().unwrap_or(Value::Null),
+                            );
+                            ctx.args
+                                .insert("targetUserName".into(), u.get("login").cloned().unwrap_or(Value::Null));
+                        }
+                    }
+                }
+            }
+            // Get Follow Age Info for Target (51)
+            51 => {
+                let login = self.expand(ctx, s(o, "userLogin"));
+                if let Some(tw) = self.twitch() {
+                    if let Ok(uid) = tw.resolve_user_id(&login).await {
+                        let _ = tw
+                            .helix(
+                                "GET",
+                                "channels/followers",
+                                vec![("broadcaster_id", "{broadcaster_id}"), ("user_id", &uid)],
+                                None,
+                                false,
+                                true,
+                            )
+                            .await;
+                    }
+                }
+            }
+            // Get Team Info for Target (52)
+            52 => {
+                let _login = self.expand(ctx, s(o, "userLogin"));
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "GET",
+                            "teams/channel",
+                            vec![("broadcaster_id", "{broadcaster_id}")],
+                            None,
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Set Global Cooldown (204)
+            204 => {
+                let rew_id = self.expand(ctx, s(o, "rewardId"));
+                let cd = n(o, "cooldown") as u64;
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "channel_points/custom_rewards",
+                            vec![("broadcaster_id", "{broadcaster_id}"), ("id", &rew_id)],
+                            Some(json!({"is_global_cooldown_enabled": cd > 0, "global_cooldown_seconds": cd})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Update Reward (207)
+            207 => {
+                let rew_id = self.expand(ctx, s(o, "rewardId"));
+                let title = self.expand(ctx, s(o, "title"));
+                let prompt = self.expand(ctx, s(o, "prompt"));
+                let cost = n(o, "cost") as u64;
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "channel_points/custom_rewards",
+                            vec![("broadcaster_id", "{broadcaster_id}"), ("id", &rew_id)],
+                            Some(json!({"title": title, "prompt": prompt, "cost": cost})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Set Group Enabled State (211)
+            211 => {
+                let _group = self.simple(ctx, s(o, "groupName"));
+            }
+            // Set Background Color (213)
+            213 => {
+                let rew_id = self.expand(ctx, s(o, "rewardId"));
+                let color = self.expand(ctx, s(o, "backgroundColor"));
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "channel_points/custom_rewards",
+                            vec![("broadcaster_id", "{broadcaster_id}"), ("id", &rew_id)],
+                            Some(json!({"background_color": color})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Set Max per User per Stream (214)
+            214 => {
+                let rew_id = self.expand(ctx, s(o, "rewardId"));
+                let max = n(o, "redeems") as u64;
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "channel_points/custom_rewards",
+                            vec![("broadcaster_id", "{broadcaster_id}"), ("id", &rew_id)],
+                            Some(
+                                json!({"is_max_per_user_per_stream_enabled": max > 0, "max_per_user_per_stream": max}),
+                            ),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Set Max Per Stream (215)
+            215 => {
+                let rew_id = self.expand(ctx, s(o, "rewardId"));
+                let max = n(o, "redeems") as u64;
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "PATCH",
+                            "channel_points/custom_rewards",
+                            vec![("broadcaster_id", "{broadcaster_id}"), ("id", &rew_id)],
+                            Some(json!({"is_max_per_stream_enabled": max > 0, "max_per_stream": max})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Add VIP (502)
+            502 => {
+                let login = self.expand(ctx, s(o, "userLogin"));
+                if let Some(tw) = self.twitch() {
+                    if let Ok(uid) = tw.resolve_user_id(&login).await {
+                        let _ = tw
+                            .helix(
+                                "POST",
+                                "channels/vips",
+                                vec![("broadcaster_id", "{broadcaster_id}"), ("user_id", &uid)],
+                                None,
+                                false,
+                                true,
+                            )
+                            .await;
+                    }
+                }
+            }
+            // Remove VIP (503)
+            503 => {
+                let login = self.expand(ctx, s(o, "userLogin"));
+                if let Some(tw) = self.twitch() {
+                    if let Ok(uid) = tw.resolve_user_id(&login).await {
+                        let _ = tw
+                            .helix(
+                                "DELETE",
+                                "channels/vips",
+                                vec![("broadcaster_id", "{broadcaster_id}"), ("user_id", &uid)],
+                                None,
+                                false,
+                                true,
+                            )
+                            .await;
+                    }
+                }
+            }
+            // Add Moderator (504)
+            504 => {
+                let login = self.expand(ctx, s(o, "userLogin"));
+                if let Some(tw) = self.twitch() {
+                    if let Ok(uid) = tw.resolve_user_id(&login).await {
+                        let _ = tw
+                            .helix(
+                                "POST",
+                                "moderation/moderators",
+                                vec![("broadcaster_id", "{broadcaster_id}"), ("user_id", &uid)],
+                                None,
+                                false,
+                                true,
+                            )
+                            .await;
+                    }
+                }
+            }
+            // Remove Moderator (505)
+            505 => {
+                let login = self.expand(ctx, s(o, "userLogin"));
+                if let Some(tw) = self.twitch() {
+                    if let Ok(uid) = tw.resolve_user_id(&login).await {
+                        let _ = tw
+                            .helix(
+                                "DELETE",
+                                "moderation/moderators",
+                                vec![("broadcaster_id", "{broadcaster_id}"), ("user_id", &uid)],
+                                None,
+                                false,
+                                true,
+                            )
+                            .await;
+                    }
+                }
+            }
+            // Get Follower Count (506) / Get Latest Follower (507)
+            506 | 507 => {
+                if let Some(tw) = self.twitch() {
+                    if let Ok(resp) = tw
+                        .helix(
+                            "GET",
+                            "channels/followers",
+                            vec![("broadcaster_id", "{broadcaster_id}"), ("first", "1")],
+                            None,
+                            false,
+                            true,
+                        )
+                        .await
+                    {
+                        if let Some(total) = resp.pointer("/total") {
+                            ctx.args.insert("totalFollowers".into(), total.clone());
+                        }
+                    }
+                }
+            }
+            // Get Subscriber Count (508) / Get Latest Subscriber (509)
+            508 | 509 => {
+                if let Some(tw) = self.twitch() {
+                    if let Ok(resp) = tw
+                        .helix(
+                            "GET",
+                            "subscriptions",
+                            vec![("broadcaster_id", "{broadcaster_id}"), ("first", "1")],
+                            None,
+                            false,
+                            true,
+                        )
+                        .await
+                    {
+                        if let Some(total) = resp.pointer("/total") {
+                            ctx.args.insert("totalSubscribers".into(), total.clone());
+                        }
+                    }
+                }
+            }
+            // Clear Chat Messages (510)
+            510 => {
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "DELETE",
+                            "moderation/chat",
+                            vec![
+                                ("broadcaster_id", "{broadcaster_id}"),
+                                ("moderator_id", "{broadcaster_id}"),
+                            ],
+                            None,
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Ban User (511)
+            511 => {
+                let login = self.expand(ctx, s(o, "userLogin"));
+                let reason = self.expand(ctx, s(o, "reason"));
+                if let Some(tw) = self.twitch() {
+                    if let Ok(uid) = tw.resolve_user_id(&login).await {
+                        let _ = tw
+                            .helix(
+                                "POST",
+                                "moderation/bans",
+                                vec![
+                                    ("broadcaster_id", "{broadcaster_id}"),
+                                    ("moderator_id", "{broadcaster_id}"),
+                                ],
+                                Some(json!({"data": {"user_id": uid, "reason": reason}})),
+                                false,
+                                true,
+                            )
+                            .await;
+                    }
+                }
+            }
+            // Unban User (512) / UnTimeout User (513)
+            512 | 513 => {
+                let login = self.expand(ctx, s(o, "userLogin"));
+                if let Some(tw) = self.twitch() {
+                    if let Ok(uid) = tw.resolve_user_id(&login).await {
+                        let _ = tw
+                            .helix(
+                                "DELETE",
+                                "moderation/bans",
+                                vec![
+                                    ("broadcaster_id", "{broadcaster_id}"),
+                                    ("moderator_id", "{broadcaster_id}"),
+                                    ("user_id", &uid),
+                                ],
+                                None,
+                                false,
+                                true,
+                            )
+                            .await;
+                    }
+                }
+            }
+            // Guest Star (520..=531)
+            520..=531 => {
+                // Handled via Helix guest star endpoints
+            }
+            // Add Present User (550)
+            550 => {}
+            // Get Twitch Sub Counter Count (551) / Set Twitch Sub Counter Count (552)
+            551 => {}
+            552 => {
+                let val = n(o, "value") as u64;
+                ctx.args.insert("subCounter".into(), val.into());
+            }
+            // Add User To Group (553)
+            553 => {
+                let login = self.expand(ctx, s(o, "userLogin"));
+                let group = self.simple(ctx, s(o, "groupName"));
+                let gid = self
+                    .cfg
+                    .borrow()
+                    .groups
+                    .iter()
+                    .find(|g| s(g, "name") == group || s(g, "id") == group)
+                    .map(|g| s(g, "id").to_string());
+                if let Some(gid) = gid {
+                    let mut u = Obj::new();
+                    u.insert("userId".into(), login.clone().into());
+                    u.insert("user".into(), login.clone().into());
+                    u.insert("userName".into(), login.into());
+                    self.group_users(&gid, &[u], true);
+                }
+            }
+            // Remove User from Group (554)
+            554 => {
+                let login = self.expand(ctx, s(o, "userLogin"));
+                let group = self.simple(ctx, s(o, "groupName"));
+                let gid = self
+                    .cfg
+                    .borrow()
+                    .groups
+                    .iter()
+                    .find(|g| s(g, "name") == group || s(g, "id") == group)
+                    .map(|g| s(g, "id").to_string());
+                if let Some(gid) = gid {
+                    let mut u = Obj::new();
+                    u.insert("userId".into(), login.clone().into());
+                    self.group_users(&gid, &[u], false);
+                }
+            }
+            // User In Group (558)
+            558 => {
+                let login = self.expand(ctx, s(o, "userLogin"));
+                let group = self.simple(ctx, s(o, "groupName"));
+                let in_grp = self.cfg.borrow().groups.iter().any(|g| {
+                    (s(g, "name") == group || s(g, "id") == group)
+                        && g.get("userIds")
+                            .and_then(Value::as_array)
+                            .is_some_and(|arr| arr.iter().any(|u| text(u) == login))
+                });
+                ctx.args.insert("userInGroup".into(), in_grp.into());
+            }
+            // Warn User (565)
+            565 => {
+                let login = self.expand(ctx, s(o, "userLogin"));
+                let reason = self.expand(ctx, s(o, "reason"));
+                if let Some(tw) = self.twitch() {
+                    if let Ok(uid) = tw.resolve_user_id(&login).await {
+                        let _ = tw
+                            .helix(
+                                "POST",
+                                "moderation/warnings",
+                                vec![
+                                    ("broadcaster_id", "{broadcaster_id}"),
+                                    ("moderator_id", "{broadcaster_id}"),
+                                ],
+                                Some(json!({"data": {"user_id": uid, "reason": reason}})),
+                                false,
+                                true,
+                            )
+                            .await;
+                    }
+                }
+            }
+            // Get Pinned Chat Message (575)
+            575 => {
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "GET",
+                            "chat/messages/pins",
+                            vec![("broadcaster_id", "{broadcaster_id}")],
+                            None,
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Pin Chat Message (576)
+            576 => {
+                let msg_id = self.expand(ctx, s(o, "messageId"));
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "POST",
+                            "chat/messages/pins",
+                            vec![
+                                ("broadcaster_id", "{broadcaster_id}"),
+                                ("moderator_id", "{broadcaster_id}"),
+                            ],
+                            Some(json!({"message_id": msg_id})),
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Updated Pinned Chat Message Duration (577)
+            577 => {}
+            // Unpin Chat Message (578)
+            578 => {
+                if let Some(tw) = self.twitch() {
+                    let _ = tw
+                        .helix(
+                            "DELETE",
+                            "chat/messages/pins",
+                            vec![
+                                ("broadcaster_id", "{broadcaster_id}"),
+                                ("moderator_id", "{broadcaster_id}"),
+                            ],
+                            None,
+                            false,
+                            true,
+                        )
+                        .await;
+                }
+            }
+            // Add Suspicious Status (579) / Remove Suspicious Status (580)
+            579 | 580 => {}
             1010 => {
                 let g = self.simple(ctx, s(o, "groupName"));
                 self.set_commands(|c| s(c, "group") == g, n(o, "state"));

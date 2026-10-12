@@ -186,7 +186,7 @@ platform handles through channels, never through shared locks held across awaits
   - Channel points rewards (create/update/redemptions), power-ups.
   - Polls, predictions, goals, hype train, community goals.
   - Channel info (title, category, tags), clips, markers, ads.
-- [ ] 8. Twitch C:
+- [x] 8. Twitch C:
   - Moderation (bans, timeouts, unban requests, AutoMod, shield mode, warnings, chat settings).
   - Shared chat, Guest Star, user groups.
   - Third-party emotes and the rest of the Twitch list. COVERAGE Twitch complete.

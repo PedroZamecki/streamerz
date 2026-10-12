@@ -53,6 +53,29 @@ pub const BROADCASTER_SCOPES: &[&str] = &[
     "channel:manage:ads",
     "channel:manage:broadcast",
     "clips:edit",
+    "moderation:read",
+    "moderator:manage:banned_users",
+    "moderator:read:banned_users",
+    "moderator:manage:chat_messages",
+    "moderator:read:chat_settings",
+    "moderator:manage:chat_settings",
+    "moderator:manage:shield_mode",
+    "moderator:read:shield_mode",
+    "moderator:manage:warnings",
+    "moderator:read:warnings",
+    "moderator:manage:unban_requests",
+    "moderator:read:unban_requests",
+    "moderator:manage:automod",
+    "moderator:read:automod_settings",
+    "moderator:manage:shoutouts",
+    "moderator:read:shoutouts",
+    "moderator:read:suspicious_users",
+    "channel:manage:moderators",
+    "channel:manage:vips",
+    "channel:read:vips",
+    "channel:read:charity",
+    "channel:read:guest_star",
+    "channel:manage:guest_star",
 ];
 
 pub const BOT_SCOPES: &[&str] = &[
@@ -121,6 +144,88 @@ pub const T_AUTOMATIC_REWARD_REDEMPTION: u32 = 194;
 pub const T_POWER_UP_REDEMPTION: u32 = 196;
 pub const T_POLL_ARCHIVED: u32 = 473;
 pub const T_CUSTOM_POWER_UP_REDEMPTION: u32 = 496;
+
+// Phase 8 (Twitch C) Trigger codes
+pub const T_SUB_COUNTER_ROLLOVER: u32 = 121;
+pub const T_PRESENT_VIEWERS: u32 = 124;
+pub const T_CHAT_MESSAGE_DELETED: u32 = 135;
+pub const T_USER_TIMED_OUT: u32 = 136;
+pub const T_USER_BANNED: u32 = 137;
+pub const T_CHARITY_DONATION: u32 = 141;
+pub const T_CHARITY_COMPLETED: u32 = 142;
+pub const T_SHOUTOUT_CREATED: u32 = 144;
+pub const T_USER_UNTIMED_OUT: u32 = 145;
+pub const T_CHARITY_STARTED: u32 = 146;
+pub const T_CHARITY_PROGRESS: u32 = 147;
+pub const T_SHIELD_MODE_BEGIN: u32 = 151;
+pub const T_SHIELD_MODE_END: u32 = 152;
+pub const T_SHOUTOUT_RECEIVED: u32 = 156;
+pub const T_CHAT_CLEARED: u32 = 157;
+pub const T_PYRAMID_SUCCESS: u32 = 162;
+pub const T_PYRAMID_BROKEN: u32 = 163;
+pub const T_GUEST_STAR_SESSION_BEGIN: u32 = 165;
+pub const T_GUEST_STAR_SESSION_END: u32 = 166;
+pub const T_GUEST_STAR_GUEST_UPDATE: u32 = 167;
+pub const T_GUEST_STAR_SLOT_UPDATE: u32 = 168;
+pub const T_GUEST_STAR_SETTINGS_UPDATE: u32 = 169;
+pub const T_SEVEN_TV_EMOTE_ADDED: u32 = 180;
+pub const T_SEVEN_TV_EMOTE_REMOVED: u32 = 181;
+pub const T_BETTER_TTV_EMOTE_ADDED: u32 = 182;
+pub const T_BETTER_TTV_EMOTE_REMOVED: u32 = 183;
+pub const T_MODERATOR_ADDED: u32 = 187;
+pub const T_MODERATOR_REMOVED: u32 = 188;
+pub const T_VIP_ADDED: u32 = 189;
+pub const T_VIP_REMOVED: u32 = 190;
+pub const T_USER_UNBANNED: u32 = 191;
+pub const T_UNBAN_REQUEST_APPROVED: u32 = 192;
+pub const T_UNBAN_REQUEST_DENIED: u32 = 193;
+pub const T_UNBAN_REQUEST_CREATED: u32 = 195;
+pub const T_CHAT_MODE_EMOTE_ON: u32 = 451;
+pub const T_CHAT_MODE_EMOTE_OFF: u32 = 452;
+pub const T_CHAT_MODE_FOLLOWER_ON: u32 = 453;
+pub const T_CHAT_MODE_FOLLOWER_OFF: u32 = 454;
+pub const T_CHAT_MODE_FOLLOWER_CHANGED: u32 = 455;
+pub const T_CHAT_MODE_SLOW_ON: u32 = 456;
+pub const T_CHAT_MODE_SLOW_OFF: u32 = 457;
+pub const T_CHAT_MODE_SLOW_CHANGED: u32 = 458;
+pub const T_CHAT_MODE_SUBSCRIBER_ON: u32 = 459;
+pub const T_CHAT_MODE_SUBSCRIBER_OFF: u32 = 460;
+pub const T_CHAT_MODE_UNIQUE_ON: u32 = 461;
+pub const T_CHAT_MODE_UNIQUE_OFF: u32 = 462;
+pub const T_AUTOMOD_MESSAGE_HELD: u32 = 463;
+pub const T_AUTOMOD_MESSAGE_UPDATED: u32 = 464;
+pub const T_BLOCKED_TERMS_ADDED: u32 = 465;
+pub const T_BLOCKED_TERMS_DELETED: u32 = 466;
+pub const T_WARNED_USER: u32 = 467;
+pub const T_SUSPICIOUS_USER_UPDATE: u32 = 468;
+pub const T_PERMITTED_TERMS_ADDED: u32 = 469;
+pub const T_PERMITTED_TERMS_DELETED: u32 = 470;
+pub const T_WARNING_ACKNOWLEDGED: u32 = 471;
+pub const T_WATCH_STREAK: u32 = 472;
+pub const T_SHARED_CHAT_SESSION_BEGIN: u32 = 474;
+pub const T_SHARED_CHAT_SESSION_UPDATE: u32 = 475;
+pub const T_SHARED_CHAT_SESSION_END: u32 = 476;
+pub const T_PRIME_PAID_UPGRADE: u32 = 477;
+pub const T_PAY_IT_FORWARD: u32 = 478;
+pub const T_GIFT_PAID_UPGRADE: u32 = 479;
+pub const T_BITS_BADGE_TIER: u32 = 480;
+pub const T_SHARED_CHAT_ANNOUNCEMENT: u32 = 481;
+pub const T_SHARED_CHAT_RAID: u32 = 482;
+pub const T_SHARED_CHAT_PRIME_PAID_UPGRADE: u32 = 483;
+pub const T_SHARED_CHAT_GIFT_PAID_UPGRADE: u32 = 484;
+pub const T_SHARED_CHAT_PAY_IT_FORWARD: u32 = 485;
+pub const T_SHARED_CHAT_SUB: u32 = 486;
+pub const T_SHARED_CHAT_RESUB: u32 = 487;
+pub const T_SHARED_CHAT_SUB_GIFT: u32 = 488;
+pub const T_SHARED_CHAT_COMMUNITY_SUB_GIFT: u32 = 489;
+pub const T_SHARED_CHAT_USER_BANNED: u32 = 490;
+pub const T_SHARED_CHAT_USER_UNBANNED: u32 = 491;
+pub const T_SHARED_CHAT_USER_TIMED_OUT: u32 = 492;
+pub const T_SHARED_CHAT_USER_UNTIMED_OUT: u32 = 493;
+pub const T_SHARED_CHAT_MESSAGE_DELETED: u32 = 494;
+pub const T_SUSPICIOUS_USER_MESSAGE: u32 = 495;
+pub const T_MODIVERSARY: u32 = 497;
+pub const T_SHARED_MODIVERSARY: u32 = 498;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default, rename_all = "camelCase")]
@@ -203,6 +308,10 @@ pub enum TwitchCmd {
         use_bot: bool,
         fallback: bool,
         resp: oneshot::Sender<Result<Value, String>>,
+    },
+    ResolveUserId {
+        login: String,
+        resp: oneshot::Sender<Result<String, String>>,
     },
     ClearFirstWords,
     Connect,
@@ -302,6 +411,15 @@ impl TwitchHandle {
             body,
             use_bot,
             fallback,
+            resp: resp_tx,
+        });
+        resp_rx.await.map_err(|_| String::from("Twitch task stopped"))?
+    }
+
+    pub async fn resolve_user_id(&self, login: &str) -> Result<String, String> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.send(TwitchCmd::ResolveUserId {
+            login: login.to_string(),
             resp: resp_tx,
         });
         resp_rx.await.map_err(|_| String::from("Twitch task stopped"))?
@@ -675,6 +793,10 @@ impl Runner {
                     .await;
                 let _ = resp.send(res);
             }
+            TwitchCmd::ResolveUserId { login, resp } => {
+                let res = self.resolve_user_id(&login).await;
+                let _ = resp.send(res);
+            }
         }
     }
 
@@ -909,6 +1031,25 @@ impl Runner {
             Ok(())
         } else {
             Err(format!("Cancel raid failed: HTTP {} {}", res.status, res.text()))
+        }
+    }
+
+    async fn resolve_user_id(&self, login: &str) -> Result<String, String> {
+        if login.is_empty() {
+            return Err("Empty login".into());
+        }
+        let broadcaster = self.cfg.borrow().twitch.broadcaster.clone();
+        let broadcaster = broadcaster.as_ref().ok_or("No broadcaster account")?;
+        let token = &broadcaster.token.access_token;
+        match fetch_user(CLIENT_ID, token, Some(login)).await {
+            Ok(u) => Ok(u.user_id),
+            Err(e) => {
+                if login.chars().all(|c| c.is_ascii_digit()) {
+                    Ok(login.to_string())
+                } else {
+                    Err(e)
+                }
+            }
         }
     }
 
@@ -1311,6 +1452,95 @@ async fn create_all_subscriptions(sid: &str, token: &str, bid: &str) {
         ("channel.goal.end", "1", json!({"broadcaster_user_id": bid})),
         ("channel.update", "2", json!({"broadcaster_user_id": bid})),
         ("channel.ad_break.begin", "1", json!({"broadcaster_user_id": bid})),
+        ("channel.ban", "1", json!({"broadcaster_user_id": bid})),
+        ("channel.unban", "1", json!({"broadcaster_user_id": bid})),
+        ("channel.moderator.add", "1", json!({"broadcaster_user_id": bid})),
+        ("channel.moderator.remove", "1", json!({"broadcaster_user_id": bid})),
+        ("channel.vip.add", "1", json!({"broadcaster_user_id": bid})),
+        ("channel.vip.remove", "1", json!({"broadcaster_user_id": bid})),
+        (
+            "channel.shield_mode.begin",
+            "1",
+            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+        ),
+        (
+            "channel.shield_mode.end",
+            "1",
+            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+        ),
+        (
+            "channel.shoutout.create",
+            "1",
+            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+        ),
+        (
+            "channel.shoutout.receive",
+            "1",
+            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+        ),
+        (
+            "channel.chat.clear",
+            "1",
+            json!({"broadcaster_user_id": bid, "user_id": bid}),
+        ),
+        (
+            "channel.chat.clear_user_messages",
+            "1",
+            json!({"broadcaster_user_id": bid, "user_id": bid}),
+        ),
+        (
+            "channel.chat_settings.update",
+            "1",
+            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+        ),
+        (
+            "channel.charity_campaign.donate",
+            "1",
+            json!({"broadcaster_user_id": bid}),
+        ),
+        (
+            "channel.charity_campaign.start",
+            "1",
+            json!({"broadcaster_user_id": bid}),
+        ),
+        (
+            "channel.charity_campaign.progress",
+            "1",
+            json!({"broadcaster_user_id": bid}),
+        ),
+        (
+            "channel.charity_campaign.stop",
+            "1",
+            json!({"broadcaster_user_id": bid}),
+        ),
+        (
+            "channel.guest_star_session.begin",
+            "beta",
+            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+        ),
+        (
+            "channel.guest_star_session.end",
+            "beta",
+            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+        ),
+        (
+            "channel.guest_star_guest.update",
+            "beta",
+            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+        ),
+        (
+            "channel.guest_star_slot.update",
+            "beta",
+            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+        ),
+        (
+            "channel.guest_star_settings.update",
+            "beta",
+            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+        ),
+        ("channel.shared_chat.begin", "1", json!({"broadcaster_user_id": bid})),
+        ("channel.shared_chat.update", "1", json!({"broadcaster_user_id": bid})),
+        ("channel.shared_chat.end", "1", json!({"broadcaster_user_id": bid})),
     ];
 
     for (stype, ver, cond) in subs {
@@ -2262,6 +2492,481 @@ fn handle_notification(
             engine.fire(T_AD_RUN, "Ad Run", "Twitch/Ads", "twitch", &args, |_| true);
             engine.emit("Twitch", "AdRun", || json!(args));
         }
+        "channel.ban" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let uid = event.pointer("/user_id").and_then(Value::as_str).unwrap_or("");
+            let ulogin = event.pointer("/user_login").and_then(Value::as_str).unwrap_or("");
+            let uname = event.pointer("/user_name").and_then(Value::as_str).unwrap_or("");
+            let reason = event.pointer("/reason").and_then(Value::as_str).unwrap_or("");
+            let is_perm = event.pointer("/is_permanent").and_then(Value::as_bool).unwrap_or(true);
+            populate_user_vars(&mut args, uid, ulogin, uname, 1, false);
+            args.insert("reason".into(), reason.into());
+            args.insert("isPermanent".into(), is_perm.into());
+            if is_perm {
+                engine.fire(
+                    T_USER_BANNED,
+                    "User Banned",
+                    "Twitch/Moderation",
+                    "twitch",
+                    &args,
+                    |_| true,
+                );
+                engine.emit("Twitch", "UserBanned", || json!(args));
+            } else {
+                let ends = event.pointer("/ends_at").and_then(Value::as_str).unwrap_or("");
+                args.insert("endsAt".into(), ends.into());
+                engine.fire(
+                    T_USER_TIMED_OUT,
+                    "User Timed Out",
+                    "Twitch/Moderation",
+                    "twitch",
+                    &args,
+                    |_| true,
+                );
+                engine.emit("Twitch", "UserTimedOut", || json!(args));
+            }
+        }
+        "channel.unban" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let uid = event.pointer("/user_id").and_then(Value::as_str).unwrap_or("");
+            let ulogin = event.pointer("/user_login").and_then(Value::as_str).unwrap_or("");
+            let uname = event.pointer("/user_name").and_then(Value::as_str).unwrap_or("");
+            populate_user_vars(&mut args, uid, ulogin, uname, 1, false);
+            engine.fire(
+                T_USER_UNBANNED,
+                "User Unbanned",
+                "Twitch/Moderation",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.fire(
+                T_USER_UNTIMED_OUT,
+                "User Untimed Out",
+                "Twitch/Moderation",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "UserUnbanned", || json!(args));
+            engine.emit("Twitch", "UserUntimedOut", || json!(args));
+        }
+        "channel.moderator.add" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let uid = event.pointer("/user_id").and_then(Value::as_str).unwrap_or("");
+            let ulogin = event.pointer("/user_login").and_then(Value::as_str).unwrap_or("");
+            let uname = event.pointer("/user_name").and_then(Value::as_str).unwrap_or("");
+            populate_user_vars(&mut args, uid, ulogin, uname, 3, false);
+            engine.fire(
+                T_MODERATOR_ADDED,
+                "Moderator Added",
+                "Twitch/Moderation",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "ModeratorAdded", || json!(args));
+        }
+        "channel.moderator.remove" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let uid = event.pointer("/user_id").and_then(Value::as_str).unwrap_or("");
+            let ulogin = event.pointer("/user_login").and_then(Value::as_str).unwrap_or("");
+            let uname = event.pointer("/user_name").and_then(Value::as_str).unwrap_or("");
+            populate_user_vars(&mut args, uid, ulogin, uname, 1, false);
+            engine.fire(
+                T_MODERATOR_REMOVED,
+                "Moderator Removed",
+                "Twitch/Moderation",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "ModeratorRemoved", || json!(args));
+        }
+        "channel.vip.add" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let uid = event.pointer("/user_id").and_then(Value::as_str).unwrap_or("");
+            let ulogin = event.pointer("/user_login").and_then(Value::as_str).unwrap_or("");
+            let uname = event.pointer("/user_name").and_then(Value::as_str).unwrap_or("");
+            populate_user_vars(&mut args, uid, ulogin, uname, 2, false);
+            engine.fire(T_VIP_ADDED, "VIP Added", "Twitch/Moderation", "twitch", &args, |_| true);
+            engine.emit("Twitch", "VipAdded", || json!(args));
+        }
+        "channel.vip.remove" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let uid = event.pointer("/user_id").and_then(Value::as_str).unwrap_or("");
+            let ulogin = event.pointer("/user_login").and_then(Value::as_str).unwrap_or("");
+            let uname = event.pointer("/user_name").and_then(Value::as_str).unwrap_or("");
+            populate_user_vars(&mut args, uid, ulogin, uname, 1, false);
+            engine.fire(
+                T_VIP_REMOVED,
+                "VIP Removed",
+                "Twitch/Moderation",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "VipRemoved", || json!(args));
+        }
+        "channel.shield_mode.begin" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            engine.fire(
+                T_SHIELD_MODE_BEGIN,
+                "Shield Mode Begin",
+                "Twitch/Moderation",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "ShieldModeBegin", || json!(args));
+        }
+        "channel.shield_mode.end" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            engine.fire(
+                T_SHIELD_MODE_END,
+                "Shield Mode End",
+                "Twitch/Moderation",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "ShieldModeEnd", || json!(args));
+        }
+        "channel.shoutout.create" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let to_login = event
+                .pointer("/to_broadcaster_user_login")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let to_name = event
+                .pointer("/to_broadcaster_user_name")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let to_id = event
+                .pointer("/to_broadcaster_user_id")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            args.insert("targetUser".into(), to_name.into());
+            args.insert("targetUserName".into(), to_login.into());
+            args.insert("targetUserId".into(), to_id.into());
+            engine.fire(
+                T_SHOUTOUT_CREATED,
+                "Shoutout Created",
+                "Twitch/Moderation",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "ShoutoutCreated", || json!(args));
+        }
+        "channel.shoutout.receive" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let from_login = event
+                .pointer("/from_broadcaster_user_login")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let from_name = event
+                .pointer("/from_broadcaster_user_name")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let from_id = event
+                .pointer("/from_broadcaster_user_id")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let viewers = event.pointer("/viewer_count").and_then(Value::as_u64).unwrap_or(0);
+            args.insert("fromUser".into(), from_name.into());
+            args.insert("fromUserName".into(), from_login.into());
+            args.insert("fromUserId".into(), from_id.into());
+            args.insert("viewerCount".into(), viewers.into());
+            engine.fire(
+                T_SHOUTOUT_RECEIVED,
+                "Shoutout Received",
+                "Twitch/General",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "ShoutoutReceived", || json!(args));
+        }
+        "channel.chat.clear" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            engine.fire(
+                T_CHAT_CLEARED,
+                "Chat Cleared",
+                "Twitch/Moderation",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "ChatCleared", || json!(args));
+        }
+        "channel.chat.clear_user_messages" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let uid = event.pointer("/target_user_id").and_then(Value::as_str).unwrap_or("");
+            let ulogin = event
+                .pointer("/target_user_login")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let uname = event.pointer("/target_user_name").and_then(Value::as_str).unwrap_or("");
+            populate_user_vars(&mut args, uid, ulogin, uname, 1, false);
+            engine.fire(
+                T_CHAT_MESSAGE_DELETED,
+                "Chat Message Deleted",
+                "Twitch/Moderation",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "ChatMessageDeleted", || json!(args));
+        }
+        "channel.chat_settings.update" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            if let Some(emote) = event.pointer("/emote_mode").and_then(Value::as_bool) {
+                let tid = if emote {
+                    T_CHAT_MODE_EMOTE_ON
+                } else {
+                    T_CHAT_MODE_EMOTE_OFF
+                };
+                engine.fire(tid, "Emote Mode Changed", "Twitch/Chat Modes", "twitch", &args, |_| {
+                    true
+                });
+            }
+            if let Some(sub) = event.pointer("/subscriber_mode").and_then(Value::as_bool) {
+                let tid = if sub {
+                    T_CHAT_MODE_SUBSCRIBER_ON
+                } else {
+                    T_CHAT_MODE_SUBSCRIBER_OFF
+                };
+                engine.fire(
+                    tid,
+                    "Subscriber Mode Changed",
+                    "Twitch/Chat Modes",
+                    "twitch",
+                    &args,
+                    |_| true,
+                );
+            }
+            if let Some(slow) = event.pointer("/slow_mode").and_then(Value::as_bool) {
+                let tid = if slow {
+                    T_CHAT_MODE_SLOW_ON
+                } else {
+                    T_CHAT_MODE_SLOW_OFF
+                };
+                engine.fire(tid, "Slow Mode Changed", "Twitch/Chat Modes", "twitch", &args, |_| true);
+            }
+            if let Some(follower) = event.pointer("/follower_mode").and_then(Value::as_bool) {
+                let tid = if follower {
+                    T_CHAT_MODE_FOLLOWER_ON
+                } else {
+                    T_CHAT_MODE_FOLLOWER_OFF
+                };
+                engine.fire(
+                    tid,
+                    "Follower Mode Changed",
+                    "Twitch/Chat Modes",
+                    "twitch",
+                    &args,
+                    |_| true,
+                );
+            }
+            if let Some(unique) = event.pointer("/unique_chat_mode").and_then(Value::as_bool) {
+                let tid = if unique {
+                    T_CHAT_MODE_UNIQUE_ON
+                } else {
+                    T_CHAT_MODE_UNIQUE_OFF
+                };
+                engine.fire(tid, "Unique Mode Changed", "Twitch/Chat Modes", "twitch", &args, |_| {
+                    true
+                });
+            }
+        }
+        "channel.charity_campaign.donate" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let uid = event.pointer("/user_id").and_then(Value::as_str).unwrap_or("");
+            let ulogin = event.pointer("/user_login").and_then(Value::as_str).unwrap_or("");
+            let uname = event.pointer("/user_name").and_then(Value::as_str).unwrap_or("");
+            let amt = event.pointer("/amount/value").and_then(Value::as_u64).unwrap_or(0);
+            populate_user_vars(&mut args, uid, ulogin, uname, 1, false);
+            args.insert("amount".into(), amt.into());
+            engine.fire(
+                T_CHARITY_DONATION,
+                "Charity Donation",
+                "Twitch/Charity",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "CharityDonation", || json!(args));
+        }
+        "channel.charity_campaign.start" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let name = event.pointer("/charity_name").and_then(Value::as_str).unwrap_or("");
+            args.insert("charityName".into(), name.into());
+            engine.fire(
+                T_CHARITY_STARTED,
+                "Charity Started",
+                "Twitch/Charity",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "CharityStarted", || json!(args));
+        }
+        "channel.charity_campaign.progress" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let curr = event
+                .pointer("/current_amount/value")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let target = event
+                .pointer("/target_amount/value")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            args.insert("currentAmount".into(), curr.into());
+            args.insert("targetAmount".into(), target.into());
+            engine.fire(
+                T_CHARITY_PROGRESS,
+                "Charity Progress",
+                "Twitch/Charity",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "CharityProgress", || json!(args));
+        }
+        "channel.charity_campaign.stop" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            engine.fire(
+                T_CHARITY_COMPLETED,
+                "Charity Completed",
+                "Twitch/Charity",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "CharityCompleted", || json!(args));
+        }
+        "channel.guest_star_session.begin" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            engine.fire(
+                T_GUEST_STAR_SESSION_BEGIN,
+                "Guest Star Session Begin",
+                "Twitch/Guest Star",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "GuestStarSessionBegin", || json!(args));
+        }
+        "channel.guest_star_session.end" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            engine.fire(
+                T_GUEST_STAR_SESSION_END,
+                "Guest Star Session End",
+                "Twitch/Guest Star",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "GuestStarSessionEnd", || json!(args));
+        }
+        "channel.guest_star_guest.update" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            engine.fire(
+                T_GUEST_STAR_GUEST_UPDATE,
+                "Guest Star Guest Update",
+                "Twitch/Guest Star",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "GuestStarGuestUpdate", || json!(args));
+        }
+        "channel.guest_star_slot.update" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            engine.fire(
+                T_GUEST_STAR_SLOT_UPDATE,
+                "Guest Star Slot Update",
+                "Twitch/Guest Star",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "GuestStarSlotUpdate", || json!(args));
+        }
+        "channel.guest_star_settings.update" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            engine.fire(
+                T_GUEST_STAR_SETTINGS_UPDATE,
+                "Guest Star Settings Update",
+                "Twitch/Guest Star",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "GuestStarSettingsUpdate", || json!(args));
+        }
+        "channel.shared_chat.begin" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            engine.fire(
+                T_SHARED_CHAT_SESSION_BEGIN,
+                "Shared Chat Session Begin",
+                "Twitch/Shared Chat",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "SharedChatSessionBegin", || json!(args));
+        }
+        "channel.shared_chat.update" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            engine.fire(
+                T_SHARED_CHAT_SESSION_UPDATE,
+                "Shared Chat Session Update",
+                "Twitch/Shared Chat",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "SharedChatSessionUpdate", || json!(args));
+        }
+        "channel.shared_chat.end" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            engine.fire(
+                T_SHARED_CHAT_SESSION_END,
+                "Shared Chat Session End",
+                "Twitch/Shared Chat",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            engine.emit("Twitch", "SharedChatSessionEnd", || json!(args));
+        }
         _ => {}
     }
 }
@@ -2569,6 +3274,231 @@ pub(crate) mod tests {
             &mut HashSet::new(),
             "channel.prediction.end",
             &pred,
+        );
+    }
+
+    #[test]
+    fn moderation_and_chat_modes_notifications() {
+        let (tx, _rx) = watch::channel(Config::default());
+        let cfg = Arc::new(tx);
+        let engine = Engine::new(cfg.clone(), |_| {});
+
+        let broadcaster = TwitchAccount {
+            user_id: "123".into(),
+            login: "streamer".into(),
+            display_name: "Streamer".into(),
+            ..Default::default()
+        };
+
+        // Ban
+        let ban = json!({
+            "user_id": "456",
+            "user_login": "spammer",
+            "user_name": "Spammer",
+            "reason": "spamming",
+            "is_permanent": true
+        });
+        handle_notification(&engine, &broadcaster, &cfg, &mut HashSet::new(), "channel.ban", &ban);
+
+        // Timeout
+        let to = json!({
+            "user_id": "456",
+            "user_login": "spammer",
+            "user_name": "Spammer",
+            "reason": "caps",
+            "is_permanent": false,
+            "ends_at": "2026-10-12T22:00:00Z"
+        });
+        handle_notification(&engine, &broadcaster, &cfg, &mut HashSet::new(), "channel.ban", &to);
+
+        // Unban
+        let unban = json!({
+            "user_id": "456",
+            "user_login": "spammer",
+            "user_name": "Spammer"
+        });
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.unban",
+            &unban,
+        );
+
+        // Mod add / remove
+        let mod_event = json!({
+            "user_id": "789",
+            "user_login": "moduser",
+            "user_name": "ModUser"
+        });
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.moderator.add",
+            &mod_event,
+        );
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.moderator.remove",
+            &mod_event,
+        );
+
+        // VIP add / remove
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.vip.add",
+            &mod_event,
+        );
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.vip.remove",
+            &mod_event,
+        );
+
+        // Shield mode
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.shield_mode.begin",
+            &json!({}),
+        );
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.shield_mode.end",
+            &json!({}),
+        );
+
+        // Shoutout
+        let shoutout = json!({
+            "to_broadcaster_user_id": "999",
+            "to_broadcaster_user_login": "friend",
+            "to_broadcaster_user_name": "Friend"
+        });
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.shoutout.create",
+            &shoutout,
+        );
+
+        // Chat settings
+        let settings = json!({
+            "emote_mode": true,
+            "subscriber_mode": true,
+            "slow_mode": false,
+            "follower_mode": false,
+            "unique_chat_mode": true
+        });
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.chat_settings.update",
+            &settings,
+        );
+    }
+
+    #[test]
+    fn charity_and_guest_star_notifications() {
+        let (tx, _rx) = watch::channel(Config::default());
+        let cfg = Arc::new(tx);
+        let engine = Engine::new(cfg.clone(), |_| {});
+
+        let broadcaster = TwitchAccount {
+            user_id: "123".into(),
+            login: "streamer".into(),
+            display_name: "Streamer".into(),
+            ..Default::default()
+        };
+
+        // Charity
+        let donation = json!({
+            "user_id": "456",
+            "user_login": "donor",
+            "user_name": "Donor",
+            "amount": { "value": 1000 }
+        });
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.charity_campaign.donate",
+            &donation,
+        );
+
+        let charity_start = json!({ "charity_name": "Save the Whales" });
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.charity_campaign.start",
+            &charity_start,
+        );
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.charity_campaign.stop",
+            &json!({}),
+        );
+
+        // Guest star
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.guest_star_session.begin",
+            &json!({}),
+        );
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.guest_star_session.end",
+            &json!({}),
+        );
+
+        // Shared chat
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.shared_chat.begin",
+            &json!({}),
+        );
+        handle_notification(
+            &engine,
+            &broadcaster,
+            &cfg,
+            &mut HashSet::new(),
+            "channel.shared_chat.end",
+            &json!({}),
         );
     }
 }

@@ -98,6 +98,9 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("fallback", "Fallback to broadcaster", Bool),
         ],
         11 => &[("status", "Status", Pick(&["Fulfilled", "Canceled"]))],
+        12 => &[("status", "Subscriber only", Bool)],
+        13 => &[("status", "Emote only", Bool)],
+        14 => &[("status", "Slow mode", Bool), ("duration", "Duration (seconds)", Int)],
         15 => &[("title", "Title", Text)],
         16 => &[
             ("source", "Source", Pick(&["Manual", "Variable", "Twitch Game ID"])),
@@ -107,13 +110,52 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         17 => &[("description", "Description", Text)],
         18 => &[("title", "Title", Text), ("duration", "Duration (seconds)", Int)],
         19 => &[("duration", "Duration (seconds)", Int)],
+        20 => &[
+            ("userLogin", "User login", Text),
+            ("duration", "Duration (seconds)", Int),
+            ("reason", "Reason", Multi),
+        ],
+        21
+        | 24
+        | 26
+        | 251
+        | 501
+        | 506..=510
+        | 520
+        | 522..=525
+        | 551
+        | 555..=557
+        | 562
+        | 563
+        | 566
+        | 567
+        | 569
+        | 570
+        | 575
+        | 578 => &[],
+        22 => &[
+            ("present", "Present users only", Bool),
+            ("count", "Count", Int),
+            ("includeFrom", "Include from", Text),
+            ("groups", "Groups", Lines),
+        ],
         23 => &[
             ("text", "Announcement", Multi),
             ("color", "Color (Primary/Blue/Green/Orange/Purple)", Text),
             ("useBot", "Send from bot account", Bool),
             ("fallback", "Fallback to broadcaster", Bool),
         ],
-        24 | 251 | 555..=557 | 562 | 563 | 566 | 567 | 569 | 570 => &[],
+        25 => &[
+            ("text", "Text", Multi),
+            ("preferredAccount", "Preferred account", Text),
+            ("color", "Color", Text),
+        ],
+        27 => &[("status", "Shield mode", Bool)],
+        28 => &[
+            ("status", "Follower mode", Bool),
+            ("duration", "Duration (minutes)", Int),
+        ],
+        29 | 50 | 51 | 52 | 500 | 502..=505 | 512 | 513 | 526 | 527 | 580 => &[("userLogin", "User login", Text)],
         200 => &[("rewardId", "Reward ID", Text), ("state", "State", Pick(STATE))],
         201 => &[("rewardId", "Reward ID", Text), ("state", "State", Pick(STATE))],
         202 => &[
@@ -122,14 +164,59 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("operator", "Operation", Pick(&["Set", "Add", "Subtract"])),
         ],
         203 => &[("disableNotConfigured", "Disable not configured", Bool)],
+        204 => &[
+            ("rewardId", "Reward ID", Text),
+            ("cooldown", "Cooldown (seconds)", Int),
+            ("additive", "Additive", Bool),
+        ],
         205 => &[("rewardId", "Reward ID", Text), ("title", "Title", Text)],
         206 => &[("rewardId", "Reward ID", Text), ("prompt", "Prompt", Multi)],
+        207 => &[
+            ("rewardId", "Reward ID", Text),
+            ("title", "Title", Text),
+            ("prompt", "Prompt", Multi),
+            ("cost", "Cost", Int),
+            ("operator", "Operation", Pick(&["Set", "Add", "Subtract"])),
+        ],
         208..=210 => &[("rewardId", "Reward ID", Text)],
+        211 => &[("groupName", "Group name", Text), ("state", "State", Pick(STATE))],
         212 => &[("groupName", "Group name", Text), ("state", "State", Pick(STATE))],
+        213 => &[
+            ("rewardId", "Reward ID", Text),
+            ("backgroundColor", "Background color", Text),
+            ("random", "Random", Bool),
+        ],
+        214 | 215 => &[
+            ("rewardId", "Reward ID", Text),
+            ("redeems", "Max redeems", Int),
+            ("additive", "Additive", Bool),
+        ],
         252 => &[("tags", "Tags", Lines)],
         253 | 254 => &[("tag", "Tag", Text)],
-        500 => &[("userLogin", "Target channel", Text)],
-        501 => &[],
+        511 => &[("userLogin", "User login", Text), ("reason", "Reason", Multi)],
+        521 => &[
+            ("moderatorSendLiveEnabled", "Mod send live", Bool),
+            ("slotCount", "Slot count", Int),
+            ("browserSourceAudioEnabled", "Audio enabled", Bool),
+            ("groupLayout", "Group layout", Text),
+            ("regenerateBrowserSources", "Regenerate sources", Bool),
+        ],
+        528 => &[("userLogin", "User login", Text), ("slot", "Slot", Int)],
+        529 => &[
+            ("sourceSlot", "Source slot", Int),
+            ("destinationSlot", "Destination slot", Int),
+        ],
+        530 => &[("userLogin", "User login", Text), ("slot", "Slot", Int)],
+        531 => &[
+            ("slot", "Slot", Int),
+            ("audioEnabled", "Audio enabled", Bool),
+            ("videoEnabled", "Video enabled", Bool),
+            ("live", "Live", Bool),
+            ("volume", "Volume", Num),
+        ],
+        550 => &[("userIndex", "User index", Int)],
+        552 => &[("value", "Value", Int)],
+        553 | 554 | 558 => &[("userLogin", "User login", Text), ("groupName", "Group", UserGroup)],
         560 => &[
             ("text", "Reply", Multi),
             ("replyId", "Reply message ID", Text),
@@ -143,6 +230,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("choices", "Choices (one per line)", Lines),
         ],
         564 => &[("status", "Branded content", Bool)],
+        565 => &[("userLogin", "User login", Text), ("reason", "Reason", Multi)],
         568 => &[
             ("title", "Title", Text),
             ("predictionWindow", "Prediction window (seconds)", Int),
@@ -151,6 +239,12 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         571 => &[("winningIndex", "Winning outcome index", Int)],
         572 => &[("outcomeTitle", "Winning outcome title", Text)],
         573 => &[("clipId", "Clip ID", Text)],
+        576 => &[
+            ("messageId", "Message ID", Text),
+            ("duration", "Duration (seconds)", Int),
+        ],
+        577 => &[("duration", "Duration (seconds)", Int)],
+        579 => &[("userLogin", "User login", Text), ("status", "Status", Text)],
 
         120 => &[
             ("input", "Input", Text),
@@ -304,24 +398,7 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
         18001 => &[("eventName", "Event name", Text)],
         18002 => &[("triggerName", "Trigger name", Text)],
         32001..=32005 => &[("groupId", "Group (none: any)", UserGroup)],
-        101..=114
-        | 116..=120
-        | 125..=133
-        | 138..=140
-        | 148..=150
-        | 154
-        | 155
-        | 158..=161
-        | 164
-        | 171
-        | 173..=175
-        | 178
-        | 179
-        | 184..=186
-        | 194
-        | 196
-        | 473
-        | 496 => &[],
+        101..=196 | 451..=498 => &[],
         _ => return None,
     })
 }
@@ -727,11 +804,9 @@ mod tests {
         ]
         .into_iter()
         .chain(32001..=32005)
-        .chain([
-            101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 116, 117, 118, 119, 120, 125, 126,
-            127, 128, 129, 130, 131, 132, 133, 138, 139, 140, 148, 149, 150, 154, 155, 158, 159, 160, 161, 164, 171,
-            173, 174, 175, 178, 179, 184, 185, 186, 194, 196, 473, 496,
-        ]) {
+        .chain(101..=196)
+        .chain(451..=498)
+        {
             assert!(trigger_fields(k).is_some(), "trigger {k} has no form");
         }
     }
