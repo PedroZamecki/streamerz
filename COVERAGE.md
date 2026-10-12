@@ -185,46 +185,46 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Triggers** (131)
 
-- [ ] ads: Ad Mid-Roll
+- [x] ads: Ad Mid-Roll
 - [x] ads: Ad Run
-- [ ] ads: Upcoming Ad
+- [x] ads: Upcoming Ad
 - [x] channel-goal: Goal Begin
 - [x] channel-goal: Goal End
 - [x] channel-goal: Goal Progress
-- [ ] channel-power-ups: Custom Power Up Redemption
-- [ ] channel-reward: Automatic Reward Redemption
+- [x] channel-power-ups: Custom Power Up Redemption
+- [x] channel-reward: Automatic Reward Redemption
 - [x] channel-reward: Reward Redemption Updated
 - [x] channel-reward: Reward Redemption
 - [x] channel: Follow
 - [x] channel: Stream Offline
 - [x] channel: Stream Online
-- [ ] channel: Viewer Count Update
-- [ ] charity: Charity Completed
-- [ ] charity: Charity Donation
-- [ ] charity: Charity Progress
-- [ ] charity: Charity Started
-- [ ] chat: Bits Badge Tier
+- [x] channel: Viewer Count Update
+- [x] charity: Charity Completed
+- [x] charity: Charity Donation
+- [x] charity: Charity Progress
+- [x] charity: Charity Started
+- [x] chat: Bits Badge Tier
 - [x] chat: Bot Whispers
 - [x] chat: Cheer
 - [x] chat: First Words
 - [x] chat: Chat Message
-- [ ] chat/mode: Emote Mode Off
-- [ ] chat/mode: Emote Mode On
-- [ ] chat/mode: Follower Mode Changed
-- [ ] chat/mode: Follower Mode Off
-- [ ] chat/mode: Follower Mode On
-- [ ] chat/mode: Slow Mode Changed
-- [ ] chat/mode: Slow Mode Off
-- [ ] chat/mode: Slow Mode On
-- [ ] chat/mode: Subscriber Mode Off
-- [ ] chat/mode: Subscriber Mode On
-- [ ] chat/mode: Unique Mode Off
-- [ ] chat/mode: Unique Mode On
-- [ ] chat: Modiversary
-- [ ] chat: Watch Streak
+- [x] chat/mode: Emote Mode Off
+- [x] chat/mode: Emote Mode On
+- [x] chat/mode: Follower Mode Changed
+- [x] chat/mode: Follower Mode Off
+- [x] chat/mode: Follower Mode On
+- [x] chat/mode: Slow Mode Changed
+- [x] chat/mode: Slow Mode Off
+- [x] chat/mode: Slow Mode On
+- [x] chat/mode: Subscriber Mode Off
+- [x] chat/mode: Subscriber Mode On
+- [x] chat/mode: Unique Mode Off
+- [x] chat/mode: Unique Mode On
+- [x] chat: Modiversary
+- [x] chat: Watch Streak
 - [x] chat: Whispers
-- [ ] community-goal: Community Goal Contribution
-- [ ] community-goal: Community Goal Ended
+- [x] community-goal: Community Goal Contribution
+- [x] community-goal: Community Goal Ended
 - [x] connections: Bot Chat Connected
 - [x] connections: Bot Chat Disconnected
 - [x] connections: Broadcaster Authenticated
@@ -232,49 +232,49 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] connections: Broadcaster Chat Disconnected
 - [x] connections: Broadcaster EventSub Connected
 - [x] connections: Broadcaster EventSub Disconnected
-- [ ] connections: Broadcaster PubSub Connected
-- [ ] connections: Broadcaster PubSub Disconnected
-- [ ] emotes: BetterTTV Emote Added
-- [ ] emotes: BetterTTV Emote Removed
-- [ ] emotes: SevenTV Emote Added
-- [ ] emotes: SevenTV Emote Removed
+- [x] ~~connections: Broadcaster PubSub Connected~~ (Twitch shut down PubSub in 2024; replaced by EventSub)
+- [x] ~~connections: Broadcaster PubSub Disconnected~~ (Twitch shut down PubSub in 2024; replaced by EventSub)
+- [x] emotes: BetterTTV Emote Added
+- [x] emotes: BetterTTV Emote Removed
+- [x] emotes: SevenTV Emote Added
+- [x] emotes: SevenTV Emote Removed
 - [x] general: Announcement
-- [ ] general: Present Viewers
-- [ ] general: Shoutout Received
+- [x] general: Present Viewers
+- [x] general: Shoutout Received
 - [x] general: Stream Update
-- [ ] guest-star: Guest Star Guest Update
-- [ ] guest-star: Guest Star Session Begin
-- [ ] guest-star: Guest Star Session End
-- [ ] guest-star: Guest Star Settings Update
+- [x] guest-star: Guest Star Guest Update
+- [x] guest-star: Guest Star Session Begin
+- [x] guest-star: Guest Star Session End
+- [x] guest-star: Guest Star Settings Update
 - [x] hype-train: Hype Train End
-- [ ] hype-train: Hype Train Level Up
+- [x] hype-train: Hype Train Level Up
 - [x] hype-train: Hype Train Starts
 - [x] hype-train: Hype Train Update
-- [ ] moderation: AutoMod Message Held
-- [ ] moderation: AutoMod Message Updated
-- [ ] moderation: Blocked Terms Added
-- [ ] moderation: Blocked Terms Deleted
-- [ ] moderation: Chat Cleared
-- [ ] moderation: Chat Message Deleted
-- [ ] moderation: Moderator Added
-- [ ] moderation: Moderator Removed
-- [ ] moderation: Permitted Terms Added
-- [ ] moderation: Permitted Terms Deleted
-- [ ] moderation: Shield Mode Begin
-- [ ] moderation: Shield Mode End
-- [ ] moderation: Shoutout Created
-- [ ] moderation: Suspicious User Update
-- [ ] moderation: Unban Request Approved
-- [ ] moderation: Unban Request Created
-- [ ] moderation: Unban Request Denied
-- [ ] moderation: User Banned
-- [ ] moderation: User Timed Out
-- [ ] moderation: User Unbanned
-- [ ] moderation: User Untimed Out
-- [ ] moderation: VIP Added
-- [ ] moderation: VIP Removed
-- [ ] moderation: Warned User
-- [ ] moderation: Warning Acknowledged
+- [x] moderation: AutoMod Message Held
+- [x] moderation: AutoMod Message Updated
+- [x] moderation: Blocked Terms Added
+- [x] moderation: Blocked Terms Deleted
+- [x] moderation: Chat Cleared
+- [x] moderation: Chat Message Deleted
+- [x] moderation: Moderator Added
+- [x] moderation: Moderator Removed
+- [x] moderation: Permitted Terms Added
+- [x] moderation: Permitted Terms Deleted
+- [x] moderation: Shield Mode Begin
+- [x] moderation: Shield Mode End
+- [x] moderation: Shoutout Created
+- [x] moderation: Suspicious User Update
+- [x] moderation: Unban Request Approved
+- [x] moderation: Unban Request Created
+- [x] moderation: Unban Request Denied
+- [x] moderation: User Banned
+- [x] moderation: User Timed Out
+- [x] moderation: User Unbanned
+- [x] moderation: User Untimed Out
+- [x] moderation: VIP Added
+- [x] moderation: VIP Removed
+- [x] moderation: Warned User
+- [x] moderation: Warning Acknowledged
 - [x] polls: Poll Archived
 - [x] polls: Poll Completed
 - [x] polls: Poll Created
@@ -285,36 +285,36 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] predictions: Prediction Created
 - [x] predictions: Prediction Locked
 - [x] predictions: Prediction Updated
-- [ ] pyramid: Pyramid Broken
-- [ ] pyramid: Pyramid Success
+- [x] pyramid: Pyramid Broken
+- [x] pyramid: Pyramid Success
 - [x] raid: Raid Cancelled
 - [x] raid: Raid
 - [x] raid: Raid Send
 - [x] raid: Raid Start
-- [ ] shared-chat: Shared Announcement
-- [ ] shared-chat: Shared Community Sub Gift
-- [ ] shared-chat: Shared Gift Paid Upgrade
-- [ ] shared-chat: Shared Chat Message Deleted
-- [ ] shared-chat: Shared Modiversary
-- [ ] shared-chat: Shared Pay It Forward
-- [ ] shared-chat: Shared Prime Paid Upgrade
-- [ ] shared-chat: Shared Resub
-- [ ] shared-chat: Twitch Shared Chat Session Begin
-- [ ] shared-chat: Twitch Shared Chat Session End
-- [ ] shared-chat: Twitch Shared Chat Session Update
-- [ ] shared-chat: Shared Sub Gift
-- [ ] shared-chat: Shared Sub
-- [ ] shared-chat: Shared Chat User Banned
-- [ ] shared-chat: Shared Chat User Timed Out
-- [ ] shared-chat: Shared Chat User Unbanned
-- [ ] shared-chat: Shared Chat User Untimed Out
+- [x] shared-chat: Shared Announcement
+- [x] shared-chat: Shared Community Sub Gift
+- [x] shared-chat: Shared Gift Paid Upgrade
+- [x] shared-chat: Shared Chat Message Deleted
+- [x] shared-chat: Shared Modiversary
+- [x] shared-chat: Shared Pay It Forward
+- [x] shared-chat: Shared Prime Paid Upgrade
+- [x] shared-chat: Shared Resub
+- [x] shared-chat: Twitch Shared Chat Session Begin
+- [x] shared-chat: Twitch Shared Chat Session End
+- [x] shared-chat: Twitch Shared Chat Session Update
+- [x] shared-chat: Shared Sub Gift
+- [x] shared-chat: Shared Sub
+- [x] shared-chat: Shared Chat User Banned
+- [x] shared-chat: Shared Chat User Timed Out
+- [x] shared-chat: Shared Chat User Unbanned
+- [x] shared-chat: Shared Chat User Untimed Out
 - [x] subscriptions: Gift Bomb
-- [ ] subscriptions: Gift Paid Upgrade
+- [x] subscriptions: Gift Paid Upgrade
 - [x] subscriptions: Gift Subscription
-- [ ] subscriptions: Pay It Forward
-- [ ] subscriptions: Prime Paid Upgrade
+- [x] subscriptions: Pay It Forward
+- [x] subscriptions: Prime Paid Upgrade
 - [x] subscriptions: Resubscription
-- [ ] subscriptions: Sub Counter Rollover
+- [x] subscriptions: Sub Counter Rollover
 - [x] subscriptions: Subscription
 
 **Sub-actions** (95)
@@ -329,46 +329,46 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] channel: Set Channel Branded Content
 - [x] channel: Set Channel Game
 - [x] channel: Set Channel Title
-- [ ] charity: Get Latest Charity Campaign
-- [ ] chat: Clear Chat Messages
-- [ ] chat: Get Pinned Chat Message
-- [ ] chat: Pin Chat Message
+- [x] charity: Get Latest Charity Campaign
+- [x] chat: Clear Chat Messages
+- [x] chat: Get Pinned Chat Message
+- [x] chat: Pin Chat Message
 - [x] chat: Reply to Message
 - [x] chat: Send Announcement to Channel
 - [x] chat: Send Message
-- [ ] chat: Unpin Chat Message
-- [ ] chat: Update Pinned Chat Message Duration
-- [ ] followers: Get Follow Age Info for Target
-- [ ] followers: Get Follower Count
-- [ ] followers: Get Latest Follower
-- [ ] guest-star: Assign Guest Star Slot
-- [ ] guest-star: Create Guest Star Session
-- [ ] guest-star: Delete Guest Star Invite
-- [ ] guest-star: Delete Guest Star Slot
-- [ ] guest-star: End Guest Star Session
-- [ ] guest-star: Get Channel Guest Star Settings
-- [ ] guest-star: Get Guest Star Invites
-- [ ] guest-star: Get Guest Star Session
-- [ ] guest-star: Send Guest Star Invite
-- [ ] guest-star: Update Channel Guest Star Settings
-- [ ] guest-star: Update Guest Star Slot Settings
-- [ ] guest-star: Update Guest Star Slot
-- [ ] moderation: Add Moderator
-- [ ] moderation: Add Vip
-- [ ] moderation: Ban User
-- [ ] moderation/chat-modes: Emote Only
-- [ ] moderation/chat-modes: Follow Mode
-- [ ] moderation/chat-modes: Slow Mode
-- [ ] moderation/chat-modes: Subscriber Only
-- [ ] moderation: Remove Moderator
-- [ ] moderation: Remove Vip
-- [ ] moderation: Send Shoutout
-- [ ] moderation/shield: Get Shield Mode Status
-- [ ] moderation/shield: Update Shield Mode Status
-- [ ] moderation: Timeout User
-- [ ] moderation: Unban User
-- [ ] moderation: UnTimeout User
-- [ ] moderation: Warn User
+- [x] chat: Unpin Chat Message
+- [x] chat: Update Pinned Chat Message Duration
+- [x] followers: Get Follow Age Info for Target
+- [x] followers: Get Follower Count
+- [x] followers: Get Latest Follower
+- [x] guest-star: Assign Guest Star Slot
+- [x] guest-star: Create Guest Star Session
+- [x] guest-star: Delete Guest Star Invite
+- [x] guest-star: Delete Guest Star Slot
+- [x] guest-star: End Guest Star Session
+- [x] guest-star: Get Channel Guest Star Settings
+- [x] guest-star: Get Guest Star Invites
+- [x] guest-star: Get Guest Star Session
+- [x] guest-star: Send Guest Star Invite
+- [x] guest-star: Update Channel Guest Star Settings
+- [x] guest-star: Update Guest Star Slot Settings
+- [x] guest-star: Update Guest Star Slot
+- [x] moderation: Add Moderator
+- [x] moderation: Add Vip
+- [x] moderation: Ban User
+- [x] moderation/chat-modes: Emote Only
+- [x] moderation/chat-modes: Follow Mode
+- [x] moderation/chat-modes: Slow Mode
+- [x] moderation/chat-modes: Subscriber Only
+- [x] moderation: Remove Moderator
+- [x] moderation: Remove Vip
+- [x] moderation: Send Shoutout
+- [x] moderation/shield: Get Shield Mode Status
+- [x] moderation/shield: Update Shield Mode Status
+- [x] moderation: Timeout User
+- [x] moderation: Unban User
+- [x] moderation: UnTimeout User
+- [x] moderation: Warn User
 - [x] polls: Archive Active Poll
 - [x] polls: Create Poll
 - [x] polls: Get Active Poll
@@ -385,35 +385,35 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] rewards: Get Reward Info
 - [x] rewards: Reset Reward Counter
 - [x] rewards: Reset Reward User Counters
-- [ ] rewards: Set Background Color
+- [x] rewards: Set Background Color
 - [x] rewards: Set Cost
 - [x] rewards: Set Enabled State
-- [ ] rewards: Set Global Cooldown
-- [ ] rewards: Set Group Enabled State
+- [x] rewards: Set Global Cooldown
+- [x] rewards: Set Group Enabled State
 - [x] rewards: Set Group Paused State
-- [ ] rewards: Set Max Per Stream
-- [ ] rewards: Set Max per User Per Stream
+- [x] rewards: Set Max Per Stream
+- [x] rewards: Set Max per User Per Stream
 - [x] rewards: Set Paused State
 - [x] rewards: Set Prompt
 - [x] rewards: Set Title
 - [x] rewards: Update Redemption Status
-- [ ] rewards: Update
-- [ ] sub-counter: Get Twitch Sub Counter Count
-- [ ] sub-counter: Set Twitch Sub Counter Count
-- [ ] subscribers: Get Latest Subscriber
-- [ ] subscribers: Get Subscriber Count
+- [x] rewards: Update
+- [x] sub-counter: Get Twitch Sub Counter Count
+- [x] sub-counter: Set Twitch Sub Counter Count
+- [x] subscribers: Get Latest Subscriber
+- [x] subscribers: Get Subscriber Count
 - [x] tags: Add Channel Tag
 - [x] tags: Clear Channel Tags
 - [x] tags: Remove Channel Tag
 - [x] tags: Set Channel Tags
-- [ ] user-groups: Add User To Group
-- [ ] user-groups: Remove User From Group
-- [ ] user-groups: User in Group
-- [ ] user: Add Broadcaster Information
-- [ ] user: Add Present User
-- [ ] user: Add Random Users
-- [ ] user: Get Team Info For Target
-- [ ] user: Get User Info for Target
+- [x] user-groups: Add User To Group
+- [x] user-groups: Remove User From Group
+- [x] user-groups: User in Group
+- [x] user: Add Broadcaster Information
+- [x] user: Add Present User
+- [x] user: Add Random Users
+- [x] user: Get Team Info For Target
+- [x] user: Get User Info for Target
 
 
 ## Phase 9: OBS Studio
