@@ -190,7 +190,7 @@ platform handles through channels, never through shared locks held across awaits
   - Moderation (bans, timeouts, unban requests, AutoMod, shield mode, warnings, chat settings).
   - Shared chat, Guest Star, user groups.
   - Third-party emotes and the rest of the Twitch list. COVERAGE Twitch complete.
-- [ ] 9. OBS Studio: connection settings, every sub-action (including raw/batch) and trigger.
+- [x] 9. OBS Studio: connection settings, every sub-action (including raw/batch) and trigger.
 - [ ] 10. Kick:
   - Pusher read, and user-app OAuth for send/moderation.
   - Optional webhooks with signature check.

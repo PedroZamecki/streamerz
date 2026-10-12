@@ -8,6 +8,7 @@ mod fmt;
 pub mod http;
 mod math;
 pub mod model;
+pub mod obs;
 pub mod servers;
 mod tray;
 pub mod twitch;
@@ -53,6 +54,9 @@ pub struct Config {
     /// Twitch configuration (broadcaster, bot, auto-connect, settings).
     #[serde(default)]
     pub twitch: twitch::TwitchConfig,
+    /// OBS Studio configuration.
+    #[serde(default)]
+    pub obs: obs::ObsConfig,
     /// Fields this build doesn't know (e.g. written by a newer one): kept, so a save loses nothing.
     #[serde(flatten)]
     rest: Map<String, Value>,
@@ -78,6 +82,7 @@ impl Default for Config {
             groups: Vec::new(),
             counters: Map::new(),
             twitch: twitch::TwitchConfig::default(),
+            obs: obs::ObsConfig::default(),
             rest: Map::new(),
         }
     }
@@ -265,6 +270,15 @@ fn main() {
             let tw = engine_cfg.borrow().twitch.clone();
             if tw.auto_connect && tw.broadcaster.is_some() {
                 e.twitch_start();
+            }
+            // Opt-in: OBS auto-connect if any connection is set to connect at start.
+            let obs_cfg = engine_cfg.borrow().obs.clone();
+            if obs_cfg
+                .connections
+                .iter()
+                .any(|c| c.get("autoConnect").and_then(Value::as_bool).unwrap_or(false))
+            {
+                e.obs_start();
             }
             tokio::task::spawn_local(servers::run(e.clone()));
             e.started();
