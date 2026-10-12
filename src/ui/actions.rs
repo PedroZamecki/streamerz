@@ -2,6 +2,7 @@
 //! triggers and sub-actions on the right. Drag an action onto a group (or another action) to move it
 //! there; drag a sub-action to reorder it or into a container (group, branch, loop).
 
+use super::forms::{self, Done, Lists};
 use super::{button, dialogs, ROW};
 use crate::edit::{self, Path};
 use crate::engine::{UiCmd, DEFAULT_QUEUE};
@@ -60,8 +61,31 @@ fn short(t: &str) -> String {
     }
 }
 
+/// Names by id (actions, queues, timers, commands, user groups, WebSocket clients and servers), so
+/// labels show names rather than ids.
+pub type Names = std::collections::HashMap<String, String>;
+
+pub fn names(c: &Config) -> Names {
+    let objs = [
+        &c.actions.queues,
+        &c.timers,
+        &c.commands,
+        &c.groups,
+        &c.websockets.connections,
+        &c.websockets.servers,
+    ];
+    let mut out: Names = objs
+        .into_iter()
+        .flatten()
+        .map(|o| (s(o, "id").to_string(), s(o, "name").to_string()))
+        .collect();
+    out.extend(c.actions.actions.iter().map(|a| (a.id.clone(), a.name.clone())));
+    out.insert(DEFAULT_QUEUE.into(), "Default".into());
+    out
+}
+
 /// How a sub-action reads in the list.
-pub fn sub_label(o: &Obj) -> String {
+pub fn sub_label(o: &Obj, names: &Names) -> String {
     let k = edit::kind(o);
     let what = SUB_ACTION_INFO.binary_search_by_key(&(k as u32), |x| x.0).map_or_else(
         |_| {
@@ -94,23 +118,14 @@ pub fn sub_label(o: &Obj) -> String {
             }
         ),
         120 | 128 => {
-            const OPS: [&str; 10] = [
-                "Equals",
-                "Not Equals",
-                "Contains",
-                "Regex Match",
-                "Less Than",
-                "Greater Than",
-                "Does Not Exist",
-                "Equals (Ignore Case)",
-                "Not Equals (Ignore Case)",
-                "Is Null or Empty",
-            ];
-            const WHILE_OPS: [&str; 4] = ["Equals", "Not Equals", "Less Than", "Greater Than"];
             let op = o.get("operation").and_then(Value::as_u64).unwrap_or(0) as usize;
-            let op = if k == 120 { OPS.get(op) } else { WHILE_OPS.get(op) }
-                .copied()
-                .unwrap_or("?");
+            let op = if k == 120 {
+                forms::OPS.get(op)
+            } else {
+                forms::WHILE_OPS.get(op)
+            }
+            .copied()
+            .unwrap_or("?");
             format!("{} {op} {}", v("input"), v("value"))
         }
         123 | 122 => format!("{} = {}", v("variableName"), v("value")),
@@ -123,7 +138,8 @@ pub fn sub_label(o: &Obj) -> String {
             .filter(|(k, _)| {
                 !["id", "weight", "type", "parentId", "enabled", "index", "subActions"].contains(&k.as_str())
             })
-            .find_map(|(_, x)| x.as_str().filter(|t| !t.is_empty()).map(String::from))
+            .find_map(|(_, x)| x.as_str().filter(|t| !t.is_empty()))
+            .map(|t| names.get(t).map_or(t, |n| n.as_str()).to_string())
             .unwrap_or_default(),
     };
     let mut out = if detail.is_empty() {
@@ -137,7 +153,7 @@ pub fn sub_label(o: &Obj) -> String {
     out
 }
 
-fn trigger_label(t: &Obj) -> String {
+pub fn trigger_label(t: &Obj, names: &Names) -> String {
     let k = t.get("type").and_then(Value::as_u64).unwrap_or(0) as u32;
     let what = name(TRIGGERS, k).unwrap_or("Unknown");
     let detail = t
@@ -145,7 +161,8 @@ fn trigger_label(t: &Obj) -> String {
         .filter(|(k, _)| !["id", "type", "enabled", "exclusions"].contains(&k.as_str()))
         .filter_map(|(k, x)| {
             let x = crate::vars::text(x);
-            (!x.is_empty()).then(|| format!("{k}: {x}"))
+            let x = names.get(&x).cloned().unwrap_or(x);
+            (!x.is_empty()).then(|| format!("{}: {x}", k.trim_end_matches("Id")))
         })
         .collect::<Vec<_>>()
         .join(", ");
@@ -313,17 +330,25 @@ impl Actions {
             format!(" ({})", flags.join(", "))
         };
         self.title.set_label(&plain(&format!("{}{flags}", a.name)));
+        let names = names(&self.cfg.borrow());
         for t in &a.triggers {
-            self.triggers.add(&format!("@.{}", trigger_label(t)));
+            self.triggers.add(&format!("@.{}", trigger_label(t, &names)));
         }
         if keep_trigger > 0 && keep_trigger <= self.triggers.size() {
             self.triggers.select(keep_trigger);
         }
         let Some(root) = self.subs.root() else { return };
-        fn add(t: &mut Tree, parent: &TreeItem, list: &[Obj], path: &mut Path, items: &mut Vec<(TreeItem, Path)>) {
+        fn add(
+            t: &mut Tree,
+            parent: &TreeItem,
+            list: &[Obj],
+            path: &mut Path,
+            items: &mut Vec<(TreeItem, Path)>,
+            names: &Names,
+        ) {
             for (i, o) in list.iter().enumerate() {
                 path.push(i);
-                if let Some(mut it) = t.insert(parent, &plain(&sub_label(o)), parent.children()) {
+                if let Some(mut it) = t.insert(parent, &plain(&sub_label(o, names)), parent.children()) {
                     let k = edit::kind(o);
                     if o.get("enabled").and_then(Value::as_bool) == Some(false) || !crate::engine::supported(k as u32) {
                         it.set_label_fgcolor(Color::from_rgb(130, 130, 130));
@@ -337,7 +362,7 @@ impl Actions {
                         .and_then(Value::as_array)
                         .map(|a| a.iter().filter_map(|x| x.as_object().cloned()).collect())
                         .unwrap_or_default();
-                    add(t, &it, &kids, path, items);
+                    add(t, &it, &kids, path, items, names);
                 }
                 path.pop();
             }
@@ -348,6 +373,7 @@ impl Actions {
             &a.sub_actions,
             &mut Vec::new(),
             &mut self.sub_items,
+            &names,
         );
         if let Some(p) = keep {
             if let Some((i, _)) = self.sub_items.iter().find(|(_, x)| *x == p) {
@@ -606,7 +632,9 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
             let Some(i) = dialogs::pick("Add a trigger", &names) else {
                 return;
             };
-            let t = edit::new_trigger(TRIGGERS[i].0);
+            let Some(t) = fill_new(m, edit::new_trigger(TRIGGERS[i].0), true) else {
+                return;
+            };
             m.edit_action(|a| a.triggers.push(t));
         }),
     );
@@ -705,6 +733,15 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
             let mut o = edit::new_sub(kind);
             if kind == 99903 {
                 o.insert("values".into(), json!([]));
+            }
+            // The form's fields go before the children and the base fields.
+            let kids = o.shift_remove("subActions");
+            let Some(mut o) = fill_new(m, o, false) else {
+                return;
+            };
+            if let Some(kids) = kids {
+                let at = o.keys().position(|k| k == "id").unwrap_or(o.len());
+                o.shift_insert(at, "subActions".into(), kids);
             }
             let at = m.selected_sub();
             m.edit_action(|a| {
@@ -876,6 +913,53 @@ fn edit_action(me: &Rc<RefCell<Actions>>) {
     }
 }
 
+/// Edit a sub-action or trigger: in its form, or as JSON (no form, or asked for). The type stays.
+fn edit_obj(m: &Actions, title: &str, fields: Option<&[forms::F]>, o: &Obj, hint: &str) -> Option<Obj> {
+    if let Some(fields) = fields {
+        let lists = Lists::new(&m.cfg.borrow());
+        match forms::form(title, fields, o, &lists) {
+            Done::Ok(x) => return Some(x),
+            Done::Cancel => return None,
+            Done::Json => {}
+        }
+    }
+    let k = edit::kind(o);
+    let new = dialogs::json_editor(title, hint, &Value::Object(o.clone()), |v| {
+        match v.get("type").and_then(Value::as_u64) {
+            Some(x) if x == k => Ok(()),
+            _ => Err(format!("Keep \"type\": {k}.")),
+        }
+    });
+    match new {
+        Some(Value::Object(x)) => Some(x),
+        _ => None,
+    }
+}
+
+fn trigger_title(k: u64) -> &'static str {
+    name(TRIGGERS, k as u32).unwrap_or("Trigger")
+}
+
+fn sub_title(k: u64) -> &'static str {
+    SUB_ACTION_INFO
+        .binary_search_by_key(&(k as u32), |x| x.0)
+        .map_or("Sub-action", |i| SUB_ACTION_INFO[i].1)
+}
+
+/// A new trigger or sub-action with fields opens its form first; cancelling it adds nothing.
+fn fill_new(m: &Actions, o: Obj, trigger: bool) -> Option<Obj> {
+    let k = edit::kind(&o);
+    let (title, fields) = if trigger {
+        (trigger_title(k), forms::trigger_fields(k))
+    } else {
+        (sub_title(k), forms::sub_fields(k))
+    };
+    match fields {
+        Some(f) if !f.is_empty() => edit_obj(m, title, Some(f), &o, ""),
+        _ => Some(o),
+    }
+}
+
 fn edit_trigger(me: &Rc<RefCell<Actions>>) {
     let mut m = me.borrow_mut();
     let (Some(id), i) = (m.selected.clone(), m.triggers.value() - 1) else {
@@ -893,21 +977,12 @@ fn edit_trigger(me: &Rc<RefCell<Actions>>) {
         .find(|a| a.id == id)
         .and_then(|a| a.triggers.get(i as usize).cloned());
     let Some(t) = t else { return };
-    let k = t.get("type").and_then(Value::as_u64).unwrap_or(0);
-    let hint = format!(
-        "{} trigger. Its fields are in Streamer.bot's docs.",
-        name(TRIGGERS, k as u32).unwrap_or("Unknown")
-    );
-    let keep = t.get("id").cloned();
-    let new = dialogs::json_editor("Trigger", &hint, &Value::Object(t), |v| {
-        match v.get("type").and_then(Value::as_u64) {
-            Some(x) if x == k => Ok(()),
-            _ => Err(format!("Keep \"type\": {k}.")),
-        }
-    });
-    if let Some(Value::Object(mut new)) = new {
-        if let Some(keep) = keep {
-            new.insert("id".into(), keep);
+    let k = edit::kind(&t);
+    let title = trigger_title(k);
+    let hint = format!("{title} trigger. Its fields are in Streamer.bot's docs.");
+    if let Some(mut new) = edit_obj(&m, title, forms::trigger_fields(k), &t, &hint) {
+        if let Some(keep) = t.get("id") {
+            new.insert("id".into(), keep.clone());
         }
         m.edit_action(|a| {
             if let Some(t) = a.triggers.get_mut(i as usize) {
@@ -934,21 +1009,12 @@ fn edit_sub(me: &Rc<RefCell<Actions>>) {
     // Children are edited in the list, not here.
     let kids = o.shift_remove("subActions");
     let k = edit::kind(&o);
+    let title = sub_title(k);
     let hint = match SUB_ACTION_INFO.binary_search_by_key(&(k as u32), |x| x.0) {
-        Ok(i) => format!(
-            "{}. Its fields: {}",
-            SUB_ACTION_INFO[i].1,
-            SUB_ACTION_INFO[i].3.join(", ")
-        ),
-        Err(_) => "Sub-action".into(),
+        Ok(i) => format!("{title}. Its fields: {}", SUB_ACTION_INFO[i].3.join(", ")),
+        Err(_) => title.into(),
     };
-    let new = dialogs::json_editor("Sub-action", &hint, &Value::Object(o.clone()), |v| {
-        match v.get("type").and_then(Value::as_u64) {
-            Some(x) if x == k => Ok(()),
-            _ => Err(format!("Keep \"type\": {k}.")),
-        }
-    });
-    if let Some(Value::Object(mut new)) = new {
+    if let Some(mut new) = edit_obj(&m, title, forms::sub_fields(k), &o, &hint) {
         for f in ["id", "parentId", "index"] {
             if let Some(v) = o.get(f) {
                 new.insert(f.into(), v.clone());

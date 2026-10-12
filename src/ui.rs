@@ -3,6 +3,7 @@
 
 mod actions;
 mod dialogs;
+mod forms;
 
 use crate::engine::UiCmd;
 use crate::{status, Config};
