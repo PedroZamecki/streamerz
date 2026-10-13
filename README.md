@@ -61,3 +61,9 @@ dual-output scene a source's horizontal and vertical copies both change unless "
 - **IFTTT**: send basic and advanced notification triggers directly to IFTTT webhooks.
 - **Pronouns**: fetch and cache user pronouns using the alejo.io Twitch Chat Pronouns API, populating standard pronoun variables.
 - **Remote Instances**: connect multiple streamerz or Streamer.bot instances via WebSocket clients or servers, sending and waiting for remote triggers and signals.
+
+## Hotkeys, inputs, MIDI and voice control
+
+- **Inputs & Hotkeys**: Key Press sub-actions (keyboard press simulation with modifiers) and Input Key Press / Mouse Click triggers with key, button, and modifier filters.
+- **MIDI**: MIDI Message triggers (note on/off, CC, pitch bend, sysex) with device, channel, and status filters, and Note On, Control Change, and Generic MIDI Out sub-actions.
+- **Voice Control**: Speech to Text Dictation and Speech to Text Command triggers, plus Set Voice Control Command, Set Command State, and Set Voice Input sub-actions.

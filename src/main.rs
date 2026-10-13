@@ -7,6 +7,7 @@ mod edit;
 pub mod engine;
 mod fmt;
 pub mod http;
+pub mod inputs;
 pub mod kick;
 mod math;
 pub mod model;
