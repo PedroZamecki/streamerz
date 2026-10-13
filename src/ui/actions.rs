@@ -409,7 +409,7 @@ impl Actions {
             self.detail_title.set_label("No Action Selected");
             self.detail_desc
                 .set_label("Select an action from the list on the left to configure triggers and sub-actions.");
-            for b in self.action_btns.iter_mut().skip(1) {
+            for b in &mut self.action_btns {
                 b.deactivate();
             }
             for b in &mut self.trigger_btns {
@@ -421,7 +421,7 @@ impl Actions {
             self.subs.redraw();
             return;
         };
-        for b in self.action_btns.iter_mut().skip(1) {
+        for b in &mut self.action_btns {
             b.activate();
         }
         for b in &mut self.trigger_btns {
@@ -578,8 +578,9 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
     act_head.end();
     left.fixed(&act_head, ROW);
     let actions_tree = tree();
-    let lb = bar(&mut left, &["Add", "Edit", "Delete", "Test"]);
-    let lb2 = bar(&mut left, &["Import", "Export"]);
+    let lb = bar(&mut left, &["Add", "Edit", "Duplicate"]);
+    let lb2 = bar(&mut left, &["Delete", "Test"]);
+    let lb3 = bar(&mut left, &["Import", "Export"]);
     left.end();
     row.fixed(&left, 300);
     let mut right = Flex::default().column();
@@ -632,7 +633,7 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
         sub_items: Vec::new(),
         detail_title: detail_title.clone(),
         detail_desc: detail_desc.clone(),
-        action_btns: lb.clone(),
+        action_btns: vec![lb[1].clone(), lb[2].clone(), lb2[0].clone(), lb2[1].clone()],
         trigger_btns: tb.clone(),
         sub_btns: sb.clone(),
     }));
@@ -704,6 +705,22 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
         &lb[2],
         Box::new(|m| {
             let Some(id) = m.selected.clone() else { return };
+            let src = m.cfg.borrow().actions.actions.iter().find(|a| a.id == id).cloned();
+            let Some(src) = src else { return };
+            let default_name = format!("{} (Copy)", src.name);
+            let Some(name) = ask_name("Duplicate action", &default_name) else {
+                return;
+            };
+            let dup = edit::duplicate_action(&src, &name);
+            let new_id = dup.id.clone();
+            m.selected = Some(new_id);
+            m.edit(|c| c.actions.actions.push(dup));
+        }),
+    );
+    on(
+        &lb2[0],
+        Box::new(|m| {
+            let Some(id) = m.selected.clone() else { return };
             let name = m
                 .cfg
                 .borrow()
@@ -722,7 +739,7 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
         }),
     );
     on(
-        &lb[3],
+        &lb2[1],
         Box::new(|m| {
             if let Some(id) = m.selected.clone() {
                 super::tell(&m.cmds, move |e| drop(e.test(&id)));
@@ -730,7 +747,7 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
         }),
     );
     on(
-        &lb2[0],
+        &lb3[0],
         Box::new(|m| {
             let Some(x) = dialogs::import() else { return };
             let q = format!(
@@ -757,7 +774,7 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
         }),
     );
     on(
-        &lb2[1],
+        &lb3[1],
         Box::new(|m| {
             let list: Vec<(String, String, String)> = {
                 let c = m.cfg.borrow();
