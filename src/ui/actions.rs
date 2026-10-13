@@ -11,9 +11,10 @@ use crate::types::{name, SUB_ACTION_INFO, TRIGGERS};
 use crate::Config;
 use fltk::browser::HoldBrowser;
 use fltk::button::Button;
-use fltk::enums::{Align, Color, Cursor, Event, Font};
+use fltk::enums::{Align, Color, Cursor, Event, Font, Key};
 use fltk::frame::Frame;
 use fltk::group::{Flex, Tabs};
+use fltk::input::Input;
 use fltk::prelude::*;
 use fltk::tree::{Tree, TreeItem, TreeReason, TreeSelect};
 use fltk::{app, dialog, draw};
@@ -30,6 +31,8 @@ pub struct Actions {
     triggers: HoldBrowser,
     subs: Tree,
     title: Frame,
+    search_actions: Input,
+    search_subs: Input,
     /// The selected action's id.
     selected: Option<String>,
     /// Tree items and what they are: an action id, or a group name.
@@ -246,6 +249,7 @@ impl Actions {
         let Some(root) = self.tree.root() else { return };
         // Not clear(): that deletes the root too.
         self.tree.clear_children(&root);
+        let filter = self.search_actions.value().trim().to_lowercase();
         let mut groups: Vec<String> = c.iter().map(|a| a.group.clone()).filter(|g| !g.is_empty()).collect();
         groups.extend(
             self.cfg
@@ -271,17 +275,26 @@ impl Actions {
                 }
             };
         let mut sorted = c.clone();
+        if !filter.is_empty() {
+            sorted.retain(|a| a.name.to_lowercase().contains(&filter) || a.group.to_lowercase().contains(&filter));
+        }
         sorted.sort_by_key(|a| a.name.to_lowercase());
         for g in &groups {
+            let in_group: Vec<_> = sorted.iter().filter(|a| &a.group == g).collect();
+            if !filter.is_empty() && in_group.is_empty() && !g.to_lowercase().contains(&filter) {
+                continue;
+            }
             let Some(mut gi) = self.tree.insert(&root, &plain(g), root.children()) else {
                 continue;
             };
             gi.set_label_font(Font::HelveticaBold);
             self.items.push((gi.clone(), Node::Group(g.clone())));
-            for a in sorted.iter().filter(|a| &a.group == g) {
+            for a in in_group {
                 add(&mut self.tree, &gi, a, &mut self.items);
             }
-            if closed.contains(g) {
+            if !filter.is_empty() {
+                gi.open();
+            } else if closed.contains(g) {
                 gi.close();
             }
         }
@@ -333,13 +346,29 @@ impl Actions {
         };
         self.title.set_label(&plain(&format!("{}{flags}", a.name)));
         let names = names(&self.cfg.borrow());
+        let sub_filter = self.search_subs.value().trim().to_lowercase();
         for t in &a.triggers {
-            self.triggers.add(&format!("@.{}", trigger_label(t, &names)));
+            let lbl = trigger_label(t, &names);
+            if sub_filter.is_empty() || lbl.to_lowercase().contains(&sub_filter) {
+                self.triggers.add(&format!("@.{lbl}"));
+            }
         }
         if keep_trigger > 0 && keep_trigger <= self.triggers.size() {
             self.triggers.select(keep_trigger);
         }
         let Some(root) = self.subs.root() else { return };
+        fn matches_filter(o: &Obj, names: &Names, q: &str) -> bool {
+            if q.is_empty() || sub_label(o, names).to_lowercase().contains(q) {
+                return true;
+            }
+            if let Some(kids) = o.get("subActions").and_then(Value::as_array) {
+                kids.iter()
+                    .filter_map(|x| x.as_object())
+                    .any(|k| matches_filter(k, names, q))
+            } else {
+                false
+            }
+        }
         fn add(
             t: &mut Tree,
             parent: &TreeItem,
@@ -347,9 +376,14 @@ impl Actions {
             path: &mut Path,
             items: &mut Vec<(TreeItem, Path)>,
             names: &Names,
+            sub_filter: &str,
         ) {
             for (i, o) in list.iter().enumerate() {
                 path.push(i);
+                if !sub_filter.is_empty() && !matches_filter(o, names, sub_filter) {
+                    path.pop();
+                    continue;
+                }
                 if let Some(mut it) = t.insert(parent, &plain(&sub_label(o, names)), parent.children()) {
                     let k = edit::kind(o);
                     if o.get("enabled").and_then(Value::as_bool) == Some(false) || !crate::engine::supported(k as u32) {
@@ -364,7 +398,10 @@ impl Actions {
                         .and_then(Value::as_array)
                         .map(|a| a.iter().filter_map(|x| x.as_object().cloned()).collect())
                         .unwrap_or_default();
-                    add(t, &it, &kids, path, items, names);
+                    add(t, &it, &kids, path, items, names, sub_filter);
+                    if !sub_filter.is_empty() {
+                        it.open();
+                    }
                 }
                 path.pop();
             }
@@ -376,6 +413,7 @@ impl Actions {
             &mut Vec::new(),
             &mut self.sub_items,
             &names,
+            &sub_filter,
         );
         if let Some(p) = keep {
             if let Some((i, _)) = self.sub_items.iter().find(|(_, x)| *x == p) {
@@ -427,10 +465,16 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
     row.set_pad(8);
     let mut left = Flex::default().column();
     left.set_pad(4);
+    let mut act_head = Flex::default().row();
+    act_head.set_pad(4);
     let t = Frame::default()
         .with_label("Actions")
         .with_align(Align::Left | Align::Inside);
-    left.fixed(&t, ROW - 4);
+    act_head.fixed(&t, 60);
+    let mut search_actions = Input::default();
+    search_actions.set_tooltip("Filter actions...");
+    act_head.end();
+    left.fixed(&act_head, ROW);
     let actions_tree = tree();
     let lb = bar(&mut left, &["Add", "Edit", "Delete", "Test"]);
     let lb2 = bar(&mut left, &["Import", "Export"]);
@@ -448,10 +492,16 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
     let triggers = HoldBrowser::default();
     right.fixed(&triggers, 120);
     let tb = bar(&mut right, &["Add", "Edit", "On/Off", "Test...", "Delete"]);
+    let mut sub_head = Flex::default().row();
+    sub_head.set_pad(4);
     let t = Frame::default()
         .with_label("Sub-actions")
         .with_align(Align::Left | Align::Inside);
-    right.fixed(&t, ROW - 4);
+    sub_head.fixed(&t, 90);
+    let mut search_subs = Input::default();
+    search_subs.set_tooltip("Filter sub-actions...");
+    sub_head.end();
+    right.fixed(&sub_head, ROW);
     let subs = tree();
     let sb = bar(&mut right, &["Add", "Edit", "On/Off", "Delete"]);
     right.end();
@@ -464,10 +514,34 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
         triggers: triggers.clone(),
         subs: subs.clone(),
         title,
+        search_actions: search_actions.clone(),
+        search_subs: search_subs.clone(),
         selected: None,
         items: Vec::new(),
         sub_items: Vec::new(),
     }));
+
+    let mut sa = search_actions.clone();
+    sa.set_trigger(fltk::enums::CallbackTrigger::Changed);
+    sa.set_callback({
+        let me = me.clone();
+        move |_| {
+            if let Ok(mut m) = me.try_borrow_mut() {
+                m.refresh();
+            }
+        }
+    });
+
+    let mut ss = search_subs.clone();
+    ss.set_trigger(fltk::enums::CallbackTrigger::Changed);
+    ss.set_callback({
+        let me = me.clone();
+        move |_| {
+            if let Ok(mut m) = me.try_borrow_mut() {
+                m.refresh_action();
+            }
+        }
+    });
     let on = |b: &Button, f: Box<dyn Fn(&mut Actions)>| {
         let me = me.clone();
         let mut b = b.clone();
@@ -583,6 +657,7 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
 
     // Drag an action onto a group, or onto an action (its group), or to the bottom (no group).
     let me2 = me.clone();
+    let me_del_act = me.clone();
     drag(
         &actions_tree,
         {
@@ -612,17 +687,78 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
             }
         },
         move || edit_action(&me2),
+        Some(Box::new(move |k| {
+            if k == Key::Delete || k == Key::BackSpace {
+                let mut m = me_del_act.borrow_mut();
+                let Some(id) = m.selected.clone() else { return false };
+                let name = m
+                    .cfg
+                    .borrow()
+                    .actions
+                    .actions
+                    .iter()
+                    .find(|a| a.id == id)
+                    .map(|a| a.name.clone())
+                    .unwrap_or_default();
+                if dialog::choice2_default(&format!("Delete the action {}?", plain(&name)), "Cancel", "Delete", "")
+                    == Some(1)
+                {
+                    m.selected = None;
+                    m.edit(|c| c.actions.actions.retain(|a| a.id != id));
+                }
+                true
+            } else {
+                false
+            }
+        })),
     );
 
     // Triggers.
     let mut tr = triggers.clone();
-    tr.set_callback({
-        let me = me.clone();
-        move |b| {
+    let me_tr = me.clone();
+    let me_key_tr = me.clone();
+    tr.handle(move |b, ev| match ev {
+        Event::Push => {
             if app::event_clicks() && b.value() > 0 {
-                edit_trigger(&me);
+                edit_trigger(&me_tr);
+                return true;
             }
+            false
         }
+        Event::KeyDown => {
+            let key = app::event_key();
+            if key == Key::Enter {
+                if b.value() > 0 {
+                    edit_trigger(&me_key_tr);
+                    return true;
+                }
+            } else if key == Key::Delete || key == Key::BackSpace {
+                let i = b.value() - 1;
+                if i >= 0 {
+                    let mut m = me_key_tr.borrow_mut();
+                    m.edit_action(|a| {
+                        if (i as usize) < a.triggers.len() {
+                            a.triggers.remove(i as usize);
+                        }
+                    });
+                    return true;
+                }
+            } else if key == Key::from_char(' ') {
+                let i = b.value() - 1;
+                if i >= 0 {
+                    let mut m = me_key_tr.borrow_mut();
+                    m.edit_action(|a| {
+                        if let Some(t) = a.triggers.get_mut(i as usize) {
+                            let on = t.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+                            t.insert("enabled".into(), (!on).into());
+                        }
+                    });
+                    return true;
+                }
+            }
+            false
+        }
+        _ => false,
     });
     on(
         &tb[0],
@@ -807,6 +943,7 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
             });
         }),
     );
+    let me_key_sub = me.clone();
     drag(
         &subs,
         {
@@ -831,6 +968,45 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
             let me = me.clone();
             move || edit_sub(&me)
         },
+        Some(Box::new(move |k| {
+            if k == Key::Delete || k == Key::BackSpace {
+                let mut m = me_key_sub.borrow_mut();
+                let Some(p) = m.selected_sub() else { return false };
+                let fixed = m
+                    .selected
+                    .as_ref()
+                    .and_then(|id| {
+                        m.cfg
+                            .borrow()
+                            .actions
+                            .actions
+                            .iter()
+                            .find(|a| &a.id == id)
+                            .and_then(|a| edit::get(&a.sub_actions, &p).map(|o| edit::fixed(edit::kind(o))))
+                    })
+                    .unwrap_or(true);
+                if fixed {
+                    dialog::alert_default("This branch is part of its If/Else or Switch; delete that instead.");
+                    return true;
+                }
+                m.edit_action(|a| {
+                    edit::remove(&mut a.sub_actions, &p);
+                });
+                true
+            } else if k == Key::from_char(' ') {
+                let mut m = me_key_sub.borrow_mut();
+                let Some(p) = m.selected_sub() else { return false };
+                m.edit_action(|a| {
+                    edit::update(&mut a.sub_actions, &p, |o| {
+                        let on = o.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+                        o.insert("enabled".into(), (!on).into());
+                    });
+                });
+                true
+            } else {
+                false
+            }
+        })),
     );
     me
 }
@@ -838,7 +1014,12 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
 /// Dragging in a tree: `done(dragged, target)` when the mouse is let go over `target` (None:
 /// below the last item). FLTK's own handling runs first (the selection follows the mouse, which
 /// shows where it lands), so the dragged item is the one selected on the press.
-fn drag(t: &Tree, done: impl Fn(TreeItem, Option<TreeItem>) + 'static, double: impl Fn() + 'static) {
+fn drag(
+    t: &Tree,
+    done: impl Fn(TreeItem, Option<TreeItem>) + 'static,
+    double: impl Fn() + 'static,
+    key_action: Option<Box<dyn Fn(Key) -> bool + 'static>>,
+) {
     let mut t = t.clone();
     let mut start: Option<(TreeItem, i32)> = None;
     let mut dragging = false;
@@ -850,6 +1031,19 @@ fn drag(t: &Tree, done: impl Fn(TreeItem, Option<TreeItem>) + 'static, double: i
                 start = None;
                 double();
                 return true;
+            }
+            false
+        }
+        Event::KeyDown => {
+            let key = app::event_key();
+            if key == Key::Enter {
+                double();
+                return true;
+            }
+            if let Some(ref kf) = key_action {
+                if kf(key) {
+                    return true;
+                }
             }
             false
         }

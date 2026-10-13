@@ -10,13 +10,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-deps-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            apt-deps-${{ runner.os }}-
       # FLTK (the window) builds from source against these; dbus is the tray.
       - run: >
-          sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxft-dev libxinerama-dev
-          libxcursor-dev libxrender-dev libxfixes-dev libpango1.0-dev libgl1-mesa-dev libglu1-mesa-dev
-          libwayland-dev wayland-protocols libdbus-1-dev libxkbcommon-dev libegl-dev libopengl-dev
-      - run: cargo fmt --check
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends
+          libx11-dev libxext-dev libxft-dev libxinerama-dev libxcursor-dev libxrender-dev
+          libxfixes-dev libpango1.0-dev libgl1-mesa-dev libglu1-mesa-dev libwayland-dev
+          wayland-protocols libdbus-1-dev libxkbcommon-dev libegl-dev libopengl-dev
+      - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
 
