@@ -1,4 +1,6 @@
 /target
-streamerz.json
-streamerz.json.bak
+streamerz.json*
+*.bak
+*.tmp
+.claude/
 .serena/

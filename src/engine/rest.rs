@@ -3153,7 +3153,10 @@ impl Engine {
                 let file = self.expand(ctx, s(o, "file"));
                 let text = self.expand(ctx, s(o, "text"));
                 let append = b(o, "append", false);
-                let _ = crate::fileio::write_to_file(std::path::Path::new(&file), &text, append);
+                let _ = tokio::task::spawn_blocking(move || {
+                    crate::fileio::write_to_file(std::path::Path::new(&file), &text, append)
+                })
+                .await;
             }
 
             // Read Random Line From File (5)
@@ -3162,7 +3165,10 @@ impl Engine {
                 let var = self.simple(ctx, s(o, "variableName"));
                 let parse = b(o, "parseVariables", false);
                 let auto = b(o, "autoType", false);
-                if let Ok(Some(mut line)) = crate::fileio::read_random_line(std::path::Path::new(&file)) {
+                if let Ok(Ok(Some(mut line))) =
+                    tokio::task::spawn_blocking(move || crate::fileio::read_random_line(std::path::Path::new(&file)))
+                        .await
+                {
                     if parse {
                         line = self.expand(ctx, &line);
                     }
@@ -3177,7 +3183,9 @@ impl Engine {
                 let var = self.simple(ctx, s(o, "variableName"));
                 let parse = b(o, "parseVariables", false);
                 let auto = b(o, "autoType", false);
-                if let Ok(lines) = crate::fileio::read_lines(std::path::Path::new(&file)) {
+                if let Ok(Ok(lines)) =
+                    tokio::task::spawn_blocking(move || crate::fileio::read_lines(std::path::Path::new(&file))).await
+                {
                     let processed: Vec<Value> = lines
                         .into_iter()
                         .map(|l| {
@@ -3204,7 +3212,11 @@ impl Engine {
                 let line_num = n(o, "count") as usize;
                 let parse = b(o, "parseVariables", false);
                 let auto = b(o, "autoType", false);
-                if let Ok(Some(mut line)) = crate::fileio::read_specific_line(std::path::Path::new(&file), line_num) {
+                if let Ok(Ok(Some(mut line))) = tokio::task::spawn_blocking(move || {
+                    crate::fileio::read_specific_line(std::path::Path::new(&file), line_num)
+                })
+                .await
+                {
                     if parse {
                         line = self.expand(ctx, &line);
                     }
@@ -3224,7 +3236,10 @@ impl Engine {
             1039 => {
                 let file = self.expand(ctx, s(o, "file"));
                 let var = self.simple(ctx, s(o, "variableName"));
-                let exists = crate::fileio::file_exists(std::path::Path::new(&file));
+                let exists =
+                    tokio::task::spawn_blocking(move || crate::fileio::file_exists(std::path::Path::new(&file)))
+                        .await
+                        .unwrap_or(false);
                 ctx.args.insert(var, exists.into());
             }
 
@@ -3232,7 +3247,10 @@ impl Engine {
             1040 => {
                 let folder = self.expand(ctx, s(o, "folder"));
                 let var = self.simple(ctx, s(o, "variableName"));
-                let exists = crate::fileio::folder_exists(std::path::Path::new(&folder));
+                let exists =
+                    tokio::task::spawn_blocking(move || crate::fileio::folder_exists(std::path::Path::new(&folder)))
+                        .await
+                        .unwrap_or(false);
                 ctx.args.insert(var, exists.into());
             }
 
