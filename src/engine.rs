@@ -102,6 +102,7 @@ pub struct Engine {
     obs: RefCell<Option<crate::obs::ObsHandle>>,
     kick: RefCell<Option<crate::kick::KickHandle>>,
     youtube: RefCell<Option<crate::youtube::YouTubeHandle>>,
+    pub(crate) slobs: crate::slobs::Slobs,
 }
 
 /// A running action's context.
@@ -138,7 +139,7 @@ pub type UiCmd = Box<dyn FnOnce(&Rc<Engine>) + Send>;
 pub fn supported(kind: u32) -> bool {
     matches!(
         kind,
-        2 | 4 | 6 | 8 | 9 | 10..=29 | 30..=49 | 50..=52 | 120..=130 | 200..=215 | 251..=254 | 321..=329 | 500..=531 | 550..=573 | 575..=580
+        2 | 4 | 6 | 8 | 9 | 10..=29 | 30..=49 | 50..=52 | 120..=130 | 200..=215 | 251..=254 | 321..=329 | 401..=415 | 417 | 500..=531 | 550..=573 | 575..=580
             | 1001..=1005 | 1007 | 1009..=1011 | 1013..=1017 | 1020 | 1022 | 1023 | 1028
             | 1031..=1034 | 1038 | 4001..=4012 | 10001 | 35001 | 35002 | 35010..=35012 | 35020..=35022 | 35030 | 35031
             | 35040..=35043 | 35101..=35113 | 99900..=99904
@@ -234,6 +235,7 @@ impl Engine {
             obs: RefCell::default(),
             kick: RefCell::default(),
             youtube: RefCell::default(),
+            slobs: Default::default(),
         })
     }
 
@@ -692,6 +694,20 @@ impl Engine {
                 | 35031
                 | 35040..=35043
                 | 35101..=35113 => self.rest(ctx, o, kind).await,
+                // Streamlabs Desktop
+                401..=415 | 417 => {
+                    let mut x = o.clone();
+                    for k in ["sceneName", "sourceName", "groupName", "filterName", "url", "text"] {
+                        if let Some(t) = o.get(k).and_then(Value::as_str) {
+                            x.insert(k.into(), self.expand(ctx, t).into());
+                        }
+                    }
+                    match self.slobs_sub(kind, &x).await {
+                        Ok(Some(scene)) => drop(ctx.args.insert("currentScene".into(), scene.into())),
+                        Ok(None) => {}
+                        Err(e) => crate::say(format!("Streamlabs Desktop: {e}")),
+                    }
+                }
                 // Set Argument
                 123 => {
                     let k = self.simple(ctx, s(o, "variableName"));

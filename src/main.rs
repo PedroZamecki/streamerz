@@ -11,6 +11,7 @@ mod math;
 pub mod model;
 pub mod obs;
 pub mod servers;
+mod slobs;
 mod tray;
 pub mod twitch;
 pub mod types;
@@ -59,6 +60,8 @@ pub struct Config {
     /// OBS Studio configuration.
     #[serde(default)]
     pub obs: obs::ObsConfig,
+    /// Streamlabs Desktop connections (Streamer.bot's slobsSettings).
+    pub slobs: slobs::Settings,
     /// Kick configuration.
     #[serde(default)]
     pub kick: kick::KickConfig,
@@ -91,6 +94,7 @@ impl Default for Config {
             counters: Map::new(),
             twitch: twitch::TwitchConfig::default(),
             obs: obs::ObsConfig::default(),
+            slobs: slobs::Settings::default(),
             kick: kick::KickConfig::default(),
             youtube: youtube::YouTubeConfig::default(),
             rest: Map::new(),
@@ -290,6 +294,8 @@ fn main() {
             {
                 e.obs_start();
             }
+            // Opt-in: only the Streamlabs Desktop connections set to connect at start.
+            e.slobs_sync(true);
             // Opt-in: YouTube auto-connect if configured.
             let yt_cfg = engine_cfg.borrow().youtube.clone();
             if yt_cfg.auto_connect && (!yt_cfg.video_id.trim().is_empty() || !yt_cfg.channel_id.trim().is_empty()) {
