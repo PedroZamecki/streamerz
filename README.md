@@ -54,3 +54,10 @@ tab with that token. "Default connection" is the one sub-actions use when they d
 Streamlabs Desktop trigger and sub-action of Streamer.bot works, with the same arguments. Differences:
 Set Browser Source URL and Set GDI Text work (in Streamer.bot 1.0.7 they do nothing), and in a
 dual-output scene a source's horizontal and vertical copies both change unless "Display" picks one.
+
+## Webhooks and remote integrations
+
+- **Discord Webhook**: post basic messages, embeds, custom username/avatar and TTS directly to Discord webhooks.
+- **IFTTT**: send basic and advanced notification triggers directly to IFTTT webhooks.
+- **Pronouns**: fetch and cache user pronouns using the alejo.io Twitch Chat Pronouns API, populating standard pronoun variables.
+- **Remote Instances**: connect multiple streamerz or Streamer.bot instances via WebSocket clients or servers, sending and waiting for remote triggers and signals.

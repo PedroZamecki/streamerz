@@ -669,26 +669,26 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Sub-actions: discord** (1)
 
-- [ ] Basic Webhook
+- [x] Basic Webhook
 
 **Sub-actions: ifttt** (2)
 
-- [ ] IFTTT Notification (Basic)
-- [ ] IFTTT Notification (Advanced)
+- [x] IFTTT Notification (Basic)
+- [x] IFTTT Notification (Advanced)
 
 **Sub-actions: pronouns** (1)
 
-- [ ] Add Pronouns for User
+- [x] Add Pronouns for User
 
 **Sub-actions** (3)
 
-- [ ] Send Remote Signal
-- [ ] Send Remote Trigger
-- [ ] Wait For Remote Signal
+- [x] Send Remote Signal
+- [x] Send Remote Trigger
+- [x] Wait For Remote Signal
 
 **Triggers** (3)
 
-- [ ] Remote Instance Connected
-- [ ] Remote Instance Disconnected
-- [ ] Remote Instance Trigger
+- [x] Remote Instance Connected
+- [x] Remote Instance Disconnected
+- [x] Remote Instance Trigger
 

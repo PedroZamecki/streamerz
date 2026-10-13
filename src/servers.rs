@@ -210,10 +210,44 @@ async fn ws_client(e: Rc<Engine>, c: Obj) {
             Ok((ws, _)) => {
                 crate::say(format!("WebSocket client {}: connected to {url}", field(&c, "name")));
                 ws_event(&e, true, "Open", &c, Obj::new());
+                e.remote_connected(field(&c, "id"), field(&c, "name"));
                 let (_sink, mut stream) = ws.split();
                 while let Some(Ok(m)) = stream.next().await {
                     match frame_text(m) {
                         Some(Ok(text)) => {
+                            if let Ok(val) = serde_json::from_str::<Value>(&text) {
+                                if let Some(event) = val.get("event") {
+                                    if event.get("source").and_then(Value::as_str) == Some("StreamerbotRemote") {
+                                        let ev_type = event.get("type").and_then(Value::as_str).unwrap_or("");
+                                        let data =
+                                            val.get("data").and_then(Value::as_object).cloned().unwrap_or_default();
+                                        let inst = data.get("instanceId").and_then(Value::as_str).unwrap_or("");
+                                        match ev_type {
+                                            "InstanceTrigger" => {
+                                                let ev_name =
+                                                    data.get("eventName").and_then(Value::as_str).unwrap_or("");
+                                                let args = data
+                                                    .get("arguments")
+                                                    .and_then(Value::as_object)
+                                                    .cloned()
+                                                    .unwrap_or_default();
+                                                e.fire_remote_trigger(inst, ev_name, args);
+                                            }
+                                            "InstanceSignal" => {
+                                                let sig_name =
+                                                    data.get("signalName").and_then(Value::as_str).unwrap_or("");
+                                                let args = data
+                                                    .get("arguments")
+                                                    .and_then(Value::as_object)
+                                                    .cloned()
+                                                    .unwrap_or_default();
+                                                e.deliver_remote_signal(inst, sig_name, args);
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
                             let mut args = Obj::new();
                             args.insert("message".into(), text.into());
                             ws_event(&e, true, "Message", &c, args);
@@ -222,6 +256,7 @@ async fn ws_client(e: Rc<Engine>, c: Obj) {
                         None => {}
                     }
                 }
+                e.remote_disconnected(field(&c, "id"), field(&c, "name"));
                 ws_event(&e, true, "Close", &c, Obj::new());
                 if !flag(&c, "reconnectOnDisconnect") {
                     return;
@@ -495,16 +530,28 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
                 error(&id, &format!("{p} is not connected"))
             }
         }
-        // The pronouns integration is a later phase: Streamer.bot's answer for an unknown user.
-        "GetUserPronouns" => ok(
-            &id,
-            json!({"userLogin": get("userLogin"), "pronoun": {"pronounPastTense": "Were", "pronounCurrentTense": "Are",
-                "pronounCurrentTenseLower": "are", "pronounPluralLower": null, "pronounPastTenseLower": "were",
-                "pronounReflexiveLower": "themselves", "pronounPronounLower": "theirs", "pronounPossessiveLower": "their",
-                "pronounObjectLower": "them", "pronounSubjectLower": "they", "pronounReflexive": "Themselves",
-                "pronounPossessive": "Their", "pronounObject": "Them", "pronounSubject": "They", "pronoun": "Theirs",
-                "userFound": false}}),
-        ),
+        "GetUserPronouns" => {
+            let login = get("userLogin");
+            let pronoun_val = match crate::remote::get_cached_pronoun(login) {
+                Some(info) => crate::remote::pronoun_to_json(&info, true),
+                None => crate::remote::default_pronoun_json(),
+            };
+            ok(&id, json!({"userLogin": login, "pronoun": pronoun_val}))
+        }
+        "ExecuteRemoteTrigger" | "SendRemoteTrigger" | "RemoteTrigger" => {
+            let instance_id = get("instanceId");
+            let event_name = get("eventName");
+            let args = req.get("args").and_then(Value::as_object).cloned().unwrap_or_default();
+            e.fire_remote_trigger(instance_id, event_name, args);
+            ok(&id, json!({}))
+        }
+        "SendRemoteSignal" | "RemoteSignal" => {
+            let instance_id = get("instanceId");
+            let signal_name = get("signalName");
+            let args = req.get("args").and_then(Value::as_object).cloned().unwrap_or_default();
+            e.deliver_remote_signal(instance_id, signal_name, args);
+            ok(&id, json!({}))
+        }
         _ => return None,
     })
 }
@@ -529,9 +576,13 @@ async fn websocket(e: Rc<Engine>, s: WsSettings) {
         next += 1;
         let (e, s, id) = (e.clone(), s.clone(), next);
         tokio::task::spawn_local(async move {
+            let client_inst_id = format!("remote-{id}");
+            let client_inst_name = format!("Client {id}");
+            e.remote_connected(&client_inst_id, &client_inst_name);
             if let Err(err) = connection(&e, &s, tcp, id).await {
                 crate::say(format!("WebSocket client: {err}"));
             }
+            e.remote_disconnected(&client_inst_id, &client_inst_name);
             e.listen(id, &events::Subs::new(), &tokio::sync::mpsc::unbounded_channel().0);
         });
     }

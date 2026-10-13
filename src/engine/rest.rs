@@ -2796,6 +2796,145 @@ impl Engine {
                 ctx.args.insert("rewardBackgroundColor".into(), color.into());
             }
 
+            // Discord Basic Webhook (7001)
+            7001 => {
+                let url = self.expand(ctx, s(o, "webhookUrl"));
+                let content = self.expand(ctx, s(o, "content"));
+                let username = self.expand(ctx, s(o, "username"));
+                let avatar = self.expand(ctx, s(o, "avatar"));
+                let image = self.expand(ctx, s(o, "image"));
+                let tts = b(o, "textToSpeech", false);
+                if let Err(e) =
+                    crate::remote::execute_discord_webhook(&url, &content, &username, &avatar, &image, tts).await
+                {
+                    crate::say(format!("Discord webhook: {e}"));
+                }
+            }
+
+            // IFTTT Notification Basic (8001)
+            8001 => {
+                let event = self.expand(ctx, s(o, "eventName"));
+                let text_val = self.expand(ctx, s(o, "text"));
+                let key = ctx
+                    .args
+                    .get("iftttKey")
+                    .or_else(|| ctx.args.get("key"))
+                    .and_then(Value::as_str);
+                let payload = crate::remote::build_ifttt_basic_payload(&text_val);
+                if let Err(e) = crate::remote::execute_ifttt_notification(&event, &payload, key).await {
+                    crate::say(format!("IFTTT: {e}"));
+                }
+            }
+
+            // IFTTT Notification Advanced (8002)
+            8002 => {
+                let event = self.expand(ctx, s(o, "eventName"));
+                let custom_args = o.get("args").and_then(Value::as_object).cloned().unwrap_or_default();
+                let mut expanded_args = Obj::new();
+                for (k, v) in &custom_args {
+                    let val_str = self.expand(ctx, &text(v));
+                    expanded_args.insert(k.clone(), val_str.into());
+                }
+                let key = ctx
+                    .args
+                    .get("iftttKey")
+                    .or_else(|| ctx.args.get("key"))
+                    .and_then(Value::as_str);
+                let payload = crate::remote::build_ifttt_advanced_payload(&expanded_args);
+                if let Err(e) = crate::remote::execute_ifttt_notification(&event, &payload, key).await {
+                    crate::say(format!("IFTTT: {e}"));
+                }
+            }
+
+            // Pronouns: Add Pronouns for User (15001)
+            15001 => {
+                let mut login = self.expand(ctx, s(o, "userLogin"));
+                if login.is_empty() {
+                    login = ctx
+                        .args
+                        .get("userLogin")
+                        .or_else(|| ctx.args.get("user"))
+                        .or_else(|| ctx.args.get("userName"))
+                        .map(text)
+                        .unwrap_or_default();
+                }
+                let prefix = self.expand(ctx, s(o, "prefix"));
+                let info = crate::remote::get_user_pronouns(&login).await;
+                crate::remote::populate_pronoun_vars(&mut ctx.args, &prefix, info.as_ref());
+            }
+
+            // Send Remote Trigger (20001)
+            20001 => {
+                let inst = self.expand(ctx, s(o, "instanceId"));
+                let event = self.expand(ctx, s(o, "eventName"));
+                let mut payload = if b(o, "useArge", false) {
+                    ctx.args.clone()
+                } else {
+                    Obj::new()
+                };
+                if let Some(m) = o.get("customArgs").and_then(Value::as_object) {
+                    for (k, v) in m {
+                        payload.insert(k.clone(), self.expand(ctx, &text(v)).into());
+                    }
+                }
+                let cfg = self.config();
+                payload.insert("instanceId".into(), cfg.instance_id.clone().into());
+                payload.insert("instanceName".into(), cfg.instance_name.clone().into());
+                payload.insert(
+                    "instanceOs".into(),
+                    (if cfg!(windows) { "windows" } else { "linux" }).into(),
+                );
+                self.fire_remote_trigger(&inst, &event, payload);
+            }
+
+            // Send Remote Signal (20002)
+            20002 => {
+                let inst = self.expand(ctx, s(o, "instanceId"));
+                let sig = self.expand(ctx, s(o, "signalName"));
+                let mut payload = if b(o, "useArge", false) {
+                    ctx.args.clone()
+                } else {
+                    Obj::new()
+                };
+                if let Some(m) = o.get("customArgs").and_then(Value::as_object) {
+                    for (k, v) in m {
+                        payload.insert(k.clone(), self.expand(ctx, &text(v)).into());
+                    }
+                }
+                let cfg = self.config();
+                payload.insert("instanceId".into(), cfg.instance_id.clone().into());
+                payload.insert("instanceName".into(), cfg.instance_name.clone().into());
+                payload.insert(
+                    "instanceOs".into(),
+                    (if cfg!(windows) { "windows" } else { "linux" }).into(),
+                );
+                self.deliver_remote_signal(&inst, &sig, payload);
+            }
+
+            // Wait For Remote Signal (20003)
+            20003 => {
+                let inst = self.expand(ctx, s(o, "instanceId"));
+                let sig = self.expand(ctx, s(o, "signalName"));
+                let timeout = n(o, "timeout") as u64;
+                let overwrite = b(o, "overwrite", false);
+                let got = self.wait_remote_signal(&inst, &sig, timeout).await;
+                match got {
+                    Some(payload) => {
+                        for (k, v) in payload {
+                            if overwrite || !ctx.args.contains_key(&k) {
+                                ctx.args.insert(k, v);
+                            }
+                        }
+                        ctx.args.insert("signalTimeout".into(), false.into());
+                        ctx.args.insert("hasResult".into(), true.into());
+                    }
+                    None => {
+                        ctx.args.insert("signalTimeout".into(), true.into());
+                        ctx.args.insert("hasResult".into(), false.into());
+                    }
+                }
+            }
+
             _ => {}
         }
     }

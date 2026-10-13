@@ -704,6 +704,36 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("backgroundColor", "Background color", Text),
             ("random", "Random", Bool),
         ],
+        7001 => &[
+            ("name", "Name", Text),
+            ("username", "Username", Text),
+            ("webhookUrl", "Webhook URL", Text),
+            ("content", "Content", Multi),
+            ("image", "Image URL", Text),
+            ("avatar", "Avatar URL", Text),
+            ("textToSpeech", "Text-to-Speech", Bool),
+        ],
+        8001 => &[("eventName", "Event Name", Text), ("text", "Text", Multi)],
+        8002 => &[("eventName", "Event Name", Text), ("args", "Arguments", Map)],
+        15001 => &[("userLogin", "User Login", Text), ("prefix", "Prefix", Text)],
+        20001 => &[
+            ("instanceId", "Instance", Text),
+            ("eventName", "Event Name", Text),
+            ("useArge", "Use current arguments", Bool),
+            ("customArgs", "Custom arguments", Map),
+        ],
+        20002 => &[
+            ("instanceId", "Instance", Text),
+            ("signalName", "Signal Name", Text),
+            ("useArge", "Use current arguments", Bool),
+            ("customArgs", "Custom arguments", Map),
+        ],
+        20003 => &[
+            ("instanceId", "Instance", Text),
+            ("signalName", "Signal Name", Text),
+            ("overwrite", "Overwrite", Bool),
+            ("timeout", "Timeout (ms)", Int),
+        ],
         99901 | 99902 | 99904 => &[("random", "Random", Bool)],
         99903 => &[
             ("values", "Values (one per line)", Lines),
@@ -771,6 +801,9 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
         | 28001..=28003
         | 36001..=36004
         | 37001..=37003 => &[],
+        29001 | 29002 => &[("instanceId", "Instance", Text)],
+        29003 => &[("instanceId", "Instance", Text), ("eventName", "Event Name", Text)],
+        29004 => &[("instanceId", "Instance", Text), ("signalName", "Signal Name", Text)],
         _ => return None,
     })
 }
@@ -1202,6 +1235,7 @@ mod tests {
         .chain(28001..=28003)
         .chain(36001..=36004)
         .chain(37001..=37003)
+        .chain(29001..=29004)
         {
             assert!(trigger_fields(k).is_some(), "trigger {k} has no form");
         }
