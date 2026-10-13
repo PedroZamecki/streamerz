@@ -68,6 +68,7 @@ pub fn trigger_clean_title(name: &str) -> String {
         .or_else(|| name.strip_prefix("YouTube"))
         .or_else(|| name.strip_prefix("Youtube"))
         .or_else(|| name.strip_prefix("Kick"))
+        .or_else(|| name.strip_prefix("TikTok"))
         .or_else(|| name.strip_prefix("Obs"))
         .or_else(|| name.strip_prefix("Slobs"))
         .or_else(|| name.strip_prefix("StreamlabsDesktop"))
@@ -273,6 +274,18 @@ pub fn trigger_categorize(name: &str) -> String {
             "Kick/Channel & Stream".into()
         }
     }
+    // TikTok
+    else if let Some(rest) = name.strip_prefix("TikTok") {
+        if rest.contains("Chat") {
+            "TikTok/Chat".into()
+        } else if rest.contains("Gift") {
+            "TikTok/Gifts & Coins".into()
+        } else if rest.contains("Connected") || rest.contains("Disconnected") {
+            "TikTok/Connection".into()
+        } else {
+            "TikTok/Community".into()
+        }
+    }
     // YouTube
     else if let Some(rest) = name.strip_prefix("YouTube").or_else(|| name.strip_prefix("Youtube")) {
         if rest.contains("Message") || rest.contains("Super") || rest.contains("Jewel") {
@@ -462,6 +475,15 @@ pub fn trigger_description(code: u32, _raw_name: &str, title: &str, category: &s
         4001 => "Fires when a chat message is received from YouTube Live chat.".into(),
         4003 => "Fires when a Super Chat is received in YouTube Live chat.".into(),
         4004 => "Fires when a Super Sticker is received in YouTube Live chat.".into(),
+        41001 => "Fires on every standard chat message posted in TikTok Live chat.".into(),
+        41002 => "Fires when a gift (or gift combo streak) is received on TikTok Live.".into(),
+        41003 => "Fires when likes / screen taps are received on TikTok Live.".into(),
+        41004 => "Fires when a viewer follows the streamer on TikTok.".into(),
+        41005 => "Fires when a viewer shares the TikTok live stream.".into(),
+        41006 => "Fires when a viewer subscribes to the TikTok channel.".into(),
+        41007 => "Fires when a viewer joins the TikTok live stream.".into(),
+        41008 => "Fires when connected to TikTok Live or the local tikstream bridge.".into(),
+        41009 => "Fires when disconnected from TikTok Live or the local tikstream bridge.".into(),
         42001 => "Fires when the system clipboard content changes.".into(),
         _ => format!("Fires on the {title} event in {}.", category.replace('/', " > ")),
     }

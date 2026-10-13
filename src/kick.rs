@@ -49,6 +49,25 @@ pub const KICK_PUSHER_URL: &str =
     "wss://ws-us2.pusher.com/app/eb1d5f283081a78b932c?protocol=7&client=js&version=7.6.0&flash=false";
 pub const KICK_API_BASE: &str = "https://api.kick.com/public/v1";
 
+/// Strip URL prefixes, @ signs, and slashes from a Kick channel input.
+pub fn clean_kick_channel(input: &str) -> String {
+    let mut s = input.trim();
+    for prefix in &[
+        "https://www.kick.com/",
+        "http://www.kick.com/",
+        "https://kick.com/",
+        "http://kick.com/",
+        "www.kick.com/",
+        "kick.com/",
+    ] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest;
+            break;
+        }
+    }
+    s.trim_start_matches('@').trim_end_matches('/').trim().to_string()
+}
+
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct KickConfig {
@@ -1057,6 +1076,14 @@ pub fn handle_kick_event(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_clean_kick_channel() {
+        assert_eq!(clean_kick_channel("https://kick.com/streamer"), "streamer");
+        assert_eq!(clean_kick_channel("http://www.kick.com/@mychannel/"), "mychannel");
+        assert_eq!(clean_kick_channel("@coolstreamer"), "coolstreamer");
+        assert_eq!(clean_kick_channel("normal"), "normal");
+    }
+
     use super::*;
     #[tokio::test]
     async fn test_mock_pusher_protocol() {

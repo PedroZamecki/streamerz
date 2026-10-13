@@ -17,6 +17,7 @@ pub mod obs;
 pub mod remote;
 pub mod servers;
 mod slobs;
+pub mod tiktok;
 mod tray;
 pub mod twitch;
 pub mod types;
@@ -73,6 +74,9 @@ pub struct Config {
     /// YouTube configuration.
     #[serde(default)]
     pub youtube: youtube::YouTubeConfig,
+    /// TikTok configuration.
+    #[serde(default)]
+    pub tiktok: tiktok::TikTokConfig,
     /// Donations and shops configuration.
     #[serde(default)]
     pub donations: donations::DonationsConfig,
@@ -105,6 +109,7 @@ impl Default for Config {
             slobs: slobs::Settings::default(),
             kick: kick::KickConfig::default(),
             youtube: youtube::YouTubeConfig::default(),
+            tiktok: tiktok::TikTokConfig::default(),
             donations: donations::DonationsConfig::default(),
             rest: Map::new(),
         }
@@ -314,6 +319,10 @@ fn main() {
             let kick_cfg = engine_cfg.borrow().kick.clone();
             if kick_cfg.auto_connect && !kick_cfg.channel.trim().is_empty() {
                 e.kick_start();
+            }
+            let tt_cfg = engine_cfg.borrow().tiktok.clone();
+            if tt_cfg.auto_connect {
+                e.tiktok_start();
             }
             tokio::task::spawn_local(servers::run(e.clone()));
             e.started();

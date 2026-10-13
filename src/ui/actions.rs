@@ -40,6 +40,9 @@ pub struct Actions {
     sub_items: Vec<(TreeItem, Path)>,
     detail_title: Frame,
     detail_desc: Frame,
+    action_btns: Vec<Button>,
+    trigger_btns: Vec<Button>,
+    sub_btns: Vec<Button>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -401,10 +404,32 @@ impl Actions {
         }
         self.sub_items.clear();
         let Some(a) = a else {
-            self.title.set_label("Select an action, or add one.");
+            self.title
+                .set_label("← Select an action from the list to configure triggers and sub-actions");
+            self.detail_title.set_label("No Action Selected");
+            self.detail_desc
+                .set_label("Select an action from the list on the left to configure triggers and sub-actions.");
+            for b in self.action_btns.iter_mut().skip(1) {
+                b.deactivate();
+            }
+            for b in &mut self.trigger_btns {
+                b.deactivate();
+            }
+            for b in &mut self.sub_btns {
+                b.deactivate();
+            }
             self.subs.redraw();
             return;
         };
+        for b in self.action_btns.iter_mut().skip(1) {
+            b.activate();
+        }
+        for b in &mut self.trigger_btns {
+            b.activate();
+        }
+        for b in &mut self.sub_btns {
+            b.activate();
+        }
         let mut flags = Vec::new();
         for (on, what) in [
             (!a.enabled, "disabled"),
@@ -607,6 +632,9 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
         sub_items: Vec::new(),
         detail_title: detail_title.clone(),
         detail_desc: detail_desc.clone(),
+        action_btns: lb.clone(),
+        trigger_btns: tb.clone(),
+        sub_btns: sb.clone(),
     }));
 
     let mut sa = search_actions.clone();
@@ -646,9 +674,15 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
                 return;
             }
             let Ok(mut m) = me.try_borrow_mut() else { return };
-            if let Some(Node::Action(id)) = m.node(&item) {
-                m.selected = Some(id);
-                m.refresh_action();
+            match m.node(&item) {
+                Some(Node::Action(id)) => {
+                    m.selected = Some(id);
+                    m.refresh_action();
+                }
+                _ => {
+                    m.selected = None;
+                    m.refresh_action();
+                }
             }
         }
     });
@@ -874,6 +908,7 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
         &tb[0],
         Box::new(|m| {
             if m.selected.is_none() {
+                dialog::alert_default("Please select an action from the list on the left first.");
                 return;
             }
             let items = super::picker::trigger_pick_items();
@@ -956,6 +991,7 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
         &sb[0],
         Box::new(|m| {
             if m.selected.is_none() {
+                dialog::alert_default("Please select an action from the list on the left first.");
                 return;
             }
             let items = super::picker::sub_action_pick_items();
