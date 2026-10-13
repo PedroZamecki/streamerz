@@ -91,6 +91,8 @@ struct State {
     chat_lines: u64,
     /// The running timers, stopped when timers change.
     timers: Vec<tokio::task::AbortHandle>,
+    voice_commands: HashMap<String, (String, bool)>,
+    voice_input: (String, String),
 }
 
 pub struct Engine {
@@ -142,8 +144,8 @@ pub fn supported(kind: u32) -> bool {
     matches!(
         kind,
         2 | 4 | 6 | 8 | 9 | 10..=29 | 30..=49 | 50..=52 | 120..=130 | 200..=215 | 251..=254 | 321..=329 | 401..=415 | 417 | 500..=531 | 550..=573 | 575..=580
-            | 1001..=1005 | 1007 | 1009..=1011 | 1013..=1017 | 1020 | 1022 | 1023 | 1028
-            | 1031..=1034 | 1038 | 4001..=4012 | 7001 | 8001 | 8002 | 10001 | 15001 | 20001..=20003
+            | 1001..=1005 | 1007 | 1009..=1020 | 1022 | 1023 | 1025 | 1028
+            | 1031..=1034 | 1038 | 4001..=4012 | 7001 | 8001 | 8002 | 9001..=9003 | 10001 | 15001 | 20001..=20003
             | 35001 | 35002 | 35010..=35012 | 35020..=35022 | 35030 | 35031
             | 35040..=35043 | 35101..=35113 | 99900..=99904
     )
@@ -513,6 +515,203 @@ impl Engine {
         });
     }
 
+    pub fn set_voice_command(self: &Rc<Self>, id: &str, phrase: &str) {
+        let mut st = self.st.borrow_mut();
+        let entry = st
+            .voice_commands
+            .entry(id.to_string())
+            .or_insert_with(|| (phrase.to_string(), true));
+        entry.0 = phrase.to_string();
+    }
+
+    pub fn set_voice_command_state(self: &Rc<Self>, id: &str, state: f64) {
+        let mut st = self.st.borrow_mut();
+        let entry = st
+            .voice_commands
+            .entry(id.to_string())
+            .or_insert_with(|| (String::new(), true));
+        entry.1 = new_state(state, entry.1);
+    }
+
+    pub fn set_voice_input(self: &Rc<Self>, device_id: &str, device_name: &str) {
+        self.st.borrow_mut().voice_input = (device_id.to_string(), device_name.to_string());
+    }
+
+    pub fn fire_speech_dictation(self: &Rc<Self>, text: &str, confidence: f64, culture: &str) {
+        let mut args = Obj::new();
+        args.insert("dictationText".into(), text.into());
+        args.insert("text".into(), text.into());
+        args.insert("confidence".into(), confidence.into());
+        args.insert("culture".into(), culture.into());
+        let culture_str = culture.to_string();
+        self.fire(
+            crate::inputs::T_SPEECH_DICTATION,
+            "Speech to Text Dictation",
+            "Core/Voice Control",
+            "speechtotext",
+            &args,
+            |t| {
+                let want = s(t, "culture");
+                want.is_empty() || want == culture_str
+            },
+        );
+        self.emit("SpeechToText", "Dictation", || {
+            json!({
+                "text": text,
+                "confidence": confidence,
+                "culture": culture
+            })
+        });
+    }
+
+    pub fn fire_speech_command(
+        self: &Rc<Self>,
+        command_id: &str,
+        command_name: &str,
+        phrase: &str,
+        confidence: f64,
+        culture: &str,
+    ) {
+        let mut args = Obj::new();
+        args.insert("commandId".into(), command_id.into());
+        args.insert("commandName".into(), command_name.into());
+        args.insert("command".into(), phrase.into());
+        args.insert("phrase".into(), phrase.into());
+        args.insert("confidence".into(), confidence.into());
+        args.insert("culture".into(), culture.into());
+        let id_str = command_id.to_string();
+        self.fire(
+            crate::inputs::T_SPEECH_COMMAND,
+            "Speech to Text Command",
+            "Core/Voice Control",
+            "speechtotext",
+            &args,
+            |t| {
+                let want = s(t, "commandId");
+                want.is_empty() || want == id_str
+            },
+        );
+        self.emit("SpeechToText", "Command", || {
+            json!({
+                "commandId": command_id,
+                "commandName": command_name,
+                "command": phrase,
+                "confidence": confidence,
+                "culture": culture
+            })
+        });
+    }
+
+    pub fn fire_midi_message(self: &Rc<Self>, device: &str, channel: u8, status: u8, data1: u8, data2: u8) {
+        let mut args = Obj::new();
+        args.insert("midiDevice".into(), device.into());
+        args.insert("channel".into(), (channel as u64).into());
+        args.insert("status".into(), (status as u64).into());
+        let type_name = crate::inputs::midi_type_name(status);
+        args.insert("type".into(), type_name.into());
+        args.insert("eventType".into(), type_name.into());
+        args.insert("data1".into(), (data1 as u64).into());
+        args.insert("data2".into(), (data2 as u64).into());
+        if type_name == "NoteOn" || type_name == "NoteOff" {
+            args.insert("note".into(), (data1 as u64).into());
+            args.insert("noteName".into(), crate::inputs::note_name(data1).into());
+            args.insert("velocity".into(), (data2 as u64).into());
+        } else if type_name == "ControlChange" {
+            args.insert("controller".into(), (data1 as u64).into());
+            args.insert("value".into(), (data2 as u64).into());
+        }
+        let dev_str = device.to_string();
+        let type_str = type_name.to_string();
+        self.fire(
+            crate::inputs::T_MIDI_MESSAGE,
+            "Midi Message",
+            "Core/MIDI",
+            "midi",
+            &args,
+            |t| {
+                let want_dev = s(t, "device");
+                let want_ch = n(t, "channel") as u8;
+                let want_status = s(t, "status");
+                (want_dev.is_empty() || want_dev == dev_str)
+                    && (want_ch == 0 || want_ch == channel)
+                    && (want_status.is_empty() || want_status == type_str)
+            },
+        );
+        self.emit("Midi", "Message", || {
+            json!({
+                "device": device,
+                "channel": channel,
+                "status": status,
+                "data1": data1,
+                "data2": data2,
+                "type": type_name
+            })
+        });
+    }
+
+    pub fn fire_input_key(self: &Rc<Self>, key: &str, modifiers: u32, event_type: &str) {
+        let mut args = Obj::new();
+        args.insert("key".into(), key.into());
+        args.insert("modifiers".into(), (modifiers as u64).into());
+        args.insert(
+            "modifierNames".into(),
+            crate::inputs::format_modifiers(modifiers).into(),
+        );
+        args.insert("event".into(), event_type.into());
+        args.insert("eventType".into(), event_type.into());
+        let key_str = key.to_string();
+        self.fire(
+            crate::inputs::T_INPUT_KEY_PRESS,
+            "Key Press",
+            "Core/Inputs",
+            "inputs",
+            &args,
+            |t| {
+                let want_key = s(t, "key");
+                let want_mods = n(t, "modifiers") as u32;
+                (want_key.is_empty() || want_key.eq_ignore_ascii_case(&key_str))
+                    && (want_mods == 0 || want_mods == modifiers)
+            },
+        );
+        self.emit("Inputs", "InputKeyPress", || {
+            json!({
+                "key": key,
+                "modifiers": modifiers,
+                "event": event_type
+            })
+        });
+    }
+
+    pub fn fire_input_mouse(self: &Rc<Self>, button: &str, event_type: &str, x: i32, y: i32) {
+        let mut args = Obj::new();
+        args.insert("button".into(), button.into());
+        args.insert("buttonName".into(), button.into());
+        args.insert("event".into(), event_type.into());
+        args.insert("eventType".into(), event_type.into());
+        args.insert("x".into(), (x as i64).into());
+        args.insert("y".into(), (y as i64).into());
+        let btn_str = button.to_string();
+        self.fire(
+            crate::inputs::T_INPUT_MOUSE_CLICK,
+            "Mouse Click",
+            "Core/Inputs",
+            "inputs",
+            &args,
+            |t| {
+                let want_btn = s(t, "button");
+                want_btn.is_empty() || want_btn.eq_ignore_ascii_case(&btn_str)
+            },
+        );
+        self.emit("Inputs", "InputMouseClick", || {
+            json!({
+                "button": button,
+                "event": event_type,
+                "x": x,
+                "y": y
+            })
+        });
+    }
+
     pub fn remote_disconnected(self: &Rc<Self>, instance_id: &str, instance_name: &str) {
         let mut args = Obj::new();
         args.insert("instanceId".into(), instance_id.into());
@@ -844,9 +1043,11 @@ impl Engine {
                 | 575..=580
                 | 1007
                 | 1010
-                | 1013
-                | 1014
-                | 1015
+                | 1012..=1015
+                | 1018
+                | 1019
+                | 1025
+                | 9001..=9003
                 | 4001..=4012
                 | 7001
                 | 8001
@@ -1581,6 +1782,138 @@ pub(crate) mod tests {
             assert_eq!(res.get("sig_data").and_then(Value::as_str), Some("remote_ok"));
         });
         assert!(out.contains(&"T remote_trig hello_remote 42".to_string()));
+    }
+
+    #[test]
+    fn inputs_hotkeys_midi_and_voice_control() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+
+        // 1. Actions with triggers
+        let a_voice_dict = json!({
+            "id": "a_dict",
+            "name": "Speech Dictation",
+            "enabled": true,
+            "group": "",
+            "queue": crate::engine::DEFAULT_QUEUE,
+            "triggers": [{
+                "id": "t_dict",
+                "type": crate::inputs::T_SPEECH_DICTATION,
+                "enabled": true,
+                "culture": "en-US"
+            }],
+            "subActions": [log("T dictation %dictationText% %culture%")]
+        });
+
+        let a_voice_cmd = json!({
+            "id": "a_cmd",
+            "name": "Speech Command",
+            "enabled": true,
+            "group": "",
+            "queue": crate::engine::DEFAULT_QUEUE,
+            "triggers": [{
+                "id": "t_cmd",
+                "type": crate::inputs::T_SPEECH_COMMAND,
+                "enabled": true,
+                "commandId": "vcmd1"
+            }],
+            "subActions": [
+                log("T speech_cmd %commandId% %phrase%"),
+                // Change voice command state and audio device
+                json!({"type": crate::inputs::S_SET_VOICE_COMMAND, "commandId": "vcmd1", "command": "turn off the lights"}),
+                json!({"type": crate::inputs::S_SET_VOICE_COMMAND_STATE, "commandId": "vcmd1", "state": 1}),
+                json!({"type": crate::inputs::S_SET_VOICE_INPUT, "audioDeviceId": "mic1", "audioDeviceName": "Blue Yeti"}),
+                // Test keyboard press subaction
+                json!({"type": crate::inputs::S_KEYBOARD_PRESS, "key": "F13", "modifiers": 2})
+            ]
+        });
+
+        let a_midi = json!({
+            "id": "a_midi",
+            "name": "MIDI Action",
+            "enabled": true,
+            "group": "",
+            "queue": crate::engine::DEFAULT_QUEUE,
+            "triggers": [{
+                "id": "t_midi",
+                "type": crate::inputs::T_MIDI_MESSAGE,
+                "enabled": true,
+                "channel": 1,
+                "status": "NoteOn",
+                "device": ""
+            }],
+            "subActions": [
+                log("T midi %midiDevice% %channel% %noteName% %velocity%"),
+                // MIDI subactions
+                json!({"type": crate::inputs::S_MIDI_NOTE_ON, "device": "Launchpad", "name": "L1", "channel": 1, "note": 60, "velocity": 127, "sendNoteOff": true, "duration": 100}),
+                json!({"type": crate::inputs::S_MIDI_CONTROL_CHANGE, "device": "Launchpad", "name": "L1", "channel": 1, "controller": 7, "value": 100}),
+                json!({"type": crate::inputs::S_MIDI_GENERIC, "device": "Launchpad", "name": "L1", "command": "PitchBend", "channel": 1, "data1": 0, "data2": 64})
+            ]
+        });
+
+        let a_input_key = json!({
+            "id": "a_key",
+            "name": "Key Action",
+            "enabled": true,
+            "group": "",
+            "queue": crate::engine::DEFAULT_QUEUE,
+            "triggers": [{
+                "id": "t_key",
+                "type": crate::inputs::T_INPUT_KEY_PRESS,
+                "enabled": true,
+                "key": "F14",
+                "modifiers": 6 // Ctrl + Shift
+            }],
+            "subActions": [log("T key %key% %modifierNames% %eventType%")]
+        });
+
+        let a_input_mouse = json!({
+            "id": "a_mouse",
+            "name": "Mouse Action",
+            "enabled": true,
+            "group": "",
+            "queue": crate::engine::DEFAULT_QUEUE,
+            "triggers": [{
+                "id": "t_mouse",
+                "type": crate::inputs::T_INPUT_MOUSE_CLICK,
+                "enabled": true,
+                "button": "Right"
+            }],
+            "subActions": [log("T mouse %buttonName% %x% %y%")]
+        });
+
+        let e = engine(json!({
+            "blocking": false,
+            "queues": [],
+            "actions": [a_voice_dict, a_voice_cmd, a_midi, a_input_key, a_input_mouse]
+        }));
+
+        let out = run(async {
+            // Fire speech dictation
+            e.fire_speech_dictation("hello world", 0.95, "en-US");
+            // Fire speech command
+            e.fire_speech_command("vcmd1", "Lights On", "turn on the lights", 0.98, "en-US");
+            // Fire MIDI note on (0x90 = NoteOn ch 1)
+            e.fire_midi_message("Launchpad", 1, 0x90, 60, 100);
+            // Fire key press
+            e.fire_input_key("F14", 6, "KeyDown");
+            // Fire mouse click
+            e.fire_input_mouse("Right", "Click", 300, 450);
+
+            settle().await;
+        });
+
+        assert!(out.contains(&"T dictation hello world en-US".to_string()));
+        assert!(out.contains(&"T speech_cmd vcmd1 turn on the lights".to_string()));
+        assert!(out.contains(&"T midi Launchpad 1 C4 100".to_string()));
+        assert!(out.contains(&"T key F14 Control + Shift KeyDown".to_string()));
+        assert!(out.contains(&"T mouse Right 300 450".to_string()));
+
+        // Check voice command state and voice input changes
+        let st = e.st.borrow();
+        assert_eq!(st.voice_commands.get("vcmd1").unwrap().0, "turn off the lights");
+        assert!(!st.voice_commands.get("vcmd1").unwrap().1);
+        assert_eq!(st.voice_input.0, "mic1");
+        assert_eq!(st.voice_input.1, "Blue Yeti");
     }
 
     #[test]

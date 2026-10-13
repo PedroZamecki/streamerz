@@ -2935,6 +2935,64 @@ impl Engine {
                 }
             }
 
+            // Keyboard Press (1012)
+            1012 => {
+                let key = self.expand(ctx, s(o, "key"));
+                let modifiers = n(o, "modifiers") as u32;
+                let _ = crate::inputs::simulate_keyboard_press(&key, modifiers);
+            }
+
+            // Set Voice Control Command (1018)
+            1018 => {
+                let cmd_id = self.expand(ctx, s(o, "commandId"));
+                let cmd_phrase = self.expand(ctx, s(o, "command"));
+                self.set_voice_command(&cmd_id, &cmd_phrase);
+            }
+
+            // Set Voice Control Command State (1019)
+            1019 => {
+                let cmd_id = self.expand(ctx, s(o, "commandId"));
+                let state = n(o, "state");
+                self.set_voice_command_state(&cmd_id, state);
+            }
+
+            // Set Voice Control Input (1025)
+            1025 => {
+                let dev_id = self.expand(ctx, s(o, "audioDeviceId"));
+                let dev_name = self.expand(ctx, s(o, "audioDeviceName"));
+                self.set_voice_input(&dev_id, &dev_name);
+            }
+
+            // MIDI Note On (9001)
+            9001 => {
+                let device = self.expand(ctx, s(o, "device"));
+                let channel = n(o, "channel") as u8;
+                let note = n(o, "note") as u8;
+                let velocity = n(o, "velocity") as u8;
+                let send_off = b(o, "sendNoteOff", false);
+                let duration = n(o, "duration") as u64;
+                crate::inputs::midi_note_on(&device, channel, note, velocity, send_off, duration);
+            }
+
+            // MIDI Control Change (9002)
+            9002 => {
+                let device = self.expand(ctx, s(o, "device"));
+                let channel = n(o, "channel") as u8;
+                let controller = n(o, "controller") as u8;
+                let value = n(o, "value") as u8;
+                crate::inputs::midi_control_change(&device, channel, controller, value);
+            }
+
+            // MIDI Generic Event (9003)
+            9003 => {
+                let device = self.expand(ctx, s(o, "device"));
+                let cmd = self.expand(ctx, s(o, "command"));
+                let channel = n(o, "channel") as u8;
+                let data1 = n(o, "data1") as u8;
+                let data2 = n(o, "data2") as u8;
+                crate::inputs::midi_generic(&device, &cmd, channel, data1, data2);
+            }
+
             _ => {}
         }
     }

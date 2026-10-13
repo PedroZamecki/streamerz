@@ -692,3 +692,35 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] Remote Instance Disconnected
 - [x] Remote Instance Trigger
 
+
+## Phase 15: hotkeys, inputs, MIDI and voice control
+
+**Sub-actions: system / inputs** (1)
+
+- [x] Keyboard Press
+
+**Sub-actions: voice control** (3)
+
+- [x] Set Voice Control Command
+- [x] Set Voice Control Command State
+- [x] Set Voice Control Input
+
+**Sub-actions: MIDI** (3)
+
+- [x] Note On
+- [x] Control Change
+- [x] Generic Event
+
+**Triggers: speech to text** (2)
+
+- [x] Speech to Text Dictation
+- [x] Speech to Text Command
+
+**Triggers: MIDI** (1)
+
+- [x] Midi Message
+
+**Triggers: inputs** (2)
+
+- [x] Key Press
+- [x] Mouse Click

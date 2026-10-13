@@ -734,6 +734,37 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("overwrite", "Overwrite", Bool),
             ("timeout", "Timeout (ms)", Int),
         ],
+        1012 => &[("key", "Key", Text), ("modifiers", "Modifiers", Int)],
+        1018 => &[("commandId", "Command ID", Text), ("command", "Command Phrase", Text)],
+        1019 => &[("commandId", "Command ID", Text), ("state", "State", Pick(STATE))],
+        1025 => &[
+            ("audioDeviceId", "Audio Device ID", Text),
+            ("audioDeviceName", "Audio Device Name", Text),
+        ],
+        9001 => &[
+            ("device", "Device", Text),
+            ("name", "Name", Text),
+            ("sendNoteOff", "Send Note Off", Bool),
+            ("channel", "Channel", Int),
+            ("note", "Note", Int),
+            ("velocity", "Velocity", Int),
+            ("duration", "Duration (ms)", Int),
+        ],
+        9002 => &[
+            ("device", "Device", Text),
+            ("name", "Name", Text),
+            ("channel", "Channel", Int),
+            ("controller", "Controller", Int),
+            ("value", "Value", Int),
+        ],
+        9003 => &[
+            ("device", "Device", Text),
+            ("name", "Name", Text),
+            ("command", "Command", Text),
+            ("channel", "Channel", Int),
+            ("data1", "Data 1", Int),
+            ("data2", "Data 2", Int),
+        ],
         99901 | 99902 | 99904 => &[("random", "Random", Bool)],
         99903 => &[
             ("values", "Values (one per line)", Lines),
@@ -804,6 +835,15 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
         29001 | 29002 => &[("instanceId", "Instance", Text)],
         29003 => &[("instanceId", "Instance", Text), ("eventName", "Event Name", Text)],
         29004 => &[("instanceId", "Instance", Text), ("signalName", "Signal Name", Text)],
+        301 => &[("culture", "Culture", Text)],
+        302 => &[("commandId", "Command ID", Text)],
+        15001 => &[
+            ("device", "Device", Text),
+            ("channel", "Channel", Int),
+            ("status", "Status / Type", Text),
+        ],
+        16001 => &[("key", "Key", Text), ("modifiers", "Modifiers", Int)],
+        16002 => &[("button", "Button", Text)],
         _ => return None,
     })
 }
@@ -1236,6 +1276,7 @@ mod tests {
         .chain(36001..=36004)
         .chain(37001..=37003)
         .chain(29001..=29004)
+        .chain([301, 302, 15001, 16001, 16002])
         {
             assert!(trigger_fields(k).is_some(), "trigger {k} has no form");
         }

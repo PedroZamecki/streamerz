@@ -204,7 +204,8 @@ platform handles through channels, never through shared locks held across awaits
   (socket, REST or webhook through the same tunnel as Kick) and ask if one needs Streamer.bot's cloud.
 - [x] 14. Webhooks and remote: Discord webhook, IFTTT, pronouns (alejo.io), Streamer.bot remote instances
   (signals/triggers between instances, also with a real Streamer.bot).
-- [ ] 15+. Later extras, one phase each, order chosen then (see Decisions).
+- [x] 15. Hotkeys, inputs, MIDI and voice control: keyboard simulation, mouse click trigger, MIDI In/Out, Speech to Text triggers and voice control sub-actions.
+- [ ] 16+. Later extras, one phase each, order chosen then (see Decisions).
 
 ## Open points (decide when the phase starts, ask first)
 
