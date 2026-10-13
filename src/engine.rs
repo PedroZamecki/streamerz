@@ -95,6 +95,7 @@ struct State {
     voice_input: (String, String),
     decks: HashMap<String, crate::decks::DeckState>,
     stream_deck_items: HashMap<String, crate::decks::DeckItem>,
+    file_tails: HashMap<String, bool>,
 }
 
 pub struct Engine {
@@ -146,8 +147,7 @@ pub fn supported(kind: u32) -> bool {
     matches!(
         kind,
         2 | 4 | 6 | 8 | 9 | 10..=29 | 30..=49 | 50..=52 | 120..=130 | 200..=215 | 251..=254 | 321..=329 | 401..=415 | 417 | 500..=531 | 550..=573 | 575..=580
-            | 1001..=1005 | 1007 | 1009..=1020 | 1022 | 1023 | 1025 | 1028
-            | 1031..=1034 | 1038 | 4001..=4012 | 7001 | 8001 | 8002 | 9001..=9003 | 10001 | 11001 | 11002 | 11004..=11008 | 15001 | 20001..=20003 | 21001..=21010
+            | 3 | 5 | 1001..=1007 | 1009..=1023 | 1025 | 1028 | 1030..=1034 | 1038..=1040 | 4001..=4012 | 7001 | 8001 | 8002 | 9001..=9003 | 10001 | 11001 | 11002 | 11004..=11008 | 15001 | 20001..=20003 | 21001..=21010
             | 35001 | 35002 | 35010..=35012 | 35020..=35022 | 35030 | 35031
             | 35040..=35043 | 35101..=35113 | 99900..=99904
     )
@@ -712,6 +712,128 @@ impl Engine {
                 "y": y
             })
         });
+    }
+
+    pub fn fire_file_watcher(self: &Rc<Self>, kind: u32, watcher_id: &str, path: &str, old_path: &str) {
+        let (name, event_type) = match kind {
+            crate::fileio::T_FILE_WATCHER_CREATED => ("File Watcher Created", "Created"),
+            crate::fileio::T_FILE_WATCHER_DELETED => ("File Watcher Deleted", "Deleted"),
+            crate::fileio::T_FILE_WATCHER_RENAMED => ("File Watcher Renamed", "Renamed"),
+            _ => ("File Watcher Changed", "Changed"),
+        };
+        let mut args = Obj::new();
+        args.insert("watcherId".into(), watcher_id.into());
+        args.insert("path".into(), path.into());
+        args.insert("fullPath".into(), path.into());
+        let file_name = std::path::Path::new(path)
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        args.insert("fileName".into(), file_name.into());
+        if !old_path.is_empty() {
+            args.insert("oldPath".into(), old_path.into());
+        }
+        let w_str = watcher_id.to_string();
+        let p_str = path.to_string();
+        self.fire(kind, name, "FileWatcher", "filewatcher", &args, |t| {
+            let want_w = s(t, "watcherId");
+            let want_p = s(t, "path");
+            (want_w.is_empty() || want_w == w_str) && (want_p.is_empty() || want_p == p_str)
+        });
+        self.emit("FileWatcher", event_type, || {
+            json!({
+                "watcherId": watcher_id,
+                "path": path,
+                "oldPath": old_path
+            })
+        });
+    }
+
+    pub fn fire_file_tail(self: &Rc<Self>, tail_id: &str, path: &str, line: &str, line_number: u64) {
+        let mut args = Obj::new();
+        args.insert("tailId".into(), tail_id.into());
+        args.insert("path".into(), path.into());
+        args.insert("line".into(), line.into());
+        args.insert("lineNumber".into(), line_number.into());
+        let t_str = tail_id.to_string();
+        let p_str = path.to_string();
+        self.fire(
+            crate::fileio::T_FILE_TAIL_CHANGED,
+            "File Tail Changed",
+            "FileTail",
+            "filetail",
+            &args,
+            |t| {
+                let want_t = s(t, "tailId");
+                let want_p = s(t, "path");
+                (want_t.is_empty() || want_t == t_str) && (want_p.is_empty() || want_p == p_str)
+            },
+        );
+        self.emit("FileTail", "Changed", || {
+            json!({
+                "tailId": tail_id,
+                "path": path,
+                "line": line,
+                "lineNumber": line_number
+            })
+        });
+    }
+
+    pub fn fire_process_started(self: &Rc<Self>, process_name: &str, pid: u32) {
+        let mut args = Obj::new();
+        args.insert("processName".into(), process_name.into());
+        args.insert("processId".into(), (pid as u64).into());
+        let p_str = process_name.to_string();
+        self.fire(
+            crate::fileio::T_PROCESS_STARTED,
+            "Process Started",
+            "Misc",
+            "misc",
+            &args,
+            |t| {
+                let want = s(t, "processName");
+                want.is_empty() || want.eq_ignore_ascii_case(&p_str)
+            },
+        );
+        self.emit("Misc", "ProcessStarted", || {
+            json!({
+                "processName": process_name,
+                "processId": pid
+            })
+        });
+    }
+
+    pub fn fire_process_stopped(self: &Rc<Self>, process_name: &str, pid: u32, exit_code: i32) {
+        let mut args = Obj::new();
+        args.insert("processName".into(), process_name.into());
+        args.insert("processId".into(), (pid as u64).into());
+        args.insert("exitCode".into(), (exit_code as i64).into());
+        let p_str = process_name.to_string();
+        self.fire(
+            crate::fileio::T_PROCESS_STOPPED,
+            "Process Stopped",
+            "Misc",
+            "misc",
+            &args,
+            |t| {
+                let want = s(t, "processName");
+                want.is_empty() || want.eq_ignore_ascii_case(&p_str)
+            },
+        );
+        self.emit("Misc", "ProcessStopped", || {
+            json!({
+                "processName": process_name,
+                "processId": pid,
+                "exitCode": exit_code
+            })
+        });
+    }
+
+    pub fn set_file_tail_state(self: &Rc<Self>, tail_id: &str, state: f64) {
+        let mut st = self.st.borrow_mut();
+        let entry = st.file_tails.entry(tail_id.to_string()).or_insert(true);
+        *entry = new_state(state, *entry);
+        crate::say(format!("File Tail [{}]: Set State {}", tail_id, *entry));
     }
 
     pub fn fire_stream_deck_action(
@@ -1404,8 +1526,15 @@ impl Engine {
                 | 550..=573
                 | 575..=580
                 | 1007
+                | 3
+                | 5
+                | 1006
                 | 1010
                 | 1012..=1015
+                | 1021
+                | 1030
+                | 1039
+                | 1040
                 | 1018
                 | 1019
                 | 1025
@@ -2367,6 +2496,137 @@ pub(crate) mod tests {
         assert_eq!(deck_item.title, "Pause");
         assert_eq!(deck_item.value, "50");
         assert_eq!(deck_item.icon, "icon1");
+    }
+
+    #[test]
+    fn file_io_file_tail_and_process_triggers() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+
+        let dir = std::env::temp_dir().join(format!("streamerz_engine_file_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let test_file = dir.join("test_io.txt");
+        let test_file_str = test_file.to_string_lossy().to_string();
+        let dir_str = dir.to_string_lossy().to_string();
+
+        let a_file_sub = json!({
+            "id": "a_fsub",
+            "name": "File Subactions",
+            "enabled": true,
+            "group": "",
+            "queue": crate::engine::DEFAULT_QUEUE,
+            "triggers": [],
+            "subActions": [
+                // Write file
+                json!({"type": crate::fileio::S_WRITE_TO_FILE, "file": test_file_str, "text": "hello
+world
+rust
+", "append": false}),
+                // File Exists
+                json!({"type": crate::fileio::S_FILE_EXISTS, "file": test_file_str, "variableName": "f_exists"}),
+                // Folder Exists
+                json!({"type": crate::fileio::S_FOLDER_EXISTS, "folder": dir_str, "variableName": "d_exists"}),
+                // Read Specific Line
+                json!({"type": crate::fileio::S_READ_SPECIFIC_LINE, "file": test_file_str, "count": 2, "variableName": "line_two", "autoType": false, "parseVariables": false}),
+                // Read Lines
+                json!({"type": crate::fileio::S_READ_LINES, "file": test_file_str, "variableName": "all_lines", "autoType": false, "parseVariables": false}),
+                // Read Random Line
+                json!({"type": crate::fileio::S_READ_RANDOM_LINE, "file": test_file_str, "variableName": "rand_line", "autoType": false, "parseVariables": false}),
+                // Set File Tail State
+                json!({"type": crate::fileio::S_SET_FILE_TAIL_STATE, "fileTailId": "tail1", "state": 0}),
+                log("T file f_exists=%f_exists% d_exists=%d_exists% l2=%line_two% count=%all_lines.count%")
+            ]
+        });
+
+        let a_watch = json!({
+            "id": "a_watch",
+            "name": "Watcher Action",
+            "enabled": true,
+            "group": "",
+            "queue": crate::engine::DEFAULT_QUEUE,
+            "triggers": [{
+                "id": "t_watch",
+                "type": crate::fileio::T_FILE_WATCHER_CHANGED,
+                "enabled": true,
+                "watcherId": "w1",
+                "path": ""
+            }],
+            "subActions": [log("T watcher %watcherId% %fileName%")]
+        });
+
+        let a_tail = json!({
+            "id": "a_tail",
+            "name": "Tail Action",
+            "enabled": true,
+            "group": "",
+            "queue": crate::engine::DEFAULT_QUEUE,
+            "triggers": [{
+                "id": "t_tail",
+                "type": crate::fileio::T_FILE_TAIL_CHANGED,
+                "enabled": true,
+                "tailId": "t1",
+                "path": ""
+            }],
+            "subActions": [log("T tail %tailId% %line% %lineNumber%")]
+        });
+
+        let a_proc_start = json!({
+            "id": "a_pstart",
+            "name": "Process Start Action",
+            "enabled": true,
+            "group": "",
+            "queue": crate::engine::DEFAULT_QUEUE,
+            "triggers": [{
+                "id": "t_pstart",
+                "type": crate::fileio::T_PROCESS_STARTED,
+                "enabled": true,
+                "processName": "obs64.exe"
+            }],
+            "subActions": [log("T pstart %processName% %processId%")]
+        });
+
+        let a_proc_stop = json!({
+            "id": "a_pstop",
+            "name": "Process Stop Action",
+            "enabled": true,
+            "group": "",
+            "queue": crate::engine::DEFAULT_QUEUE,
+            "triggers": [{
+                "id": "t_pstop",
+                "type": crate::fileio::T_PROCESS_STOPPED,
+                "enabled": true,
+                "processName": "obs64.exe"
+            }],
+            "subActions": [log("T pstop %processName% %processId% %exitCode%")]
+        });
+
+        let e = engine(json!({
+            "blocking": false,
+            "queues": [],
+            "actions": [a_file_sub, a_watch, a_tail, a_proc_start, a_proc_stop]
+        }));
+
+        let out = run(async {
+            e.queue("a_fsub", Obj::new()).unwrap();
+            settle().await;
+
+            e.fire_file_watcher(crate::fileio::T_FILE_WATCHER_CHANGED, "w1", &test_file_str, "");
+            e.fire_file_tail("t1", &test_file_str, "new appended line", 4);
+            e.fire_process_started("obs64.exe", 4321);
+            e.fire_process_stopped("obs64.exe", 4321, 0);
+
+            settle().await;
+        });
+
+        assert!(out.contains(&"T file f_exists=True d_exists=True l2=world count=3".to_string()));
+        assert!(out.contains(&"T watcher w1 test_io.txt".to_string()));
+        assert!(out.contains(&"T tail t1 new appended line 4".to_string()));
+        assert!(out.contains(&"T pstart obs64.exe 4321".to_string()));
+        assert!(out.contains(&"T pstop obs64.exe 4321 0".to_string()));
+
+        let st = e.st.borrow();
+        assert_eq!(st.file_tails.get("tail1"), Some(&true));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
