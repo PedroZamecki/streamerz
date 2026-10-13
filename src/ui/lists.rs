@@ -457,6 +457,7 @@ pub struct Views {
     pub groups: Rc<RefCell<Groups>>,
     pub twitch: Rc<RefCell<TwitchView>>,
     pub kick: Rc<RefCell<KickView>>,
+    pub youtube: Rc<RefCell<YouTubeView>>,
 }
 
 impl Views {
@@ -479,6 +480,11 @@ impl Views {
         if let Ok(mut k) = self.kick.try_borrow_mut() {
             if is(&k.tab) {
                 k.refresh();
+            }
+        }
+        if let Ok(mut y) = self.youtube.try_borrow_mut() {
+            if is(&y.tab) {
+                y.refresh();
             }
         }
         if let Ok(mut q) = self.queues.try_borrow_mut() {
@@ -523,6 +529,7 @@ pub fn tabs(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Views {
 
     let twitch = twitch_tab(tabs, cfg, cmds);
     let kick = kick_tab(tabs, cfg, cmds);
+    let youtube = youtube_tab(tabs, cfg, cmds);
 
     let mut col = tab(tabs, "OBS");
     title(&mut col, "OBS Studio Connections");
@@ -556,6 +563,7 @@ pub fn tabs(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Views {
         groups,
         twitch,
         kick,
+        youtube,
     }
 }
 
@@ -1605,6 +1613,147 @@ fn kick_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<KickView>> {
             tell(&cmds, |e| {
                 if let Some(k) = e.kick() {
                     k.send(crate::kick::KickCmd::Disconnect);
+                }
+            });
+            me.borrow_mut().refresh();
+        }
+    });
+
+    me.borrow_mut().refresh();
+    me
+}
+
+pub struct YouTubeView {
+    pub tab: Flex,
+    cfg: Cfg,
+    cmds: Cmds,
+    channel_input: fltk::input::Input,
+    video_input: fltk::input::Input,
+    status_label: Frame,
+    auto_connect: fltk::button::CheckButton,
+}
+
+impl YouTubeView {
+    pub fn refresh(&mut self) {
+        let c = self.cfg.borrow();
+        if self.channel_input.value() != c.youtube.channel_id {
+            self.channel_input.set_value(&c.youtube.channel_id);
+        }
+        if self.video_input.value() != c.youtube.video_id {
+            self.video_input.set_value(&c.youtube.video_id);
+        }
+        self.auto_connect.set_checked(c.youtube.auto_connect);
+
+        let connected = query(&self.cmds, |e| e.youtube_connected()).unwrap_or(false);
+        let st = if connected {
+            format!(
+                "InnerTube / Live Chat: Monitoring Active ({})",
+                if !c.youtube.video_id.is_empty() {
+                    format!("video: {}", c.youtube.video_id)
+                } else if !c.youtube.channel_id.is_empty() {
+                    format!("channel: {}", c.youtube.channel_id)
+                } else {
+                    "no broadcast configured".into()
+                }
+            )
+        } else if c.youtube.video_id.is_empty() && c.youtube.channel_id.is_empty() {
+            "InnerTube / Live Chat: Disconnected (No channel or video ID)".to_string()
+        } else {
+            "InnerTube / Live Chat: Disconnected".to_string()
+        };
+        self.status_label.set_label(&st);
+    }
+}
+
+fn youtube_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<YouTubeView>> {
+    let mut col = tab(tabs, "YouTube");
+    title(&mut col, "YouTube Broadcast Configuration");
+
+    let mut ch_row = Flex::default().row();
+    let ch_lbl = Frame::default().with_label("Channel ID:");
+    ch_row.fixed(&ch_lbl, 90);
+    let mut channel_input = fltk::input::Input::default();
+    ch_row.end();
+    col.fixed(&ch_row, ROW);
+
+    let mut vid_row = Flex::default().row();
+    let vid_lbl = Frame::default().with_label("Video ID:");
+    vid_row.fixed(&vid_lbl, 90);
+    let mut video_input = fltk::input::Input::default();
+    vid_row.end();
+    col.fixed(&vid_row, ROW);
+
+    title(&mut col, "Connection");
+    let status_label = Frame::default().with_align(Align::Left | Align::Inside);
+    col.fixed(&status_label, ROW);
+
+    let mut conn_row = Flex::default().row();
+    let mut auto_connect = fltk::button::CheckButton::default().with_label("Auto-connect on startup");
+    conn_row.fixed(&auto_connect, 180);
+    let mut connect_btn = button(&mut conn_row, "Connect", 90);
+    let mut disconnect_btn = button(&mut conn_row, "Disconnect", 90);
+    Frame::default();
+    conn_row.end();
+    col.fixed(&conn_row, ROW);
+
+    Frame::default();
+    col.end();
+
+    let me = Rc::new(RefCell::new(YouTubeView {
+        tab: col,
+        cfg: cfg.clone(),
+        cmds: cmds.clone(),
+        channel_input: channel_input.clone(),
+        video_input: video_input.clone(),
+        status_label,
+        auto_connect: auto_connect.clone(),
+    }));
+
+    channel_input.set_callback({
+        let cfg = cfg.clone();
+        let channel_input = channel_input.clone();
+        move |_| {
+            let val = channel_input.value().trim().to_string();
+            save(&cfg, |c| c.youtube.channel_id = val);
+        }
+    });
+
+    video_input.set_callback({
+        let cfg = cfg.clone();
+        let video_input = video_input.clone();
+        move |_| {
+            let val = video_input.value().trim().to_string();
+            save(&cfg, |c| c.youtube.video_id = val);
+        }
+    });
+
+    auto_connect.set_callback({
+        let cfg = cfg.clone();
+        let auto_connect = auto_connect.clone();
+        move |_| {
+            let on = auto_connect.is_checked();
+            save(&cfg, |c| c.youtube.auto_connect = on);
+        }
+    });
+
+    connect_btn.set_callback({
+        let cmds = cmds.clone();
+        let me = me.clone();
+        move |_| {
+            tell(&cmds, |e| {
+                e.youtube_start().send(crate::youtube::YouTubeCmd::Connect);
+            });
+            me.borrow_mut().refresh();
+        }
+    });
+
+    disconnect_btn.set_callback({
+        let cmds = cmds.clone();
+        let me = me.clone();
+        move |_| {
+            tell(&cmds, |e| {
+                if let Some(y) = e.youtube() {
+                    y.send(crate::youtube::YouTubeCmd::Disconnect);
                 }
             });
             me.borrow_mut().refresh();

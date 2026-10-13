@@ -530,6 +530,33 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("connectionId", "Connection", ObsConnection),
             ("chapterName", "Chapter name", Text),
         ],
+        4001 => &[
+            ("broadcast", "Broadcast", Text),
+            ("text", "Message", Text),
+            ("useBot", "Use Bot Account", Bool),
+            ("fallback", "Fallback to Broadcaster", Bool),
+        ],
+        4002 => &[("broadcast", "Broadcast", Text), ("title", "Title", Text)],
+        4003 => &[("broadcast", "Broadcast", Text), ("description", "Description", Text)],
+        4004 => &[
+            ("broadcast", "Broadcast", Text),
+            ("title", "Title", Text),
+            ("description", "Description", Text),
+        ],
+        4005..=4007 => &[("userLogin", "User login", Text), ("groupName", "Group name", Text)],
+        4008 => &[("broadcast", "Broadcast", Text), ("userId", "User ID", Text)],
+        4009 => &[
+            ("broadcast", "Broadcast", Text),
+            ("userId", "User ID", Text),
+            ("duration", "Duration (seconds)", Int),
+        ],
+        4010 => &[],
+        4011 => &[
+            ("broadcast", "Broadcast", Text),
+            ("question", "Question", Text),
+            ("options", "Options (one per line)", Lines),
+        ],
+        4012 => &[("broadcast", "Broadcast", Text)],
         35001 => &[
             ("text", "Message", Text),
             ("useBot", "Use Bot Account", Bool),
@@ -631,7 +658,7 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
             ("vendorName", "Vendor (empty: any)", Text),
             ("eventType", "Event type (empty: any)", Text),
         ],
-        101..=196 | 451..=498 | 35001..=35003 | 35008..=35025 => &[],
+        101..=196 | 451..=498 | 4001..=4031 | 35001..=35003 | 35008..=35025 => &[],
         _ => return None,
     })
 }
@@ -1043,6 +1070,7 @@ mod tests {
         .chain(101..=196)
         .chain(451..=498)
         .chain(14001..=14009)
+        .chain(4001..=4031)
         .chain([35001, 35002, 35003, 35008, 35009])
         .chain(35010..=35025)
         {
