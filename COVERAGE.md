@@ -582,87 +582,87 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Triggers: ko-fi** (5)
 
-- [ ] Commission
-- [ ] Donation
-- [ ] Resubscription
-- [ ] Shop Order
-- [ ] Subscription
+- [x] Commission
+- [x] Donation
+- [x] Resubscription
+- [x] Shop Order
+- [x] Subscription
 
 **Triggers: streamelements** (4)
 
-- [ ] Connected
-- [ ] Disconnected
-- [ ] Merch
-- [ ] Tip
+- [x] Connected
+- [x] Disconnected
+- [x] Merch
+- [x] Tip
 
 **Triggers: streamlabs** (5)
 
-- [ ] Charity Donation
-- [ ] Connected
-- [ ] Disconnected
-- [ ] Donation
-- [ ] Merchandise
+- [x] Charity Donation
+- [x] Connected
+- [x] Disconnected
+- [x] Donation
+- [x] Merchandise
 
 **Triggers: patreon** (5)
 
-- [ ] Follow Created
-- [ ] Follow Deleted
-- [ ] Pledge Created
-- [ ] Pledge Deleted
-- [ ] Pledge Updated
+- [x] Follow Created
+- [x] Follow Deleted
+- [x] Pledge Created
+- [x] Pledge Deleted
+- [x] Pledge Updated
 
 **Triggers: fourthwall** (13)
 
-- [ ] Fourthwall Donation
-- [ ] Gift Draw Ended
-- [ ] Gift Draw Started
-- [ ] Gift Purchase
-- [ ] Newsletter Subscribed
-- [ ] Order Placed
-- [ ] Order Updated
-- [ ] Product Created
-- [ ] Product Updated
-- [ ] Subscription Changed
-- [ ] Subscription Expired
-- [ ] Subscription Purchased
-- [ ] Thank You Sent
+- [x] Fourthwall Donation
+- [x] Gift Draw Ended
+- [x] Gift Draw Started
+- [x] Gift Purchase
+- [x] Newsletter Subscribed
+- [x] Order Placed
+- [x] Order Updated
+- [x] Product Created
+- [x] Product Updated
+- [x] Subscription Changed
+- [x] Subscription Expired
+- [x] Subscription Purchased
+- [x] Thank You Sent
 
 **Triggers: throne** (3)
 
-- [ ] Contribution Purchased
-- [ ] Gift Crowdfunded
-- [ ] Gift Purchased
+- [x] Contribution Purchased
+- [x] Gift Crowdfunded
+- [x] Gift Purchased
 
 **Triggers: tipeeestream** (1)
 
-- [ ] Donation
+- [x] Donation
 
 **Triggers: treatstream** (1)
 
-- [ ] Treat
+- [x] Treat
 
 **Triggers: donordrive** (3)
 
-- [ ] Donation
-- [ ] Incentive
-- [ ] Profile Updated
+- [x] Donation
+- [x] Incentive
+- [x] Profile Updated
 
 **Triggers: pallygg** (3)
 
-- [ ] Campaign Tip
-- [ ] Connected
-- [ ] Disconnected
+- [x] Campaign Tip
+- [x] Connected
+- [x] Disconnected
 
 **Triggers: shopify** (2)
 
-- [ ] Order Created
-- [ ] Order Paid
+- [x] Order Created
+- [x] Order Paid
 
 **Triggers: streamloots** (3)
 
-- [ ] Card Redeemed
-- [ ] Pack Gifted
-- [ ] Pack Purchased
+- [x] Card Redeemed
+- [x] Pack Gifted
+- [x] Pack Purchased
 
 
 ## Phase 14: webhooks and remote

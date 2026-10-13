@@ -2,6 +2,7 @@
 //! OBS and Streamlabs Desktop, running on ~nothing.
 
 mod commands;
+pub mod donations;
 mod edit;
 pub mod engine;
 mod fmt;
@@ -68,6 +69,9 @@ pub struct Config {
     /// YouTube configuration.
     #[serde(default)]
     pub youtube: youtube::YouTubeConfig,
+    /// Donations and shops configuration.
+    #[serde(default)]
+    pub donations: donations::DonationsConfig,
     /// Fields this build doesn't know (e.g. written by a newer one): kept, so a save loses nothing.
     #[serde(flatten)]
     rest: Map<String, Value>,
@@ -97,6 +101,7 @@ impl Default for Config {
             slobs: slobs::Settings::default(),
             kick: kick::KickConfig::default(),
             youtube: youtube::YouTubeConfig::default(),
+            donations: donations::DonationsConfig::default(),
             rest: Map::new(),
         }
     }
