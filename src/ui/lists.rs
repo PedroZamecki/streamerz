@@ -439,7 +439,6 @@ fn list(
             false
         }
     });
-    me.borrow_mut().refresh();
     me
 }
 
@@ -1101,7 +1100,6 @@ fn servers_box(col: &mut Flex, cfg: &Cfg) -> Rc<RefCell<Servers>> {
         });
         me.borrow_mut().lines.push(f);
     }
-    me.borrow_mut().refresh();
     me
 }
 
@@ -1167,7 +1165,6 @@ fn groups_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Groups>> {
             }
         }
     });
-    me.borrow_mut().refresh();
     me
 }
 
@@ -1502,7 +1499,6 @@ fn twitch_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<TwitchView>> {
         }
     });
 
-    me.borrow_mut().refresh();
     me
 }
 
@@ -1620,7 +1616,6 @@ fn kick_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<KickView>> {
         }
     });
 
-    me.borrow_mut().refresh();
     me
 }
 
@@ -1761,7 +1756,6 @@ fn youtube_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<YouTubeView>> 
         }
     });
 
-    me.borrow_mut().refresh();
     me
 }
 

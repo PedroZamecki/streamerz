@@ -830,7 +830,6 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
             move || edit_sub(&me)
         },
     );
-    me.borrow_mut().refresh();
     me
 }
 
