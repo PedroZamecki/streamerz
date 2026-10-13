@@ -67,3 +67,9 @@ dual-output scene a source's horizontal and vertical copies both change unless "
 - **Inputs & Hotkeys**: Key Press sub-actions (keyboard press simulation with modifiers) and Input Key Press / Mouse Click triggers with key, button, and modifier filters.
 - **MIDI**: MIDI Message triggers (note on/off, CC, pitch bend, sysex) with device, channel, and status filters, and Note On, Control Change, and Generic MIDI Out sub-actions.
 - **Voice Control**: Speech to Text Dictation and Speech to Text Command triggers, plus Set Voice Control Command, Set Command State, and Set Voice Input sub-actions.
+
+## Decks, Stream Deck, and Chat Window
+
+- **Streamer.bot Decks**: set item state, toggle state, title, background, icon, value, deck notifications, and page navigation (set, next, previous).
+- **Elgato Stream Deck**: set title, background, state, toggle state, value, show alert, and show OK sub-actions; Action, Connected, Disconnected, and Info triggers.
+- **Chat Window**: multi-platform chat window action trigger (`ChatWindowAction`) with platform, user, message, and action arguments.

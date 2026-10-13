@@ -93,6 +93,8 @@ struct State {
     timers: Vec<tokio::task::AbortHandle>,
     voice_commands: HashMap<String, (String, bool)>,
     voice_input: (String, String),
+    decks: HashMap<String, crate::decks::DeckState>,
+    stream_deck_items: HashMap<String, crate::decks::DeckItem>,
 }
 
 pub struct Engine {
@@ -145,7 +147,7 @@ pub fn supported(kind: u32) -> bool {
         kind,
         2 | 4 | 6 | 8 | 9 | 10..=29 | 30..=49 | 50..=52 | 120..=130 | 200..=215 | 251..=254 | 321..=329 | 401..=415 | 417 | 500..=531 | 550..=573 | 575..=580
             | 1001..=1005 | 1007 | 1009..=1020 | 1022 | 1023 | 1025 | 1028
-            | 1031..=1034 | 1038 | 4001..=4012 | 7001 | 8001 | 8002 | 9001..=9003 | 10001 | 15001 | 20001..=20003
+            | 1031..=1034 | 1038 | 4001..=4012 | 7001 | 8001 | 8002 | 9001..=9003 | 10001 | 11001 | 11002 | 11004..=11008 | 15001 | 20001..=20003 | 21001..=21010
             | 35001 | 35002 | 35010..=35012 | 35020..=35022 | 35030 | 35031
             | 35040..=35043 | 35101..=35113 | 99900..=99904
     )
@@ -712,6 +714,366 @@ impl Engine {
         });
     }
 
+    pub fn fire_stream_deck_action(
+        self: &Rc<Self>,
+        button_id: &str,
+        action: &str,
+        state: f64,
+        title: &str,
+        value: &str,
+    ) {
+        let mut args = Obj::new();
+        args.insert("buttonId".into(), button_id.into());
+        args.insert("action".into(), action.into());
+        args.insert("state".into(), state.into());
+        args.insert("title".into(), title.into());
+        args.insert("value".into(), value.into());
+        let btn_str = button_id.to_string();
+        self.fire(
+            crate::decks::T_STREAM_DECK_ACTION,
+            "Stream Deck Action",
+            "StreamDeck",
+            "streamdeck",
+            &args,
+            |t| {
+                let want = s(t, "buttonId");
+                want.is_empty() || want == btn_str
+            },
+        );
+        self.emit("StreamDeck", "Action", || {
+            json!({
+                "buttonId": button_id,
+                "action": action,
+                "state": state,
+                "title": title,
+                "value": value
+            })
+        });
+    }
+
+    pub fn fire_stream_deck_connected(self: &Rc<Self>, device: &str, version: &str) {
+        let mut args = Obj::new();
+        args.insert("device".into(), device.into());
+        args.insert("version".into(), version.into());
+        let dev_str = device.to_string();
+        self.fire(
+            crate::decks::T_STREAM_DECK_CONNECTED,
+            "Stream Deck Connected",
+            "StreamDeck",
+            "streamdeck",
+            &args,
+            |t| {
+                let want = s(t, "device");
+                want.is_empty() || want == dev_str
+            },
+        );
+        self.emit(
+            "StreamDeck",
+            "Connected",
+            || json!({"device": device, "version": version}),
+        );
+    }
+
+    pub fn fire_stream_deck_disconnected(self: &Rc<Self>, device: &str) {
+        let mut args = Obj::new();
+        args.insert("device".into(), device.into());
+        let dev_str = device.to_string();
+        self.fire(
+            crate::decks::T_STREAM_DECK_DISCONNECTED,
+            "Stream Deck Disconnected",
+            "StreamDeck",
+            "streamdeck",
+            &args,
+            |t| {
+                let want = s(t, "device");
+                want.is_empty() || want == dev_str
+            },
+        );
+        self.emit("StreamDeck", "Disconnected", || json!({"device": device}));
+    }
+
+    pub fn fire_stream_deck_info(self: &Rc<Self>, device: &str, rows: u32, cols: u32) {
+        let mut args = Obj::new();
+        args.insert("device".into(), device.into());
+        args.insert("rows".into(), (rows as u64).into());
+        args.insert("columns".into(), (cols as u64).into());
+        let dev_str = device.to_string();
+        self.fire(
+            crate::decks::T_STREAM_DECK_INFO,
+            "Stream Deck Info",
+            "StreamDeck",
+            "streamdeck",
+            &args,
+            |t| {
+                let want = s(t, "device");
+                want.is_empty() || want == dev_str
+            },
+        );
+        self.emit(
+            "StreamDeck",
+            "Info",
+            || json!({"device": device, "rows": rows, "columns": cols}),
+        );
+    }
+
+    pub fn fire_chat_window_action(
+        self: &Rc<Self>,
+        platform: &str,
+        user: &str,
+        user_id: &str,
+        text: &str,
+        message_id: &str,
+        action_name: &str,
+    ) {
+        let mut args = Obj::new();
+        args.insert("platform".into(), platform.into());
+        args.insert("user".into(), user.into());
+        args.insert("userId".into(), user_id.into());
+        args.insert("text".into(), text.into());
+        args.insert("messageId".into(), message_id.into());
+        args.insert("actionName".into(), action_name.into());
+        let act_str = action_name.to_string();
+        self.fire(
+            crate::decks::T_CHAT_WINDOW_ACTION,
+            "Chat Window Action",
+            "Misc",
+            "misc",
+            &args,
+            |t| {
+                let want = s(t, "actionName");
+                want.is_empty() || want == act_str
+            },
+        );
+        self.emit("Misc", "ChatWindowAction", || {
+            json!({
+                "platform": platform,
+                "user": user,
+                "userId": user_id,
+                "text": text,
+                "messageId": message_id,
+                "actionName": action_name
+            })
+        });
+    }
+
+    pub fn set_stream_deck_title(self: &Rc<Self>, button_id: &str, title: &str, state: f64) {
+        let mut st = self.st.borrow_mut();
+        let item = st.stream_deck_items.entry(button_id.to_string()).or_default();
+        item.id = button_id.to_string();
+        item.title = title.to_string();
+        item.state = new_state(state, item.state);
+        crate::say(format!("StreamDeck [{}]: Set Title '{}'", button_id, title));
+    }
+
+    pub fn set_stream_deck_background(self: &Rc<Self>, button_id: &str, image: &str, color: &str, state: f64) {
+        let mut st = self.st.borrow_mut();
+        let item = st.stream_deck_items.entry(button_id.to_string()).or_default();
+        item.id = button_id.to_string();
+        item.background = image.to_string();
+        item.color = color.to_string();
+        item.state = new_state(state, item.state);
+        crate::say(format!(
+            "StreamDeck [{}]: Set Background img='{}' col='{}'",
+            button_id, image, color
+        ));
+    }
+
+    pub fn set_stream_deck_state(self: &Rc<Self>, button_id: &str, state: f64) {
+        let mut st = self.st.borrow_mut();
+        let item = st.stream_deck_items.entry(button_id.to_string()).or_default();
+        item.id = button_id.to_string();
+        item.state = new_state(state, item.state);
+        crate::say(format!("StreamDeck [{}]: Set State {}", button_id, item.state));
+    }
+
+    pub fn toggle_stream_deck_state(self: &Rc<Self>, button_id: &str) {
+        let mut st = self.st.borrow_mut();
+        let item = st.stream_deck_items.entry(button_id.to_string()).or_default();
+        item.id = button_id.to_string();
+        item.state = !item.state;
+        crate::say(format!("StreamDeck [{}]: Toggle State -> {}", button_id, item.state));
+    }
+
+    pub fn show_stream_deck_alert(self: &Rc<Self>, button_id: &str) {
+        crate::say(format!("StreamDeck [{}]: Show Alert", button_id));
+    }
+
+    pub fn show_stream_deck_ok(self: &Rc<Self>, button_id: &str) {
+        crate::say(format!("StreamDeck [{}]: Show Ok", button_id));
+    }
+
+    pub fn set_stream_deck_value(self: &Rc<Self>, button_id: &str, value: &str) {
+        let mut st = self.st.borrow_mut();
+        let item = st.stream_deck_items.entry(button_id.to_string()).or_default();
+        item.id = button_id.to_string();
+        item.value = value.to_string();
+        crate::say(format!("StreamDeck [{}]: Set Value '{}'", button_id, value));
+    }
+
+    fn deck_key<'a>(deck_id: &'a str, deck_name: &'a str) -> String {
+        if !deck_id.is_empty() {
+            deck_id.to_string()
+        } else {
+            deck_name.to_string()
+        }
+    }
+
+    pub fn set_deck_item_state(
+        self: &Rc<Self>,
+        deck_id: &str,
+        deck_name: &str,
+        item_id: &str,
+        item_name: &str,
+        state: f64,
+    ) {
+        let key = Self::deck_key(deck_id, deck_name);
+        let mut st = self.st.borrow_mut();
+        let deck = st.decks.entry(key.clone()).or_default();
+        let item = deck.get_or_create(item_id, item_name);
+        item.state = new_state(state, item.state);
+        crate::say(format!("Deck [{}]: Item [{}]: Set State {}", key, item_id, item.state));
+    }
+
+    pub fn toggle_deck_item_state(self: &Rc<Self>, deck_id: &str, deck_name: &str, item_id: &str, item_name: &str) {
+        let key = Self::deck_key(deck_id, deck_name);
+        let mut st = self.st.borrow_mut();
+        let deck = st.decks.entry(key.clone()).or_default();
+        let item = deck.get_or_create(item_id, item_name);
+        item.state = !item.state;
+        crate::say(format!(
+            "Deck [{}]: Item [{}]: Toggle State -> {}",
+            key, item_id, item.state
+        ));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_deck_item_title(
+        self: &Rc<Self>,
+        deck_id: &str,
+        deck_name: &str,
+        item_id: &str,
+        item_name: &str,
+        color: &str,
+        title: &str,
+        state: f64,
+    ) {
+        let key = Self::deck_key(deck_id, deck_name);
+        let mut st = self.st.borrow_mut();
+        let deck = st.decks.entry(key.clone()).or_default();
+        let item = deck.get_or_create(item_id, item_name);
+        item.title = title.to_string();
+        item.color = color.to_string();
+        item.state = new_state(state, item.state);
+        crate::say(format!("Deck [{}]: Item [{}]: Set Title '{}'", key, item_id, title));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_deck_item_background(
+        self: &Rc<Self>,
+        deck_id: &str,
+        deck_name: &str,
+        item_id: &str,
+        item_name: &str,
+        color: &str,
+        url: &str,
+        _file_id: &str,
+        state: f64,
+    ) {
+        let key = Self::deck_key(deck_id, deck_name);
+        let mut st = self.st.borrow_mut();
+        let deck = st.decks.entry(key.clone()).or_default();
+        let item = deck.get_or_create(item_id, item_name);
+        item.background = url.to_string();
+        item.color = color.to_string();
+        item.state = new_state(state, item.state);
+        crate::say(format!("Deck [{}]: Item [{}]: Set Background '{}'", key, item_id, url));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_deck_item_icon(
+        self: &Rc<Self>,
+        deck_id: &str,
+        deck_name: &str,
+        item_id: &str,
+        item_name: &str,
+        color: &str,
+        name: &str,
+        url: &str,
+        _file_id: &str,
+        state: f64,
+    ) {
+        let key = Self::deck_key(deck_id, deck_name);
+        let mut st = self.st.borrow_mut();
+        let deck = st.decks.entry(key.clone()).or_default();
+        let item = deck.get_or_create(item_id, item_name);
+        item.icon = if !url.is_empty() {
+            url.to_string()
+        } else {
+            name.to_string()
+        };
+        item.color = color.to_string();
+        item.state = new_state(state, item.state);
+        crate::say(format!("Deck [{}]: Item [{}]: Set Icon '{}'", key, item_id, item.icon));
+    }
+
+    pub fn set_deck_item_value(
+        self: &Rc<Self>,
+        deck_id: &str,
+        deck_name: &str,
+        item_id: &str,
+        item_name: &str,
+        value: &str,
+        state: f64,
+    ) {
+        let key = Self::deck_key(deck_id, deck_name);
+        let mut st = self.st.borrow_mut();
+        let deck = st.decks.entry(key.clone()).or_default();
+        let item = deck.get_or_create(item_id, item_name);
+        item.value = value.to_string();
+        item.state = new_state(state, item.state);
+        crate::say(format!("Deck [{}]: Item [{}]: Set Value '{}'", key, item_id, value));
+    }
+
+    pub fn deck_notify(
+        self: &Rc<Self>,
+        deck_id: &str,
+        deck_name: &str,
+        title: &str,
+        description: &str,
+        color: &str,
+        _sound_id: &str,
+    ) {
+        let key = Self::deck_key(deck_id, deck_name);
+        crate::say(format!(
+            "Deck [{}]: Notification: '{}' - '{}' (color: {})",
+            key, title, description, color
+        ));
+    }
+
+    pub fn set_deck_page(self: &Rc<Self>, deck_id: &str, deck_name: &str, page: i64) {
+        let key = Self::deck_key(deck_id, deck_name);
+        let mut st = self.st.borrow_mut();
+        let deck = st.decks.entry(key.clone()).or_default();
+        deck.page = page;
+        crate::say(format!("Deck [{}]: Set Page {}", key, page));
+    }
+
+    pub fn next_deck_page(self: &Rc<Self>, deck_id: &str, deck_name: &str) {
+        let key = Self::deck_key(deck_id, deck_name);
+        let mut st = self.st.borrow_mut();
+        let deck = st.decks.entry(key.clone()).or_default();
+        deck.page += 1;
+        crate::say(format!("Deck [{}]: Next Page -> {}", key, deck.page));
+    }
+
+    pub fn prev_deck_page(self: &Rc<Self>, deck_id: &str, deck_name: &str) {
+        let key = Self::deck_key(deck_id, deck_name);
+        let mut st = self.st.borrow_mut();
+        let deck = st.decks.entry(key.clone()).or_default();
+        deck.page = (deck.page - 1).max(0);
+        crate::say(format!("Deck [{}]: Prev Page -> {}", key, deck.page));
+    }
+
     pub fn remote_disconnected(self: &Rc<Self>, instance_id: &str, instance_name: &str) {
         let mut args = Obj::new();
         args.insert("instanceId".into(), instance_id.into());
@@ -1048,6 +1410,10 @@ impl Engine {
                 | 1019
                 | 1025
                 | 9001..=9003
+                | 11001
+                | 11002
+                | 11004..=11008
+                | 21001..=21010
                 | 4001..=4012
                 | 7001
                 | 8001
@@ -1914,6 +2280,93 @@ pub(crate) mod tests {
         assert!(!st.voice_commands.get("vcmd1").unwrap().1);
         assert_eq!(st.voice_input.0, "mic1");
         assert_eq!(st.voice_input.1, "Blue Yeti");
+    }
+
+    #[test]
+    fn decks_stream_deck_and_chat_window_actions() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+
+        let a_chat = json!({
+            "id": "a_chat",
+            "name": "Chat Action",
+            "enabled": true,
+            "group": "",
+            "queue": crate::engine::DEFAULT_QUEUE,
+            "triggers": [{
+                "id": "t_chat",
+                "type": crate::decks::T_CHAT_WINDOW_ACTION,
+                "enabled": true,
+                "actionName": "shoutout"
+            }],
+            "subActions": [log("T chat %platform% %user% %actionName%")]
+        });
+
+        let a_sd = json!({
+            "id": "a_sd",
+            "name": "Stream Deck Action",
+            "enabled": true,
+            "group": "",
+            "queue": crate::engine::DEFAULT_QUEUE,
+            "triggers": [{
+                "id": "t_sd",
+                "type": crate::decks::T_STREAM_DECK_ACTION,
+                "enabled": true,
+                "buttonId": "btn_1"
+            }],
+            "subActions": [
+                log("T sd %buttonId% %action% %title%"),
+                json!({"type": crate::decks::S_STREAM_DECK_SET_TITLE, "buttonId": "btn_1", "title": "Active", "state": 0}),
+                json!({"type": crate::decks::S_STREAM_DECK_SET_BACKGROUND, "buttonId": "btn_1", "image": "bg.png", "color": "#ff0000", "state": 0}),
+                json!({"type": crate::decks::S_STREAM_DECK_SET_STATE, "buttonId": "btn_1", "state": 0}),
+                json!({"type": crate::decks::S_STREAM_DECK_SHOW_ALERT, "buttonId": "btn_1"}),
+                json!({"type": crate::decks::S_STREAM_DECK_SHOW_OK, "buttonId": "btn_1"}),
+                json!({"type": crate::decks::S_STREAM_DECK_TOGGLE_STATE, "buttonId": "btn_1"}),
+                json!({"type": crate::decks::S_STREAM_DECK_SET_VALUE, "buttonId": "btn_1", "value": "100"}),
+                // Streamer.bot Decks subactions
+                json!({"type": crate::decks::S_DECK_SET_ITEM_STATE, "deckId": "d1", "deckName": "MainDeck", "itemId": "i1", "itemName": "Play", "state": 0}),
+                json!({"type": crate::decks::S_DECK_TOGGLE_ITEM_STATE, "deckId": "d1", "deckName": "MainDeck", "itemId": "i1", "itemName": "Play"}),
+                json!({"type": crate::decks::S_DECK_SET_ITEM_TITLE, "deckId": "d1", "deckName": "MainDeck", "itemId": "i1", "itemName": "Play", "color": "#00ff00", "title": "Pause", "state": 0}),
+                json!({"type": crate::decks::S_DECK_SET_ITEM_BACKGROUND, "deckId": "d1", "deckName": "MainDeck", "itemId": "i1", "itemName": "Play", "color": "#0000ff", "url": "http://img", "fileId": "", "state": 0}),
+                json!({"type": crate::decks::S_DECK_SET_ITEM_ICON, "deckId": "d1", "deckName": "MainDeck", "itemId": "i1", "itemName": "Play", "color": "#ffff00", "name": "icon1", "url": "", "fileId": "", "state": 0}),
+                json!({"type": crate::decks::S_DECK_SET_ITEM_VALUE, "deckId": "d1", "deckName": "MainDeck", "itemId": "i1", "itemName": "Play", "value": "50", "state": 0}),
+                json!({"type": crate::decks::S_DECK_NOTIFY, "deckId": "d1", "deckName": "MainDeck", "title": "Notice", "description": "Deck alert", "color": "#ffffff", "soundId": ""}),
+                json!({"type": crate::decks::S_DECK_PAGE_SET, "deckId": "d1", "deckName": "MainDeck", "page": 2}),
+                json!({"type": crate::decks::S_DECK_PAGE_NEXT, "deckId": "d1", "deckName": "MainDeck"}),
+                json!({"type": crate::decks::S_DECK_PAGE_PREVIOUS, "deckId": "d1", "deckName": "MainDeck"})
+            ]
+        });
+
+        let e = engine(json!({
+            "blocking": false,
+            "queues": [],
+            "actions": [a_chat, a_sd]
+        }));
+
+        let out = run(async {
+            e.fire_chat_window_action("twitch", "alice", "123", "hello", "m1", "shoutout");
+            e.fire_stream_deck_action("btn_1", "Press", 1.0, "Ready", "0");
+            e.fire_stream_deck_connected("Elgato-XL", "1.0");
+            e.fire_stream_deck_info("Elgato-XL", 4, 8);
+            e.fire_stream_deck_disconnected("Elgato-XL");
+
+            settle().await;
+        });
+
+        assert!(out.contains(&"T chat twitch alice shoutout".to_string()));
+        assert!(out.contains(&"T sd btn_1 Press Ready".to_string()));
+
+        let st = e.st.borrow();
+        let sd_item = st.stream_deck_items.get("btn_1").unwrap();
+        assert_eq!(sd_item.title, "Active");
+        assert_eq!(sd_item.value, "100");
+        assert_eq!(sd_item.background, "bg.png");
+
+        let deck = st.decks.get("d1").unwrap();
+        assert_eq!(deck.page, 2);
+        let deck_item = deck.items.get("i1").unwrap();
+        assert_eq!(deck_item.title, "Pause");
+        assert_eq!(deck_item.value, "50");
+        assert_eq!(deck_item.icon, "icon1");
     }
 
     #[test]

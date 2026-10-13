@@ -765,6 +765,88 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("data1", "Data 1", Int),
             ("data2", "Data 2", Int),
         ],
+        11001 => &[
+            ("buttonId", "Button ID", Text),
+            ("title", "Title", Text),
+            ("state", "State", Pick(STATE)),
+        ],
+        11002 => &[
+            ("buttonId", "Button ID", Text),
+            ("image", "Image", Text),
+            ("color", "Color", Text),
+            ("state", "State", Pick(STATE)),
+        ],
+        11004 => &[("buttonId", "Button ID", Text), ("state", "State", Pick(STATE))],
+        11005 => &[("buttonId", "Button ID", Text)],
+        11006 => &[("buttonId", "Button ID", Text)],
+        11007 => &[("buttonId", "Button ID", Text)],
+        11008 => &[("buttonId", "Button ID", Text), ("value", "Value", Text)],
+        21001 => &[
+            ("deckId", "Deck ID", Text),
+            ("deckName", "Deck Name", Text),
+            ("itemId", "Item ID", Text),
+            ("itemName", "Item Name", Text),
+            ("state", "State", Pick(STATE)),
+        ],
+        21002 => &[
+            ("deckId", "Deck ID", Text),
+            ("deckName", "Deck Name", Text),
+            ("itemId", "Item ID", Text),
+            ("itemName", "Item Name", Text),
+        ],
+        21003 => &[
+            ("deckId", "Deck ID", Text),
+            ("deckName", "Deck Name", Text),
+            ("itemId", "Item ID", Text),
+            ("itemName", "Item Name", Text),
+            ("color", "Color", Text),
+            ("title", "Title", Text),
+            ("state", "State", Pick(STATE)),
+        ],
+        21004 => &[
+            ("deckId", "Deck ID", Text),
+            ("deckName", "Deck Name", Text),
+            ("itemId", "Item ID", Text),
+            ("itemName", "Item Name", Text),
+            ("color", "Color", Text),
+            ("url", "URL", Text),
+            ("fileId", "File ID", Text),
+            ("state", "State", Pick(STATE)),
+        ],
+        21005 => &[
+            ("deckId", "Deck ID", Text),
+            ("deckName", "Deck Name", Text),
+            ("itemId", "Item ID", Text),
+            ("itemName", "Item Name", Text),
+            ("color", "Color", Text),
+            ("name", "Name", Text),
+            ("url", "URL", Text),
+            ("fileId", "File ID", Text),
+            ("state", "State", Pick(STATE)),
+        ],
+        21006 => &[
+            ("deckId", "Deck ID", Text),
+            ("deckName", "Deck Name", Text),
+            ("itemId", "Item ID", Text),
+            ("itemName", "Item Name", Text),
+            ("value", "Value", Text),
+            ("state", "State", Pick(STATE)),
+        ],
+        21007 => &[
+            ("deckId", "Deck ID", Text),
+            ("deckName", "Deck Name", Text),
+            ("title", "Title", Text),
+            ("description", "Description", Multi),
+            ("color", "Color", Text),
+            ("soundId", "Sound ID", Text),
+        ],
+        21008 => &[
+            ("deckId", "Deck ID", Text),
+            ("deckName", "Deck Name", Text),
+            ("page", "Page", Int),
+        ],
+        21009 => &[("deckId", "Deck ID", Text), ("deckName", "Deck Name", Text)],
+        21010 => &[("deckId", "Deck ID", Text), ("deckName", "Deck Name", Text)],
         99901 | 99902 | 99904 => &[("random", "Random", Bool)],
         99903 => &[
             ("values", "Values (one per line)", Lines),
@@ -844,6 +926,11 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
         ],
         16001 => &[("key", "Key", Text), ("modifiers", "Modifiers", Int)],
         16002 => &[("button", "Button", Text)],
+        705 => &[("actionName", "Action Name", Text)],
+        17001 => &[("buttonId", "Button ID", Text)],
+        17002 => &[("device", "Device", Text)],
+        17003 => &[("device", "Device", Text)],
+        17004 => &[("device", "Device", Text)],
         _ => return None,
     })
 }
@@ -1277,6 +1364,7 @@ mod tests {
         .chain(37001..=37003)
         .chain(29001..=29004)
         .chain([301, 302, 15001, 16001, 16002])
+        .chain([705, 17001, 17002, 17003, 17004])
         {
             assert!(trigger_fields(k).is_some(), "trigger {k} has no form");
         }

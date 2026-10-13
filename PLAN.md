@@ -205,7 +205,8 @@ platform handles through channels, never through shared locks held across awaits
 - [x] 14. Webhooks and remote: Discord webhook, IFTTT, pronouns (alejo.io), Streamer.bot remote instances
   (signals/triggers between instances, also with a real Streamer.bot).
 - [x] 15. Hotkeys, inputs, MIDI and voice control: keyboard simulation, mouse click trigger, MIDI In/Out, Speech to Text triggers and voice control sub-actions.
-- [ ] 16+. Later extras, one phase each, order chosen then (see Decisions).
+- [x] 16. Streamer.bot Decks, Stream Deck, HTML overlay and chat window: Stream Deck sub-actions and triggers, Decks item/page controls, and multi-platform chat window action triggers.
+- [ ] 17+. Later extras, one phase each, order chosen then (see Decisions).
 
 ## Open points (decide when the phase starts, ask first)
 

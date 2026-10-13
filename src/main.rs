@@ -2,6 +2,7 @@
 //! OBS and Streamlabs Desktop, running on ~nothing.
 
 mod commands;
+pub mod decks;
 pub mod donations;
 mod edit;
 pub mod engine;
