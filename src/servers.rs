@@ -663,6 +663,19 @@ fn http_answer(e: &Rc<Engine>, method: &str, path: &str, body: &[u8]) -> (u16, O
                 ),
             }
         }
+        ("POST", path) if path.starts_with("/api/") || path.starts_with("/") => {
+            let p = path.trim_start_matches("/api/").trim_start_matches("/");
+            match p {
+                "kofi" | "streamelements" | "streamlabs" | "patreon" | "fourthwall" | "throne" | "tipeeestream"
+                | "treatstream" | "donordrive" | "pallygg" | "pally" | "shopify" | "streamloots" => {
+                    match crate::donations::handle_webhook(e, p, body) {
+                        Ok(()) => (200, Some(json!({"status": "ok"}))),
+                        Err(err) => (400, Some(json!({"status": "error", "error": err}))),
+                    }
+                }
+                _ => invalid(),
+            }
+        }
         _ => invalid(),
     }
 }
@@ -859,6 +872,14 @@ mod tests {
                 (418, json!("'OPTIONS /DoAction' is an invalid request"))
             );
             assert_eq!(http_answer(&e, "POST", "/DoAction", b"xx").0, 400);
+            assert_eq!(
+                http_answer(&e, "POST", "/api/kofi", br#"{"type":"Donation","amount":"5.00"}"#).0,
+                200
+            );
+            assert_eq!(
+                http_answer(&e, "POST", "/streamelements", br#"{"type":"tip","amount":10.0}"#).0,
+                200
+            );
             let req = json!({"request": "DoAction", "id": "1", "action": {"name": "hi"}, "args": {"k": 1}});
             let r = answer(&e, &req, false).unwrap();
             assert_eq!(r["args"]["queueName"], "Default");
