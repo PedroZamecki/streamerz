@@ -109,6 +109,7 @@ pub struct Engine {
     obs: RefCell<Option<crate::obs::ObsHandle>>,
     kick: RefCell<Option<crate::kick::KickHandle>>,
     youtube: RefCell<Option<crate::youtube::YouTubeHandle>>,
+    tiktok: RefCell<Option<crate::tiktok::TikTokHandle>>,
     pub(crate) slobs: crate::slobs::Slobs,
 }
 
@@ -242,6 +243,7 @@ impl Engine {
             obs: RefCell::default(),
             kick: RefCell::default(),
             youtube: RefCell::default(),
+            tiktok: RefCell::default(),
             slobs: Default::default(),
         })
     }
@@ -286,6 +288,27 @@ impl Engine {
 
     pub fn kick_connected(&self) -> bool {
         self.kick().is_some_and(|k| k.is_connected())
+    }
+
+    pub fn set_tiktok(&self, handle: crate::tiktok::TikTokHandle) {
+        *self.tiktok.borrow_mut() = Some(handle);
+    }
+
+    pub fn tiktok(&self) -> Option<crate::tiktok::TikTokHandle> {
+        self.tiktok.borrow().clone()
+    }
+
+    pub fn tiktok_start(self: &Rc<Self>) -> crate::tiktok::TikTokHandle {
+        if let Some(t) = self.tiktok() {
+            return t;
+        }
+        let t = crate::tiktok::start(self.clone(), &self.cfg);
+        self.set_tiktok(t.clone());
+        t
+    }
+
+    pub fn tiktok_connected(&self) -> bool {
+        self.tiktok().is_some_and(|t| t.is_connected())
     }
 
     pub fn set_obs(&self, handle: crate::obs::ObsHandle) {

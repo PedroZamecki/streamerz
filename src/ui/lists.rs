@@ -489,6 +489,7 @@ pub struct Views {
     pub twitch: Rc<RefCell<TwitchView>>,
     pub kick: Rc<RefCell<KickView>>,
     pub youtube: Rc<RefCell<YouTubeView>>,
+    pub tiktok: Rc<RefCell<TikTokView>>,
 }
 
 impl Views {
@@ -516,6 +517,11 @@ impl Views {
         if let Ok(mut y) = self.youtube.try_borrow_mut() {
             if is(&y.tab) {
                 y.refresh();
+            }
+        }
+        if let Ok(mut tk) = self.tiktok.try_borrow_mut() {
+            if is(&tk.tab) {
+                tk.refresh();
             }
         }
         if let Ok(mut q) = self.queues.try_borrow_mut() {
@@ -561,9 +567,14 @@ pub fn tabs(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Views {
     let twitch = twitch_tab(tabs, cfg, cmds);
     let kick = kick_tab(tabs, cfg, cmds);
     let youtube = youtube_tab(tabs, cfg, cmds);
+    let tiktok = tiktok_tab(tabs, cfg, cmds);
 
     let mut col = tab(tabs, "Stream Apps");
     title(&mut col, "OBS Studio");
+    let obs_guide = Frame::default()
+        .with_label("• In OBS Studio: Tools > WebSocket Server Settings > check 'Enable WebSocket server' (port 4455).\n• Add a connection below matching your port & password, then click Connect All.")
+        .with_align(Align::Left | Align::Inside | Align::Wrap);
+    col.fixed(&obs_guide, 36);
     let obs = list(&mut col, cfg, cmds, &OBS_CONNECTIONS, Some("autoConnect"));
     let mut b_row = Flex::default().row();
     let mut b_connect = button(&mut b_row, "Connect All", 120);
@@ -584,6 +595,10 @@ pub fn tabs(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Views {
         });
     });
     title(&mut col, "Streamlabs Desktop");
+    let slobs_guide = Frame::default()
+        .with_label("• In Streamlabs Desktop: Settings > API / Remote Control > generate and copy your API Token.\n• Add a connection below (port 59650) with your API Token, then click Connect All.")
+        .with_align(Align::Left | Align::Inside | Align::Wrap);
+    col.fixed(&slobs_guide, 36);
     let slobs = list(&mut col, cfg, cmds, &SLOBS_CONNECTIONS, Some("autoConnect"));
     let mut b_row = Flex::default().row();
     let mut b_connect = button(&mut b_row, "Connect All", 120);
@@ -607,6 +622,7 @@ pub fn tabs(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Views {
         twitch,
         kick,
         youtube,
+        tiktok,
     }
 }
 
@@ -1455,6 +1471,11 @@ fn twitch_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<TwitchView>> {
     conn_row.end();
     col.fixed(&conn_row, ROW);
 
+    let guide = Frame::default()
+        .with_label("• Login uses OAuth Device Flow: click 'Login Broadcaster' or 'Login Bot' to authorize at twitch.tv/activate.\n• Tokens are saved locally in streamerz config and automatically refreshed.\n• Connects via Twitch EventSub & IRC for real-time alerts, points rewards, and chat.")
+        .with_align(Align::Left | Align::Inside | Align::Wrap);
+    col.fixed(&guide, 54);
+
     Frame::default();
     col.end();
 
@@ -1606,6 +1627,11 @@ fn kick_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<KickView>> {
     conn_row.end();
     col.fixed(&conn_row, ROW);
 
+    let guide = Frame::default()
+        .with_label("• Zero-login connection: enter your channel name or paste your Kick stream URL (auto-parsed!).\n• Connects directly to Kick's public Pusher WebSocket for chat messages, follows, subscriptions, and kicks.\n• Broadcaster token in Settings is only required if you want streamerz to send chat messages or moderate.")
+        .with_align(Align::Left | Align::Inside | Align::Wrap);
+    col.fixed(&guide, 54);
+
     Frame::default();
     col.end();
 
@@ -1620,10 +1646,14 @@ fn kick_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<KickView>> {
 
     channel_input.set_callback({
         let cfg = cfg.clone();
-        let channel_input = channel_input.clone();
+        let mut channel_input = channel_input.clone();
         move |_| {
-            let val = channel_input.value().trim().to_string();
-            save(&cfg, |c| c.kick.channel = val);
+            let raw = channel_input.value();
+            let cleaned = crate::kick::clean_kick_channel(&raw);
+            if cleaned != raw {
+                channel_input.set_value(&cleaned);
+            }
+            save(&cfg, |c| c.kick.channel = cleaned);
         }
     });
 
@@ -1736,6 +1766,11 @@ fn youtube_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<YouTubeView>> 
     conn_row.end();
     col.fixed(&conn_row, ROW);
 
+    let guide = Frame::default()
+        .with_label("• Connects to live chat via InnerTube without requiring API quotas or sign-in.\n• Channel ID: Found in YouTube Studio > Customization > Basic Info (starts with 'UC').\n• Video ID: Enter your 11-character video ID or paste the full live stream URL (auto-parsed!).")
+        .with_align(Align::Left | Align::Inside | Align::Wrap);
+    col.fixed(&guide, 54);
+
     Frame::default();
     col.end();
 
@@ -1751,19 +1786,27 @@ fn youtube_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<YouTubeView>> 
 
     channel_input.set_callback({
         let cfg = cfg.clone();
-        let channel_input = channel_input.clone();
+        let mut channel_input = channel_input.clone();
         move |_| {
-            let val = channel_input.value().trim().to_string();
-            save(&cfg, |c| c.youtube.channel_id = val);
+            let raw = channel_input.value();
+            let cleaned = crate::youtube::clean_youtube_channel(&raw);
+            if cleaned != raw {
+                channel_input.set_value(&cleaned);
+            }
+            save(&cfg, |c| c.youtube.channel_id = cleaned);
         }
     });
 
     video_input.set_callback({
         let cfg = cfg.clone();
-        let video_input = video_input.clone();
+        let mut video_input = video_input.clone();
         move |_| {
-            let val = video_input.value().trim().to_string();
-            save(&cfg, |c| c.youtube.video_id = val);
+            let raw = video_input.value();
+            let cleaned = crate::youtube::clean_youtube_video(&raw);
+            if cleaned != raw {
+                video_input.set_value(&cleaned);
+            }
+            save(&cfg, |c| c.youtube.video_id = cleaned);
         }
     });
 
@@ -1799,6 +1842,178 @@ fn youtube_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<YouTubeView>> 
             me.borrow_mut().refresh();
         }
     });
+
+    me
+}
+
+pub struct TikTokView {
+    pub tab: Flex,
+    cfg: Cfg,
+    cmds: Cmds,
+    channel_input: fltk::input::Input,
+    bridge_input: fltk::input::Input,
+    status_label: Frame,
+    auto_connect: fltk::button::CheckButton,
+}
+
+impl TikTokView {
+    pub fn refresh(&mut self) {
+        let connected = query(&self.cmds, |e| e.tiktok_connected()).unwrap_or(false);
+        let c = self.cfg.borrow();
+        if self.channel_input.value() != c.tiktok.channel {
+            self.channel_input.set_value(&c.tiktok.channel);
+        }
+        if self.bridge_input.value() != c.tiktok.bridge_url {
+            self.bridge_input.set_value(&c.tiktok.bridge_url);
+        }
+        self.auto_connect.set_checked(c.tiktok.auto_connect);
+        let st = if connected {
+            format!(
+                "WebSocket Bridge: Connected (channel: {})",
+                if c.tiktok.channel.is_empty() {
+                    "all / any"
+                } else {
+                    &c.tiktok.channel
+                }
+            )
+        } else if c.tiktok.bridge_url.is_empty() {
+            "WebSocket Bridge: Disconnected (No bridge URL configured)".to_string()
+        } else {
+            format!("WebSocket Bridge: Disconnected ({})", c.tiktok.bridge_url)
+        };
+        self.status_label.set_label(&st);
+    }
+}
+
+fn tiktok_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<TikTokView>> {
+    let mut col = tab(tabs, "TikTok");
+    title(&mut col, "TikTok Live Configuration");
+
+    let mut ch_row = Flex::default().row();
+    let ch_lbl = Frame::default().with_label("Channel:");
+    ch_row.fixed(&ch_lbl, 80);
+    let mut channel_input = fltk::input::Input::default();
+    ch_row.end();
+    col.fixed(&ch_row, ROW);
+
+    let mut br_row = Flex::default().row();
+    let br_lbl = Frame::default().with_label("Bridge URL:");
+    br_row.fixed(&br_lbl, 80);
+    let mut bridge_input = fltk::input::Input::default();
+    br_row.end();
+    col.fixed(&br_row, ROW);
+
+    title(&mut col, "Connection");
+    let status_label = Frame::default().with_align(Align::Left | Align::Inside);
+    col.fixed(&status_label, ROW);
+
+    let mut conn_row = Flex::default().row();
+    let mut auto_connect = fltk::button::CheckButton::default().with_label("Auto-connect on startup");
+    conn_row.fixed(&auto_connect, 180);
+    let mut connect_btn = button(&mut conn_row, "Connect", 90);
+    let mut disconnect_btn = button(&mut conn_row, "Disconnect", 90);
+
+    let tikstream_bin = crate::tiktok::find_tikstream_binary();
+    let launch_btn = if tikstream_bin.is_some() {
+        let b = button(&mut conn_row, "Start tikstream", 130);
+        Some(b)
+    } else {
+        None
+    };
+
+    Frame::default();
+    conn_row.end();
+    col.fixed(&conn_row, ROW);
+
+    let guide = Frame::default()
+        .with_label("• Dual Integration: Connects via local WebSocket bridge (TikFinity / tikstream on ws://127.0.0.1:21213).\n• Enter your TikTok @username or full profile URL above (auto-parsed!).\n• Automatically receives chat messages, gifts & coin streaks, likes, follows, shares, and joins.\n• Companion: Works seamlessly with tikstream (Linux/Windows) or TikFinity (Windows).")
+        .with_align(Align::Left | Align::Inside | Align::Wrap);
+    col.fixed(&guide, 68);
+
+    Frame::default();
+    col.end();
+
+    let me = Rc::new(RefCell::new(TikTokView {
+        tab: col,
+        cfg: cfg.clone(),
+        cmds: cmds.clone(),
+        channel_input: channel_input.clone(),
+        bridge_input: bridge_input.clone(),
+        status_label,
+        auto_connect: auto_connect.clone(),
+    }));
+
+    channel_input.set_callback({
+        let cfg = cfg.clone();
+        let mut channel_input = channel_input.clone();
+        move |_| {
+            let raw = channel_input.value();
+            let cleaned = crate::tiktok::clean_tiktok_channel(&raw);
+            if cleaned != raw {
+                channel_input.set_value(&cleaned);
+            }
+            save(&cfg, |c| c.tiktok.channel = cleaned);
+        }
+    });
+
+    bridge_input.set_callback({
+        let cfg = cfg.clone();
+        let bridge_input = bridge_input.clone();
+        move |_| {
+            let val = bridge_input.value().trim().to_string();
+            save(&cfg, |c| c.tiktok.bridge_url = val);
+        }
+    });
+
+    auto_connect.set_callback({
+        let cfg = cfg.clone();
+        let auto_connect = auto_connect.clone();
+        move |_| {
+            let on = auto_connect.is_checked();
+            save(&cfg, |c| c.tiktok.auto_connect = on);
+        }
+    });
+
+    connect_btn.set_callback({
+        let cmds = cmds.clone();
+        let me = me.clone();
+        move |_| {
+            tell(&cmds, |e| {
+                e.tiktok_start().send(crate::tiktok::TikTokCmd::Connect);
+            });
+            me.borrow_mut().refresh();
+        }
+    });
+
+    disconnect_btn.set_callback({
+        let cmds = cmds.clone();
+        let me = me.clone();
+        move |_| {
+            tell(&cmds, |e| {
+                if let Some(t) = e.tiktok() {
+                    t.send(crate::tiktok::TikTokCmd::Disconnect);
+                }
+            });
+            me.borrow_mut().refresh();
+        }
+    });
+
+    if let Some(mut b) = launch_btn {
+        let cfg = cfg.clone();
+        b.set_callback(move |_| {
+            let ch = cfg.borrow().tiktok.channel.clone();
+            match crate::tiktok::launch_tikstream(&ch) {
+                Ok(_) => {
+                    crate::say("tikstream companion launched".into());
+                    fltk::dialog::message_default("tikstream companion launched successfully.");
+                }
+                Err(e) => {
+                    crate::say(format!("Failed to launch tikstream: {e}"));
+                    fltk::dialog::alert_default(&format!("Failed to launch tikstream:\n{e}"));
+                }
+            }
+        });
+    }
 
     me
 }

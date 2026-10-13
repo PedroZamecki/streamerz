@@ -53,6 +53,38 @@ pub const T_YT_USER_TIMEDOUT: u32 = 4031;
 pub const YOUTUBE_API_BASE: &str = "https://www.googleapis.com/youtube/v3";
 pub const YOUTUBE_INNERTUBE_URL: &str = "https://www.youtube.com/youtubei/v1/live_chat/get_live_chat";
 
+/// Strip URL prefixes and extract YouTube channel ID if present.
+pub fn clean_youtube_channel(input: &str) -> String {
+    let s = input.trim();
+    if let Some(idx) = s.find("/channel/") {
+        let rest = &s[idx + 9..];
+        let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        return rest[..end].to_string();
+    }
+    s.trim_start_matches('@').trim_end_matches('/').trim().to_string()
+}
+
+/// Strip full video URLs or extract video ID parameter.
+pub fn clean_youtube_video(input: &str) -> String {
+    let s = input.trim();
+    if let Some(idx) = s.find("v=") {
+        let rest = &s[idx + 2..];
+        let end = rest.find(['&', '#', '/']).unwrap_or(rest.len());
+        return rest[..end].to_string();
+    }
+    if let Some(idx) = s.find("youtu.be/") {
+        let rest = &s[idx + 9..];
+        let end = rest.find(['?', '#', '/']).unwrap_or(rest.len());
+        return rest[..end].to_string();
+    }
+    if let Some(idx) = s.find("/live/") {
+        let rest = &s[idx + 6..];
+        let end = rest.find(['?', '#', '/']).unwrap_or(rest.len());
+        return rest[..end].to_string();
+    }
+    s.trim_end_matches('/').trim().to_string()
+}
+
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct YouTubeConfig {
@@ -1114,6 +1146,26 @@ pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value], speakers
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_clean_youtube_urls() {
+        assert_eq!(
+            clean_youtube_video("https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+            "dQw4w9WgXcQ"
+        );
+        assert_eq!(clean_youtube_video("https://youtu.be/dQw4w9WgXcQ?t=42"), "dQw4w9WgXcQ");
+        assert_eq!(
+            clean_youtube_video("https://www.youtube.com/live/live_video_id?feature=share"),
+            "live_video_id"
+        );
+        assert_eq!(clean_youtube_video("simple_vid_id"), "simple_vid_id");
+
+        assert_eq!(
+            clean_youtube_channel("https://www.youtube.com/channel/UC1234567890"),
+            "UC1234567890"
+        );
+        assert_eq!(clean_youtube_channel("@MyCreatorHandle"), "MyCreatorHandle");
+    }
+
     use super::*;
 
     #[test]

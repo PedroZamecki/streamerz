@@ -873,6 +873,15 @@ pub const TRIGGERS: &[(u32, &str)] = &[
     (37001, "ThroneGiftPurchased"),
     (37002, "ThroneContributionPurchased"),
     (37003, "ThroneGiftCrowdfunded"),
+    (41001, "TikTokChatMessage"),
+    (41002, "TikTokGift"),
+    (41003, "TikTokLike"),
+    (41004, "TikTokFollow"),
+    (41005, "TikTokShare"),
+    (41006, "TikTokSubscribe"),
+    (41007, "TikTokJoin"),
+    (41008, "TikTokConnected"),
+    (41009, "TikTokDisconnected"),
     (42001, "SystemClipboardChanged"),
 ];
 
