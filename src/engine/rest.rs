@@ -2468,6 +2468,131 @@ impl Engine {
                     )
                     .await;
             }
+            // YouTube Sub-actions
+            // 4001: Send Message to Channel
+            4001 => {
+                let broadcast = self.expand(ctx, s(o, "broadcast"));
+                let text = self.expand(ctx, s(o, "text"));
+                let use_bot = b(o, "useBot", false);
+                let fallback = b(o, "fallback", false);
+                let yt = self.youtube_start();
+                let _ = yt.send_message(&broadcast, &text, use_bot, fallback).await;
+            }
+            // 4002: Set Title
+            4002 => {
+                let broadcast = self.expand(ctx, s(o, "broadcast"));
+                let title = self.expand(ctx, s(o, "title"));
+                let yt = self.youtube_start();
+                let _ = yt.set_title(&broadcast, &title).await;
+            }
+            // 4003: Set Description
+            4003 => {
+                let broadcast = self.expand(ctx, s(o, "broadcast"));
+                let desc = self.expand(ctx, s(o, "description"));
+                let yt = self.youtube_start();
+                let _ = yt.set_description(&broadcast, &desc).await;
+            }
+            // 4004: Set Title and Description
+            4004 => {
+                let broadcast = self.expand(ctx, s(o, "broadcast"));
+                let title = self.expand(ctx, s(o, "title"));
+                let desc = self.expand(ctx, s(o, "description"));
+                let yt = self.youtube_start();
+                let _ = yt.set_title_and_description(&broadcast, &title, &desc).await;
+            }
+            // 4005: Add User To Group
+            4005 => {
+                let user = self.expand(ctx, s(o, "userLogin"));
+                let group = self.simple(ctx, s(o, "groupName"));
+                self.change(|c| {
+                    if let Some(g) = c
+                        .groups
+                        .iter_mut()
+                        .find(|g| s(g, "name") == group || s(g, "id") == group)
+                    {
+                        if let Some(users) = g.get_mut("userIds").and_then(Value::as_array_mut) {
+                            if !users.iter().any(|u| u.as_str() == Some(&user)) {
+                                users.push(user.clone().into());
+                            }
+                        }
+                    }
+                });
+            }
+            // 4006: Remove User from Group
+            4006 => {
+                let user = self.expand(ctx, s(o, "userLogin"));
+                let group = self.simple(ctx, s(o, "groupName"));
+                self.change(|c| {
+                    if let Some(g) = c
+                        .groups
+                        .iter_mut()
+                        .find(|g| s(g, "name") == group || s(g, "id") == group)
+                    {
+                        if let Some(users) = g.get_mut("userIds").and_then(Value::as_array_mut) {
+                            users.retain(|u| u.as_str() != Some(&user));
+                        }
+                    }
+                });
+            }
+            // 4007: User In Group
+            4007 => {
+                let user = self.expand(ctx, s(o, "userLogin"));
+                let group = self.simple(ctx, s(o, "groupName"));
+                let in_group = {
+                    let c = self.cfg.borrow();
+                    c.groups
+                        .iter()
+                        .find(|g| s(g, "name") == group || s(g, "id") == group)
+                        .and_then(|g| g.get("userIds").and_then(Value::as_array))
+                        .map(|users| users.iter().any(|u| u.as_str() == Some(&user)))
+                        .unwrap_or(false)
+                };
+                ctx.args.insert("userInGroup".into(), in_group.into());
+            }
+            // 4008: Ban User
+            4008 => {
+                let broadcast = self.expand(ctx, s(o, "broadcast"));
+                let user_id = self.expand(ctx, s(o, "userId"));
+                let yt = self.youtube_start();
+                let _ = yt.ban_user(&broadcast, &user_id).await;
+            }
+            // 4009: Timeout User
+            4009 => {
+                let broadcast = self.expand(ctx, s(o, "broadcast"));
+                let user_id = self.expand(ctx, s(o, "userId"));
+                let duration = n(o, "duration") as u64;
+                let yt = self.youtube_start();
+                let _ = yt.timeout_user(&broadcast, &user_id, duration).await;
+            }
+            // 4010: Add Broadcaster Information
+            4010 => {
+                let c = self.cfg.borrow();
+                let chan_id = c.youtube.channel_id.clone();
+                ctx.args.insert("broadcasterUserId".into(), chan_id.into());
+                if let Some(b) = &c.youtube.broadcaster {
+                    ctx.args.insert("broadcasterUser".into(), b.name.clone().into());
+                    ctx.args.insert("broadcasterUserName".into(), b.name.clone().into());
+                }
+            }
+            // 4011: Create Poll
+            4011 => {
+                let broadcast = self.expand(ctx, s(o, "broadcast"));
+                let question = self.expand(ctx, s(o, "question"));
+                let options_raw = self.expand(ctx, s(o, "options"));
+                let options: Vec<String> = options_raw
+                    .lines()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let yt = self.youtube_start();
+                let _ = yt.create_poll(&broadcast, &question, &options).await;
+            }
+            // 4012: End Poll
+            4012 => {
+                let broadcast = self.expand(ctx, s(o, "broadcast"));
+                let yt = self.youtube_start();
+                let _ = yt.end_poll(&broadcast).await;
+            }
             // Kick Sub-actions
             // 35001: Send Message to Channel
             35001 => {

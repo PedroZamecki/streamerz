@@ -16,6 +16,7 @@ pub mod twitch;
 pub mod types;
 mod ui;
 mod vars;
+pub mod youtube;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -61,6 +62,9 @@ pub struct Config {
     /// Kick configuration.
     #[serde(default)]
     pub kick: kick::KickConfig,
+    /// YouTube configuration.
+    #[serde(default)]
+    pub youtube: youtube::YouTubeConfig,
     /// Fields this build doesn't know (e.g. written by a newer one): kept, so a save loses nothing.
     #[serde(flatten)]
     rest: Map<String, Value>,
@@ -88,6 +92,7 @@ impl Default for Config {
             twitch: twitch::TwitchConfig::default(),
             obs: obs::ObsConfig::default(),
             kick: kick::KickConfig::default(),
+            youtube: youtube::YouTubeConfig::default(),
             rest: Map::new(),
         }
     }
@@ -284,6 +289,11 @@ fn main() {
                 .any(|c| c.get("autoConnect").and_then(Value::as_bool).unwrap_or(false))
             {
                 e.obs_start();
+            }
+            // Opt-in: YouTube auto-connect if configured.
+            let yt_cfg = engine_cfg.borrow().youtube.clone();
+            if yt_cfg.auto_connect && (!yt_cfg.video_id.trim().is_empty() || !yt_cfg.channel_id.trim().is_empty()) {
+                e.youtube_start();
             }
             // Opt-in: Kick auto-connect if channel is set and auto_connect is true.
             let kick_cfg = engine_cfg.borrow().kick.clone();

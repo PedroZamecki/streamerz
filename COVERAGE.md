@@ -508,42 +508,42 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Triggers** (24)
 
-- [ ] broadcast: Broadcast Added
-- [ ] broadcast: Broadcast Ended
-- [ ] broadcast: Broadcast Monitoring Ended
-- [ ] broadcast: Broadcast Monitoring Started
-- [ ] broadcast: Broadcast Removed
-- [ ] broadcast: Broadcast Started
-- [ ] broadcast: Statistics Updated
-- [ ] broadcast: Broadcast Updated
-- [ ] chat: First Words
-- [ ] chat: Jewels Gifted
-- [ ] chat: Message
-- [ ] chat: Super Chat
-- [ ] chat: Super Sticker
-- [ ] general: New Sponsor
-- [ ] general: New Subscriber
-- [ ] general: Present Viewers
-- [ ] general: Sponsor Only Ended
-- [ ] general: Sponsor Only Started
-- [ ] general: User Banned
-- [ ] general: User Timed Out
-- [ ] membership: Gift Membership Received
-- [ ] membership: Membership Gift
-- [ ] membership: Member Milestone
-- [ ] polls: Poll Closed
+- [x] broadcast: Broadcast Added
+- [x] broadcast: Broadcast Ended
+- [x] broadcast: Broadcast Monitoring Ended
+- [x] broadcast: Broadcast Monitoring Started
+- [x] broadcast: Broadcast Removed
+- [x] broadcast: Broadcast Started
+- [x] broadcast: Statistics Updated
+- [x] broadcast: Broadcast Updated
+- [x] chat: First Words
+- [x] chat: Jewels Gifted
+- [x] chat: Message
+- [x] chat: Super Chat
+- [x] chat: Super Sticker
+- [x] general: New Sponsor
+- [x] general: New Subscriber
+- [x] general: Present Viewers
+- [x] general: Sponsor Only Ended
+- [x] general: Sponsor Only Started
+- [x] general: User Banned
+- [x] general: User Timed Out
+- [x] membership: Gift Membership Received
+- [x] membership: Membership Gift
+- [x] membership: Member Milestone
+- [x] polls: Poll Closed
 
 **Sub-actions** (9)
 
-- [ ] moderation: Ban User
-- [ ] moderation: Timeout User
-- [ ] Send Message to Channel
-- [ ] Set Description
-- [ ] Set Title And Description
-- [ ] Set Title
-- [ ] user-groups: Add User to Group
-- [ ] user-groups: Remove User from Group
-- [ ] user-groups: User in Group
+- [x] moderation: Ban User
+- [x] moderation: Timeout User
+- [x] Send Message to Channel
+- [x] Set Description
+- [x] Set Title And Description
+- [x] Set Title
+- [x] user-groups: Add User to Group
+- [x] user-groups: Remove User from Group
+- [x] user-groups: User in Group
 
 
 ## Phase 12: Streamlabs Desktop

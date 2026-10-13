@@ -195,7 +195,7 @@ platform handles through channels, never through shared locks held across awaits
   - Pusher read, and user-app OAuth for send/moderation.
   - Optional webhooks with signature check.
   - Every trigger and sub-action.
-- [ ] 11. YouTube:
+- [x] 11. YouTube:
   - InnerTube chat and events (messages, Super Chats/Stickers, memberships, gifts, polls…).
   - Google OAuth to send/moderate and set the title/description; viewer counts.
   - Every trigger and sub-action.
