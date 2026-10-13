@@ -490,6 +490,32 @@ Without a window manager keys go to the window under the pointer, and windows op
 onto a dialog (and click its input) before typing. Type long text in chunks (one long burst stops FLTK's
 input until restart).
 
+## Streamlabs Desktop (src/slobs.rs)
+
+Its remote-control API is JSON-RPC over a plain WebSocket at `ws://host:59650/api/websocket` (no SockJS
+framing): `TcpServerService.auth(token)`, then subscriptions (a method named like the event, answered
+`{_type: "SUBSCRIPTION", resourceId: "Service.event"}`; events come as `{id: null, result: {_type:
+"EVENT", resourceId, data}}`). Methods are those of stream-labs/desktop's `app/services/api/external-api`,
+which falls back to the internal services (`getSceneIds`, `SceneItem.flipX`/`flipY`/`rotate`).
+
+Without Streamlabs Desktop (it's Windows/macOS only), the reference was the real Streamer.bot connected
+to a fake API server that logs every call and answers like Streamlabs' models (scenes as `HELPER`
+objects with their nodes, items with `resourceId`, filters, audio sources). Running each sub-action in
+Streamer.bot showed the calls and enum values:
+
+- Streaming: state 0 stop, 1 start (its docs list Start first); it reads `StreamingService.getModel` and
+  calls `toggleStreaming` only when needed. Recording: 0 start, 1 stop; Pause and Resume do nothing.
+- Visibility, filters: 0 on, 1 off, 2 toggle; mute: 0 muted, 1 not muted, 2 toggle
+  (`AudioService.getSourcesForScene`, then `AudioSource.setMuted`).
+- Flip: 0 `flipX`, 1 `flipY`, 2 both. Rotate: `setTransform({rotation})`, or `rotate(deg)` when Additive.
+- Set Random Group Source Visible shows one of the group's hidden sources; Hide Group's Sources hides
+  the visible ones. Set State of a Random Filter picks any of the source's filters.
+- Triggers: Streaming Started on status `starting`, Stopped on `ending`; Recording Started on
+  `recording`, Stopped on `stopping`. Arguments `sd.id`, `sd.name`, `sd.host` (and `sd.sceneName`); the
+  trigger's connection field is `sdId` (all zeros: any).
+- Set Browser Source URL and Set GDI Text make no call at all in Streamer.bot 1.0.7; streamerz uses
+  `Source.updateSettings`.
+
 ## The window and the engine
 
 The engine lives on the runtime thread and isn't `Send`; the window talks to it with closures
@@ -498,6 +524,12 @@ globals, queue state). The engine never waits on the window, so `query` can't de
 a `cfg.borrow()` across it. The engine calls `ui::changed()` after config changes, runs and temporary
 global writes; it only wakes the window while it's up, and the live tabs (Queues, History, Globals)
 only ask the engine when they're the tab on screen.
+
+Never hold `cfg.borrow()` across `query`: the engine may be waiting to write the config (it does at
+the first start, for the instance id), and both threads stop for good.
+
+The tabs are filled when the window opens, not when it's built: filling a list measures its text,
+which opens the display and loads fontconfig and harfbuzz, about 14 MB, even with the window hidden.
 
 Streamer.bot splits multi-line text (command aliases) on `\r\n` only: `!a\n!b` is one alias `!a!b`
 there. Its text boxes write `\r\n`, and so do the forms' multi-line fields.

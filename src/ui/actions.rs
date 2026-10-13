@@ -61,8 +61,8 @@ fn short(t: &str) -> String {
     }
 }
 
-/// Names by id (actions, queues, timers, commands, user groups, WebSocket clients and servers), so
-/// labels show names rather than ids.
+/// Names by id (actions, queues, timers, commands, user groups, WebSocket clients and servers, OBS
+/// and Streamlabs connections), so labels show names rather than ids.
 pub type Names = std::collections::HashMap<String, String>;
 
 pub fn names(c: &Config) -> Names {
@@ -73,6 +73,8 @@ pub fn names(c: &Config) -> Names {
         &c.groups,
         &c.websockets.connections,
         &c.websockets.servers,
+        &c.obs.connections,
+        &c.slobs.connections,
     ];
     let mut out: Names = objs
         .into_iter()
@@ -830,7 +832,6 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
             move || edit_sub(&me)
         },
     );
-    me.borrow_mut().refresh();
     me
 }
 

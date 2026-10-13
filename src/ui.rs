@@ -367,9 +367,13 @@ pub fn run(
         }
     });
 
+    // The tabs are filled only when shown: filling a list measures its text, which opens the display
+    // and loads the fonts (~14 MB) even with the window hidden.
     let open = |win: &mut Window, log: &mut Log| {
         if !win.visible() {
             SHOWN.store(true, Ordering::Relaxed);
+            acts.borrow_mut().refresh();
+            views.refresh(&tabs);
             win.show();
             log.refresh();
         }

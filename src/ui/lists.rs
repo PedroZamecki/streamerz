@@ -240,6 +240,38 @@ pub static OBS_CONNECTIONS: Kind = Kind {
     after: Some(|e| e.obs_start().reload()),
 };
 
+pub static SLOBS_CONNECTIONS: Kind = Kind {
+    what: "Streamlabs Desktop connection",
+    get: |c| &c.slobs.connections,
+    get_mut: |c| &mut c.slobs.connections,
+    fields: &[
+        ("name", "Name", Text),
+        ("host", "Host", Text),
+        ("port", "Port", Int),
+        ("token", "Token", Text),
+        ("autoConnect", "Connect on start", Bool),
+        ("reconnectOnDisconnect", "Reconnect", Bool),
+        ("retryInterval", "Retry interval (s)", Int),
+        ("default", "Default connection", Bool),
+    ],
+    // Streamer.bot's field order (its settings.json).
+    new: || {
+        json!({"id": "", "name": "Streamlabs Desktop", "host": "127.0.0.1", "port": 59650, "autoConnect": true,
+            "reconnectOnDisconnect": true, "token": "", "retryInterval": 30, "default": false})
+    },
+    columns: &[200, 200, 100, 100],
+    label: |o| {
+        let port = o.get("port").and_then(Value::as_u64).unwrap_or(59650);
+        vec![
+            s(o, "name").into(),
+            format!("{}:{port}", s(o, "host")),
+            yes(!on(o, "autoConnect"), "manual"),
+            yes(on(o, "default"), "default"),
+        ]
+    },
+    after: Some(|e| e.slobs_sync(false)),
+};
+
 pub static SERVERS: Kind = Kind {
     what: "WebSocket server",
     get: |c| &c.websockets.servers,
@@ -439,7 +471,6 @@ fn list(
             false
         }
     });
-    me.borrow_mut().refresh();
     me
 }
 
@@ -531,8 +562,8 @@ pub fn tabs(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Views {
     let kick = kick_tab(tabs, cfg, cmds);
     let youtube = youtube_tab(tabs, cfg, cmds);
 
-    let mut col = tab(tabs, "OBS");
-    title(&mut col, "OBS Studio Connections");
+    let mut col = tab(tabs, "Stream Apps");
+    title(&mut col, "OBS Studio");
     let obs = list(&mut col, cfg, cmds, &OBS_CONNECTIONS, Some("autoConnect"));
     let mut b_row = Flex::default().row();
     let mut b_connect = button(&mut b_row, "Connect All", 120);
@@ -552,10 +583,22 @@ pub fn tabs(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Views {
             e.obs_start().disconnect(None);
         });
     });
+    title(&mut col, "Streamlabs Desktop");
+    let slobs = list(&mut col, cfg, cmds, &SLOBS_CONNECTIONS, Some("autoConnect"));
+    let mut b_row = Flex::default().row();
+    let mut b_connect = button(&mut b_row, "Connect All", 120);
+    let mut b_disconnect = button(&mut b_row, "Disconnect All", 120);
+    Frame::default();
+    b_row.end();
+    col.fixed(&b_row, ROW);
+    let c = cmds.clone();
+    b_connect.set_callback(move |_| tell(&c, |e| e.slobs_connect("")));
+    let c = cmds.clone();
+    b_disconnect.set_callback(move |_| tell(&c, |e| e.slobs_disconnect("")));
     col.end();
 
     Views {
-        lists: vec![commands, timers, clients, custom, obs],
+        lists: vec![commands, timers, clients, custom, obs, slobs],
         queues,
         history,
         globals,
@@ -1101,7 +1144,6 @@ fn servers_box(col: &mut Flex, cfg: &Cfg) -> Rc<RefCell<Servers>> {
         });
         me.borrow_mut().lines.push(f);
     }
-    me.borrow_mut().refresh();
     me
 }
 
@@ -1167,7 +1209,6 @@ fn groups_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Groups>> {
             }
         }
     });
-    me.borrow_mut().refresh();
     me
 }
 
@@ -1192,6 +1233,8 @@ pub struct TwitchView {
 
 impl TwitchView {
     pub fn refresh(&mut self) {
+        // Before borrowing the config: the engine may be waiting to write it.
+        let connected = query(&self.cmds, |e| e.twitch_connected()).unwrap_or(false);
         let c = self.cfg.borrow();
         let b_text = match &c.twitch.broadcaster {
             Some(b) => format!("Broadcaster: {} (@{}) [ID: {}]", b.display_name, b.login, b.user_id),
@@ -1207,7 +1250,6 @@ impl TwitchView {
 
         self.auto_connect.set_checked(c.twitch.auto_connect);
 
-        let connected = query(&self.cmds, |e| e.twitch_connected()).unwrap_or(false);
         let st = if connected {
             "EventSub: Connected"
         } else if c.twitch.broadcaster.is_none() {
@@ -1501,7 +1543,6 @@ fn twitch_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<TwitchView>> {
         }
     });
 
-    me.borrow_mut().refresh();
     me
 }
 
@@ -1516,13 +1557,13 @@ pub struct KickView {
 
 impl KickView {
     pub fn refresh(&mut self) {
+        // Before borrowing the config: the engine may be waiting to write it.
+        let connected = query(&self.cmds, |e| e.kick_connected()).unwrap_or(false);
         let c = self.cfg.borrow();
         if self.channel_input.value() != c.kick.channel {
             self.channel_input.set_value(&c.kick.channel);
         }
         self.auto_connect.set_checked(c.kick.auto_connect);
-
-        let connected = query(&self.cmds, |e| e.kick_connected()).unwrap_or(false);
         let st = if connected {
             format!(
                 "Pusher WebSocket: Connected (channel: {})",
@@ -1619,7 +1660,6 @@ fn kick_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<KickView>> {
         }
     });
 
-    me.borrow_mut().refresh();
     me
 }
 
@@ -1635,6 +1675,8 @@ pub struct YouTubeView {
 
 impl YouTubeView {
     pub fn refresh(&mut self) {
+        // Before borrowing the config: the engine may be waiting to write it.
+        let connected = query(&self.cmds, |e| e.youtube_connected()).unwrap_or(false);
         let c = self.cfg.borrow();
         if self.channel_input.value() != c.youtube.channel_id {
             self.channel_input.set_value(&c.youtube.channel_id);
@@ -1643,8 +1685,6 @@ impl YouTubeView {
             self.video_input.set_value(&c.youtube.video_id);
         }
         self.auto_connect.set_checked(c.youtube.auto_connect);
-
-        let connected = query(&self.cmds, |e| e.youtube_connected()).unwrap_or(false);
         let st = if connected {
             format!(
                 "InnerTube / Live Chat: Monitoring Active ({})",
@@ -1760,7 +1800,6 @@ fn youtube_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<YouTubeView>> 
         }
     });
 
-    me.borrow_mut().refresh();
     me
 }
 
@@ -1771,7 +1810,14 @@ mod tests {
     /// A new one already has every field its form sets, so none lands out of Streamer.bot's order.
     #[test]
     fn new_objects_have_their_form_fields() {
-        for k in [&COMMANDS, &TIMERS, &CLIENTS, &SERVERS, &OBS_CONNECTIONS] {
+        for k in [
+            &COMMANDS,
+            &TIMERS,
+            &CLIENTS,
+            &SERVERS,
+            &OBS_CONNECTIONS,
+            &SLOBS_CONNECTIONS,
+        ] {
             let new = (k.new)();
             for f in k.fields {
                 assert!(new.get(f.0).is_some(), "{}: {} missing", k.what, f.0);

@@ -38,6 +38,7 @@ pub enum W {
     Client,
     Server,
     ObsConnection,
+    SlobsConnection,
     /// A sub-action or trigger of the action picked in the `actionId` field.
     Sub,
     Trigger,
@@ -59,6 +60,13 @@ pub const STATE_HIDE_SHOW_TOGGLE: &[&str] = &["Hide", "Show", "Toggle"];
 pub const STREAM_STATE: &[&str] = &["Stop", "Start", "Toggle"];
 pub const RECORD_STATE: &[&str] = &["Stop", "Start", "Toggle", "Pause", "Resume"];
 pub const REPLAY_STATE: &[&str] = &["Stop", "Start", "Toggle", "Save"];
+// Streamlabs Desktop (checked against Streamer.bot): visibility/filters/mute 0 on, 1 off, 2 toggle;
+// Streaming 0 stop, 1 start; Recording 0 start, 1 stop (Pause/Resume do nothing in Streamlabs).
+const SD_SHOW: &[&str] = &["Visible", "Hidden", "Toggle"];
+const SD_MUTE: &[&str] = &["Muted", "Not muted", "Toggle"];
+const SD_STREAM: &[&str] = &["Stop", "Start"];
+const SD_RECORD: &[&str] = &["Start", "Stop", "Pause", "Resume"];
+const SD_DISPLAY: &[&str] = &["Both", "Horizontal", "Vertical"];
 pub const FLIP_MODE: &[&str] = &["Horizontal", "Vertical", "Both"];
 pub const FILTER_STATE: &[&str] = &["Disable", "Enable", "Toggle"];
 pub const MUTE_STATE: &[&str] = &["Unmute", "Mute", "Toggle"];
@@ -373,6 +381,89 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("weight", "Weight", Num),
         ],
         10001 => &[("groupId", "Group", UserGroup)],
+        401 => &[
+            ("connectionId", "Connection", SlobsConnection),
+            ("sceneName", "Scene (empty: active)", Text),
+            ("sourceName", "Source", Text),
+            ("state", "State", Pick(SD_SHOW)),
+            ("display", "Display", Pick(SD_DISPLAY)),
+        ],
+        402 | 403 => &[
+            ("connectionId", "Connection", SlobsConnection),
+            ("sceneName", "Scene (empty: active)", Text),
+            ("groupName", "Group", Text),
+            ("display", "Display", Pick(SD_DISPLAY)),
+        ],
+        404 => &[
+            ("connectionId", "Connection", SlobsConnection),
+            ("state", "State", Pick(SD_STREAM)),
+        ],
+        405 => &[
+            ("connectionId", "Connection", SlobsConnection),
+            ("sceneName", "Scene", Text),
+        ],
+        406 => &[
+            ("connectionId", "Connection", SlobsConnection),
+            ("sceneName", "Scene (empty: active)", Text),
+            ("sourceName", "Source", Text),
+            ("filterName", "Filter", Text),
+            ("state", "State", Pick(SD_SHOW)),
+        ],
+        407 => &[
+            ("connectionId", "Connection", SlobsConnection),
+            ("flipMode", "Flip", Pick(FLIP_MODE)),
+            ("sceneName", "Scene (empty: active)", Text),
+            ("sourceName", "Source", Text),
+            ("display", "Display", Pick(SD_DISPLAY)),
+        ],
+        408 => &[
+            ("connectionId", "Connection", SlobsConnection),
+            ("degrees", "Degrees", Num),
+            ("additive", "Additive (rotate by, not to)", Bool),
+            ("sceneName", "Scene (empty: active)", Text),
+            ("sourceName", "Source", Text),
+            ("display", "Display", Pick(SD_DISPLAY)),
+        ],
+        409 => &[
+            ("connectionId", "Connection", SlobsConnection),
+            ("sceneName", "Scene (empty: active)", Text),
+            ("sourceName", "Source", Text),
+            ("url", "URL", Text),
+        ],
+        410 => &[
+            ("connectionId", "Connection", SlobsConnection),
+            ("sceneName", "Scene (empty: active)", Text),
+            ("sourceName", "Source", Text),
+            ("text", "Text", Multi),
+        ],
+        411 => &[
+            ("connectionId", "Connection", SlobsConnection),
+            ("sceneName", "Scene (empty: active)", Text),
+            ("sourceName", "Source", Text),
+            ("state", "State", Pick(SD_SHOW)),
+        ],
+        413 => &[
+            ("connectionId", "Connection", SlobsConnection),
+            ("sceneName", "Scene (empty: active)", Text),
+            ("sourceName", "Source", Text),
+            ("state", "State", Pick(SD_MUTE)),
+        ],
+        412 => &[
+            ("connectionId", "Connection", SlobsConnection),
+            ("sceneName", "Scene (empty: active)", Text),
+            ("sourceName", "Source", Text),
+        ],
+        414 => &[("connectionId", "Connection", SlobsConnection)],
+        415 => &[
+            ("connectionId", "Connection", SlobsConnection),
+            ("state", "State", Pick(SD_RECORD)),
+        ],
+        417 => &[
+            ("connectionId", "Connection", SlobsConnection),
+            ("sceneName", "Scene (empty: active)", Text),
+            ("filterName", "Filter", Text),
+            ("state", "State", Pick(SD_SHOW)),
+        ],
         99900 => &[
             ("name", "Name", Text),
             ("random", "Random", Bool),
@@ -645,6 +736,11 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
         18002 => &[("triggerName", "Trigger name", Text)],
         32001..=32005 => &[("groupId", "Group (none: any)", UserGroup)],
         14001 | 14002 | 14005 | 14006 | 14007 | 14008 => &[("connectionId", "Connection (empty: any)", ObsConnection)],
+        22001 | 22002 | 22004..=22007 => &[("sdId", "Connection (none: any)", SlobsConnection)],
+        22003 => &[
+            ("sdId", "Connection (none: any)", SlobsConnection),
+            ("sceneName", "Scene (empty: any)", Text),
+        ],
         14003 => &[
             ("connectionId", "Connection (empty: any)", ObsConnection),
             ("eventType", "Event type (empty: any)", Text),
@@ -677,6 +773,7 @@ pub struct Lists {
     clients: Ids,
     servers: Ids,
     obs_connections: Ids,
+    slobs_connections: Ids,
     action_groups: Vec<String>,
     command_groups: Vec<String>,
 }
@@ -727,6 +824,7 @@ impl Lists {
             clients: ids(&c.websockets.connections),
             servers: ids(&c.websockets.servers),
             obs_connections: ids(&c.obs.connections),
+            slobs_connections: ids(&c.slobs.connections),
             action_groups: sorted(c.actions.actions.iter().map(|a| a.group.as_str())),
             command_groups: sorted(c.commands.iter().map(|x| s(x, "group"))),
         }
@@ -870,7 +968,8 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
                 c.set_value(v.and_then(Value::as_i64).unwrap_or(0) as i32);
                 Widget::Pick(c)
             }
-            Action | Queue | Timer | Command | UserGroup | Client | Server | ObsConnection | Sub | Trigger => {
+            Action | Queue | Timer | Command | UserGroup | Client | Server | ObsConnection | SlobsConnection | Sub
+            | Trigger => {
                 let mut c = Choice::default();
                 let list = match w {
                     Action => lists.actions.iter().map(|a| (a.0.clone(), a.1.clone())).collect(),
@@ -881,6 +980,7 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
                     Client => lists.clients.clone(),
                     Server => lists.servers.clone(),
                     ObsConnection => lists.obs_connections.clone(),
+                    SlobsConnection => lists.slobs_connections.clone(),
                     _ => lists.of(s(o, "actionId"), matches!(w, Sub)),
                 };
                 let got = fill(&mut c, &list, &text(v));
@@ -1070,6 +1170,7 @@ mod tests {
         .chain(101..=196)
         .chain(451..=498)
         .chain(14001..=14009)
+        .chain(22001..=22007)
         .chain(4001..=4031)
         .chain([35001, 35002, 35003, 35008, 35009])
         .chain(35010..=35025)

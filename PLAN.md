@@ -109,7 +109,7 @@ platform handles through channels, never through shared locks held across awaits
 - Official Data API v3 to send, moderate and set the broadcast title/description.
 
 ### Streamlabs Desktop
-- Websocket API `ws://127.0.0.1:59650/api/websocket` (SockJS framing), token auth, JSON-RPC to the
+- Websocket API `ws://127.0.0.1:59650/api/websocket` (plain JSON-RPC text frames, no SockJS framing), token auth, JSON-RPC to the
   services (scenes, sources, streaming, recording, replay buffer).
 
 ## Setup (repo owner, once, before the phases that need it)
@@ -199,7 +199,7 @@ platform handles through channels, never through shared locks held across awaits
   - InnerTube chat and events (messages, Super Chats/Stickers, memberships, gifts, polls…).
   - Google OAuth to send/moderate and set the title/description; viewer counts.
   - Every trigger and sub-action.
-- [ ] 12. Streamlabs Desktop: every sub-action and trigger.
+- [x] 12. Streamlabs Desktop: every sub-action and trigger.
 - [ ] 13. Donations and shops: one integration per commit, each opt-in. Check each one's transport first
   (socket, REST or webhook through the same tunnel as Kick) and ask if one needs Streamer.bot's cloud.
 - [ ] 14. Webhooks and remote: Discord webhook, IFTTT, pronouns (alejo.io), Streamer.bot remote instances
