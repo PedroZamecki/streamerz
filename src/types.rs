@@ -398,6 +398,7 @@ pub const SUB_ACTIONS: &[(u32, &str)] = &[
     (41015, "MeldStudioSetLayerRotation"),
     (41016, "MeldStudioSetBrowserLayerUrl"),
     (41017, "MeldStudioTakeVerticalScreenshot"),
+    (43001, "TikTokSendMessage"),
     (44001, "StreamlabsWebsiteSpinWheel"),
     (99900, "Group"),
     (99901, "IfTrueGroup"),
@@ -2295,6 +2296,12 @@ pub const SUB_ACTION_INFO: &[(u32, &str, &str, &[&str])] = &[
         &["connectionId", "sceneName", "layerName", "url"],
     ),
     (41017, "Take Vertical Screenshot", "Meld Studio", &["connectionId"]),
+    (
+        43001,
+        "Send Message to Live Chat",
+        "TikTok/Chat",
+        &["text", "useBot", "fallback"],
+    ),
     (44001, "Spin Wheel", "Integrations/Streamlabs", &[]),
     (99900, "Group", "", &["subActions", "random", "name", "color"]),
     (

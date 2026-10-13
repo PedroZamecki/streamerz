@@ -538,6 +538,8 @@ pub fn sub_action_description(code: u32, name: &str, category: &str) -> String {
         1011 => "Enables, disables, or toggles all actions belonging to a specified action group.".into(),
         1016 => "Stops running the current action or aborts parent action execution.".into(),
         1018 => "Suspends, resumes, or clears all pending tasks in a named queue.".into(),
+        35001 => "Sends a chat message to Kick chat from the configured broadcaster or bot account.".into(),
+        43001 => "Sends a chat message to TikTok live chat from the configured broadcaster or bot account.".into(),
         99900 => "Executes child sub-actions concurrently on separate thread worker pools.".into(),
         99903 => "Matches a variable against defined case branches to execute corresponding sub-actions.".into(),
         _ => format!("Executes the {name} operation in {}.", category.replace('/', " > ")),

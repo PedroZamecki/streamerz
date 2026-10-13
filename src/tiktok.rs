@@ -3,7 +3,8 @@
 //!   1. Local WebSocket bridge (TikFinity / tikstream on `ws://127.0.0.1:21213`).
 //!   2. Companion management: detects and launches `tikstream` binary.
 //! - Listens to TikTok Live events: chat messages, gifts & coins, likes, follows, shares, subscriptions, and joins.
-//! - Triggers (41001..=41009) and chat command execution.
+//! - Chat message dispatch via Webcast API with broadcaster / bot account selection and fallback.
+//! - Triggers (41001..=41009), chat sub-action (43001), and chat command execution.
 
 use crate::commands::Chat;
 use crate::engine::Engine;
@@ -34,6 +35,15 @@ pub const T_TIKTOK_DISCONNECTED: u32 = 41009;
 
 pub const DEFAULT_TIKTOK_BRIDGE_URL: &str = "ws://127.0.0.1:21213/";
 
+#[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TikTokAccount {
+    /// TikTok username / handle (@handle or nickname).
+    pub username: String,
+    /// Session cookie string (must contain sessionid=...).
+    pub session_cookie: String,
+}
+
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct TikTokConfig {
@@ -43,6 +53,10 @@ pub struct TikTokConfig {
     pub auto_connect: bool,
     /// WebSocket bridge URL (defaults to ws://127.0.0.1:21213/).
     pub bridge_url: String,
+    /// Broadcaster account credentials
+    pub broadcaster: Option<TikTokAccount>,
+    /// Bot account credentials
+    pub bot: Option<TikTokAccount>,
 }
 
 impl Default for TikTokConfig {
@@ -51,6 +65,8 @@ impl Default for TikTokConfig {
             channel: String::new(),
             auto_connect: false,
             bridge_url: DEFAULT_TIKTOK_BRIDGE_URL.to_string(),
+            broadcaster: None,
+            bot: None,
         }
     }
 }
@@ -143,6 +159,112 @@ pub fn launch_tikstream(channel: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Find local `tikstream-login` (or `tikstream` on Windows) companion binary.
+pub fn find_tikstream_login_binary() -> Option<PathBuf> {
+    let bin_name = if cfg!(windows) {
+        "tikstream.exe"
+    } else {
+        "tikstream-login"
+    };
+
+    // 1. Next to current executable
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join(bin_name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    // 2. Relative repos directory if in dev workspace
+    if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+        for profile in &["release", "debug"] {
+            let p = Path::new(&home).join(format!("Documents/repos/tikstream/target/{profile}/{bin_name}"));
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+
+    // 3. Search PATH
+    if let Ok(path_var) = std::env::var("PATH") {
+        let sep = if cfg!(windows) { ';' } else { ':' };
+        for part in path_var.split(sep) {
+            let candidate = Path::new(part).join(bin_name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+/// Spawns the login window companion and captures user credentials on success.
+pub fn run_tikstream_login(is_bot: bool) -> Result<(String, String), String> {
+    let bin = find_tikstream_login_binary().ok_or_else(|| "tikstream-login companion binary not found".to_string())?;
+
+    let profile_name = if is_bot {
+        "streamerz-tiktok-bot"
+    } else {
+        "streamerz-tiktok-broadcaster"
+    };
+    let profile_dir = std::env::temp_dir().join(profile_name);
+
+    let mut cmd = std::process::Command::new(&bin);
+    if cfg!(windows) {
+        cmd.args(["--login", profile_dir.to_str().unwrap_or("")]);
+    } else {
+        cmd.arg(&profile_dir);
+    }
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to spawn {}: {e}", bin.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Login window was closed or cancelled. {stderr}"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if let Ok(v) = serde_json::from_str::<Value>(line.trim()) {
+            if let Some(cookies) = v["cookies"].as_str().filter(|s| !s.is_empty()) {
+                let username = v["username"].as_str().unwrap_or("").to_string();
+                return Ok((username, cookies.to_string()));
+            }
+        }
+    }
+
+    Err("No session credentials returned from login companion".to_string())
+}
+
+/// Attempts to extract live room ID from public TikTok live page if not received from bridge.
+pub async fn resolve_room_id(channel: &str) -> Option<String> {
+    let clean = clean_tiktok_channel(channel);
+    if clean.is_empty() {
+        return None;
+    }
+    let url = format!("https://www.tiktok.com/@{clean}/live");
+    let headers = vec![
+        ("User-Agent".into(), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".into()),
+    ];
+    let resp = crate::http::request("GET", &url, &headers, b"").await.ok()?;
+    let body = String::from_utf8_lossy(&resp.body);
+    for key in &["\"roomId\":", "\"room_id\":"] {
+        if let Some(pos) = body.find(key) {
+            let after = &body[pos + key.len()..];
+            let trimmed = after.trim_start_matches(['"', ' ']);
+            let id: String = trimmed.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if !id.is_empty() {
+                return Some(id);
+            }
+        }
+    }
+    None
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum TikTokStatus {
     Disconnected,
@@ -154,6 +276,12 @@ pub enum TikTokStatus {
 pub enum TikTokCmd {
     Connect,
     Disconnect,
+    SendMessage {
+        text: String,
+        use_bot: bool,
+        fallback: bool,
+        resp: oneshot::Sender<Result<(), String>>,
+    },
     GetStatus(oneshot::Sender<TikTokStatus>),
 }
 
@@ -162,11 +290,16 @@ pub struct TikTokHandle {
     tx: mpsc::UnboundedSender<TikTokCmd>,
     connected: Arc<AtomicBool>,
     status: Arc<Mutex<TikTokStatus>>,
+    room_id: Arc<Mutex<Option<String>>>,
 }
 
 impl TikTokHandle {
     pub fn send(&self, cmd: TikTokCmd) {
         let _ = self.tx.send(cmd);
+    }
+
+    pub fn room_id(&self) -> Option<String> {
+        self.room_id.lock().ok().and_then(|r| r.clone())
     }
 
     pub fn is_connected(&self) -> bool {
@@ -188,17 +321,32 @@ impl TikTokHandle {
             TikTokStatus::Disconnected
         }
     }
+
+    pub async fn send_message(&self, text: &str, use_bot: bool, fallback: bool) -> Result<(), String> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.tx
+            .send(TikTokCmd::SendMessage {
+                text: text.to_string(),
+                use_bot,
+                fallback,
+                resp: resp_tx,
+            })
+            .map_err(|_| "TikTok runner is down".to_string())?;
+        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
 }
 
 pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> TikTokHandle {
     let (tx, rx) = mpsc::unbounded_channel();
     let connected = Arc::new(AtomicBool::new(false));
     let status = Arc::new(Mutex::new(TikTokStatus::Disconnected));
+    let room_id = Arc::new(Mutex::new(None));
 
     let handle = TikTokHandle {
         tx,
         connected: connected.clone(),
         status: status.clone(),
+        room_id: room_id.clone(),
     };
 
     let runner = Runner {
@@ -207,6 +355,7 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> TikTokHand
         rx,
         connected,
         status,
+        room_id,
         read_task: None,
     };
     tokio::task::spawn_local(runner.run());
@@ -219,6 +368,7 @@ struct Runner {
     rx: mpsc::UnboundedReceiver<TikTokCmd>,
     connected: Arc<AtomicBool>,
     status: Arc<Mutex<TikTokStatus>>,
+    room_id: Arc<Mutex<Option<String>>>,
     read_task: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -254,6 +404,15 @@ impl Runner {
                     );
                     self.engine.emit("TikTok", "Disconnected", || json!(args));
                 }
+                TikTokCmd::SendMessage {
+                    text,
+                    use_bot,
+                    fallback,
+                    resp,
+                } => {
+                    let res = self.send_chat_message(&text, use_bot, fallback).await;
+                    let _ = resp.send(res);
+                }
                 TikTokCmd::GetStatus(resp) => {
                     let st = self
                         .status
@@ -263,6 +422,88 @@ impl Runner {
                     let _ = resp.send(st);
                 }
             }
+        }
+    }
+
+    async fn send_chat_message(&self, text: &str, use_bot: bool, fallback: bool) -> Result<(), String> {
+        let (cookie, mut room_id) = {
+            let c = self.cfg.borrow();
+            let acc = if use_bot {
+                let mut a = c.tiktok.bot.as_ref();
+                if a.is_none() && fallback {
+                    a = c.tiktok.broadcaster.as_ref();
+                }
+                a
+            } else {
+                let mut a = c.tiktok.broadcaster.as_ref();
+                if a.is_none() && fallback {
+                    a = c.tiktok.bot.as_ref();
+                }
+                a
+            };
+            let acc = acc.ok_or_else(|| {
+                if use_bot {
+                    "No TikTok bot account configured (and no fallback)".to_string()
+                } else {
+                    "No TikTok broadcaster account configured (and no fallback)".to_string()
+                }
+            })?;
+            let cookie = acc.session_cookie.clone();
+            let rid = self.room_id.lock().ok().and_then(|r| r.clone());
+            (cookie, rid)
+        };
+
+        if room_id.is_none() || room_id.as_deref() == Some("") {
+            let chan = clean_tiktok_channel(&self.cfg.borrow().tiktok.channel);
+            if !chan.is_empty() {
+                if let Some(resolved) = resolve_room_id(&chan).await {
+                    if let Ok(mut r) = self.room_id.lock() {
+                        *r = Some(resolved.clone());
+                    }
+                    room_id = Some(resolved);
+                }
+            }
+        }
+
+        let rid = room_id
+            .ok_or_else(|| "No TikTok live room ID available (ensure stream is live and channel is set)".to_string())?;
+
+        let cookie_header = if cookie.contains('=') {
+            cookie
+        } else {
+            format!("sessionid={cookie}")
+        };
+
+        let url = "https://webcast.tiktok.com/webcast/room/chat/?aid=1988&app_language=en&app_name=tiktok_web";
+        let body = format!(
+            "content={}&room_id={}",
+            crate::commands::url_encode(text),
+            crate::commands::url_encode(&rid),
+        );
+        let headers = vec![
+            ("Content-Type".into(), "application/x-www-form-urlencoded".into()),
+            ("Cookie".into(), cookie_header),
+            ("User-Agent".into(), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".into()),
+            ("Referer".into(), "https://www.tiktok.com/".into()),
+        ];
+
+        let resp = crate::http::request("POST", url, &headers, body.as_bytes())
+            .await
+            .map_err(|e| format!("TikTok chat request error: {e}"))?;
+
+        if (200..300).contains(&resp.status) {
+            if let Ok(val) = serde_json::from_slice::<Value>(&resp.body) {
+                if let Some(code) = val.get("status_code").and_then(Value::as_i64) {
+                    if code != 0 {
+                        let msg = val.get("message").and_then(Value::as_str).unwrap_or("TikTok error");
+                        return Err(format!("TikTok chat error (status_code {code}): {msg}"));
+                    }
+                }
+            }
+            Ok(())
+        } else {
+            let body_str = String::from_utf8_lossy(&resp.body);
+            Err(format!("TikTok chat failed HTTP {}: {}", resp.status, body_str))
         }
     }
 
@@ -297,6 +538,7 @@ impl Runner {
         let connected_flag = self.connected.clone();
         let status_arc = self.status.clone();
         let cfg_watch = self.cfg.clone();
+        let room_id_arc = self.room_id.clone();
 
         let task = tokio::task::spawn_local(async move {
             let mut retry_secs = 2;
@@ -335,6 +577,13 @@ impl Runner {
                             match msg {
                                 Ok(Message::Text(text)) => {
                                     if let Ok(v) = serde_json::from_str::<Value>(&text) {
+                                        if v["event"].as_str() == Some("connected") {
+                                            if let Some(rid) = v["data"]["roomId"].as_str().filter(|s| !s.is_empty()) {
+                                                if let Ok(mut r) = room_id_arc.lock() {
+                                                    *r = Some(rid.to_string());
+                                                }
+                                            }
+                                        }
                                         handle_tiktok_event(&engine, &channel_name, &v, &mut local_speakers);
                                     }
                                 }
@@ -617,6 +866,35 @@ pub mod tests {
         assert_eq!(cfg.channel, "");
         assert!(!cfg.auto_connect);
         assert_eq!(cfg.bridge_url, DEFAULT_TIKTOK_BRIDGE_URL);
+        assert!(cfg.broadcaster.is_none());
+        assert!(cfg.bot.is_none());
+    }
+
+    #[test]
+    fn test_tiktok_account_fallback_logic() {
+        let mut cfg = TikTokConfig {
+            broadcaster: Some(TikTokAccount {
+                username: "streamer".into(),
+                session_cookie: "sessionid=streamer_cookie_123".into(),
+            }),
+            ..Default::default()
+        };
+
+        // 1. Bot requested with fallback -> resolves broadcaster cookie
+        let cookie = if let Some(bot) = cfg.bot.as_ref().filter(|b| !b.session_cookie.is_empty()) {
+            Some(bot.session_cookie.clone())
+        } else {
+            cfg.broadcaster.as_ref().map(|b| b.session_cookie.clone())
+        };
+        assert_eq!(cookie.as_deref(), Some("sessionid=streamer_cookie_123"));
+
+        // 2. Bot configured -> resolves bot cookie
+        cfg.bot = Some(TikTokAccount {
+            username: "bot_account".into(),
+            session_cookie: "sessionid=bot_cookie_456".into(),
+        });
+        let bot_cookie = cfg.bot.as_ref().map(|b| b.session_cookie.clone());
+        assert_eq!(bot_cookie.as_deref(), Some("sessionid=bot_cookie_456"));
     }
 
     #[test]

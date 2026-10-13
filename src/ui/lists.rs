@@ -1572,6 +1572,8 @@ pub struct KickView {
     cfg: Cfg,
     cmds: Cmds,
     channel_input: fltk::input::Input,
+    broadcaster_info: Frame,
+    bot_info: Frame,
     status_label: Frame,
     auto_connect: fltk::button::CheckButton,
 }
@@ -1584,6 +1586,32 @@ impl KickView {
         if self.channel_input.value() != c.kick.channel {
             self.channel_input.set_value(&c.kick.channel);
         }
+        let b_text = match &c.kick.broadcaster {
+            Some(b) if !b.token.access_token.is_empty() => {
+                let name = if !b.username.is_empty() {
+                    &b.username
+                } else {
+                    "configured"
+                };
+                format!("Broadcaster: @{name} (Token Set)")
+            }
+            _ => "Broadcaster: No token configured".to_string(),
+        };
+        self.broadcaster_info.set_label(&b_text);
+
+        let bot_text = match &c.kick.bot {
+            Some(bot) if !bot.token.access_token.is_empty() => {
+                let name = if !bot.username.is_empty() {
+                    &bot.username
+                } else {
+                    "configured"
+                };
+                format!("Bot: @{name} (Token Set)")
+            }
+            _ => "Bot: No token configured".to_string(),
+        };
+        self.bot_info.set_label(&bot_text);
+
         self.auto_connect.set_checked(c.kick.auto_connect);
         let st = if connected {
             format!(
@@ -1614,6 +1642,42 @@ fn kick_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<KickView>> {
     ch_row.end();
     col.fixed(&ch_row, ROW);
 
+    title(&mut col, "Kick Broadcaster Account");
+    let broadcaster_info = Frame::default().with_align(Align::Left | Align::Inside);
+    col.fixed(&broadcaster_info, ROW);
+
+    let mut b_row = Flex::default().row();
+    let b_lbl = Frame::default().with_label("Token:");
+    b_row.fixed(&b_lbl, 55);
+    let broadcaster_token_input = fltk::input::Input::default();
+    let mut b_save = button(&mut b_row, "Save Token", 95);
+    let mut b_clear = button(&mut b_row, "Clear", 70);
+    b_row.end();
+    col.fixed(&b_row, ROW);
+
+    title(&mut col, "Kick Bot Account");
+    let bot_info = Frame::default().with_align(Align::Left | Align::Inside);
+    col.fixed(&bot_info, ROW);
+
+    let mut bot_row = Flex::default().row();
+    let bot_lbl = Frame::default().with_label("Token:");
+    bot_row.fixed(&bot_lbl, 55);
+    let bot_token_input = fltk::input::Input::default();
+    let mut bot_save = button(&mut bot_row, "Save Token", 95);
+    let mut bot_clear = button(&mut bot_row, "Clear", 70);
+    bot_row.end();
+    col.fixed(&bot_row, ROW);
+
+    title(&mut col, "Test Chat Message");
+    let mut test_row = Flex::default().row();
+    let test_lbl = Frame::default().with_label("Message:");
+    test_row.fixed(&test_lbl, 70);
+    let test_msg_input = fltk::input::Input::default();
+    let mut send_b_btn = button(&mut test_row, "Send (Broadcaster)", 140);
+    let mut send_bot_btn = button(&mut test_row, "Send (Bot)", 95);
+    test_row.end();
+    col.fixed(&test_row, ROW);
+
     title(&mut col, "Connection");
     let status_label = Frame::default().with_align(Align::Left | Align::Inside);
     col.fixed(&status_label, ROW);
@@ -1628,9 +1692,9 @@ fn kick_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<KickView>> {
     col.fixed(&conn_row, ROW);
 
     let guide = Frame::default()
-        .with_label("• Zero-login connection: enter your channel name or paste your Kick stream URL (auto-parsed!).\n• Connects directly to Kick's public Pusher WebSocket for chat messages, follows, subscriptions, and kicks.\n• Broadcaster token in Settings is only required if you want streamerz to send chat messages or moderate.")
+        .with_label("• Zero-login connection: enter your channel name or stream URL (auto-parsed!) to read public live chat & events via Pusher.\n• Chat Sending: To send messages as Broadcaster or Bot, enter your Kick OAuth Access Token above.\n• To get tokens: Generate an API access token in Kick Developer Portal (kick.com/settings/developer) with chat:write scope.\n• Fallback: Sub-actions can automatically fall back between Bot and Broadcaster if either is not configured.")
         .with_align(Align::Left | Align::Inside | Align::Wrap);
-    col.fixed(&guide, 54);
+    col.fixed(&guide, 68);
 
     Frame::default();
     col.end();
@@ -1640,6 +1704,8 @@ fn kick_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<KickView>> {
         cfg: cfg.clone(),
         cmds: cmds.clone(),
         channel_input: channel_input.clone(),
+        broadcaster_info,
+        bot_info,
         status_label,
         auto_connect: auto_connect.clone(),
     }));
@@ -1655,6 +1721,154 @@ fn kick_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<KickView>> {
             }
             save(&cfg, |c| c.kick.channel = cleaned);
         }
+    });
+
+    b_save.set_callback({
+        let cfg = cfg.clone();
+        let mut broadcaster_token_input = broadcaster_token_input.clone();
+        let me = me.clone();
+        let cmds = cmds.clone();
+        move |_| {
+            let tok = broadcaster_token_input.value().trim().to_string();
+            if tok.is_empty() {
+                fltk::dialog::alert_default("Please enter a token first.");
+                return;
+            }
+            let chan = cfg.borrow().kick.channel.clone();
+            save(&cfg, |c| {
+                c.kick.broadcaster = Some(crate::kick::KickAccount {
+                    user_id: 0,
+                    username: chan.clone(),
+                    token: crate::kick::KickToken {
+                        access_token: tok.clone(),
+                        refresh_token: String::new(),
+                        expires_at: 0,
+                    },
+                });
+            });
+            broadcaster_token_input.set_value("");
+            let tok_clone = tok.clone();
+            let cfg_clone = cfg.clone();
+            let me_clone = me.clone();
+            tell(&cmds, move |_| {
+                tokio::task::spawn_local(async move {
+                    if let Ok((uid, name)) = crate::kick::fetch_kick_user(&tok_clone).await {
+                        save(&cfg_clone, |c| {
+                            if let Some(ref mut b) = c.kick.broadcaster {
+                                b.user_id = uid;
+                                b.username = name;
+                            }
+                        });
+                    }
+                });
+            });
+            fltk::dialog::message_default("Broadcaster token saved successfully!");
+            me_clone.borrow_mut().refresh();
+        }
+    });
+
+    b_clear.set_callback({
+        let cfg = cfg.clone();
+        let me = me.clone();
+        move |_| {
+            save(&cfg, |c| c.kick.broadcaster = None);
+            me.borrow_mut().refresh();
+        }
+    });
+
+    bot_save.set_callback({
+        let cfg = cfg.clone();
+        let mut bot_token_input = bot_token_input.clone();
+        let me = me.clone();
+        let cmds = cmds.clone();
+        move |_| {
+            let tok = bot_token_input.value().trim().to_string();
+            if tok.is_empty() {
+                fltk::dialog::alert_default("Please enter a token first.");
+                return;
+            }
+            save(&cfg, |c| {
+                c.kick.bot = Some(crate::kick::KickAccount {
+                    user_id: 0,
+                    username: "bot".into(),
+                    token: crate::kick::KickToken {
+                        access_token: tok.clone(),
+                        refresh_token: String::new(),
+                        expires_at: 0,
+                    },
+                });
+            });
+            bot_token_input.set_value("");
+            let tok_clone = tok.clone();
+            let cfg_clone = cfg.clone();
+            let me_clone = me.clone();
+            tell(&cmds, move |_| {
+                tokio::task::spawn_local(async move {
+                    if let Ok((uid, name)) = crate::kick::fetch_kick_user(&tok_clone).await {
+                        save(&cfg_clone, |c| {
+                            if let Some(ref mut b) = c.kick.bot {
+                                b.user_id = uid;
+                                b.username = name;
+                            }
+                        });
+                    }
+                });
+            });
+            fltk::dialog::message_default("Bot token saved successfully!");
+            me_clone.borrow_mut().refresh();
+        }
+    });
+
+    bot_clear.set_callback({
+        let cfg = cfg.clone();
+        let me = me.clone();
+        move |_| {
+            save(&cfg, |c| c.kick.bot = None);
+            me.borrow_mut().refresh();
+        }
+    });
+
+    let send_test_kick = {
+        let cmds = cmds.clone();
+        let test_msg_input = test_msg_input.clone();
+        move |as_bot: bool| {
+            let who = if as_bot { "Bot" } else { "Broadcaster" };
+            let text = test_msg_input.value().trim().to_string();
+            if text.is_empty() {
+                fltk::dialog::alert_default("Please enter a test message to send.");
+                return;
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            tell(&cmds, move |e| {
+                let kick = e.kick_start();
+                tokio::task::spawn_local(async move {
+                    let res = kick.send_message(&text, as_bot, false).await;
+                    let _ = tx.send(res);
+                });
+            });
+            let start = std::time::Instant::now();
+            while start.elapsed() < std::time::Duration::from_secs(6) {
+                if let Ok(res) = rx.try_recv() {
+                    match res {
+                        Ok(()) => fltk::dialog::message_default(&format!("Kick message sent successfully via {who}!")),
+                        Err(e) => fltk::dialog::alert_default(&format!("Failed to send Kick message:\n{e}")),
+                    }
+                    return;
+                }
+                fltk::app::wait();
+            }
+            fltk::dialog::alert_default("Request timed out waiting for Kick API response.");
+        }
+    };
+
+    send_b_btn.set_callback({
+        let send = send_test_kick.clone();
+        move |_| send(false)
+    });
+
+    send_bot_btn.set_callback({
+        let send = send_test_kick;
+        move |_| send(true)
     });
 
     auto_connect.set_callback({
@@ -1852,6 +2066,8 @@ pub struct TikTokView {
     cmds: Cmds,
     channel_input: fltk::input::Input,
     bridge_input: fltk::input::Input,
+    broadcaster_info: Frame,
+    bot_info: Frame,
     status_label: Frame,
     auto_connect: fltk::button::CheckButton,
 }
@@ -1866,6 +2082,32 @@ impl TikTokView {
         if self.bridge_input.value() != c.tiktok.bridge_url {
             self.bridge_input.set_value(&c.tiktok.bridge_url);
         }
+        let b_text = match &c.tiktok.broadcaster {
+            Some(b) if !b.session_cookie.is_empty() => {
+                let name = if !b.username.is_empty() {
+                    &b.username
+                } else {
+                    "logged in"
+                };
+                format!("Broadcaster: @{name} (Cookie Set)")
+            }
+            _ => "Broadcaster: Not logged in".to_string(),
+        };
+        self.broadcaster_info.set_label(&b_text);
+
+        let bot_text = match &c.tiktok.bot {
+            Some(bot) if !bot.session_cookie.is_empty() => {
+                let name = if !bot.username.is_empty() {
+                    &bot.username
+                } else {
+                    "logged in"
+                };
+                format!("Bot: @{name} (Cookie Set)")
+            }
+            _ => "Bot: Not logged in".to_string(),
+        };
+        self.bot_info.set_label(&bot_text);
+
         self.auto_connect.set_checked(c.tiktok.auto_connect);
         let st = if connected {
             format!(
@@ -1903,6 +2145,44 @@ fn tiktok_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<TikTokView>> {
     br_row.end();
     col.fixed(&br_row, ROW);
 
+    title(&mut col, "TikTok Broadcaster Account");
+    let broadcaster_info = Frame::default().with_align(Align::Left | Align::Inside);
+    col.fixed(&broadcaster_info, ROW);
+
+    let mut b_row = Flex::default().row();
+    let mut b_login_btn = button(&mut b_row, "1-Click Login", 105);
+    let b_c_lbl = Frame::default().with_label("Cookie:");
+    b_row.fixed(&b_c_lbl, 55);
+    let broadcaster_cookie_input = fltk::input::Input::default();
+    let mut b_save_cookie = button(&mut b_row, "Save Cookie", 95);
+    let mut b_clear = button(&mut b_row, "Clear", 65);
+    b_row.end();
+    col.fixed(&b_row, ROW);
+
+    title(&mut col, "TikTok Bot Account");
+    let bot_info = Frame::default().with_align(Align::Left | Align::Inside);
+    col.fixed(&bot_info, ROW);
+
+    let mut bot_row = Flex::default().row();
+    let mut bot_login_btn = button(&mut bot_row, "1-Click Login", 105);
+    let bot_c_lbl = Frame::default().with_label("Cookie:");
+    bot_row.fixed(&bot_c_lbl, 55);
+    let bot_cookie_input = fltk::input::Input::default();
+    let mut bot_save_cookie = button(&mut bot_row, "Save Cookie", 95);
+    let mut bot_clear = button(&mut bot_row, "Clear", 65);
+    bot_row.end();
+    col.fixed(&bot_row, ROW);
+
+    title(&mut col, "Test Chat Message");
+    let mut test_row = Flex::default().row();
+    let test_lbl = Frame::default().with_label("Message:");
+    test_row.fixed(&test_lbl, 70);
+    let test_msg_input = fltk::input::Input::default();
+    let mut send_b_btn = button(&mut test_row, "Send (Broadcaster)", 140);
+    let mut send_bot_btn = button(&mut test_row, "Send (Bot)", 95);
+    test_row.end();
+    col.fixed(&test_row, ROW);
+
     title(&mut col, "Connection");
     let status_label = Frame::default().with_align(Align::Left | Align::Inside);
     col.fixed(&status_label, ROW);
@@ -1926,7 +2206,7 @@ fn tiktok_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<TikTokView>> {
     col.fixed(&conn_row, ROW);
 
     let guide = Frame::default()
-        .with_label("• Dual Integration: Connects via local WebSocket bridge (TikFinity / tikstream on ws://127.0.0.1:21213).\n• Enter your TikTok @username or full profile URL above (auto-parsed!).\n• Automatically receives chat messages, gifts & coin streaks, likes, follows, shares, and joins.\n• Companion: Works seamlessly with tikstream (Linux/Windows) or TikFinity (Windows).")
+        .with_label("• Dual Integration: Connects via WebSocket bridge (TikFinity / tikstream on ws://127.0.0.1:21213) for real-time live events.\n• Chat Sending: Click '1-Click Login' to log in via companion browser window, or paste session cookies (sessionid=...) from browser DevTools.\n• Isolated profiles allow logging in separate Broadcaster and Bot accounts.\n• Messages are sent directly to the live stream chat using TikTok's Webcast API with automatic room ID discovery.")
         .with_align(Align::Left | Align::Inside | Align::Wrap);
     col.fixed(&guide, 68);
 
@@ -1939,6 +2219,8 @@ fn tiktok_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<TikTokView>> {
         cmds: cmds.clone(),
         channel_input: channel_input.clone(),
         bridge_input: bridge_input.clone(),
+        broadcaster_info,
+        bot_info,
         status_label,
         auto_connect: auto_connect.clone(),
     }));
@@ -1963,6 +2245,196 @@ fn tiktok_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<TikTokView>> {
             let val = bridge_input.value().trim().to_string();
             save(&cfg, |c| c.tiktok.bridge_url = val);
         }
+    });
+
+    let do_1click_login = |as_bot: bool, cfg: Cfg, me: Rc<RefCell<TikTokView>>| {
+        let who = if as_bot { "Bot" } else { "Broadcaster" };
+        if crate::tiktok::find_tikstream_login_binary().is_none() {
+            fltk::dialog::alert_default(
+                "tikstream-login companion was not found.\nPlease paste your session cookie in the field on the right (e.g. sessionid=... from browser DevTools), or build/install tikstream."
+            );
+            return;
+        }
+
+        let (mut win, answer) = dialogs::window(400, 150, &format!("TikTok Login - {who}"));
+        let mut col = Flex::new(10, 10, 380, 130, None).column();
+        col.set_pad(8);
+        let msg = Frame::default()
+            .with_label(&format!("Browser login window opened for {who}.\nPlease log in to TikTok in the window.\nThis dialog will close automatically when done."))
+            .with_align(Align::Left | Align::Inside | Align::Wrap);
+        col.fixed(&msg, 80);
+        let mut bar = Flex::default().row();
+        Frame::default();
+        let mut cancel_btn = button(&mut bar, "Cancel", 80);
+        cancel_btn.set_callback({
+            let a = answer.clone();
+            move |_| a.set(Some(false))
+        });
+        bar.end();
+        col.fixed(&bar, ROW);
+        col.end();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let res = crate::tiktok::run_tikstream_login(as_bot);
+            let _ = tx.send(res);
+        });
+
+        win.show();
+        while win.shown() && answer.get().is_none() {
+            if let Ok(res) = rx.try_recv() {
+                win.hide();
+                match res {
+                    Ok((username, cookies)) => {
+                        save(&cfg, |c| {
+                            let acc = crate::tiktok::TikTokAccount {
+                                username: username.clone(),
+                                session_cookie: cookies,
+                            };
+                            if as_bot {
+                                c.tiktok.bot = Some(acc);
+                            } else {
+                                c.tiktok.broadcaster = Some(acc);
+                            }
+                        });
+                        fltk::dialog::message_default(&format!("Successfully logged in {who} as @{username}!"));
+                        me.borrow_mut().refresh();
+                    }
+                    Err(e) => {
+                        fltk::dialog::alert_default(&format!("TikTok login cancelled or failed:\n{e}"));
+                    }
+                }
+                return;
+            }
+            fltk::app::wait();
+        }
+        win.hide();
+    };
+
+    b_login_btn.set_callback({
+        let cfg = cfg.clone();
+        let me = me.clone();
+        move |_| do_1click_login(false, cfg.clone(), me.clone())
+    });
+
+    bot_login_btn.set_callback({
+        let cfg = cfg.clone();
+        let me = me.clone();
+        move |_| do_1click_login(true, cfg.clone(), me.clone())
+    });
+
+    b_save_cookie.set_callback({
+        let cfg = cfg.clone();
+        let mut broadcaster_cookie_input = broadcaster_cookie_input.clone();
+        let me = me.clone();
+        move |_| {
+            let mut val = broadcaster_cookie_input.value().trim().to_string();
+            if val.is_empty() {
+                fltk::dialog::alert_default("Please enter a session cookie first.");
+                return;
+            }
+            if !val.contains('=') {
+                val = format!("sessionid={val}");
+            }
+            save(&cfg, |c| {
+                let chan = c.tiktok.channel.clone();
+                c.tiktok.broadcaster = Some(crate::tiktok::TikTokAccount {
+                    username: chan,
+                    session_cookie: val,
+                });
+            });
+            broadcaster_cookie_input.set_value("");
+            fltk::dialog::message_default("Broadcaster cookie saved successfully!");
+            me.borrow_mut().refresh();
+        }
+    });
+
+    b_clear.set_callback({
+        let cfg = cfg.clone();
+        let me = me.clone();
+        move |_| {
+            save(&cfg, |c| c.tiktok.broadcaster = None);
+            me.borrow_mut().refresh();
+        }
+    });
+
+    bot_save_cookie.set_callback({
+        let cfg = cfg.clone();
+        let mut bot_cookie_input = bot_cookie_input.clone();
+        let me = me.clone();
+        move |_| {
+            let mut val = bot_cookie_input.value().trim().to_string();
+            if val.is_empty() {
+                fltk::dialog::alert_default("Please enter a session cookie first.");
+                return;
+            }
+            if !val.contains('=') {
+                val = format!("sessionid={val}");
+            }
+            save(&cfg, |c| {
+                c.tiktok.bot = Some(crate::tiktok::TikTokAccount {
+                    username: "bot".into(),
+                    session_cookie: val,
+                });
+            });
+            bot_cookie_input.set_value("");
+            fltk::dialog::message_default("Bot cookie saved successfully!");
+            me.borrow_mut().refresh();
+        }
+    });
+
+    bot_clear.set_callback({
+        let cfg = cfg.clone();
+        let me = me.clone();
+        move |_| {
+            save(&cfg, |c| c.tiktok.bot = None);
+            me.borrow_mut().refresh();
+        }
+    });
+
+    let send_test_tiktok = {
+        let cmds = cmds.clone();
+        let test_msg_input = test_msg_input.clone();
+        move |as_bot: bool| {
+            let who = if as_bot { "Bot" } else { "Broadcaster" };
+            let text = test_msg_input.value().trim().to_string();
+            if text.is_empty() {
+                fltk::dialog::alert_default("Please enter a test message to send.");
+                return;
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            tell(&cmds, move |e| {
+                let tiktok = e.tiktok_start();
+                tokio::task::spawn_local(async move {
+                    let res = tiktok.send_message(&text, as_bot, false).await;
+                    let _ = tx.send(res);
+                });
+            });
+            let start = std::time::Instant::now();
+            while start.elapsed() < std::time::Duration::from_secs(6) {
+                if let Ok(res) = rx.try_recv() {
+                    match res {
+                        Ok(()) => {
+                            fltk::dialog::message_default(&format!("TikTok message sent successfully via {who}!"))
+                        }
+                        Err(e) => fltk::dialog::alert_default(&format!("Failed to send TikTok message:\n{e}")),
+                    }
+                    return;
+                }
+                fltk::app::wait();
+            }
+            fltk::dialog::alert_default("Request timed out waiting for TikTok response.");
+        }
+    };
+
+    send_b_btn.set_callback({
+        let send = send_test_tiktok.clone();
+        move |_| send(false)
+    });
+
+    send_bot_btn.set_callback({
+        let send = send_test_tiktok;
+        move |_| send(true)
     });
 
     auto_connect.set_callback({
