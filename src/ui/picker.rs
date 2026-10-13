@@ -1,5 +1,5 @@
-//! Hierarchical grouped picker dialog with search, breadcrumb navigation,
-//! and real-time detail/hover description card.
+//! Hierarchical grouped picker dialog with multi-level submenus, live search,
+//! breadcrumb navigation, and real-time detail/description panel.
 
 use super::{button, ROW};
 use crate::types::{SUB_ACTION_INFO, TRIGGERS};
@@ -13,7 +13,7 @@ use fltk::tree::{Tree, TreeItem, TreeReason, TreeSelect};
 use fltk::window::Window;
 use fltk::{app, dialog};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 #[derive(Clone, Debug)]
@@ -53,164 +53,280 @@ pub fn split_pascal(s: &str) -> String {
 
 /// Clean human-readable title for a trigger.
 pub fn trigger_clean_title(name: &str) -> String {
-    let raw = split_pascal(name);
-    for prefix in &[
-        "Twitch ",
-        "Obs ",
-        "Slobs ",
-        "Kick ",
-        "You Tube ",
-        "YouTube ",
-        "File Watcher ",
-        "File Tail ",
-        "Stream Deck ",
-        "Elgato Stream Deck ",
-        "Remote Instance ",
-        "Ko Fi ",
-        "Kofi ",
-        "Stream Elements ",
-        "Streamlabs Desktop ",
-        "Streamlabs ",
-        "Fourthwall ",
-        "Patreon ",
-        "Throne ",
-        "Shopify ",
-        "Stream Loots ",
-    ] {
-        if let Some(rest) = raw.strip_prefix(prefix) {
-            return rest.to_string();
-        }
+    let stripped = name
+        .strip_prefix("ElgatoCameraHubWebcam")
+        .or_else(|| name.strip_prefix("ElgatoCameraHubPrompter"))
+        .or_else(|| name.strip_prefix("ElgatoCameraHub"))
+        .or_else(|| name.strip_prefix("ElgatoWaveLink"))
+        .or_else(|| name.strip_prefix("ElgatoStreamDeck"))
+        .or_else(|| name.strip_prefix("StreamDeck"))
+        .or_else(|| name.strip_prefix("MeldStudio"))
+        .or_else(|| name.strip_prefix("VoiceMod"))
+        .or_else(|| name.strip_prefix("SpeakerBot"))
+        .or_else(|| name.strip_prefix("TwitchSharedChat"))
+        .or_else(|| name.strip_prefix("Twitch"))
+        .or_else(|| name.strip_prefix("YouTube"))
+        .or_else(|| name.strip_prefix("Youtube"))
+        .or_else(|| name.strip_prefix("Kick"))
+        .or_else(|| name.strip_prefix("Obs"))
+        .or_else(|| name.strip_prefix("Slobs"))
+        .or_else(|| name.strip_prefix("StreamlabsDesktop"))
+        .or_else(|| name.strip_prefix("Streamlabs"))
+        .or_else(|| name.strip_prefix("StreamElements"))
+        .or_else(|| name.strip_prefix("StreamerBotRemoteInstance"))
+        .or_else(|| name.strip_prefix("RemoteInstance"))
+        .or_else(|| name.strip_prefix("VTubeStudio"))
+        .or_else(|| name.strip_prefix("CrowdControl"))
+        .or_else(|| name.strip_prefix("Throwing"))
+        .or_else(|| name.strip_prefix("Pulsoid"))
+        .or_else(|| name.strip_prefix("HypeRate"))
+        .or_else(|| name.strip_prefix("FileWatcher"))
+        .or_else(|| name.strip_prefix("FileTail"))
+        .or_else(|| name.strip_prefix("Process"))
+        .or_else(|| name.strip_prefix("WebsocketClient"))
+        .or_else(|| name.strip_prefix("WebsocketCustom"))
+        .or_else(|| name.strip_prefix("System"))
+        .unwrap_or(name);
+
+    let clean = split_pascal(if stripped.is_empty() { name } else { stripped });
+    if clean.is_empty() {
+        split_pascal(name)
+    } else {
+        clean
     }
-    raw
 }
 
-/// Categorize triggers into Category / Subgroup hierarchy.
+/// Categorize triggers into Category / Submenu / Group hierarchy.
 pub fn trigger_categorize(name: &str) -> String {
-    if let Some(rest) = name.strip_prefix("Twitch") {
-        let sub = if rest.contains("Chat")
-            || rest.contains("Whisper")
-            || rest.contains("Cheer")
-            || rest.contains("FirstWord")
-            || rest.contains("Announcement")
+    // Elgato
+    if let Some(rest) = name
+        .strip_prefix("ElgatoCameraHub")
+        .or_else(|| name.strip_prefix("CameraHub"))
+    {
+        if rest.contains("Prompter") {
+            if rest.contains("Bright")
+                || rest.contains("Font")
+                || rest.contains("Color")
+                || rest.contains("Margin")
+                || rest.contains("LineSpacing")
+                || rest.contains("Opacity")
+                || rest.contains("Background")
+            {
+                "Elgato/Camera Hub/Prompter - Display".into()
+            } else {
+                "Elgato/Camera Hub/Prompter - Script & Controls".into()
+            }
+        } else if rest.contains("Exposure")
+            || rest.contains("Shutter")
+            || rest.contains("ISO")
+            || rest.contains("Focus")
         {
-            "Chat"
-        } else if rest.contains("Sub") || rest.contains("Gift") {
-            "Subscriptions"
-        } else if rest.contains("Follow") || rest.contains("Stream") || rest.contains("Viewer") {
-            "Channel"
-        } else if rest.contains("Reward") || rest.contains("PowerUp") {
-            "Rewards & Points"
-        } else if rest.contains("HypeTrain") {
-            "Hype Train"
-        } else if rest.contains("Poll") {
-            "Polls"
-        } else if rest.contains("Prediction") {
-            "Predictions"
+            "Elgato/Camera Hub/Webcam - Exposure & Focus".into()
+        } else if rest.contains("Zoom")
+            || rest.contains("White")
+            || rest.contains("Bright")
+            || rest.contains("Contrast")
+            || rest.contains("Saturation")
+            || rest.contains("Sharpness")
+            || rest.contains("Noise")
+            || rest.contains("AntiFlicker")
+        {
+            "Elgato/Camera Hub/Webcam - Image & Color".into()
+        } else if rest.contains("Webcam")
+            || rest.contains("Tilt")
+            || rest.contains("Lens")
+            || rest.contains("Pan")
+            || rest.contains("Flash")
+            || rest.contains("Mirror")
+            || rest.contains("Flip")
+            || rest.contains("Orientation")
+        {
+            "Elgato/Camera Hub/Webcam - Device & Lens".into()
+        } else {
+            "Elgato/Camera Hub/Connection & Status".into()
+        }
+    } else if let Some(rest) = name
+        .strip_prefix("ElgatoWaveLink")
+        .or_else(|| name.strip_prefix("WaveLink"))
+    {
+        if rest.contains("Microphone") {
+            "Elgato/Wave Link/Microphone".into()
+        } else if rest.contains("Filter") {
+            "Elgato/Wave Link/Filters".into()
+        } else if rest.contains("Output") {
+            "Elgato/Wave Link/Outputs".into()
+        } else if rest.contains("Input") {
+            "Elgato/Wave Link/Inputs".into()
+        } else {
+            "Elgato/Wave Link/Connection".into()
+        }
+    } else if name.starts_with("StreamDeck") || name.starts_with("ElgatoStreamDeck") {
+        "Elgato/Stream Deck".into()
+    }
+    // Twitch
+    else if let Some(rest) = name.strip_prefix("Twitch") {
+        if rest.contains("Shared") {
+            if rest.contains("Session") {
+                "Twitch/Shared Chat/Sessions".into()
+            } else if rest.contains("Sub") || rest.contains("PayItForward") || rest.contains("Upgrade") {
+                "Twitch/Shared Chat/Subscriptions".into()
+            } else if rest.contains("Banned") || rest.contains("Timedout") || rest.contains("Deleted") {
+                "Twitch/Shared Chat/Moderation".into()
+            } else {
+                "Twitch/Shared Chat/Messages & Announcements".into()
+            }
+        } else if rest.contains("Cheer") || rest.contains("Bits") || rest.contains("Coin") || rest.contains("HypeChat")
+        {
+            "Twitch/Chat/Bits & Cheers".into()
+        } else if rest.contains("Whisper") || rest.contains("Announcement") || rest.contains("FirstWord") {
+            "Twitch/Chat/Special Messages".into()
+        } else if rest.contains("ChatMessage")
+            || rest.contains("Deleted")
+            || rest.contains("Clear")
+            || rest.contains("EmoteOnly")
+            || rest.contains("FollowersOnly")
+            || rest.contains("Slow")
+            || rest.contains("SubOnly")
+            || rest.contains("SubscriberOnly")
+        {
+            "Twitch/Chat/Messages & Modes".into()
+        } else if rest.contains("SubGift")
+            || rest.contains("Gift")
+            || rest.contains("Community")
+            || rest.contains("PayItForward")
+            || rest.contains("PrimePaidUpgrade")
+        {
+            "Twitch/Subscriptions/Gift Subscriptions".into()
+        } else if rest.contains("Sub") {
+            "Twitch/Subscriptions/Channel Subscriptions".into()
         } else if rest.contains("Ban")
             || rest.contains("TimeOut")
-            || rest.contains("Mod")
-            || rest.contains("Vip")
-            || rest.contains("Shield")
-            || rest.contains("AutoMod")
-            || rest.contains("Warning")
-            || rest.contains("Terms")
-            || rest.contains("Shoutout")
+            || rest.contains("TimedOut")
+            || rest.contains("Untimed")
+            || rest.contains("Unban")
         {
-            "Moderation"
+            "Twitch/Moderation/Bans & Timeouts".into()
+        } else if rest.contains("AutoMod")
+            || rest.contains("Shield")
+            || rest.contains("Warned")
+            || rest.contains("Suspicious")
+        {
+            "Twitch/Moderation/Automod & Safety".into()
+        } else if rest.contains("Mod") || rest.contains("Vip") || rest.contains("Shoutout") {
+            "Twitch/Moderation/Roles & Shoutouts".into()
+        } else if rest.contains("Reward") || rest.contains("PowerUp") || rest.contains("Point") {
+            "Twitch/Rewards & Points".into()
+        } else if rest.contains("HypeTrain") || rest.contains("Raid") {
+            "Twitch/Community/Hype Train & Raids".into()
         } else if rest.contains("Charity") || rest.contains("Goal") {
-            "Charity & Goals"
-        } else if rest.contains("Shared") {
-            "Shared Chat"
+            "Twitch/Community/Charity & Goals".into()
+        } else if rest.contains("Ad") || rest.contains("Pyramid") || rest.contains("Streak") {
+            "Twitch/Community/Ads & Milestones".into()
+        } else if rest.contains("Poll") || rest.contains("Prediction") {
+            "Twitch/Polls & Predictions".into()
         } else if rest.contains("GuestStar") {
-            "Guest Star"
-        } else if rest.contains("Ad") {
-            "Ads"
+            "Twitch/Guest Star".into()
         } else if rest.contains("Emote") {
-            "Emotes"
-        } else if rest.contains("Raid") {
-            "Raid"
+            "Twitch/Channel/Emotes & Badges".into()
         } else {
-            "General"
-        };
-        format!("Twitch/{sub}")
-    } else if let Some(rest) = name.strip_prefix("Obs") {
-        let sub = if rest.contains("Scene") {
-            "Scenes"
+            "Twitch/Channel/Follow & Stream".into()
+        }
+    }
+    // OBS Studio
+    else if let Some(rest) = name.strip_prefix("Obs") {
+        if rest.contains("Scene") {
+            "OBS Studio/Scenes & Sources".into()
         } else if rest.contains("Streaming") || rest.contains("Recording") {
-            "Streaming & Recording"
+            "OBS Studio/Streaming & Recording".into()
         } else if rest.contains("Connected") || rest.contains("Disconnected") {
-            "Connection"
+            "OBS Studio/Connection".into()
         } else {
-            "Events"
-        };
-        format!("OBS Studio/{sub}")
-    } else if let Some(rest) = name
+            "OBS Studio/Events".into()
+        }
+    }
+    // Streamlabs Desktop
+    else if let Some(rest) = name
         .strip_prefix("Slobs")
         .or_else(|| name.strip_prefix("StreamlabsDesktop"))
     {
-        let sub = if rest.contains("Scene") {
-            "Scenes"
+        if rest.contains("Scene") {
+            "Streamlabs Desktop/Scenes & Sources".into()
         } else if rest.contains("Streaming") || rest.contains("Recording") {
-            "Streaming & Recording"
+            "Streamlabs Desktop/Streaming & Recording".into()
         } else {
-            "Connection"
-        };
-        format!("Streamlabs Desktop/{sub}")
-    } else if let Some(rest) = name.strip_prefix("Kick") {
-        let sub = if rest.contains("Chat") || rest.contains("FirstWord") {
-            "Chat"
+            "Streamlabs Desktop/Connection".into()
+        }
+    }
+    // Kick
+    else if let Some(rest) = name.strip_prefix("Kick") {
+        if rest.contains("Chat") || rest.contains("FirstWord") {
+            "Kick/Chat".into()
         } else if rest.contains("Sub") {
-            "Subscriptions"
+            "Kick/Subscriptions".into()
         } else if rest.contains("Ban") || rest.contains("TimeOut") {
-            "Moderation"
+            "Kick/Moderation".into()
         } else if rest.contains("Reward") {
-            "Rewards"
+            "Kick/Rewards".into()
         } else if rest.contains("Emote") {
-            "Emotes"
+            "Kick/Emotes".into()
         } else {
-            "Channel"
-        };
-        format!("Kick/{sub}")
-    } else if let Some(rest) = name.strip_prefix("YouTube").or_else(|| name.strip_prefix("Youtube")) {
-        let sub = if rest.contains("Message") || rest.contains("Super") || rest.contains("Jewel") {
-            "Chat & Super Chats"
+            "Kick/Channel & Stream".into()
+        }
+    }
+    // YouTube
+    else if let Some(rest) = name.strip_prefix("YouTube").or_else(|| name.strip_prefix("Youtube")) {
+        if rest.contains("Message") || rest.contains("Super") || rest.contains("Jewel") {
+            "YouTube/Chat & Super Chats".into()
         } else if rest.contains("Broadcast") {
-            "Broadcast"
-        } else if rest.contains("Member") || rest.contains("Sponsor") || rest.contains("Subscriber") {
-            "Memberships"
+            "YouTube/Broadcast".into()
+        } else if rest.contains("Member") || rest.contains("Sponsor") {
+            "YouTube/Memberships".into()
         } else if rest.contains("Ban") || rest.contains("TimeOut") {
-            "Moderation"
+            "YouTube/Moderation".into()
+        } else if rest.contains("Emote") || rest.contains("Poll") {
+            "YouTube/Community".into()
         } else {
-            "General"
-        };
-        format!("YouTube/{sub}")
-    } else if name.starts_with("FileWatcher") {
+            "YouTube/Channel & Statistics".into()
+        }
+    }
+    // File & Process
+    else if name.starts_with("FileWatcher") {
         "File & Process/File Watcher".into()
     } else if name.starts_with("FileTail") {
         "File & Process/File Tail".into()
     } else if name.starts_with("Process") {
-        "File & Process/Process".into()
-    } else if name.starts_with("Command") {
-        "Core/Commands".into()
-    } else if name.starts_with("Timed") || name.contains("Timer") {
-        "Core/Timers".into()
-    } else if name.starts_with("Global") || name.starts_with("UserGlobal") {
-        "Core/Globals".into()
-    } else if name.starts_with("Group") {
-        "Core/User Groups".into()
-    } else if name.starts_with("Midi") {
-        "Inputs & MIDI/MIDI".into()
+        "File & Process/Process Monitor".into()
+    }
+    // Inputs & MIDI
+    else if name.starts_with("Midi") {
+        "Inputs & MIDI/MIDI Controller".into()
     } else if name.starts_with("SpeechToText") {
         "Inputs & MIDI/Voice Control".into()
     } else if name.starts_with("Key") || name.starts_with("Mouse") || name.starts_with("Input") {
-        "Inputs & MIDI/Hotkeys".into()
-    } else if name.starts_with("StreamDeck") || name.starts_with("ElgatoStreamDeck") {
-        "Decks & Chat/Stream Deck".into()
-    } else if name.starts_with("ChatWindow") {
-        "Decks & Chat/Chat Window".into()
-    } else if name.starts_with("RemoteInstance") {
-        "Webhooks & Remote/Remote Instances".into()
-    } else if name.starts_with("Kofi") || name.starts_with("KoFi") {
+        "Inputs & MIDI/Hotkeys & Mouse".into()
+    }
+    // Integrations
+    else if name.starts_with("VoiceMod") {
+        "Integrations/VoiceMod".into()
+    } else if name.starts_with("SpeakerBot") {
+        "Integrations/Speaker.bot".into()
+    } else if let Some(rest) = name.strip_prefix("MeldStudio") {
+        if rest.contains("Stream") || rest.contains("Record") {
+            "Integrations/Meld Studio/Streaming & Recording".into()
+        } else {
+            "Integrations/Meld Studio/Scenes & Audio".into()
+        }
+    } else if name.starts_with("Pulsoid") || name.starts_with("HypeRate") {
+        "Integrations/Heart Rate Monitors".into()
+    } else if name.starts_with("VTubeStudio") {
+        "Integrations/VTube Studio".into()
+    } else if name.starts_with("CrowdControl") {
+        "Integrations/Crowd Control".into()
+    } else if name.starts_with("Throwing") {
+        "Integrations/Throwing System".into()
+    }
+    // Donations & Shops
+    else if name.starts_with("Kofi") || name.starts_with("KoFi") {
         "Donations & Shops/Ko-fi".into()
     } else if name.starts_with("StreamElements") {
         "Donations & Shops/StreamElements".into()
@@ -232,27 +348,47 @@ pub fn trigger_categorize(name: &str) -> String {
         || name.starts_with("Pally")
     {
         "Donations & Shops/Other Services".into()
-    } else if name.starts_with("WebsocketClient") {
-        "Servers/WebSocket Client".into()
+    }
+    // Servers & Remote
+    else if name.starts_with("WebsocketClient") {
+        "Servers & Remote/WebSocket Client".into()
     } else if name.starts_with("WebsocketCustom") {
-        "Servers/Custom Server".into()
-    } else if name.starts_with("ElgatoWaveLink") || name.starts_with("WaveLink") {
-        "Integrations/Elgato Wave Link".into()
-    } else if name.starts_with("VTubeStudio") {
-        "Integrations/VTube Studio".into()
-    } else if name.starts_with("CrowdControl") {
-        "Integrations/Crowd Control".into()
-    } else if name.starts_with("Throwing") {
-        "Integrations/Throwing System".into()
-    } else if name.starts_with("Application") {
-        "Core/System".into()
+        "Servers & Remote/Custom WebSocket Server".into()
+    } else if name.starts_with("RemoteInstance") || name.starts_with("StreamerBotRemoteInstance") {
+        "Servers & Remote/Remote Instances".into()
+    } else if name.contains("Webook") || name.contains("Webhook") {
+        "Servers & Remote/Custom Webhooks".into()
+    }
+    // Core & System
+    else if name.starts_with("ChatWindow") {
+        "Core/Chat Window".into()
+    } else if name.starts_with("Command") {
+        "Core/Commands".into()
+    } else if name.starts_with("Timed") || name.contains("Timer") {
+        "Core/Timers".into()
+    } else if name.starts_with("Global") || name.starts_with("UserGlobal") {
+        "Core/Globals".into()
+    } else if name.starts_with("Group") {
+        "Core/User Groups".into()
+    } else if name.starts_with("Quote") {
+        "Core/Quotes".into()
+    } else if name.contains("Custom")
+        || name.starts_with("RawAction")
+        || name.starts_with("RawSubAction")
+        || name == "Test"
+    {
+        "Core/Custom & Scripting".into()
+    } else if name.contains("Clipboard") {
+        "Core/System & Clipboard".into()
+    } else if name.starts_with("Application") || name.starts_with("Streamerbot") || name.contains("Toast") {
+        "Core/Application Lifecycle".into()
     } else {
-        "Core/General".into()
+        "Core/Other".into()
     }
 }
 
 /// Helpful description of what a trigger does and when it fires.
-pub fn trigger_description(code: u32, raw_name: &str, title: &str, category: &str) -> String {
+pub fn trigger_description(code: u32, _raw_name: &str, title: &str, category: &str) -> String {
     match code {
         1 => "Fires when triggered programmatically via ExecuteCodeTrigger or external API calls.".into(),
         101 => "Fires when a new viewer follows the channel on Twitch.".into(),
@@ -280,6 +416,10 @@ pub fn trigger_description(code: u32, raw_name: &str, title: &str, category: &st
         138 => "Fires when a chat announcement is sent in Twitch chat.".into(),
         139 => "Fires when an ad break runs on Twitch.".into(),
         144 => "Fires when a shoutout is created for another streamer on Twitch.".into(),
+        154 => "Fires when the Twitch channel broadcast goes live.".into(),
+        155 => "Fires when the Twitch channel broadcast ends.".into(),
+        164 => "Fires periodically when Twitch live viewer count is updated.".into(),
+        170 => "Fires when a viewer sends a highlighted Hype Chat message.".into(),
         401 => "Fires when a configured chat command is triggered by a user.".into(),
         402 => "Fires when a command execution is prevented due to an active cooldown.".into(),
         501 => "Fires when a watched file on disk is modified.".into(),
@@ -287,10 +427,16 @@ pub fn trigger_description(code: u32, raw_name: &str, title: &str, category: &st
         503 => "Fires when an existing file is deleted from a watched directory folder.".into(),
         504 => "Fires when a file in a watched directory folder is renamed.".into(),
         511 => "Fires when new lines are appended to a monitored tail log file.".into(),
-        701 => "Fires periodically based on a timer configured in the Timers tab.".into(),
+        601 => "Fires when a new quote is added to the channel quote database.".into(),
+        602 => "Fires when an existing quote is retrieved or displayed.".into(),
+        701 => "Fires periodically based on an interval configured in the Timers tab.".into(),
         703 => "Fires when an external application or process starts running.".into(),
         704 => "Fires when an external application or process terminates.".into(),
         705 => "Fires on multi-platform chat window actions.".into(),
+        706 => "Fires when Streamer.bot starts up and completes initialization.".into(),
+        707 => "Fires when Streamer.bot is shutting down.".into(),
+        5001 => "Fires when a new heart rate pulse measurement is received from Pulsoid.".into(),
+        6001 => "Fires when a new heart rate pulse measurement is received from HypeRate.".into(),
         14001 => "Fires when obs-websocket connection to OBS Studio is established.".into(),
         14002 => "Fires when obs-websocket connection to OBS Studio is disconnected.".into(),
         14004 => "Fires when the active program scene in OBS Studio changes.".into(),
@@ -302,13 +448,22 @@ pub fn trigger_description(code: u32, raw_name: &str, title: &str, category: &st
         16001 => "Fires when a configured keyboard shortcut is pressed.".into(),
         16002 => "Fires when a configured mouse button click is detected.".into(),
         17001 => "Fires when a Stream Deck key or dial action is triggered.".into(),
+        21001..=21020 => format!("Fires on Elgato Wave Link audio event: {title}."),
+        21301..=21390 => format!("Fires on Elgato Camera Hub webcam event: {title}."),
+        21401..=21426 => format!("Fires on Elgato Camera Hub prompter event: {title}."),
+        21501..=21502 => "Fires when Stream Deck MCP server connects or disconnects.".into(),
+        23001..=23002 => "Fires on Speaker.bot text-to-speech connection status changes.".into(),
+        29001..=29004 => format!("Fires on Streamer.bot remote instance event: {title}."),
+        30001..=30004 => format!("Fires on VoiceMod voice changer event: {title}."),
+        33001..=33012 => format!("Fires on Meld Studio streaming and broadcast event: {title}."),
         35001 => "Fires on every standard chat message received from Kick.".into(),
         35003 => "Fires when a user follows the channel on Kick.".into(),
         35010 => "Fires when a subscription is purchased on Kick.".into(),
         4001 => "Fires when a chat message is received from YouTube Live chat.".into(),
         4003 => "Fires when a Super Chat is received in YouTube Live chat.".into(),
         4004 => "Fires when a Super Sticker is received in YouTube Live chat.".into(),
-        _ => format!("Fires on the {title} event in {category} ({raw_name})."),
+        42001 => "Fires when the system clipboard content changes.".into(),
+        _ => format!("Fires on the {title} event in {}.", category.replace('/', " > ")),
     }
 }
 
@@ -318,60 +473,52 @@ pub fn sub_action_description(code: u32, name: &str, category: &str) -> String {
         1 => "Plays a sound file through the selected audio playback device.".into(),
         3 => "Writes or appends specified text to a local file path on disk, auto-creating parent folders.".into(),
         5 => "Selects a random line from a text file using a cryptographic PRNG and sets a variable.".into(),
-        6 => "Runs an external program or script, passing arguments and parsing stdout into variables.".into(),
-        10 => "Sends a chat message to the Twitch channel as the broadcaster or configured bot account.".into(),
-        11 => "Replies to a specific chat message in Twitch chat.".into(),
-        12 => "Toggles subscriber-only chat mode on Twitch.".into(),
-        13 => "Toggles emote-only chat mode on Twitch.".into(),
-        14 => "Sets slow mode delay for messages in Twitch chat.".into(),
-        15 => "Updates the stream broadcast title on Twitch.".into(),
-        16 => "Updates the stream game / category on Twitch.".into(),
-        18 => "Creates a Twitch poll with options and duration.".into(),
-        21 => "Times out a user in Twitch chat for a specified duration in seconds.".into(),
-        22 => "Permanently bans a user from Twitch chat.".into(),
-        23 => "Unbans a user in Twitch chat.".into(),
-        24 => "Deletes a specific chat message from Twitch chat.".into(),
-        25 => "Clears all recent messages from Twitch chat.".into(),
-        27 => "Toggles Shield Mode on Twitch.".into(),
-        28 => "Sends a shoutout to another streamer in Twitch chat.".into(),
-        30 => "Connects or disconnects the OBS Studio websocket connection.".into(),
-        41 => "Switches the active program scene in OBS Studio.".into(),
-        42 => "Sets the visibility (show/hide) of a source in OBS Studio.".into(),
-        43 => "Sets the mute state of an audio input source in OBS Studio.".into(),
-        44 => "Enables or disables a filter on an OBS Studio source.".into(),
-        48 => "Starts, stops, or toggles live streaming in OBS Studio.".into(),
-        49 => "Starts, stops, pauses, resumes, or toggles video recording in OBS Studio.".into(),
-        328 => "Executes a raw JSON-RPC request to obs-websocket.".into(),
-        1001 => "Pauses action execution for the specified number of milliseconds.".into(),
-        1002 => "Generates a random integer within a specified minimum and maximum range.".into(),
-        1004 => "Enables, disables, or toggles the enabled state of another action.".into(),
-        1005 => "Clears all waiting actions from a specific action queue.".into(),
-        1006 => "Reads all lines from a text file into an array variable for processing in actions.".into(),
-        1007 => "Conditionally branches execution (If/Else) by comparing variable values.".into(),
-        1008 => "Executes another action, optionally waiting for it to finish before continuing.".into(),
-        1009 => "Adds a non-executing documentation comment or label in the sub-actions list.".into(),
-        1010 => "Enables, disables, or toggles the state of a group of commands.".into(),
-        1011 => "Enables, disables, or toggles the state of an action group.".into(),
-        1012 => "Simulates keyboard keystrokes and modifier combinations.".into(),
-        1013 => "Sends an HTTP GET or POST request to a remote URL and parses the response.".into(),
-        1020 => "Writes a log message to the streamerz application log and console.".into(),
-        1021 => "Reads a specific line number from a text file into a variable.".into(),
-        1022 => "Sets the value of a global variable (persisted or temporary).".into(),
-        1030 => "Enables or disables background tail monitoring for a log or text file.".into(),
-        1039 => "Checks if a file exists on disk and sets a boolean variable in action arguments.".into(),
-        1040 => "Checks if a directory folder exists on disk and sets a boolean variable in action arguments.".into(),
-        10001 => "Clears all users from a specified user group.".into(),
-        11001 => "Sets the title of an Elgato Stream Deck key.".into(),
-        11004 => "Sets the state of an Elgato Stream Deck key.".into(),
-        21001 => "Sets the state of a Streamer.bot Deck item.".into(),
-        21007 => "Sends a push notification to a connected Streamer.bot Deck.".into(),
-        21008 => "Switches the active page on a Streamer.bot Deck.".into(),
-        35001 => "Sends a chat message to the Kick channel.".into(),
-        35030 => "Updates the broadcast title on Kick.".into(),
-        35040 => "Bans a user from chat on Kick.".into(),
-        4001 => "Sends a chat message to YouTube Live chat.".into(),
-        4002 => "Updates the stream title on YouTube.".into(),
-        _ => format!("Performs the {name} operation in {category}."),
+        6 => "Launches an external application or executable script with arguments.".into(),
+        7 => "Plays a randomly selected audio file from a specified folder directory.".into(),
+        8 => "Broadcasts a raw string payload over UDP to a target IP address and port.".into(),
+        10 => "Pauses action execution for a configured duration in milliseconds.".into(),
+        12 => "Requests user input in a modal prompt dialog and stores the response in a variable.".into(),
+        13 => "Outputs a formatted message to the application log window.".into(),
+        14 => "Executes custom C# script code via Roslyn or external script runners.".into(),
+        15 => "Evaluates an if/else conditional expression and branches action execution accordingly.".into(),
+        18 => "Performs basic arithmetic operations (+, -, *, /) and math functions on variables.".into(),
+        20 => "Toggles, enables, or disables an existing timer configuration.".into(),
+        21 => "Fetches remote data via HTTP/HTTPS GET request and captures response body/headers.".into(),
+        22 => "Sends remote data via HTTP/HTTPS POST request with custom payload and headers.".into(),
+        24 => "Parses a JSON string from a variable into structured variables.".into(),
+        25 => "Extracts matching substrings using regular expression capture groups.".into(),
+        26 => "Formats current local or UTC date and time into a variable using standard format patterns.".into(),
+        30 => "Changes visibility of a source in the specified OBS Studio scene (show, hide, or toggle).".into(),
+        33 => "Starts, stops, or toggles live streaming in OBS Studio.".into(),
+        34 => "Switches active program scene in OBS Studio.".into(),
+        40 => "Mutes, unmutes, or toggles audio mute for a specified source in OBS Studio.".into(),
+        41 => "Sets audio volume level for a specified source in OBS Studio in dB or percentage.".into(),
+        101 => "Sends a chat message to Twitch chat from the configured broadcaster or bot account.".into(),
+        102 => "Sends a private whisper message to a Twitch user.".into(),
+        103 => "Creates a Twitch chat announcement with customizable color banner.".into(),
+        105 => "Times out a user in Twitch chat for a specified duration in seconds.".into(),
+        106 => "Permanently bans a user from Twitch chat.".into(),
+        107 => "Removes an active timeout or ban from a Twitch user.".into(),
+        108 => "Deletes all recent chat messages posted by a specific user.".into(),
+        109 => "Clears the entire Twitch chat history.".into(),
+        110 => "Updates channel game category, title, tags, or content classification on Twitch.".into(),
+        111 => "Triggers a commercial ad break on Twitch for a configured number of seconds.".into(),
+        114 => "Sends a chat shoutout to another channel on Twitch.".into(),
+        115 => "Initiates a Twitch raid targeting another live stream channel.".into(),
+        120 => "Creates and launches a new Twitch community poll.".into(),
+        122 => "Creates and launches a new Twitch channel prediction.".into(),
+        127 => "Branches action execution into multiple cases matching an evaluated variable value.".into(),
+        401 => "Enables, disables, or toggles an existing chat command.".into(),
+        402 => "Resets the global or user cooldown timer for a specified chat command.".into(),
+        1001 => "Sets or updates a global or user-scoped variable value in memory or disk storage.".into(),
+        1002 => "Retrieves an existing global or user variable into action context.".into(),
+        1004 => "Enables, disables, or toggles an entire Action configuration.".into(),
+        1011 => "Enables, disables, or toggles all actions belonging to a specified action group.".into(),
+        1016 => "Stops running the current action or aborts parent action execution.".into(),
+        1018 => "Suspends, resumes, or clears all pending tasks in a named queue.".into(),
+        99900 => "Executes child sub-actions concurrently on separate thread worker pools.".into(),
+        99903 => "Matches a variable against defined case branches to execute corresponding sub-actions.".into(),
+        _ => format!("Executes the {name} operation in {}.", category.replace('/', " > ")),
     }
 }
 
@@ -400,7 +547,7 @@ pub fn sub_action_pick_items() -> Vec<PickItem> {
         .filter(|x| !(99901..=99904).contains(&x.0) || x.0 == 99903)
         .map(|&(code, name, category, _)| {
             let cat = if category.is_empty() {
-                "General".to_string()
+                "Core/General".to_string()
             } else {
                 category.to_string()
             };
@@ -415,13 +562,51 @@ pub fn sub_action_pick_items() -> Vec<PickItem> {
         .collect()
 }
 
-/// Hierarchical tree picker dialog with category/subgroup tree and description panel.
+#[derive(Default)]
+struct CategoryNode<'a> {
+    subgroups: BTreeMap<String, CategoryNode<'a>>,
+    items: Vec<&'a PickItem>,
+}
+
+fn insert_category_node<'a>(
+    tree: &mut Tree,
+    parent: &TreeItem,
+    node: &CategoryNode<'a>,
+    expanded: bool,
+    node_map: &Rc<RefCell<Vec<(TreeItem, usize)>>>,
+    first_leaf: &mut Option<(TreeItem, usize)>,
+) {
+    for (name, child) in &node.subgroups {
+        if let Some(mut item) = tree.insert(parent, name, parent.children()) {
+            item.set_label_font(Font::HelveticaBold);
+            if expanded {
+                item.open();
+            } else {
+                item.close();
+            }
+            insert_category_node(tree, &item, child, expanded, node_map, first_leaf);
+        }
+    }
+    let mut sorted = node.items.clone();
+    sorted.sort_by_key(|a| a.title.to_lowercase());
+    for it in sorted {
+        if let Some(item_node) = tree.insert(parent, &it.title, parent.children()) {
+            if first_leaf.is_none() {
+                *first_leaf = Some((item_node.clone(), it.id));
+            }
+            node_map.borrow_mut().push((item_node, it.id));
+        }
+    }
+}
+
+/// Hierarchical tree picker dialog with multi-level submenus, collapsed by default,
+/// live search with auto-expanding paths, and detailed right-pane description.
 pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
-    let (mut win, answer) = window(800, 560, win_title);
-    let mut root_col = Flex::new(12, 10, 776, 540, None).column();
+    let (mut win, answer) = window(840, 580, win_title);
+    let mut root_col = Flex::new(12, 10, 816, 560, None).column();
     root_col.set_pad(6);
 
-    // Filter input
+    // Filter row with Search input and Collapse/Expand all controls
     let mut filter_row = Flex::default().row();
     filter_row.set_pad(4);
     let f_label = Frame::default()
@@ -429,11 +614,15 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
         .with_align(Align::Left | Align::Inside);
     filter_row.fixed(&f_label, 50);
     let mut filter = Input::default();
-    filter.set_tooltip("Filter by title, category, or description...");
+    filter.set_tooltip("Filter triggers by title, category, or description...");
+    let mut btn_collapse = button(&mut filter_row, "Collapse All", 95);
+    let mut btn_expand = button(&mut filter_row, "Expand All", 85);
+    filter_row.fixed(&btn_collapse, 95);
+    filter_row.fixed(&btn_expand, 85);
     filter_row.end();
     root_col.fixed(&filter_row, ROW);
 
-    // Main split view: Tree (left) + Detail card (right)
+    // Main split view: Submenu Tree (left) + Detail card (right)
     let mut split = Flex::default().row();
     split.set_pad(8);
 
@@ -444,14 +633,14 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
     let mut detail_col = Flex::default().column();
     detail_col.set_pad(4);
     let mut d_title = Frame::default()
-        .with_label("Select an item")
+        .with_label("Select an option")
         .with_align(Align::Left | Align::Inside);
     d_title.set_label_font(Font::HelveticaBold);
     d_title.set_label_size(14);
     detail_col.fixed(&d_title, 24);
 
     let mut d_cat = Frame::default()
-        .with_label("Category")
+        .with_label("Browse submenus on the left")
         .with_align(Align::Left | Align::Inside);
     d_cat.set_label_font(Font::HelveticaItalic);
     d_cat.set_label_color(Color::from_rgb(100, 160, 240));
@@ -461,7 +650,9 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
     detail_col.fixed(&divider, 4);
 
     let mut desc_buf = TextBuffer::default();
-    desc_buf.set_text("Browse the categories or search above to view details.");
+    desc_buf.set_text(
+        "Browse the submenus on the left or type in the Search box above to quickly find any trigger or sub-action.",
+    );
     let mut desc_disp = TextDisplay::default();
     desc_disp.set_buffer(desc_buf.clone());
     desc_disp.wrap_mode(WrapMode::AtBounds, 0);
@@ -469,7 +660,7 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
     desc_disp.set_text_size(12);
 
     detail_col.end();
-    split.fixed(&detail_col, 310);
+    split.fixed(&detail_col, 330);
     split.end();
 
     // Bottom action bar
@@ -493,7 +684,7 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
     let selected_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
     let node_map: Rc<RefCell<Vec<(TreeItem, usize)>>> = Rc::default();
 
-    // Rebuild tree contents based on query
+    // Rebuild tree contents based on query and expand flag
     let items_vec = items.to_vec();
     let mut populate = {
         let mut tree = tree.clone();
@@ -504,15 +695,15 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
         let mut d_title = d_title.clone();
         let mut d_cat = d_cat.clone();
         let mut desc_buf = desc_buf.clone();
-        move |q: &str| {
+        move |q: &str, force_expand: Option<bool>| {
             let q = q.trim().to_lowercase();
             let Some(root) = tree.root() else { return };
             tree.clear_children(&root);
             node_map.borrow_mut().clear();
 
             let mut matched = 0;
-            // Group matching items by (top_cat, sub_cat)
-            let mut top_groups: HashMap<String, HashMap<String, Vec<&PickItem>>> = HashMap::new();
+            let mut root_node = CategoryNode::default();
+
             for it in &items {
                 let m = q.is_empty()
                     || it.title.to_lowercase().contains(&q)
@@ -522,67 +713,25 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
                     continue;
                 }
                 matched += 1;
-                let parts: Vec<&str> = it.category.split('/').collect();
-                let top = parts.first().copied().unwrap_or("General").to_string();
-                let sub = if parts.len() > 1 {
-                    parts[1..].join(" / ")
-                } else {
-                    String::new()
-                };
-                top_groups.entry(top).or_default().entry(sub).or_default().push(it);
+                let parts: Vec<&str> = it
+                    .category
+                    .split('/')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let mut cur = &mut root_node;
+                for part in parts {
+                    cur = cur.subgroups.entry(part.to_string()).or_default();
+                }
+                cur.items.push(it);
             }
 
             count_label.set_label(&format!("Showing {} of {} items", matched, items.len()));
 
-            // Sort categories for consistent order
-            let mut top_keys: Vec<_> = top_groups.keys().cloned().collect();
-            top_keys.sort();
-
             let mut first_leaf: Option<(TreeItem, usize)> = None;
+            let expand_nodes = force_expand.unwrap_or(!q.is_empty());
+            insert_category_node(&mut tree, &root, &root_node, expand_nodes, &node_map, &mut first_leaf);
 
-            for top in top_keys {
-                let Some(mut top_node) = tree.insert(&root, &top, root.children()) else {
-                    continue;
-                };
-                top_node.set_label_font(Font::HelveticaBold);
-
-                let sub_map = &top_groups[&top];
-                let mut sub_keys: Vec<_> = sub_map.keys().cloned().collect();
-                sub_keys.sort();
-
-                for sub in sub_keys {
-                    let items_in_group = &sub_map[&sub];
-                    let parent_for_items = if sub.is_empty() {
-                        top_node.clone()
-                    } else {
-                        let Some(mut sub_node) = tree.insert(&top_node, &sub, top_node.children()) else {
-                            continue;
-                        };
-                        sub_node.set_label_font(Font::HelveticaBold);
-                        if !q.is_empty() {
-                            sub_node.open();
-                        }
-                        sub_node
-                    };
-
-                    let mut sorted_items = items_in_group.clone();
-                    sorted_items.sort_by_key(|a| a.title.to_lowercase());
-
-                    for it in sorted_items {
-                        if let Some(item_node) = tree.insert(&parent_for_items, &it.title, parent_for_items.children())
-                        {
-                            if first_leaf.is_none() {
-                                first_leaf = Some((item_node.clone(), it.id));
-                            }
-                            node_map.borrow_mut().push((item_node, it.id));
-                        }
-                    }
-                }
-
-                top_node.open();
-            }
-
-            // Select first matching item if filtering
             if let Some((first_item, id)) = first_leaf {
                 if !q.is_empty() {
                     let _ = tree.select_only(&first_item, false);
@@ -603,13 +752,26 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
         }
     };
 
-    populate("");
+    // Initially populate with EVERYTHING COLLAPSED
+    populate("", Some(false));
 
     // Wire filter callback
     filter.set_trigger(fltk::enums::CallbackTrigger::Changed);
     filter.set_callback({
         let mut populate = populate.clone();
-        move |inp| populate(&inp.value())
+        move |inp| populate(&inp.value(), None)
+    });
+
+    // Wire Collapse All / Expand All buttons
+    btn_collapse.set_callback({
+        let mut populate = populate.clone();
+        let filter = filter.clone();
+        move |_| populate(&filter.value(), Some(false))
+    });
+    btn_expand.set_callback({
+        let mut populate = populate.clone();
+        let filter = filter.clone();
+        move |_| populate(&filter.value(), Some(true))
     });
 
     // Wire selection callback
@@ -633,16 +795,16 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
                     desc_buf.set_text(&it.description);
                 }
             } else if let Some(lbl) = item.label() {
-                // Clicked a group node
+                // Clicked a submenu folder node
                 selected_id.set(None);
                 d_title.set_label(&lbl);
-                d_cat.set_label("Category Folder");
-                desc_buf.set_text("Expand this category to select a specific item.");
+                d_cat.set_label("Submenu");
+                desc_buf.set_text("Click to expand or collapse this submenu to view and select options.");
             }
         }
     });
 
-    // Double-click on leaf item confirms
+    // Double-click on leaf item confirms; Enter confirms
     tree.handle({
         let answer = answer.clone();
         let selected_id = selected_id.clone();
@@ -651,7 +813,7 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
             Event::Push => {
                 if app::event_clicks() {
                     if let Some(item) = t.first_selected_item() {
-                        if node_map.borrow().iter().any(|(node, _)| node == &item) {
+                        if node_map.borrow().iter().any(|(node, _)| node == &item) && selected_id.get().is_some() {
                             answer.set(Some(true));
                             return true;
                         }
@@ -674,21 +836,21 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
     // OK / Cancel buttons
     ok_btn.set_callback({
         let answer = answer.clone();
-        move |_| answer.set(Some(true))
+        let selected_id = selected_id.clone();
+        move |_| {
+            if selected_id.get().is_some() {
+                answer.set(Some(true));
+            } else {
+                dialog::alert_default("Please select an item from the tree.");
+            }
+        }
     });
     cancel_btn.set_callback({
         let answer = answer.clone();
         move |_| answer.set(Some(false))
     });
 
-    let ok = super::dialogs::run(&mut win, &answer, || {
-        let sel = selected_id.get().is_some();
-        if !sel {
-            dialog::alert_default("Please select an item from the list.");
-        }
-        sel
-    });
-
+    let ok = super::dialogs::run(&mut win, &answer, || selected_id.get().is_some());
     if ok {
         selected_id.get()
     } else {
