@@ -78,6 +78,8 @@ struct State {
     history: VecDeque<Record>,
     waiters: HashMap<String, Vec<oneshot::Sender<Obj>>>,
     signals: HashMap<String, VecDeque<Obj>>,
+    remote_waiters: HashMap<(String, String), Vec<oneshot::Sender<Obj>>>,
+    remote_signals: HashMap<(String, String), VecDeque<Obj>>,
     /// Sub-action types already reported as unsupported.
     warned: HashSet<u64>,
     save_pending: bool,
@@ -141,7 +143,8 @@ pub fn supported(kind: u32) -> bool {
         kind,
         2 | 4 | 6 | 8 | 9 | 10..=29 | 30..=49 | 50..=52 | 120..=130 | 200..=215 | 251..=254 | 321..=329 | 401..=415 | 417 | 500..=531 | 550..=573 | 575..=580
             | 1001..=1005 | 1007 | 1009..=1011 | 1013..=1017 | 1020 | 1022 | 1023 | 1028
-            | 1031..=1034 | 1038 | 4001..=4012 | 10001 | 35001 | 35002 | 35010..=35012 | 35020..=35022 | 35030 | 35031
+            | 1031..=1034 | 1038 | 4001..=4012 | 7001 | 8001 | 8002 | 10001 | 15001 | 20001..=20003
+            | 35001 | 35002 | 35010..=35012 | 35020..=35022 | 35030 | 35031
             | 35040..=35043 | 35101..=35113 | 99900..=99904
     )
 }
@@ -373,6 +376,165 @@ impl Engine {
 
     pub fn subscribe(&self) -> watch::Receiver<Config> {
         self.cfg.subscribe()
+    }
+    pub fn fire_remote_trigger(self: &Rc<Self>, instance_id: &str, event_name: &str, mut args: Obj) {
+        let inst = if instance_id.is_empty() { "Any" } else { instance_id };
+        args.insert("instanceId".into(), inst.into());
+        args.insert("eventName".into(), event_name.into());
+        let inst_id_str = instance_id.to_string();
+        let ev_str = event_name.to_string();
+        self.fire(
+            crate::remote::T_REMOTE_TRIGGER,
+            "Remote Instance Trigger",
+            "Integrations/Streamer.bot Remote",
+            "streamerbotremote",
+            &args,
+            |t| {
+                let want_inst = s(t, "instanceId");
+                let want_ev = s(t, "eventName");
+                (want_inst.is_empty() || want_inst == "Any" || want_inst == inst_id_str)
+                    && (want_ev.is_empty() || want_ev == ev_str)
+            },
+        );
+        self.emit("StreamerbotRemote", "InstanceTrigger", || {
+            json!({
+                "instanceId": instance_id,
+                "eventName": event_name,
+                "arguments": args
+            })
+        });
+    }
+
+    pub fn deliver_remote_signal(self: &Rc<Self>, instance_id: &str, signal_name: &str, mut args: Obj) {
+        let inst = if instance_id.is_empty() { "Any" } else { instance_id };
+        args.insert("instanceId".into(), inst.into());
+        args.insert("signalName".into(), signal_name.into());
+        let mut delivered = false;
+        let mut st = self.st.borrow_mut();
+        for key in [
+            (instance_id.to_string(), signal_name.to_string()),
+            ("".to_string(), signal_name.to_string()),
+            ("Any".to_string(), signal_name.to_string()),
+        ] {
+            if let Some(waiters) = st.remote_waiters.remove(&key) {
+                for w in waiters {
+                    delivered |= w.send(args.clone()).is_ok();
+                }
+            }
+        }
+        if !delivered {
+            st.remote_signals
+                .entry((instance_id.to_string(), signal_name.to_string()))
+                .or_default()
+                .push_back(args.clone());
+        }
+        drop(st);
+
+        let inst_id_str = instance_id.to_string();
+        let sig_str = signal_name.to_string();
+        self.fire(
+            crate::remote::T_REMOTE_SIGNAL,
+            "Remote Instance Signal",
+            "Integrations/Streamer.bot Remote",
+            "streamerbotremote",
+            &args,
+            |t| {
+                let want_inst = s(t, "instanceId");
+                let want_sig = s(t, "signalName");
+                (want_inst.is_empty() || want_inst == "Any" || want_inst == inst_id_str)
+                    && (want_sig.is_empty() || want_sig == sig_str)
+            },
+        );
+        self.emit("StreamerbotRemote", "InstanceSignal", || {
+            json!({
+                "instanceId": instance_id,
+                "signalName": signal_name,
+                "arguments": args
+            })
+        });
+    }
+
+    pub async fn wait_remote_signal(&self, instance_id: &str, signal_name: &str, timeout_ms: u64) -> Option<Obj> {
+        let (queued, rx) = {
+            let mut st = self.st.borrow_mut();
+            let key = (instance_id.to_string(), signal_name.to_string());
+            let queued = if let Some(q) = st.remote_signals.get_mut(&key) {
+                q.pop_front()
+            } else if instance_id.is_empty() || instance_id == "Any" {
+                st.remote_signals
+                    .iter_mut()
+                    .find_map(|(k, v)| if k.1 == signal_name { v.pop_front() } else { None })
+            } else {
+                None
+            };
+            if let Some(p) = queued {
+                (Some(p), None)
+            } else {
+                let (tx, rx) = oneshot::channel();
+                st.remote_waiters.entry(key).or_default().push(tx);
+                (None, Some(rx))
+            }
+        };
+        if let Some(p) = queued {
+            return Some(p);
+        }
+        let rx = rx?;
+        let ms = match timeout_ms {
+            0 => 30_000,
+            t => t.min(60_000),
+        };
+        tokio::time::timeout(std::time::Duration::from_millis(ms), rx)
+            .await
+            .ok()
+            .and_then(Result::ok)
+    }
+
+    pub fn remote_connected(self: &Rc<Self>, instance_id: &str, instance_name: &str) {
+        let mut args = Obj::new();
+        args.insert("instanceId".into(), instance_id.into());
+        args.insert("instanceName".into(), instance_name.into());
+        let inst_id_str = instance_id.to_string();
+        self.fire(
+            crate::remote::T_REMOTE_CONNECTED,
+            "Remote Instance Connected",
+            "Integrations/Streamer.bot Remote",
+            "streamerbotremote",
+            &args,
+            |t| {
+                let want = s(t, "instanceId");
+                want.is_empty() || want == "Any" || want == inst_id_str
+            },
+        );
+        self.emit("StreamerbotRemote", "InstanceConnected", || {
+            json!({
+                "instanceId": instance_id,
+                "instanceName": instance_name
+            })
+        });
+    }
+
+    pub fn remote_disconnected(self: &Rc<Self>, instance_id: &str, instance_name: &str) {
+        let mut args = Obj::new();
+        args.insert("instanceId".into(), instance_id.into());
+        args.insert("instanceName".into(), instance_name.into());
+        let inst_id_str = instance_id.to_string();
+        self.fire(
+            crate::remote::T_REMOTE_DISCONNECTED,
+            "Remote Instance Disconnected",
+            "Integrations/Streamer.bot Remote",
+            "streamerbotremote",
+            &args,
+            |t| {
+                let want = s(t, "instanceId");
+                want.is_empty() || want == "Any" || want == inst_id_str
+            },
+        );
+        self.emit("StreamerbotRemote", "InstanceDisconnected", || {
+            json!({
+                "instanceId": instance_id,
+                "instanceName": instance_name
+            })
+        });
     }
 
     fn action<T>(&self, id: &str, f: impl FnOnce(&Action) -> T) -> Option<T> {
@@ -685,7 +847,13 @@ impl Engine {
                 | 1013
                 | 1014
                 | 1015
+                | 4001..=4012
+                | 7001
+                | 8001
+                | 8002
                 | 10001
+                | 15001
+                | 20001..=20003
                 | 35001
                 | 35002
                 | 35010..=35012
@@ -1377,6 +1545,42 @@ pub(crate) mod tests {
         assert!(out.contains(&"T state False".to_string()));
         assert!(out.contains(&"T got v False".to_string()));
         assert!(out.contains(&"T timeout True".to_string()));
+    }
+
+    #[test]
+    fn remote_instances_triggers_signals_and_wait() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        let act = action("r1", "remote_action", json!([log("T remote_trig %eventName% %val%")]));
+        let mut act_with_trig = act.clone();
+        act_with_trig["triggers"] = json!([{
+            "type": crate::remote::T_REMOTE_TRIGGER,
+            "id": "rt1",
+            "enabled": true,
+            "eventName": "hello_remote",
+            "instanceId": ""
+        }]);
+        let e = engine(json!({"blocking": false, "queues": [], "actions": [act_with_trig]}));
+
+        let out = run(async {
+            let mut args = Obj::new();
+            args.insert("val".into(), "42".into());
+            e.fire_remote_trigger("inst-1", "hello_remote", args);
+            settle().await;
+
+            let e2 = e.clone();
+            tokio::task::spawn_local(async move {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                let mut sig_args = Obj::new();
+                sig_args.insert("sig_data".into(), "remote_ok".into());
+                e2.deliver_remote_signal("inst-2", "sig1", sig_args);
+            });
+
+            let res = e.wait_remote_signal("inst-2", "sig1", 500).await;
+            assert!(res.is_some());
+            let res = res.unwrap();
+            assert_eq!(res.get("sig_data").and_then(Value::as_str), Some("remote_ok"));
+        });
+        assert!(out.contains(&"T remote_trig hello_remote 42".to_string()));
     }
 
     #[test]

@@ -202,7 +202,7 @@ platform handles through channels, never through shared locks held across awaits
 - [x] 12. Streamlabs Desktop: every sub-action and trigger.
 - [x] 13. Donations and shops: one integration per commit, each opt-in. Check each one's transport first
   (socket, REST or webhook through the same tunnel as Kick) and ask if one needs Streamer.bot's cloud.
-- [ ] 14. Webhooks and remote: Discord webhook, IFTTT, pronouns (alejo.io), Streamer.bot remote instances
+- [x] 14. Webhooks and remote: Discord webhook, IFTTT, pronouns (alejo.io), Streamer.bot remote instances
   (signals/triggers between instances, also with a real Streamer.bot).
 - [ ] 15+. Later extras, one phase each, order chosen then (see Decisions).
 
