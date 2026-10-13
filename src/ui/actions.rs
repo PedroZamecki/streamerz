@@ -234,7 +234,8 @@ impl Actions {
         let cat = super::picker::trigger_categorize(raw);
         let title = super::picker::trigger_clean_title(raw);
         let desc = super::picker::trigger_description(k, raw, &title, &cat);
-        self.detail_title.set_label(&format!("Trigger: {title}  [{cat}]"));
+        self.detail_title
+            .set_label(&format!("Trigger: {title}  [{}]", cat.replace("/", " > ")));
         self.detail_desc.set_label(&desc);
         self.detail_title.redraw();
         self.detail_desc.redraw();
@@ -257,7 +258,8 @@ impl Actions {
             .unwrap_or(("Sub-action", "Core"));
         let cat_str = if cat.is_empty() { "Core" } else { cat };
         let desc = super::picker::sub_action_description(k, name, cat_str);
-        self.detail_title.set_label(&format!("Sub-action: {name}  [{cat_str}]"));
+        self.detail_title
+            .set_label(&format!("Sub-action: {name}  [{}]", cat_str.replace("/", " > ")));
         self.detail_desc.set_label(&desc);
         self.detail_title.redraw();
         self.detail_desc.redraw();
