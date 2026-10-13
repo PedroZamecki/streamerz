@@ -185,6 +185,31 @@ pub fn new_action(name: &str, group: &str) -> Action {
     }
 }
 
+/// Clones an action, giving it and its triggers and sub-actions fresh unique IDs.
+pub fn duplicate_action(src: &Action, new_name: &str) -> Action {
+    let mut dup = src.clone();
+    dup.id = uuid();
+    dup.name = new_name.to_string();
+
+    for t in &mut dup.triggers {
+        t.insert("id".into(), Value::from(uuid()));
+    }
+
+    fn regenerate_sub_ids(subs: &mut [Obj]) {
+        for s in subs {
+            s.insert("id".into(), Value::from(uuid()));
+            if let Some(Value::Array(kids)) = s.get_mut("subActions") {
+                let mut kid_objs: Vec<Obj> = kids.iter().filter_map(|v| v.as_object().cloned()).collect();
+                regenerate_sub_ids(&mut kid_objs);
+                *kids = kid_objs.into_iter().map(Value::Object).collect();
+            }
+        }
+    }
+
+    regenerate_sub_ids(&mut dup.sub_actions);
+    dup
+}
+
 fn s<'a>(o: &'a Obj, k: &str) -> &'a str {
     o.get(k).and_then(Value::as_str).unwrap_or("")
 }
@@ -342,6 +367,28 @@ pub fn walk(list: &[Obj], f: &mut dyn FnMut(&Obj)) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn duplicate_action_regenerates_ids() {
+        let mut a = new_action("Original", "Group A");
+        a.triggers.push(new_trigger(101));
+        let mut sub = new_sub(1);
+        sub.insert("subActions".into(), json!([new_sub(2)]));
+        a.sub_actions.push(sub);
+
+        let dup = duplicate_action(&a, "Original (Copy)");
+        assert_eq!(dup.name, "Original (Copy)");
+        assert_eq!(dup.group, "Group A");
+        assert_ne!(dup.id, a.id);
+        assert_eq!(dup.triggers.len(), 1);
+        assert_ne!(dup.triggers[0]["id"], a.triggers[0]["id"]);
+        assert_eq!(dup.sub_actions.len(), 1);
+        assert_ne!(dup.sub_actions[0]["id"], a.sub_actions[0]["id"]);
+        assert_ne!(
+            dup.sub_actions[0]["subActions"][0]["id"],
+            a.sub_actions[0]["subActions"][0]["id"]
+        );
+    }
+
     use super::*;
 
     fn tree() -> Vec<Obj> {
