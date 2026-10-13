@@ -2,9 +2,9 @@
 
 use super::{button, ROW};
 use crate::model::{Action, Obj};
-use fltk::browser::{CheckBrowser, HoldBrowser};
+use fltk::browser::CheckBrowser;
 use fltk::button::CheckButton;
-use fltk::enums::{Align, Event, Font, Key, Shortcut};
+use fltk::enums::{Align, Font, Key, Shortcut};
 use fltk::frame::Frame;
 use fltk::group::Flex;
 use fltk::input::{Input, MultilineInput};
@@ -129,58 +129,27 @@ pub fn json_editor(title: &str, hint: &str, v: &Value, valid: impl Fn(&Value) ->
     }
 }
 
-/// Pick one of `items` (typing filters them). Its index.
+/// Pick one of `items` using the tree picker dialog.
+#[allow(dead_code)]
 pub fn pick(title: &str, items: &[String]) -> Option<usize> {
-    let (mut win, answer) = window(520, 560, title);
-    let mut col = Flex::new(10, 10, 500, 540, None).column();
-    col.set_pad(6);
-    let mut filter = Input::default();
-    filter.set_tooltip("Type to filter");
-    col.fixed(&filter, ROW);
-    let mut list = HoldBrowser::default();
-    let mut bar = Flex::default().row();
-    ok_cancel(&mut bar, &answer, true);
-    bar.end();
-    col.fixed(&bar, ROW + 4);
-    col.end();
-    win.end();
-    win.resizable(&col);
-    let shown: Rc<std::cell::RefCell<Vec<usize>>> = Rc::default();
-    let mut fill = {
-        let (mut list, shown, items) = (list.clone(), shown.clone(), items.to_vec());
-        move |f: &str| {
-            let f = f.to_lowercase();
-            list.clear();
-            let mut s = shown.borrow_mut();
-            s.clear();
-            for (i, x) in items.iter().enumerate().filter(|(_, x)| x.to_lowercase().contains(&f)) {
-                // "@." makes the line plain text (no format codes).
-                list.add(&format!("@.{x}"));
-                s.push(i);
+    let pick_items: Vec<super::picker::PickItem> = items
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let (cat, item_title) = if let Some((c, n)) = name.split_once(": ") {
+                (c.to_string(), n.to_string())
+            } else {
+                ("General".to_string(), name.clone())
+            };
+            super::picker::PickItem {
+                id: i,
+                title: item_title,
+                category: cat,
+                description: String::new(),
             }
-            if !s.is_empty() {
-                list.select(1);
-            }
-        }
-    };
-    fill("");
-    filter.set_trigger(fltk::enums::CallbackTrigger::Changed);
-    filter.set_callback({
-        let mut fill = fill.clone();
-        move |i| fill(&i.value())
-    });
-    list.set_callback({
-        let a = answer.clone();
-        move |_| {
-            if app::event() == Event::Released && app::event_clicks() {
-                a.set(Some(true));
-            }
-        }
-    });
-    let ok = run(&mut win, &answer, || list.value() > 0);
-    let i = list.value();
-    let s = shown.borrow();
-    (ok && i > 0).then(|| s.get(i as usize - 1).copied()).flatten()
+        })
+        .collect();
+    super::picker::pick_tree(title, &pick_items)
 }
 
 /// An action's settings: name, group, queue and flags. `queues`: (id, name), the default first.
@@ -310,21 +279,41 @@ pub fn import() -> Option<Obj> {
 
 /// Choose actions and the export's details, then show the export string (copy or save it).
 pub fn export(
-    actions: &[(String, String)],
+    actions: &[(String, String, String)],
     selected: Option<&str>,
     build: impl Fn(&[String], [&str; 4]) -> String + 'static,
 ) {
-    let (mut win, answer) = window(640, 560, "Export");
-    let mut col = Flex::new(10, 10, 620, 540, None).column();
+    let (mut win, answer) = window(640, 580, "Export");
+    let mut col = Flex::new(10, 10, 620, 560, None).column();
     col.set_pad(4);
     let l = Frame::default()
         .with_label("Actions to export (the commands, timers, queues and WebSocket clients/servers their triggers use go with them):")
         .with_align(Align::Left | Align::Inside | Align::Wrap);
     col.fixed(&l, 2 * ROW);
+    let mut sel_bar = Flex::default().row();
+    sel_bar.set_pad(4);
+    let mut btn_all = button(&mut sel_bar, "Select All", 90);
+    let mut btn_none = button(&mut sel_bar, "Select None", 90);
+    Frame::default();
+    sel_bar.end();
+    col.fixed(&sel_bar, ROW);
     let mut list = CheckBrowser::default();
-    for (id, name) in actions {
-        list.add(name, Some(id.as_str()) == selected);
+    for (id, name, group) in actions {
+        let label = if group.is_empty() {
+            name.clone()
+        } else {
+            format!("[{group}] {name}")
+        };
+        list.add(&label, Some(id.as_str()) == selected);
     }
+    btn_all.set_callback({
+        let mut list = list.clone();
+        move |_| list.check_all()
+    });
+    btn_none.set_callback({
+        let mut list = list.clone();
+        move |_| list.check_none()
+    });
     let field = |col: &mut Flex, label: &str| {
         let r = row(label);
         let i = Input::default();
@@ -333,7 +322,7 @@ pub fn export(
         i
     };
     let mut name = field(&mut col, "Name");
-    if let Some((_, n)) = actions.iter().find(|(id, _)| Some(id.as_str()) == selected) {
+    if let Some((_, n, _)) = actions.iter().find(|(id, _, _)| Some(id.as_str()) == selected) {
         name.set_value(n);
     }
     let author = field(&mut col, "Author");
@@ -354,7 +343,7 @@ pub fn export(
     col.end();
     win.end();
     win.resizable(&col);
-    let ids = actions.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+    let ids = actions.iter().map(|(id, _, _)| id.clone()).collect::<Vec<_>>();
     make.set_callback({
         let (list, name, mut out) = (list.clone(), name.clone(), out.clone());
         move |_| {

@@ -1004,7 +1004,7 @@ fn sorted<'a>(it: impl Iterator<Item = &'a str>) -> Vec<String> {
 impl Lists {
     pub fn new(c: &Config) -> Self {
         let names = super::actions::names(c);
-        let actions = c
+        let mut actions: Vec<_> = c
             .actions
             .actions
             .iter()
@@ -1018,8 +1018,22 @@ impl Lists {
                     .iter()
                     .map(|t| (s(t, "id").into(), super::actions::trigger_label(t, &names)))
                     .collect();
-                (a.id.clone(), a.name.clone(), subs, trigs)
+                let display = if a.group.is_empty() {
+                    a.name.clone()
+                } else {
+                    format!("[{}] {}", a.group, a.name)
+                };
+                (a.id.clone(), display, subs, trigs, a.group.clone(), a.name.clone())
             })
+            .collect();
+        actions.sort_by(|x, y| {
+            x.4.to_lowercase()
+                .cmp(&y.4.to_lowercase())
+                .then_with(|| x.5.to_lowercase().cmp(&y.5.to_lowercase()))
+        });
+        let actions = actions
+            .into_iter()
+            .map(|(id, name, subs, trigs, _, _)| (id, name, subs, trigs))
             .collect();
         let mut queues = vec![(crate::engine::DEFAULT_QUEUE.to_string(), "Default".to_string())];
         queues.extend(ids(&c.actions.queues));
