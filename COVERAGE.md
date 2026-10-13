@@ -550,32 +550,32 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Triggers** (7)
 
-- [ ] Streamlabs Desktop Connected
-- [ ] Streamlabs Desktop Disconnected
-- [ ] Streamlabs Desktop Recording Started
-- [ ] Streamlabs Desktop Recording Stopped
-- [ ] Streamlabs Desktop Scene Changed
-- [ ] Streamlabs Desktop Streaming Started
-- [ ] Streamlabs Desktop Streaming Stopped
+- [x] Streamlabs Desktop Connected
+- [x] Streamlabs Desktop Disconnected
+- [x] Streamlabs Desktop Recording Started
+- [x] Streamlabs Desktop Recording Stopped
+- [x] Streamlabs Desktop Scene Changed
+- [x] Streamlabs Desktop Streaming Started
+- [x] Streamlabs Desktop Streaming Stopped
 
 **Sub-actions** (16)
 
-- [ ] filters: Set State of a Random Filter
-- [ ] groups: Hide Group's Sources
-- [ ] groups: Set Random Group Source Visible
-- [ ] Recording
-- [ ] scenes: Get Current Scene
-- [ ] scenes: Set Active Scene
-- [ ] scenes: Set Scene Filter State
-- [ ] sources: Flip Source
-- [ ] sources: Hide Source's Filters
-- [ ] sources: Hide Source's Filters
-- [ ] sources: Set Browser Source URL
-- [ ] sources: Set GDI Text
-- [ ] sources: Set Source Filter State
-- [ ] sources: Set Source Mute State
-- [ ] sources: Set Source Visibility State
-- [ ] Streaming
+- [x] filters: Set State of a Random Filter
+- [x] groups: Hide Group's Sources
+- [x] groups: Set Random Group Source Visible
+- [x] Recording
+- [x] scenes: Get Current Scene
+- [x] scenes: Set Active Scene
+- [x] scenes: Set Scene Filter State
+- [x] sources: Flip Source
+- [x] sources: Hide Source's Filters
+- [x] sources: Hide Source's Filters
+- [x] sources: Set Browser Source URL
+- [x] sources: Set GDI Text
+- [x] sources: Set Source Filter State
+- [x] sources: Set Source Mute State
+- [x] sources: Set Source Visibility State
+- [x] Streaming
 
 
 ## Phase 13: donations and shops

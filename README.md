@@ -43,4 +43,14 @@ The other tabs, as in Streamer.bot:
 - **Groups**: add and delete user groups (their Added/Removed triggers fire). Users join them from chat.
 - **Servers**: the WebSocket, HTTP and UDP servers, WebSocket clients and custom WebSocket servers.
 - **Twitch**: Broadcaster and Bot account login (Device Code Grant OAuth via browser), auto-connect on startup, and EventSub connection controls.
+- **Stream Apps**: OBS Studio and Streamlabs Desktop connections.
 - **Settings**: window options and this instance's name (what GetInfo reports).
+
+## Streamlabs Desktop
+
+In Streamlabs Desktop, open Settings → Remote Control, click the QR code to show the details, and copy
+the token (the port is 59650 unless you changed it). In streamerz, add a connection in the Stream Apps
+tab with that token. "Default connection" is the one sub-actions use when they don't name one. Every
+Streamlabs Desktop trigger and sub-action of Streamer.bot works, with the same arguments. Differences:
+Set Browser Source URL and Set GDI Text work (in Streamer.bot 1.0.7 they do nothing), and in a
+dual-output scene a source's horizontal and vertical copies both change unless "Display" picks one.
