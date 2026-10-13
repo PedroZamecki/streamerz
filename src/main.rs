@@ -6,6 +6,7 @@ pub mod decks;
 pub mod donations;
 mod edit;
 pub mod engine;
+pub mod fileio;
 mod fmt;
 pub mod http;
 pub mod inputs;

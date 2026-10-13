@@ -847,6 +847,35 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         ],
         21009 => &[("deckId", "Deck ID", Text), ("deckName", "Deck Name", Text)],
         21010 => &[("deckId", "Deck ID", Text), ("deckName", "Deck Name", Text)],
+        3 => &[
+            ("file", "File", Text),
+            ("text", "Text", Multi),
+            ("append", "Append", Bool),
+        ],
+        5 => &[
+            ("file", "File", Text),
+            ("parseVariables", "Parse Variables", Bool),
+            ("autoType", "Auto Type", Bool),
+            ("overwrite", "Overwrite", Bool),
+            ("count", "Count", Int),
+            ("variableName", "Variable Name", Text),
+        ],
+        1006 => &[
+            ("file", "File", Text),
+            ("parseVariables", "Parse Variables", Bool),
+            ("autoType", "Auto Type", Bool),
+            ("variableName", "Variable Name", Text),
+        ],
+        1021 => &[
+            ("file", "File", Text),
+            ("parseVariables", "Parse Variables", Bool),
+            ("autoType", "Auto Type", Bool),
+            ("count", "Line Number", Int),
+            ("variableName", "Variable Name", Text),
+        ],
+        1030 => &[("fileTailId", "File Tail ID", Text), ("state", "State", Pick(STATE))],
+        1039 => &[("file", "File", Text), ("variableName", "Variable Name", Text)],
+        1040 => &[("folder", "Folder", Text), ("variableName", "Variable Name", Text)],
         99901 | 99902 | 99904 => &[("random", "Random", Bool)],
         99903 => &[
             ("values", "Values (one per line)", Lines),
@@ -931,6 +960,9 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
         17002 => &[("device", "Device", Text)],
         17003 => &[("device", "Device", Text)],
         17004 => &[("device", "Device", Text)],
+        501..=504 => &[("watcherId", "Watcher ID", Text), ("path", "Path", Text)],
+        511 => &[("tailId", "Tail ID", Text), ("path", "Path", Text)],
+        703 | 704 => &[("processName", "Process Name", Text)],
         _ => return None,
     })
 }
@@ -1365,6 +1397,8 @@ mod tests {
         .chain(29001..=29004)
         .chain([301, 302, 15001, 16001, 16002])
         .chain([705, 17001, 17002, 17003, 17004])
+        .chain(501..=504)
+        .chain([511, 703, 704])
         {
             assert!(trigger_fields(k).is_some(), "trigger {k} has no form");
         }

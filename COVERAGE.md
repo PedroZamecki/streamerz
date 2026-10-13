@@ -129,7 +129,6 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] Custom Code Event (fired by the WebSocket's ExecuteCodeTrigger)
 - [x] Custom
 
-
 ## Phase 4: servers
 
 **WebSocket client/server triggers** (6)
@@ -179,7 +178,6 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] SendMessage (auth as Streamer.bot; "<platform> is not connected" until phase 6+)
 - [x] GetUserPronouns (Streamer.bot's answer for an unknown user until the pronouns integration (phase 14))
 - [ ] Events: every category/event the real Streamer.bot lists in `GetEvents`, emitted as its trigger fires (core ones done: Raw, Misc, Command, Group, WebsocketClient, WebsocketCustomServer; the platforms' own come with their phases)
-
 
 ## Phase 6-8: Twitch
 
@@ -415,7 +413,6 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] user: Get Team Info For Target
 - [x] user: Get User Info for Target
 
-
 ## Phase 9: OBS Studio
 
 **Triggers** (9)
@@ -462,7 +459,6 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] Streaming
 - [x] Take Screenshot
 
-
 ## Phase 10: Kick
 
 **Triggers** (18)
@@ -502,7 +498,6 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] user: Add Broadcaster Information
 - [x] user: Add Random Users
 - [x] user: Get User Info for Target Info
-
 
 ## Phase 11: YouTube
 
@@ -545,7 +540,6 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] user-groups: Remove User from Group
 - [x] user-groups: User in Group
 
-
 ## Phase 12: Streamlabs Desktop
 
 **Triggers** (7)
@@ -576,7 +570,6 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] sources: Set Source Mute State
 - [x] sources: Set Source Visibility State
 - [x] Streaming
-
 
 ## Phase 13: donations and shops
 
@@ -664,7 +657,6 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] Pack Gifted
 - [x] Pack Purchased
 
-
 ## Phase 14: webhooks and remote
 
 **Sub-actions: discord** (1)
@@ -691,7 +683,6 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] Remote Instance Connected
 - [x] Remote Instance Disconnected
 - [x] Remote Instance Trigger
-
 
 ## Phase 15: hotkeys, inputs, MIDI and voice control
 
@@ -760,3 +751,31 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 **Triggers: chat window** (1)
 
 - [x] Chat Window Action
+
+## Phase 17: File I/O, file tail, watcher and process triggers
+
+**Sub-actions: File** (7)
+
+- [x] Write to File
+- [x] Read Random Line From File
+- [x] Read Lines From File
+- [x] Read Specific Line From File
+- [x] Set File Tail State
+- [x] File Exists
+- [x] Folder Exists
+
+**Triggers: file watcher** (4)
+
+- [x] File Changed
+- [x] File Created
+- [x] File Deleted
+- [x] File Renamed
+
+**Triggers: file tail** (1)
+
+- [x] File Tail Changed
+
+**Triggers: process** (2)
+
+- [x] Process Started
+- [x] Process Stopped

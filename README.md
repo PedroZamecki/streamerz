@@ -73,3 +73,11 @@ dual-output scene a source's horizontal and vertical copies both change unless "
 - **Streamer.bot Decks**: set item state, toggle state, title, background, icon, value, deck notifications, and page navigation (set, next, previous).
 - **Elgato Stream Deck**: set title, background, state, toggle state, value, show alert, and show OK sub-actions; Action, Connected, Disconnected, and Info triggers.
 - **Chat Window**: multi-platform chat window action trigger (`ChatWindowAction`) with platform, user, message, and action arguments.
+
+## File I/O, file tail, watcher and process triggers
+
+- **File Operations**: Write to File (append or overwrite), Read Lines, Read Specific Line, and Read Random Line sub-actions with variable expansion and auto-typing.
+- **File and Folder Checks**: File Exists and Folder Exists sub-actions for testing path presence and setting boolean arguments.
+- **File Tail**: Set File Tail State sub-action and File Tail Changed trigger for monitoring log and text file appends.
+- **File Watcher**: File Changed, File Created, File Deleted, and File Renamed triggers for monitoring filesystem directory modifications.
+- **Process Triggers**: Process Started and Process Stopped triggers to react to application launches and terminations.

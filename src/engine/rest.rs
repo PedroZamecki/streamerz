@@ -3148,6 +3148,94 @@ impl Engine {
                 self.prev_deck_page(&deck_id, &deck_name);
             }
 
+            // Write To File (3)
+            3 => {
+                let file = self.expand(ctx, s(o, "file"));
+                let text = self.expand(ctx, s(o, "text"));
+                let append = b(o, "append", false);
+                let _ = crate::fileio::write_to_file(std::path::Path::new(&file), &text, append);
+            }
+
+            // Read Random Line From File (5)
+            5 => {
+                let file = self.expand(ctx, s(o, "file"));
+                let var = self.simple(ctx, s(o, "variableName"));
+                let parse = b(o, "parseVariables", false);
+                let auto = b(o, "autoType", false);
+                if let Ok(Some(mut line)) = crate::fileio::read_random_line(std::path::Path::new(&file)) {
+                    if parse {
+                        line = self.expand(ctx, &line);
+                    }
+                    let val = if auto { auto_type(&line) } else { line.into() };
+                    ctx.args.insert(var, val);
+                }
+            }
+
+            // Read Lines From File (1006)
+            1006 => {
+                let file = self.expand(ctx, s(o, "file"));
+                let var = self.simple(ctx, s(o, "variableName"));
+                let parse = b(o, "parseVariables", false);
+                let auto = b(o, "autoType", false);
+                if let Ok(lines) = crate::fileio::read_lines(std::path::Path::new(&file)) {
+                    let processed: Vec<Value> = lines
+                        .into_iter()
+                        .map(|l| {
+                            let l = if parse { self.expand(ctx, &l) } else { l };
+                            if auto {
+                                auto_type(&l)
+                            } else {
+                                l.into()
+                            }
+                        })
+                        .collect();
+                    ctx.args.insert(format!("{var}.count"), (processed.len() as u64).into());
+                    for (i, v) in processed.iter().enumerate() {
+                        ctx.args.insert(format!("{var}[{i}]"), v.clone());
+                    }
+                    ctx.args.insert(var, Value::Array(processed));
+                }
+            }
+
+            // Read Specific Line From File (1021)
+            1021 => {
+                let file = self.expand(ctx, s(o, "file"));
+                let var = self.simple(ctx, s(o, "variableName"));
+                let line_num = n(o, "count") as usize;
+                let parse = b(o, "parseVariables", false);
+                let auto = b(o, "autoType", false);
+                if let Ok(Some(mut line)) = crate::fileio::read_specific_line(std::path::Path::new(&file), line_num) {
+                    if parse {
+                        line = self.expand(ctx, &line);
+                    }
+                    let val = if auto { auto_type(&line) } else { line.into() };
+                    ctx.args.insert(var, val);
+                }
+            }
+
+            // Set File Tail State (1030)
+            1030 => {
+                let tail_id = self.expand(ctx, s(o, "fileTailId"));
+                let state = n(o, "state");
+                self.set_file_tail_state(&tail_id, state);
+            }
+
+            // File Exists (1039)
+            1039 => {
+                let file = self.expand(ctx, s(o, "file"));
+                let var = self.simple(ctx, s(o, "variableName"));
+                let exists = crate::fileio::file_exists(std::path::Path::new(&file));
+                ctx.args.insert(var, exists.into());
+            }
+
+            // Folder Exists (1040)
+            1040 => {
+                let folder = self.expand(ctx, s(o, "folder"));
+                let var = self.simple(ctx, s(o, "variableName"));
+                let exists = crate::fileio::folder_exists(std::path::Path::new(&folder));
+                ctx.args.insert(var, exists.into());
+            }
+
             _ => {}
         }
     }
