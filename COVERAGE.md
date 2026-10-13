@@ -724,3 +724,39 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 - [x] Key Press
 - [x] Mouse Click
+
+## Phase 16: Decks, Stream Deck, HTML overlay and chat window
+
+**Sub-actions: Stream Deck** (7)
+
+- [x] Set Title
+- [x] Set Background
+- [x] Set State
+- [x] Show Alert
+- [x] Show Ok
+- [x] Toggle State
+- [x] Set Value
+
+**Sub-actions: Streamer.bot Decks** (10)
+
+- [x] Item Set State
+- [x] Item Toggle State
+- [x] Item Set Title
+- [x] Item Set Background
+- [x] Item Set Icon
+- [x] Item Set Value
+- [x] Deck Notify
+- [x] Page Set
+- [x] Page Next
+- [x] Page Previous
+
+**Triggers: Stream Deck** (4)
+
+- [x] Action
+- [x] Connected
+- [x] Disconnected
+- [x] Info
+
+**Triggers: chat window** (1)
+
+- [x] Chat Window Action

@@ -2993,6 +2993,161 @@ impl Engine {
                 crate::inputs::midi_generic(&device, &cmd, channel, data1, data2);
             }
 
+            // Elgato Stream Deck Set Title (11001)
+            11001 => {
+                let button_id = self.expand(ctx, s(o, "buttonId"));
+                let title = self.expand(ctx, s(o, "title"));
+                let state = n(o, "state");
+                self.set_stream_deck_title(&button_id, &title, state);
+            }
+
+            // Elgato Stream Deck Set Background (11002)
+            11002 => {
+                let button_id = self.expand(ctx, s(o, "buttonId"));
+                let image = self.expand(ctx, s(o, "image"));
+                let color = self.expand(ctx, s(o, "color"));
+                let state = n(o, "state");
+                self.set_stream_deck_background(&button_id, &image, &color, state);
+            }
+
+            // Elgato Stream Deck Set State (11004)
+            11004 => {
+                let button_id = self.expand(ctx, s(o, "buttonId"));
+                let state = n(o, "state");
+                self.set_stream_deck_state(&button_id, state);
+            }
+
+            // Elgato Stream Deck Show Alert (11005)
+            11005 => {
+                let button_id = self.expand(ctx, s(o, "buttonId"));
+                self.show_stream_deck_alert(&button_id);
+            }
+
+            // Elgato Stream Deck Show Ok (11006)
+            11006 => {
+                let button_id = self.expand(ctx, s(o, "buttonId"));
+                self.show_stream_deck_ok(&button_id);
+            }
+
+            // Elgato Stream Deck Toggle State (11007)
+            11007 => {
+                let button_id = self.expand(ctx, s(o, "buttonId"));
+                self.toggle_stream_deck_state(&button_id);
+            }
+
+            // Elgato Stream Deck Set Value (11008)
+            11008 => {
+                let button_id = self.expand(ctx, s(o, "buttonId"));
+                let value = self.expand(ctx, s(o, "value"));
+                self.set_stream_deck_value(&button_id, &value);
+            }
+
+            // Streamer.bot Deck Set Item State (21001)
+            21001 => {
+                let deck_id = self.expand(ctx, s(o, "deckId"));
+                let deck_name = self.expand(ctx, s(o, "deckName"));
+                let item_id = self.expand(ctx, s(o, "itemId"));
+                let item_name = self.expand(ctx, s(o, "itemName"));
+                let state = n(o, "state");
+                self.set_deck_item_state(&deck_id, &deck_name, &item_id, &item_name, state);
+            }
+
+            // Streamer.bot Deck Toggle Item State (21002)
+            21002 => {
+                let deck_id = self.expand(ctx, s(o, "deckId"));
+                let deck_name = self.expand(ctx, s(o, "deckName"));
+                let item_id = self.expand(ctx, s(o, "itemId"));
+                let item_name = self.expand(ctx, s(o, "itemName"));
+                self.toggle_deck_item_state(&deck_id, &deck_name, &item_id, &item_name);
+            }
+
+            // Streamer.bot Deck Set Item Title (21003)
+            21003 => {
+                let deck_id = self.expand(ctx, s(o, "deckId"));
+                let deck_name = self.expand(ctx, s(o, "deckName"));
+                let item_id = self.expand(ctx, s(o, "itemId"));
+                let item_name = self.expand(ctx, s(o, "itemName"));
+                let color = self.expand(ctx, s(o, "color"));
+                let title = self.expand(ctx, s(o, "title"));
+                let state = n(o, "state");
+                self.set_deck_item_title(&deck_id, &deck_name, &item_id, &item_name, &color, &title, state);
+            }
+
+            // Streamer.bot Deck Set Item Background (21004)
+            21004 => {
+                let deck_id = self.expand(ctx, s(o, "deckId"));
+                let deck_name = self.expand(ctx, s(o, "deckName"));
+                let item_id = self.expand(ctx, s(o, "itemId"));
+                let item_name = self.expand(ctx, s(o, "itemName"));
+                let color = self.expand(ctx, s(o, "color"));
+                let url = self.expand(ctx, s(o, "url"));
+                let file_id = self.expand(ctx, s(o, "fileId"));
+                let state = n(o, "state");
+                self.set_deck_item_background(
+                    &deck_id, &deck_name, &item_id, &item_name, &color, &url, &file_id, state,
+                );
+            }
+
+            // Streamer.bot Deck Set Item Icon (21005)
+            21005 => {
+                let deck_id = self.expand(ctx, s(o, "deckId"));
+                let deck_name = self.expand(ctx, s(o, "deckName"));
+                let item_id = self.expand(ctx, s(o, "itemId"));
+                let item_name = self.expand(ctx, s(o, "itemName"));
+                let color = self.expand(ctx, s(o, "color"));
+                let name = self.expand(ctx, s(o, "name"));
+                let url = self.expand(ctx, s(o, "url"));
+                let file_id = self.expand(ctx, s(o, "fileId"));
+                let state = n(o, "state");
+                self.set_deck_item_icon(
+                    &deck_id, &deck_name, &item_id, &item_name, &color, &name, &url, &file_id, state,
+                );
+            }
+
+            // Streamer.bot Deck Set Item Value (21006)
+            21006 => {
+                let deck_id = self.expand(ctx, s(o, "deckId"));
+                let deck_name = self.expand(ctx, s(o, "deckName"));
+                let item_id = self.expand(ctx, s(o, "itemId"));
+                let item_name = self.expand(ctx, s(o, "itemName"));
+                let value = self.expand(ctx, s(o, "value"));
+                let state = n(o, "state");
+                self.set_deck_item_value(&deck_id, &deck_name, &item_id, &item_name, &value, state);
+            }
+
+            // Streamer.bot Deck Notify (21007)
+            21007 => {
+                let deck_id = self.expand(ctx, s(o, "deckId"));
+                let deck_name = self.expand(ctx, s(o, "deckName"));
+                let title = self.expand(ctx, s(o, "title"));
+                let description = self.expand(ctx, s(o, "description"));
+                let color = self.expand(ctx, s(o, "color"));
+                let sound_id = self.expand(ctx, s(o, "soundId"));
+                self.deck_notify(&deck_id, &deck_name, &title, &description, &color, &sound_id);
+            }
+
+            // Streamer.bot Deck Page Set (21008)
+            21008 => {
+                let deck_id = self.expand(ctx, s(o, "deckId"));
+                let deck_name = self.expand(ctx, s(o, "deckName"));
+                let page = n(o, "page") as i64;
+                self.set_deck_page(&deck_id, &deck_name, page);
+            }
+
+            // Streamer.bot Deck Page Next (21009)
+            21009 => {
+                let deck_id = self.expand(ctx, s(o, "deckId"));
+                let deck_name = self.expand(ctx, s(o, "deckName"));
+                self.next_deck_page(&deck_id, &deck_name);
+            }
+
+            // Streamer.bot Deck Page Previous (21010)
+            21010 => {
+                let deck_id = self.expand(ctx, s(o, "deckId"));
+                let deck_name = self.expand(ctx, s(o, "deckName"));
+                self.prev_deck_page(&deck_id, &deck_name);
+            }
+
             _ => {}
         }
     }
