@@ -704,6 +704,11 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("backgroundColor", "Background color", Text),
             ("random", "Random", Bool),
         ],
+        43001 => &[
+            ("text", "Message", Text),
+            ("useBot", "Use Bot Account", Bool),
+            ("fallback", "Fallback to Broadcaster", Bool),
+        ],
         7001 => &[
             ("name", "Name", Text),
             ("username", "Username", Text),

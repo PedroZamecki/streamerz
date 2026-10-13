@@ -2796,6 +2796,16 @@ impl Engine {
                 ctx.args.insert("rewardBackgroundColor".into(), color.into());
             }
 
+            // TikTok Sub-actions
+            // 43001: Send Message to Live Chat
+            43001 => {
+                let text = self.expand(ctx, s(o, "text"));
+                let use_bot = b(o, "useBot", false);
+                let fallback = b(o, "fallback", false);
+                let tiktok = self.tiktok_start();
+                let _ = tiktok.send_message(&text, use_bot, fallback).await;
+            }
+
             // Discord Basic Webhook (7001)
             7001 => {
                 let url = self.expand(ctx, s(o, "webhookUrl"));

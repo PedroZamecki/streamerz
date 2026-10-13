@@ -326,21 +326,21 @@ impl Runner {
                 }
                 KickCmd::SendMessage {
                     text,
-                    use_bot: _,
-                    fallback: _,
+                    use_bot,
+                    fallback,
                     resp,
                 } => {
-                    let res = self.send_chat_api(&text, None).await;
+                    let res = self.send_chat_api(&text, None, use_bot, fallback).await;
                     let _ = resp.send(res);
                 }
                 KickCmd::ReplyToMessage {
                     text,
                     reply_id,
-                    use_bot: _,
-                    fallback: _,
+                    use_bot,
+                    fallback,
                     resp,
                 } => {
-                    let res = self.send_chat_api(&text, Some(&reply_id)).await;
+                    let res = self.send_chat_api(&text, Some(&reply_id), use_bot, fallback).await;
                     let _ = resp.send(res);
                 }
                 KickCmd::SetChannelTitle { title, resp } => {
@@ -436,19 +436,73 @@ impl Runner {
         }
     }
 
-    async fn send_chat_api(&self, text: &str, reply_id: Option<&str>) -> Result<(), String> {
-        let (token, chatroom_id) = {
+    async fn send_chat_api(
+        &self,
+        text: &str,
+        reply_id: Option<&str>,
+        use_bot: bool,
+        fallback: bool,
+    ) -> Result<(), String> {
+        let (token, mut chatroom_id) = {
             let c = self.cfg.borrow();
-            let tok = c
-                .kick
-                .broadcaster
-                .as_ref()
-                .map(|b| b.token.access_token.clone())
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| "No Kick broadcaster token configured".to_string())?;
+            let tok = if use_bot {
+                let mut t = c
+                    .kick
+                    .bot
+                    .as_ref()
+                    .map(|b| b.token.access_token.clone())
+                    .filter(|s| !s.is_empty());
+                if t.is_none() && fallback {
+                    t = c
+                        .kick
+                        .broadcaster
+                        .as_ref()
+                        .map(|b| b.token.access_token.clone())
+                        .filter(|s| !s.is_empty());
+                }
+                t
+            } else {
+                let mut t = c
+                    .kick
+                    .broadcaster
+                    .as_ref()
+                    .map(|b| b.token.access_token.clone())
+                    .filter(|s| !s.is_empty());
+                if t.is_none() && fallback {
+                    t = c
+                        .kick
+                        .bot
+                        .as_ref()
+                        .map(|b| b.token.access_token.clone())
+                        .filter(|s| !s.is_empty());
+                }
+                t
+            };
+            let tok = tok.ok_or_else(|| {
+                if use_bot {
+                    "No Kick bot token configured (and no fallback)".to_string()
+                } else {
+                    "No Kick broadcaster token configured (and no fallback)".to_string()
+                }
+            })?;
             let cr_id = c.kick.chatroom_id.unwrap_or(0);
             (tok, cr_id)
         };
+
+        if chatroom_id == 0 {
+            let channel = self.cfg.borrow().kick.channel.trim().to_lowercase();
+            if !channel.is_empty() {
+                let url = format!("https://kick.com/api/v2/channels/{channel}");
+                if let Ok(resp) = crate::http::request("GET", &url, &[], b"").await {
+                    if let Ok(val) = serde_json::from_slice::<Value>(&resp.body) {
+                        if let Some(crid) = val.pointer("/chatroom/id").and_then(Value::as_u64) {
+                            chatroom_id = crid;
+                            self.engine.change(|c| c.kick.chatroom_id = Some(crid));
+                        }
+                    }
+                }
+            }
+        }
 
         let url = format!("{KICK_API_BASE}/chat");
         let mut payload = json!({
@@ -637,6 +691,26 @@ async fn run_pusher_loop(
     speakers: &mut HashSet<String>,
 ) {
     run_pusher_loop_url(engine, cfg, connected, speakers, KICK_PUSHER_URL, false).await;
+}
+
+/// Query Kick API v1 /users endpoint using an OAuth bearer token.
+pub async fn fetch_kick_user(token: &str) -> Result<(u64, String), String> {
+    let url = format!("{KICK_API_BASE}/users");
+    let headers = vec![
+        ("Authorization".into(), format!("Bearer {token}")),
+        ("Accept".into(), "application/json".into()),
+    ];
+    let resp = crate::http::request("GET", &url, &headers, b"").await?;
+    if (200..300).contains(&resp.status) {
+        let val = serde_json::from_slice::<Value>(&resp.body)
+            .map_err(|e| format!("Invalid JSON from Kick users API: {e}"))?;
+        if let Some(user) = val.pointer("/data/0") {
+            let uid = user.get("user_id").and_then(Value::as_u64).unwrap_or(0);
+            let name = user.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+            return Ok((uid, name));
+        }
+    }
+    Err(format!("Kick API returned HTTP {}", resp.status))
 }
 
 pub async fn run_pusher_loop_url(
@@ -1289,5 +1363,41 @@ mod tests {
         // Viewer count
         let vc = json!({ "viewers": 1500 });
         handle_kick_event(&engine, "chan", "App\\Events\\ViewerCountUpdated", &vc, &mut speakers);
+    }
+
+    #[test]
+    fn test_kick_account_fallback_logic() {
+        let mut cfg = KickConfig {
+            broadcaster: Some(KickAccount {
+                user_id: 1,
+                username: "streamer".into(),
+                token: KickToken {
+                    access_token: "broadcaster_token_123".into(),
+                    refresh_token: String::new(),
+                    expires_at: 0,
+                },
+            }),
+            ..Default::default()
+        };
+        // 1. Bot requested with fallback -> resolves broadcaster token
+        let token_bot = if let Some(bot) = cfg.bot.as_ref().filter(|b| !b.token.access_token.is_empty()) {
+            Some(bot.token.access_token.clone())
+        } else {
+            cfg.broadcaster.as_ref().map(|b| b.token.access_token.clone())
+        };
+        assert_eq!(token_bot.as_deref(), Some("broadcaster_token_123"));
+
+        // 2. Bot set -> resolves bot token
+        cfg.bot = Some(KickAccount {
+            user_id: 2,
+            username: "streamerbot".into(),
+            token: KickToken {
+                access_token: "bot_token_456".into(),
+                refresh_token: String::new(),
+                expires_at: 0,
+            },
+        });
+        let token_bot2 = cfg.bot.as_ref().map(|b| b.token.access_token.clone());
+        assert_eq!(token_bot2.as_deref(), Some("bot_token_456"));
     }
 }
