@@ -1192,6 +1192,8 @@ pub struct TwitchView {
 
 impl TwitchView {
     pub fn refresh(&mut self) {
+        // Before borrowing the config: the engine may be waiting to write it.
+        let connected = query(&self.cmds, |e| e.twitch_connected()).unwrap_or(false);
         let c = self.cfg.borrow();
         let b_text = match &c.twitch.broadcaster {
             Some(b) => format!("Broadcaster: {} (@{}) [ID: {}]", b.display_name, b.login, b.user_id),
@@ -1207,7 +1209,6 @@ impl TwitchView {
 
         self.auto_connect.set_checked(c.twitch.auto_connect);
 
-        let connected = query(&self.cmds, |e| e.twitch_connected()).unwrap_or(false);
         let st = if connected {
             "EventSub: Connected"
         } else if c.twitch.broadcaster.is_none() {
@@ -1516,13 +1517,13 @@ pub struct KickView {
 
 impl KickView {
     pub fn refresh(&mut self) {
+        // Before borrowing the config: the engine may be waiting to write it.
+        let connected = query(&self.cmds, |e| e.kick_connected()).unwrap_or(false);
         let c = self.cfg.borrow();
         if self.channel_input.value() != c.kick.channel {
             self.channel_input.set_value(&c.kick.channel);
         }
         self.auto_connect.set_checked(c.kick.auto_connect);
-
-        let connected = query(&self.cmds, |e| e.kick_connected()).unwrap_or(false);
         let st = if connected {
             format!(
                 "Pusher WebSocket: Connected (channel: {})",
@@ -1635,6 +1636,8 @@ pub struct YouTubeView {
 
 impl YouTubeView {
     pub fn refresh(&mut self) {
+        // Before borrowing the config: the engine may be waiting to write it.
+        let connected = query(&self.cmds, |e| e.youtube_connected()).unwrap_or(false);
         let c = self.cfg.borrow();
         if self.channel_input.value() != c.youtube.channel_id {
             self.channel_input.set_value(&c.youtube.channel_id);
@@ -1643,8 +1646,6 @@ impl YouTubeView {
             self.video_input.set_value(&c.youtube.video_id);
         }
         self.auto_connect.set_checked(c.youtube.auto_connect);
-
-        let connected = query(&self.cmds, |e| e.youtube_connected()).unwrap_or(false);
         let st = if connected {
             format!(
                 "InnerTube / Live Chat: Monitoring Active ({})",
