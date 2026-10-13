@@ -38,6 +38,8 @@ pub struct Actions {
     /// Tree items and what they are: an action id, or a group name.
     items: Vec<(TreeItem, Node)>,
     sub_items: Vec<(TreeItem, Path)>,
+    detail_title: Frame,
+    detail_desc: Frame,
 }
 
 #[derive(Clone, PartialEq)]
@@ -160,7 +162,14 @@ pub fn sub_label(o: &Obj, names: &Names) -> String {
 
 pub fn trigger_label(t: &Obj, names: &Names) -> String {
     let k = t.get("type").and_then(Value::as_u64).unwrap_or(0) as u32;
-    let what = name(TRIGGERS, k).unwrap_or("Unknown");
+    let what = if let Some(raw) = name(TRIGGERS, k) {
+        let cat = super::picker::trigger_categorize(raw);
+        let platform = cat.split("/").next().unwrap_or(&cat);
+        let clean = super::picker::trigger_clean_title(raw);
+        format!("{platform}: {clean}")
+    } else {
+        "Unknown".to_string()
+    };
     let detail = t
         .iter()
         .filter(|(k, _)| !["id", "type", "enabled", "exclusions"].contains(&k.as_str()))
@@ -211,6 +220,71 @@ impl Actions {
 
     fn selected_sub(&self) -> Option<Path> {
         self.subs.first_selected_item().and_then(|i| self.sub_path(&i))
+    }
+
+    fn update_details_trigger(&mut self, trigger_idx: usize) {
+        let Some(ref id) = self.selected else { return };
+        let cfg = self.cfg.borrow();
+        let Some(a) = cfg.actions.actions.iter().find(|a| &a.id == id) else {
+            return;
+        };
+        let Some(t) = a.triggers.get(trigger_idx) else { return };
+        let k = t.get("type").and_then(Value::as_u64).unwrap_or(0) as u32;
+        let raw = name(TRIGGERS, k).unwrap_or("Unknown");
+        let cat = super::picker::trigger_categorize(raw);
+        let title = super::picker::trigger_clean_title(raw);
+        let desc = super::picker::trigger_description(k, raw, &title, &cat);
+        self.detail_title.set_label(&format!("Trigger: {title}  [{cat}]"));
+        self.detail_desc.set_label(&desc);
+        self.detail_title.redraw();
+        self.detail_desc.redraw();
+    }
+
+    fn update_details_sub(&mut self, path: &[usize]) {
+        let Some(ref id) = self.selected else { return };
+        let cfg = self.cfg.borrow();
+        let Some(a) = cfg.actions.actions.iter().find(|a| &a.id == id) else {
+            return;
+        };
+        let Some(o) = edit::get(&a.sub_actions, path) else {
+            return;
+        };
+        let k = edit::kind(o) as u32;
+        let (name, cat) = SUB_ACTION_INFO
+            .iter()
+            .find(|x| x.0 == k)
+            .map(|x| (x.1, x.2))
+            .unwrap_or(("Sub-action", "Core"));
+        let cat_str = if cat.is_empty() { "Core" } else { cat };
+        let desc = super::picker::sub_action_description(k, name, cat_str);
+        self.detail_title.set_label(&format!("Sub-action: {name}  [{cat_str}]"));
+        self.detail_desc.set_label(&desc);
+        self.detail_title.redraw();
+        self.detail_desc.redraw();
+    }
+
+    fn update_details_action(&mut self) {
+        if let Some(ref id) = self.selected {
+            let cfg = self.cfg.borrow();
+            if let Some(a) = cfg.actions.actions.iter().find(|a| &a.id == id) {
+                let grp = if a.group.is_empty() { "None" } else { &a.group };
+                self.detail_title
+                    .set_label(&format!("Action: {}  [Group: {grp}]", a.name));
+                self.detail_desc.set_label(&format!(
+                    "Triggers: {} | Sub-actions: {}. Select a trigger or sub-action to view its details.",
+                    a.triggers.len(),
+                    a.sub_actions.len()
+                ));
+                self.detail_title.redraw();
+                self.detail_desc.redraw();
+                return;
+            }
+        }
+        self.detail_title.set_label("Details");
+        self.detail_desc
+            .set_label("Select an action, trigger, or sub-action to view its description and parameters.");
+        self.detail_title.redraw();
+        self.detail_desc.redraw();
     }
 
     /// The group of what's selected on the left ("" for none).
@@ -421,6 +495,7 @@ impl Actions {
             }
         }
         self.subs.redraw();
+        self.update_details_action();
     }
 }
 
@@ -504,6 +579,15 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
     right.fixed(&sub_head, ROW);
     let subs = tree();
     let sb = bar(&mut right, &["Add", "Edit", "On/Off", "Delete"]);
+
+    let mut detail_title = Frame::default().with_align(Align::Left | Align::Inside);
+    detail_title.set_label_font(Font::HelveticaBold);
+    detail_title.set_label_color(Color::from_u32(0x5599ff));
+    right.fixed(&detail_title, 18);
+    let mut detail_desc = Frame::default().with_align(Align::Left | Align::Inside | Align::Wrap);
+    detail_desc.set_label_color(Color::from_u32(0x888888));
+    right.fixed(&detail_desc, 38);
+
     right.end();
     row.end();
 
@@ -519,6 +603,8 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
         selected: None,
         items: Vec::new(),
         sub_items: Vec::new(),
+        detail_title: detail_title.clone(),
+        detail_desc: detail_desc.clone(),
     }));
 
     let mut sa = search_actions.clone();
@@ -637,15 +723,19 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
     on(
         &lb2[1],
         Box::new(|m| {
-            let list: Vec<(String, String)> = {
+            let list: Vec<(String, String, String)> = {
                 let c = m.cfg.borrow();
-                let mut l: Vec<(String, String)> = c
+                let mut l: Vec<(String, String, String)> = c
                     .actions
                     .actions
                     .iter()
-                    .map(|a| (a.id.clone(), a.name.clone()))
+                    .map(|a| (a.id.clone(), a.name.clone(), a.group.clone()))
                     .collect();
-                l.sort_by_key(|(_, n)| n.to_lowercase());
+                l.sort_by(|x, y| {
+                    x.2.to_lowercase()
+                        .cmp(&y.2.to_lowercase())
+                        .then_with(|| x.1.to_lowercase().cmp(&y.1.to_lowercase()))
+                });
                 l
             };
             let cfg = m.cfg.clone();
@@ -718,14 +808,32 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
     let me_tr = me.clone();
     let me_key_tr = me.clone();
     tr.handle(move |b, ev| match ev {
-        Event::Push => {
-            if app::event_clicks() && b.value() > 0 {
+        Event::Push | Event::Released => {
+            if b.value() > 0 {
+                let idx = (b.value() - 1) as usize;
+                if let Ok(mut m) = me_tr.try_borrow_mut() {
+                    m.update_details_trigger(idx);
+                }
+            }
+            if ev == Event::Push && app::event_clicks() && b.value() > 0 {
                 edit_trigger(&me_tr);
                 return true;
             }
             false
         }
         Event::KeyDown => {
+            let key = app::event_key();
+            if key == Key::Up || key == Key::Down {
+                let me_k = me_key_tr.clone();
+                app::add_timeout3(0.02, move |_| {
+                    if let Ok(mut m) = me_k.try_borrow_mut() {
+                        let v = m.triggers.value();
+                        if v > 0 {
+                            m.update_details_trigger((v - 1) as usize);
+                        }
+                    }
+                });
+            }
             let key = app::event_key();
             if key == Key::Enter {
                 if b.value() > 0 {
@@ -766,11 +874,11 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
             if m.selected.is_none() {
                 return;
             }
-            let names: Vec<String> = TRIGGERS.iter().map(|(_, n)| n.to_string()).collect();
-            let Some(i) = dialogs::pick("Add a trigger", &names) else {
+            let items = super::picker::trigger_pick_items();
+            let Some(code) = super::picker::pick_tree("Add a Trigger", &items) else {
                 return;
             };
-            let Some(t) = fill_new(m, edit::new_trigger(TRIGGERS[i].0), true) else {
+            let Some(t) = fill_new(m, edit::new_trigger(code as u32), true) else {
                 return;
             };
             m.edit_action(|a| a.triggers.push(t));
@@ -848,26 +956,11 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
             if m.selected.is_none() {
                 return;
             }
-            let names: Vec<String> = SUB_ACTION_INFO
-                .iter()
-                .filter(|x| !(99901..=99904).contains(&x.0) || x.0 == 99903)
-                .map(|(_, n, c, _)| {
-                    if c.is_empty() {
-                        n.to_string()
-                    } else {
-                        format!("{c}: {n}")
-                    }
-                })
-                .collect();
-            let infos: Vec<u32> = SUB_ACTION_INFO
-                .iter()
-                .filter(|x| !(99901..=99904).contains(&x.0) || x.0 == 99903)
-                .map(|x| x.0)
-                .collect();
-            let Some(i) = dialogs::pick("Add a sub-action", &names) else {
+            let items = super::picker::sub_action_pick_items();
+            let Some(kind) = super::picker::pick_tree("Add a Sub-action", &items) else {
                 return;
             };
-            let kind = infos[i] as u64;
+            let kind = kind as u64;
             let mut o = edit::new_sub(kind);
             if kind == 99903 {
                 o.insert("values".into(), json!([]));
@@ -943,6 +1036,21 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
             });
         }),
     );
+    let mut s_tree = subs.clone();
+    s_tree.set_callback({
+        let me = me.clone();
+        move |t| {
+            let Some(item) = t.callback_item() else { return };
+            if t.callback_reason() != TreeReason::Selected {
+                return;
+            }
+            let Ok(mut m) = me.try_borrow_mut() else { return };
+            if let Some(path) = m.sub_path(&item) {
+                m.update_details_sub(&path);
+            }
+        }
+    });
+
     let me_key_sub = me.clone();
     drag(
         &subs,

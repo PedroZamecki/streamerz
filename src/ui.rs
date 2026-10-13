@@ -5,6 +5,7 @@ mod actions;
 mod dialogs;
 mod forms;
 mod lists;
+pub mod picker;
 
 use crate::engine::{Engine, UiCmd};
 use crate::{status, Config};
