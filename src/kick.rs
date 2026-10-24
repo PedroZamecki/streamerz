@@ -43,10 +43,11 @@ pub const T_KICK_VIEWER_COUNT_UPDATE: u32 = 35023;
 pub const T_KICK_REWARD_REDEMPTION: u32 = 35024;
 pub const T_KICK_KICKS_GIFTED: u32 = 35025;
 
-/// Public Pusher App Key used by kick.com
-pub const KICK_PUSHER_KEY: &str = "eb1d5f283081a78b932c";
+/// Public Pusher app key used by kick.com (rotated 2026-10; a dead key answers `pusher:error` 4001).
+// ponytail: hardcoded; ask web.kick.com/api/v1/realtime/connection if it keeps rotating.
+pub const KICK_PUSHER_KEY: &str = "34bf7a0ff419a2a775b9";
 pub const KICK_PUSHER_URL: &str =
-    "wss://ws-us2.pusher.com/app/eb1d5f283081a78b932c?protocol=7&client=js&version=7.6.0&flash=false";
+    "wss://ws-us2.pusher.com/app/34bf7a0ff419a2a775b9?protocol=7&client=js&version=7.6.0&flash=false";
 pub const KICK_API_BASE: &str = "https://api.kick.com/public/v1";
 
 /// Strip URL prefixes, @ signs, and slashes from a Kick channel input.
@@ -443,51 +444,8 @@ impl Runner {
         use_bot: bool,
         fallback: bool,
     ) -> Result<(), String> {
-        let (token, mut chatroom_id) = {
-            let c = self.cfg.borrow();
-            let tok = if use_bot {
-                let mut t = c
-                    .kick
-                    .bot
-                    .as_ref()
-                    .map(|b| b.token.access_token.clone())
-                    .filter(|s| !s.is_empty());
-                if t.is_none() && fallback {
-                    t = c
-                        .kick
-                        .broadcaster
-                        .as_ref()
-                        .map(|b| b.token.access_token.clone())
-                        .filter(|s| !s.is_empty());
-                }
-                t
-            } else {
-                let mut t = c
-                    .kick
-                    .broadcaster
-                    .as_ref()
-                    .map(|b| b.token.access_token.clone())
-                    .filter(|s| !s.is_empty());
-                if t.is_none() && fallback {
-                    t = c
-                        .kick
-                        .bot
-                        .as_ref()
-                        .map(|b| b.token.access_token.clone())
-                        .filter(|s| !s.is_empty());
-                }
-                t
-            };
-            let tok = tok.ok_or_else(|| {
-                if use_bot {
-                    "No Kick bot token configured (and no fallback)".to_string()
-                } else {
-                    "No Kick broadcaster token configured (and no fallback)".to_string()
-                }
-            })?;
-            let cr_id = c.kick.chatroom_id.unwrap_or(0);
-            (tok, cr_id)
-        };
+        let token = token(&self.engine, &self.cfg, use_bot, fallback).await?;
+        let mut chatroom_id = self.cfg.borrow().kick.chatroom_id.unwrap_or(0);
 
         if chatroom_id == 0 {
             let channel = self.cfg.borrow().kick.channel.trim().to_lowercase();
@@ -531,15 +489,7 @@ impl Runner {
     }
 
     async fn set_channel_title_api(&self, title: &str) -> Result<(), String> {
-        let token = {
-            let c = self.cfg.borrow();
-            c.kick
-                .broadcaster
-                .as_ref()
-                .map(|b| b.token.access_token.clone())
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| "No Kick broadcaster token configured".to_string())?
-        };
+        let token = token(&self.engine, &self.cfg, false, false).await?;
 
         let url = format!("{KICK_API_BASE}/channels");
         let payload = json!({ "title": title });
@@ -557,15 +507,7 @@ impl Runner {
     }
 
     async fn set_channel_category_api(&self, category_id: u64) -> Result<(), String> {
-        let token = {
-            let c = self.cfg.borrow();
-            c.kick
-                .broadcaster
-                .as_ref()
-                .map(|b| b.token.access_token.clone())
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| "No Kick broadcaster token configured".to_string())?
-        };
+        let token = token(&self.engine, &self.cfg, false, false).await?;
 
         let url = format!("{KICK_API_BASE}/channels");
         let payload = json!({ "category_id": category_id });
@@ -583,15 +525,7 @@ impl Runner {
     }
 
     async fn ban_user_api(&self, user_login: &str, reason: &str) -> Result<(), String> {
-        let token = {
-            let c = self.cfg.borrow();
-            c.kick
-                .broadcaster
-                .as_ref()
-                .map(|b| b.token.access_token.clone())
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| "No Kick broadcaster token configured".to_string())?
-        };
+        let token = token(&self.engine, &self.cfg, false, false).await?;
 
         let url = format!("{KICK_API_BASE}/moderation/bans");
         let payload = json!({
@@ -612,15 +546,7 @@ impl Runner {
     }
 
     async fn unban_user_api(&self, user_login: &str) -> Result<(), String> {
-        let token = {
-            let c = self.cfg.borrow();
-            c.kick
-                .broadcaster
-                .as_ref()
-                .map(|b| b.token.access_token.clone())
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| "No Kick broadcaster token configured".to_string())?
-        };
+        let token = token(&self.engine, &self.cfg, false, false).await?;
 
         let url = format!("{KICK_API_BASE}/moderation/bans/{user_login}");
         let headers = vec![("Authorization".to_string(), format!("Bearer {token}"))];
@@ -633,15 +559,7 @@ impl Runner {
     }
 
     async fn timeout_user_api(&self, user_login: &str, duration: u64, reason: &str) -> Result<(), String> {
-        let token = {
-            let c = self.cfg.borrow();
-            c.kick
-                .broadcaster
-                .as_ref()
-                .map(|b| b.token.access_token.clone())
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| "No Kick broadcaster token configured".to_string())?
-        };
+        let token = token(&self.engine, &self.cfg, false, false).await?;
 
         let url = format!("{KICK_API_BASE}/moderation/timeouts");
         let payload = json!({
@@ -663,15 +581,7 @@ impl Runner {
     }
 
     async fn untimeout_user_api(&self, user_login: &str) -> Result<(), String> {
-        let token = {
-            let c = self.cfg.borrow();
-            c.kick
-                .broadcaster
-                .as_ref()
-                .map(|b| b.token.access_token.clone())
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| "No Kick broadcaster token configured".to_string())?
-        };
+        let token = token(&self.engine, &self.cfg, false, false).await?;
 
         let url = format!("{KICK_API_BASE}/moderation/timeouts/{user_login}");
         let headers = vec![("Authorization".to_string(), format!("Bearer {token}"))];
@@ -691,6 +601,131 @@ async fn run_pusher_loop(
     speakers: &mut HashSet<String>,
 ) {
     run_pusher_loop_url(engine, cfg, connected, speakers, KICK_PUSHER_URL, false).await;
+}
+
+pub const KICK_REDIRECT: &str = "http://127.0.0.1:45563/callback";
+const KICK_TOKEN_URL: &str = "https://id.kick.com/oauth/token";
+const KICK_SCOPES: &str = "user:read channel:read channel:write chat:write moderation:ban events:subscribe";
+
+/// One token refresh at a time: Kick replaces the refresh token, so a second refresh with the old
+/// one would fail.
+static REFRESH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// The bot's (or broadcaster's) access token, the other account's when `fallback`; refreshed first
+/// when it's about to expire.
+pub async fn token(
+    engine: &Rc<Engine>,
+    cfg: &Arc<watch::Sender<Config>>,
+    bot: bool,
+    fallback: bool,
+) -> Result<String, String> {
+    let _one = REFRESH.lock().await;
+    let pick = |c: &Config, bot: bool| {
+        if bot { &c.kick.bot } else { &c.kick.broadcaster }
+            .clone()
+            .filter(|a| !a.token.access_token.is_empty())
+    };
+    let (acc, bot) = {
+        let c = cfg.borrow();
+        match (pick(&c, bot), fallback) {
+            (Some(a), _) => (a, bot),
+            (None, true) => (pick(&c, !bot).ok_or("No Kick account logged in")?, !bot),
+            (None, false) => {
+                return Err(format!(
+                    "Kick {} isn't logged in",
+                    if bot { "bot" } else { "broadcaster" }
+                ));
+            }
+        }
+    };
+    if !crate::oauth::stale(acc.token.expires_at) || acc.token.refresh_token.is_empty() {
+        return Ok(acc.token.access_token);
+    }
+    let (id, secret) = {
+        let c = cfg.borrow();
+        (c.kick.client_id.clone(), c.kick.client_secret.clone())
+    };
+    let t = crate::oauth::token(
+        KICK_TOKEN_URL,
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", &acc.token.refresh_token),
+            ("client_id", &id),
+            ("client_secret", &secret),
+        ],
+    )
+    .await
+    .map_err(|e| format!("Kick token refresh: {e}"))?;
+    let new = KickToken {
+        access_token: t.access.clone(),
+        refresh_token: if t.refresh.is_empty() {
+            acc.token.refresh_token
+        } else {
+            t.refresh
+        },
+        expires_at: t.expires_at,
+    };
+    engine.change(|c| {
+        if let Some(a) = if bot {
+            c.kick.bot.as_mut()
+        } else {
+            c.kick.broadcaster.as_mut()
+        } {
+            a.token = new;
+        }
+    });
+    Ok(t.access)
+}
+
+/// Log in through the browser with the user's own Kick app (client ID and secret in the config,
+/// redirect `KICK_REDIRECT`).
+pub async fn login(cfg: &Arc<watch::Sender<Config>>) -> Result<KickAccount, String> {
+    let (id, secret) = {
+        let c = cfg.borrow();
+        (
+            c.kick.client_id.trim().to_string(),
+            c.kick.client_secret.trim().to_string(),
+        )
+    };
+    if id.is_empty() || secret.is_empty() {
+        return Err("Set your Kick app's client ID and secret first (Accounts > Kick > Advanced).".into());
+    }
+    let l = crate::oauth::Login::bind(45563, "/callback").await?;
+    let e = crate::commands::url_encode;
+    // `redirect=127.0.0.1` first: kick.com rewrites the first 127.0.0.1 in the URL to localhost
+    // (Kick's documented workaround), which would break the redirect_uri match.
+    crate::oauth::open_browser(&format!(
+        "https://id.kick.com/oauth/authorize?response_type=code&client_id={}&redirect=127.0.0.1&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
+        e(&id),
+        e(&l.redirect),
+        e(KICK_SCOPES),
+        l.challenge,
+        l.state
+    ));
+    let (redirect, verifier) = (l.redirect.clone(), l.verifier.clone());
+    let code = l.code().await?;
+    let t = crate::oauth::token(
+        KICK_TOKEN_URL,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("client_id", &id),
+            ("client_secret", &secret),
+            ("redirect_uri", &redirect),
+            ("code_verifier", &verifier),
+        ],
+    )
+    .await?;
+    let (user_id, username) = fetch_kick_user(&t.access).await?;
+    Ok(KickAccount {
+        user_id,
+        username,
+        token: KickToken {
+            access_token: t.access,
+            refresh_token: t.refresh,
+            expires_at: t.expires_at,
+        },
+    })
 }
 
 /// Query Kick API v1 /users endpoint using an OAuth bearer token.
@@ -768,6 +803,13 @@ pub async fn run_pusher_loop_url(
                                 established = true;
                                 break;
                             }
+                            if val["event"].as_str() == Some("pusher:error") {
+                                crate::say(format!(
+                                    "Kick: Pusher refused: {}",
+                                    val["data"]["message"].as_str().unwrap_or("")
+                                ));
+                                break;
+                            }
                         }
                     }
                 }
@@ -779,6 +821,7 @@ pub async fn run_pusher_loop_url(
                 }
 
                 connected.store(true, Ordering::Relaxed);
+                crate::ui::changed();
                 crate::say(format!("Kick: connected to chatroom {cr_id} and channel {c_id}"));
 
                 let mut args = Obj::new();
@@ -848,6 +891,7 @@ pub async fn run_pusher_loop_url(
                 }
 
                 connected.store(false, Ordering::Relaxed);
+                crate::ui::changed();
                 let args = Obj::new();
                 engine.fire(
                     T_KICK_DISCONNECTED,

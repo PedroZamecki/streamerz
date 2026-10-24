@@ -42,7 +42,14 @@ The other tabs, as in Streamer.bot:
   the same triggers as Global (Set)). User globals are shown only.
 - **Groups**: add and delete user groups (their Added/Removed triggers fire). Users join them from chat.
 - **Servers**: the WebSocket, HTTP and UDP servers, WebSocket clients and custom WebSocket servers.
-- **Twitch**: Broadcaster and Bot account login (Device Code Grant OAuth via browser), auto-connect on startup, and EventSub connection controls.
+- **Accounts**: one row per platform (Twitch, YouTube, Kick, TikTok): connected or not (and why), the
+  channel (a URL or @handle works), **Connect**, **Connect on start**, and **Login** for the broadcaster and
+  the bot. Chat is sent as the bot when one is logged in. **Advanced…** has the rest:
+  - Kick: sending needs your own Kick app (kick.com > Settings > Developer > Create app, redirect URL
+    `http://127.0.0.1:45563/callback`, every scope). Paste its client ID and secret, then Login. Reading
+    chat needs no login.
+  - YouTube: the video ID (empty: the channel's live) and, optionally, your own Google OAuth client.
+  - TikTok: the tikstream/TikFinity bridge URL, and Start tikstream. Login uses tikstream-login.
 - **Stream Apps**: OBS Studio and Streamlabs Desktop connections.
 - **Settings**: window options and this instance's name (what GetInfo reports).
 

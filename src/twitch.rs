@@ -809,6 +809,7 @@ impl Runner {
         }
         self.session_id = None;
         if self.is_connected.swap(false, Ordering::Relaxed) {
+            crate::ui::changed();
             self.engine.fire(
                 T_EVENTSUB_DISCONNECTED,
                 "Broadcaster EventSub Disconnected",
@@ -883,6 +884,7 @@ impl Runner {
         };
 
         self.is_connected.store(true, Ordering::Relaxed);
+        crate::ui::changed();
         crate::say("Twitch EventSub connected, waiting for welcome...".into());
         crate::ui::changed();
 

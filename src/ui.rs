@@ -1,6 +1,7 @@
 //! Native window: actions, settings and the log, in tabs. Lives hidden in the tray; while hidden its native
 //! window is destroyed and nothing redraws.
 
+mod accounts;
 mod actions;
 mod dialogs;
 mod forms;

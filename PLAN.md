@@ -212,9 +212,10 @@ platform handles through channels, never through shared locks held across awaits
 - [x] 18. Command sources and test hooks: fix Kick's (2097152) and TikTok's (4194304) command source bits
   and the TikTok checkbox, and run TikTok Send Message (43001, never routed). `InjectChat` and `GetChatOut`
   WebSocket requests (only with `STREAMERZ_DEV=1`) test every platform's commands without live channels.
-- [ ] 19. Accounts tab: one row per platform (status, channel, Connect, Broadcaster/Bot Login), details
+- [x] 19. Accounts tab: one row per platform (status, channel, Connect, Broadcaster/Bot Login), details
   under "Advanced". Google loopback OAuth for YouTube, Kick PKCE with the user's app, tikstream-login for
-  TikTok. Replaces the four platform tabs.
+  TikTok, tokens refreshed before use. Replaces the four platform tabs. Kick's rotated Pusher key fixed.
+  YouTube login waits for the repo owner's Google app (or a user's own client in Advanced).
 - [ ] 20. Chat box: one send box (platform or All, as Broadcaster/Bot) plus the merged incoming chat.
 - [ ] 21. Built-in commands (see Decisions), same-platform replies, per-platform `!command platforms`.
 - [ ] 22. TikTok native: piratetok read, webview send, bridge removed.
