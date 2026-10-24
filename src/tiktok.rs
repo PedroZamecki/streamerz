@@ -553,7 +553,7 @@ impl Runner {
                     }
                 };
 
-                match tokio_tungstenite::connect_async(&url_str).await {
+                match crate::http::ws_connect(&url_str).await {
                     Ok((ws_stream, _)) => {
                         connected_flag.store(true, Ordering::Relaxed);
                         crate::ui::changed();

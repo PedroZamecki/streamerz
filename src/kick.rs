@@ -730,6 +730,24 @@ pub async fn login(cfg: &Arc<watch::Sender<Config>>, bot: bool) -> Result<KickAc
     })
 }
 
+/// Kick's emotes in a message: each `[emote:<id>:<name>]`.
+pub fn kick_emotes(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(i) = rest.find("[emote:") {
+        let Some(j) = rest[i..].find(']') else { break };
+        let tag = &rest[i..i + j + 1];
+        if tag[7..tag.len() - 1]
+            .split_once(':')
+            .is_some_and(|(id, _)| id.bytes().all(|b| b.is_ascii_digit()))
+        {
+            out.push(tag.to_string());
+        }
+        rest = &rest[i + j + 1..];
+    }
+    out
+}
+
 /// Query Kick API v1 /users endpoint using an OAuth bearer token.
 pub async fn fetch_kick_user(token: &str) -> Result<(u64, String), String> {
     let url = format!("{KICK_API_BASE}/users");
@@ -792,7 +810,7 @@ pub async fn run_pusher_loop_url(
     };
 
     loop {
-        match tokio_tungstenite::connect_async(pusher_url).await {
+        match crate::http::ws_connect(pusher_url).await {
             Ok((ws, _)) => {
                 let (mut sink, mut stream) = ws.split();
 
@@ -933,6 +951,7 @@ pub fn handle_kick_event(
         "App\\Events\\ChatMessageEvent" => {
             let content = data["content"].as_str().unwrap_or("").to_string();
             let msg_id = data["id"].as_str().unwrap_or("").to_string();
+            let emotes = kick_emotes(&content);
             let sender = &data["sender"];
             let user_id = sender["id"].as_u64().unwrap_or(0);
             let username = sender["username"].as_str().unwrap_or("").to_string();
@@ -961,7 +980,7 @@ pub fn handle_kick_event(
             args.insert("userId".into(), user_id.into());
             args.insert("color".into(), color.into());
             args.insert("message".into(), content.clone().into());
-            args.insert("messageId".into(), msg_id.into());
+            args.insert("messageId".into(), msg_id.clone().into());
             args.insert("isBroadcaster".into(), is_broadcaster.into());
             args.insert("isModerator".into(), is_moderator.into());
             args.insert("isSubscriber".into(), is_subscriber.into());
@@ -982,6 +1001,8 @@ pub fn handle_kick_event(
             let chat = Chat {
                 platform: "kick".into(),
                 source: 2_097_152,
+                emotes,
+                msg_id,
                 user: username,
                 user_id: user_id.to_string(),
                 text: content,

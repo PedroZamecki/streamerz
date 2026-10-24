@@ -27,6 +27,7 @@ impl Engine {
     /// A chat message: run the commands it matches. How many ran.
     pub fn chat(self: &Rc<Self>, chat: &Chat) -> usize {
         self.st.borrow_mut().chat_lines += 1;
+        self.log_chat(chat);
         let cmds: Vec<Obj> = self.cfg.borrow().commands.clone();
         let mut ran = 0;
         for c in &cmds {

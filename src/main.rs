@@ -380,7 +380,7 @@ fn main() {
             // Opt-in: YouTube auto-connect if configured.
             let yt_cfg = engine_cfg.borrow().youtube.clone();
             if yt_cfg.auto_connect && (!yt_cfg.video_id.trim().is_empty() || !yt_cfg.channel_id.trim().is_empty()) {
-                e.youtube_start();
+                e.youtube_start().send(youtube::YouTubeCmd::Connect);
             }
             // Opt-in: Kick auto-connect if channel is set and auto_connect is true.
             let kick_cfg = engine_cfg.borrow().kick.clone();

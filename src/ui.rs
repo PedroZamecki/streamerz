@@ -3,6 +3,7 @@
 
 mod accounts;
 mod actions;
+mod chat;
 mod dialogs;
 mod forms;
 mod lists;
@@ -37,6 +38,8 @@ pub enum Msg {
     Input,
     /// The engine changed the config (an action's state, a global...).
     Changed,
+    /// New chat lines (sent only while the window is up).
+    Chat,
 }
 
 const ROW: i32 = 26;
@@ -129,6 +132,15 @@ pub fn changed() {
     if SHOWN.load(Ordering::Relaxed) {
         if let Some(ui) = UI.get() {
             ui.send(Msg::Changed);
+        }
+    }
+}
+
+/// New chat: refresh the chat tab, if the window is up.
+pub fn chat() {
+    if SHOWN.load(Ordering::Relaxed) {
+        if let Some(ui) = UI.get() {
+            ui.send(Msg::Chat);
         }
     }
 }
@@ -397,6 +409,7 @@ pub fn run(
                     open(&mut win, &mut log);
                 }
                 Msg::Log => log.refresh(),
+                Msg::Chat => views.chat_refresh(&tabs),
                 Msg::Changed => {
                     acts.borrow_mut().refresh();
                     views.refresh(&tabs);

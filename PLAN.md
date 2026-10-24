@@ -218,7 +218,11 @@ platform handles through channels, never through shared locks held across awaits
 - [x] 20. Security (see Decisions): keychain storage, revoke on logout, origin check and allowlist, token
   redaction, import warning for Run a Program, minimum scopes. Linux keeps one random key in the Secret
   Service and encrypts with HMAC-SHA256 (counter mode, encrypt-then-MAC; sha2 only, no new crate).
-- [ ] 21. Chat box: one send box (platform or All, as Broadcaster/Bot) plus the merged incoming chat.
+- [x] 21. Chat tab: every platform's chat together, side by side or alone; one send box (a platform or
+  All connected, as bot or broadcaster) with emoji/emotes converted per platform. WebSocket SendMessage
+  sends to any platform. Fixed on the way: YouTube read (InnerTube needs the chat page's continuation and
+  the channel's live video), YouTube send (live chat id, not video id), YouTube auto-connect, Kick channel
+  change keeping the old chatroom, one shared TLS setup instead of one per request.
 - [ ] 22. Built-in commands (see Decisions), same-platform replies, per-platform `!command platforms`.
 - [ ] 23. TikTok native: piratetok read, webview send, bridge removed.
 - [ ] 24+. Later extras, one phase each, order chosen then (see Decisions).

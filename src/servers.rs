@@ -210,7 +210,7 @@ async fn ws_client(e: Rc<Engine>, c: Obj) {
     let url = field(&c, "endpoint").to_string();
     let secs = c.get("retryInterval").and_then(Value::as_u64).unwrap_or(5).max(1);
     loop {
-        match tokio_tungstenite::connect_async(url.as_str()).await {
+        match crate::http::ws_connect(url.as_str()).await {
             Ok((ws, _)) => {
                 crate::say(format!("WebSocket client {}: connected to {url}", field(&c, "name")));
                 ws_event(&e, true, "Open", &c, Obj::new());
@@ -550,25 +550,23 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
             error(&id, "Authentication required to use this method")
         }
         "SendMessage" => {
-            let platform = get("platform");
-            if platform.is_empty() || platform.eq_ignore_ascii_case("twitch") {
-                let msg = req
-                    .get("message")
-                    .or_else(|| req.get("text"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                let bot = req.get("bot").and_then(Value::as_bool).unwrap_or(false);
-                match e.send_twitch_message(msg, None, bot, true) {
-                    Ok(()) => ok(&id, json!({})),
-                    Err(m) => error(&id, &m),
-                }
+            let msg = req
+                .get("message")
+                .or_else(|| req.get("text"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let bot = req.get("bot").and_then(Value::as_bool).unwrap_or(false);
+            let platform = match get("platform").to_ascii_lowercase().as_str() {
+                "" => "twitch".to_string(),
+                p => p.to_string(),
+            };
+            if !crate::engine::chatlog::PLATFORMS.contains(&platform.as_str()) && platform != "all" {
+                error(&id, &format!("unknown platform '{platform}'"))
+            } else if platform != "all" && !e.chat_connected(&platform) && !e.dev() {
+                error(&id, &format!("{platform} is not connected"))
             } else {
-                let p = match platform {
-                    "youtube" => "YouTube",
-                    "kick" => "Kick",
-                    _ => "Platform",
-                };
-                error(&id, &format!("{p} is not connected"))
+                e.send_chat(&platform, msg, bot);
+                ok(&id, json!({}))
             }
         }
         "GetUserPronouns" => {
@@ -950,7 +948,7 @@ mod tests {
             tokio::task::spawn_local(super::run(e.clone()));
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             // An outside client says hello to the custom server.
-            let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/x"))
+            let (mut ws, _) = crate::http::ws_connect(&format!("ws://127.0.0.1:{port}/x"))
                 .await
                 .unwrap();
             ws.send(Message::Text("hi".into())).await.unwrap();

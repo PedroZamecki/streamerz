@@ -875,7 +875,7 @@ impl Runner {
         };
 
         crate::say(format!("Connecting to Twitch EventSub at {url}..."));
-        let ws = match tokio_tungstenite::connect_async(&url).await {
+        let ws = match crate::http::ws_connect(&url).await {
             Ok((ws, _)) => ws,
             Err(e) => {
                 crate::say(format!("Twitch EventSub connection failed: {e}"));
@@ -903,7 +903,7 @@ impl Runner {
             let bot_url = url.clone();
             let b_acct = broadcaster.clone();
             self.bot_read_task = Some(tokio::task::spawn_local(async move {
-                match tokio_tungstenite::connect_async(&bot_url).await {
+                match crate::http::ws_connect(&bot_url).await {
                     Ok((bot_ws, _)) => {
                         run_bot_eventsub_loop(bot_ws, bot_engine, bot_cfg, b_acct, bot_acct).await;
                     }
@@ -1221,7 +1221,7 @@ async fn run_eventsub_loop(
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 crate::say(format!("Twitch EventSub reconnect request: {url}"));
-                match tokio_tungstenite::connect_async(url).await {
+                match crate::http::ws_connect(url).await {
                     Ok((new_ws, _)) => {
                         ws = new_ws;
                         reconnecting = true;
@@ -1350,7 +1350,7 @@ async fn run_bot_eventsub_loop(
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 crate::say(format!("Twitch Bot EventSub reconnect request: {url}"));
-                match tokio_tungstenite::connect_async(url).await {
+                match crate::http::ws_connect(url).await {
                     Ok((new_ws, _)) => {
                         ws = new_ws;
                         reconnecting = true;
@@ -1674,6 +1674,14 @@ fn handle_notification(
                 internal: false,
                 msg_id: msg_id.into(),
                 text: text.into(),
+                emotes: event
+                    .pointer("/message/fragments")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|f| f["type"] == "emote")
+                    .filter_map(|f| f["text"].as_str().map(String::from))
+                    .collect(),
                 args: args.clone(),
             };
             engine.chat(&chat_cmd);

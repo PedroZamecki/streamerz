@@ -303,6 +303,7 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
         engine: engine.clone(),
         cfg: cfg.clone(),
         connected: connected.clone(),
+        live: Default::default(),
     };
 
     tokio::task::spawn_local(async move {
@@ -314,8 +315,6 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
                 YouTubeCmd::Connect => {
                     if !active {
                         active = true;
-                        connected.store(true, Ordering::Relaxed);
-                        crate::ui::changed();
                         crate::say("YouTube: monitoring started".into());
                         let args = Obj::new();
                         runner.engine.fire(
@@ -552,30 +551,57 @@ struct YouTubeRunner {
     engine: Rc<Engine>,
     cfg: Arc<watch::Sender<Config>>,
     connected: Arc<AtomicBool>,
+    /// The live video being read, and its Data API live chat id once looked up (for sending).
+    live: Rc<std::cell::RefCell<(String, String)>>,
 }
 
 impl YouTubeRunner {
     async fn run_poll_loop(&self) {
         let mut speakers = HashSet::new();
-        run_innertube_poll_loop_url(
-            self.engine.clone(),
-            self.cfg.clone(),
-            self.connected.clone(),
+        read_chat(
+            &self.engine,
+            &self.cfg,
+            &self.connected,
+            &self.live,
             &mut speakers,
-            YOUTUBE_INNERTUBE_URL,
+            YOUTUBE_WEB,
             false,
         )
         .await;
     }
 
-    async fn send_chat_api(&self, broadcast: &str, text: &str, use_bot: bool, fallback: bool) -> Result<(), String> {
-        let token = token(&self.engine, &self.cfg, use_bot, fallback).await?;
-
-        let live_chat_id = if broadcast.is_empty() {
-            self.cfg.borrow().youtube.video_id.clone()
+    /// The Data API live chat id of the video being read (or `broadcast`, a video id), looked up once.
+    async fn live_chat_id(&self, broadcast: &str, token: &str) -> Result<String, String> {
+        let video = if broadcast.is_empty() {
+            self.live.borrow().0.clone()
         } else {
             broadcast.to_string()
         };
+        if video.is_empty() {
+            return Err("YouTube: no live stream found yet (connect while live)".into());
+        }
+        if broadcast.is_empty() && !self.live.borrow().1.is_empty() {
+            return Ok(self.live.borrow().1.clone());
+        }
+        let headers = [("Authorization".to_string(), format!("Bearer {token}"))];
+        let url = format!("{YOUTUBE_API_BASE}/videos?part=liveStreamingDetails&id={video}");
+        let r = crate::http::request("GET", &url, &headers, b"").await?;
+        let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
+        let id = v
+            .pointer("/items/0/liveStreamingDetails/activeLiveChatId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("YouTube: {video} has no active live chat (HTTP {})", r.status))?
+            .to_string();
+        if broadcast.is_empty() {
+            self.live.borrow_mut().1.clone_from(&id);
+        }
+        Ok(id)
+    }
+
+    async fn send_chat_api(&self, broadcast: &str, text: &str, use_bot: bool, fallback: bool) -> Result<(), String> {
+        let token = token(&self.engine, &self.cfg, use_bot, fallback).await?;
+
+        let live_chat_id = self.live_chat_id(broadcast, &token).await?;
 
         let url = format!("{YOUTUBE_API_BASE}/liveChat/messages?part=snippet");
         let payload = json!({
@@ -604,10 +630,13 @@ impl YouTubeRunner {
     async fn set_title_api(&self, broadcast: &str, title: &str) -> Result<(), String> {
         let token = token(&self.engine, &self.cfg, false, false).await?;
 
-        let video_id = if broadcast.is_empty() {
-            &self.cfg.borrow().youtube.video_id
-        } else {
+        let live = self.live.borrow().0.clone();
+        let video_id = if !broadcast.is_empty() {
             broadcast
+        } else if live.is_empty() {
+            return Err("YouTube: no live stream found yet (connect while live)".into());
+        } else {
+            &live
         };
 
         let url = format!("{YOUTUBE_API_BASE}/videos?part=snippet");
@@ -634,10 +663,13 @@ impl YouTubeRunner {
     async fn set_description_api(&self, broadcast: &str, description: &str) -> Result<(), String> {
         let token = token(&self.engine, &self.cfg, false, false).await?;
 
-        let video_id = if broadcast.is_empty() {
-            &self.cfg.borrow().youtube.video_id
-        } else {
+        let live = self.live.borrow().0.clone();
+        let video_id = if !broadcast.is_empty() {
             broadcast
+        } else if live.is_empty() {
+            return Err("YouTube: no live stream found yet (connect while live)".into());
+        } else {
+            &live
         };
 
         let url = format!("{YOUTUBE_API_BASE}/videos?part=snippet");
@@ -673,10 +705,13 @@ impl YouTubeRunner {
     ) -> Result<(), String> {
         let token = token(&self.engine, &self.cfg, false, false).await?;
 
-        let video_id = if broadcast.is_empty() {
-            &self.cfg.borrow().youtube.video_id
-        } else {
+        let live = self.live.borrow().0.clone();
+        let video_id = if !broadcast.is_empty() {
             broadcast
+        } else if live.is_empty() {
+            return Err("YouTube: no live stream found yet (connect while live)".into());
+        } else {
+            &live
         };
 
         let url = format!("{YOUTUBE_API_BASE}/videos?part=snippet");
@@ -708,11 +743,7 @@ impl YouTubeRunner {
     async fn ban_user_api(&self, broadcast: &str, user_id: &str) -> Result<(), String> {
         let token = token(&self.engine, &self.cfg, false, false).await?;
 
-        let live_chat_id = if broadcast.is_empty() {
-            &self.cfg.borrow().youtube.video_id
-        } else {
-            broadcast
-        };
+        let live_chat_id = &self.live_chat_id(broadcast, &token).await?;
 
         let url = format!("{YOUTUBE_API_BASE}/liveChat/bans?part=snippet");
         let payload = json!({
@@ -741,11 +772,7 @@ impl YouTubeRunner {
     async fn timeout_user_api(&self, broadcast: &str, user_id: &str, duration: u64) -> Result<(), String> {
         let token = token(&self.engine, &self.cfg, false, false).await?;
 
-        let live_chat_id = if broadcast.is_empty() {
-            &self.cfg.borrow().youtube.video_id
-        } else {
-            broadcast
-        };
+        let live_chat_id = &self.live_chat_id(broadcast, &token).await?;
 
         let url = format!("{YOUTUBE_API_BASE}/liveChat/bans?part=snippet");
         let payload = json!({
@@ -781,78 +808,176 @@ impl YouTubeRunner {
     }
 }
 
-pub async fn run_innertube_poll_loop_url(
-    engine: Rc<Engine>,
-    cfg: Arc<watch::Sender<Config>>,
-    connected: Arc<AtomicBool>,
+pub const YOUTUBE_WEB: &str = "https://www.youtube.com";
+
+const UA: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
+
+/// The first `"key":"value"` in a page.
+fn find<'a>(page: &'a str, key: &str) -> Option<&'a str> {
+    let pat = format!("\"{key}\":\"");
+    let i = page.find(&pat)? + pat.len();
+    page[i..].split('"').next()
+}
+
+/// The channel's current live video (the page `/channel/<id>/live` redirects to it), if live.
+async fn live_video(web: &str, channel: &str) -> Result<String, String> {
+    let headers = [
+        ("User-Agent".to_string(), UA.to_string()),
+        ("Accept-Language".to_string(), "en".to_string()),
+    ];
+    let r = crate::http::request("GET", &format!("{web}/channel/{channel}/live"), &headers, b"").await?;
+    let page = r.text();
+    let canon = page
+        .split("<link rel=\"canonical\" href=\"")
+        .nth(1)
+        .and_then(|x| x.split('"').next())
+        .unwrap_or("");
+    match canon.split_once("watch?v=") {
+        Some((_, v)) if page.contains("\"isLive\":true") => Ok(v.to_string()),
+        _ => Err("not live".into()),
+    }
+}
+
+/// Read a live chat through InnerTube (what youtube.com's chat uses): the video is the configured
+/// one, else the channel's live; the first continuation comes from its chat page, and each fetch
+/// waits the `timeoutMs` the server returns (the server sets the pace). Not live: tries again every
+/// minute. `run_once` (tests): one fetch.
+pub async fn read_chat(
+    engine: &Rc<Engine>,
+    cfg: &Arc<watch::Sender<Config>>,
+    connected: &Arc<AtomicBool>,
+    live: &Rc<std::cell::RefCell<(String, String)>>,
     speakers: &mut HashSet<String>,
-    endpoint_url: &str,
+    web: &str,
     run_once: bool,
 ) {
-    let mut continuation = String::new();
-
+    let set = |on: bool| {
+        if connected.swap(on, Ordering::Relaxed) != on {
+            crate::ui::changed();
+        }
+    };
+    let headers = [
+        ("User-Agent".to_string(), UA.to_string()),
+        ("Accept-Language".to_string(), "en".to_string()),
+    ];
     loop {
-        if !connected.load(Ordering::Relaxed) {
-            break;
-        }
-
-        let body = if continuation.is_empty() {
-            let vid = cfg.borrow().youtube.video_id.clone();
-            json!({
-                "context": {
-                    "client": {
-                        "clientName": "WEB",
-                        "clientVersion": "2.20230522.01.00"
-                    }
-                },
-                "params": vid
-            })
-        } else {
-            json!({
-                "context": {
-                    "client": {
-                        "clientName": "WEB",
-                        "clientVersion": "2.20230522.01.00"
-                    }
-                },
-                "continuation": continuation
-            })
+        let (video, channel) = {
+            let c = cfg.borrow();
+            (c.youtube.video_id.clone(), c.youtube.channel_id.clone())
         };
-
-        let headers = vec![("Content-Type".to_string(), "application/json".to_string())];
-        let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
-
-        match crate::http::request("POST", endpoint_url, &headers, &body_bytes).await {
-            Ok(resp) => {
-                if (200..300).contains(&resp.status) {
-                    if let Ok(v) = serde_json::from_slice::<Value>(&resp.body) {
-                        if let Some(actions) = v
-                            .pointer("/continuationContents/liveChatContinuation/actions")
-                            .and_then(Value::as_array)
-                        {
-                            handle_innertube_actions(&engine, actions, speakers);
-                        }
-
-                        if let Some(cont) = v.pointer("/continuationContents/liveChatContinuation/continuations/0/invalidationContinuationData/continuation")
-                            .or_else(|| v.pointer("/continuationContents/liveChatContinuation/continuations/0/timedContinuationData/continuation"))
-                            .and_then(Value::as_str)
-                        {
-                            continuation = cont.to_string();
-                        }
-                    }
-                }
-            }
+        let video = if !video.is_empty() {
+            Ok(video)
+        } else if !channel.is_empty() {
+            live_video(web, &channel).await
+        } else {
+            Err("no channel set".into())
+        };
+        let start = match video {
+            Ok(v) => crate::http::request("GET", &format!("{web}/live_chat?is_popout=1&v={v}"), &headers, b"")
+                .await
+                .map(|r| (v, r.text())),
+            Err(e) => Err(e),
+        };
+        let (video, page) = match start {
+            Ok(x) => x,
             Err(e) => {
-                crate::say(format!("YouTube poll error: {e}"));
+                set(false);
+                if run_once {
+                    return;
+                }
+                crate::say(format!("YouTube: {e}; trying again in a minute"));
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                continue;
+            }
+        };
+        let (Some(mut cont), version) = (
+            find(&page, "continuation").map(String::from),
+            find(&page, "INNERTUBE_CONTEXT_CLIENT_VERSION")
+                .unwrap_or("2.20261023.01.00")
+                .to_string(),
+        ) else {
+            set(false);
+            if run_once {
+                return;
+            }
+            crate::say(format!("YouTube: {video} has no live chat; trying again in a minute"));
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            continue;
+        };
+        *live.borrow_mut() = (video.clone(), String::new());
+        crate::say(format!("YouTube: reading the chat of {video}"));
+        let json_headers = [("Content-Type".to_string(), "application/json".to_string())];
+        let url = format!("{web}/youtubei/v1/live_chat/get_live_chat?prettyPrint=false");
+        loop {
+            let body =
+                json!({"context": {"client": {"clientName": "WEB", "clientVersion": version}}, "continuation": cont});
+            let r = crate::http::request(
+                "POST",
+                &url,
+                &json_headers,
+                &serde_json::to_vec(&body).unwrap_or_default(),
+            )
+            .await;
+            let v: Value = match r {
+                Ok(r) if (200..300).contains(&r.status) => serde_json::from_slice(&r.body).unwrap_or_default(),
+                Ok(r) => {
+                    crate::say(format!("YouTube: chat read failed (HTTP {})", r.status));
+                    Value::Null
+                }
+                Err(e) => {
+                    crate::say(format!("YouTube: chat read failed ({e})"));
+                    Value::Null
+                }
+            };
+            let c = &v["continuationContents"]["liveChatContinuation"];
+            let next = c["continuations"][0]
+                .as_object()
+                .and_then(|o| o.values().next())
+                .cloned()
+                .unwrap_or_default();
+            let Some(n) = next["continuation"].as_str() else {
+                // The stream ended (or the read failed): look for a live again.
+                break;
+            };
+            set(true);
+            cont = n.to_string();
+            if let Some(actions) = c["actions"].as_array() {
+                handle_innertube_actions(engine, actions, speakers);
+            }
+            if run_once {
+                return;
+            }
+            let wait = next["timeoutMs"].as_u64().unwrap_or(5000).clamp(1000, 30000);
+            tokio::time::sleep(Duration::from_millis(wait)).await;
+        }
+        set(false);
+        *live.borrow_mut() = Default::default();
+        if run_once {
+            return;
+        }
+        tokio::time::sleep(Duration::from_secs(10)).await;
+    }
+}
+
+/// A message's text from its runs: text as is, standard emoji as the character, YouTube's own
+/// emoji as their shortcut (":yt:"), which are also returned as the message's emotes.
+pub fn runs_text(runs: Option<&Value>) -> (String, Vec<String>) {
+    let (mut text, mut emotes) = (String::new(), Vec::new());
+    for r in runs.and_then(Value::as_array).into_iter().flatten() {
+        if let Some(t) = r["text"].as_str() {
+            text.push_str(t);
+        } else if let Some(e) = r.get("emoji") {
+            let short = e["shortcuts"][0].as_str().unwrap_or("");
+            if e["isCustomEmoji"].as_bool() == Some(true) && !short.is_empty() {
+                text.push_str(short);
+                emotes.push(short.to_string());
+            } else {
+                text.push_str(e["emojiId"].as_str().unwrap_or(short));
             }
         }
-
-        if run_once {
-            break;
-        }
-
-        tokio::time::sleep(Duration::from_secs(5)).await;
     }
+    (text, emotes)
 }
 
 pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value], speakers: &mut HashSet<String>) {
@@ -867,16 +992,7 @@ pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value], speakers
                     .unwrap_or("")
                     .to_string();
                 let author_id = msg["authorExternalChannelId"].as_str().unwrap_or("").to_string();
-                let text = msg
-                    .pointer("/message/runs")
-                    .and_then(Value::as_array)
-                    .map(|runs| {
-                        runs.iter()
-                            .filter_map(|r| r["text"].as_str())
-                            .collect::<Vec<_>>()
-                            .join("")
-                    })
-                    .unwrap_or_default();
+                let (text, emotes) = runs_text(msg.pointer("/message/runs"));
 
                 let badges = msg
                     .pointer("/authorBadges")
@@ -913,7 +1029,7 @@ pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value], speakers
                     .into(),
                 );
                 args.insert("message".into(), text.clone().into());
-                args.insert("messageId".into(), id.into());
+                args.insert("messageId".into(), id.clone().into());
                 args.insert("isOwner".into(), is_owner.into());
                 args.insert("isModerator".into(), is_mod.into());
                 args.insert("isSponsor".into(), is_member.into());
@@ -944,6 +1060,8 @@ pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value], speakers
                     user: author_name,
                     user_id: author_id,
                     text,
+                    emotes,
+                    msg_id: id,
                     broadcaster: is_owner,
                     moderator: is_mod,
                     subscriber: is_member,
@@ -1330,71 +1448,58 @@ mod tests {
         handle_innertube_actions(&engine, &actions, &mut speakers);
     }
 
-    #[tokio::test]
-    async fn test_mock_innertube_poll() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-            let mut buf = [0u8; 1024];
-            let _ = socket.read(&mut buf).await.unwrap();
-
-            let resp_body = json!({
-                "continuationContents": {
-                    "liveChatContinuation": {
-                        "actions": [{
-                            "addChatItemAction": {
-                                "item": {
-                                    "liveChatTextMessageRenderer": {
-                                        "id": "poll-msg-1",
-                                        "authorName": { "simpleText": "PollViewer" },
-                                        "authorExternalChannelId": "UCPoll",
-                                        "message": { "runs": [{ "text": "hello from mock poll" }] }
-                                    }
-                                }
-                            }
-                        }],
-                        "continuations": [{
-                            "invalidationContinuationData": {
-                                "continuation": "next_token_123"
-                            }
-                        }]
-                    }
+    #[test]
+    fn mock_live_chat_read() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            // The channel's /live page, its chat page, then one InnerTube answer.
+            tokio::task::spawn_local(async move {
+                for _ in 0..3 {
+                    let (mut sock, _) = listener.accept().await.unwrap();
+                    let mut buf = vec![0u8; 4096];
+                    let n = sock.read(&mut buf).await.unwrap();
+                    let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let body = if head.starts_with("GET /channel/UCx/live") {
+                        r#"<link rel="canonical" href="https://www.youtube.com/watch?v=vid123"> "isLive":true"#.to_string()
+                    } else if head.starts_with("GET /live_chat?is_popout=1&v=vid123") {
+                        r#"x "INNERTUBE_CONTEXT_CLIENT_VERSION":"2.1" y "continuation":"first" z"#.to_string()
+                    } else {
+                        assert!(head.contains("\"continuation\":\"first\""), "{head}");
+                        json!({"continuationContents": {"liveChatContinuation": {
+                            "continuations": [{"invalidationContinuationData": {"continuation": "next", "timeoutMs": 10000}}],
+                            "actions": [{"addChatItemAction": {"item": {"liveChatTextMessageRenderer": {
+                                "id": "m1", "authorName": {"simpleText": "PollViewer"}, "authorExternalChannelId": "UCPoll",
+                                "message": {"runs": [{"text": "hi "}, {"emoji": {"emojiId": "😀", "shortcuts": [":grinning:"]}},
+                                    {"emoji": {"emojiId": "UCx/abc", "shortcuts": [":yt:"], "isCustomEmoji": true}}]}
+                            }}}}]
+                        }}})
+                        .to_string()
+                    };
+                    let r = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                    sock.write_all(r.as_bytes()).await.unwrap();
                 }
-            })
-            .to_string();
-
-            let http_response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                resp_body.len(),
-                resp_body
-            );
-            socket.write_all(http_response.as_bytes()).await.unwrap();
+            });
+            let mut config = Config::default();
+            config.youtube.channel_id = "UCx".into();
+            let cfg = Arc::new(watch::channel(config).0);
+            let engine = Engine::new(cfg.clone(), |_| {});
+            let connected = Arc::new(AtomicBool::new(false));
+            let live = Rc::new(std::cell::RefCell::new((String::new(), String::new())));
+            let mut speakers = HashSet::new();
+            read_chat(&engine, &cfg, &connected, &live, &mut speakers, &format!("http://{addr}"), true).await;
+            assert!(speakers.contains("pollviewer"));
+            assert!(connected.load(Ordering::Relaxed));
+            assert_eq!(live.borrow().0, "vid123");
+            let lines = engine.chat_since(0);
+            assert_eq!(lines[0].text, "hi 😀 :yt:");
+            assert_eq!(lines[0].emotes, [":yt:"]);
         });
-
-        let mut config = Config::default();
-        config.youtube.video_id = "test_video_123".into();
-
-        let (tx, _rx) = watch::channel(config);
-        let cfg_sender = Arc::new(tx);
-        let engine = Engine::new(cfg_sender.clone(), |_| {});
-        let connected = Arc::new(AtomicBool::new(true));
-        let mut speakers = HashSet::new();
-
-        let mock_url = format!("http://{addr}/live_chat");
-        run_innertube_poll_loop_url(
-            engine.clone(),
-            cfg_sender.clone(),
-            connected.clone(),
-            &mut speakers,
-            &mock_url,
-            true,
-        )
-        .await;
-
-        assert!(speakers.contains("pollviewer"));
     }
 }

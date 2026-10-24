@@ -124,7 +124,14 @@ impl P {
             P::Kick => (crate::kick::clean_kick_channel(raw), &mut c.kick.channel),
             P::TikTok => (crate::tiktok::clean_tiktok_channel(raw), &mut c.tiktok.channel),
         };
-        slot.clone_from(&v);
+        if *slot != v {
+            slot.clone_from(&v);
+            if self == P::Kick {
+                // The ids looked up for the old channel.
+                c.kick.channel_id = None;
+                c.kick.chatroom_id = None;
+            }
+        }
         v
     }
 
