@@ -47,7 +47,19 @@ impl P {
         match self {
             P::Twitch => if bot { &c.twitch.bot } else { &c.twitch.broadcaster }
                 .as_ref()
-                .map(|a| a.display_name.clone()),
+                .map(|a| {
+                    let want = if bot {
+                        crate::twitch::BOT_SCOPES
+                    } else {
+                        crate::twitch::BROADCASTER_SCOPES
+                    };
+                    // Logged in before streamerz asked for more: some sub-actions would fail.
+                    if want.iter().any(|w| !a.token.scope.iter().any(|g| g == w)) {
+                        format!("{} (log in again: new permissions)", a.display_name)
+                    } else {
+                        a.display_name.clone()
+                    }
+                }),
             P::YouTube => if bot { &c.youtube.bot } else { &c.youtube.broadcaster }
                 .as_ref()
                 .map(|a| a.name.clone()),

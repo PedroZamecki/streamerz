@@ -21,6 +21,7 @@ pub struct Line {
     pub platform: String,
     pub time: String,
     pub user: String,
+    pub user_id: String,
     pub text: String,
     /// The emote names in `text`.
     pub emotes: Vec<String>,
@@ -105,6 +106,7 @@ impl Engine {
             platform: c.platform.clone(),
             time: crate::fmt::date(&crate::fmt::now(), "HH:mm"),
             user: c.user.clone(),
+            user_id: c.user_id.clone(),
             text,
             emotes: c.emotes.iter().map(|e| shown(e).to_string()).collect(),
             ..Default::default()
@@ -130,6 +132,24 @@ impl Engine {
     pub fn chat_since(&self, seq: u64) -> Vec<Line> {
         let st = self.st.borrow();
         st.chat_log.lines.iter().filter(|l| l.seq > seq).cloned().collect()
+    }
+
+    /// The people who chatted on `platform` this session (newest first): name and id.
+    pub fn chatters(&self, platform: &str) -> Vec<(String, String)> {
+        let st = self.st.borrow();
+        let mut seen = Vec::new();
+        for l in st
+            .chat_log
+            .lines
+            .iter()
+            .rev()
+            .filter(|l| l.platform == platform && !l.note)
+        {
+            if !seen.iter().any(|(_, id): &(String, String)| *id == l.user_id) {
+                seen.push((l.user.clone(), l.user_id.clone()));
+            }
+        }
+        seen
     }
 
     /// The emotes seen on `platform`, most recent first, by display name.
