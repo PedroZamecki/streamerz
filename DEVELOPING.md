@@ -492,6 +492,129 @@ ws.onmessage = (m) => { const v = JSON.parse(m.data); if (v.request !== "Hello")
   reqs.length ? setTimeout(() => ws.send(JSON.stringify(reqs.shift())), 200) : ws.close(); };
 ```
 
+## OBS sub-actions against a real OBS
+
+A throwaway OBS on the hidden display, so the user's own profile and devices aren't touched: its own config
+(`XDG_CONFIG_HOME=/tmp/obscfg`), obs-websocket on 4456 with a password, the scene collection's
+`DesktopAudioDevice1`/`AuxAudioDevice1` removed (no microphone or desktop capture) and recordings in
+`/tmp/szo/rec` (`[SimpleOutput] FilePath=`, `RecRB=true` for the replay buffer). Then `run.py` builds one
+streamerz action per case, runs each with `DoAction` and checks OBS's own state with `obs.mjs`, an
+independent obs-websocket client. The scenes it expects (SZT A/B, SZT Text, Color, Image, Browser, Audio,
+Media, the filters) are created with `obs.mjs` `CreateScene`/`CreateInput`/`CreateSourceFilter` first.
+
+```
+mkdir -p /tmp/obscfg/obs-studio/plugin_config/obs-websocket   # + config.json: server_port 4456, auth
+DISPLAY=:99 QT_QPA_PLATFORM=xcb XDG_CONFIG_HOME=/tmp/obscfg setsid obs --disable-shutdown-check --multi &
+python3 /tmp/szo/run.py      # PASS/FAIL per case
+```
+
+`obs.mjs`:
+
+```js
+// Minimal obs-websocket v5 client (the oracle): node obs.mjs '[["Request", {data}], ...]'
+import crypto from "node:crypto";
+const reqs = JSON.parse(process.argv[2]); const pass = "szt-test-pass";
+const ws = new WebSocket("ws://127.0.0.1:4456"); let i = 0; const out = [];
+const sha = (s) => crypto.createHash("sha256").update(s).digest("base64");
+ws.onmessage = (m) => {
+  const v = JSON.parse(m.data);
+  if (v.op === 0) { const a = v.d.authentication; const auth = sha(sha(pass + a.salt) + a.challenge);
+    ws.send(JSON.stringify({ op: 1, d: { rpcVersion: 1, authentication: auth } })); }
+  else if (v.op === 2) next();
+  else if (v.op === 7) { out.push({ type: v.d.requestType, ok: v.d.requestStatus.result, comment: v.d.requestStatus.comment, data: v.d.responseData }); next(); }
+};
+function next() { if (i >= reqs.length) { console.log(JSON.stringify(out)); ws.close(); return; }
+  const [t, d] = reqs[i++]; ws.send(JSON.stringify({ op: 6, d: { requestType: t, requestId: String(i), requestData: d || {} } })); }
+```
+
+`ws.mjs`:
+
+```js
+// node ws.mjs '[{"request":...}, ...]' : send each (waiting `wait` ms first), print answers.
+const reqs = JSON.parse(process.argv[2]); const ws = new WebSocket("ws://127.0.0.1:8090/");
+ws.onmessage = (m) => { const v = JSON.parse(m.data); if (v.request !== "Hello") console.log(m.data);
+  if (v.request === "Hello" || v.id) next(); };
+function next() { if (!reqs.length) { ws.close(); return; } const r = reqs.shift();
+  setTimeout(() => ws.send(JSON.stringify(r)), r.wait || 0); }
+```
+
+`run.py`:
+
+```python
+import json, subprocess, time, os, sys, uuid
+D='/tmp/szo'
+def oracle(reqs):
+    return json.loads(subprocess.check_output(['node', f'{D}/obs.mjs', json.dumps(reqs)], timeout=20))
+def ws(reqs):
+    return subprocess.check_output(['node', f'{D}/ws.mjs', json.dumps(reqs)], timeout=60).decode()
+def item(scene, src):
+    for i in oracle([["GetSceneItemList", {"sceneName": scene}]])[0]['data']['sceneItems']:
+        if i['sourceName']==src: return i['sceneItemId']
+def log(m): return {"type": 1020, "logLevel": 1, "message": m}
+A, T = "SZT A", "SZT Text"
+cases = [  # (name, sub-actions, check(lines) -> bool or str)
+ ("set active scene", [{"type":34,"sceneName":A}], lambda L: oracle([["GetCurrentProgramScene"]])[0]['data']['sceneName']==A),
+ ("get current scene", [{"type":43}, log("T scene %currentScene%")], lambda L: "T scene SZT A" in L),
+ ("hide source", [{"type":30,"sceneName":A,"sourceName":"SZT Color","state":1}], lambda L: oracle([["GetSceneItemEnabled",{"sceneName":A,"sceneItemId":item(A,"SZT Color")}]])[0]['data']['sceneItemEnabled'] is False),
+ ("toggle source", [{"type":30,"sceneName":A,"sourceName":"SZT Color","state":2}], lambda L: oracle([["GetSceneItemEnabled",{"sceneName":A,"sceneItemId":item(A,"SZT Color")}]])[0]['data']['sceneItemEnabled'] is True),
+ ("filter off", [{"type":35,"sceneName":A,"sourceName":T,"filterName":"SZT Filter","state":1}], lambda L: oracle([["GetSourceFilter",{"sourceName":T,"filterName":"SZT Filter"}]])[0]['data']['filterEnabled'] is False),
+ ("scene filter off", [{"type":47,"sceneName":A,"filterName":"SZT SceneFilter","state":1}], lambda L: oracle([["GetSourceFilter",{"sourceName":A,"filterName":"SZT SceneFilter"}]])[0]['data']['filterEnabled'] is False),
+ ("flip horizontal", [{"type":36,"sceneName":A,"sourceName":"SZT Image","flipMode":0}], lambda L: oracle([["GetSceneItemTransform",{"sceneName":A,"sceneItemId":item(A,"SZT Image")}]])[0]['data']['sceneItemTransform']['scaleX'] * FLIP0 < 0),
+ ("rotate 45", [{"type":37,"sceneName":A,"sourceName":"SZT Image","degrees":45,"additive":False}], lambda L: abs(oracle([["GetSceneItemTransform",{"sceneName":A,"sceneItemId":item(A,"SZT Image")}]])[0]['data']['sceneItemTransform']['rotation']-45)<0.01),
+ ("rotate +10", [{"type":37,"sceneName":A,"sourceName":"SZT Image","degrees":10,"additive":True}], lambda L: abs(oracle([["GetSceneItemTransform",{"sceneName":A,"sceneItemId":item(A,"SZT Image")}]])[0]['data']['sceneItemTransform']['rotation']-55)<0.01),
+ ("browser url", [{"type":38,"sceneName":A,"sourceName":"SZT Browser","url":"https://example.com/%user%"}], lambda L: oracle([["GetInputSettings",{"inputName":"SZT Browser"}]])[0]['data']['inputSettings'].get('url')=="https://example.com/tester"),
+ ("set text", [{"type":39,"sceneName":A,"sourceName":T,"text":"hello %user%"}], lambda L: oracle([["GetInputSettings",{"inputName":T}]])[0]['data']['inputSettings'].get('text')=="hello tester"),
+ ("hide source filters", [{"type":41,"sceneName":A,"sourceName":T}], lambda L: all(not f['filterEnabled'] for f in oracle([["GetSourceFilterList",{"sourceName":T}]])[0]['data']['filters'])),
+ ("random filter on", [{"type":40,"sceneName":A,"sourceName":T,"state":0}], lambda L: sum(f['filterEnabled'] for f in oracle([["GetSourceFilterList",{"sourceName":T}]])[0]['data']['filters'])==1),
+ ("mute", [{"type":42,"sceneName":A,"sourceName":"SZT Audio","state":0}], lambda L: oracle([["GetInputMute",{"inputName":"SZT Audio"}]])[0]['data']['inputMuted'] is True),
+ ("unmute", [{"type":42,"sceneName":A,"sourceName":"SZT Audio","state":1}], lambda L: oracle([["GetInputMute",{"inputName":"SZT Audio"}]])[0]['data']['inputMuted'] is False),
+ ("audio track 2 off", [{"type":44,"sceneName":A,"sourceName":"SZT Audio","track":1,"state":1}], lambda L: oracle([["GetInputAudioTracks",{"inputName":"SZT Audio"}]])[0]['data']['inputAudioTracks']['2'] is False),
+ ("raw GetVersion", [{"type":46,"raw":json.dumps({"requestType":"GetVersion","requestData":{}}),"resultsToArgs":True,"prefix":"v"}, log("T raw %v.obsVersion%")], lambda L: "T raw 32.2.2" in L),
+ ("screenshot", [{"type":48,"sceneName":A,"sourceName":"","path":f"{D}/shot.png","quality":-1}], lambda L: os.path.exists(f"{D}/shot.png")),
+ ("image file", [{"type":323,"sceneName":A,"sourceName":"SZT Image","fileName":f"{D}/b.png"}], lambda L: oracle([["GetInputSettings",{"inputName":"SZT Image"}]])[0]['data']['inputSettings'].get('file')==f"{D}/b.png"),
+ ("item props", [{"type":324,"sceneName":A,"sourceName":"SZT Image"}, log("T props %props.rotation% %props.visible% %props.name%")], lambda L: any(l.startswith("T props 55") for l in L)),
+ ("color", [{"type":327,"sceneName":A,"sourceName":"SZT Color","color":"#FF112233","random":False}], lambda L: oracle([["GetInputSettings",{"inputName":"SZT Color"}]])[0]['data']['inputSettings'].get('color')==0xFF332211),
+ ("get status", [{"type":328}, log("T status %obs.isConnected% %obs.isRecording%")], lambda L: "T status True False" in L),
+ ("hide scene sources", [{"type":325,"sceneName":A}], lambda L: not any(i['sceneItemEnabled'] for i in oracle([["GetSceneItemList",{"sceneName":A}]])[0]['data']['sceneItems'])),
+ ("random scene source", [{"type":326,"sceneName":A}], lambda L: sum(i['sceneItemEnabled'] for i in oracle([["GetSceneItemList",{"sceneName":A}]])[0]['data']['sceneItems'])==1),
+ ("media file", [{"type":322,"sceneName":A,"sourceName":"SZT Media","fileName":f"{D}/v2.mp4"}], lambda L: oracle([["GetInputSettings",{"inputName":"SZT Media"}]])[0]['data']['inputSettings'].get('local_file')==f"{D}/v2.mp4"),
+ ("media pause", [{"type":49,"sceneName":A,"sourceName":"SZT Media","state":1}], lambda L: (time.sleep(0.5), oracle([["GetMediaInputStatus",{"inputName":"SZT Media"}]])[0]['data']['mediaState'])[1]=="OBS_MEDIA_STATE_PAUSED"),
+ ("media play", [{"type":49,"sceneName":A,"sourceName":"SZT Media","state":0}], lambda L: (time.sleep(0.5), oracle([["GetMediaInputStatus",{"inputName":"SZT Media"}]])[0]['data']['mediaState'])[1]=="OBS_MEDIA_STATE_PLAYING"),
+ ("media stop", [{"type":49,"sceneName":A,"sourceName":"SZT Media","state":3}], lambda L: (time.sleep(0.5), oracle([["GetMediaInputStatus",{"inputName":"SZT Media"}]])[0]['data']['mediaState'])[1]=="OBS_MEDIA_STATE_STOPPED"),
+ ("replay start", [{"type":321,"state":0}], lambda L: (time.sleep(1.5), oracle([["GetReplayBufferStatus"]])[0]['data']['outputActive'])[1] is True),
+ ("replay stop", [{"type":321,"state":1}], lambda L: (time.sleep(1.5), oracle([["GetReplayBufferStatus"]])[0]['data']['outputActive'])[1] is False),
+ ("record start", [{"type":45,"state":0}], lambda L: (time.sleep(1.5), oracle([["GetRecordStatus"]])[0]['data']['outputActive'])[1] is True),
+ ("record stop", [{"type":45,"state":1}], lambda L: (time.sleep(1.5), oracle([["GetRecordStatus"]])[0]['data']['outputActive'])[1] is False),
+]
+acts=[]
+for i,(n,subs,_) in enumerate(cases):
+    acts.append({"id":f"a{i}","name":f"obs {i}","enabled":True,"queue":"","group":"","triggers":[],
+      "subActions":[dict(s, id=str(uuid.uuid4()), index=j, enabled=True, connectionId="") for j,s in enumerate(subs)]})
+cfg={"start_hidden":True,"websockets":{"autoStart":True,"address":"127.0.0.1","port":8090,"endpoint":"/"},
+     "obs":{"connections":[{"id":"obs1","name":"OBS","host":"127.0.0.1","port":4456,"password":"szt-test-pass","autoConnect":True,"reconnect":True,"retryInterval":5,"version":5}]},
+     "actions":{"version":24,"actions":acts,"queues":[],"groups":[]}}
+json.dump(cfg, open(f'{D}/streamerz.json','w'))
+if os.path.exists(f"{D}/shot.png"): os.remove(f"{D}/shot.png")
+logf=open(f'{D}/log.txt','w')
+p=subprocess.Popen([f'{D}/streamerz'], cwd=D, stdout=logf, stderr=subprocess.STDOUT, env=dict(os.environ, DISPLAY=':99', WAYLAND_DISPLAY='', STREAMERZ_DEV='1'))
+time.sleep(3)
+FLIP0=oracle([["GetSceneItemTransform",{"sceneName":A,"sceneItemId":item(A,"SZT Image")}]])[0]['data']['sceneItemTransform']['scaleX']
+fails=0
+try:
+    for i,(n,subs,check) in enumerate(cases):
+        ws([{"request":"DoAction","id":"1","action":{"name":f"obs {i}"},"args":{"user":"tester"}}])
+        time.sleep(0.8)
+        L=[l.strip() for l in open(f'{D}/log.txt').read().splitlines()]
+        try: ok=check(L)
+        except Exception as e: ok=f"error {e!r}"
+        print(("PASS" if ok is True else "FAIL"), n, "" if ok is True else ok)
+        fails+= ok is not True
+finally:
+    p.terminate()
+print("failures:", fails)
+print("\n".join(l for l in open(f'{D}/log.txt').read().splitlines() if "OBS" in l)[:3000])
+```
+
 ## Driving the window in tests
 
 Never drive the window on the desktop someone is using: focusing it sends their keys to streamerz. Run it

@@ -297,6 +297,7 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> KickHandle
         connected,
         read_task: None,
         speakers: HashSet::new(),
+        ids: Default::default(),
     };
     tokio::task::spawn_local(runner.run());
     handle
@@ -309,6 +310,8 @@ struct Runner {
     connected: Arc<AtomicBool>,
     read_task: Option<tokio::task::JoinHandle<()>>,
     speakers: HashSet<String>,
+    /// The channel (slug) and its broadcaster user id, looked up once.
+    ids: std::cell::RefCell<Option<(String, u64)>>,
 }
 
 impl Runner {
@@ -437,6 +440,46 @@ impl Runner {
         }
     }
 
+    /// A user id from a login: every Kick user has a channel whose slug is their name.
+    async fn user_id(&self, token: &str, login: &str) -> Result<u64, String> {
+        let slug = clean_kick_channel(login).to_lowercase();
+        if slug.is_empty() {
+            return Err("no user given".into());
+        }
+        let v = api(
+            token,
+            "GET",
+            &format!("/channels?slug={}", crate::commands::url_encode(&slug)),
+            None,
+        )
+        .await?;
+        v.pointer("/data/0/broadcaster_user_id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("no Kick user '{slug}'"))
+    }
+
+    /// The broadcaster's user id: the logged-in broadcaster's, else the channel's (looked up once).
+    async fn broadcaster_id(&self, token: &str) -> Result<u64, String> {
+        let (chan, cached) = {
+            let c = self.cfg.borrow();
+            let acc = c.kick.broadcaster.as_ref().filter(|b| b.user_id != 0);
+            (c.kick.channel.clone(), acc.map(|b| (b.username.clone(), b.user_id)))
+        };
+        if let Some((name, id)) = cached {
+            if chan.is_empty() || name.eq_ignore_ascii_case(&chan) {
+                return Ok(id);
+            }
+        }
+        if let Some((slug, id)) = self.ids.borrow().as_ref() {
+            if *slug == chan {
+                return Ok(*id);
+            }
+        }
+        let id = self.user_id(token, &chan).await?;
+        *self.ids.borrow_mut() = Some((chan, id));
+        Ok(id)
+    }
+
     async fn send_chat_api(
         &self,
         text: &str,
@@ -445,152 +488,75 @@ impl Runner {
         fallback: bool,
     ) -> Result<(), String> {
         let token = token(&self.engine, &self.cfg, use_bot, fallback).await?;
-        let mut chatroom_id = self.cfg.borrow().kick.chatroom_id.unwrap_or(0);
-
-        if chatroom_id == 0 {
-            let channel = self.cfg.borrow().kick.channel.trim().to_lowercase();
-            if !channel.is_empty() {
-                let url = format!("https://kick.com/api/v2/channels/{channel}");
-                if let Ok(resp) = crate::http::request("GET", &url, &[], b"").await {
-                    if let Ok(val) = serde_json::from_slice::<Value>(&resp.body) {
-                        if let Some(crid) = val.pointer("/chatroom/id").and_then(Value::as_u64) {
-                            chatroom_id = crid;
-                            self.engine.change(|c| c.kick.chatroom_id = Some(crid));
-                        }
-                    }
-                }
-            }
-        }
-
-        let url = format!("{KICK_API_BASE}/chat");
-        let mut payload = json!({
+        // "user" with the channel's id: sent by whoever the token is (bot or broadcaster) into the
+        // broadcaster's chat. ("bot" would send to the token's own channel.)
+        let mut body = json!({
             "content": text,
-            "type": "message",
+            "type": "user",
+            "broadcaster_user_id": self.broadcaster_id(&token).await?,
         });
-        if chatroom_id > 0 {
-            payload["chatroom_id"] = json!(chatroom_id);
+        if let Some(r) = reply_id.filter(|r| !r.is_empty()) {
+            body["reply_to_message_id"] = json!(r);
         }
-        if let Some(r_id) = reply_id {
-            payload["reply_to_message_id"] = json!(r_id);
-        }
-
-        let headers = vec![
-            ("Authorization".to_string(), format!("Bearer {token}")),
-            ("Content-Type".to_string(), "application/json".to_string()),
-        ];
-
-        let body = serde_json::to_vec(&payload).unwrap_or_default();
-        let resp = crate::http::request("POST", &url, &headers, &body).await?;
-        if (200..300).contains(&resp.status) {
-            Ok(())
-        } else {
-            Err(format!("Kick send chat error {}: {}", resp.status, resp.text()))
-        }
+        api(&token, "POST", "/chat", Some(body)).await.map(drop)
     }
 
     async fn set_channel_title_api(&self, title: &str) -> Result<(), String> {
         let token = token(&self.engine, &self.cfg, false, false).await?;
-
-        let url = format!("{KICK_API_BASE}/channels");
-        let payload = json!({ "title": title });
-        let headers = vec![
-            ("Authorization".to_string(), format!("Bearer {token}")),
-            ("Content-Type".to_string(), "application/json".to_string()),
-        ];
-        let body = serde_json::to_vec(&payload).unwrap_or_default();
-        let resp = crate::http::request("PATCH", &url, &headers, &body).await?;
-        if (200..300).contains(&resp.status) {
-            Ok(())
-        } else {
-            Err(format!("Kick set title error {}: {}", resp.status, resp.text()))
-        }
+        api(&token, "PATCH", "/channels", Some(json!({ "stream_title": title })))
+            .await
+            .map(drop)
     }
 
     async fn set_channel_category_api(&self, category_id: u64) -> Result<(), String> {
         let token = token(&self.engine, &self.cfg, false, false).await?;
+        api(
+            &token,
+            "PATCH",
+            "/channels",
+            Some(json!({ "category_id": category_id })),
+        )
+        .await
+        .map(drop)
+    }
 
-        let url = format!("{KICK_API_BASE}/channels");
-        let payload = json!({ "category_id": category_id });
-        let headers = vec![
-            ("Authorization".to_string(), format!("Bearer {token}")),
-            ("Content-Type".to_string(), "application/json".to_string()),
-        ];
-        let body = serde_json::to_vec(&payload).unwrap_or_default();
-        let resp = crate::http::request("PATCH", &url, &headers, &body).await?;
-        if (200..300).contains(&resp.status) {
-            Ok(())
-        } else {
-            Err(format!("Kick set category error {}: {}", resp.status, resp.text()))
+    /// Ban (`minutes` None) or time out a user.
+    async fn ban(&self, user_login: &str, minutes: Option<u64>, reason: &str) -> Result<(), String> {
+        let token = token(&self.engine, &self.cfg, false, false).await?;
+        let mut body = json!({
+            "broadcaster_user_id": self.broadcaster_id(&token).await?,
+            "user_id": self.user_id(&token, user_login).await?,
+        });
+        if let Some(m) = minutes {
+            body["duration"] = json!(m.clamp(1, 10080));
         }
+        if !reason.is_empty() {
+            body["reason"] = json!(reason.chars().take(100).collect::<String>());
+        }
+        api(&token, "POST", "/moderation/bans", Some(body)).await.map(drop)
     }
 
     async fn ban_user_api(&self, user_login: &str, reason: &str) -> Result<(), String> {
-        let token = token(&self.engine, &self.cfg, false, false).await?;
-
-        let url = format!("{KICK_API_BASE}/moderation/bans");
-        let payload = json!({
-            "banned_user": user_login,
-            "reason": reason,
-        });
-        let headers = vec![
-            ("Authorization".to_string(), format!("Bearer {token}")),
-            ("Content-Type".to_string(), "application/json".to_string()),
-        ];
-        let body = serde_json::to_vec(&payload).unwrap_or_default();
-        let resp = crate::http::request("POST", &url, &headers, &body).await?;
-        if (200..300).contains(&resp.status) {
-            Ok(())
-        } else {
-            Err(format!("Kick ban error {}: {}", resp.status, resp.text()))
-        }
+        self.ban(user_login, None, reason).await
     }
 
+    /// Streamer.bot gives timeouts in seconds; Kick takes minutes (1 to 7 days).
+    async fn timeout_user_api(&self, user_login: &str, seconds: u64, reason: &str) -> Result<(), String> {
+        self.ban(user_login, Some(seconds.div_ceil(60)), reason).await
+    }
+
+    /// Lifts a ban or a timeout (the same call on Kick).
     async fn unban_user_api(&self, user_login: &str) -> Result<(), String> {
         let token = token(&self.engine, &self.cfg, false, false).await?;
-
-        let url = format!("{KICK_API_BASE}/moderation/bans/{user_login}");
-        let headers = vec![("Authorization".to_string(), format!("Bearer {token}"))];
-        let resp = crate::http::request("DELETE", &url, &headers, b"").await?;
-        if (200..300).contains(&resp.status) {
-            Ok(())
-        } else {
-            Err(format!("Kick unban error {}: {}", resp.status, resp.text()))
-        }
-    }
-
-    async fn timeout_user_api(&self, user_login: &str, duration: u64, reason: &str) -> Result<(), String> {
-        let token = token(&self.engine, &self.cfg, false, false).await?;
-
-        let url = format!("{KICK_API_BASE}/moderation/timeouts");
-        let payload = json!({
-            "banned_user": user_login,
-            "duration": duration,
-            "reason": reason,
+        let body = json!({
+            "broadcaster_user_id": self.broadcaster_id(&token).await?,
+            "user_id": self.user_id(&token, user_login).await?,
         });
-        let headers = vec![
-            ("Authorization".to_string(), format!("Bearer {token}")),
-            ("Content-Type".to_string(), "application/json".to_string()),
-        ];
-        let body = serde_json::to_vec(&payload).unwrap_or_default();
-        let resp = crate::http::request("POST", &url, &headers, &body).await?;
-        if (200..300).contains(&resp.status) {
-            Ok(())
-        } else {
-            Err(format!("Kick timeout error {}: {}", resp.status, resp.text()))
-        }
+        api(&token, "DELETE", "/moderation/bans", Some(body)).await.map(drop)
     }
 
     async fn untimeout_user_api(&self, user_login: &str) -> Result<(), String> {
-        let token = token(&self.engine, &self.cfg, false, false).await?;
-
-        let url = format!("{KICK_API_BASE}/moderation/timeouts/{user_login}");
-        let headers = vec![("Authorization".to_string(), format!("Bearer {token}"))];
-        let resp = crate::http::request("DELETE", &url, &headers, b"").await?;
-        if (200..300).contains(&resp.status) {
-            Ok(())
-        } else {
-            Err(format!("Kick untimeout error {}: {}", resp.status, resp.text()))
-        }
+        self.unban_user_api(user_login).await
     }
 }
 
@@ -728,6 +694,29 @@ pub async fn login(cfg: &Arc<watch::Sender<Config>>, bot: bool) -> Result<KickAc
             expires_at: t.expires_at,
         },
     })
+}
+
+/// One official API call: the JSON answer, or Kick's error message.
+async fn api(token: &str, method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
+    let mut headers = vec![
+        ("Authorization".to_string(), format!("Bearer {token}")),
+        ("Accept".to_string(), "application/json".to_string()),
+    ];
+    let body = match body {
+        Some(b) => {
+            headers.push(("Content-Type".to_string(), "application/json".to_string()));
+            serde_json::to_vec(&b).unwrap_or_default()
+        }
+        None => Vec::new(),
+    };
+    let r = crate::http::request(method, &format!("{KICK_API_BASE}{path}"), &headers, &body).await?;
+    let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
+    if (200..300).contains(&r.status) {
+        Ok(v)
+    } else {
+        let msg = v["message"].as_str().map_or_else(|| r.text(), String::from);
+        Err(format!("Kick {method} {path}: HTTP {} {msg}", r.status))
+    }
 }
 
 /// Kick's emotes in a message: each `[emote:<id>:<name>]`.
