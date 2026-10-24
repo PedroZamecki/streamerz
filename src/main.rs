@@ -82,6 +82,9 @@ pub struct Config {
     /// Donations and shops configuration.
     #[serde(default)]
     pub donations: donations::DonationsConfig,
+    /// The built-in chat commands were added (once: deleting one keeps it deleted).
+    #[serde(default)]
+    builtins: bool,
     /// Fields this build doesn't know (e.g. written by a newer one): kept, so a save loses nothing.
     #[serde(flatten)]
     rest: Map<String, Value>,
@@ -113,6 +116,7 @@ impl Default for Config {
             youtube: youtube::YouTubeConfig::default(),
             tiktok: tiktok::TikTokConfig::default(),
             donations: donations::DonationsConfig::default(),
+            builtins: false,
             rest: Map::new(),
         }
     }
@@ -377,6 +381,7 @@ fn main() {
             }
             // Opt-in: only the Streamlabs Desktop connections set to connect at start.
             e.slobs_sync(true);
+            e.add_builtins();
             // Opt-in: YouTube auto-connect if configured.
             let yt_cfg = engine_cfg.borrow().youtube.clone();
             if yt_cfg.auto_connect && (!yt_cfg.video_id.trim().is_empty() || !yt_cfg.channel_id.trim().is_empty()) {

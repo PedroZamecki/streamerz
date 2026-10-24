@@ -223,7 +223,9 @@ platform handles through channels, never through shared locks held across awaits
   sends to any platform. Fixed on the way: YouTube read (InnerTube needs the chat page's continuation and
   the channel's live video), YouTube send (live chat id, not video id), YouTube auto-connect, Kick channel
   change keeping the old chatroom, one shared TLS setup instead of one per request.
-- [ ] 22. Built-in commands (see Decisions), same-platform replies, per-platform `!command platforms`.
+- [x] 22. Built-in commands (`!commands`, `!command add/edit/remove/platforms/show`, `!so`, `!uptime`, `!title`)
+  as ordinary editable commands with streamerz-only `builtin`/`response`/`replyAll` fields; text replies
+  for any command; new commands work on every platform.
 - [ ] 23. TikTok native: piratetok read, webview send, bridge removed.
 - [ ] 24+. Later extras, one phase each, order chosen then (see Decisions).
 

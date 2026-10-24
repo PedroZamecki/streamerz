@@ -115,6 +115,8 @@ pub struct YouTubeToken {
 
 pub enum YouTubeCmd {
     Connect,
+    /// The live video being read ("" when none).
+    LiveVideo(oneshot::Sender<String>),
     Disconnect,
     SendMessage {
         broadcast: String,
@@ -267,6 +269,46 @@ impl YouTubeHandle {
     }
 
     /// The new poll's id.
+    /// The live video's watch page facts: start time (Unix seconds; None when not live) and title.
+    async fn live_page(&self) -> Result<(Option<i64>, String), String> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(YouTubeCmd::LiveVideo(tx))
+            .map_err(|_| "YouTube runner is down".to_string())?;
+        let video = rx.await.unwrap_or_default();
+        if video.is_empty() {
+            return Ok((None, String::new()));
+        }
+        let headers = [
+            ("User-Agent".to_string(), UA.to_string()),
+            ("Accept-Language".to_string(), "en".to_string()),
+        ];
+        let page = crate::http::request("GET", &format!("{YOUTUBE_WEB}/watch?v={video}"), &headers, b"")
+            .await?
+            .text();
+        let start = find(&page, "startTimestamp").and_then(|t| {
+            // "2026-10-24T09:00:05+00:00"
+            crate::engine::rest_parse_iso(t)
+        });
+        let title = page
+            .split("<meta name=\"title\" content=\"")
+            .nth(1)
+            .and_then(|x| x.split('"').next())
+            .unwrap_or("")
+            .replace("&amp;", "&")
+            .replace("&#39;", "'")
+            .replace("&quot;", "\"");
+        Ok((start, title))
+    }
+
+    pub async fn live_started(&self) -> Result<Option<i64>, String> {
+        Ok(self.live_page().await?.0)
+    }
+
+    pub async fn live_title(&self) -> Result<String, String> {
+        Ok(self.live_page().await?.1)
+    }
+
     pub async fn create_poll(&self, broadcast: &str, question: &str, options: &[String]) -> Result<String, String> {
         let (resp_tx, resp_rx) = oneshot::channel();
         self.tx
@@ -314,6 +356,9 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
 
         while let Some(cmd) = rx.recv().await {
             match cmd {
+                YouTubeCmd::LiveVideo(resp) => {
+                    let _ = resp.send(runner.live.borrow().0.clone());
+                }
                 YouTubeCmd::Connect => {
                     if !active {
                         active = true;
