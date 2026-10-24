@@ -36,7 +36,6 @@ pub const BROADCASTER_SCOPES: &[&str] = &[
     "bits:read",
     "moderator:read:followers",
     "channel:manage:raids",
-    "channel:read:raids",
     "moderator:manage:announcements",
     "user:read:whispers",
     "user:manage:whispers",

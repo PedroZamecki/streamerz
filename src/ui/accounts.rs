@@ -540,11 +540,7 @@ fn advanced(cfg: &Cfg, p: P) {
             ("Client secret", c.kick.client_secret.clone(), true),
         ],
         P::YouTube => vec![
-            (
-                "Video ID (empty: the channel's live)",
-                c.youtube.video_id.clone(),
-                false,
-            ),
+            ("Video ID (optional)", c.youtube.video_id.clone(), false),
             ("Google client ID", c.youtube.client_id.clone(), false),
             ("Google client secret", c.youtube.client_secret.clone(), true),
         ],
@@ -552,24 +548,25 @@ fn advanced(cfg: &Cfg, p: P) {
     };
     let help = match p {
         P::Kick => format!(
-            "Sending on Kick needs your own Kick app: kick.com > Settings > Developer > Create app,\n\
+            "Sending on Kick needs your own Kick app: kick.com > Settings > Developer > Create app, \
              redirect URL {}, every scope ticked. Paste its client ID and secret here.",
             crate::kick::KICK_REDIRECT
         ),
-        P::YouTube => "Sending on YouTube needs your own Google client: console.cloud.google.com > new project >\n\
-             enable YouTube Data API v3 > OAuth consent screen (External, Publish) > Credentials > OAuth client, Desktop app.".into(),
+        P::YouTube => "Sending on YouTube needs your own Google client: console.cloud.google.com > new project > \
+             enable YouTube Data API v3 > OAuth consent screen (External, Publish) > Credentials > OAuth client, Desktop app. \
+             Leave Video ID empty to follow the channel's current live.".into(),
         P::TikTok => "tikstream or TikFinity serve TikTok's events here (default ws://127.0.0.1:21213/).".into(),
         P::Twitch => String::new(),
     };
     drop(c);
-    let h = 110 + fields.len() as i32 * (ROW + 6);
+    let h = 132 + fields.len() as i32 * (ROW + 6);
     let (mut win, answer) = dialogs::window(620, h, &format!("{} - Advanced", p.name()));
     let mut col = Flex::new(10, 10, 600, h - 20, None).column();
     col.set_pad(6);
     let f = Frame::default()
         .with_label(&help)
         .with_align(Align::Left | Align::Inside | Align::Wrap);
-    col.fixed(&f, 54);
+    col.fixed(&f, 76);
     let mut inputs: Vec<Box<dyn Fn() -> String>> = Vec::new();
     for (label, value, secret) in &fields {
         let r = dialogs::row(label);
