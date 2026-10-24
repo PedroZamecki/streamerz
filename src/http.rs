@@ -90,10 +90,10 @@ pub fn tls_connector() -> Result<native_tls::TlsConnector, String> {
 
 type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>;
 
-/// `tokio_tungstenite::connect_async` with the shared TLS setup.
+/// `tokio_tungstenite::connect_async` with the shared TLS setup (a URL, or a request with headers).
 #[allow(clippy::result_large_err)] // the same error type connect_async returns
 pub async fn ws_connect(
-    url: &str,
+    url: impl tokio_tungstenite::tungstenite::client::IntoClientRequest + Unpin,
 ) -> Result<(Ws, tokio_tungstenite::tungstenite::handshake::client::Response), tokio_tungstenite::tungstenite::Error> {
     let tls = tls_connector().map_err(|e| tokio_tungstenite::tungstenite::Error::Io(std::io::Error::other(e)))?;
     tokio_tungstenite::connect_async_tls_with_config(

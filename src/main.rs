@@ -25,6 +25,7 @@ pub mod twitch;
 pub mod types;
 mod ui;
 mod vars;
+mod webcast;
 pub mod youtube;
 
 use serde::{Deserialize, Serialize};

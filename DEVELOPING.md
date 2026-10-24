@@ -492,6 +492,15 @@ ws.onmessage = (m) => { const v = JSON.parse(m.data); if (v.request !== "Hello")
   reqs.length ? setTimeout(() => ws.send(JSON.stringify(reqs.shift())), 200) : ws.close(); };
 ```
 
+## TikTok live (src/webcast.rs)
+
+Reading needs a channel that is live right now. `api-live/user/room?...&uniqueId=NAME` (the URL in
+`webcast::room_id`) says so: `statusCode` 19881007 is no such user, `data.liveRoom.status` 2 is live, 4
+offline. It answers 429 to a few quick lookups in a row (less with a `ttwid` cookie), so check names one
+every few seconds. Then run streamerz with `"tiktok": {"channel": NAME, "autoConnect": true}` and subscribe
+to the TikTok events on its WebSocket. Chat on a quiet live can take minutes; joins and likes come at once.
+An emote-only comment has no text (its emotes are in field 13).
+
 ## OBS sub-actions against a real OBS
 
 A throwaway OBS on the hidden display, so the user's own profile and devices aren't touched: its own config

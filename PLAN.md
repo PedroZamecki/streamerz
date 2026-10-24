@@ -35,8 +35,8 @@ phase, following `CLAUDE.md`.
 | Integrations | Opt-in and off by default; a disabled one opens nothing. In scope: donations/shops (Ko-fi, StreamElements, Streamlabs, Patreon, Fourthwall, Throne, Tipeee, Treatstream, DonorDrive, Pally, Shopify, Streamloots) and webhooks/remote (Discord, IFTTT, pronouns, Streamer.bot remote instances). |
 | OS | Windows + Linux (Wayland, ksni tray). CI releases a Windows exe and a Linux binary on every release. |
 | Budget | Hidden window, Twitch + OBS connected: < 25 MB RSS and ~0% idle CPU, measured and written in every PR. Streamer.bot uses ~300 MB. |
-| Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, fltk, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only). HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. **tokio-native-tls** (the crate tokio-tungstenite's native-tls feature uses, for HTTPS), **regex-lite** (If/Else, While, Switch and regex commands; .NET's backreferences and lookaround aren't supported). **piratetok-live-rs** (vendored as in tikstream, TikTok read, phase 22). Anything else needs a question first. |
-| TikTok | Read natively with a vendored `piratetok-live-rs` (as tikstream), no bridge app. Send through the logged-in tikstream-login webview posting on the live page (TikTok signs its chat requests); the webview runs only while TikTok sending is enabled. Broadcaster + bot accounts like the other platforms. |
+| Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, fltk, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only). HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. **tokio-native-tls** (the crate tokio-tungstenite's native-tls feature uses, for HTTPS), **regex-lite** (If/Else, While, Switch and regex commands; .NET's backreferences and lookaround aren't supported). Anything else needs a question first. |
+| TikTok | Read natively, no bridge app: `webcast.rs` ports the part of piratetok-live-rs (0BSD) streamerz uses (ttwid cookie, room lookup, WebSocket, ~10 protobuf messages) onto the HTTP/WebSocket code and flate2 already here, instead of vendoring it with reqwest, prost and tracing. Send through the logged-in tikstream-login webview posting on the live page (TikTok signs its chat requests); the webview runs only while TikTok sending is enabled. Broadcaster + bot accounts like the other platforms. |
 | Chat commands | Commands keep Streamer.bot's `sources` bitmask (Twitch 1/2/8, YouTube 1024, Kick 2097152, TikTok 4194304), so each command chooses its platforms. Built-in commands (`!commands`, `!command add/edit/remove`, `!command platforms`, `!so`, `!uptime`, `!title`) are normal commands created on first run, editable and disable-able. Replies go to the platform the command came from; a command can opt in to reply on all connected platforms. |
 | Not in scope | Meld, PolyPop, Elgato, VTube Studio/Voicemod/Speaker.bot/TITS/Crowd Control/HypeRate/Pulsoid/Lumia/Streamfog/mtion, the Streamer.bot website integration/cloud, C# and plugins. |
 | Later (own phases, after phase 14) | Quotes, credits, points, users/first words; sounds and TTS; file I/O, file tail, folder watcher, process triggers; hotkeys/inputs, MIDI, voice control; Decks, HTML overlay, multi-platform chat window. |
@@ -226,10 +226,16 @@ platform handles through channels, never through shared locks held across awaits
 - [x] 22. Built-in commands (`!commands`, `!command add/edit/remove/platforms/show`, `!so`, `!uptime`, `!title`)
   as ordinary editable commands with streamerz-only `builtin`/`response`/`replyAll` fields; text replies
   for any command; new commands work on every platform.
-- [ ] 23. TikTok native: piratetok read, webview send, bridge removed.
+- [x] 23. TikTok native read (`webcast.rs`, ported from piratetok-live-rs): chat, gifts, likes, follows,
+  shares, subscriptions and joins without tikstream or TikFinity; the bridge URL and Start tikstream removed.
+- [ ] 23b. TikTok send through the logged-in webview (see Open points).
 - [ ] 24+. Later extras, one phase each, order chosen then (see Decisions).
 
 ## Open points (decide when the phase starts, ask first)
+
+- Phase 23b: TikTok signs its web chat requests, so sending needs the logged-in page itself. tikstream-login
+  has no send mode and lives on tikstream's unmerged draft PR; either add one there, or give streamerz its
+  own small webview helper (wry/tao in a separate child binary, as tikstream does). Ask which.
 
 - Cron trigger: new in Streamer.bot 1.1.0. When the real Streamer.bot is updated, read its type code and
   fields from the metadata, then add it (and a small cron parser).
