@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{oneshot, watch};
 
+pub mod chatlog;
 pub mod events;
 pub mod globals;
 mod rest;
@@ -98,6 +99,8 @@ struct State {
     file_tails: HashMap<String, bool>,
     /// Dev mode (`STREAMERZ_DEV=1`): chat lines kept here instead of sent, for `GetChatOut`.
     dev_out: Option<Vec<Value>>,
+    /// Every platform's chat, for the chat window.
+    chat_log: chatlog::Log,
 }
 
 pub struct Engine {

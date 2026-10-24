@@ -214,7 +214,7 @@ impl Engine {
         rx: &mut mpsc::UnboundedReceiver<Call>,
         up: &Cell<bool>,
     ) -> Result<(), String> {
-        let (ws, _) = tokio_tungstenite::connect_async(url).await.map_err(|e| e.to_string())?;
+        let (ws, _) = crate::http::ws_connect(url).await.map_err(|e| e.to_string())?;
         let (mut tx, mut stream) = ws.split();
         let req = |id: &str, resource: &str, method: &str, args: Value| {
             Message::Text(

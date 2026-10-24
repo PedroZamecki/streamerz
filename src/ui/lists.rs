@@ -488,9 +488,20 @@ pub struct Views {
     pub servers: Rc<RefCell<Servers>>,
     pub groups: Rc<RefCell<Groups>>,
     pub accounts: Rc<RefCell<super::accounts::Accounts>>,
+    pub chat: Rc<RefCell<super::chat::Chat>>,
 }
 
 impl Views {
+    /// New chat lines: added to the Chat tab when it's up (it catches up when shown).
+    pub fn chat_refresh(&self, tabs: &Tabs) {
+        let up = tabs.value().map(|g| g.as_widget_ptr());
+        if let Ok(mut c) = self.chat.try_borrow_mut() {
+            if up == Some(c.tab.as_widget_ptr()) {
+                c.refresh();
+            }
+        }
+    }
+
     /// Redraw what the config shows, and the live views on the tab that's up.
     pub fn refresh(&self, tabs: &Tabs) {
         let up = tabs.value().map(|g| g.as_widget_ptr());
@@ -507,6 +518,7 @@ impl Views {
                 a.refresh();
             }
         }
+        self.chat_refresh(tabs);
         if let Ok(mut q) = self.queues.try_borrow_mut() {
             if is(&q.tab) {
                 q.refresh();
@@ -527,6 +539,7 @@ impl Views {
 
 pub fn tabs(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Views {
     let accounts = super::accounts::tab(tabs, cfg, cmds);
+    let chat = super::chat::tab(tabs, cmds);
     let mut col = tab(tabs, "Commands");
     let commands = list(&mut col, cfg, cmds, &COMMANDS, Some("enabled"));
     col.end();
@@ -599,6 +612,7 @@ pub fn tabs(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Views {
         servers,
         groups,
         accounts,
+        chat,
     }
 }
 

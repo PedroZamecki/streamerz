@@ -25,6 +25,9 @@ pub struct Chat {
     pub internal: bool,
     pub msg_id: String,
     pub text: String,
+    /// The platform emotes in `text`, by the name shown there (Twitch "Kappa", YouTube ":yt:", Kick
+    /// "[emote:37226:KEKW]").
+    pub emotes: Vec<String>,
     /// The platform's own arguments (user, userName, userType, ...), passed on to the action.
     pub args: Obj,
 }

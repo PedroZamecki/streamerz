@@ -80,14 +80,38 @@ pub async fn request(method: &str, url: &str, headers: &[(String, String)], body
     Err(format!("{url}: too many redirects"))
 }
 
+/// One TLS setup for every connection: building one loads and parses the system's CA bundle
+/// (OpenSSL), a few MB and a burst of CPU each time.
+pub fn tls_connector() -> Result<native_tls::TlsConnector, String> {
+    static C: std::sync::OnceLock<Result<native_tls::TlsConnector, String>> = std::sync::OnceLock::new();
+    C.get_or_init(|| native_tls::TlsConnector::new().map_err(|e| e.to_string()))
+        .clone()
+}
+
+type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>;
+
+/// `tokio_tungstenite::connect_async` with the shared TLS setup.
+#[allow(clippy::result_large_err)] // the same error type connect_async returns
+pub async fn ws_connect(
+    url: &str,
+) -> Result<(Ws, tokio_tungstenite::tungstenite::handshake::client::Response), tokio_tungstenite::tungstenite::Error> {
+    let tls = tls_connector().map_err(|e| tokio_tungstenite::tungstenite::Error::Io(std::io::Error::other(e)))?;
+    tokio_tungstenite::connect_async_tls_with_config(
+        url,
+        None,
+        false,
+        Some(tokio_tungstenite::Connector::NativeTls(tls)),
+    )
+    .await
+}
+
 async fn once(method: &str, url: &str, headers: &[(String, String)], body: &[u8]) -> Result<Response, String> {
     let (tls, host, port, path) = parse(url)?;
     let tcp = TcpStream::connect((host.as_str(), port))
         .await
         .map_err(|e| format!("{host}:{port}: {e}"))?;
     let mut io: Box<dyn Io> = if tls {
-        let c = native_tls::TlsConnector::new().map_err(|e| e.to_string())?;
-        let c = tokio_native_tls::TlsConnector::from(c);
+        let c = tokio_native_tls::TlsConnector::from(tls_connector()?);
         Box::new(c.connect(&host, tcp).await.map_err(|e| format!("{host}: {e}"))?)
     } else {
         Box::new(tcp)

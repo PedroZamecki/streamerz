@@ -474,7 +474,7 @@ async fn run_conn_loop(
     crate::say(format!("OBS '{}': connecting to {url}...", info.name));
 
     loop {
-        match tokio_tungstenite::connect_async(&url).await {
+        match crate::http::ws_connect(&url).await {
             Ok((ws, _)) => {
                 let (mut sink, mut stream) = ws.split();
                 let mut identified = false;
