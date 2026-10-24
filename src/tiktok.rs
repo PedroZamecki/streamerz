@@ -388,6 +388,7 @@ impl Runner {
                         task.abort();
                     }
                     self.connected.store(false, Ordering::Relaxed);
+                    crate::ui::changed();
                     if let Ok(mut s) = self.status.lock() {
                         *s = TikTokStatus::Disconnected;
                     }
@@ -555,6 +556,7 @@ impl Runner {
                 match tokio_tungstenite::connect_async(&url_str).await {
                     Ok((ws_stream, _)) => {
                         connected_flag.store(true, Ordering::Relaxed);
+                        crate::ui::changed();
                         let channel_name = clean_tiktok_channel(&cfg_watch.borrow().tiktok.channel);
                         let conn_msg = format!("Connected ({url_str})");
                         if let Ok(mut s) = status_arc.lock() {
@@ -600,6 +602,7 @@ impl Runner {
                         }
 
                         connected_flag.store(false, Ordering::Relaxed);
+                        crate::ui::changed();
                         let mut args = Obj::new();
                         args.insert("channel".into(), channel_name.into());
                         engine.fire(
@@ -614,6 +617,7 @@ impl Runner {
                     }
                     Err(e) => {
                         connected_flag.store(false, Ordering::Relaxed);
+                        crate::ui::changed();
                         let err_msg = format!("Bridge offline ({e}), retrying in {retry_secs}s");
                         if let Ok(mut s) = status_arc.lock() {
                             *s = TikTokStatus::Error(err_msg.clone());

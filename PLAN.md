@@ -28,8 +28,9 @@ phase, following `CLAUDE.md`.
 | Storage | One `streamerz.json` next to the exe: settings, actions, commands, timers, queues, globals, user data and tokens. Gitignored. Written atomically (temp file + rename) with a `.bak` of the previous version. |
 | Twitch | EventSub WebSocket for chat and every event, Helix REST for sub-actions, no IRC. Broadcaster account plus an optional bot account (chat is sent as the bot when set, as in Streamer.bot). Device-code OAuth with our public client ID, so there's no secret in the exe. |
 | Kick | Read through Kick's public Pusher websocket (what kick.com uses): chat, follows, subs, gifts and more, with no login. The official API with OAuth is used to send chat and moderate. That needs the **user's own Kick app** (client ID + secret pasted in Settings), because Kick requires a secret even for refresh. Official webhooks are optional, through a user-run tunnel to the local HTTP server, with signatures verified (RSA-SHA256, Kick's public key). |
-| YouTube | Read chat and events through InnerTube (what the youtube.com page uses): no quota, no login. The official Data API with Google OAuth (our project; the installed-app secret is embedded, which Google allows) is used to send messages, moderate and set the title/description. If InnerTube breaks, the fallback is the official gRPC `liveChatMessages.streamList`, which Streamer.bot itself uses. |
-| OAuth apps | The repo owner registers the Twitch and Google apps (steps under "Setup"). Users only click Login. Kick is the exception (see above). |
+| YouTube | Read chat and events through InnerTube (what the youtube.com page uses): no quota, no login. The official Data API with Google OAuth, through **the user's own Google client** (Desktop app, pasted in Accounts > YouTube > Advanced, like Kick: nothing shared is shipped) is used to send messages, moderate and set the title/description. If InnerTube breaks, the fallback is the official gRPC `liveChatMessages.streamList`, which Streamer.bot itself uses. |
+| OAuth apps | Only Twitch has a shared app: a public client ID with no secret (device code). Kick and YouTube use the user's own app, so no secret is ever in the repo or the exe. |
+| Security | Tokens and cookies live in the OS keychain (Windows DPAPI, Linux Secret Service; `streamerz.json` with 0600 when there is none), are revoked on logout and never logged. The WebSocket and HTTP servers refuse browser origins other than local ones (`null`, `file://`, localhost) and an allowlist in Servers; clients without an Origin (apps) are unchanged. Importing actions that run programs asks first. Minimum scopes per account. |
 | Stream apps | OBS Studio (obs-websocket v5) and Streamlabs Desktop (its websocket API). Meld Studio and PolyPop are not supported. |
 | Integrations | Opt-in and off by default; a disabled one opens nothing. In scope: donations/shops (Ko-fi, StreamElements, Streamlabs, Patreon, Fourthwall, Throne, Tipeee, Treatstream, DonorDrive, Pally, Shopify, Streamloots) and webhooks/remote (Discord, IFTTT, pronouns, Streamer.bot remote instances). |
 | OS | Windows + Linux (Wayland, ksni tray). CI releases a Windows exe and a Linux binary on every release. |
@@ -119,9 +120,7 @@ platform handles through channels, never through shared locks held across awaits
 - Twitch (phase 6): dev.twitch.tv → Register application. Client type **Public**, redirect
   `http://localhost`, category "Application Integration". Enable Device Code Grant. Put the client ID in
   the code (it's public).
-- Google (phase 11): a Cloud project, enable YouTube Data API v3. OAuth consent screen External, testing
-  then production. Create an OAuth client of type **Desktop app**, and put the ID and secret in the code
-  (Google treats installed-app secrets as non-confidential).
+- Google: nothing for the owner (each user makes a Desktop OAuth client; README has the steps).
 - Kick: nothing for the owner. Each user creates their own app at kick.com → Settings → Developer, and
   README documents the steps.
 
@@ -212,13 +211,16 @@ platform handles through channels, never through shared locks held across awaits
 - [x] 18. Command sources and test hooks: fix Kick's (2097152) and TikTok's (4194304) command source bits
   and the TikTok checkbox, and run TikTok Send Message (43001, never routed). `InjectChat` and `GetChatOut`
   WebSocket requests (only with `STREAMERZ_DEV=1`) test every platform's commands without live channels.
-- [ ] 19. Accounts tab: one row per platform (status, channel, Connect, Broadcaster/Bot Login), details
+- [x] 19. Accounts tab: one row per platform (status, channel, Connect, Broadcaster/Bot Login), details
   under "Advanced". Google loopback OAuth for YouTube, Kick PKCE with the user's app, tikstream-login for
-  TikTok. Replaces the four platform tabs.
-- [ ] 20. Chat box: one send box (platform or All, as Broadcaster/Bot) plus the merged incoming chat.
-- [ ] 21. Built-in commands (see Decisions), same-platform replies, per-platform `!command platforms`.
-- [ ] 22. TikTok native: piratetok read, webview send, bridge removed.
-- [ ] 23+. Later extras, one phase each, order chosen then (see Decisions).
+  TikTok, tokens refreshed before use. Replaces the four platform tabs. Kick's rotated Pusher key fixed.
+  YouTube logs in with the user's own Google client.
+- [ ] 20. Security (see Decisions): keychain storage, revoke on logout, origin check and allowlist, token
+  redaction, import warning for Run a Program, minimum scopes.
+- [ ] 21. Chat box: one send box (platform or All, as Broadcaster/Bot) plus the merged incoming chat.
+- [ ] 22. Built-in commands (see Decisions), same-platform replies, per-platform `!command platforms`.
+- [ ] 23. TikTok native: piratetok read, webview send, bridge removed.
+- [ ] 24+. Later extras, one phase each, order chosen then (see Decisions).
 
 ## Open points (decide when the phase starts, ask first)
 

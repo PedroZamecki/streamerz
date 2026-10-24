@@ -13,6 +13,7 @@ pub mod inputs;
 pub mod kick;
 mod math;
 pub mod model;
+mod oauth;
 pub mod obs;
 pub mod remote;
 pub mod servers;

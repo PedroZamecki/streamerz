@@ -315,6 +315,7 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
                     if !active {
                         active = true;
                         connected.store(true, Ordering::Relaxed);
+                        crate::ui::changed();
                         crate::say("YouTube: monitoring started".into());
                         let args = Obj::new();
                         runner.engine.fire(
@@ -339,6 +340,7 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
                     if active {
                         active = false;
                         connected.store(false, Ordering::Relaxed);
+                        crate::ui::changed();
                         if let Some(task) = poll_task.take() {
                             task.abort();
                         }
@@ -427,6 +429,124 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
     handle
 }
 
+const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+const GOOGLE_SCOPE: &str = "https://www.googleapis.com/auth/youtube.force-ssl";
+
+/// The user's own Google OAuth client (Desktop app): no shared client is shipped, so nothing
+/// secret is in the repo or the exe.
+fn client(c: &Config) -> (String, String) {
+    (c.youtube.client_id.trim().into(), c.youtube.client_secret.trim().into())
+}
+
+/// The bot's (or broadcaster's) access token, the other account's when `fallback`; refreshed first
+/// when it's about to expire.
+pub async fn token(
+    engine: &Rc<Engine>,
+    cfg: &Arc<watch::Sender<Config>>,
+    bot: bool,
+    fallback: bool,
+) -> Result<String, String> {
+    let pick = |c: &Config, bot: bool| {
+        if bot { &c.youtube.bot } else { &c.youtube.broadcaster }
+            .clone()
+            .filter(|a| !a.token.access_token.is_empty())
+    };
+    let (acc, bot, (id, secret)) = {
+        let c = cfg.borrow();
+        match (pick(&c, bot), fallback) {
+            (Some(a), _) => (a, bot, client(&c)),
+            (None, true) => (pick(&c, !bot).ok_or("No YouTube account logged in")?, !bot, client(&c)),
+            (None, false) => {
+                return Err(format!(
+                    "YouTube {} isn't logged in",
+                    if bot { "bot" } else { "broadcaster" }
+                ));
+            }
+        }
+    };
+    if !crate::oauth::stale(acc.token.expires_at) || acc.token.refresh_token.is_empty() {
+        return Ok(acc.token.access_token);
+    }
+    // Google keeps the refresh token, so two refreshes at once are harmless.
+    let t = crate::oauth::token(
+        GOOGLE_TOKEN_URL,
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", &acc.token.refresh_token),
+            ("client_id", &id),
+            ("client_secret", &secret),
+        ],
+    )
+    .await
+    .map_err(|e| format!("YouTube token refresh: {e}"))?;
+    let (access, expires_at) = (t.access.clone(), t.expires_at);
+    engine.change(|c| {
+        if let Some(a) = if bot {
+            c.youtube.bot.as_mut()
+        } else {
+            c.youtube.broadcaster.as_mut()
+        } {
+            a.token.access_token = access;
+            a.token.expires_at = expires_at;
+        }
+    });
+    Ok(t.access)
+}
+
+/// Log in with Google in the browser (loopback redirect on a free port, PKCE).
+pub async fn login(cfg: &Arc<watch::Sender<Config>>) -> Result<YouTubeAccount, String> {
+    let (id, secret) = client(&cfg.borrow());
+    if id.is_empty() {
+        return Err("Set your Google OAuth client (Desktop app) first (Accounts > YouTube > Advanced).".into());
+    }
+    let l = crate::oauth::Login::bind(0, "/").await?;
+    let e = crate::commands::url_encode;
+    crate::oauth::open_browser(&format!(
+        "https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id={}&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}&access_type=offline&prompt=consent",
+        e(&id),
+        e(&l.redirect),
+        e(GOOGLE_SCOPE),
+        l.challenge,
+        l.state
+    ));
+    let (redirect, verifier) = (l.redirect.clone(), l.verifier.clone());
+    let code = l.code().await?;
+    let t = crate::oauth::token(
+        GOOGLE_TOKEN_URL,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("client_id", &id),
+            ("client_secret", &secret),
+            ("redirect_uri", &redirect),
+            ("code_verifier", &verifier),
+        ],
+    )
+    .await?;
+    let headers = [("Authorization".to_string(), format!("Bearer {}", t.access))];
+    let r = crate::http::request(
+        "GET",
+        &format!("{YOUTUBE_API_BASE}/channels?part=snippet&mine=true"),
+        &headers,
+        b"",
+    )
+    .await?;
+    let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
+    let ch = &v["items"][0];
+    let channel_id = ch["id"]
+        .as_str()
+        .ok_or_else(|| format!("no YouTube channel on this account ({})", r.text()))?;
+    Ok(YouTubeAccount {
+        channel_id: channel_id.into(),
+        name: ch["snippet"]["title"].as_str().unwrap_or(channel_id).into(),
+        token: YouTubeToken {
+            access_token: t.access,
+            refresh_token: t.refresh,
+            expires_at: t.expires_at,
+        },
+    })
+}
+
 #[derive(Clone)]
 struct YouTubeRunner {
     engine: Rc<Engine>,
@@ -449,29 +569,7 @@ impl YouTubeRunner {
     }
 
     async fn send_chat_api(&self, broadcast: &str, text: &str, use_bot: bool, fallback: bool) -> Result<(), String> {
-        let token = {
-            let c = self.cfg.borrow();
-            let bot_tok = c
-                .youtube
-                .bot
-                .as_ref()
-                .map(|b| b.token.access_token.clone())
-                .filter(|s| !s.is_empty());
-            let broad_tok = c
-                .youtube
-                .broadcaster
-                .as_ref()
-                .map(|b| b.token.access_token.clone())
-                .filter(|s| !s.is_empty());
-
-            if use_bot {
-                bot_tok
-                    .or(if fallback { broad_tok } else { None })
-                    .ok_or_else(|| "No YouTube bot or fallback token configured".to_string())?
-            } else {
-                broad_tok.ok_or_else(|| "No YouTube broadcaster token configured".to_string())?
-            }
-        };
+        let token = token(&self.engine, &self.cfg, use_bot, fallback).await?;
 
         let live_chat_id = if broadcast.is_empty() {
             self.cfg.borrow().youtube.video_id.clone()
@@ -504,15 +602,7 @@ impl YouTubeRunner {
     }
 
     async fn set_title_api(&self, broadcast: &str, title: &str) -> Result<(), String> {
-        let token = {
-            let c = self.cfg.borrow();
-            c.youtube
-                .broadcaster
-                .as_ref()
-                .map(|b| b.token.access_token.clone())
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| "No YouTube broadcaster token configured".to_string())?
-        };
+        let token = token(&self.engine, &self.cfg, false, false).await?;
 
         let video_id = if broadcast.is_empty() {
             &self.cfg.borrow().youtube.video_id
@@ -542,15 +632,7 @@ impl YouTubeRunner {
     }
 
     async fn set_description_api(&self, broadcast: &str, description: &str) -> Result<(), String> {
-        let token = {
-            let c = self.cfg.borrow();
-            c.youtube
-                .broadcaster
-                .as_ref()
-                .map(|b| b.token.access_token.clone())
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| "No YouTube broadcaster token configured".to_string())?
-        };
+        let token = token(&self.engine, &self.cfg, false, false).await?;
 
         let video_id = if broadcast.is_empty() {
             &self.cfg.borrow().youtube.video_id
@@ -589,15 +671,7 @@ impl YouTubeRunner {
         title: &str,
         description: &str,
     ) -> Result<(), String> {
-        let token = {
-            let c = self.cfg.borrow();
-            c.youtube
-                .broadcaster
-                .as_ref()
-                .map(|b| b.token.access_token.clone())
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| "No YouTube broadcaster token configured".to_string())?
-        };
+        let token = token(&self.engine, &self.cfg, false, false).await?;
 
         let video_id = if broadcast.is_empty() {
             &self.cfg.borrow().youtube.video_id
@@ -632,15 +706,7 @@ impl YouTubeRunner {
     }
 
     async fn ban_user_api(&self, broadcast: &str, user_id: &str) -> Result<(), String> {
-        let token = {
-            let c = self.cfg.borrow();
-            c.youtube
-                .broadcaster
-                .as_ref()
-                .map(|b| b.token.access_token.clone())
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| "No YouTube broadcaster token configured".to_string())?
-        };
+        let token = token(&self.engine, &self.cfg, false, false).await?;
 
         let live_chat_id = if broadcast.is_empty() {
             &self.cfg.borrow().youtube.video_id
@@ -673,15 +739,7 @@ impl YouTubeRunner {
     }
 
     async fn timeout_user_api(&self, broadcast: &str, user_id: &str, duration: u64) -> Result<(), String> {
-        let token = {
-            let c = self.cfg.borrow();
-            c.youtube
-                .broadcaster
-                .as_ref()
-                .map(|b| b.token.access_token.clone())
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| "No YouTube broadcaster token configured".to_string())?
-        };
+        let token = token(&self.engine, &self.cfg, false, false).await?;
 
         let live_chat_id = if broadcast.is_empty() {
             &self.cfg.borrow().youtube.video_id
