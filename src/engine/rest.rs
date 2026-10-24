@@ -69,12 +69,28 @@ fn civil(secs: i64) -> crate::fmt::Time {
     }
 }
 
+pub(super) fn parse_iso_pub(t: &str) -> Option<i64> {
+    parse_iso(t)
+}
+
 /// Unix seconds from an ISO 8601 UTC time as the platforms send it ("2024-08-17T12:34:56Z",
 /// fractions ignored).
 fn parse_iso(t: &str) -> Option<i64> {
     let n = |r: std::ops::Range<usize>| t.get(r)?.parse::<i64>().ok();
     let days = days_from_civil(n(0..4)?, n(5..7)?, n(8..10)?);
-    Some(days * 86_400 + n(11..13)? * 3600 + n(14..16)? * 60 + n(17..19)?)
+    // An offset after the seconds (and any fraction): "+02:00" is two hours ahead of UTC.
+    let tail = t
+        .get(19..)
+        .unwrap_or("")
+        .trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
+    let offset = match (tail.get(..1), tail.get(1..3).and_then(|h| h.parse::<i64>().ok())) {
+        (Some(sign @ ("+" | "-")), Some(h)) => {
+            let m = tail.get(4..6).and_then(|m| m.parse::<i64>().ok()).unwrap_or(0);
+            (h * 3600 + m * 60) * if sign == "+" { 1 } else { -1 }
+        }
+        _ => 0,
+    };
+    Some(days * 86_400 + n(11..13)? * 3600 + n(14..16)? * 60 + n(17..19)? - offset)
 }
 
 /// The calendar time between two Unix times: years, months, days, hours, minutes, seconds.
@@ -300,6 +316,7 @@ impl Engine {
             ran += self.fire(T_COMMAND, "Command Triggered", "Core/Commands", "command", &args, |t| {
                 s(t, "commandId") == id
             });
+            ran += usize::from(self.command_reply(c, &args, chat));
         }
         ran
     }
@@ -4383,6 +4400,14 @@ mod tests {
 
     #[test]
     fn dates_and_ages() {
+        assert_eq!(
+            parse_iso("2024-08-17T14:34:56+02:00"),
+            parse_iso("2024-08-17T12:34:56Z")
+        );
+        assert_eq!(
+            parse_iso("2024-08-17T09:34:56.5-03:00"),
+            parse_iso("2024-08-17T12:34:56Z")
+        );
         let t = parse_iso("2024-08-17T12:34:56.123Z").unwrap();
         assert_eq!(t, 1_723_898_096);
         let c = civil(t);

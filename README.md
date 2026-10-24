@@ -53,6 +53,22 @@ The other tabs, as in Streamer.bot:
   and the emotes seen in chat; each platform gets its own format (on Kick an emote name becomes Kick's
   emote tag, a Kick emote sent elsewhere becomes its name). A send that fails says why, in grey.
 - **Commands** and **Timers**: add, edit (a form), turn on/off and delete them.
+  A command can just answer: put the text in **Reply text** (variables like `%user%` and `%input0%`
+  work); it answers where it was typed, or everywhere with **Reply on every connected platform**. The
+  platform boxes choose where a command works; new ones work everywhere.
+
+## Built-in chat commands
+
+Added once on first run, in the Built-in group: edit, turn off or re-alias them like any command
+(deleted ones stay deleted). They work on every platform, answering where they were typed.
+
+- `!commands`: the commands that work here and that the asker may use.
+- `!command add !name text`, `!command edit !name text`, `!command remove !name`,
+  `!command platforms !name twitch,kick,youtube,tiktok` (or `all`), `!command show !name` (moderators).
+- `!so user` (moderators): "Go check out user at …" with that platform's link; on Twitch also Twitch's
+  own shoutout.
+- `!uptime`: how long this platform's stream has been live (not on TikTok).
+- `!title`: this platform's stream title; moderators set it with `!title new title`.
 - **Queues**: your queues and Default, with what's running and waiting in each; add, edit, delete,
   Blocking, pause/resume (one or all) and clear. **Pending** lists the waiting runs.
 - **History**: the last 100 runs (actions set to Exclude from History are left out), with their

@@ -114,23 +114,29 @@ pub static COMMANDS: Kind = Kind {
         ("userCooldown", "User cooldown (s)", Int),
         ("grantType", "Grant type", Pick(&["Allow", "Deny"])),
         ("permittedGroups", "Groups, one per line", Lines),
+        ("response", "Reply text", Multi),
+        ("replyAll", "Reply on every connected platform", Bool),
     ],
     // Streamer.bot's field order (from its exports).
     new: || {
         json!({"permittedUsers": [], "permittedGroups": [], "id": "", "name": "New command", "enabled": true,
             "include": true, "mode": 0, "command": "!new", "regexExplicitCapture": false, "location": 0,
-            "ignoreBotAccount": true, "ignoreInternal": true, "sources": 1, "persistCounter": false,
+            "ignoreBotAccount": true, "ignoreInternal": true, "sources": 6292481, "persistCounter": false,
             "persistUserCounter": false, "caseSensitive": false, "globalCooldown": 0, "userCooldown": 0,
-            "group": "", "grantType": 0})
+            "group": "", "grantType": 0, "response": "", "replyAll": false})
     },
-    columns: &[200, 330, 150, 80],
+    columns: &[180, 280, 120, 260],
     label: |o| {
         let aliases = crate::commands::aliases(o).join(", ");
         vec![
             s(o, "name").into(),
             aliases,
             s(o, "group").into(),
-            yes(!on(o, "enabled"), "disabled"),
+            if on(o, "enabled") {
+                crate::engine::builtins::sources_text(o.get("sources").and_then(Value::as_u64).unwrap_or(1))
+            } else {
+                "disabled".into()
+            },
         ]
     },
     after: None,

@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{oneshot, watch};
 
+pub mod builtins;
 pub mod chatlog;
 pub mod events;
 pub mod globals;
@@ -157,6 +158,11 @@ pub fn supported(kind: u32) -> bool {
             | 35001 | 35002 | 35010..=35012 | 35020..=35022 | 35030 | 35031
             | 35040..=35043 | 35101..=35103 | 35105..=35108 | 35113 | 43001 | 99900..=99904
     )
+}
+
+/// Unix seconds from an ISO 8601 UTC time ("2024-08-17T12:34:56Z").
+pub fn rest_parse_iso(t: &str) -> Option<i64> {
+    rest::parse_iso_pub(t)
 }
 
 /// A random version 4 UUID.
