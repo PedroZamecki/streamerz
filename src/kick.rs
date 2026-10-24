@@ -606,6 +606,8 @@ async fn run_pusher_loop(
 pub const KICK_REDIRECT: &str = "http://127.0.0.1:45563/callback";
 const KICK_TOKEN_URL: &str = "https://id.kick.com/oauth/token";
 const KICK_SCOPES: &str = "user:read channel:read channel:write chat:write moderation:ban events:subscribe";
+/// The bot only chats.
+const KICK_BOT_SCOPES: &str = "user:read chat:write";
 
 /// One token refresh at a time: Kick replaces the refresh token, so a second refresh with the old
 /// one would fail.
@@ -679,7 +681,7 @@ pub async fn token(
 
 /// Log in through the browser with the user's own Kick app (client ID and secret in the config,
 /// redirect `KICK_REDIRECT`).
-pub async fn login(cfg: &Arc<watch::Sender<Config>>) -> Result<KickAccount, String> {
+pub async fn login(cfg: &Arc<watch::Sender<Config>>, bot: bool) -> Result<KickAccount, String> {
     let (id, secret) = {
         let c = cfg.borrow();
         (
@@ -698,7 +700,7 @@ pub async fn login(cfg: &Arc<watch::Sender<Config>>) -> Result<KickAccount, Stri
         "https://id.kick.com/oauth/authorize?response_type=code&client_id={}&redirect=127.0.0.1&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
         e(&id),
         e(&l.redirect),
-        e(KICK_SCOPES),
+        e(if bot { KICK_BOT_SCOPES } else { KICK_SCOPES }),
         l.challenge,
         l.state
     ));

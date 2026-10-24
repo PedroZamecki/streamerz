@@ -16,6 +16,7 @@ pub mod model;
 mod oauth;
 pub mod obs;
 pub mod remote;
+mod secrets;
 pub mod servers;
 mod slobs;
 pub mod tiktok;
@@ -138,7 +139,55 @@ fn status(f: impl FnOnce(&mut Status)) {
 }
 
 /// Print and keep for the window's log.
+/// Hide credentials a log line may carry (error bodies, URLs): the value after each marker.
+fn redact(line: &str) -> String {
+    const MARKERS: &[&str] = &[
+        "access_token",
+        "refresh_token",
+        "client_secret",
+        "id_token",
+        "sessionid",
+        "token=",
+        "Bearer ",
+        "password",
+    ];
+    let lower = line.to_ascii_lowercase();
+    let mut cuts: Vec<(usize, usize)> = Vec::new();
+    for m in MARKERS {
+        let m = m.to_ascii_lowercase();
+        let mut from = 0;
+        while let Some(i) = lower[from..].find(&m) {
+            let mut j = from + i + m.len();
+            let b = line.as_bytes();
+            while j < b.len() && matches!(b[j], b'"' | b'\'' | b':' | b'=' | b' ') {
+                j += 1;
+            }
+            let start = j;
+            while j < b.len() && (b[j].is_ascii_alphanumeric() || b"._~+/-%=".contains(&b[j])) {
+                j += 1;
+            }
+            if j > start {
+                cuts.push((start, j));
+            }
+            from = j.max(from + i + 1);
+        }
+    }
+    cuts.sort_unstable();
+    let mut out = String::with_capacity(line.len());
+    let mut at = 0;
+    for (a, b) in cuts {
+        if a >= at {
+            out.push_str(&line[at..a]);
+            out.push_str("***");
+            at = b;
+        }
+    }
+    out.push_str(&line[at..]);
+    out
+}
+
 fn say(line: String) {
+    let line = redact(&line);
     println!("{line}");
     status(|s| {
         if s.log.len() == LOG_LINES {
@@ -175,8 +224,17 @@ fn save_to(path: &Path, c: &Config) -> std::io::Result<()> {
     static SAVING: Mutex<()> = Mutex::new(());
     let _one = SAVING.lock();
     let tmp = with(path, ".tmp");
-    let mut f = std::fs::File::create(&tmp)?;
-    f.write_all(serde_json::to_string_pretty(c).unwrap_or_default().as_bytes())?;
+    let mut v = serde_json::to_value(c).unwrap_or_default();
+    secrets::seal(&mut v);
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create(true).truncate(true);
+    // Only the owner can read it: it may hold logins (see secrets.rs).
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    let mut f = o.open(&tmp)?;
+    #[cfg(unix)]
+    f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    f.write_all(serde_json::to_string_pretty(&v).unwrap_or_default().as_bytes())?;
     f.sync_all()?;
     match std::fs::copy(path, with(path, ".bak")) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
@@ -196,7 +254,14 @@ fn save(c: &Config) -> std::io::Result<()> {
 /// The config, else its `.bak`, else the defaults. Written back, so new settings show up in the
 /// file; an invalid file is left alone.
 fn load_from(path: &Path) -> Config {
-    let read = |p: &Path| std::fs::read_to_string(p).map(|s| serde_json::from_str::<Config>(&s));
+    let read = |p: &Path| {
+        std::fs::read_to_string(p).map(|s| {
+            serde_json::from_str::<serde_json::Value>(&s).and_then(|mut v| {
+                secrets::open(&mut v);
+                serde_json::from_value::<Config>(v)
+            })
+        })
+    };
     let c = match read(path) {
         Ok(Ok(c)) => c,
         Err(_) => Config::default(),
@@ -276,6 +341,7 @@ fn autostart(on: bool) -> std::io::Result<()> {
 
 fn main() {
     say(version());
+    secrets::init(&config_path());
     let cfg = load_from(&config_path());
     say(format!("config: {}", config_path().display()));
     let app = ui::app();
@@ -344,6 +410,24 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redacts_credentials() {
+        assert_eq!(
+            redact(r#"token request failed (HTTP 400): {"access_token":"abc.DEF-1","refresh_token": "x/y=", "ok":1}"#),
+            r#"token request failed (HTTP 400): {"access_token":"***","refresh_token": "***", "ok":1}"#
+        );
+        assert_eq!(
+            redact("GET /revoke?client_id=c&token=t%2B1&x=2"),
+            "GET /revoke?client_id=c&token=***&x=2"
+        );
+        assert_eq!(redact("Authorization: Bearer abc123"), "Authorization: Bearer ***");
+        assert_eq!(
+            redact("Twitch: refreshed the bot token"),
+            "Twitch: refreshed the bot token"
+        );
+        assert_eq!(redact("cookie sessionid=zz; tt=1"), "cookie sessionid=***; tt=1");
+    }
 
     #[test]
     fn save_keeps_bak_and_unknown_fields() {

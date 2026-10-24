@@ -60,7 +60,39 @@ impl P {
         }
     }
 
-    fn logout(self, c: &mut Config, bot: bool) {
+    /// Forget an account; its revoke URL and form (Kick and Google need the token in the URL).
+    fn logout(self, c: &mut Config, bot: bool) -> Option<String> {
+        let e = crate::commands::url_encode;
+        let revoke = match self {
+            P::Twitch => if bot { &c.twitch.bot } else { &c.twitch.broadcaster }
+                .as_ref()
+                .map(|a| {
+                    format!(
+                        "https://id.twitch.tv/oauth2/revoke?client_id={}&token={}",
+                        crate::twitch::CLIENT_ID,
+                        e(&a.token.access_token)
+                    )
+                }),
+            P::YouTube => if bot { &c.youtube.bot } else { &c.youtube.broadcaster }
+                .as_ref()
+                .map(|a| {
+                    // Revoking the refresh token ends the whole grant.
+                    let t = if a.token.refresh_token.is_empty() {
+                        &a.token.access_token
+                    } else {
+                        &a.token.refresh_token
+                    };
+                    format!("https://oauth2.googleapis.com/revoke?token={}", e(t))
+                }),
+            P::Kick => if bot { &c.kick.bot } else { &c.kick.broadcaster }.as_ref().map(|a| {
+                format!(
+                    "https://id.kick.com/oauth/revoke?token={}&token_hint_type=access_token",
+                    e(&a.token.access_token)
+                )
+            }),
+            // A cookie: only TikTok's own logout ends the session.
+            P::TikTok => None,
+        };
         match (self, bot) {
             (P::Twitch, false) => c.twitch.broadcaster = None,
             (P::Twitch, true) => c.twitch.bot = None,
@@ -71,6 +103,7 @@ impl P {
             (P::TikTok, false) => c.tiktok.broadcaster = None,
             (P::TikTok, true) => c.tiktok.bot = None,
         }
+        revoke
     }
 
     /// The channel to read; Twitch reads the broadcaster's own.
@@ -353,7 +386,31 @@ pub fn tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
             let refresh = refresh.clone();
             b.set_callback(move |b| {
                 if b.label() == "Logout" {
-                    save(&cfg, |c| p.logout(c, bot));
+                    let mut revoke = None;
+                    save(&cfg, |c| revoke = p.logout(c, bot));
+                    if let Some(url) = revoke {
+                        // Best effort: the token is gone here either way.
+                        tell(&cmds, move |_| {
+                            tokio::task::spawn_local(async move {
+                                let h = [(
+                                    "Content-Type".to_string(),
+                                    "application/x-www-form-urlencoded".to_string(),
+                                )];
+                                // Kick reads the token from the query; Twitch and Google from a form.
+                                let (u, q) = match url.split_once('?') {
+                                    Some((u, q)) if !u.contains("kick.com") => (u, q),
+                                    _ => (url.as_str(), ""),
+                                };
+                                let r = crate::http::request("POST", u, &h, q.as_bytes()).await;
+                                let ok = r.as_ref().is_ok_and(|r| (200..300).contains(&r.status));
+                                crate::say(format!(
+                                    "{}: login revoked{}",
+                                    p.name(),
+                                    if ok { "" } else { " (the server didn't confirm)" }
+                                ));
+                            });
+                        });
+                    }
                     if p == P::Twitch && !bot {
                         p.connect(&cmds, false);
                     }
@@ -374,7 +431,7 @@ fn login(cfg: &Cfg, cmds: &Cmds, p: P, bot: bool) {
         P::TikTok => tiktok_login(cfg, bot),
         P::Kick => {
             let c = cfg.clone();
-            if let Some(a) = browser_login(cmds, "Kick", bot, async move { crate::kick::login(&c).await }) {
+            if let Some(a) = browser_login(cmds, "Kick", bot, async move { crate::kick::login(&c, bot).await }) {
                 save(cfg, |c| {
                     *if bot { &mut c.kick.bot } else { &mut c.kick.broadcaster } = Some(a)
                 });

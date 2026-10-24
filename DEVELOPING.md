@@ -555,6 +555,25 @@ which opens the display and loads fontconfig and harfbuzz, about 14 MB, even wit
 Streamer.bot splits multi-line text (command aliases) on `\r\n` only: `!a\n!b` is one alias `!a!b`
 there. Its text boxes write `\r\n`, and so do the forms' multi-line fields.
 
+## Secrets (src/secrets.rs)
+
+Every config key ending in `token`, `secret`, `password` or `cookie` (outside the user's own data:
+actions, globals, commands, ...) is moved on save into one `secrets` value (`dpapi:` or `keyring:` +
+base64) and put back on load. A new secret field only needs a name ending like that. On Linux the key is
+read lazily from the Secret Service on its own thread, so nobody who never logs in touches the keyring.
+Check it by hand: `secret-tool search application streamerz` shows the item; `secret-tool clear
+application streamerz config <path>` removes it (the saved logins then can't be decrypted and are kept
+as they are until the key is back). `main.rs`'s `redact` hides token-shaped values in every log line.
+
+The Windows check needs the official rustc and both rust-std components; /tmp is cleared on reboot, so
+reinstall them with:
+
+```
+mkdir -p /tmp/rtdl && cd /tmp/rtdl && V=$(rustc -V | cut -d' ' -f2) && for c in rustc-$V-x86_64-unknown-linux-gnu \
+  rust-std-$V-x86_64-unknown-linux-gnu rust-std-$V-x86_64-pc-windows-msvc; do curl -sfLO \
+  https://static.rust-lang.org/dist/$c.tar.xz && tar xf $c.tar.xz && ./$c/install.sh --prefix=/tmp/rt --disable-ldconfig; done
+```
+
 ## Memory and CPU
 
 Every PR measures the hidden window (start hidden, wait a few seconds):

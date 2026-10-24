@@ -1074,6 +1074,7 @@ impl Servers {
             ("enableAuth", "Password required", Bool),
             ("authEnforce", "Password for every request", Bool),
             ("authPassword", "Password", Text),
+            ("allowedOrigins", "Websites allowed (also HTTP), one per line", Multi),
         ];
         let http: &[F] = &[
             ("autoStart", "On", Bool),
