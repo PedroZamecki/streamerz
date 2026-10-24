@@ -36,6 +36,9 @@ pub struct WsSettings {
     /// and custom servers ({id, name, address, port, endpoint, autoStart, ...}).
     pub connections: Vec<Obj>,
     pub servers: Vec<Obj>,
+    /// Websites (origins like `https://overlays.example.com`), one per line, allowed to connect from
+    /// a browser besides local pages. Also used by the HTTP server.
+    pub allowed_origins: String,
 }
 
 impl Default for WsSettings {
@@ -50,6 +53,7 @@ impl Default for WsSettings {
             auth_password: String::new(),
             connections: Vec::new(),
             servers: Vec::new(),
+            allowed_origins: String::new(),
         }
     }
 }
@@ -289,7 +293,8 @@ async fn custom_server(e: Rc<Engine>, s: Obj) {
         let Ok((tcp, peer)) = l.accept().await else { continue };
         let (e, s) = (e.clone(), s.clone());
         tokio::task::spawn_local(async move {
-            let Ok(ws) = accept(tcp, field(&s, "endpoint").to_string()).await else {
+            let allowed = e.config().websockets.allowed_origins.clone();
+            let Ok(ws) = accept(tcp, field(&s, "endpoint").to_string(), allowed).await else {
                 return;
             };
             let mut args = Obj::new();
@@ -313,19 +318,55 @@ async fn custom_server(e: Rc<Engine>, s: Obj) {
     }
 }
 
-/// Accept a WebSocket connection on `endpoint` only (404 elsewhere). The handshake callback's error
-/// type is tungstenite's (a whole HTTP response).
+/// Whether a request may reach the servers. Browsers let any website open `ws://127.0.0.1` or post
+/// to `http://127.0.0.1`, so a request from a browser (it sends `Origin`, or `Sec-Fetch-Site` for
+/// a plain GET) must come from a local page (`null`/`file:` pages, OBS's local files, localhost)
+/// or an allowed website. Apps send neither header and are always let in.
+pub fn origin_ok(origin: Option<&str>, fetch_site: Option<&str>, allowed: &str) -> bool {
+    let Some(o) = origin.map(|o| o.trim().trim_end_matches('/').to_ascii_lowercase()) else {
+        // A GET from another site (an <img> or link) has no Origin, only Sec-Fetch-Site.
+        return fetch_site.is_none_or(|f| !f.eq_ignore_ascii_case("cross-site"));
+    };
+    if o == "null" || o.starts_with("file:") {
+        return true;
+    }
+    let host = o.split_once("://").map_or("", |x| x.1);
+    let host = host
+        .rsplit_once(':')
+        .filter(|(h, p)| !p.contains(']') && !h.is_empty())
+        .map_or(host, |x| x.0);
+    matches!(host, "localhost" | "127.0.0.1" | "[::1]")
+        || allowed
+            .lines()
+            .any(|a| a.trim().trim_end_matches('/').eq_ignore_ascii_case(&o))
+}
+
+/// Accept a WebSocket connection on `endpoint` only (404 elsewhere), from allowed origins only
+/// (403). The handshake callback's error type is tungstenite's (a whole HTTP response).
 #[allow(clippy::result_large_err)]
-async fn accept(tcp: TcpStream, endpoint: String) -> Result<tokio_tungstenite::WebSocketStream<TcpStream>, String> {
+async fn accept(
+    tcp: TcpStream,
+    endpoint: String,
+    allowed: String,
+) -> Result<tokio_tungstenite::WebSocketStream<TcpStream>, String> {
     use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+    use tokio_tungstenite::tungstenite::http::StatusCode;
     let check = move |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
-        if endpoint.is_empty() || req.uri().path() == endpoint {
-            Ok(resp)
+        let h = |k: &str| req.headers().get(k).and_then(|v| v.to_str().ok());
+        let status = if !endpoint.is_empty() && req.uri().path() != endpoint {
+            StatusCode::NOT_FOUND
+        } else if !origin_ok(h("origin"), h("sec-fetch-site"), &allowed) {
+            crate::say(format!(
+                "WebSocket: refused a browser page from {} (add it to Servers > WebSocket > allowed websites to let it in)",
+                h("origin").unwrap_or("another website")
+            ));
+            StatusCode::FORBIDDEN
         } else {
-            let mut r = ErrorResponse::new(None);
-            *r.status_mut() = tokio_tungstenite::tungstenite::http::StatusCode::NOT_FOUND;
-            Err(r)
-        }
+            return Ok(resp);
+        };
+        let mut r = ErrorResponse::new(None);
+        *r.status_mut() = status;
+        Err(r)
     };
     tokio_tungstenite::accept_hdr_async(tcp, check)
         .await
@@ -595,7 +636,7 @@ async fn websocket(e: Rc<Engine>, s: WsSettings) {
 }
 
 async fn connection(e: &Rc<Engine>, s: &WsSettings, tcp: TcpStream, conn: u64) -> Result<(), String> {
-    let ws = accept(tcp, s.endpoint.clone()).await?;
+    let ws = accept(tcp, s.endpoint.clone(), s.allowed_origins.clone()).await?;
     let (mut sink, mut stream) = ws.split();
     let (salt, challenge) = (random_b64(), random_b64());
     let mut hello = json!({"timestamp": crate::engine::globals::iso_now(), "session": crate::engine::uuid(),
@@ -755,10 +796,26 @@ async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
     let mut first = lines.next().unwrap_or("").split(' ');
     let (method, target) = (first.next().unwrap_or(""), first.next().unwrap_or("/"));
     let path = target.split('?').next().unwrap_or("/");
-    let len = lines
-        .filter_map(|l| l.split_once(':'))
-        .find(|(k, _)| k.trim().eq_ignore_ascii_case("content-length"))
-        .and_then(|(_, v)| v.trim().parse::<usize>().ok())
+    let headers: Vec<(&str, &str)> = lines.filter_map(|l| l.split_once(':')).collect();
+    let h = |k: &str| {
+        headers
+            .iter()
+            .find(|(n, _)| n.trim().eq_ignore_ascii_case(k))
+            .map(|(_, v)| v.trim())
+    };
+    let allowed = e.config().websockets.allowed_origins.clone();
+    // Webhooks (donations, Kick) come from servers, which send no Origin; browsers are checked.
+    if !origin_ok(h("origin"), h("sec-fetch-site"), &allowed) {
+        crate::say(format!(
+            "HTTP server: refused a browser page from {}",
+            h("origin").unwrap_or("another website")
+        ));
+        tcp.write_all(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+            .await?;
+        return tcp.shutdown().await;
+    }
+    let len = h("content-length")
+        .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(0)
         .min(1 << 20);
     let mut body = buf.split_off(head_end + 4);
@@ -820,6 +877,32 @@ async fn udp_server(e: Rc<Engine>, s: UdpSettings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn origins() {
+        let ok = |o: Option<&str>, f: Option<&str>| origin_ok(o, f, "https://Overlays.example.com/\r\n");
+        assert!(ok(None, None)); // apps
+        assert!(ok(None, Some("none")));
+        assert!(!ok(None, Some("cross-site"))); // <img src=...> from a website
+        for o in [
+            "null",
+            "file://",
+            "http://localhost:3000",
+            "http://127.0.0.1",
+            "http://[::1]:8080",
+        ] {
+            assert!(ok(Some(o), None), "{o}");
+        }
+        assert!(ok(Some("https://overlays.example.com"), Some("cross-site")));
+        for o in [
+            "https://evil.com",
+            "http://localhost.evil.com",
+            "http://127.0.0.1.evil.com",
+            "https://overlays.example.com.evil.com",
+        ] {
+            assert!(!ok(Some(o), None), "{o}");
+        }
+    }
 
     #[test]
     fn auth() {

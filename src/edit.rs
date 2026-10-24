@@ -271,6 +271,31 @@ pub fn export(c: &Config, ids: &[String], meta: [&str; 4]) -> Obj {
 }
 
 /// What an import holds, for the confirmation.
+/// The programs an import would run ("action: program arguments"): Run a Program can do anything
+/// the user can, so an import from someone else has to say so first.
+pub fn programs(x: &Obj) -> Vec<String> {
+    fn walk(list: Option<&Value>, action: &str, out: &mut Vec<String>) {
+        for sub in list.and_then(Value::as_array).into_iter().flatten() {
+            if sub.get("type").and_then(Value::as_u64) == Some(6) {
+                let f = |k: &str| sub.get(k).and_then(Value::as_str).unwrap_or("");
+                out.push(
+                    format!("{action}: {} {}", f("command"), f("arguments"))
+                        .trim_end()
+                        .to_string(),
+                );
+            }
+            walk(sub.get("subActions"), action, out);
+        }
+    }
+    let mut out = Vec::new();
+    let actions = x.get("data").and_then(|d| d.get("actions")).and_then(Value::as_array);
+    for a in actions.into_iter().flatten() {
+        let name = a.get("name").and_then(Value::as_str).unwrap_or("?");
+        walk(a.get("subActions").or_else(|| a.get("actions")), name, &mut out);
+    }
+    out
+}
+
 pub fn summary(x: &Obj) -> String {
     let n = |k: &str| {
         x.get("data")
@@ -367,6 +392,16 @@ pub fn walk(list: &[Obj], f: &mut dyn FnMut(&Obj)) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lists_programs_an_import_runs() {
+        let x = json!({"data": {"actions": [
+            {"name": "safe", "subActions": [{"type": 1}]},
+            {"name": "bad", "subActions": [{"type": 99900, "subActions": [{"type": 6, "command": "cmd.exe", "arguments": "/c del"}]}]},
+            {"name": "old", "actions": [{"type": 6, "command": "x"}]}
+        ]}});
+        assert_eq!(programs(x.as_object().unwrap()), ["bad: cmd.exe /c del", "old: x"]);
+    }
+
     #[test]
     fn duplicate_action_regenerates_ids() {
         let mut a = new_action("Original", "Group A");

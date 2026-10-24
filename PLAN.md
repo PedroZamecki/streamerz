@@ -215,8 +215,9 @@ platform handles through channels, never through shared locks held across awaits
   under "Advanced". Google loopback OAuth for YouTube, Kick PKCE with the user's app, tikstream-login for
   TikTok, tokens refreshed before use. Replaces the four platform tabs. Kick's rotated Pusher key fixed.
   YouTube logs in with the user's own Google client.
-- [ ] 20. Security (see Decisions): keychain storage, revoke on logout, origin check and allowlist, token
-  redaction, import warning for Run a Program, minimum scopes.
+- [x] 20. Security (see Decisions): keychain storage, revoke on logout, origin check and allowlist, token
+  redaction, import warning for Run a Program, minimum scopes. Linux keeps one random key in the Secret
+  Service and encrypts with HMAC-SHA256 (counter mode, encrypt-then-MAC; sha2 only, no new crate).
 - [ ] 21. Chat box: one send box (platform or All, as Broadcaster/Bot) plus the merged incoming chat.
 - [ ] 22. Built-in commands (see Decisions), same-platform replies, per-platform `!command platforms`.
 - [ ] 23. TikTok native: piratetok read, webview send, bridge removed.

@@ -20,6 +20,19 @@ and authentication, so tools made for Streamer.bot (songrequestz, overlays, Stre
 changes. Set them in the Servers tab (changes apply at once), along with WebSocket clients and custom
 servers.
 
+Unlike Streamer.bot, websites can't reach them: a browser page from another site (which could otherwise
+run your actions or chat as your bot) is refused. Apps, local overlays (OBS browser sources with local
+files, `localhost`) and the websites you list in Servers > WebSocket > **Websites allowed** get in.
+
+## Your logins
+
+Logins (tokens, cookies) and passwords/secrets you type are never stored as plain text in
+`streamerz.json`: on Windows they're encrypted for your Windows user (DPAPI); on Linux with a key kept in
+your keyring (GNOME Keyring, KWallet, KeePassXC), which may ask to unlock the first time. Without a
+keyring they stay in the file, which only you can read. **Logout** also revokes the login at Twitch, Kick
+and Google. Copying `streamerz.json` to another computer or user doesn't carry the logins: log in again.
+Importing actions that run programs shows them and asks first.
+
 ## The editor
 
 Click the tray icon to open the window. The Actions tab lists your actions by group; select one to see
@@ -46,7 +59,7 @@ The other tabs, as in Streamer.bot:
   channel (a URL or @handle works), **Connect**, **Connect on start**, and **Login** for the broadcaster and
   the bot. Chat is sent as the bot when one is logged in. **Advanced…** has the rest:
   - Kick: sending needs your own Kick app (kick.com > Settings > Developer > Create app, redirect URL
-    `http://127.0.0.1:45563/callback`, every scope). Paste its client ID and secret, then Login. Reading
+    `http://127.0.0.1:45563/callback`, every scope; the bot account is only asked for chat). Paste its client ID and secret, then Login. Reading
     chat needs no login.
   - YouTube: the video ID (empty: the channel's live) and your Google OAuth client, needed to send:
     console.cloud.google.com > New project > enable **YouTube Data API v3** > OAuth consent screen

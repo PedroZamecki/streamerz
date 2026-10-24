@@ -750,8 +750,21 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
         &lb3[0],
         Box::new(|m| {
             let Some(x) = dialogs::import() else { return };
+            let progs = edit::programs(&x);
+            let warn = if progs.is_empty() {
+                String::new()
+            } else {
+                let mut list: Vec<String> = progs.iter().take(8).cloned().collect();
+                if progs.len() > 8 {
+                    list.push(format!("... and {} more", progs.len() - 8));
+                }
+                format!(
+                    "\n\nWARNING: this runs programs on your computer. Only import it if you trust where it came from:\n{}",
+                    list.join("\n")
+                )
+            };
             let q = format!(
-                "Import this?\n\n{}\n\nItems with the same name are replaced.",
+                "Import this?\n\n{}\n\nItems with the same name are replaced.{warn}",
                 edit::summary(&x)
             );
             if dialog::choice2_default(&plain(&q), "Cancel", "Import", "") != Some(1) {
