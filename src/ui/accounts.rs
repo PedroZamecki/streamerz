@@ -294,7 +294,7 @@ pub fn tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
         .with_label(
             "• Login opens your browser (Twitch shows a code to type at twitch.tv/activate).\n\
              • Chat is sent as the bot when one is logged in, else as the broadcaster.\n\
-             • Kick sends with your own Kick app: Advanced shows how to make one (a minute, once).\n\
+             • Kick and YouTube send with your own app: Advanced shows how to make one (once).\n\
              • TikTok reads through tikstream or TikFinity (Advanced) until it connects by itself.",
         )
         .with_align(Align::Left | Align::Inside | Align::Wrap);
@@ -469,7 +469,7 @@ fn advanced(cfg: &Cfg, p: P) {
                 c.youtube.video_id.clone(),
                 false,
             ),
-            ("Google client ID (own app)", c.youtube.client_id.clone(), false),
+            ("Google client ID", c.youtube.client_id.clone(), false),
             ("Google client secret", c.youtube.client_secret.clone(), true),
         ],
         P::TikTok => vec![("Bridge URL", c.tiktok.bridge_url.clone(), false)],
@@ -480,7 +480,8 @@ fn advanced(cfg: &Cfg, p: P) {
              redirect URL {}, every scope ticked. Paste its client ID and secret here.",
             crate::kick::KICK_REDIRECT
         ),
-        P::YouTube => "Optional: a Google Cloud OAuth client of type Desktop app (YouTube Data API v3 on).".into(),
+        P::YouTube => "Sending on YouTube needs your own Google client: console.cloud.google.com > new project >\n\
+             enable YouTube Data API v3 > OAuth consent screen (External, Publish) > Credentials > OAuth client, Desktop app.".into(),
         P::TikTok => "tikstream or TikFinity serve TikTok's events here (default ws://127.0.0.1:21213/).".into(),
         P::Twitch => String::new(),
     };

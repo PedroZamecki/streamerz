@@ -429,20 +429,13 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
     handle
 }
 
-// ponytail: empty until the repo owner registers the Google app (PLAN.md Setup); until then users
-// paste their own Desktop app client under Accounts > YouTube > Advanced.
-const GOOGLE_CLIENT_ID: &str = "";
-const GOOGLE_CLIENT_SECRET: &str = "";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const GOOGLE_SCOPE: &str = "https://www.googleapis.com/auth/youtube.force-ssl";
 
-/// The Google OAuth client: the user's own when set, else the embedded one.
+/// The user's own Google OAuth client (Desktop app): no shared client is shipped, so nothing
+/// secret is in the repo or the exe.
 fn client(c: &Config) -> (String, String) {
-    if c.youtube.client_id.trim().is_empty() {
-        (GOOGLE_CLIENT_ID.into(), GOOGLE_CLIENT_SECRET.into())
-    } else {
-        (c.youtube.client_id.trim().into(), c.youtube.client_secret.trim().into())
-    }
+    (c.youtube.client_id.trim().into(), c.youtube.client_secret.trim().into())
 }
 
 /// The bot's (or broadcaster's) access token, the other account's when `fallback`; refreshed first
@@ -504,7 +497,7 @@ pub async fn token(
 pub async fn login(cfg: &Arc<watch::Sender<Config>>) -> Result<YouTubeAccount, String> {
     let (id, secret) = client(&cfg.borrow());
     if id.is_empty() {
-        return Err("Set a Google OAuth client (Desktop app) first (Accounts > YouTube > Advanced).".into());
+        return Err("Set your Google OAuth client (Desktop app) first (Accounts > YouTube > Advanced).".into());
     }
     let l = crate::oauth::Login::bind(0, "/").await?;
     let e = crate::commands::url_encode;

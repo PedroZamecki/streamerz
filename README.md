@@ -48,7 +48,11 @@ The other tabs, as in Streamer.bot:
   - Kick: sending needs your own Kick app (kick.com > Settings > Developer > Create app, redirect URL
     `http://127.0.0.1:45563/callback`, every scope). Paste its client ID and secret, then Login. Reading
     chat needs no login.
-  - YouTube: the video ID (empty: the channel's live) and, optionally, your own Google OAuth client.
+  - YouTube: the video ID (empty: the channel's live) and your Google OAuth client, needed to send:
+    console.cloud.google.com > New project > enable **YouTube Data API v3** > OAuth consent screen
+    (External, then **Publish app**; unpublished apps log you out every 7 days) > Credentials > Create
+    OAuth client ID, type **Desktop app**. Paste its ID and secret, then Login. Google warns that the app
+    is unverified: it's yours, so continue. Reading chat needs no login.
   - TikTok: the tikstream/TikFinity bridge URL, and Start tikstream. Login uses tikstream-login.
 - **Stream Apps**: OBS Studio and Streamlabs Desktop connections.
 - **Settings**: window options and this instance's name (what GetInfo reports).
