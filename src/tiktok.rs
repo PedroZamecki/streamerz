@@ -691,7 +691,7 @@ pub fn handle_tiktok_event(engine: &Rc<Engine>, channel: &str, payload: &Value, 
             // Feed chat commands into engine
             let chat = Chat {
                 platform: "tiktok".into(),
-                source: 4194304, // TikTok command source bit
+                source: 4_194_304,
                 user,
                 user_id,
                 text: comment,

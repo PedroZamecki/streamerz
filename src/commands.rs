@@ -9,10 +9,10 @@ use serde_json::Value;
 /// A chat message, from any platform.
 #[derive(Clone, Default)]
 pub struct Chat {
-    /// "twitch", "youtube" or "kick".
+    /// "twitch", "youtube", "kick" or "tiktok".
     pub platform: String,
     /// Streamer.bot's CommandSource bit: 1 Twitch message, 2 whisper, 8 resub, 1024 YouTube,
-    /// 2097152 Kick.
+    /// 2097152 Kick, 4194304 TikTok.
     pub source: u64,
     pub user_id: String,
     pub user: String,

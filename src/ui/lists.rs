@@ -85,6 +85,7 @@ const SOURCES: &[(&str, u64)] = &[
     ("Twitch re-sub message", 8),
     ("YouTube message", 1024),
     ("Kick message", 2_097_152),
+    ("TikTok message", 4_194_304),
 ];
 
 pub static COMMANDS: Kind = Kind {
@@ -109,6 +110,7 @@ pub static COMMANDS: Kind = Kind {
         ("sources", SOURCES[2].0, Bit(SOURCES[2].1)),
         ("sources", SOURCES[3].0, Bit(SOURCES[3].1)),
         ("sources", SOURCES[4].0, Bit(SOURCES[4].1)),
+        ("sources", SOURCES[5].0, Bit(SOURCES[5].1)),
         ("globalCooldown", "Global cooldown (s)", Int),
         ("userCooldown", "User cooldown (s)", Int),
         ("grantType", "Grant type", Pick(&["Allow", "Deny"])),
