@@ -96,6 +96,8 @@ struct State {
     decks: HashMap<String, crate::decks::DeckState>,
     stream_deck_items: HashMap<String, crate::decks::DeckItem>,
     file_tails: HashMap<String, bool>,
+    /// Dev mode (`STREAMERZ_DEV=1`): chat lines kept here instead of sent, for `GetChatOut`.
+    dev_out: Option<Vec<Value>>,
 }
 
 pub struct Engine {
@@ -237,7 +239,10 @@ impl Engine {
         Rc::new(Engine {
             cfg,
             save,
-            st: RefCell::default(),
+            st: RefCell::new(State {
+                dev_out: std::env::var_os("STREAMERZ_DEV").map(|_| Vec::new()),
+                ..Default::default()
+            }),
             hub: RefCell::default(),
             twitch: RefCell::default(),
             obs: RefCell::default(),
@@ -365,6 +370,9 @@ impl Engine {
         use_bot: bool,
         fallback: bool,
     ) -> Result<(), String> {
+        if self.dev_out("twitch", text, use_bot) {
+            return Ok(());
+        }
         let tw = self.twitch().ok_or("Twitch is not connected")?;
         let text = text.to_string();
         let reply_id = reply_id.map(String::from);
@@ -1580,7 +1588,8 @@ impl Engine {
                 | 35030
                 | 35031
                 | 35040..=35043
-                | 35101..=35113 => self.rest(ctx, o, kind).await,
+                | 35101..=35113
+                | 43001 => self.rest(ctx, o, kind).await,
                 // Streamlabs Desktop
                 401..=415 | 417 => {
                     let mut x = o.clone();

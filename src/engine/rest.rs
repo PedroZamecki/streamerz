@@ -25,7 +25,6 @@ fn in_group(c: &Obj, group: &str) -> bool {
 
 impl Engine {
     /// A chat message: run the commands it matches. How many ran.
-    #[allow(dead_code)] // ponytail: the platforms send chat here (phase 6+).
     pub fn chat(self: &Rc<Self>, chat: &Chat) -> usize {
         self.st.borrow_mut().chat_lines += 1;
         let cmds: Vec<Obj> = self.cfg.borrow().commands.clone();
@@ -104,6 +103,61 @@ impl Engine {
             });
         }
         ran
+    }
+
+    /// Dev mode (`STREAMERZ_DEV` set).
+    pub fn dev(&self) -> bool {
+        self.st.borrow().dev_out.is_some()
+    }
+
+    /// Dev mode: keep a chat line instead of sending it. Whether it was kept.
+    pub fn dev_out(&self, platform: &str, text: &str, bot: bool) -> bool {
+        let mut st = self.st.borrow_mut();
+        let Some(out) = st.dev_out.as_mut() else {
+            return false;
+        };
+        if out.len() >= 500 {
+            out.remove(0); // ponytail: dev only, a VecDeque if this ever matters
+        }
+        out.push(json!({"platform": platform, "text": text, "bot": bot}));
+        true
+    }
+
+    /// Dev mode: the chat lines kept since the last call. None outside dev mode.
+    pub fn dev_take(&self) -> Option<Vec<Value>> {
+        self.st.borrow_mut().dev_out.as_mut().map(std::mem::take)
+    }
+
+    /// Dev mode: a chat message as if it came from `platform`, run through the commands. How many
+    /// ran. `role`: broadcaster, moderator, vip, subscriber or viewer.
+    pub fn inject_chat(self: &Rc<Self>, platform: &str, user: &str, role: &str, text: &str) -> Result<usize, String> {
+        let source = match platform {
+            "twitch" => 1,
+            "youtube" => 1024,
+            "kick" => 2_097_152,
+            "tiktok" => 4_194_304,
+            _ => return Err(format!("unknown platform '{platform}'")),
+        };
+        let mut args = Obj::new();
+        for k in ["user", "userName", "userId"] {
+            args.insert(k.into(), user.into());
+        }
+        args.insert("message".into(), text.into());
+        args.insert("platform".into(), platform.into());
+        Ok(self.chat(&Chat {
+            platform: platform.into(),
+            source,
+            user_id: user.into(),
+            user: user.into(),
+            broadcaster: role == "broadcaster",
+            moderator: role == "moderator",
+            vip: role == "vip",
+            subscriber: role == "subscriber",
+            msg_id: super::uuid(),
+            text: text.into(),
+            args,
+            ..Default::default()
+        }))
     }
 
     /// Add one to a command counter; the new count.
@@ -321,7 +375,8 @@ impl Engine {
                 let text = self.expand(ctx, s(o, "text"));
                 let use_bot = b(o, "useBot", false);
                 let fallback = b(o, "fallback", false);
-                if let Some(tw) = self.twitch() {
+                if self.dev_out("twitch", &text, use_bot) {
+                } else if let Some(tw) = self.twitch() {
                     let _ = tw.send_message(text, None, use_bot, fallback).await;
                 }
             }
@@ -355,7 +410,8 @@ impl Engine {
                 let reply_id = self.expand(ctx, s(o, "replyId"));
                 let use_bot = b(o, "useBot", false);
                 let fallback = b(o, "fallback", false);
-                if let Some(tw) = self.twitch() {
+                if self.dev_out("twitch", &text, use_bot) {
+                } else if let Some(tw) = self.twitch() {
                     let _ = tw.send_message(text, Some(reply_id), use_bot, fallback).await;
                 }
             }
@@ -2475,8 +2531,10 @@ impl Engine {
                 let text = self.expand(ctx, s(o, "text"));
                 let use_bot = b(o, "useBot", false);
                 let fallback = b(o, "fallback", false);
-                let yt = self.youtube_start();
-                let _ = yt.send_message(&broadcast, &text, use_bot, fallback).await;
+                if !self.dev_out("youtube", &text, use_bot) {
+                    let yt = self.youtube_start();
+                    let _ = yt.send_message(&broadcast, &text, use_bot, fallback).await;
+                }
             }
             // 4002: Set Title
             4002 => {
@@ -2599,8 +2657,10 @@ impl Engine {
                 let text = self.expand(ctx, s(o, "text"));
                 let use_bot = b(o, "useBot", false);
                 let fallback = b(o, "fallback", false);
-                let kick = self.kick_start();
-                let _ = kick.send_message(&text, use_bot, fallback).await;
+                if !self.dev_out("kick", &text, use_bot) {
+                    let kick = self.kick_start();
+                    let _ = kick.send_message(&text, use_bot, fallback).await;
+                }
             }
             // 35002: Reply To Message
             35002 => {
@@ -2608,8 +2668,10 @@ impl Engine {
                 let reply_id = self.expand(ctx, s(o, "replyId"));
                 let use_bot = b(o, "useBot", false);
                 let fallback = b(o, "fallback", false);
-                let kick = self.kick_start();
-                let _ = kick.reply_message(&text, &reply_id, use_bot, fallback).await;
+                if !self.dev_out("kick", &text, use_bot) {
+                    let kick = self.kick_start();
+                    let _ = kick.reply_message(&text, &reply_id, use_bot, fallback).await;
+                }
             }
             // 35010: Add Broadcaster Information
             35010 => {
@@ -2802,8 +2864,10 @@ impl Engine {
                 let text = self.expand(ctx, s(o, "text"));
                 let use_bot = b(o, "useBot", false);
                 let fallback = b(o, "fallback", false);
-                let tiktok = self.tiktok_start();
-                let _ = tiktok.send_message(&text, use_bot, fallback).await;
+                if !self.dev_out("tiktok", &text, use_bot) {
+                    let tiktok = self.tiktok_start();
+                    let _ = tiktok.send_message(&text, use_bot, fallback).await;
+                }
             }
 
             // Discord Basic Webhook (7001)
@@ -3527,5 +3591,37 @@ mod tests {
         for w in want {
             assert!(out.iter().any(|x| x == w), "{w} missing: {out:?}");
         }
+    }
+
+    #[test]
+    fn per_platform_commands_dev_outbox() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        let mut reply = action(
+            "a1",
+            "reply",
+            json!([{"type": 35001, "text": "hi %user%"}, {"type": 43001, "text": "tt %user%"}]),
+        );
+        reply["triggers"] = json!([{"commandId": "c1", "id": "t1", "type": 401, "enabled": true}]);
+        let e = engine(json!({"actions": [reply]}));
+        e.st.borrow_mut().dev_out = Some(Vec::new());
+        e.cfg.send_modify(|c| {
+            c.commands = vec![
+                json!({"id": "c1", "name": "hi", "enabled": true, "mode": 0, "command": "!hi",
+                "location": 0, "sources": 2_097_152 | 4_194_304})
+                .as_object()
+                .unwrap()
+                .clone(),
+            ];
+        });
+        run(async move {
+            assert_eq!(e.inject_chat("twitch", "ana", "viewer", "!hi").unwrap(), 0);
+            assert_eq!(e.inject_chat("kick", "bo", "viewer", "!hi").unwrap(), 1);
+            assert!(e.inject_chat("nope", "bo", "viewer", "!hi").is_err());
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let out = e.dev_take().unwrap();
+            assert_eq!(out[0], json!({"platform": "kick", "text": "hi bo", "bot": false}));
+            assert_eq!(out[1], json!({"platform": "tiktok", "text": "tt bo", "bot": false}));
+            assert!(e.dev_take().unwrap().is_empty());
+        });
     }
 }

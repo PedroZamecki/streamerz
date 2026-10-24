@@ -34,8 +34,10 @@ phase, following `CLAUDE.md`.
 | Integrations | Opt-in and off by default; a disabled one opens nothing. In scope: donations/shops (Ko-fi, StreamElements, Streamlabs, Patreon, Fourthwall, Throne, Tipeee, Treatstream, DonorDrive, Pally, Shopify, Streamloots) and webhooks/remote (Discord, IFTTT, pronouns, Streamer.bot remote instances). |
 | OS | Windows + Linux (Wayland, ksni tray). CI releases a Windows exe and a Linux binary on every release. |
 | Budget | Hidden window, Twitch + OBS connected: < 25 MB RSS and ~0% idle CPU, measured and written in every PR. Streamer.bot uses ~300 MB. |
-| Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, fltk, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only). HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. **tokio-native-tls** (the crate tokio-tungstenite's native-tls feature uses, for HTTPS), **regex-lite** (If/Else, While, Switch and regex commands; .NET's backreferences and lookaround aren't supported). Anything else needs a question first. |
-| Not in scope | TikTok (that's tikstream), Meld, PolyPop, Elgato, VTube Studio/Voicemod/Speaker.bot/TITS/Crowd Control/HypeRate/Pulsoid/Lumia/Streamfog/mtion, the Streamer.bot website integration/cloud, C# and plugins. |
+| Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, fltk, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only). HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. **tokio-native-tls** (the crate tokio-tungstenite's native-tls feature uses, for HTTPS), **regex-lite** (If/Else, While, Switch and regex commands; .NET's backreferences and lookaround aren't supported). **piratetok-live-rs** (vendored as in tikstream, TikTok read, phase 22). Anything else needs a question first. |
+| TikTok | Read natively with a vendored `piratetok-live-rs` (as tikstream), no bridge app. Send through the logged-in tikstream-login webview posting on the live page (TikTok signs its chat requests); the webview runs only while TikTok sending is enabled. Broadcaster + bot accounts like the other platforms. |
+| Chat commands | Commands keep Streamer.bot's `sources` bitmask (Twitch 1/2/8, YouTube 1024, Kick 2097152, TikTok 4194304), so each command chooses its platforms. Built-in commands (`!commands`, `!command add/edit/remove`, `!command platforms`, `!so`, `!uptime`, `!title`) are normal commands created on first run, editable and disable-able. Replies go to the platform the command came from; a command can opt in to reply on all connected platforms. |
+| Not in scope | Meld, PolyPop, Elgato, VTube Studio/Voicemod/Speaker.bot/TITS/Crowd Control/HypeRate/Pulsoid/Lumia/Streamfog/mtion, the Streamer.bot website integration/cloud, C# and plugins. |
 | Later (own phases, after phase 14) | Quotes, credits, points, users/first words; sounds and TTS; file I/O, file tail, folder watcher, process triggers; hotkeys/inputs, MIDI, voice control; Decks, HTML overlay, multi-platform chat window. |
 
 ## Architecture
@@ -207,7 +209,16 @@ platform handles through channels, never through shared locks held across awaits
 - [x] 15. Hotkeys, inputs, MIDI and voice control: keyboard simulation, mouse click trigger, MIDI In/Out, Speech to Text triggers and voice control sub-actions.
 - [x] 16. Streamer.bot Decks, Stream Deck, HTML overlay and chat window: Stream Deck sub-actions and triggers, Decks item/page controls, and multi-platform chat window action triggers.
 - [x] 17. File I/O, file tail, watcher and process triggers: File sub-actions (write, read lines, read specific/random line, file/folder exists, set file tail state), file watcher triggers, file tail trigger, process started/stopped triggers.
-- [ ] 18+. Later extras, one phase each, order chosen then (see Decisions).
+- [x] 18. Command sources and test hooks: fix Kick's (2097152) and TikTok's (4194304) command source bits
+  and the TikTok checkbox, and run TikTok Send Message (43001, never routed). `InjectChat` and `GetChatOut`
+  WebSocket requests (only with `STREAMERZ_DEV=1`) test every platform's commands without live channels.
+- [ ] 19. Accounts tab: one row per platform (status, channel, Connect, Broadcaster/Bot Login), details
+  under "Advanced". Google loopback OAuth for YouTube, Kick PKCE with the user's app, tikstream-login for
+  TikTok. Replaces the four platform tabs.
+- [ ] 20. Chat box: one send box (platform or All, as Broadcaster/Bot) plus the merged incoming chat.
+- [ ] 21. Built-in commands (see Decisions), same-platform replies, per-platform `!command platforms`.
+- [ ] 22. TikTok native: piratetok read, webview send, bridge removed.
+- [ ] 23+. Later extras, one phase each, order chosen then (see Decisions).
 
 ## Open points (decide when the phase starts, ask first)
 

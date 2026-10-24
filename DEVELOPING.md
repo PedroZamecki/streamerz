@@ -471,6 +471,27 @@ async def main():
 asyncio.run(main())
 ```
 
+## Chat without live channels (dev mode)
+
+Started with `STREAMERZ_DEV=1`, streamerz sends no chat: every message an action would send (Twitch, YouTube,
+Kick, TikTok send/reply) is kept instead, and the WebSocket server answers two extra requests (unknown
+otherwise, so a release never has them unless the variable is set):
+
+- `{"request": "InjectChat", "id": "1", "platform": "kick", "user": "bo", "role": "viewer", "text": "!hi"}`
+  runs `text` through the commands as a chat message from that platform (`twitch`, `youtube`, `kick`,
+  `tiktok`; role `broadcaster`, `moderator`, `vip`, `subscriber` or `viewer`), answering `{"ran": n}`.
+- `{"request": "GetChatOut", "id": "2"}` returns and clears what would have been sent:
+  `{"messages": [{"platform": "kick", "text": "hi bo", "bot": false}, ...]}` (the last 500).
+
+Node has a WebSocket client built in, so no package is needed:
+
+```js
+// node ws.mjs '[{"request":"InjectChat",...},{"request":"GetChatOut","id":"2"}]'
+const reqs = JSON.parse(process.argv[2]), ws = new WebSocket("ws://127.0.0.1:8090/");
+ws.onmessage = (m) => { const v = JSON.parse(m.data); if (v.request !== "Hello") console.log(m.data);
+  reqs.length ? setTimeout(() => ws.send(JSON.stringify(reqs.shift())), 200) : ws.close(); };
+```
+
 ## Driving the window in tests
 
 Never drive the window on the desktop someone is using: focusing it sends their keys to streamerz. Run it

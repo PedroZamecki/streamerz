@@ -935,7 +935,7 @@ pub fn handle_kick_event(
             // Feed chat commands into engine
             let chat = Chat {
                 platform: "kick".into(),
-                source: 4,
+                source: 2_097_152,
                 user: username,
                 user_id: user_id.to_string(),
                 text: content,
