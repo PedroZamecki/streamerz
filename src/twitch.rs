@@ -70,6 +70,8 @@ pub const BROADCASTER_SCOPES: &[&str] = &[
     "moderator:manage:shoutouts",
     "moderator:read:shoutouts",
     "moderator:read:suspicious_users",
+    "moderator:manage:suspicious_users",
+    "moderator:read:chatters",
     "channel:manage:moderators",
     "channel:manage:vips",
     "channel:read:vips",
@@ -1085,7 +1087,13 @@ impl Runner {
         ];
         let bytes = if let Some(b) = body {
             headers.push(("Content-Type".into(), "application/json".into()));
-            serde_json::to_vec(b).unwrap_or_default()
+            // The same placeholders as the query, as whole JSON strings in the body.
+            let ids = |x: &str| serde_json::to_string(x).unwrap_or_default();
+            serde_json::to_string(b)
+                .unwrap_or_default()
+                .replace("\"{broadcaster_id}\"", &ids(&broadcaster_id))
+                .replace("\"{sender_id}\"", &ids(&sender_id))
+                .into_bytes()
         } else {
             Vec::new()
         };

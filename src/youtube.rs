@@ -154,7 +154,7 @@ pub enum YouTubeCmd {
         broadcast: String,
         question: String,
         options: Vec<String>,
-        resp: oneshot::Sender<Result<(), String>>,
+        resp: oneshot::Sender<Result<String, String>>,
     },
     EndPoll {
         broadcast: String,
@@ -266,7 +266,8 @@ impl YouTubeHandle {
         resp_rx.await.map_err(|_| "Request cancelled".to_string())?
     }
 
-    pub async fn create_poll(&self, broadcast: &str, question: &str, options: &[String]) -> Result<(), String> {
+    /// The new poll's id.
+    pub async fn create_poll(&self, broadcast: &str, question: &str, options: &[String]) -> Result<String, String> {
         let (resp_tx, resp_rx) = oneshot::channel();
         self.tx
             .send(YouTubeCmd::CreatePoll {
@@ -780,7 +781,7 @@ impl YouTubeRunner {
     }
 
     /// Post a poll in the live chat (liveChatMessages.insert, a pollEvent); kept to end it later.
-    async fn create_poll_api(&self, broadcast: &str, question: &str, options: &[String]) -> Result<(), String> {
+    async fn create_poll_api(&self, broadcast: &str, question: &str, options: &[String]) -> Result<String, String> {
         let token = token(&self.engine, &self.cfg, false, false).await?;
         let chat = self.live_chat_id(broadcast, &token).await?;
         let opts: Vec<Value> = options
@@ -805,7 +806,7 @@ impl YouTubeRunner {
         match v["id"].as_str() {
             Some(id) if (200..300).contains(&r.status) => {
                 *self.poll.borrow_mut() = id.to_string();
-                Ok(())
+                Ok(id.to_string())
             }
             _ => Err(format!("YouTube create poll: HTTP {} {}", r.status, r.text())),
         }

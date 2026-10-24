@@ -118,6 +118,13 @@ pub enum KickCmd {
         title: String,
         resp: oneshot::Sender<Result<(), String>>,
     },
+    /// Any official API call as the broadcaster (method, path under /public/v1, JSON body).
+    Api {
+        method: &'static str,
+        path: String,
+        body: Option<Value>,
+        resp: oneshot::Sender<Result<Value, String>>,
+    },
     SetChannelCategory {
         category_id: u64,
         category_name: String,
@@ -201,6 +208,19 @@ impl KickHandle {
             })
             .map_err(|_| "Kick runner is down".to_string())?;
         resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    pub async fn api(&self, method: &'static str, path: &str, body: Option<Value>) -> Result<Value, String> {
+        let (resp, rx) = oneshot::channel();
+        self.tx
+            .send(KickCmd::Api {
+                method,
+                path: path.to_string(),
+                body,
+                resp,
+            })
+            .map_err(|_| "Kick runner is down".to_string())?;
+        rx.await.map_err(|_| "Request cancelled".to_string())?
     }
 
     pub async fn set_channel_title(&self, title: &str) -> Result<(), String> {
@@ -346,6 +366,18 @@ impl Runner {
                 } => {
                     let res = self.send_chat_api(&text, Some(&reply_id), use_bot, fallback).await;
                     let _ = resp.send(res);
+                }
+                KickCmd::Api {
+                    method,
+                    path,
+                    body,
+                    resp,
+                } => {
+                    let r = match token(&self.engine, &self.cfg, false, false).await {
+                        Ok(t) => api(&t, method, &path, body).await,
+                        Err(e) => Err(e),
+                    };
+                    let _ = resp.send(r);
                 }
                 KickCmd::SetChannelTitle { title, resp } => {
                     let res = self.set_channel_title_api(&title).await;
@@ -571,7 +603,8 @@ async fn run_pusher_loop(
 
 pub const KICK_REDIRECT: &str = "http://127.0.0.1:45563/callback";
 const KICK_TOKEN_URL: &str = "https://id.kick.com/oauth/token";
-const KICK_SCOPES: &str = "user:read channel:read channel:write chat:write moderation:ban events:subscribe";
+const KICK_SCOPES: &str =
+    "user:read channel:read channel:write chat:write moderation:ban events:subscribe channel:rewards:read channel:rewards:write";
 /// The bot only chats.
 const KICK_BOT_SCOPES: &str = "user:read chat:write";
 
@@ -709,7 +742,13 @@ async fn api(token: &str, method: &str, path: &str, body: Option<Value>) -> Resu
         }
         None => Vec::new(),
     };
-    let r = crate::http::request(method, &format!("{KICK_API_BASE}{path}"), &headers, &body).await?;
+    // A path under /public/v1, or a whole URL (the v2 endpoints).
+    let url = if path.starts_with("https://") {
+        path.to_string()
+    } else {
+        format!("{KICK_API_BASE}{path}")
+    };
+    let r = crate::http::request(method, &url, &headers, &body).await?;
     let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
     if (200..300).contains(&r.status) {
         Ok(v)

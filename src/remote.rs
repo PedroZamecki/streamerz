@@ -55,16 +55,24 @@ pub async fn execute_discord_webhook(
     avatar: &str,
     image: &str,
     tts: bool,
-) -> Result<(), String> {
+) -> Result<String, String> {
     if url.is_empty() {
         return Err("missing webhook URL".into());
     }
+    // wait=true: Discord answers with the message (its id), not 204.
+    let url = if url.contains('?') {
+        format!("{url}&wait=true")
+    } else {
+        format!("{url}?wait=true")
+    };
+    let url = url.as_str();
     let payload = build_discord_payload(content, username, avatar, image, tts);
     let body = serde_json::to_vec(&payload).map_err(|e| e.to_string())?;
     let headers = vec![("Content-Type".into(), "application/json".into())];
     let resp = crate::http::request("POST", url, &headers, &body).await?;
     if (200..300).contains(&resp.status) {
-        Ok(())
+        let v: Value = serde_json::from_slice(&resp.body).unwrap_or_default();
+        Ok(v["id"].as_str().unwrap_or("").to_string())
     } else {
         Err(format!("HTTP {}", resp.status))
     }

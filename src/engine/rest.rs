@@ -35,6 +35,172 @@ fn obs_color(c: &str) -> i64 {
     i64::from(a << 24 | b2 << 16 | g << 8 | r)
 }
 
+/// Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468
+}
+
+/// A UTC civil date and time from Unix seconds.
+fn civil(secs: i64) -> crate::fmt::Time {
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let year = (yoe + era * 400 + i64::from(month <= 2)) as i32;
+    crate::fmt::Time {
+        year,
+        month,
+        day,
+        hour: (rem / 3600) as u32,
+        min: (rem % 3600 / 60) as u32,
+        sec: (rem % 60) as u32,
+        nanos: 0,
+        weekday: (days + 4).rem_euclid(7) as u32,
+        offset: 0,
+    }
+}
+
+/// Unix seconds from an ISO 8601 UTC time as the platforms send it ("2024-08-17T12:34:56Z",
+/// fractions ignored).
+fn parse_iso(t: &str) -> Option<i64> {
+    let n = |r: std::ops::Range<usize>| t.get(r)?.parse::<i64>().ok();
+    let days = days_from_civil(n(0..4)?, n(5..7)?, n(8..10)?);
+    Some(days * 86_400 + n(11..13)? * 3600 + n(14..16)? * 60 + n(17..19)?)
+}
+
+/// The calendar time between two Unix times: years, months, days, hours, minutes, seconds.
+/// Whole months are added first (a day past the month's end clamps to its last day), then the
+/// rest is counted.
+fn age(from: i64, to: i64) -> [i64; 6] {
+    let to = to.max(from);
+    let (a, b2) = (civil(from), civil(to));
+    let add = |months: i64| {
+        let m0 = i64::from(a.year) * 12 + i64::from(a.month) - 1 + months;
+        let (y, m) = (m0.div_euclid(12), m0.rem_euclid(12) + 1);
+        let len =
+            days_from_civil(y + i64::from(m == 12), if m == 12 { 1 } else { m + 1 }, 1) - days_from_civil(y, m, 1);
+        let day = i64::from(a.day).min(len);
+        days_from_civil(y, m, day) * 86_400 + from.rem_euclid(86_400)
+    };
+    let mut months = (i64::from(b2.year) - i64::from(a.year)) * 12 + i64::from(b2.month) - i64::from(a.month);
+    while months > 0 && add(months) > to {
+        months -= 1;
+    }
+    let rest = to - add(months);
+    [
+        months / 12,
+        months % 12,
+        rest / 86_400,
+        rest % 86_400 / 3600,
+        rest % 3600 / 60,
+        rest % 60,
+    ]
+}
+
+/// "1 year, 10 months, 5 days, ..." and "1y, 10m, 5d, ..." (zero units left out, as Streamer.bot).
+fn age_text(v: &[i64; 6]) -> (String, String) {
+    const LONG: [&str; 6] = ["year", "month", "day", "hour", "minute", "second"];
+    const SHORT: [&str; 6] = ["y", "m", "d", "h", "m", "s"];
+    let (mut l, mut sh) = (Vec::new(), Vec::new());
+    for (i, x) in v.iter().enumerate().filter(|(_, x)| **x > 0) {
+        l.push(format!("{x} {}{}", LONG[i], if *x == 1 { "" } else { "s" }));
+        sh.push(format!("{x}{}", SHORT[i]));
+    }
+    (l.join(", "), sh.join(", "))
+}
+
+/// A list field: a JSON array (of strings or {title}), or text with one item per line or comma.
+fn list(v: Option<&Value>) -> Vec<String> {
+    let items: Vec<String> = match v {
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|x| {
+                x.as_str()
+                    .or_else(|| x["title"].as_str())
+                    .or_else(|| x["text"].as_str())
+            })
+            .map(String::from)
+            .collect(),
+        Some(Value::String(t)) => {
+            let sep = if t.contains('\n') { '\n' } else { ',' };
+            t.split(sep).map(|x| x.trim().to_string()).collect()
+        }
+        _ => Vec::new(),
+    };
+    items.into_iter().filter(|x| !x.trim().is_empty()).collect()
+}
+
+/// A Helix poll as Streamer.bot's poll.* arguments.
+fn poll_args(p: &Value, args: &mut Obj) {
+    let now = crate::fmt::unix_now().as_secs() as i64;
+    let started = p["started_at"].as_str().and_then(parse_iso).unwrap_or(now);
+    let duration = p["duration"].as_i64().unwrap_or(0);
+    let choices = p["choices"].as_array().cloned().unwrap_or_default();
+    let (mut votes, mut points) = (0, 0);
+    for (i, c) in choices.iter().enumerate() {
+        let (v, r) = (
+            c["votes"].as_i64().unwrap_or(0),
+            c["channel_points_votes"].as_i64().unwrap_or(0),
+        );
+        votes += v - r;
+        points += r;
+        for (k, x) in [("id", c["id"].clone()), ("title", c["title"].clone())] {
+            args.insert(format!("poll.choice{i}.{k}"), x);
+        }
+        args.insert(format!("poll.choice{i}.votes"), (v - r).into());
+        args.insert(format!("poll.choice{i}.rewardVotes"), r.into());
+        args.insert(format!("poll.choice{i}.totalVotes"), v.into());
+    }
+    for (k, x) in [
+        ("active", true.into()),
+        ("poll.Id", p["id"].clone()),
+        ("poll.Title", p["title"].clone()),
+        ("poll.StartedAt", p["started_at"].clone()),
+        ("poll.EndsAt", crate::fmt::date(&civil(started + duration), "o").into()),
+        ("poll.Duration", duration.into()),
+        ("poll.DurationRemaining", (started + duration - now).max(0).into()),
+        ("poll.choices.count", choices.len().into()),
+        ("poll.votes", votes.into()),
+        ("poll.rewardVotes", points.into()),
+        ("poll.totalVotes", (votes + points).into()),
+    ] {
+        args.insert(k.into(), x);
+    }
+}
+
+/// A Helix prediction as Streamer.bot's prediction.* arguments.
+fn prediction_args(p: &Value, args: &mut Obj) {
+    args.insert("active".into(), (p["status"] == "ACTIVE").into());
+    for (k, f) in [
+        ("Id", "id"),
+        ("Title", "title"),
+        ("CreatedAt", "created_at"),
+        ("PredictionWindow", "prediction_window"),
+    ] {
+        args.insert(format!("prediction.{k}"), p[f].clone());
+    }
+    for (i, c) in p["outcomes"].as_array().into_iter().flatten().enumerate() {
+        for (k, f) in [
+            ("id", "id"),
+            ("title", "title"),
+            ("color", "color"),
+            ("users", "users"),
+            ("points", "channel_points"),
+        ] {
+            args.insert(format!("prediction.outcome{i}.{k}"), c[f].clone());
+        }
+    }
+}
+
 /// A JSON value as arguments: `prefix.key.sub`, arrays as `prefix.list[0]` (as Streamer.bot puts
 /// OBS Raw and Get Scene Item Properties results).
 fn flatten(prefix: &str, v: &Value, args: &mut Obj) {
@@ -207,6 +373,28 @@ impl Engine {
         } else {
             bump(&mut self.st.borrow_mut().counters)
         }
+    }
+
+    /// A user's id on a platform from their name, as chat reports it (and groups keep it); the
+    /// name itself when it can't be looked up (an id already, or the platform not connected).
+    async fn user_id_for(self: &Rc<Self>, platform: &str, login: &str) -> String {
+        let looked = match platform {
+            "twitch" if !login.bytes().all(|b| b.is_ascii_digit()) => match self.twitch() {
+                Some(tw) => tw.resolve_user_id(login).await.ok(),
+                None => None,
+            },
+            "kick" if !login.bytes().all(|b| b.is_ascii_digit()) && self.kick().is_some() => {
+                let slug = crate::commands::url_encode(&login.to_lowercase());
+                self.kick_start()
+                    .api("GET", &format!("/channels?slug={slug}"), None)
+                    .await
+                    .ok()
+                    .and_then(|v| v["data"][0]["broadcaster_user_id"].as_u64())
+                    .map(|i| i.to_string())
+            }
+            _ => None,
+        };
+        looked.unwrap_or_else(|| login.to_string())
     }
 
     fn user_in_group(&self, group: &str, user_id: &str) -> bool {
@@ -502,9 +690,10 @@ impl Engine {
             }
             // Set Channel Title (15)
             15 => {
+                ctx.args.insert("titleSuccess".into(), false.into());
                 let title = self.expand(ctx, s(o, "title"));
                 if let Some(tw) = self.twitch() {
-                    if let Err(e) = tw
+                    match tw
                         .helix(
                             "PATCH",
                             "channels",
@@ -515,48 +704,75 @@ impl Engine {
                         )
                         .await
                     {
-                        crate::say(format!("Twitch: {e}"));
+                        Ok(_) => {
+                            ctx.args.insert("titleSuccess".into(), true.into());
+                        }
+                        Err(e) => {
+                            crate::say(format!("Twitch: {e}"));
+                        }
                     }
                 }
             }
             // Set Channel Game (16)
             16 => {
-                let game_id = self.expand(ctx, s(o, "gameId"));
-                if let Some(tw) = self.twitch() {
-                    if let Err(e) = tw
-                        .helix(
-                            "PATCH",
-                            "channels",
-                            vec![("broadcaster_id", "{broadcaster_id}")],
-                            Some(json!({"game_id": game_id})),
-                            false,
-                            true,
-                        )
-                        .await
-                    {
-                        crate::say(format!("Twitch: {e}"));
-                    }
+                ctx.args.insert("gameSuccess".into(), false.into());
+                let Some(tw) = self.twitch() else { return };
+                // Source 0 (String): a game name; 1 (Specific Game): the id picked.
+                let (by_id, want) = if n(o, "source") as i64 == 1 && !s(o, "gameId").is_empty() {
+                    (true, self.expand(ctx, s(o, "gameId")))
+                } else {
+                    (false, self.expand(ctx, s(o, "game")))
+                };
+                let r: Result<(), String> = async {
+                    let q = vec![(if by_id { "id" } else { "name" }, want.as_str())];
+                    let v = tw.helix("GET", "games", q, None, false, true).await?;
+                    let g = v["data"][0].clone();
+                    let id = g["id"].as_str().ok_or_else(|| format!("no game '{want}'"))?.to_string();
+                    ctx.args.insert("gameId".into(), id.as_str().into());
+                    ctx.args.insert("gameName".into(), g["name"].clone());
+                    let art = g["box_art_url"]
+                        .as_str()
+                        .unwrap_or("")
+                        .replace("{width}x{height}", "285x380");
+                    ctx.args.insert("gameBoxArt".into(), art.into());
+                    let who = vec![("broadcaster_id", "{broadcaster_id}")];
+                    tw.helix("PATCH", "channels", who, Some(json!({"game_id": id})), false, true)
+                        .await?;
+                    Ok(())
+                }
+                .await;
+                match r {
+                    Ok(()) => drop(ctx.args.insert("gameSuccess".into(), true.into())),
+                    Err(e) => crate::say(format!("Twitch: {e}")),
                 }
             }
+
             // Create Stream Marker (17)
             17 => {
+                ctx.args.insert("streamMarkerSuccess".into(), false.into());
                 let desc = self.expand(ctx, s(o, "description"));
-                if let Some(tw) = self.twitch() {
-                    if let Err(e) = tw
-                        .helix(
-                            "POST",
-                            "streams/markers",
-                            vec![],
-                            Some(json!({"user_id": "{broadcaster_id}", "description": desc})),
-                            false,
-                            true,
-                        )
-                        .await
-                    {
-                        crate::say(format!("Twitch: {e}"));
+                let Some(tw) = self.twitch() else { return };
+                let body = json!({"user_id": "{broadcaster_id}", "description": desc});
+                match tw
+                    .helix("POST", "streams/markers", vec![], Some(body), false, true)
+                    .await
+                {
+                    Ok(v) => {
+                        let m = &v["data"][0];
+                        ctx.args.insert("streamMarkerSuccess".into(), true.into());
+                        for (k, f) in [
+                            ("Id", "id"),
+                            ("CreatedAt", "created_at"),
+                            ("Description", "description"),
+                            ("Position", "position_seconds"),
+                        ] {
+                            ctx.args.insert(format!("streamMarker{k}"), m[f].clone());
+                        }
                     }
+                    Err(e) => crate::say(format!("Twitch: {e}")),
                 }
             }
+
             // Create Clip (18)
             18 => {
                 let delay = b(o, "hasDelay", false);
@@ -574,10 +790,19 @@ impl Engine {
                             true,
                         )
                         .await;
-                    if let Ok(val) = res {
-                        if let Some(id) = val.pointer("/data/0/id").and_then(Value::as_str) {
-                            ctx.args.insert("clipId".into(), id.into());
+                    ctx.args.insert("createClipSuccess".into(), res.is_ok().into());
+                    match res {
+                        Ok(val) => {
+                            if let Some(id) = val.pointer("/data/0/id").and_then(Value::as_str) {
+                                ctx.args.insert("clipId".into(), id.into());
+                                ctx.args.insert("createClipId".into(), id.into());
+                                ctx.args
+                                    .insert("createClipUrl".into(), format!("https://clips.twitch.tv/{id}").into());
+                                ctx.args
+                                    .insert("createClipCreatedAt".into(), super::globals::iso_now().into());
+                            }
                         }
+                        Err(e) => crate::say(format!("Twitch: {e}")),
                     }
                 }
             }
@@ -682,8 +907,6 @@ impl Engine {
                     }
                 }
             }
-            // Configure Rewards (203)
-            203 => {}
             // Set Title (205)
             205 => {
                 let reward_id = self.expand(ctx, s(o, "rewardId"));
@@ -740,15 +963,39 @@ impl Engine {
                         .await
                     {
                         if let Some(r) = val.pointer("/data/0") {
-                            ctx.args.insert("rewardTitle".into(), r["title"].clone());
-                            ctx.args.insert("rewardCost".into(), r["cost"].clone());
-                            ctx.args.insert("rewardPrompt".into(), r["prompt"].clone());
+                            let max = |k: &str| {
+                                r[k][if k == "global_cooldown_setting" {
+                                    "global_cooldown_seconds"
+                                } else {
+                                    "max_per_stream"
+                                }]
+                                .clone()
+                            };
+                            for (k, x) in [
+                                ("rewardId", r["id"].clone()),
+                                ("rewardTitle", r["title"].clone()),
+                                ("rewardCost", r["cost"].clone()),
+                                ("rewardPrompt", r["prompt"].clone()),
+                                ("rewardBackgroundColor", r["background_color"].clone()),
+                                ("rewardEnabled", r["is_enabled"].clone()),
+                                ("rewardPaused", r["is_paused"].clone()),
+                                (
+                                    "rewardSkipRequestQueue",
+                                    r["should_redemptions_skip_request_queue"].clone(),
+                                ),
+                                ("rewardGlobalCooldown", max("global_cooldown_setting")),
+                                ("rewardMaxPerStream", max("max_per_stream_setting")),
+                                (
+                                    "rewardMaxPerUserPerStream",
+                                    r["max_per_user_per_stream_setting"]["max_per_user_per_stream"].clone(),
+                                ),
+                            ] {
+                                ctx.args.insert(k.into(), x);
+                            }
                         }
                     }
                 }
             }
-            // Reset Reward Counter (209) / Reset Reward User Counters (210) / Set Group Paused State (212)
-            209 | 210 | 212 => {}
             // Clear Channel Tags (251)
             251 => {
                 if let Some(tw) = self.twitch() {
@@ -788,11 +1035,36 @@ impl Engine {
                 }
             }
             // Add Channel Tag (253) / Remove Channel Tag (254)
-            253 | 254 => {}
+            253 | 254 => {
+                let tag = self.expand(ctx, s(o, "tag"));
+                let Some(tw) = self.twitch() else { return };
+                let who = vec![("broadcaster_id", "{broadcaster_id}")];
+                let r = async {
+                    let cur = tw.helix("GET", "channels", who.clone(), None, false, true).await?;
+                    let mut tags: Vec<String> = cur
+                        .pointer("/data/0/tags")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|t| t.as_str().map(String::from))
+                        .filter(|t| !t.eq_ignore_ascii_case(&tag))
+                        .collect();
+                    if kind == 253 {
+                        tags.push(tag.clone());
+                    }
+                    tw.helix("PATCH", "channels", who, Some(json!({"tags": tags})), false, true)
+                        .await
+                }
+                .await;
+                if let Err(e) = r {
+                    crate::say(format!("Twitch: {e}"));
+                }
+            }
             // Snooze Ad (555)
             555 => {
+                ctx.args.insert("snooze.success".into(), false.into());
                 if let Some(tw) = self.twitch() {
-                    if let Err(e) = tw
+                    match tw
                         .helix(
                             "POST",
                             "channels/ads/schedule/snooze",
@@ -803,101 +1075,132 @@ impl Engine {
                         )
                         .await
                     {
-                        crate::say(format!("Twitch: {e}"));
+                        Ok(_) => {
+                            ctx.args.insert("snooze.success".into(), true.into());
+                        }
+                        Err(e) => {
+                            crate::say(format!("Twitch: {e}"));
+                        }
                     }
                 }
             }
             // Get Ad Schedule (556) / Get Pre-roll Free Time (557)
             556 | 557 => {
-                if let Some(tw) = self.twitch() {
-                    if let Ok(val) = tw
+                let Some(tw) = self.twitch() else { return };
+                match tw
+                    .helix(
+                        "GET",
+                        "channels/ads/schedule",
+                        vec![("broadcaster_id", "{broadcaster_id}")],
+                        None,
+                        false,
+                        true,
+                    )
+                    .await
+                {
+                    Ok(v) => {
+                        let d = &v["data"][0];
+                        let free = d["preroll_free_time"].as_i64().unwrap_or(0);
+                        ctx.args.insert("prerollFree".into(), (free > 0).into());
+                        ctx.args.insert("prerollFreeSeconds".into(), free.into());
+                        if kind == 556 {
+                            ctx.args.insert("snoozeCount".into(), d["snooze_count"].clone());
+                            ctx.args.insert("adScheduleNextAdAt".into(), d["next_ad_at"].clone());
+                        }
+                    }
+                    Err(e) => crate::say(format!("Twitch: {e}")),
+                }
+            }
+
+            // Create Poll (561)
+            561 => {
+                ctx.args.insert("success".into(), false.into());
+                let title = self.expand(ctx, s(o, "title"));
+                let choices: Vec<Value> = list(o.get("choices"))
+                    .iter()
+                    .map(|c| json!({"title": self.expand(ctx, c)}))
+                    .collect();
+                let mut body = json!({"broadcaster_id": "{broadcaster_id}", "title": title, "choices": choices,
+                    "duration": (n(o, "duration") as u64).clamp(15, 1800)});
+                let points = n(o, "channelPointsPerVote") as u64;
+                if points > 0 {
+                    body["channel_points_voting_enabled"] = true.into();
+                    body["channel_points_per_vote"] = points.into();
+                }
+                let Some(tw) = self.twitch() else { return };
+                match tw.helix("POST", "polls", vec![], Some(body), false, true).await {
+                    Ok(v) => {
+                        ctx.args.insert("success".into(), true.into());
+                        ctx.args.insert("pollId".into(), v["data"][0]["id"].clone());
+                    }
+                    Err(e) => crate::say(format!("Twitch: {e}")),
+                }
+            }
+
+            // Terminate Active Poll (562)
+            562 => {
+                // The active poll (the newest one, still ACTIVE).
+                let Some(tw) = self.twitch() else { return };
+                let r = async {
+                    let v = tw
                         .helix(
                             "GET",
-                            "channels/ads/schedule",
+                            "polls",
                             vec![("broadcaster_id", "{broadcaster_id}")],
                             None,
                             false,
                             true,
                         )
-                        .await
-                    {
-                        if let Some(d) = val.pointer("/data/0") {
-                            ctx.args.insert("adScheduleNextAdAt".into(), d["next_ad_at"].clone());
-                            ctx.args
-                                .insert("adSchedulePrerollFreeTime".into(), d["preroll_free_time"].clone());
-                        }
-                    }
+                        .await?;
+                    let p = v["data"]
+                        .as_array()
+                        .and_then(|a| a.iter().find(|p| p["status"] == "ACTIVE"))
+                        .cloned();
+                    let p = p.ok_or("no active poll")?;
+                    let body = json!({"broadcaster_id": "{broadcaster_id}", "id": p["id"], "status": "TERMINATED"});
+                    tw.helix("PATCH", "polls", vec![], Some(body), false, true).await
+                }
+                .await;
+                if let Err(e) = r {
+                    crate::say(format!("Twitch: {e}"));
                 }
             }
-            // Create Poll (561)
-            561 => {
-                let title = self.expand(ctx, s(o, "title"));
-                let duration = n(o, "duration") as u64;
-                let dur = if duration == 0 { 60 } else { duration };
-                if let Some(tw) = self.twitch() {
-                    if let Err(e) = tw
-                        .helix(
-                            "POST",
-                            "polls",
-                            vec![],
-                            Some(json!({
-                                "broadcaster_id": "{broadcaster_id}",
-                                "title": title,
-                                "choices": [{"title": "Option 1"}, {"title": "Option 2"}],
-                                "duration": dur
-                            })),
-                            false,
-                            true,
-                        )
-                        .await
-                    {
-                        crate::say(format!("Twitch: {e}"));
-                    }
-                }
-            }
-            // Terminate Active Poll (562)
-            562 => {
-                let poll_id = self.expand(ctx, s(o, "pollId"));
-                if let Some(tw) = self.twitch() {
-                    if let Err(e) = tw
-                        .helix(
-                            "PATCH",
-                            "polls",
-                            vec![],
-                            Some(json!({"broadcaster_id": "{broadcaster_id}", "id": poll_id, "status": "TERMINATED"})),
-                            false,
-                            true,
-                        )
-                        .await
-                    {
-                        crate::say(format!("Twitch: {e}"));
-                    }
-                }
-            }
+
             // Archive Active Poll (563)
             563 => {
-                let poll_id = self.expand(ctx, s(o, "pollId"));
-                if let Some(tw) = self.twitch() {
-                    if let Err(e) = tw
+                // The active poll (the newest one, still ACTIVE).
+                let Some(tw) = self.twitch() else { return };
+                let r = async {
+                    let v = tw
                         .helix(
-                            "PATCH",
+                            "GET",
                             "polls",
-                            vec![],
-                            Some(json!({"broadcaster_id": "{broadcaster_id}", "id": poll_id, "status": "ARCHIVED"})),
+                            vec![("broadcaster_id", "{broadcaster_id}")],
+                            None,
                             false,
                             true,
                         )
-                        .await
-                    {
-                        crate::say(format!("Twitch: {e}"));
-                    }
+                        .await?;
+                    let p = v["data"]
+                        .as_array()
+                        .and_then(|a| a.iter().find(|p| p["status"] == "ACTIVE"))
+                        .cloned();
+                    let p = p.ok_or("no active poll")?;
+                    let body = json!({"broadcaster_id": "{broadcaster_id}", "id": p["id"], "status": "ARCHIVED"});
+                    tw.helix("PATCH", "polls", vec![], Some(body), false, true).await
+                }
+                .await;
+                if let Err(e) = r {
+                    crate::say(format!("Twitch: {e}"));
                 }
             }
+
             // Set Channel Branded Content (564)
             564 => {
+                ctx.args.insert("success".into(), false.into());
                 let status = b(o, "status", false);
                 if let Some(tw) = self.twitch() {
-                    if let Err(e) = tw
+                    match tw
                         .helix(
                             "PATCH",
                             "channels",
@@ -908,133 +1211,162 @@ impl Engine {
                         )
                         .await
                     {
-                        crate::say(format!("Twitch: {e}"));
+                        Ok(_) => {
+                            ctx.args.insert("success".into(), true.into());
+                        }
+                        Err(e) => {
+                            crate::say(format!("Twitch: {e}"));
+                        }
                     }
                 }
             }
             // Get Active Poll (566)
             566 => {
-                if let Some(tw) = self.twitch() {
-                    if let Ok(val) = tw
-                        .helix(
-                            "GET",
-                            "polls",
-                            vec![("broadcaster_id", "{broadcaster_id}")],
-                            None,
-                            false,
-                            true,
-                        )
-                        .await
-                    {
-                        if let Some(p) = val.pointer("/data/0") {
-                            ctx.args.insert("pollId".into(), p["id"].clone());
-                            ctx.args.insert("pollTitle".into(), p["title"].clone());
-                        }
-                    }
-                }
-            }
-            // Get Active Prediction (567)
-            567 => {
-                if let Some(tw) = self.twitch() {
-                    if let Ok(val) = tw
-                        .helix(
-                            "GET",
-                            "predictions",
-                            vec![("broadcaster_id", "{broadcaster_id}")],
-                            None,
-                            false,
-                            true,
-                        )
-                        .await
-                    {
-                        if let Some(p) = val.pointer("/data/0") {
-                            ctx.args.insert("predictionId".into(), p["id"].clone());
-                            ctx.args.insert("predictionTitle".into(), p["title"].clone());
-                        }
-                    }
-                }
-            }
-            // Create Prediction (568)
-            568 => {
-                let title = self.expand(ctx, s(o, "title"));
-                let duration = n(o, "duration") as u64;
-                let dur = if duration == 0 { 120 } else { duration };
-                if let Some(tw) = self.twitch() {
-                    if let Err(e) = tw
-                        .helix(
-                            "POST",
-                            "predictions",
-                            vec![],
-                            Some(json!({
-                                "broadcaster_id": "{broadcaster_id}",
-                                "title": title,
-                                "outcomes": [{"title": "Yes"}, {"title": "No"}],
-                                "prediction_window": dur
-                            })),
-                            false,
-                            true,
-                        )
-                        .await
-                    {
-                        crate::say(format!("Twitch: {e}"));
-                    }
-                }
-            }
-            // Cancel Active Prediction (569)
-            569 => {
-                let pred_id = self.expand(ctx, s(o, "predictionId"));
-                if let Some(tw) = self.twitch() {
-                    if let Err(e) = tw
-                        .helix(
-                            "PATCH",
-                            "predictions",
-                            vec![],
-                            Some(json!({"broadcaster_id": "{broadcaster_id}", "id": pred_id, "status": "CANCELED"})),
-                            false,
-                            true,
-                        )
-                        .await
-                    {
-                        crate::say(format!("Twitch: {e}"));
-                    }
-                }
-            }
-            // Lock Active Prediction (570)
-            570 => {
-                let pred_id = self.expand(ctx, s(o, "predictionId"));
-                if let Some(tw) = self.twitch() {
-                    if let Err(e) = tw
-                        .helix(
-                            "PATCH",
-                            "predictions",
-                            vec![],
-                            Some(json!({"broadcaster_id": "{broadcaster_id}", "id": pred_id, "status": "LOCKED"})),
-                            false,
-                            true,
-                        )
-                        .await
-                    {
-                        crate::say(format!("Twitch: {e}"));
-                    }
-                }
-            }
-            // Resolve Last Prediction (571) / Resolve Last Prediction by Title (572)
-            571 | 572 => {
-                let pred_id = self.expand(ctx, s(o, "predictionId"));
-                let win_id = self.expand(ctx, s(o, "winningOutcomeId"));
-                if let Some(tw) = self.twitch() {
-                    if let Err(e) = tw.helix(
-                        "PATCH",
-                        "predictions",
-                        vec![],
-                        Some(json!({"broadcaster_id": "{broadcaster_id}", "id": pred_id, "status": "RESOLVED", "winning_outcome_id": win_id})),
+                ctx.args.insert("active".into(), false.into());
+                let Some(tw) = self.twitch() else { return };
+                if let Ok(v) = tw
+                    .helix(
+                        "GET",
+                        "polls",
+                        vec![("broadcaster_id", "{broadcaster_id}")],
+                        None,
                         false,
                         true,
-                    ).await {
-                    crate::say(e);
-                }
+                    )
+                    .await
+                {
+                    if let Some(p) = v["data"]
+                        .as_array()
+                        .and_then(|a| a.iter().find(|p| p["status"] == "ACTIVE"))
+                    {
+                        poll_args(p, &mut ctx.args);
+                    }
                 }
             }
+
+            // Get Active Prediction (567)
+            567 => {
+                ctx.args.insert("active".into(), false.into());
+                let Some(tw) = self.twitch() else { return };
+                if let Ok(v) = tw
+                    .helix(
+                        "GET",
+                        "predictions",
+                        vec![("broadcaster_id", "{broadcaster_id}")],
+                        None,
+                        false,
+                        true,
+                    )
+                    .await
+                {
+                    if let Some(p) = v["data"]
+                        .as_array()
+                        .and_then(|a| a.iter().find(|p| p["status"] == "ACTIVE"))
+                    {
+                        prediction_args(p, &mut ctx.args);
+                    }
+                }
+            }
+
+            // Create Prediction (568)
+            568 => {
+                ctx.args.insert("success".into(), false.into());
+                let title = self.expand(ctx, s(o, "title"));
+                let outcomes: Vec<Value> = list(o.get("outcomes"))
+                    .iter()
+                    .map(|c| json!({"title": self.expand(ctx, c)}))
+                    .collect();
+                let window = (n(o, "predictionWindow") as u64).clamp(30, 1800);
+                let body = json!({"broadcaster_id": "{broadcaster_id}", "title": title, "outcomes": outcomes,
+                    "prediction_window": window});
+                let Some(tw) = self.twitch() else { return };
+                match tw.helix("POST", "predictions", vec![], Some(body), false, true).await {
+                    Ok(v) => {
+                        ctx.args.insert("success".into(), true.into());
+                        ctx.args.insert("prediction.Id".into(), v["data"][0]["id"].clone());
+                    }
+                    Err(e) => crate::say(format!("Twitch: {e}")),
+                }
+            }
+
+            // Cancel (569) / Lock (570) the active prediction; Resolve the last one by outcome
+            // index (571) or title (572). Each adds the prediction's variables.
+            569..=572 => {
+                ctx.args.insert("active".into(), false.into());
+                if kind >= 571 {
+                    ctx.args.insert("success".into(), false.into());
+                }
+                let Some(tw) = self.twitch() else { return };
+                let pick = match self.expand(ctx, s(o, if kind == 572 { "outcomeTitle" } else { "winningIndex" })) {
+                    p if p.is_empty() => "0".to_string(),
+                    p => p,
+                };
+                let r: Result<(), String> = async {
+                    let v = tw
+                        .helix(
+                            "GET",
+                            "predictions",
+                            vec![("broadcaster_id", "{broadcaster_id}")],
+                            None,
+                            false,
+                            true,
+                        )
+                        .await?;
+                    // Cancel and lock act on an ACTIVE one; resolve also on a LOCKED one.
+                    let p = v["data"]
+                        .as_array()
+                        .and_then(|a| {
+                            a.iter()
+                                .find(|p| p["status"] == "ACTIVE" || (kind != 570 && p["status"] == "LOCKED"))
+                        })
+                        .cloned()
+                        .ok_or("no active prediction")?;
+                    prediction_args(&p, &mut ctx.args);
+                    let outcomes = p["outcomes"].as_array().cloned().unwrap_or_default();
+                    let mut body = json!({"broadcaster_id": "{broadcaster_id}", "id": p["id"]});
+                    body["status"] = match kind {
+                        569 => "CANCELED",
+                        570 => "LOCKED",
+                        _ => "RESOLVED",
+                    }
+                    .into();
+                    if kind >= 571 {
+                        let win = if kind == 572 {
+                            outcomes
+                                .iter()
+                                .position(|x| x["title"].as_str().is_some_and(|t| t.eq_ignore_ascii_case(&pick)))
+                        } else {
+                            pick.trim().parse::<usize>().ok().filter(|i| *i < outcomes.len())
+                        }
+                        .ok_or_else(|| format!("no outcome '{pick}'"))?;
+                        body["winning_outcome_id"] = outcomes[win]["id"].clone();
+                        ctx.args.insert("prediction.winningIndex".into(), win.into());
+                        for (k, f) in [
+                            ("id", "id"),
+                            ("title", "title"),
+                            ("color", "color"),
+                            ("users", "users"),
+                            ("points", "channel_points"),
+                        ] {
+                            ctx.args
+                                .insert(format!("prediction.winningOutcome.{k}"), outcomes[win][f].clone());
+                        }
+                    }
+                    tw.helix("PATCH", "predictions", vec![], Some(body), false, true)
+                        .await?;
+                    match kind {
+                        569 => drop(ctx.args.insert("cancelled".into(), true.into())),
+                        570 => drop(ctx.args.insert("locked".into(), true.into())),
+                        _ => drop(ctx.args.insert("success".into(), true.into())),
+                    }
+                    Ok(())
+                }
+                .await;
+                if let Err(e) = r {
+                    crate::say(format!("Twitch prediction: {e}"));
+                }
+            }
+
             // Get Clip Download Urls (573)
             573 => {
                 let clip_id = self.expand(ctx, s(o, "clipId"));
@@ -1142,12 +1474,17 @@ impl Engine {
             }
             // Timeout User (20)
             20 => {
+                ctx.args.insert("timeoutResult".into(), false.into());
                 let login = self.expand(ctx, s(o, "userLogin"));
                 let dur = (n(o, "duration") as u64).max(1);
                 let reason = self.expand(ctx, s(o, "reason"));
                 if let Some(tw) = self.twitch() {
                     if let Ok(uid) = tw.resolve_user_id(&login).await {
-                        if let Err(e) = tw
+                        ctx.args.insert("timedOutUser".into(), login.clone().into());
+                        ctx.args.insert("timedOutUserName".into(), login.clone().into());
+                        ctx.args.insert("timedOutUserType".into(), "twitch".into());
+                        ctx.args.insert("timedOutUserId".into(), uid.clone().into());
+                        match tw
                             .helix(
                                 "POST",
                                 "moderation/bans",
@@ -1161,41 +1498,102 @@ impl Engine {
                             )
                             .await
                         {
-                            crate::say(format!("Twitch: {e}"));
+                            Ok(_) => {
+                                ctx.args.insert("timeoutResult".into(), true.into());
+                            }
+                            Err(e) => {
+                                crate::say(format!("Twitch: {e}"));
+                            }
                         }
                     }
                 }
             }
             // Add Broadcaster Information (21)
             21 => {
-                if let Some(tw) = &self.cfg.borrow().twitch.broadcaster {
-                    ctx.args.insert("broadcastUserId".into(), tw.user_id.clone().into());
-                    ctx.args.insert("broadcastUserName".into(), tw.login.clone().into());
-                    ctx.args.insert("broadcastUser".into(), tw.display_name.clone().into());
-                }
-            }
-            // Add Random Users (22)
-            22 => {
-                ctx.args.insert("randomUsersAdded".into(), 0.into());
-            }
-            // Get Latest Charity Campaign (25)
-            25 => {
-                if let Some(tw) = self.twitch() {
-                    if let Err(e) = tw
-                        .helix(
-                            "GET",
-                            "charity/campaigns",
-                            vec![("broadcaster_id", "{broadcaster_id}")],
-                            None,
-                            false,
-                            true,
-                        )
-                        .await
-                    {
-                        crate::say(format!("Twitch: {e}"));
+                let Some(tw) = self.twitch() else { return };
+                let id = self.cfg.borrow().twitch.broadcaster.as_ref().map(|b| b.user_id.clone());
+                let Some(id) = id else { return };
+                if let Ok(v) = tw.helix("GET", "users", vec![("id", &id)], None, false, true).await {
+                    let u = &v["data"][0];
+                    let f = |k: &str| u[k].clone();
+                    let kind = u["broadcaster_type"].as_str().unwrap_or("");
+                    for (k, x) in [
+                        ("broadcastUser", f("display_name")),
+                        ("broadcastUserName", f("login")),
+                        ("broadcastUserId", f("id")),
+                        ("broadcastUserType", "twitch".into()),
+                        ("broadcastIsAffiliate", (kind == "affiliate").into()),
+                        ("broadcastIsPartner", (kind == "partner").into()),
+                        ("broadcasterProfileUrl", f("profile_image_url")),
+                        ("broadcasterOfflineUrl", f("offline_image_url")),
+                        ("broadcasterCreatedAt", f("created_at")),
+                        ("broadcasterDescription", f("description")),
+                    ] {
+                        ctx.args.insert(k.into(), x);
                     }
                 }
             }
+
+            // Add Random Users (22)
+            22 => {
+                // The users in chat now (Present Only, or not: streamerz only knows who is present).
+                let count = (n(o, "count") as usize).max(1);
+                let Some(tw) = self.twitch() else { return };
+                let who = vec![
+                    ("broadcaster_id", "{broadcaster_id}"),
+                    ("moderator_id", "{broadcaster_id}"),
+                    ("first", "1000"),
+                ];
+                let mut users: Vec<Value> = match tw.helix("GET", "chat/chatters", who, None, false, true).await {
+                    Ok(v) => v["data"].as_array().cloned().unwrap_or_default(),
+                    Err(e) => return crate::say(format!("Twitch: {e}")),
+                };
+                for i in 0..count.min(users.len()) {
+                    let pick = i + (crate::math::secure_u64() as usize) % (users.len() - i);
+                    users.swap(i, pick);
+                    let u = &users[i];
+                    ctx.args.insert(format!("randomUser{i}"), u["user_name"].clone());
+                    ctx.args.insert(format!("randomUserName{i}"), u["user_login"].clone());
+                    ctx.args.insert(format!("randomUserId{i}"), u["user_id"].clone());
+                    ctx.args.insert(format!("randomUserType{i}"), "twitch".into());
+                }
+                ctx.args
+                    .insert("randomUsersAdded".into(), count.min(users.len()).into());
+            }
+
+            // Get Latest Charity Campaign (25)
+            25 => {
+                let Some(tw) = self.twitch() else { return };
+                match tw
+                    .helix(
+                        "GET",
+                        "charity/campaigns",
+                        vec![("broadcaster_id", "{broadcaster_id}")],
+                        None,
+                        false,
+                        true,
+                    )
+                    .await
+                {
+                    Ok(v) => {
+                        let c = &v["data"][0];
+                        let f = |k: &str| c[k].clone();
+                        for (k, x) in [
+                            ("campaignId", f("id")),
+                            ("charity.name", f("charity_name")),
+                            ("charity.description", f("charity_description")),
+                            ("charity.logoUrl", f("charity_logo")),
+                            ("charity.websiteUrl", f("charity_website")),
+                            ("currentAmount", c["current_amount"]["value"].clone()),
+                            ("targetAmount", c["target_amount"]["value"].clone()),
+                        ] {
+                            ctx.args.insert(k.into(), x);
+                        }
+                    }
+                    Err(e) => crate::say(format!("Twitch: {e}")),
+                }
+            }
+
             // Get Shield Mode Status (26)
             26 => {
                 if let Some(tw) = self.twitch() {
@@ -1245,10 +1643,11 @@ impl Engine {
             }
             // Send Shoutout (29)
             29 => {
+                ctx.args.insert("shoutoutSuccess".into(), false.into());
                 let login = self.expand(ctx, s(o, "userLogin"));
                 if let Some(tw) = self.twitch() {
                     if let Ok(uid) = tw.resolve_user_id(&login).await {
-                        if let Err(e) = tw
+                        match tw
                             .helix(
                                 "POST",
                                 "chat/shoutouts",
@@ -1263,72 +1662,180 @@ impl Engine {
                             )
                             .await
                         {
-                            crate::say(format!("Twitch: {e}"));
+                            Ok(_) => {
+                                ctx.args.insert("shoutoutSuccess".into(), true.into());
+                            }
+                            Err(e) => {
+                                crate::say(format!("Twitch: {e}"));
+                            }
                         }
                     }
                 }
             }
             // Get User Info for Target (50)
             50 => {
-                let login = self.expand(ctx, s(o, "userLogin"));
-                if let Some(tw) = self.twitch() {
-                    if let Ok(resp) = tw
-                        .helix("GET", "users", vec![("login", &login)], None, false, true)
-                        .await
-                    {
-                        if let Some(u) = resp.pointer("/data/0") {
-                            ctx.args
-                                .insert("targetUserId".into(), u.get("id").cloned().unwrap_or(Value::Null));
-                            ctx.args.insert(
-                                "targetUser".into(),
-                                u.get("display_name").cloned().unwrap_or(Value::Null),
-                            );
-                            ctx.args
-                                .insert("targetUserName".into(), u.get("login").cloned().unwrap_or(Value::Null));
-                        }
+                ctx.args.insert("addTargetResult".into(), false.into());
+                let login = self.expand(ctx, s(o, "userLogin")).trim_start_matches('@').to_string();
+                let Some(tw) = self.twitch() else { return };
+                let Ok(v) = tw
+                    .helix("GET", "users", vec![("login", &login)], None, false, true)
+                    .await
+                else {
+                    return;
+                };
+                let u = v["data"][0].clone();
+                let Some(uid) = u["id"].as_str().map(String::from) else {
+                    return;
+                };
+                let desc = u["description"].as_str().unwrap_or("").to_string();
+                let kind = u["broadcaster_type"].as_str().unwrap_or("");
+                let mut put = |k: &str, x: Value| drop(ctx.args.insert(k.into(), x));
+                put("addTargetResult", true.into());
+                put("targetUser", u["display_name"].clone());
+                put("targetUserName", u["login"].clone());
+                put("targetUserId", uid.as_str().into());
+                put("targetUserType", "twitch".into());
+                put("targetDescription", desc.as_str().into());
+                put("targetDescriptionEscaped", crate::commands::escape(&desc).into());
+                put("targetUserProfileImageUrl", u["profile_image_url"].clone());
+                put(
+                    "targetUserProfileImageUrlEscaped",
+                    crate::commands::url_encode(u["profile_image_url"].as_str().unwrap_or("")).into(),
+                );
+                put("targetIsAffiliate", (kind == "affiliate").into());
+                put("targetIsPartner", (kind == "partner").into());
+                put("createdAt", u["created_at"].clone());
+                if let Some(t) = u["created_at"].as_str().and_then(parse_iso) {
+                    let now = crate::fmt::unix_now().as_secs() as i64;
+                    put("accountAge", ((now - t) / 86_400).into());
+                }
+                let me = vec![("broadcaster_id", "{broadcaster_id}"), ("user_id", uid.as_str())];
+                let has = |r: Result<Value, String>| {
+                    r.ok()
+                        .is_some_and(|v| v["data"].as_array().is_some_and(|a| !a.is_empty()))
+                };
+                let sub = tw.helix("GET", "subscriptions", me.clone(), None, false, true).await;
+                let tier = sub
+                    .as_ref()
+                    .ok()
+                    .and_then(|v| v["data"][0]["tier"].as_str().map(String::from));
+                put("targetIsSubscribed", tier.is_some().into());
+                put("targetSubscriptionTier", tier.unwrap_or_default().into());
+                put(
+                    "targetIsModerator",
+                    has(tw
+                        .helix("GET", "moderation/moderators", me.clone(), None, false, true)
+                        .await)
+                    .into(),
+                );
+                put(
+                    "targetIsVip",
+                    has(tw.helix("GET", "channels/vips", me, None, false, true).await).into(),
+                );
+                if let Ok(ch) = tw
+                    .helix(
+                        "GET",
+                        "channels",
+                        vec![("broadcaster_id", uid.as_str())],
+                        None,
+                        false,
+                        true,
+                    )
+                    .await
+                {
+                    let c = &ch["data"][0];
+                    put("targetChannelTitle", c["title"].clone());
+                    put("game", c["game_name"].clone());
+                    put("gameId", c["game_id"].clone());
+                    let tags: Vec<String> = c["tags"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|t| t.as_str().map(String::from))
+                        .collect();
+                    put("tagCount", tags.len().into());
+                    for (i, t) in tags.iter().enumerate() {
+                        put(&format!("tag{i}"), t.as_str().into());
                     }
+                    put("tagsDelimited", tags.join(", ").into());
+                    put("tags", tags.into());
                 }
             }
+
             // Get Follow Age Info for Target (51)
             51 => {
-                let login = self.expand(ctx, s(o, "userLogin"));
-                if let Some(tw) = self.twitch() {
-                    if let Ok(uid) = tw.resolve_user_id(&login).await {
-                        if let Err(e) = tw
-                            .helix(
-                                "GET",
-                                "channels/followers",
-                                vec![("broadcaster_id", "{broadcaster_id}"), ("user_id", &uid)],
-                                None,
-                                false,
-                                true,
-                            )
-                            .await
-                        {
-                            crate::say(format!("Twitch: {e}"));
-                        }
-                    }
+                ctx.args.insert("isFollowing".into(), false.into());
+                let login = self.expand(ctx, s(o, "userLogin")).trim_start_matches('@').to_string();
+                let Some(tw) = self.twitch() else { return };
+                let Ok(uid) = tw.resolve_user_id(&login).await else {
+                    return;
+                };
+                let q = vec![("broadcaster_id", "{broadcaster_id}"), ("user_id", uid.as_str())];
+                let v = match tw.helix("GET", "channels/followers", q, None, false, true).await {
+                    Ok(v) => v,
+                    Err(e) => return crate::say(format!("Twitch: {e}")),
+                };
+                let f = &v["data"][0];
+                ctx.args.insert("followUser".into(), f["user_name"].clone());
+                ctx.args.insert("followUserName".into(), f["user_login"].clone());
+                ctx.args.insert("followUserId".into(), uid.as_str().into());
+                let Some(t) = f["followed_at"].as_str().and_then(parse_iso) else {
+                    return;
+                };
+                let now = crate::fmt::unix_now().as_secs() as i64;
+                let a = age(t, now);
+                let (long, short) = age_text(&a);
+                ctx.args.insert("isFollowing".into(), true.into());
+                ctx.args.insert(
+                    "followDate".into(),
+                    crate::fmt::date(&civil(t), "dddd, d MMMM yyyy").into(),
+                );
+                ctx.args.insert("followAgeLong".into(), long.into());
+                ctx.args.insert("followAgeShort".into(), short.into());
+                ctx.args.insert("followAgeDays".into(), ((now - t) / 86_400).into());
+                ctx.args.insert("followAgeMinutes".into(), ((now - t) / 60).into());
+                ctx.args.insert("followAgeSeconds".into(), (now - t).into());
+                for (k, x) in ["years", "months", "days", "hours", "minutes", "seconds"].iter().zip(a) {
+                    ctx.args.insert(format!("followAge.{k}"), x.into());
                 }
             }
+
             // Get Team Info for Target (52)
             52 => {
-                let _login = self.expand(ctx, s(o, "userLogin"));
-                if let Some(tw) = self.twitch() {
-                    if let Err(e) = tw
-                        .helix(
-                            "GET",
-                            "teams/channel",
-                            vec![("broadcaster_id", "{broadcaster_id}")],
-                            None,
-                            false,
-                            true,
-                        )
-                        .await
-                    {
-                        crate::say(format!("Twitch: {e}"));
+                let login = self.expand(ctx, s(o, "userLogin")).trim_start_matches('@').to_string();
+                let Some(tw) = self.twitch() else { return };
+                let Ok(uid) = tw.resolve_user_id(&login).await else {
+                    return;
+                };
+                match tw
+                    .helix(
+                        "GET",
+                        "teams/channel",
+                        vec![("broadcaster_id", uid.as_str())],
+                        None,
+                        false,
+                        true,
+                    )
+                    .await
+                {
+                    Ok(v) => {
+                        ctx.args.insert("_jsonTeamData".into(), v["data"].to_string().into());
+                        for (i, t) in v["data"].as_array().into_iter().flatten().enumerate() {
+                            for (k, f) in [
+                                ("teamId", "id"),
+                                ("teamName", "team_name"),
+                                ("teamDisplayName", "team_display_name"),
+                                ("teamBackgroundUrl", "background_image_url"),
+                                ("teamBannerUrl", "banner"),
+                            ] {
+                                ctx.args.insert(format!("{k}{i}"), t[f].clone());
+                            }
+                        }
                     }
+                    Err(e) => crate::say(format!("Twitch: {e}")),
                 }
             }
+
             // Set Global Cooldown (204)
             204 => {
                 let rew_id = self.expand(ctx, s(o, "rewardId"));
@@ -1370,10 +1877,6 @@ impl Engine {
                         crate::say(format!("Twitch: {e}"));
                     }
                 }
-            }
-            // Set Group Enabled State (211)
-            211 => {
-                let _group = self.simple(ctx, s(o, "groupName"));
             }
             // Set Background Color (213)
             213 => {
@@ -1563,8 +2066,9 @@ impl Engine {
             }
             // Clear Chat Messages (510)
             510 => {
+                ctx.args.insert("clearSuccess".into(), false.into());
                 if let Some(tw) = self.twitch() {
-                    if let Err(e) = tw
+                    match tw
                         .helix(
                             "DELETE",
                             "moderation/chat",
@@ -1578,17 +2082,27 @@ impl Engine {
                         )
                         .await
                     {
-                        crate::say(format!("Twitch: {e}"));
+                        Ok(_) => {
+                            ctx.args.insert("clearSuccess".into(), true.into());
+                        }
+                        Err(e) => {
+                            crate::say(format!("Twitch: {e}"));
+                        }
                     }
                 }
             }
             // Ban User (511)
             511 => {
+                ctx.args.insert("banResult".into(), false.into());
                 let login = self.expand(ctx, s(o, "userLogin"));
                 let reason = self.expand(ctx, s(o, "reason"));
                 if let Some(tw) = self.twitch() {
                     if let Ok(uid) = tw.resolve_user_id(&login).await {
-                        if let Err(e) = tw
+                        ctx.args.insert("bannedUser".into(), login.clone().into());
+                        ctx.args.insert("bannedUserName".into(), login.clone().into());
+                        ctx.args.insert("bannedUserType".into(), "twitch".into());
+                        ctx.args.insert("bannedUserId".into(), uid.clone().into());
+                        match tw
                             .helix(
                                 "POST",
                                 "moderation/bans",
@@ -1602,103 +2116,153 @@ impl Engine {
                             )
                             .await
                         {
-                            crate::say(format!("Twitch: {e}"));
+                            Ok(_) => {
+                                ctx.args.insert("banResult".into(), true.into());
+                            }
+                            Err(e) => {
+                                crate::say(format!("Twitch: {e}"));
+                            }
                         }
                     }
                 }
             }
             // Unban User (512) / UnTimeout User (513)
             512 | 513 => {
-                let login = self.expand(ctx, s(o, "userLogin"));
-                if let Some(tw) = self.twitch() {
-                    if let Ok(uid) = tw.resolve_user_id(&login).await {
-                        if let Err(e) = tw
-                            .helix(
-                                "DELETE",
-                                "moderation/bans",
-                                vec![
-                                    ("broadcaster_id", "{broadcaster_id}"),
-                                    ("moderator_id", "{broadcaster_id}"),
-                                    ("user_id", &uid),
-                                ],
-                                None,
-                                false,
-                                true,
-                            )
-                            .await
-                        {
-                            crate::say(format!("Twitch: {e}"));
+                let (p, res) = if kind == 512 {
+                    ("unbanned", "unbanResult")
+                } else {
+                    ("unTimedOut", "unTimedOutResult")
+                };
+                ctx.args.insert(res.into(), false.into());
+                let login = self.expand(ctx, s(o, "userLogin")).trim_start_matches('@').to_string();
+                let Some(tw) = self.twitch() else { return };
+                let Ok(uid) = tw.resolve_user_id(&login).await else {
+                    return;
+                };
+                for (k, x) in [("User", &login), ("UserName", &login), ("UserId", &uid)] {
+                    ctx.args.insert(format!("{p}{k}"), x.as_str().into());
+                }
+                ctx.args.insert(format!("{p}UserType"), "twitch".into());
+                let q = vec![
+                    ("broadcaster_id", "{broadcaster_id}"),
+                    ("moderator_id", "{broadcaster_id}"),
+                    ("user_id", uid.as_str()),
+                ];
+                match tw.helix("DELETE", "moderation/bans", q, None, false, true).await {
+                    Ok(_) => drop(ctx.args.insert(res.into(), true.into())),
+                    Err(e) => crate::say(format!("Twitch: {e}")),
+                }
+            }
+
+            // Add Present User (550)
+            550 => {
+                ctx.args.insert("presentUser".into(), false.into());
+                let Some(tw) = self.twitch() else { return };
+                let who = vec![
+                    ("broadcaster_id", "{broadcaster_id}"),
+                    ("moderator_id", "{broadcaster_id}"),
+                    ("first", "1000"),
+                ];
+                match tw.helix("GET", "chat/chatters", who, None, false, true).await {
+                    Ok(v) => {
+                        ctx.args.insert("presentUsersCount".into(), v["total"].clone());
+                        let i = self.expand(ctx, s(o, "userIndex")).trim().parse::<usize>().unwrap_or(0);
+                        if let Some(u) = v["data"].as_array().and_then(|a| a.get(i)) {
+                            ctx.args.insert("presentUser".into(), u["user_name"].clone());
+                            ctx.args.insert("presentUserName".into(), u["user_login"].clone());
+                            ctx.args.insert("presentUserId".into(), u["user_id"].clone());
+                            ctx.args.insert("presentUserType".into(), "twitch".into());
+                        }
+                    }
+                    Err(e) => crate::say(format!("Twitch: {e}")),
+                }
+            }
+            // Get Twitch Sub Counter Count (551) / Set Twitch Sub Counter Count (552)
+            // ponytail: a plain persisted count (no rollover setting yet); subs add to it.
+            551 => {
+                let c = self
+                    .cfg
+                    .borrow()
+                    .counters
+                    .get("twitch:subCounter")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                ctx.args.insert("subCounter.count".into(), c.into());
+                ctx.args.insert("subCounter.rollover".into(), 0.into());
+                ctx.args.insert("subCounter.rolloverCount".into(), 0.into());
+            }
+            552 => {
+                let v = self.expand(ctx, s(o, "value")).trim().parse::<i64>();
+                ctx.args.insert("setResult".into(), v.is_ok().into());
+                if let Ok(v) = v {
+                    self.change(|c| drop(c.counters.insert("twitch:subCounter".into(), v.into())));
+                }
+            }
+            // User groups from each platform: Add (553, 4005, 35020), Remove (554, 4006, 35021),
+            // In Group (558, 4007, 35022). Groups hold user ids, so names are looked up first.
+            553 | 554 | 558 | 4005..=4007 | 35020..=35022 => {
+                let login = self
+                    .expand(ctx, s(o, "userLogin"))
+                    .trim()
+                    .trim_start_matches('@')
+                    .to_string();
+                let group = self.simple(ctx, s(o, "groupName"));
+                let (platform, op) = match kind {
+                    553 | 554 | 558 => ("twitch", [553, 554, 558].iter().position(|k| *k == kind)),
+                    4005..=4007 => ("youtube", Some(kind as usize - 4005)),
+                    _ => ("kick", Some(kind as usize - 35020)),
+                };
+                let id = self.user_id_for(platform, &login).await;
+                let gid = self
+                    .cfg
+                    .borrow()
+                    .groups
+                    .iter()
+                    .find(|g| s(g, "name").eq_ignore_ascii_case(&group) || s(g, "id") == group)
+                    .map(|g| s(g, "id").to_string());
+                match op {
+                    Some(2) => {
+                        let found = gid.as_ref().is_some_and(|gid| {
+                            self.cfg.borrow().groups.iter().any(|g| {
+                                s(g, "id") == gid
+                                    && g["userIds"].as_array().is_some_and(|u| u.iter().any(|x| text(x) == id))
+                            })
+                        });
+                        ctx.args.insert("inGroup".into(), found.into());
+                        if found {
+                            for (k, x) in [("foundUser", &login), ("foundUserName", &login), ("foundUserId", &id)] {
+                                ctx.args.insert(k.into(), x.as_str().into());
+                            }
+                            ctx.args.insert("foundUserType".into(), platform.into());
+                        }
+                    }
+                    _ => {
+                        let add = op == Some(0);
+                        let key = if add { "addResult" } else { "removeResult" };
+                        ctx.args.insert(key.into(), gid.is_some().into());
+                        if let Some(gid) = gid {
+                            let mut u = Obj::new();
+                            u.insert("userId".into(), id.into());
+                            u.insert("user".into(), login.as_str().into());
+                            u.insert("userName".into(), login.as_str().into());
+                            u.insert("platform".into(), platform.into());
+                            self.group_users(&gid, &[u], add);
                         }
                     }
                 }
             }
-            // Guest Star (520..=531)
-            520..=531 => {
-                // Handled via Helix guest star endpoints
-            }
-            // Add Present User (550)
-            550 => {}
-            // Get Twitch Sub Counter Count (551) / Set Twitch Sub Counter Count (552)
-            551 => {}
-            552 => {
-                let val = n(o, "value") as u64;
-                ctx.args.insert("subCounter".into(), val.into());
-            }
-            // Add User To Group (553)
-            553 => {
-                let login = self.expand(ctx, s(o, "userLogin"));
-                let group = self.simple(ctx, s(o, "groupName"));
-                let gid = self
-                    .cfg
-                    .borrow()
-                    .groups
-                    .iter()
-                    .find(|g| s(g, "name") == group || s(g, "id") == group)
-                    .map(|g| s(g, "id").to_string());
-                if let Some(gid) = gid {
-                    let mut u = Obj::new();
-                    u.insert("userId".into(), login.clone().into());
-                    u.insert("user".into(), login.clone().into());
-                    u.insert("userName".into(), login.into());
-                    self.group_users(&gid, &[u], true);
-                }
-            }
-            // Remove User from Group (554)
-            554 => {
-                let login = self.expand(ctx, s(o, "userLogin"));
-                let group = self.simple(ctx, s(o, "groupName"));
-                let gid = self
-                    .cfg
-                    .borrow()
-                    .groups
-                    .iter()
-                    .find(|g| s(g, "name") == group || s(g, "id") == group)
-                    .map(|g| s(g, "id").to_string());
-                if let Some(gid) = gid {
-                    let mut u = Obj::new();
-                    u.insert("userId".into(), login.clone().into());
-                    self.group_users(&gid, &[u], false);
-                }
-            }
-            // User In Group (558)
-            558 => {
-                let login = self.expand(ctx, s(o, "userLogin"));
-                let group = self.simple(ctx, s(o, "groupName"));
-                let in_grp = self.cfg.borrow().groups.iter().any(|g| {
-                    (s(g, "name") == group || s(g, "id") == group)
-                        && g.get("userIds")
-                            .and_then(Value::as_array)
-                            .is_some_and(|arr| arr.iter().any(|u| text(u) == login))
-                });
-                ctx.args.insert("userInGroup".into(), in_grp.into());
-            }
             // Warn User (565)
             565 => {
+                ctx.args.insert("warnedResult".into(), false.into());
                 let login = self.expand(ctx, s(o, "userLogin"));
                 let reason = self.expand(ctx, s(o, "reason"));
                 if let Some(tw) = self.twitch() {
                     if let Ok(uid) = tw.resolve_user_id(&login).await {
-                        if let Err(e) = tw
+                        ctx.args.insert("warnedUser".into(), login.clone().into());
+                        ctx.args.insert("warnedUserName".into(), login.clone().into());
+                        ctx.args.insert("warnedUserType".into(), "twitch".into());
+                        ctx.args.insert("warnedUserId".into(), uid.clone().into());
+                        match tw
                             .helix(
                                 "POST",
                                 "moderation/warnings",
@@ -1712,7 +2276,12 @@ impl Engine {
                             )
                             .await
                         {
-                            crate::say(format!("Twitch: {e}"));
+                            Ok(_) => {
+                                ctx.args.insert("warnedResult".into(), true.into());
+                            }
+                            Err(e) => {
+                                crate::say(format!("Twitch: {e}"));
+                            }
                         }
                     }
                 }
@@ -1803,7 +2372,36 @@ impl Engine {
                 }
             }
             // Add Suspicious Status (579) / Remove Suspicious Status (580)
-            579 | 580 => {}
+            579 | 580 => {
+                let login = self.expand(ctx, s(o, "userLogin"));
+                let Some(tw) = self.twitch() else { return };
+                let r = async {
+                    let uid = tw.resolve_user_id(&login).await?;
+                    let mut q = vec![
+                        ("broadcaster_id", "{broadcaster_id}"),
+                        ("moderator_id", "{broadcaster_id}"),
+                    ];
+                    if kind == 579 {
+                        // Monitored: messages show to mods; restricted needs mod approval.
+                        let status = if n(o, "status") as i64 == 1 {
+                            "RESTRICTED"
+                        } else {
+                            "ACTIVE_MONITORING"
+                        };
+                        let body = json!({"user_id": uid, "status": status});
+                        tw.helix("POST", "moderation/suspicious_users", q, Some(body), false, true)
+                            .await
+                    } else {
+                        q.push(("user_id", &uid));
+                        tw.helix("DELETE", "moderation/suspicious_users", q, None, false, true)
+                            .await
+                    }
+                }
+                .await;
+                if let Err(e) = r {
+                    crate::say(format!("Twitch: {e}"));
+                }
+            }
             1010 => {
                 let g = self.simple(ctx, s(o, "groupName"));
                 self.set_commands(|c| s(c, "group") == g, n(o, "state"));
@@ -2691,7 +3289,7 @@ impl Engine {
                 let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
                 let chapter = self.expand(ctx, s(o, "chapterName"));
                 let obs = self.obs_start();
-                let _ = obs
+                let ok = obs
                     .send_request(
                         conn_ref,
                         "CreateRecordChapter",
@@ -2699,7 +3297,9 @@ impl Engine {
                             "chapterName": chapter
                         }),
                     )
-                    .await;
+                    .await
+                    .is_ok();
+                ctx.args.insert("success".into(), ok.into());
             }
             // YouTube Sub-actions
             // 4001: Send Message to Channel
@@ -2743,72 +3343,43 @@ impl Engine {
                     crate::say(e);
                 }
             }
-            // 4005: Add User To Group
-            4005 => {
-                let user = self.expand(ctx, s(o, "userLogin"));
-                let group = self.simple(ctx, s(o, "groupName"));
-                self.change(|c| {
-                    if let Some(g) = c
-                        .groups
-                        .iter_mut()
-                        .find(|g| s(g, "name") == group || s(g, "id") == group)
-                    {
-                        if let Some(users) = g.get_mut("userIds").and_then(Value::as_array_mut) {
-                            if !users.iter().any(|u| u.as_str() == Some(&user)) {
-                                users.push(user.clone().into());
-                            }
-                        }
-                    }
-                });
-            }
-            // 4006: Remove User from Group
-            4006 => {
-                let user = self.expand(ctx, s(o, "userLogin"));
-                let group = self.simple(ctx, s(o, "groupName"));
-                self.change(|c| {
-                    if let Some(g) = c
-                        .groups
-                        .iter_mut()
-                        .find(|g| s(g, "name") == group || s(g, "id") == group)
-                    {
-                        if let Some(users) = g.get_mut("userIds").and_then(Value::as_array_mut) {
-                            users.retain(|u| u.as_str() != Some(&user));
-                        }
-                    }
-                });
-            }
-            // 4007: User In Group
-            4007 => {
-                let user = self.expand(ctx, s(o, "userLogin"));
-                let group = self.simple(ctx, s(o, "groupName"));
-                let in_group = {
-                    let c = self.cfg.borrow();
-                    c.groups
-                        .iter()
-                        .find(|g| s(g, "name") == group || s(g, "id") == group)
-                        .and_then(|g| g.get("userIds").and_then(Value::as_array))
-                        .map(|users| users.iter().any(|u| u.as_str() == Some(&user)))
-                        .unwrap_or(false)
-                };
-                ctx.args.insert("userInGroup".into(), in_group.into());
-            }
             // 4008: Ban User
             4008 => {
+                ctx.args.insert("banResult".into(), false.into());
                 let broadcast = self.expand(ctx, s(o, "broadcast"));
                 let user_id = self.expand(ctx, s(o, "userId"));
                 let yt = self.youtube_start();
-                if let Err(e) = yt.ban_user(&broadcast, &user_id).await {
-                    crate::say(e);
+                ctx.args.insert("bannedUser".into(), user_id.clone().into());
+                ctx.args.insert("bannedUserName".into(), user_id.clone().into());
+                ctx.args.insert("bannedUserType".into(), "youtube".into());
+                ctx.args.insert("bannedUserId".into(), user_id.clone().into());
+                match yt.ban_user(&broadcast, &user_id).await {
+                    Ok(_) => {
+                        ctx.args.insert("banResult".into(), true.into());
+                    }
+                    Err(e) => {
+                        crate::say(e);
+                    }
                 }
             }
             // 4009: Timeout User
             4009 => {
+                ctx.args.insert("timeoutResult".into(), false.into());
                 let broadcast = self.expand(ctx, s(o, "broadcast"));
                 let user_id = self.expand(ctx, s(o, "userId"));
                 let duration = n(o, "duration") as u64;
                 let yt = self.youtube_start();
-                if let Err(e) = yt.timeout_user(&broadcast, &user_id, duration).await {
-                    crate::say(e);
+                ctx.args.insert("bannedUser".into(), user_id.clone().into());
+                ctx.args.insert("bannedUserName".into(), user_id.clone().into());
+                ctx.args.insert("bannedUserType".into(), "youtube".into());
+                ctx.args.insert("bannedUserId".into(), user_id.clone().into());
+                match yt.timeout_user(&broadcast, &user_id, duration).await {
+                    Ok(_) => {
+                        ctx.args.insert("timeoutResult".into(), true.into());
+                    }
+                    Err(e) => {
+                        crate::say(e);
+                    }
                 }
             }
             // 4010: Add Broadcaster Information
@@ -2823,17 +3394,19 @@ impl Engine {
             }
             // 4011: Create Poll
             4011 => {
+                ctx.args.insert("success".into(), false.into());
                 let broadcast = self.expand(ctx, s(o, "broadcast"));
                 let question = self.expand(ctx, s(o, "question"));
-                let options_raw = self.expand(ctx, s(o, "options"));
-                let options: Vec<String> = options_raw
-                    .lines()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
+                let options: Vec<String> = list(o.get("options")).iter().map(|x| self.expand(ctx, x)).collect();
                 let yt = self.youtube_start();
-                if let Err(e) = yt.create_poll(&broadcast, &question, &options).await {
-                    crate::say(e);
+                match yt.create_poll(&broadcast, &question, &options).await {
+                    Ok(id) => {
+                        ctx.args.insert("success".into(), true.into());
+                        ctx.args.insert("pollId".into(), id.into());
+                    }
+                    Err(e) => {
+                        crate::say(e);
+                    }
                 }
             }
             // 4012: End Poll
@@ -2872,201 +3445,285 @@ impl Engine {
             }
             // 35010: Add Broadcaster Information
             35010 => {
-                let c = self.cfg.borrow();
-                let chan = c.kick.channel.clone();
-                ctx.args.insert("broadcasterUser".into(), chan.clone().into());
-                ctx.args.insert("broadcasterUserName".into(), chan.into());
-                if let Some(cid) = c.kick.channel_id {
-                    ctx.args.insert("broadcasterUserId".into(), cid.into());
-                }
+                let chan = self.cfg.borrow().kick.channel.clone();
+                ctx.args.insert("broadcastUser".into(), chan.as_str().into());
+                ctx.args.insert("broadcastUserName".into(), chan.to_lowercase().into());
+                ctx.args.insert("broadcastUserType".into(), "kick".into());
+                ctx.args.insert(
+                    "broadcasterProfileUrl".into(),
+                    format!("https://kick.com/{}", chan.to_lowercase()).into(),
+                );
+                let id = self.user_id_for("kick", &chan).await;
+                ctx.args.insert("broadcastUserId".into(), id.into());
             }
+
             // 35011: Get User Info for Target
             35011 => {
-                let user = self.expand(ctx, s(o, "userLogin"));
-                ctx.args.insert("targetUser".into(), user.clone().into());
-                ctx.args.insert("targetUserName".into(), user.into());
+                ctx.args.insert("addTargetResult".into(), false.into());
+                let login = self
+                    .expand(ctx, s(o, "userLogin"))
+                    .trim()
+                    .trim_start_matches('@')
+                    .to_lowercase();
+                let kick = self.kick_start();
+                let slug = crate::commands::url_encode(&login);
+                match kick.api("GET", &format!("/channels?slug={slug}"), None).await {
+                    Ok(v) if v["data"][0].is_object() => {
+                        let c = &v["data"][0];
+                        let tags: Vec<String> = c["stream"]["custom_tags"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|t| t.as_str().map(String::from))
+                            .collect();
+                        let desc = c["channel_description"].as_str().unwrap_or("").to_string();
+                        let mut put = |k: &str, x: Value| drop(ctx.args.insert(k.into(), x));
+                        put("addTargetResult", true.into());
+                        put("targetUser", c["slug"].clone());
+                        put("targetUserName", c["slug"].clone());
+                        put("targetUserId", c["broadcaster_user_id"].clone());
+                        put("targetUserType", "kick".into());
+                        put("targetDescription", desc.as_str().into());
+                        put("targetDescriptionEscaped", crate::commands::escape(&desc).into());
+                        put("targetChannelTitle", c["stream_title"].clone());
+                        put("game", c["category"]["name"].clone());
+                        put("gameId", c["category"]["id"].clone());
+                        put("tagCount", tags.len().into());
+                        for (i, t) in tags.iter().enumerate() {
+                            put(&format!("tag{i}"), t.as_str().into());
+                        }
+                        put("tagsDelimited", tags.join(", ").into());
+                        put("tags", tags.into());
+                    }
+                    Ok(_) => crate::say(format!("Kick: no user '{login}'")),
+                    Err(e) => crate::say(e),
+                }
             }
+
             // 35012: Add Random Users
+            // Kick has no list of who is in chat: the people who chatted this session.
             35012 => {
-                let count = n(o, "count") as usize;
-                let _count = if count == 0 { 1 } else { count };
-                ctx.args.insert("randomUsersCount".into(), 0.into());
+                let count = (n(o, "count") as usize).max(1);
+                let mut users = self.chatters("kick");
+                let take = count.min(users.len());
+                for i in 0..take {
+                    let pick = i + (crate::math::secure_u64() as usize) % (users.len() - i);
+                    users.swap(i, pick);
+                    let (name, id) = &users[i];
+                    ctx.args.insert(format!("randomUser{i}"), name.as_str().into());
+                    ctx.args
+                        .insert(format!("randomUserName{i}"), name.to_lowercase().into());
+                    ctx.args.insert(format!("randomUserId{i}"), id.as_str().into());
+                    ctx.args.insert(format!("randomUserType{i}"), "kick".into());
+                }
+                ctx.args.insert("randomUsersCount".into(), take.into());
             }
-            // 35020: Add User To Group
-            35020 => {
-                let user = self.expand(ctx, s(o, "userLogin"));
-                let group = self.simple(ctx, s(o, "groupName"));
-                self.change(|c| {
-                    if let Some(g) = c
-                        .groups
-                        .iter_mut()
-                        .find(|g| s(g, "name") == group || s(g, "id") == group)
-                    {
-                        if let Some(users) = g.get_mut("userIds").and_then(Value::as_array_mut) {
-                            if !users.iter().any(|u| u.as_str() == Some(&user)) {
-                                users.push(user.clone().into());
-                            }
-                        }
-                    }
-                });
-            }
-            // 35021: Remove User from Group
-            35021 => {
-                let user = self.expand(ctx, s(o, "userLogin"));
-                let group = self.simple(ctx, s(o, "groupName"));
-                self.change(|c| {
-                    if let Some(g) = c
-                        .groups
-                        .iter_mut()
-                        .find(|g| s(g, "name") == group || s(g, "id") == group)
-                    {
-                        if let Some(users) = g.get_mut("userIds").and_then(Value::as_array_mut) {
-                            users.retain(|u| u.as_str() != Some(&user));
-                        }
-                    }
-                });
-            }
-            // 35022: User In Group
-            35022 => {
-                let user = self.expand(ctx, s(o, "userLogin"));
-                let group = self.simple(ctx, s(o, "groupName"));
-                let in_group = {
-                    let c = self.cfg.borrow();
-                    c.groups
-                        .iter()
-                        .find(|g| s(g, "name") == group || s(g, "id") == group)
-                        .and_then(|g| g.get("userIds").and_then(Value::as_array))
-                        .map(|users| users.iter().any(|u| u.as_str() == Some(&user)))
-                        .unwrap_or(false)
-                };
-                ctx.args.insert("userInGroup".into(), in_group.into());
-            }
+
             // 35030: Set Channel Title
             35030 => {
+                ctx.args.insert("titleSuccess".into(), false.into());
                 let title = self.expand(ctx, s(o, "title"));
                 let kick = self.kick_start();
-                if let Err(e) = kick.set_channel_title(&title).await {
-                    crate::say(e);
+                match kick.set_channel_title(&title).await {
+                    Ok(_) => {
+                        ctx.args.insert("titleSuccess".into(), true.into());
+                    }
+                    Err(e) => {
+                        crate::say(e);
+                    }
                 }
             }
             // 35031: Set Channel Category
             35031 => {
-                let cat_id = n(o, "categoryId") as u64;
-                let cat_name = self.expand(ctx, s(o, "categoryName"));
+                ctx.args.insert("category.success".into(), false.into());
+                let id = n(o, "categoryId") as u64;
+                let name = self.expand(ctx, s(o, "categoryName"));
                 let kick = self.kick_start();
-                if let Err(e) = kick.set_channel_category(cat_id, &cat_name).await {
-                    crate::say(e);
+                let r: Result<(), String> = async {
+                    // By id, else by name (Kick's v2 search, exact name first).
+                    let q = if id > 0 {
+                        format!("id={id}")
+                    } else {
+                        format!("name={}", crate::commands::url_encode(&name))
+                    };
+                    let v = kick
+                        .api("GET", &format!("https://api.kick.com/public/v2/categories?{q}"), None)
+                        .await?;
+                    let list = v["data"].as_array().cloned().unwrap_or_default();
+                    let c = list
+                        .iter()
+                        .find(|c| id > 0 || c["name"].as_str().is_some_and(|x| x.eq_ignore_ascii_case(&name)))
+                        .or(list.first())
+                        .cloned()
+                        .ok_or_else(|| format!("Kick: no category '{name}'"))?;
+                    for (k, f) in [("id", "id"), ("name", "name"), ("thumbnail", "thumbnail")] {
+                        ctx.args.insert(format!("category.{k}"), c[f].clone());
+                    }
+                    kick.set_channel_category(c["id"].as_u64().unwrap_or(0), &name).await
+                }
+                .await;
+                match r {
+                    Ok(()) => drop(ctx.args.insert("category.success".into(), true.into())),
+                    Err(e) => crate::say(e),
                 }
             }
+
             // 35040: Ban User
             35040 => {
+                ctx.args.insert("banResult".into(), false.into());
                 let user = self.expand(ctx, s(o, "userLogin"));
                 let reason = self.expand(ctx, s(o, "reason"));
                 let kick = self.kick_start();
-                if let Err(e) = kick.ban_user(&user, &reason).await {
-                    crate::say(e);
+                ctx.args.insert("bannedUser".into(), user.clone().into());
+                ctx.args.insert("bannedUserName".into(), user.clone().into());
+                ctx.args.insert("bannedUserType".into(), "kick".into());
+                match kick.ban_user(&user, &reason).await {
+                    Ok(_) => {
+                        ctx.args.insert("banResult".into(), true.into());
+                    }
+                    Err(e) => {
+                        crate::say(e);
+                    }
                 }
             }
             // 35041: Unban User
             35041 => {
+                ctx.args.insert("unbanResult".into(), false.into());
                 let user = self.expand(ctx, s(o, "userLogin"));
                 let kick = self.kick_start();
-                if let Err(e) = kick.unban_user(&user).await {
-                    crate::say(e);
+                ctx.args.insert("unbannedUser".into(), user.clone().into());
+                ctx.args.insert("unbannedUserName".into(), user.clone().into());
+                ctx.args.insert("unbannedUserType".into(), "kick".into());
+                match kick.unban_user(&user).await {
+                    Ok(_) => {
+                        ctx.args.insert("unbanResult".into(), true.into());
+                    }
+                    Err(e) => {
+                        crate::say(e);
+                    }
                 }
             }
             // 35042: Timeout User
             35042 => {
+                ctx.args.insert("timeoutResult".into(), false.into());
                 let user = self.expand(ctx, s(o, "userLogin"));
                 let duration = n(o, "duration") as u64;
                 let reason = self.expand(ctx, s(o, "reason"));
                 let kick = self.kick_start();
-                if let Err(e) = kick.timeout_user(&user, duration, &reason).await {
-                    crate::say(e);
+                ctx.args.insert("timedOutUser".into(), user.clone().into());
+                ctx.args.insert("timedOutUserName".into(), user.clone().into());
+                ctx.args.insert("timedOutUserType".into(), "kick".into());
+                match kick.timeout_user(&user, duration, &reason).await {
+                    Ok(_) => {
+                        ctx.args.insert("timeoutResult".into(), true.into());
+                    }
+                    Err(e) => {
+                        crate::say(e);
+                    }
                 }
             }
             // 35043: UnTimeout User
             35043 => {
+                ctx.args.insert("unTimedOutResult".into(), false.into());
                 let user = self.expand(ctx, s(o, "userLogin"));
                 let kick = self.kick_start();
-                if let Err(e) = kick.untimeout_user(&user).await {
-                    crate::say(e);
+                ctx.args.insert("unTimedOutUser".into(), user.clone().into());
+                ctx.args.insert("unTimedOutUserName".into(), user.clone().into());
+                ctx.args.insert("unTimedOutUserType".into(), "kick".into());
+                match kick.untimeout_user(&user).await {
+                    Ok(_) => {
+                        ctx.args.insert("unTimedOutResult".into(), true.into());
+                    }
+                    Err(e) => {
+                        crate::say(e);
+                    }
                 }
             }
             // 35101..=35113: Channel Rewards sub-actions
-            35101 => {
-                let reward_id = self.simple(ctx, s(o, "rewardId"));
-                let state = n(o, "state");
-                ctx.args.insert("rewardId".into(), reward_id.into());
-                ctx.args.insert("rewardState".into(), state.into());
+            // Kick channel rewards (official API; only rewards made by this app's Kick app can be
+            // changed, as on Twitch).
+            35101..=35103 | 35105..=35108 | 35113 => {
+                let id = self.expand(ctx, s(o, "rewardId"));
+                ctx.args.insert("rewardId".into(), id.as_str().into());
+                let kick = self.kick_start();
+                let path = format!("/channels/rewards/{}", crate::commands::url_encode(&id));
+                let current = || async {
+                    kick.api("GET", "/channels/rewards", None)
+                        .await?
+                        .get("data")
+                        .and_then(Value::as_array)
+                        .and_then(|a| a.iter().find(|r| r["id"] == id.as_str()).cloned())
+                        .ok_or_else(|| format!("Kick: no reward {id}"))
+                };
+                let cost = |cur: &Value| {
+                    // Operator: 0 set, 1 add, 2 subtract (as Twitch's Set Cost).
+                    let v = n(o, "cost") as i64;
+                    let now = cur["cost"].as_i64().unwrap_or(0);
+                    match n(o, "operator") as i64 {
+                        1 => now + v,
+                        2 => now - v,
+                        _ => v,
+                    }
+                    .max(1)
+                };
+                let r: Result<(), String> = async {
+                    let body = match kind {
+                        35101 | 35102 => {
+                            let key = if kind == 35101 { "is_enabled" } else { "is_paused" };
+                            let on = new_state(n(o, "state"), current().await?[key].as_bool().unwrap_or(false));
+                            // Enabled: 0 enable; Paused: 0 pause (Streamer.bot's order).
+                            json!({ key: on })
+                        }
+                        35103 => json!({"cost": cost(&current().await?)}),
+                        35105 => json!({"title": self.expand(ctx, s(o, "title"))}),
+                        35106 => json!({"description": self.expand(ctx, s(o, "description"))}),
+                        35107 => {
+                            let cur = current().await?;
+                            let mut b = json!({"cost": cost(&cur)});
+                            for (f, k) in [("title", "title"), ("description", "description")] {
+                                let v = self.expand(ctx, s(o, f));
+                                if !v.is_empty() {
+                                    b[k] = v.into();
+                                }
+                            }
+                            b
+                        }
+                        35113 => {
+                            let c = if b(o, "random", false) {
+                                format!("#{:06X}", crate::math::secure_u64() & 0xFF_FFFF)
+                            } else {
+                                // "#AARRGGBB" from the color picker: Kick takes #RRGGBB.
+                                let h = self.expand(ctx, s(o, "backgroundColor"));
+                                let h = h.trim_start_matches('#');
+                                format!("#{}", &h[h.len().saturating_sub(6)..])
+                            };
+                            json!({"background_color": c})
+                        }
+                        _ => {
+                            let r = current().await?;
+                            let f = |k: &str| r[k].clone();
+                            for (arg, k) in [
+                                ("rewardTitle", "title"),
+                                ("rewardPrompt", "description"),
+                                ("rewardCost", "cost"),
+                                ("rewardBackgroundColor", "background_color"),
+                                ("rewardEnabled", "is_enabled"),
+                                ("rewardPaused", "is_paused"),
+                                ("rewardSkipRequestQueue", "should_redemptions_skip_request_queue"),
+                            ] {
+                                ctx.args.insert(arg.into(), f(k));
+                            }
+                            ctx.args.insert("rewardIsOurs".into(), true.into());
+                            return Ok(());
+                        }
+                    };
+                    kick.api("PATCH", &path, Some(body)).await.map(drop)
+                }
+                .await;
+                if let Err(e) = r {
+                    crate::say(e);
+                }
             }
-            35102 => {
-                let reward_id = self.simple(ctx, s(o, "rewardId"));
-                let state = n(o, "state");
-                ctx.args.insert("rewardId".into(), reward_id.into());
-                ctx.args.insert("rewardPausedState".into(), state.into());
-            }
-            35103 => {
-                let reward_id = self.simple(ctx, s(o, "rewardId"));
-                let cost = n(o, "cost");
-                ctx.args.insert("rewardId".into(), reward_id.into());
-                ctx.args.insert("rewardCost".into(), cost.into());
-            }
-            35104 => {
-                let disable_not_configured = b(o, "disableNotConfigured", false);
-                ctx.args
-                    .insert("disableNotConfigured".into(), disable_not_configured.into());
-            }
-            35105 => {
-                let reward_id = self.simple(ctx, s(o, "rewardId"));
-                let title = self.expand(ctx, s(o, "title"));
-                ctx.args.insert("rewardId".into(), reward_id.into());
-                ctx.args.insert("rewardTitle".into(), title.into());
-            }
-            35106 => {
-                let reward_id = self.simple(ctx, s(o, "rewardId"));
-                let desc = self.expand(ctx, s(o, "description"));
-                ctx.args.insert("rewardId".into(), reward_id.into());
-                ctx.args.insert("rewardDescription".into(), desc.into());
-            }
-            35107 => {
-                let reward_id = self.simple(ctx, s(o, "rewardId"));
-                let title = self.expand(ctx, s(o, "title"));
-                let desc = self.expand(ctx, s(o, "description"));
-                let cost = n(o, "cost");
-                ctx.args.insert("rewardId".into(), reward_id.into());
-                ctx.args.insert("rewardTitle".into(), title.into());
-                ctx.args.insert("rewardDescription".into(), desc.into());
-                ctx.args.insert("rewardCost".into(), cost.into());
-            }
-            35108 => {
-                let reward_id = self.simple(ctx, s(o, "rewardId"));
-                ctx.args.insert("rewardId".into(), reward_id.into());
-            }
-            35109 | 35110 => {
-                let reward_id = self.simple(ctx, s(o, "rewardId"));
-                ctx.args.insert("rewardId".into(), reward_id.into());
-                ctx.args.insert("rewardCounterReset".into(), true.into());
-            }
-            35111 => {
-                let group = self.simple(ctx, s(o, "groupName"));
-                let state = n(o, "state");
-                ctx.args.insert("groupName".into(), group.into());
-                ctx.args.insert("rewardGroupState".into(), state.into());
-            }
-            35112 => {
-                let group = self.simple(ctx, s(o, "groupName"));
-                let state = n(o, "state");
-                ctx.args.insert("groupName".into(), group.into());
-                ctx.args.insert("rewardGroupPausedState".into(), state.into());
-            }
-            35113 => {
-                let reward_id = self.simple(ctx, s(o, "rewardId"));
-                let color = self.expand(ctx, s(o, "backgroundColor"));
-                ctx.args.insert("rewardId".into(), reward_id.into());
-                ctx.args.insert("rewardBackgroundColor".into(), color.into());
-            }
-
             // TikTok Sub-actions
             // 43001: Send Message to Live Chat
             43001 => {
@@ -3089,10 +3746,9 @@ impl Engine {
                 let avatar = self.expand(ctx, s(o, "avatar"));
                 let image = self.expand(ctx, s(o, "image"));
                 let tts = b(o, "textToSpeech", false);
-                if let Err(e) =
-                    crate::remote::execute_discord_webhook(&url, &content, &username, &avatar, &image, tts).await
-                {
-                    crate::say(format!("Discord webhook: {e}"));
+                match crate::remote::execute_discord_webhook(&url, &content, &username, &avatar, &image, tts).await {
+                    Ok(id) => drop(ctx.args.insert("messageId".into(), id.into())),
+                    Err(e) => crate::say(format!("Discord webhook: {e}")),
                 }
             }
 
@@ -3212,6 +3868,8 @@ impl Engine {
                         }
                         ctx.args.insert("signalTimeout".into(), false.into());
                         ctx.args.insert("hasResult".into(), true.into());
+                        ctx.args.insert("instanceId".into(), inst.as_str().into());
+                        ctx.args.insert("signalName".into(), sig.as_str().into());
                     }
                     None => {
                         ctx.args.insert("signalTimeout".into(), true.into());
@@ -3468,9 +4126,18 @@ impl Engine {
                 let var = self.simple(ctx, s(o, "variableName"));
                 let parse = b(o, "parseVariables", false);
                 let auto = b(o, "autoType", false);
-                if let Ok(Ok(lines)) =
-                    tokio::task::spawn_blocking(move || crate::fileio::read_lines(std::path::Path::new(&file))).await
-                {
+                let read =
+                    tokio::task::spawn_blocking(move || crate::fileio::read_lines(std::path::Path::new(&file))).await;
+                ctx.args.insert("fileFound".into(), matches!(read, Ok(Ok(_))).into());
+                if let Ok(Ok(lines)) = read {
+                    // The documented lineCount and line0..N, and under the variable name if one is set.
+                    ctx.args.insert("lineCount".into(), lines.len().into());
+                    for (i, l) in lines.iter().enumerate() {
+                        ctx.args.insert(format!("line{i}"), l.as_str().into());
+                    }
+                    if var.is_empty() {
+                        return;
+                    }
                     let processed: Vec<Value> = lines
                         .into_iter()
                         .map(|l| {
@@ -3497,6 +4164,9 @@ impl Engine {
                 let line_num = n(o, "count") as usize;
                 let parse = b(o, "parseVariables", false);
                 let auto = b(o, "autoType", false);
+                let found = std::path::Path::new(&file).is_file();
+                ctx.args.insert("fileFound".into(), found.into());
+                let var = if var.is_empty() { "line".to_string() } else { var };
                 if let Ok(Ok(Some(mut line))) = tokio::task::spawn_blocking(move || {
                     crate::fileio::read_specific_line(std::path::Path::new(&file), line_num)
                 })
@@ -3520,7 +4190,10 @@ impl Engine {
             // File Exists (1039)
             1039 => {
                 let file = self.expand(ctx, s(o, "file"));
-                let var = self.simple(ctx, s(o, "variableName"));
+                let var = match self.simple(ctx, s(o, "variableName")) {
+                    v if v.is_empty() => "fileExists".to_string(),
+                    v => v,
+                };
                 let exists =
                     tokio::task::spawn_blocking(move || crate::fileio::file_exists(std::path::Path::new(&file)))
                         .await
@@ -3531,7 +4204,10 @@ impl Engine {
             // Folder Exists (1040)
             1040 => {
                 let folder = self.expand(ctx, s(o, "folder"));
-                let var = self.simple(ctx, s(o, "variableName"));
+                let var = match self.simple(ctx, s(o, "variableName")) {
+                    v if v.is_empty() => "folderExists".to_string(),
+                    v => v,
+                };
                 let exists =
                     tokio::task::spawn_blocking(move || crate::fileio::folder_exists(std::path::Path::new(&folder)))
                         .await
@@ -3704,6 +4380,122 @@ mod tests {
     use super::super::tests::{action, engine, log, run};
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn dates_and_ages() {
+        let t = parse_iso("2024-08-17T12:34:56.123Z").unwrap();
+        assert_eq!(t, 1_723_898_096);
+        let c = civil(t);
+        assert_eq!((c.year, c.month, c.day, c.weekday, c.hour), (2024, 8, 17, 6, 12));
+        let later = parse_iso("2026-06-22T10:38:21Z").unwrap();
+        let a = age(t, later);
+        assert_eq!(a, [1, 10, 4, 22, 3, 25]);
+        assert_eq!(age_text(&a).1, "1y, 10m, 4d, 22h, 3m, 25s");
+        assert_eq!(
+            age(
+                parse_iso("2024-01-31T00:00:00Z").unwrap(),
+                parse_iso("2024-03-01T00:00:00Z").unwrap()
+            ),
+            [0, 1, 1, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn lists_and_polls() {
+        assert_eq!(list(Some(&json!(["a", {"title": "b"}, " "]))), ["a", "b"]);
+        assert_eq!(list(Some(&json!("a\nb, c"))), ["a", "b, c"]);
+        assert_eq!(list(Some(&json!("a, b"))), ["a", "b"]);
+        let mut args = Obj::new();
+        poll_args(
+            &json!({"id": "p1", "title": "T", "duration": 60, "started_at": "2024-01-01T00:00:00Z",
+                "choices": [{"id": "c", "title": "A", "votes": 10, "channel_points_votes": 3}]}),
+            &mut args,
+        );
+        assert_eq!(args["poll.choice0.votes"], 7);
+        assert_eq!(args["poll.totalVotes"], 10);
+        assert_eq!(
+            args["poll.EndsAt"].as_str().unwrap().get(..19),
+            Some("2024-01-01T00:01:00")
+        );
+    }
+
+    #[test]
+    fn platform_user_groups() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        let a = action(
+            "a1",
+            "groups",
+            json!([
+                {"type": 4005, "userLogin": "UCabc", "groupName": "regulars"},
+                log("T add %addResult%"),
+                {"type": 4007, "userLogin": "UCabc", "groupName": "Regulars"},
+                log("T in %inGroup% %foundUserId% %foundUserType%"),
+                {"type": 35021, "userLogin": "123", "groupName": "Regulars"},
+                {"type": 35022, "userLogin": "123", "groupName": "Regulars"},
+                log("T kick %inGroup%"),
+                {"type": 4006, "userLogin": "UCabc", "groupName": "nope"},
+                log("T remove %removeResult%")
+            ]),
+        );
+        let e = engine(json!({"actions": [a]}));
+        e.cfg.send_modify(|c| {
+            c.groups = vec![json!({"id": "g1", "name": "Regulars", "userIds": ["123"]})
+                .as_object()
+                .unwrap()
+                .clone()];
+        });
+        let out = run(async move {
+            e.queue("a1", Obj::new());
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert_eq!(e.cfg.borrow().groups[0]["userIds"], json!(["UCabc"]));
+        });
+        for w in [
+            "T add True",
+            "T in True UCabc youtube",
+            "T kick False",
+            "T remove False",
+        ] {
+            assert!(out.iter().any(|x| x == w), "{w} missing: {out:?}");
+        }
+    }
+
+    #[test]
+    fn file_read_variables() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("szt-files-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("l.txt");
+        std::fs::write(&f, "alpha\nbeta\n").unwrap();
+        let path = f.display().to_string();
+        let a = action(
+            "a1",
+            "files",
+            json!([
+                {"type": 1006, "file": path, "variableName": ""},
+                log("T lines %lineCount% %line1% %fileFound%"),
+                {"type": 1021, "file": path, "count": 1, "variableName": ""},
+                log("T line %line% %fileFound%"),
+                {"type": 1039, "file": path, "variableName": ""},
+                {"type": 1040, "folder": dir.display().to_string(), "variableName": ""},
+                log("T exists %fileExists% %folderExists%"),
+                {"type": 1006, "file": format!("{path}.nope"), "variableName": ""},
+                log("T missing %fileFound%")
+            ]),
+        );
+        let e = engine(json!({"actions": [a]}));
+        let out = run(async move {
+            e.queue("a1", Obj::new());
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        });
+        std::fs::remove_dir_all(&dir).unwrap();
+        for w in ["T lines 2 beta True", "T exists True True", "T missing False"] {
+            assert!(out.iter().any(|x| x == w), "{w} missing: {out:?}");
+        }
+        assert!(
+            out.iter().any(|x| x.starts_with("T line ") && x.ends_with(" True")),
+            "{out:?}"
+        );
+    }
 
     #[test]
     fn obs_colors() {
