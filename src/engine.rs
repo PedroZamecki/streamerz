@@ -380,7 +380,9 @@ impl Engine {
         let text = text.to_string();
         let reply_id = reply_id.map(String::from);
         tokio::task::spawn_local(async move {
-            let _ = tw.send_message(text, reply_id, use_bot, fallback).await;
+            if let Err(e) = tw.send_message(text, reply_id, use_bot, fallback).await {
+                crate::say(e);
+            }
         });
         Ok(())
     }

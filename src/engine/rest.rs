@@ -23,6 +23,38 @@ fn in_group(c: &Obj, group: &str) -> bool {
     group.is_empty() || group == "All" || s(c, "group") == group
 }
 
+/// A color as Streamer.bot writes it ("#AARRGGBB" or "#RRGGBB") in OBS's order (0xAABBGGRR).
+fn obs_color(c: &str) -> i64 {
+    let h = c.trim().trim_start_matches('#');
+    let argb = match u32::from_str_radix(h, 16) {
+        Ok(v) if h.len() == 6 => 0xFF00_0000 | v,
+        Ok(v) => v,
+        Err(_) => 0xFF00_0000,
+    };
+    let (a, r, g, b2) = (argb >> 24, (argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF);
+    i64::from(a << 24 | b2 << 16 | g << 8 | r)
+}
+
+/// A JSON value as arguments: `prefix.key.sub`, arrays as `prefix.list[0]` (as Streamer.bot puts
+/// OBS Raw and Get Scene Item Properties results).
+fn flatten(prefix: &str, v: &Value, args: &mut Obj) {
+    match v {
+        Value::Object(o) => {
+            for (k, x) in o {
+                flatten(&format!("{prefix}.{k}"), x, args);
+            }
+        }
+        Value::Array(a) => {
+            for (i, x) in a.iter().enumerate() {
+                flatten(&format!("{prefix}[{i}]"), x, args);
+            }
+        }
+        x => {
+            args.insert(prefix.into(), x.clone());
+        }
+    }
+}
+
 impl Engine {
     /// A chat message: run the commands it matches. How many ran.
     pub fn chat(self: &Rc<Self>, chat: &Chat) -> usize {
@@ -378,7 +410,9 @@ impl Engine {
                 let fallback = b(o, "fallback", false);
                 if self.dev_out("twitch", &text, use_bot) {
                 } else if let Some(tw) = self.twitch() {
-                    let _ = tw.send_message(text, None, use_bot, fallback).await;
+                    if let Err(e) = tw.send_message(text, None, use_bot, fallback).await {
+                        crate::say(e);
+                    }
                 }
             }
             // Send Announcement to Channel (Twitch)
@@ -388,7 +422,9 @@ impl Engine {
                 let use_bot = b(o, "useBot", false);
                 let fallback = b(o, "fallback", false);
                 if let Some(tw) = self.twitch() {
-                    let _ = tw.send_announcement(text, color, use_bot, fallback).await;
+                    if let Err(e) = tw.send_announcement(text, color, use_bot, fallback).await {
+                        crate::say(e);
+                    }
                 }
             }
             // Start Raid (Twitch)
@@ -402,7 +438,9 @@ impl Engine {
             // Cancel Raid (Twitch)
             501 => {
                 if let Some(tw) = self.twitch() {
-                    let _ = tw.cancel_raid().await;
+                    if let Err(e) = tw.cancel_raid().await {
+                        crate::say(e);
+                    }
                 }
             }
             // Reply To Message (Twitch)
@@ -413,7 +451,9 @@ impl Engine {
                 let fallback = b(o, "fallback", false);
                 if self.dev_out("twitch", &text, use_bot) {
                 } else if let Some(tw) = self.twitch() {
-                    let _ = tw.send_message(text, Some(reply_id), use_bot, fallback).await;
+                    if let Err(e) = tw.send_message(text, Some(reply_id), use_bot, fallback).await {
+                        crate::say(e);
+                    }
                 }
             }
             // Update Redemption Status (11)
@@ -441,7 +481,7 @@ impl Engine {
                     red_id
                 };
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "channel_points/custom_rewards/redemptions",
@@ -454,14 +494,17 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Set Channel Title (15)
             15 => {
                 let title = self.expand(ctx, s(o, "title"));
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "channels",
@@ -470,14 +513,17 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Set Channel Game (16)
             16 => {
                 let game_id = self.expand(ctx, s(o, "gameId"));
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "channels",
@@ -486,14 +532,17 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Create Stream Marker (17)
             17 => {
                 let desc = self.expand(ctx, s(o, "description"));
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "POST",
                             "streams/markers",
@@ -502,7 +551,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Create Clip (18)
@@ -534,7 +586,7 @@ impl Engine {
                 let duration = n(o, "duration") as u64;
                 let len = if duration == 0 { 30 } else { duration };
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "POST",
                             "channels/commercial",
@@ -543,7 +595,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Add Viewer Count (24)
@@ -571,7 +626,7 @@ impl Engine {
                 let state = n(o, "state");
                 let is_enabled = state == 0.0;
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "channel_points/custom_rewards",
@@ -580,7 +635,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Set Paused State (201)
@@ -589,7 +647,7 @@ impl Engine {
                 let state = n(o, "state");
                 let is_paused = state == 1.0;
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "channel_points/custom_rewards",
@@ -598,7 +656,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Set Cost (202)
@@ -606,7 +667,7 @@ impl Engine {
                 let reward_id = self.expand(ctx, s(o, "rewardId"));
                 let cost = n(o, "cost") as u64;
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "channel_points/custom_rewards",
@@ -615,7 +676,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Configure Rewards (203)
@@ -625,7 +689,7 @@ impl Engine {
                 let reward_id = self.expand(ctx, s(o, "rewardId"));
                 let title = self.expand(ctx, s(o, "title"));
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "channel_points/custom_rewards",
@@ -634,7 +698,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Set Prompt (206)
@@ -642,7 +709,7 @@ impl Engine {
                 let reward_id = self.expand(ctx, s(o, "rewardId"));
                 let prompt = self.expand(ctx, s(o, "prompt"));
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "channel_points/custom_rewards",
@@ -651,7 +718,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Get Reward Info (208)
@@ -682,7 +752,7 @@ impl Engine {
             // Clear Channel Tags (251)
             251 => {
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "channels",
@@ -691,7 +761,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Set Channel Tags (252)
@@ -699,7 +772,7 @@ impl Engine {
                 let tags = self.expand(ctx, s(o, "tags"));
                 let tag_list: Vec<&str> = tags.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "channels",
@@ -708,7 +781,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Add Channel Tag (253) / Remove Channel Tag (254)
@@ -716,7 +792,7 @@ impl Engine {
             // Snooze Ad (555)
             555 => {
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "POST",
                             "channels/ads/schedule/snooze",
@@ -725,7 +801,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Get Ad Schedule (556) / Get Pre-roll Free Time (557)
@@ -756,7 +835,7 @@ impl Engine {
                 let duration = n(o, "duration") as u64;
                 let dur = if duration == 0 { 60 } else { duration };
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "POST",
                             "polls",
@@ -770,14 +849,17 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Terminate Active Poll (562)
             562 => {
                 let poll_id = self.expand(ctx, s(o, "pollId"));
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "polls",
@@ -786,14 +868,17 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Archive Active Poll (563)
             563 => {
                 let poll_id = self.expand(ctx, s(o, "pollId"));
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "polls",
@@ -802,14 +887,17 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Set Channel Branded Content (564)
             564 => {
                 let status = b(o, "status", false);
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "channels",
@@ -818,7 +906,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Get Active Poll (566)
@@ -869,7 +960,7 @@ impl Engine {
                 let duration = n(o, "duration") as u64;
                 let dur = if duration == 0 { 120 } else { duration };
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "POST",
                             "predictions",
@@ -883,14 +974,17 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Cancel Active Prediction (569)
             569 => {
                 let pred_id = self.expand(ctx, s(o, "predictionId"));
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "predictions",
@@ -899,14 +993,17 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Lock Active Prediction (570)
             570 => {
                 let pred_id = self.expand(ctx, s(o, "predictionId"));
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "predictions",
@@ -915,7 +1012,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Resolve Last Prediction (571) / Resolve Last Prediction by Title (572)
@@ -923,14 +1023,16 @@ impl Engine {
                 let pred_id = self.expand(ctx, s(o, "predictionId"));
                 let win_id = self.expand(ctx, s(o, "winningOutcomeId"));
                 if let Some(tw) = self.twitch() {
-                    let _ = tw.helix(
+                    if let Err(e) = tw.helix(
                         "PATCH",
                         "predictions",
                         vec![],
                         Some(json!({"broadcaster_id": "{broadcaster_id}", "id": pred_id, "status": "RESOLVED", "winning_outcome_id": win_id})),
                         false,
                         true,
-                    ).await;
+                    ).await {
+                    crate::say(e);
+                }
                 }
             }
             // Get Clip Download Urls (573)
@@ -952,7 +1054,7 @@ impl Engine {
             12 => {
                 let status = b(o, "status", true);
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "chat/settings",
@@ -964,14 +1066,17 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Emote Only (13)
             13 => {
                 let status = b(o, "status", true);
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "chat/settings",
@@ -983,7 +1088,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Slow Mode (14)
@@ -991,7 +1099,7 @@ impl Engine {
                 let status = b(o, "status", true);
                 let dur = n(o, "duration") as u64;
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "chat/settings",
@@ -1003,7 +1111,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Follower Mode (28)
@@ -1011,7 +1122,7 @@ impl Engine {
                 let status = b(o, "status", true);
                 let dur = n(o, "duration") as u64;
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "chat/settings",
@@ -1023,7 +1134,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Timeout User (20)
@@ -1033,7 +1147,7 @@ impl Engine {
                 let reason = self.expand(ctx, s(o, "reason"));
                 if let Some(tw) = self.twitch() {
                     if let Ok(uid) = tw.resolve_user_id(&login).await {
-                        let _ = tw
+                        if let Err(e) = tw
                             .helix(
                                 "POST",
                                 "moderation/bans",
@@ -1045,7 +1159,10 @@ impl Engine {
                                 false,
                                 true,
                             )
-                            .await;
+                            .await
+                        {
+                            crate::say(format!("Twitch: {e}"));
+                        }
                     }
                 }
             }
@@ -1064,7 +1181,7 @@ impl Engine {
             // Get Latest Charity Campaign (25)
             25 => {
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "GET",
                             "charity/campaigns",
@@ -1073,7 +1190,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Get Shield Mode Status (26)
@@ -1105,7 +1225,7 @@ impl Engine {
             27 => {
                 let status = b(o, "status", true);
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PUT",
                             "moderation/shield_mode",
@@ -1117,7 +1237,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Send Shoutout (29)
@@ -1125,7 +1248,7 @@ impl Engine {
                 let login = self.expand(ctx, s(o, "userLogin"));
                 if let Some(tw) = self.twitch() {
                     if let Ok(uid) = tw.resolve_user_id(&login).await {
-                        let _ = tw
+                        if let Err(e) = tw
                             .helix(
                                 "POST",
                                 "chat/shoutouts",
@@ -1138,7 +1261,10 @@ impl Engine {
                                 false,
                                 true,
                             )
-                            .await;
+                            .await
+                        {
+                            crate::say(format!("Twitch: {e}"));
+                        }
                     }
                 }
             }
@@ -1168,7 +1294,7 @@ impl Engine {
                 let login = self.expand(ctx, s(o, "userLogin"));
                 if let Some(tw) = self.twitch() {
                     if let Ok(uid) = tw.resolve_user_id(&login).await {
-                        let _ = tw
+                        if let Err(e) = tw
                             .helix(
                                 "GET",
                                 "channels/followers",
@@ -1177,7 +1303,10 @@ impl Engine {
                                 false,
                                 true,
                             )
-                            .await;
+                            .await
+                        {
+                            crate::say(format!("Twitch: {e}"));
+                        }
                     }
                 }
             }
@@ -1185,7 +1314,7 @@ impl Engine {
             52 => {
                 let _login = self.expand(ctx, s(o, "userLogin"));
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "GET",
                             "teams/channel",
@@ -1194,7 +1323,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Set Global Cooldown (204)
@@ -1202,7 +1334,7 @@ impl Engine {
                 let rew_id = self.expand(ctx, s(o, "rewardId"));
                 let cd = n(o, "cooldown") as u64;
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "channel_points/custom_rewards",
@@ -1211,7 +1343,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Update Reward (207)
@@ -1221,7 +1356,7 @@ impl Engine {
                 let prompt = self.expand(ctx, s(o, "prompt"));
                 let cost = n(o, "cost") as u64;
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "channel_points/custom_rewards",
@@ -1230,7 +1365,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Set Group Enabled State (211)
@@ -1242,7 +1380,7 @@ impl Engine {
                 let rew_id = self.expand(ctx, s(o, "rewardId"));
                 let color = self.expand(ctx, s(o, "backgroundColor"));
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "channel_points/custom_rewards",
@@ -1251,7 +1389,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Set Max per User per Stream (214)
@@ -1259,7 +1400,7 @@ impl Engine {
                 let rew_id = self.expand(ctx, s(o, "rewardId"));
                 let max = n(o, "redeems") as u64;
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "channel_points/custom_rewards",
@@ -1270,7 +1411,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Set Max Per Stream (215)
@@ -1278,7 +1422,7 @@ impl Engine {
                 let rew_id = self.expand(ctx, s(o, "rewardId"));
                 let max = n(o, "redeems") as u64;
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "PATCH",
                             "channel_points/custom_rewards",
@@ -1287,7 +1431,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Add VIP (502)
@@ -1295,7 +1442,7 @@ impl Engine {
                 let login = self.expand(ctx, s(o, "userLogin"));
                 if let Some(tw) = self.twitch() {
                     if let Ok(uid) = tw.resolve_user_id(&login).await {
-                        let _ = tw
+                        if let Err(e) = tw
                             .helix(
                                 "POST",
                                 "channels/vips",
@@ -1304,7 +1451,10 @@ impl Engine {
                                 false,
                                 true,
                             )
-                            .await;
+                            .await
+                        {
+                            crate::say(format!("Twitch: {e}"));
+                        }
                     }
                 }
             }
@@ -1313,7 +1463,7 @@ impl Engine {
                 let login = self.expand(ctx, s(o, "userLogin"));
                 if let Some(tw) = self.twitch() {
                     if let Ok(uid) = tw.resolve_user_id(&login).await {
-                        let _ = tw
+                        if let Err(e) = tw
                             .helix(
                                 "DELETE",
                                 "channels/vips",
@@ -1322,7 +1472,10 @@ impl Engine {
                                 false,
                                 true,
                             )
-                            .await;
+                            .await
+                        {
+                            crate::say(format!("Twitch: {e}"));
+                        }
                     }
                 }
             }
@@ -1331,7 +1484,7 @@ impl Engine {
                 let login = self.expand(ctx, s(o, "userLogin"));
                 if let Some(tw) = self.twitch() {
                     if let Ok(uid) = tw.resolve_user_id(&login).await {
-                        let _ = tw
+                        if let Err(e) = tw
                             .helix(
                                 "POST",
                                 "moderation/moderators",
@@ -1340,7 +1493,10 @@ impl Engine {
                                 false,
                                 true,
                             )
-                            .await;
+                            .await
+                        {
+                            crate::say(format!("Twitch: {e}"));
+                        }
                     }
                 }
             }
@@ -1349,7 +1505,7 @@ impl Engine {
                 let login = self.expand(ctx, s(o, "userLogin"));
                 if let Some(tw) = self.twitch() {
                     if let Ok(uid) = tw.resolve_user_id(&login).await {
-                        let _ = tw
+                        if let Err(e) = tw
                             .helix(
                                 "DELETE",
                                 "moderation/moderators",
@@ -1358,7 +1514,10 @@ impl Engine {
                                 false,
                                 true,
                             )
-                            .await;
+                            .await
+                        {
+                            crate::say(format!("Twitch: {e}"));
+                        }
                     }
                 }
             }
@@ -1405,7 +1564,7 @@ impl Engine {
             // Clear Chat Messages (510)
             510 => {
                 if let Some(tw) = self.twitch() {
-                    let _ = tw
+                    if let Err(e) = tw
                         .helix(
                             "DELETE",
                             "moderation/chat",
@@ -1417,7 +1576,10 @@ impl Engine {
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                    {
+                        crate::say(format!("Twitch: {e}"));
+                    }
                 }
             }
             // Ban User (511)
@@ -1426,7 +1588,7 @@ impl Engine {
                 let reason = self.expand(ctx, s(o, "reason"));
                 if let Some(tw) = self.twitch() {
                     if let Ok(uid) = tw.resolve_user_id(&login).await {
-                        let _ = tw
+                        if let Err(e) = tw
                             .helix(
                                 "POST",
                                 "moderation/bans",
@@ -1438,7 +1600,10 @@ impl Engine {
                                 false,
                                 true,
                             )
-                            .await;
+                            .await
+                        {
+                            crate::say(format!("Twitch: {e}"));
+                        }
                     }
                 }
             }
@@ -1447,7 +1612,7 @@ impl Engine {
                 let login = self.expand(ctx, s(o, "userLogin"));
                 if let Some(tw) = self.twitch() {
                     if let Ok(uid) = tw.resolve_user_id(&login).await {
-                        let _ = tw
+                        if let Err(e) = tw
                             .helix(
                                 "DELETE",
                                 "moderation/bans",
@@ -1460,7 +1625,10 @@ impl Engine {
                                 false,
                                 true,
                             )
-                            .await;
+                            .await
+                        {
+                            crate::say(format!("Twitch: {e}"));
+                        }
                     }
                 }
             }
@@ -1530,7 +1698,7 @@ impl Engine {
                 let reason = self.expand(ctx, s(o, "reason"));
                 if let Some(tw) = self.twitch() {
                     if let Ok(uid) = tw.resolve_user_id(&login).await {
-                        let _ = tw
+                        if let Err(e) = tw
                             .helix(
                                 "POST",
                                 "moderation/warnings",
@@ -1542,62 +1710,96 @@ impl Engine {
                                 false,
                                 true,
                             )
-                            .await;
+                            .await
+                        {
+                            crate::say(format!("Twitch: {e}"));
+                        }
                     }
                 }
             }
-            // Get Pinned Chat Message (575)
-            575 => {
-                if let Some(tw) = self.twitch() {
-                    let _ = tw
-                        .helix(
-                            "GET",
-                            "chat/messages/pins",
-                            vec![("broadcaster_id", "{broadcaster_id}")],
+            // Pinned chat messages (575-578): Helix chat/pins. Update and Unpin act on the message
+            // pinned now.
+            575..=578 => {
+                let Some(tw) = self.twitch() else { return };
+                let who = vec![
+                    ("broadcaster_id", "{broadcaster_id}"),
+                    ("moderator_id", "{broadcaster_id}"),
+                ];
+                let pinned = tw.helix("GET", "chat/pins", who.clone(), None, false, true).await;
+                let current = pinned
+                    .as_ref()
+                    .ok()
+                    .and_then(|v| v.pointer("/data/0").cloned())
+                    .unwrap_or_default();
+                let duration = n(o, "duration").max(0.0) as u64;
+                let secs = duration.to_string();
+                let with = |id: &str, dur: bool| {
+                    let mut q: Vec<(&str, String)> = who.iter().map(|(k, v)| (*k, v.to_string())).collect();
+                    q.push(("message_id", id.to_string()));
+                    // 30 s to 30 min; none: until the stream ends.
+                    if dur && duration > 0 {
+                        q.push(("duration_seconds", secs.clone()));
+                    }
+                    q
+                };
+                let current_id = current["message_id"].as_str().unwrap_or("").to_string();
+                let r = match kind {
+                    575 => {
+                        let f = |k: &str| current[k].clone();
+                        ctx.args.insert("pinnedMessageId".into(), f("message_id"));
+                        ctx.args.insert(
+                            "pinnedMessage".into(),
+                            current.pointer("/message/text").cloned().unwrap_or_default(),
+                        );
+                        ctx.args.insert("pinnedUserId".into(), f("sender_user_id"));
+                        ctx.args.insert("pinnedUserName".into(), f("sender_user_name"));
+                        ctx.args.insert("pinnedByUserName".into(), f("pinned_by_user_name"));
+                        pinned.map(drop)
+                    }
+                    576 => {
+                        let id = self.expand(ctx, s(o, "messageId"));
+                        let q = with(&id, true);
+                        tw.helix(
+                            "PUT",
+                            "chat/pins",
+                            q.iter().map(|(k, v)| (*k, v.as_str())).collect(),
                             None,
                             false,
                             true,
                         )
-                        .await;
-                }
-            }
-            // Pin Chat Message (576)
-            576 => {
-                let msg_id = self.expand(ctx, s(o, "messageId"));
-                if let Some(tw) = self.twitch() {
-                    let _ = tw
-                        .helix(
-                            "POST",
-                            "chat/messages/pins",
-                            vec![
-                                ("broadcaster_id", "{broadcaster_id}"),
-                                ("moderator_id", "{broadcaster_id}"),
-                            ],
-                            Some(json!({"message_id": msg_id})),
+                        .await
+                        .map(drop)
+                    }
+                    _ if current_id.is_empty() => Err("Twitch: no pinned chat message".into()),
+                    577 => {
+                        let q = with(&current_id, true);
+                        tw.helix(
+                            "PATCH",
+                            "chat/pins",
+                            q.iter().map(|(k, v)| (*k, v.as_str())).collect(),
+                            None,
                             false,
                             true,
                         )
-                        .await;
-                }
-            }
-            // Updated Pinned Chat Message Duration (577)
-            577 => {}
-            // Unpin Chat Message (578)
-            578 => {
-                if let Some(tw) = self.twitch() {
-                    let _ = tw
-                        .helix(
+                        .await
+                        .map(drop)
+                    }
+                    _ => {
+                        let q = with(&current_id, false);
+                        tw.helix(
                             "DELETE",
-                            "chat/messages/pins",
-                            vec![
-                                ("broadcaster_id", "{broadcaster_id}"),
-                                ("moderator_id", "{broadcaster_id}"),
-                            ],
+                            "chat/pins",
+                            q.iter().map(|(k, v)| (*k, v.as_str())).collect(),
                             None,
                             false,
                             true,
                         )
-                        .await;
+                        .await
+                        .map(drop)
+                    }
+                };
+                if let Err(e) = r {
+                    crate::say(format!("Twitch pins: {e}"));
                 }
             }
             // Add Suspicious Status (579) / Remove Suspicious Status (580)
@@ -1704,8 +1906,8 @@ impl Engine {
                 {
                     if let Some(item_id) = res.get("sceneItemId").and_then(Value::as_i64) {
                         let target = match state {
-                            0 => false,
-                            1 => true,
+                            0 => true,
+                            1 => false,
                             _ => {
                                 let cur = obs
                                     .send_request(
@@ -1803,10 +2005,10 @@ impl Engine {
                 let obs = self.obs_start();
                 match state {
                     0 => {
-                        let _ = obs.send_request(conn_ref, "StopStream", json!({})).await;
+                        let _ = obs.send_request(conn_ref, "StartStream", json!({})).await;
                     }
                     1 => {
-                        let _ = obs.send_request(conn_ref, "StartStream", json!({})).await;
+                        let _ = obs.send_request(conn_ref, "StopStream", json!({})).await;
                     }
                     _ => {
                         let _ = obs.send_request(conn_ref, "ToggleStream", json!({})).await;
@@ -1832,8 +2034,8 @@ impl Engine {
                 let state = n(o, "state") as i64;
                 let obs = self.obs_start();
                 let target = match state {
-                    0 => false,
-                    1 => true,
+                    0 => true,
+                    1 => false,
                     _ => {
                         let cur = obs
                             .send_request(
@@ -2016,8 +2218,8 @@ impl Engine {
                                 if let Some(fname) = f.get("filterName").and_then(Value::as_str) {
                                     let cur_enabled = f.get("filterEnabled").and_then(Value::as_bool).unwrap_or(false);
                                     let target = match state {
-                                        0 => false,
-                                        1 => true,
+                                        0 => true,
+                                        1 => false,
                                         _ => !cur_enabled,
                                     };
                                     let _ = obs
@@ -2079,7 +2281,7 @@ impl Engine {
                             .send_request(
                                 conn_ref,
                                 "SetInputMute",
-                                json!({"inputName": source, "inputMuted": false}),
+                                json!({"inputName": source, "inputMuted": true}),
                             )
                             .await;
                     }
@@ -2088,7 +2290,7 @@ impl Engine {
                             .send_request(
                                 conn_ref,
                                 "SetInputMute",
-                                json!({"inputName": source, "inputMuted": true}),
+                                json!({"inputName": source, "inputMuted": false}),
                             )
                             .await;
                     }
@@ -2106,7 +2308,7 @@ impl Engine {
                 let obs = self.obs_start();
                 if let Ok(res) = obs.send_request(conn_ref, "GetCurrentProgramScene", json!({})).await {
                     if let Some(scene_name) = res.get("currentProgramSceneName").and_then(Value::as_str) {
-                        ctx.args.insert("obsCurrentScene".into(), scene_name.to_string().into());
+                        ctx.args.insert("currentScene".into(), scene_name.to_string().into());
                     }
                 }
             }
@@ -2116,7 +2318,8 @@ impl Engine {
                 let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
                 let source = self.expand(ctx, s(o, "sourceName"));
                 let track = n(o, "track") as i64;
-                let track_str = track.to_string();
+                // The dropdown position: Track 1 is 0.
+                let track_str = (track + 1).to_string();
                 let state = n(o, "state") as i64;
                 let obs = self.obs_start();
                 if let Ok(res) = obs
@@ -2129,8 +2332,8 @@ impl Engine {
                         .and_then(Value::as_bool)
                         .unwrap_or(false);
                     let target = match state {
-                        0 => false,
-                        1 => true,
+                        0 => true,
+                        1 => false,
                         _ => !cur,
                     };
                     let _ = obs
@@ -2155,19 +2358,19 @@ impl Engine {
                 let obs = self.obs_start();
                 match state {
                     0 => {
-                        let _ = obs.send_request(conn_ref, "StopRecord", json!({})).await;
-                    }
-                    1 => {
                         let _ = obs.send_request(conn_ref, "StartRecord", json!({})).await;
                     }
-                    2 => {
-                        let _ = obs.send_request(conn_ref, "ToggleRecord", json!({})).await;
+                    1 => {
+                        let _ = obs.send_request(conn_ref, "StopRecord", json!({})).await;
                     }
-                    3 => {
+                    2 => {
                         let _ = obs.send_request(conn_ref, "PauseRecord", json!({})).await;
                     }
-                    _ => {
+                    3 => {
                         let _ = obs.send_request(conn_ref, "ResumeRecord", json!({})).await;
+                    }
+                    _ => {
+                        let _ = obs.send_request(conn_ref, "ToggleRecord", json!({})).await;
                     }
                 }
             }
@@ -2175,27 +2378,25 @@ impl Engine {
             46 => {
                 let conn_id = s(o, "connectionId");
                 let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
-                let req_type = self.simple(ctx, s(o, "name"));
-                let prefix = self.simple(ctx, s(o, "prefix"));
-                let raw_str = self.expand(ctx, s(o, "raw"));
-                let results_to_args = b(o, "resultsToArgs", false);
-                let payload: Value = serde_json::from_str(&raw_str).unwrap_or(json!({}));
+                // `raw` is {"requestType", "requestData"} (obs-raw.streamer.bot's Raw JSON); older
+                // ones kept the type in `name` and only the data in `raw`.
+                let raw: Value = serde_json::from_str(&self.expand(ctx, s(o, "raw"))).unwrap_or(json!({}));
+                let (req_type, payload) = match raw.get("requestType").and_then(Value::as_str) {
+                    Some(t) => (t.to_string(), raw.get("requestData").cloned().unwrap_or(json!({}))),
+                    None => (self.simple(ctx, s(o, "name")), raw),
+                };
+                let prefix = match self.simple(ctx, s(o, "prefix")) {
+                    p if p.is_empty() => "obsRaw".to_string(),
+                    p => p,
+                };
                 let obs = self.obs_start();
                 if let Ok(res) = obs.send_request(conn_ref, &req_type, payload).await {
-                    if results_to_args {
-                        if let Some(map) = res.as_object() {
-                            for (k, val) in map {
-                                let key = if prefix.is_empty() {
-                                    k.clone()
-                                } else {
-                                    format!("{prefix}.{k}")
-                                };
-                                ctx.args.insert(key, val.clone());
-                            }
-                        }
+                    if b(o, "resultsToArgs", true) {
+                        flatten(&prefix, &res, &mut ctx.args);
                     }
                 }
             }
+
             // 47: Set Scene Filter State
             47 => {
                 let conn_id = s(o, "connectionId");
@@ -2205,8 +2406,8 @@ impl Engine {
                 let state = n(o, "state") as i64;
                 let obs = self.obs_start();
                 let target = match state {
-                    0 => false,
-                    1 => true,
+                    0 => true,
+                    1 => false,
                     _ => {
                         let cur = obs
                             .send_request(
@@ -2269,8 +2470,8 @@ impl Engine {
                 let action = match state {
                     0 => "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY",
                     1 => "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PAUSE",
-                    2 => "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP",
-                    3 => "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART",
+                    2 => "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART",
+                    3 => "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP",
                     4 => "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_NEXT",
                     _ => "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PREVIOUS",
                 };
@@ -2294,16 +2495,16 @@ impl Engine {
                 let obs = self.obs_start();
                 match state {
                     0 => {
-                        let _ = obs.send_request(conn_ref, "StopReplayBuffer", json!({})).await;
-                    }
-                    1 => {
                         let _ = obs.send_request(conn_ref, "StartReplayBuffer", json!({})).await;
                     }
+                    1 => {
+                        let _ = obs.send_request(conn_ref, "StopReplayBuffer", json!({})).await;
+                    }
                     2 => {
-                        let _ = obs.send_request(conn_ref, "ToggleReplayBuffer", json!({})).await;
+                        let _ = obs.send_request(conn_ref, "SaveReplayBuffer", json!({})).await;
                     }
                     _ => {
-                        let _ = obs.send_request(conn_ref, "SaveReplayBuffer", json!({})).await;
+                        let _ = obs.send_request(conn_ref, "ToggleReplayBuffer", json!({})).await;
                     }
                 }
             }
@@ -2352,56 +2553,38 @@ impl Engine {
                 let scene = self.expand(ctx, s(o, "sceneName"));
                 let source = self.expand(ctx, s(o, "sourceName"));
                 let obs = self.obs_start();
-                if let Ok(res) = obs
-                    .send_request(
-                        conn_ref,
-                        "GetSceneItemId",
-                        json!({"sceneName": scene, "sourceName": source}),
-                    )
-                    .await
-                {
-                    if let Some(item_id) = res.get("sceneItemId").and_then(Value::as_i64) {
-                        if let Ok(en_res) = obs
-                            .send_request(
-                                conn_ref,
-                                "GetSceneItemEnabled",
-                                json!({"sceneName": scene, "sceneItemId": item_id}),
-                            )
-                            .await
-                        {
-                            if let Some(enabled) = en_res.get("sceneItemEnabled").and_then(Value::as_bool) {
-                                ctx.args.insert("obsItemEnabled".into(), enabled.into());
-                            }
-                        }
-                        if let Ok(tr_res) = obs
-                            .send_request(
-                                conn_ref,
-                                "GetSceneItemTransform",
-                                json!({"sceneName": scene, "sceneItemId": item_id}),
-                            )
-                            .await
-                        {
-                            if let Some(tr) = tr_res.get("sceneItemTransform") {
-                                if let Some(rot) = tr.get("rotation").and_then(Value::as_f64) {
-                                    ctx.args.insert("obsItemRotation".into(), rot.into());
-                                }
-                                if let Some(sx) = tr.get("scaleX").and_then(Value::as_f64) {
-                                    ctx.args.insert("obsItemScaleX".into(), sx.into());
-                                }
-                                if let Some(sy) = tr.get("scaleY").and_then(Value::as_f64) {
-                                    ctx.args.insert("obsItemScaleY".into(), sy.into());
-                                }
-                                if let Some(px) = tr.get("positionX").and_then(Value::as_f64) {
-                                    ctx.args.insert("obsItemPositionX".into(), px.into());
-                                }
-                                if let Some(py) = tr.get("positionY").and_then(Value::as_f64) {
-                                    ctx.args.insert("obsItemPositionY".into(), py.into());
-                                }
-                            }
-                        }
-                    }
+                let get = |t: &'static str, d: Value| {
+                    let obs = obs.clone();
+                    async move { obs.send_request(conn_ref, t, d).await.unwrap_or_default() }
+                };
+                let id = get("GetSceneItemId", json!({"sceneName": scene, "sourceName": source})).await["sceneItemId"]
+                    .clone();
+                if id.is_null() {
+                    return;
                 }
+                let item = json!({"sceneName": scene, "sceneItemId": id});
+                let t = get("GetSceneItemTransform", item.clone()).await["sceneItemTransform"].clone();
+                let visible = get("GetSceneItemEnabled", item.clone()).await["sceneItemEnabled"].clone();
+                let locked = get("GetSceneItemLocked", item).await["sceneItemLocked"].clone();
+                let muted = get("GetInputMute", json!({"inputName": source})).await["inputMuted"]
+                    .as_bool()
+                    .unwrap_or(false);
+                // obs-websocket 4's GetSceneItemProperties, which Streamer.bot's props.* follow.
+                let props = json!({
+                    "message-id": "", "status": "ok", "name": source, "itemId": id,
+                    "position": {"x": t["positionX"], "y": t["positionY"], "alignment": t["alignment"]},
+                    "rotation": t["rotation"],
+                    "scale": {"x": t["scaleX"], "y": t["scaleY"], "filter": "OBS_SCALE_DISABLE"},
+                    "crop": {"top": t["cropTop"], "right": t["cropRight"], "bottom": t["cropBottom"], "left": t["cropLeft"]},
+                    "visible": visible, "muted": muted, "locked": locked,
+                    "bounds": {"type": t["boundsType"], "alignment": t["boundsAlignment"], "x": t["boundsWidth"], "y": t["boundsHeight"]},
+                    "sourceWidth": t["sourceWidth"], "sourceHeight": t["sourceHeight"],
+                    "width": t["width"], "height": t["height"],
+                });
+                ctx.args.insert("props._json".into(), props.to_string().into());
+                flatten("props", &props, &mut ctx.args);
             }
+
             // 325: Hide Scene's Sources
             325 => {
                 let conn_id = s(o, "connectionId");
@@ -2470,15 +2653,9 @@ impl Engine {
                 let source = self.expand(ctx, s(o, "sourceName"));
                 let random = b(o, "random", false);
                 let color_val = if random {
-                    (crate::math::secure_u64() & 0x00FFFFFF) as i64
+                    0xFF00_0000 | (crate::math::secure_u64() & 0x00FF_FFFF) as i64
                 } else {
-                    let col_str = self.expand(ctx, s(o, "color"));
-                    col_str
-                        .trim()
-                        .trim_start_matches('#')
-                        .parse::<i64>()
-                        .or_else(|_| i64::from_str_radix(col_str.trim().trim_start_matches('#'), 16))
-                        .unwrap_or(0)
+                    obs_color(&self.expand(ctx, s(o, "color")))
                 };
                 let obs = self.obs_start();
                 let _ = obs
@@ -2498,17 +2675,16 @@ impl Engine {
                 let conn_id = s(o, "connectionId");
                 let conn_ref = if conn_id.is_empty() { None } else { Some(conn_id) };
                 let obs = self.obs_start();
-                if let Ok(res) = obs.send_request(conn_ref, "GetStreamStatus", json!({})).await {
-                    let streaming = res.get("outputActive").and_then(Value::as_bool).unwrap_or(false);
-                    ctx.args.insert("obsStreaming".into(), streaming.into());
-                }
-                if let Ok(res) = obs.send_request(conn_ref, "GetRecordStatus", json!({})).await {
-                    let recording = res.get("outputActive").and_then(Value::as_bool).unwrap_or(false);
-                    let paused = res.get("outputPaused").and_then(Value::as_bool).unwrap_or(false);
-                    ctx.args.insert("obsRecording".into(), recording.into());
-                    ctx.args.insert("obsRecordingPaused".into(), paused.into());
-                }
+                let active = |r: Result<Value, String>| r.ok().and_then(|v| v["outputActive"].as_bool());
+                let streaming = active(obs.send_request(conn_ref, "GetStreamStatus", json!({})).await);
+                let recording = active(obs.send_request(conn_ref, "GetRecordStatus", json!({})).await);
+                ctx.args.insert("obs.isConnected".into(), streaming.is_some().into());
+                ctx.args
+                    .insert("obs.isStreaming".into(), streaming.unwrap_or(false).into());
+                ctx.args
+                    .insert("obs.isRecording".into(), recording.unwrap_or(false).into());
             }
+
             // 329: Create Record Chapter
             329 => {
                 let conn_id = s(o, "connectionId");
@@ -2534,7 +2710,9 @@ impl Engine {
                 let fallback = b(o, "fallback", false);
                 if !self.dev_out("youtube", &text, use_bot) {
                     let yt = self.youtube_start();
-                    let _ = yt.send_message(&broadcast, &text, use_bot, fallback).await;
+                    if let Err(e) = yt.send_message(&broadcast, &text, use_bot, fallback).await {
+                        crate::say(e);
+                    }
                 }
             }
             // 4002: Set Title
@@ -2542,14 +2720,18 @@ impl Engine {
                 let broadcast = self.expand(ctx, s(o, "broadcast"));
                 let title = self.expand(ctx, s(o, "title"));
                 let yt = self.youtube_start();
-                let _ = yt.set_title(&broadcast, &title).await;
+                if let Err(e) = yt.set_title(&broadcast, &title).await {
+                    crate::say(e);
+                }
             }
             // 4003: Set Description
             4003 => {
                 let broadcast = self.expand(ctx, s(o, "broadcast"));
                 let desc = self.expand(ctx, s(o, "description"));
                 let yt = self.youtube_start();
-                let _ = yt.set_description(&broadcast, &desc).await;
+                if let Err(e) = yt.set_description(&broadcast, &desc).await {
+                    crate::say(e);
+                }
             }
             // 4004: Set Title and Description
             4004 => {
@@ -2557,7 +2739,9 @@ impl Engine {
                 let title = self.expand(ctx, s(o, "title"));
                 let desc = self.expand(ctx, s(o, "description"));
                 let yt = self.youtube_start();
-                let _ = yt.set_title_and_description(&broadcast, &title, &desc).await;
+                if let Err(e) = yt.set_title_and_description(&broadcast, &title, &desc).await {
+                    crate::say(e);
+                }
             }
             // 4005: Add User To Group
             4005 => {
@@ -2613,7 +2797,9 @@ impl Engine {
                 let broadcast = self.expand(ctx, s(o, "broadcast"));
                 let user_id = self.expand(ctx, s(o, "userId"));
                 let yt = self.youtube_start();
-                let _ = yt.ban_user(&broadcast, &user_id).await;
+                if let Err(e) = yt.ban_user(&broadcast, &user_id).await {
+                    crate::say(e);
+                }
             }
             // 4009: Timeout User
             4009 => {
@@ -2621,7 +2807,9 @@ impl Engine {
                 let user_id = self.expand(ctx, s(o, "userId"));
                 let duration = n(o, "duration") as u64;
                 let yt = self.youtube_start();
-                let _ = yt.timeout_user(&broadcast, &user_id, duration).await;
+                if let Err(e) = yt.timeout_user(&broadcast, &user_id, duration).await {
+                    crate::say(e);
+                }
             }
             // 4010: Add Broadcaster Information
             4010 => {
@@ -2644,13 +2832,17 @@ impl Engine {
                     .filter(|s| !s.is_empty())
                     .collect();
                 let yt = self.youtube_start();
-                let _ = yt.create_poll(&broadcast, &question, &options).await;
+                if let Err(e) = yt.create_poll(&broadcast, &question, &options).await {
+                    crate::say(e);
+                }
             }
             // 4012: End Poll
             4012 => {
                 let broadcast = self.expand(ctx, s(o, "broadcast"));
                 let yt = self.youtube_start();
-                let _ = yt.end_poll(&broadcast).await;
+                if let Err(e) = yt.end_poll(&broadcast).await {
+                    crate::say(e);
+                }
             }
             // Kick Sub-actions
             // 35001: Send Message to Channel
@@ -2660,7 +2852,9 @@ impl Engine {
                 let fallback = b(o, "fallback", false);
                 if !self.dev_out("kick", &text, use_bot) {
                     let kick = self.kick_start();
-                    let _ = kick.send_message(&text, use_bot, fallback).await;
+                    if let Err(e) = kick.send_message(&text, use_bot, fallback).await {
+                        crate::say(e);
+                    }
                 }
             }
             // 35002: Reply To Message
@@ -2671,7 +2865,9 @@ impl Engine {
                 let fallback = b(o, "fallback", false);
                 if !self.dev_out("kick", &text, use_bot) {
                     let kick = self.kick_start();
-                    let _ = kick.reply_message(&text, &reply_id, use_bot, fallback).await;
+                    if let Err(e) = kick.reply_message(&text, &reply_id, use_bot, fallback).await {
+                        crate::say(e);
+                    }
                 }
             }
             // 35010: Add Broadcaster Information
@@ -2749,27 +2945,35 @@ impl Engine {
             35030 => {
                 let title = self.expand(ctx, s(o, "title"));
                 let kick = self.kick_start();
-                let _ = kick.set_channel_title(&title).await;
+                if let Err(e) = kick.set_channel_title(&title).await {
+                    crate::say(e);
+                }
             }
             // 35031: Set Channel Category
             35031 => {
                 let cat_id = n(o, "categoryId") as u64;
                 let cat_name = self.expand(ctx, s(o, "categoryName"));
                 let kick = self.kick_start();
-                let _ = kick.set_channel_category(cat_id, &cat_name).await;
+                if let Err(e) = kick.set_channel_category(cat_id, &cat_name).await {
+                    crate::say(e);
+                }
             }
             // 35040: Ban User
             35040 => {
                 let user = self.expand(ctx, s(o, "userLogin"));
                 let reason = self.expand(ctx, s(o, "reason"));
                 let kick = self.kick_start();
-                let _ = kick.ban_user(&user, &reason).await;
+                if let Err(e) = kick.ban_user(&user, &reason).await {
+                    crate::say(e);
+                }
             }
             // 35041: Unban User
             35041 => {
                 let user = self.expand(ctx, s(o, "userLogin"));
                 let kick = self.kick_start();
-                let _ = kick.unban_user(&user).await;
+                if let Err(e) = kick.unban_user(&user).await {
+                    crate::say(e);
+                }
             }
             // 35042: Timeout User
             35042 => {
@@ -2777,13 +2981,17 @@ impl Engine {
                 let duration = n(o, "duration") as u64;
                 let reason = self.expand(ctx, s(o, "reason"));
                 let kick = self.kick_start();
-                let _ = kick.timeout_user(&user, duration, &reason).await;
+                if let Err(e) = kick.timeout_user(&user, duration, &reason).await {
+                    crate::say(e);
+                }
             }
             // 35043: UnTimeout User
             35043 => {
                 let user = self.expand(ctx, s(o, "userLogin"));
                 let kick = self.kick_start();
-                let _ = kick.untimeout_user(&user).await;
+                if let Err(e) = kick.untimeout_user(&user).await {
+                    crate::say(e);
+                }
             }
             // 35101..=35113: Channel Rewards sub-actions
             35101 => {
@@ -2867,7 +3075,9 @@ impl Engine {
                 let fallback = b(o, "fallback", false);
                 if !self.dev_out("tiktok", &text, use_bot) {
                     let tiktok = self.tiktok_start();
-                    let _ = tiktok.send_message(&text, use_bot, fallback).await;
+                    if let Err(e) = tiktok.send_message(&text, use_bot, fallback).await {
+                        crate::say(e);
+                    }
                 }
             }
 
@@ -3494,6 +3704,13 @@ mod tests {
     use super::super::tests::{action, engine, log, run};
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn obs_colors() {
+        assert_eq!(obs_color("#FF112233"), 0xFF33_2211);
+        assert_eq!(obs_color("112233"), 0xFF33_2211);
+        assert_eq!(obs_color("#80FF0000"), 0x8000_00FF);
+    }
 
     #[test]
     fn args_split() {

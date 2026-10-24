@@ -822,6 +822,8 @@ fn handle_obs_message(
                         .and_then(|s| s.get("comment"))
                         .and_then(Value::as_str)
                         .unwrap_or("OBS request returned error");
+                    let what = d.get("requestType").and_then(Value::as_str).unwrap_or("request");
+                    crate::say(format!("OBS {what}: {comment}"));
                     let _ = resp_tx.send(Err(comment.to_string()));
                 }
             }

@@ -304,6 +304,7 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
         cfg: cfg.clone(),
         connected: connected.clone(),
         live: Default::default(),
+        poll: Default::default(),
     };
 
     tokio::task::spawn_local(async move {
@@ -553,6 +554,8 @@ struct YouTubeRunner {
     connected: Arc<AtomicBool>,
     /// The live video being read, and its Data API live chat id once looked up (for sending).
     live: Rc<std::cell::RefCell<(String, String)>>,
+    /// The poll created here (its chat message id), to end it.
+    poll: Rc<std::cell::RefCell<String>>,
 }
 
 impl YouTubeRunner {
@@ -627,74 +630,85 @@ impl YouTubeRunner {
         }
     }
 
-    async fn set_title_api(&self, broadcast: &str, title: &str) -> Result<(), String> {
-        let token = token(&self.engine, &self.cfg, false, false).await?;
-
+    /// The video `broadcast` names, else the live one being read.
+    fn video(&self, broadcast: &str) -> Result<String, String> {
+        if !broadcast.is_empty() {
+            return Ok(broadcast.to_string());
+        }
         let live = self.live.borrow().0.clone();
-        let video_id = if !broadcast.is_empty() {
-            broadcast
-        } else if live.is_empty() {
+        if live.is_empty() {
             return Err("YouTube: no live stream found yet (connect while live)".into());
-        } else {
-            &live
-        };
+        }
+        Ok(live)
+    }
 
-        let url = format!("{YOUTUBE_API_BASE}/videos?part=snippet");
-        let payload = json!({
-            "id": video_id,
-            "snippet": {
-                "title": title
+    /// Change a video's title and/or description. videos.update replaces the whole snippet (and
+    /// requires its categoryId), so the current one is read and sent back with the changes.
+    async fn update_snippet(
+        &self,
+        broadcast: &str,
+        title: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<(), String> {
+        let token = token(&self.engine, &self.cfg, false, false).await?;
+        let video = self.video(broadcast)?;
+        let auth = ("Authorization".to_string(), format!("Bearer {token}"));
+        let r = crate::http::request(
+            "GET",
+            &format!(
+                "{YOUTUBE_API_BASE}/videos?part=snippet&id={}",
+                crate::commands::url_encode(&video)
+            ),
+            std::slice::from_ref(&auth),
+            b"",
+        )
+        .await?;
+        let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
+        let mut snippet = v
+            .pointer("/items/0/snippet")
+            .cloned()
+            .ok_or_else(|| format!("YouTube: can't read video {video} (HTTP {})", r.status))?;
+        if let Some(t) = title {
+            snippet["title"] = json!(t);
+        }
+        if let Some(d) = description {
+            snippet["description"] = json!(d);
+        }
+        // Read-only or derived fields the update refuses or ignores.
+        if let Some(o) = snippet.as_object_mut() {
+            for k in [
+                "publishedAt",
+                "channelId",
+                "thumbnails",
+                "channelTitle",
+                "liveBroadcastContent",
+                "localized",
+            ] {
+                o.remove(k);
             }
-        });
-
-        let headers = vec![
-            ("Authorization".to_string(), format!("Bearer {token}")),
-            ("Content-Type".to_string(), "application/json".to_string()),
-        ];
-        let body = serde_json::to_vec(&payload).unwrap_or_default();
-        let resp = crate::http::request("PUT", &url, &headers, &body).await?;
-        if (200..300).contains(&resp.status) {
+        }
+        let body = serde_json::to_vec(&json!({"id": video, "snippet": snippet})).unwrap_or_default();
+        let headers = [auth, ("Content-Type".to_string(), "application/json".to_string())];
+        let r = crate::http::request(
+            "PUT",
+            &format!("{YOUTUBE_API_BASE}/videos?part=snippet"),
+            &headers,
+            &body,
+        )
+        .await?;
+        if (200..300).contains(&r.status) {
             Ok(())
         } else {
-            Err(format!("YouTube set title error {}: {}", resp.status, resp.text()))
+            Err(format!("YouTube video update: HTTP {} {}", r.status, r.text()))
         }
     }
 
+    async fn set_title_api(&self, broadcast: &str, title: &str) -> Result<(), String> {
+        self.update_snippet(broadcast, Some(title), None).await
+    }
+
     async fn set_description_api(&self, broadcast: &str, description: &str) -> Result<(), String> {
-        let token = token(&self.engine, &self.cfg, false, false).await?;
-
-        let live = self.live.borrow().0.clone();
-        let video_id = if !broadcast.is_empty() {
-            broadcast
-        } else if live.is_empty() {
-            return Err("YouTube: no live stream found yet (connect while live)".into());
-        } else {
-            &live
-        };
-
-        let url = format!("{YOUTUBE_API_BASE}/videos?part=snippet");
-        let payload = json!({
-            "id": video_id,
-            "snippet": {
-                "description": description
-            }
-        });
-
-        let headers = vec![
-            ("Authorization".to_string(), format!("Bearer {token}")),
-            ("Content-Type".to_string(), "application/json".to_string()),
-        ];
-        let body = serde_json::to_vec(&payload).unwrap_or_default();
-        let resp = crate::http::request("PUT", &url, &headers, &body).await?;
-        if (200..300).contains(&resp.status) {
-            Ok(())
-        } else {
-            Err(format!(
-                "YouTube set description error {}: {}",
-                resp.status,
-                resp.text()
-            ))
-        }
+        self.update_snippet(broadcast, None, Some(description)).await
     }
 
     async fn set_title_and_description_api(
@@ -703,41 +717,7 @@ impl YouTubeRunner {
         title: &str,
         description: &str,
     ) -> Result<(), String> {
-        let token = token(&self.engine, &self.cfg, false, false).await?;
-
-        let live = self.live.borrow().0.clone();
-        let video_id = if !broadcast.is_empty() {
-            broadcast
-        } else if live.is_empty() {
-            return Err("YouTube: no live stream found yet (connect while live)".into());
-        } else {
-            &live
-        };
-
-        let url = format!("{YOUTUBE_API_BASE}/videos?part=snippet");
-        let payload = json!({
-            "id": video_id,
-            "snippet": {
-                "title": title,
-                "description": description
-            }
-        });
-
-        let headers = vec![
-            ("Authorization".to_string(), format!("Bearer {token}")),
-            ("Content-Type".to_string(), "application/json".to_string()),
-        ];
-        let body = serde_json::to_vec(&payload).unwrap_or_default();
-        let resp = crate::http::request("PUT", &url, &headers, &body).await?;
-        if (200..300).contains(&resp.status) {
-            Ok(())
-        } else {
-            Err(format!(
-                "YouTube set title & description error {}: {}",
-                resp.status,
-                resp.text()
-            ))
-        }
+        self.update_snippet(broadcast, Some(title), Some(description)).await
     }
 
     async fn ban_user_api(&self, broadcast: &str, user_id: &str) -> Result<(), String> {
@@ -799,12 +779,56 @@ impl YouTubeRunner {
         }
     }
 
-    async fn create_poll_api(&self, _broadcast: &str, _question: &str, _options: &[String]) -> Result<(), String> {
-        Ok(())
+    /// Post a poll in the live chat (liveChatMessages.insert, a pollEvent); kept to end it later.
+    async fn create_poll_api(&self, broadcast: &str, question: &str, options: &[String]) -> Result<(), String> {
+        let token = token(&self.engine, &self.cfg, false, false).await?;
+        let chat = self.live_chat_id(broadcast, &token).await?;
+        let opts: Vec<Value> = options
+            .iter()
+            .filter(|o| !o.trim().is_empty())
+            .map(|o| json!({"optionText": o}))
+            .collect();
+        let body = json!({"snippet": {"liveChatId": chat, "type": "pollEvent",
+            "pollDetails": {"metadata": {"questionText": question, "options": opts}}}});
+        let headers = [
+            ("Authorization".to_string(), format!("Bearer {token}")),
+            ("Content-Type".to_string(), "application/json".to_string()),
+        ];
+        let r = crate::http::request(
+            "POST",
+            &format!("{YOUTUBE_API_BASE}/liveChat/messages?part=snippet"),
+            &headers,
+            &serde_json::to_vec(&body).unwrap_or_default(),
+        )
+        .await?;
+        let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
+        match v["id"].as_str() {
+            Some(id) if (200..300).contains(&r.status) => {
+                *self.poll.borrow_mut() = id.to_string();
+                Ok(())
+            }
+            _ => Err(format!("YouTube create poll: HTTP {} {}", r.status, r.text())),
+        }
     }
 
+    /// End the poll this created (liveChatMessages.transition to closed).
     async fn end_poll_api(&self, _broadcast: &str) -> Result<(), String> {
-        Ok(())
+        let id = std::mem::take(&mut *self.poll.borrow_mut());
+        if id.is_empty() {
+            return Err("YouTube: no poll to end (only polls made here can be ended)".into());
+        }
+        let token = token(&self.engine, &self.cfg, false, false).await?;
+        let headers = [("Authorization".to_string(), format!("Bearer {token}"))];
+        let url = format!(
+            "{YOUTUBE_API_BASE}/liveChat/messages/transition?id={}&status=closed&part=snippet",
+            crate::commands::url_encode(&id)
+        );
+        let r = crate::http::request("POST", &url, &headers, b"").await?;
+        if (200..300).contains(&r.status) {
+            Ok(())
+        } else {
+            Err(format!("YouTube end poll: HTTP {} {}", r.status, r.text()))
+        }
     }
 }
 
