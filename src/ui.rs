@@ -6,6 +6,7 @@ mod actions;
 mod chat;
 mod dialogs;
 mod forms;
+mod img;
 mod lists;
 pub mod picker;
 
@@ -40,6 +41,8 @@ pub enum Msg {
     Changed,
     /// New chat lines (sent only while the window is up).
     Chat,
+    /// A picture from the web is on disk now (see `img`).
+    Image,
 }
 
 const ROW: i32 = 26;
@@ -127,31 +130,28 @@ fn query<T: Send + 'static>(
     rx.recv().ok()
 }
 
-/// The engine changed the config: redraw what shows it, if the window is up.
-pub fn changed() {
+/// Wake the window with `m`, if it's up (no wakeups while hidden).
+fn wake(m: Msg) {
     if SHOWN.load(Ordering::Relaxed) {
         if let Some(ui) = UI.get() {
-            ui.send(Msg::Changed);
+            ui.send(m);
         }
     }
+}
+
+/// The engine changed the config: redraw what shows it, if the window is up.
+pub fn changed() {
+    wake(Msg::Changed);
 }
 
 /// New chat: refresh the chat tab, if the window is up.
 pub fn chat() {
-    if SHOWN.load(Ordering::Relaxed) {
-        if let Some(ui) = UI.get() {
-            ui.send(Msg::Chat);
-        }
-    }
+    wake(Msg::Chat);
 }
 
 /// A line was logged: refresh the log, if the window is up.
 pub fn logged() {
-    if SHOWN.load(Ordering::Relaxed) {
-        if let Some(ui) = UI.get() {
-            ui.send(Msg::Log);
-        }
-    }
+    wake(Msg::Log);
 }
 
 pub fn app() -> app::App {
@@ -362,6 +362,7 @@ pub fn run(
     let close = |w: &mut Window| {
         SHOWN.store(false, Ordering::Relaxed);
         w.hide();
+        img::forget();
     };
     hide.set_callback({
         let mut win = win.clone();
@@ -410,6 +411,7 @@ pub fn run(
                 }
                 Msg::Log => log.refresh(),
                 Msg::Chat => views.chat_refresh(&tabs),
+                Msg::Image => views.images(),
                 Msg::Changed => {
                     acts.borrow_mut().refresh();
                     views.refresh(&tabs);

@@ -52,10 +52,21 @@ pub(super) fn save(cfg: &Cfg, f: impl FnOnce(&mut Config)) {
     let _ = crate::save(&cfg.borrow());
 }
 
+/// A section title, with the platform's or app's logo when there's one.
 pub(super) fn title(col: &mut Flex, t: &str) {
-    let mut f = Frame::default().with_label(t).with_align(Align::Left | Align::Inside);
+    let mut f = Frame::default().with_align(Align::Left | Align::Inside | Align::ImageNextToText);
     f.set_label_font(Font::HelveticaBold);
-    col.fixed(&f, ROW - 4);
+    match super::img::logo(t, ROW - 8) {
+        Some(logo) => {
+            f.set_label(&format!("  {t}"));
+            f.set_image(Some(logo));
+            col.fixed(&f, ROW - 2);
+        }
+        None => {
+            f.set_label(t);
+            col.fixed(&f, ROW - 4);
+        }
+    }
 }
 
 fn browser(widths: &'static [i32]) -> HoldBrowser {
@@ -505,6 +516,13 @@ impl Views {
             if up == Some(c.tab.as_widget_ptr()) {
                 c.refresh();
             }
+        }
+    }
+
+    /// A picture arrived: redraw what shows pictures.
+    pub fn images(&self) {
+        if let Ok(mut a) = self.accounts.try_borrow_mut() {
+            a.refresh();
         }
     }
 
