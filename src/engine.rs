@@ -160,6 +160,8 @@ pub fn supported(kind: u32) -> bool {
     )
 }
 
+pub(crate) use rest::{poll_args, prediction_args};
+
 /// Unix seconds from an ISO 8601 UTC time ("2024-08-17T12:34:56Z").
 pub fn rest_parse_iso(t: &str) -> Option<i64> {
     rest::parse_iso_pub(t)
@@ -1310,6 +1312,15 @@ impl Engine {
             self.queue(action, a);
         }
         hits.len()
+    }
+
+    /// Whether an enabled action has an enabled trigger of `kind` (what's polled only when used).
+    pub fn uses_trigger(&self, kind: u32) -> bool {
+        self.cfg.borrow().actions.actions.iter().filter(|a| a.enabled).any(|a| {
+            a.triggers
+                .iter()
+                .any(|t| t.get("type").and_then(Value::as_u64) == Some(kind as u64) && b(t, "enabled", true))
+        })
     }
 
     /// Streamer.bot Started.

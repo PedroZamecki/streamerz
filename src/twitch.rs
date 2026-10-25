@@ -14,10 +14,12 @@ use crate::model::Obj;
 use crate::Config;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 
 /// Public Client ID from the registered Twitch Developer application.
@@ -72,6 +74,10 @@ pub const BROADCASTER_SCOPES: &[&str] = &[
     "moderator:read:suspicious_users",
     "moderator:manage:suspicious_users",
     "moderator:read:chatters",
+    // channel.moderate (shared chat bans and deletes) wants these too.
+    "moderator:read:blocked_terms",
+    "moderator:read:moderators",
+    "moderator:read:vips",
     "channel:manage:moderators",
     "channel:manage:vips",
     "channel:read:vips",
@@ -235,6 +241,8 @@ pub struct TwitchConfig {
     pub broadcaster: Option<TwitchAccount>,
     pub bot: Option<TwitchAccount>,
     pub first_words_auto_reset: bool,
+    /// The sub counter starts again at this (and Sub Counter Rollover fires); 0 never.
+    pub sub_counter_rollover: u64,
     pub ignore_bot_internal: bool,
     /// Overrides the EventSub WebSocket URL (for testing or proxying).
     pub eventsub_url: Option<String>,
@@ -1151,6 +1159,8 @@ async fn run_eventsub_loop(
     use futures_util::StreamExt;
     let mut speakers = HashSet::new();
     let mut reconnecting = false;
+    let mut poll_task: Option<tokio::task::JoinHandle<()>> = None;
+    let mut emote_task: Option<tokio::task::JoinHandle<()>> = None;
 
     while let Some(msg) = ws.next().await {
         let raw = match msg {
@@ -1211,9 +1221,25 @@ async fn run_eventsub_loop(
                 let token = broadcaster.token.access_token.clone();
                 let bid = broadcaster.user_id.clone();
                 let sid = sid.to_string();
+                let e = engine.clone();
                 tokio::task::spawn_local(async move {
                     create_all_subscriptions(&sid, &token, &bid).await;
+                    seed(&e).await;
                 });
+                if let Some(t) = poll_task.replace(tokio::task::spawn_local(poll(engine.clone(), broadcaster.clone())))
+                {
+                    t.abort();
+                }
+                let codes = crate::emote_events::Codes {
+                    platform: "twitch",
+                    source: "Twitch",
+                    seventv: (T_SEVEN_TV_EMOTE_ADDED, T_SEVEN_TV_EMOTE_REMOVED),
+                    bttv: (T_BETTER_TTV_EMOTE_ADDED, T_BETTER_TTV_EMOTE_REMOVED),
+                };
+                if codes.wanted(&engine) && emote_task.is_none() {
+                    let watch = crate::emote_events::watch(engine.clone(), codes, broadcaster.user_id.clone());
+                    emote_task = Some(tokio::task::spawn_local(watch));
+                }
             }
             "notification" => {
                 let sub_type = val
@@ -1251,6 +1277,9 @@ async fn run_eventsub_loop(
         }
     }
 
+    for t in [poll_task, emote_task].into_iter().flatten() {
+        t.abort();
+    }
     if !is_connected.swap(false, Ordering::Relaxed) {
         return;
     }
@@ -1413,12 +1442,69 @@ async fn create_all_subscriptions(sid: &str, token: &str, bid: &str) {
             "2",
             json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
         ),
-        ("channel.subscribe", "1", json!({"broadcaster_user_id": bid})),
-        ("channel.subscription.message", "1", json!({"broadcaster_user_id": bid})),
-        ("channel.subscription.gift", "1", json!({"broadcaster_user_id": bid})),
-        ("channel.cheer", "1", json!({"broadcaster_user_id": bid})),
-        ("channel.raid", "1", json!({"to_broadcaster_user_id": bid})),
         ("channel.raid", "1", json!({"from_broadcaster_user_id": bid})),
+        // Subs, resubs, gifts and incoming raids come as chat notifications; cheers with the message.
+        (
+            "channel.chat.message_delete",
+            "1",
+            json!({"broadcaster_user_id": bid, "user_id": bid}),
+        ),
+        (
+            "channel.moderate",
+            "2",
+            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+        ),
+        (
+            "automod.message.hold",
+            "2",
+            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+        ),
+        (
+            "automod.message.update",
+            "2",
+            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+        ),
+        (
+            "automod.terms.update",
+            "1",
+            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+        ),
+        (
+            "channel.unban_request.create",
+            "1",
+            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+        ),
+        (
+            "channel.unban_request.resolve",
+            "1",
+            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+        ),
+        (
+            "channel.warning.send",
+            "1",
+            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+        ),
+        (
+            "channel.warning.acknowledge",
+            "1",
+            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+        ),
+        (
+            "channel.suspicious_user.update",
+            "1",
+            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+        ),
+        (
+            "channel.suspicious_user.message",
+            "1",
+            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+        ),
+        (
+            "channel.channel_points_automatic_reward_redemption.add",
+            "2",
+            json!({"broadcaster_user_id": bid}),
+        ),
+        ("channel.bits.use", "1", json!({"broadcaster_user_id": bid})),
         ("stream.online", "1", json!({"broadcaster_user_id": bid})),
         ("stream.offline", "1", json!({"broadcaster_user_id": bid})),
         ("user.whisper.message", "1", json!({"user_id": bid})),
@@ -1651,6 +1737,53 @@ fn handle_notification(
                 },
             );
 
+            SEEN.with_borrow_mut(|s| {
+                if s.messages.len() == 200 {
+                    s.messages.pop_front();
+                }
+                s.messages.push_back((msg_id.to_string(), text.to_string()));
+            });
+            if let Some((ok, owner, word, width)) = pyramid((chatter_id, chatter_login, chatter_name), text) {
+                let mut p = args.clone();
+                p.insert("pyramidWidth".into(), width.into());
+                p.insert("pyramidEmote".into(), word.into());
+                if ok {
+                    let n = SEEN.with_borrow_mut(|s| {
+                        let c = s.pyramids.entry(owner.0.clone()).or_default();
+                        c.0 += 1;
+                        c.0
+                    });
+                    populate_user_vars(&mut p, &owner.0, &owner.1, &owner.2, 1, false);
+                    p.insert("totalPyramids".into(), n.into());
+                    go(
+                        engine,
+                        T_PYRAMID_SUCCESS,
+                        "Pyramid Success",
+                        "Twitch/Chat",
+                        "PyramidSuccess",
+                        &p,
+                    );
+                } else {
+                    let n = SEEN.with_borrow_mut(|s| {
+                        let c = s.pyramids.entry(chatter_id.to_string()).or_default();
+                        c.1 += 1;
+                        c.1
+                    });
+                    p.insert("totalPyramidsBroken".into(), n.into());
+                    p.insert("pyramidOwnerId".into(), owner.0.into());
+                    p.insert("pyramidOwnerUsername".into(), owner.1.into());
+                    p.insert("pyramidOwnerDisplayName".into(), owner.2.into());
+                    go(
+                        engine,
+                        T_PYRAMID_BROKEN,
+                        "Pyramid Broken",
+                        "Twitch/Chat",
+                        "PyramidBroken",
+                        &p,
+                    );
+                }
+            }
+
             // First Words detection
             let norm_login = chatter_login.to_lowercase();
             if !speakers.contains(&norm_login) {
@@ -1721,168 +1854,206 @@ fn handle_notification(
             }
         }
         "channel.chat.notification" => {
-            let ntype = event.pointer("/notice_type").and_then(Value::as_str).unwrap_or("");
-            let chatter_id = event.pointer("/chatter_user_id").and_then(Value::as_str).unwrap_or("");
-            let chatter_login = event
-                .pointer("/chatter_user_login")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let chatter_name = event
-                .pointer("/chatter_user_name")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let sys_msg = event.pointer("/system_message").and_then(Value::as_str).unwrap_or("");
+            let ntype = es(event, "/notice_type");
+            let chatter_id = es(event, "/chatter_user_id");
             let badges = event
                 .pointer("/badges")
                 .and_then(Value::as_array)
-                .map(|a| a.as_slice())
-                .unwrap_or(&[]);
+                .map_or(&[][..], |a| a.as_slice());
             let (role, sub) = parse_badges(badges, chatter_id == broadcaster.user_id);
-
+            let sys_msg = es(event, "/system_message");
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            populate_user_vars(&mut args, chatter_id, chatter_login, chatter_name, role, sub);
+            populate_user_vars(
+                &mut args,
+                chatter_id,
+                es(event, "/chatter_user_login"),
+                es(event, "/chatter_user_name"),
+                role,
+                sub,
+            );
             populate_chat_vars(
                 &mut args,
                 &ChatContext {
-                    text: sys_msg,
+                    text: es(event, "/message/text"),
                     role,
                     ..Default::default()
                 },
             );
-
-            match ntype {
+            args.insert("systemMessage".into(), sys_msg.into());
+            let anonymous = event["chatter_is_anonymous"].as_bool().unwrap_or(false);
+            args.insert("anonymous".into(), anonymous.into());
+            // Shared chat: the same notices, from another channel in the session.
+            let (shared, kind) = match ntype.strip_prefix("shared_chat_") {
+                Some(k) => (true, k),
+                None => (false, ntype),
+            };
+            if shared {
+                args.insert("fromSharedChat".into(), true.into());
+                event_by(&mut args, event, "source_broadcaster", "sourceBroadcaster");
+            }
+            let d = &event[ntype];
+            let pick = |own: u32, other: u32| if shared { other } else { own };
+            let gifter = |args: &mut Obj| {
+                args.insert(
+                    "anonymous".into(),
+                    d["gifter_is_anonymous"].as_bool().unwrap_or(false).into(),
+                );
+                for (k, f) in [
+                    ("gifterUser", "name"),
+                    ("gifterUserName", "login"),
+                    ("gifterUserId", "id"),
+                ] {
+                    args.insert(k.into(), d[format!("gifter_user_{f}")].clone());
+                }
+            };
+            let months = |args: &mut Obj| {
+                let duration = d["duration_months"].as_u64().unwrap_or(1);
+                args.insert(
+                    "tier".into(),
+                    tier_name(es(d, "/sub_tier"), d["is_prime"].as_bool() == Some(true)).into(),
+                );
+                args.insert("isMultiMonth".into(), (duration > 1).into());
+                args.insert("multiMonthDuration".into(), duration.into());
+                // ponytail: EventSub doesn't say how far into a multi-month sub this is.
+                args.insert("multiMonthTenure".into(), 0.into());
+            };
+            match kind {
                 "announcement" => {
-                    let color = event
-                        .pointer("/announcement/color")
-                        .and_then(Value::as_str)
-                        .unwrap_or("PRIMARY");
-                    args.insert("announceColor".into(), color.into());
-                    engine.fire(
-                        T_ANNOUNCEMENT,
-                        "Announcement",
-                        "Twitch/General",
-                        "twitch",
-                        &args,
-                        |_| true,
-                    );
-                    engine.emit("Twitch", "Announcement", || json!(args));
+                    args.insert("announceColor".into(), d["color"].as_str().unwrap_or("PRIMARY").into());
+                    let (code, name) = (pick(T_ANNOUNCEMENT, T_SHARED_CHAT_ANNOUNCEMENT), "Announcement");
+                    go(engine, code, name, "Twitch/General", "Announcement", &args);
                 }
                 "sub" => {
-                    let tier = event.pointer("/sub/sub_tier").and_then(Value::as_str).unwrap_or("1000");
-                    let tier_name = match tier {
-                        "2000" => "tier 2",
-                        "3000" => "tier 3",
-                        _ => "tier 1",
-                    };
-                    args.insert("tier".into(), tier_name.into());
-                    args.insert("isMultiMonth".into(), false.into());
-                    args.insert("multiMonthDuration".into(), 1.into());
-                    engine.fire(T_SUB, "Subscription", "Twitch/Subscriptions", "twitch", &args, |_| true);
-                    engine.emit("Twitch", "Sub", || json!(args));
+                    months(&mut args);
+                    if !shared {
+                        count_subs(engine, cfg, broadcaster, 1);
+                    }
+                    let code = pick(T_SUB, T_SHARED_CHAT_SUB);
+                    go(engine, code, "Subscription", "Twitch/Subscriptions", "Sub", &args);
                 }
                 "resub" => {
-                    let tier = event
-                        .pointer("/resub/sub_tier")
-                        .and_then(Value::as_str)
-                        .unwrap_or("1000");
-                    let tier_name = match tier {
-                        "2000" => "tier 2",
-                        "3000" => "tier 3",
-                        _ => "tier 1",
-                    };
-                    let cumulative = event
-                        .pointer("/resub/cumulative_months")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(1);
-                    let streak = event
-                        .pointer("/resub/streak_months")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(1);
-                    args.insert("tier".into(), tier_name.into());
-                    args.insert("cumulative".into(), cumulative.into());
-                    args.insert("monthStreak".into(), streak.into());
-                    args.insert("streakShared".into(), true.into());
-                    engine.fire(
-                        T_RESUB,
-                        "Resubscription",
-                        "Twitch/Subscriptions",
-                        "twitch",
-                        &args,
-                        |_| true,
-                    );
-                    engine.emit("Twitch", "ReSub", || json!(args));
+                    months(&mut args);
+                    args.insert("cumulative".into(), d["cumulative_months"].as_u64().unwrap_or(1).into());
+                    args.insert("monthStreak".into(), d["streak_months"].as_u64().unwrap_or(0).into());
+                    args.insert("streakShared".into(), d["streak_months"].is_u64().into());
+                    args.insert("isGift".into(), d["is_gift"].as_bool().unwrap_or(false).into());
+                    if d["is_gift"] == true {
+                        gifter(&mut args);
+                    }
+                    if !shared {
+                        count_subs(engine, cfg, broadcaster, 1);
+                    }
+                    let code = pick(T_RESUB, T_SHARED_CHAT_RESUB);
+                    go(engine, code, "Resubscription", "Twitch/Subscriptions", "ReSub", &args);
                 }
                 "sub_gift" => {
-                    let tier = event
-                        .pointer("/sub_gift/sub_tier")
-                        .and_then(Value::as_str)
-                        .unwrap_or("1000");
-                    let recipient_id = event
-                        .pointer("/sub_gift/recipient_user_id")
-                        .and_then(Value::as_str)
-                        .unwrap_or("");
-                    let recipient_login = event
-                        .pointer("/sub_gift/recipient_user_login")
-                        .and_then(Value::as_str)
-                        .unwrap_or("");
-                    let recipient_name = event
-                        .pointer("/sub_gift/recipient_user_name")
-                        .and_then(Value::as_str)
-                        .unwrap_or("");
-                    let total = event
-                        .pointer("/sub_gift/cumulative_total")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(1);
-                    args.insert("tier".into(), tier.into());
-                    args.insert("recipientId".into(), recipient_id.into());
-                    args.insert("recipientUserName".into(), recipient_login.into());
-                    args.insert("recipientUser".into(), recipient_name.into());
-                    args.insert("totalSubsGifted".into(), total.into());
-                    args.insert("monthsGifted".into(), 1.into());
-                    args.insert("fromGiftBomb".into(), false.into());
-                    engine.fire(
-                        T_GIFT_SUB,
+                    let bomb = es(d, "/community_gift_id").to_string();
+                    let count = SEEN.with_borrow(|s| s.bombs.get(&bomb).copied().unwrap_or(0));
+                    args.insert("tier".into(), tier_name(es(d, "/sub_tier"), false).into());
+                    args.insert("recipientId".into(), d["recipient_user_id"].clone());
+                    args.insert("recipientUserName".into(), d["recipient_user_login"].clone());
+                    args.insert("recipientUser".into(), d["recipient_user_name"].clone());
+                    args.insert("monthsGifted".into(), d["duration_months"].as_u64().unwrap_or(1).into());
+                    args.insert(
+                        "totalSubsGifted".into(),
+                        d["cumulative_total"].as_u64().unwrap_or(0).into(),
+                    );
+                    args.insert("totalSubsGiftedShared".into(), d["cumulative_total"].is_u64().into());
+                    args.insert("fromGiftBomb".into(), (!bomb.is_empty()).into());
+                    args.insert("subBombCount".into(), count.into());
+                    // ponytail: EventSub doesn't give the recipient's months; Streamer.bot reads IRC's.
+                    args.insert("cumulativeMonths".into(), 0.into());
+                    if !shared {
+                        count_subs(engine, cfg, broadcaster, 1);
+                    }
+                    let code = pick(T_GIFT_SUB, T_SHARED_CHAT_SUB_GIFT);
+                    go(
+                        engine,
+                        code,
                         "Gift Subscription",
                         "Twitch/Subscriptions",
-                        "twitch",
+                        "GiftSub",
                         &args,
-                        |_| true,
                     );
-                    engine.emit("Twitch", "GiftSub", || json!(args));
                 }
                 "community_sub_gift" => {
-                    let tier = event
-                        .pointer("/community_sub_gift/sub_tier")
-                        .and_then(Value::as_str)
-                        .unwrap_or("1000");
-                    let total = event
-                        .pointer("/community_sub_gift/total")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(1);
-                    args.insert("tier".into(), tier.into());
+                    let total = d["total"].as_u64().unwrap_or(1);
+                    SEEN.with_borrow_mut(|s| {
+                        if s.bombs.len() > 50 {
+                            s.bombs.clear();
+                        }
+                        s.bombs.insert(es(d, "/id").into(), total);
+                    });
+                    args.insert("tier".into(), tier_name(es(d, "/sub_tier"), false).into());
                     args.insert("gifts".into(), total.into());
-                    args.insert("totalGifts".into(), total.into());
-                    args.insert("anonymous".into(), chatter_id.is_empty().into());
-                    engine.fire(
-                        T_GIFT_BOMB,
-                        "Gift Bomb",
+                    args.insert("totalGifts".into(), d["cumulative_total"].as_u64().unwrap_or(0).into());
+                    args.insert("totalGiftsShared".into(), d["cumulative_total"].is_u64().into());
+                    args.insert("bonusGifts".into(), false.into());
+                    let code = pick(T_GIFT_BOMB, T_SHARED_CHAT_COMMUNITY_SUB_GIFT);
+                    go(engine, code, "Gift Bomb", "Twitch/Subscriptions", "GiftBomb", &args);
+                }
+                "gift_paid_upgrade" => {
+                    gifter(&mut args);
+                    let code = pick(T_GIFT_PAID_UPGRADE, T_SHARED_CHAT_GIFT_PAID_UPGRADE);
+                    go(
+                        engine,
+                        code,
+                        "Gift Paid Upgrade",
                         "Twitch/Subscriptions",
-                        "twitch",
+                        "GiftPaidUpgrade",
                         &args,
-                        |_| true,
                     );
-                    engine.emit("Twitch", "GiftBomb", || json!(args));
+                }
+                "prime_paid_upgrade" => {
+                    args.insert("upgradeTier".into(), es(d, "/sub_tier").into());
+                    args.insert("upgradeTierString".into(), tier_name(es(d, "/sub_tier"), false).into());
+                    let code = pick(T_PRIME_PAID_UPGRADE, T_SHARED_CHAT_PRIME_PAID_UPGRADE);
+                    go(
+                        engine,
+                        code,
+                        "Prime Paid Upgrade",
+                        "Twitch/Subscriptions",
+                        "PrimePaidUpgrade",
+                        &args,
+                    );
+                }
+                "pay_it_forward" => {
+                    gifter(&mut args);
+                    let code = pick(T_PAY_IT_FORWARD, T_SHARED_CHAT_PAY_IT_FORWARD);
+                    go(
+                        engine,
+                        code,
+                        "Pay It Forward",
+                        "Twitch/Subscriptions",
+                        "PayItForward",
+                        &args,
+                    );
                 }
                 "raid" => {
-                    let raider_id = event.pointer("/raid/user_id").and_then(Value::as_str).unwrap_or("");
-                    let raider_login = event.pointer("/raid/user_login").and_then(Value::as_str).unwrap_or("");
-                    let raider_name = event.pointer("/raid/user_name").and_then(Value::as_str).unwrap_or("");
-                    let viewers = event.pointer("/raid/viewer_count").and_then(Value::as_u64).unwrap_or(0);
-                    populate_user_vars(&mut args, raider_id, raider_login, raider_name, 1, false);
-                    args.insert("viewers".into(), viewers.into());
-                    engine.fire(T_RAID, "Raid", "Twitch/Raid", "twitch", &args, |_| true);
-                    engine.emit("Twitch", "Raid", || json!(args));
+                    populate_user_vars(
+                        &mut args,
+                        es(d, "/user_id"),
+                        es(d, "/user_login"),
+                        es(d, "/user_name"),
+                        1,
+                        false,
+                    );
+                    args.insert("viewers".into(), d["viewer_count"].as_u64().unwrap_or(0).into());
+                    args.insert("profileImageUrl".into(), d["profile_image_url"].clone());
+                    let code = pick(T_RAID, T_SHARED_CHAT_RAID);
+                    go(engine, code, "Raid", "Twitch/Raid", "Raid", &args);
+                }
+                "bits_badge_tier" if !shared => {
+                    args.insert("tier".into(), d["tier"].clone());
+                    go(
+                        engine,
+                        T_BITS_BADGE_TIER,
+                        "Bits Badge Tier",
+                        "Twitch/Chat",
+                        "BitsBadgeTier",
+                        &args,
+                    );
                 }
                 _ => {}
             }
@@ -1897,126 +2068,18 @@ fn handle_notification(
             engine.fire(T_FOLLOW, "Follow", "Twitch/Channel", "twitch", &args, |_| true);
             engine.emit("Twitch", "Follow", || json!(args));
         }
-        "channel.subscribe" => {
-            let uid = event.pointer("/user_id").and_then(Value::as_str).unwrap_or("");
-            let ulogin = event.pointer("/user_login").and_then(Value::as_str).unwrap_or("");
-            let uname = event.pointer("/user_name").and_then(Value::as_str).unwrap_or("");
-            let tier = event.pointer("/tier").and_then(Value::as_str).unwrap_or("1000");
-            let mut args = Obj::new();
-            populate_broadcaster_vars(&mut args, broadcaster);
-            populate_user_vars(&mut args, uid, ulogin, uname, 1, true);
-            args.insert("tier".into(), tier.into());
-            args.insert("isMultiMonth".into(), false.into());
-            engine.fire(T_SUB, "Subscription", "Twitch/Subscriptions", "twitch", &args, |_| true);
-            engine.emit("Twitch", "Sub", || json!(args));
-        }
-        "channel.subscription.message" => {
-            let uid = event.pointer("/user_id").and_then(Value::as_str).unwrap_or("");
-            let ulogin = event.pointer("/user_login").and_then(Value::as_str).unwrap_or("");
-            let uname = event.pointer("/user_name").and_then(Value::as_str).unwrap_or("");
-            let tier = event.pointer("/tier").and_then(Value::as_str).unwrap_or("1000");
-            let streak = event.pointer("/streak_months").and_then(Value::as_u64).unwrap_or(1);
-            let cumulative = event.pointer("/cumulative_months").and_then(Value::as_u64).unwrap_or(1);
-            let text = event.pointer("/message/text").and_then(Value::as_str).unwrap_or("");
-            let mut args = Obj::new();
-            populate_broadcaster_vars(&mut args, broadcaster);
-            populate_user_vars(&mut args, uid, ulogin, uname, 1, true);
-            populate_chat_vars(
-                &mut args,
-                &ChatContext {
-                    text,
-                    role: 1,
-                    ..Default::default()
-                },
-            );
-            args.insert("tier".into(), tier.into());
-            args.insert("cumulative".into(), cumulative.into());
-            args.insert("monthStreak".into(), streak.into());
-            args.insert("streakShared".into(), true.into());
-            engine.fire(
-                T_RESUB,
-                "Resubscription",
-                "Twitch/Subscriptions",
-                "twitch",
-                &args,
-                |_| true,
-            );
-            engine.emit("Twitch", "ReSub", || json!(args));
-        }
-        "channel.subscription.gift" => {
-            let uid = event.pointer("/user_id").and_then(Value::as_str).unwrap_or("");
-            let ulogin = event.pointer("/user_login").and_then(Value::as_str).unwrap_or("");
-            let uname = event.pointer("/user_name").and_then(Value::as_str).unwrap_or("");
-            let total = event.pointer("/total").and_then(Value::as_u64).unwrap_or(1);
-            let tier = event.pointer("/tier").and_then(Value::as_str).unwrap_or("1000");
-            let mut args = Obj::new();
-            populate_broadcaster_vars(&mut args, broadcaster);
-            populate_user_vars(&mut args, uid, ulogin, uname, 1, false);
-            args.insert("gifts".into(), total.into());
-            args.insert("totalGifts".into(), total.into());
-            args.insert("tier".into(), tier.into());
-            args.insert("anonymous".into(), uid.is_empty().into());
-            engine.fire(
-                T_GIFT_BOMB,
-                "Gift Bomb",
-                "Twitch/Subscriptions",
-                "twitch",
-                &args,
-                |_| true,
-            );
-            engine.emit("Twitch", "GiftBomb", || json!(args));
-        }
-        "channel.cheer" => {
-            let uid = event.pointer("/user_id").and_then(Value::as_str).unwrap_or("");
-            let ulogin = event.pointer("/user_login").and_then(Value::as_str).unwrap_or("");
-            let uname = event.pointer("/user_name").and_then(Value::as_str).unwrap_or("");
-            let bits = event.pointer("/bits").and_then(Value::as_u64).unwrap_or(0);
-            let text = event.pointer("/message").and_then(Value::as_str).unwrap_or("");
-            let mut args = Obj::new();
-            populate_broadcaster_vars(&mut args, broadcaster);
-            populate_user_vars(&mut args, uid, ulogin, uname, 1, false);
-            populate_chat_vars(
-                &mut args,
-                &ChatContext {
-                    text,
-                    bits,
-                    role: 1,
-                    ..Default::default()
-                },
-            );
-            engine.fire(T_CHEER, "Cheer", "Twitch/Chat", "twitch", &args, |_| true);
-            engine.emit("Twitch", "Cheer", || json!(args));
-        }
         "channel.raid" => {
-            let raider_id = event
-                .pointer("/from_broadcaster_user_id")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let raider_login = event
-                .pointer("/from_broadcaster_user_login")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let raider_name = event
-                .pointer("/from_broadcaster_user_name")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let viewers = event.pointer("/viewers").and_then(Value::as_u64).unwrap_or(0);
-            let mut args = Obj::new();
-            populate_broadcaster_vars(&mut args, broadcaster);
-            if raider_id == broadcaster.user_id {
-                let s = |k: &str| event.pointer(k).and_then(Value::as_str).unwrap_or("");
-                args.insert("raidUser".into(), s("/to_broadcaster_user_name").into());
-                args.insert("raidUserName".into(), s("/to_broadcaster_user_login").into());
-                args.insert("raidUserId".into(), s("/to_broadcaster_user_id").into());
-                args.insert("viewers".into(), viewers.into());
-                engine.fire(T_RAID_SEND, "Raid Send", "Twitch/Raid", "twitch", &args, |_| true);
-                engine.emit("Twitch", "RaidSend", || json!(args));
+            // Raids sent: incoming ones come as chat notifications (with more in them).
+            if es(event, "/from_broadcaster_user_id") != broadcaster.user_id {
                 return;
             }
-            populate_user_vars(&mut args, raider_id, raider_login, raider_name, 1, false);
-            args.insert("viewers".into(), viewers.into());
-            engine.fire(T_RAID, "Raid", "Twitch/Raid", "twitch", &args, |_| true);
-            engine.emit("Twitch", "Raid", || json!(args));
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            args.insert("raidUser".into(), es(event, "/to_broadcaster_user_name").into());
+            args.insert("raidUserName".into(), es(event, "/to_broadcaster_user_login").into());
+            args.insert("raidUserId".into(), es(event, "/to_broadcaster_user_id").into());
+            args.insert("viewers".into(), event["viewers"].as_u64().unwrap_or(0).into());
+            go(engine, T_RAID_SEND, "Raid Send", "Twitch/Raid", "RaidSend", &args);
         }
         "stream.online" => {
             if cfg.borrow().twitch.first_words_auto_reset {
@@ -2082,503 +2145,382 @@ fn handle_notification(
                 engine.emit("Twitch", "Whisper", || json!(args));
             }
         }
-        "channel.channel_points_custom_reward_redemption.add" => {
-            let id = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
-            let rid = event.pointer("/reward/id").and_then(Value::as_str).unwrap_or("");
-            let rtitle = event.pointer("/reward/title").and_then(Value::as_str).unwrap_or("");
-            let rprompt = event.pointer("/reward/prompt").and_then(Value::as_str).unwrap_or("");
-            let rcost = event.pointer("/reward/cost").and_then(Value::as_u64).unwrap_or(0);
-            let uid = event.pointer("/user_id").and_then(Value::as_str).unwrap_or("");
-            let ulogin = event.pointer("/user_login").and_then(Value::as_str).unwrap_or("");
-            let uname = event.pointer("/user_name").and_then(Value::as_str).unwrap_or("");
-            let input = event.pointer("/user_input").and_then(Value::as_str).unwrap_or("");
-            let status = event
-                .pointer("/status")
-                .and_then(Value::as_str)
-                .unwrap_or("unfulfilled");
-            let redeemed_at = event.pointer("/redeemed_at").and_then(Value::as_str).unwrap_or("");
-
+        "channel.channel_points_custom_reward_redemption.add"
+        | "channel.channel_points_custom_reward_redemption.update" => {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            populate_user_vars(&mut args, uid, ulogin, uname, 1, false);
-            args.insert("id".into(), id.into());
-            args.insert("redemptionId".into(), id.into());
-            args.insert("rewardId".into(), rid.into());
-            args.insert("rewardTitle".into(), rtitle.into());
-            args.insert("rewardName".into(), rtitle.into());
-            args.insert("rewardPrompt".into(), rprompt.into());
-            args.insert("rewardCost".into(), rcost.into());
-            args.insert("userInput".into(), input.into());
-            args.insert("rawInput".into(), input.into());
-            args.insert("status".into(), status.into());
-            args.insert("redeemedAt".into(), redeemed_at.into());
-
-            engine.fire(
-                T_REWARD_REDEMPTION,
-                "Reward Redemption",
-                "Twitch/Channel Points",
-                "twitch",
-                &args,
-                |_| true,
-            );
-            engine.emit("Twitch", "RewardRedemption", || json!(args));
-        }
-        "channel.channel_points_custom_reward_redemption.update" => {
-            let id = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
-            let rid = event.pointer("/reward/id").and_then(Value::as_str).unwrap_or("");
-            let rtitle = event.pointer("/reward/title").and_then(Value::as_str).unwrap_or("");
-            let rprompt = event.pointer("/reward/prompt").and_then(Value::as_str).unwrap_or("");
-            let rcost = event.pointer("/reward/cost").and_then(Value::as_u64).unwrap_or(0);
-            let uid = event.pointer("/user_id").and_then(Value::as_str).unwrap_or("");
-            let ulogin = event.pointer("/user_login").and_then(Value::as_str).unwrap_or("");
-            let uname = event.pointer("/user_name").and_then(Value::as_str).unwrap_or("");
-            let input = event.pointer("/user_input").and_then(Value::as_str).unwrap_or("");
-            let status = event.pointer("/status").and_then(Value::as_str).unwrap_or("fulfilled");
-            let redeemed_at = event.pointer("/redeemed_at").and_then(Value::as_str).unwrap_or("");
-
-            let mut args = Obj::new();
-            populate_broadcaster_vars(&mut args, broadcaster);
-            populate_user_vars(&mut args, uid, ulogin, uname, 1, false);
-            args.insert("id".into(), id.into());
-            args.insert("redemptionId".into(), id.into());
-            args.insert("rewardId".into(), rid.into());
-            args.insert("rewardTitle".into(), rtitle.into());
-            args.insert("rewardName".into(), rtitle.into());
-            args.insert("rewardPrompt".into(), rprompt.into());
-            args.insert("rewardCost".into(), rcost.into());
-            args.insert("userInput".into(), input.into());
-            args.insert("rawInput".into(), input.into());
-            args.insert("status".into(), status.into());
-            args.insert("redeemedAt".into(), redeemed_at.into());
-
-            engine.fire(
-                T_REWARD_REDEMPTION_UPDATED,
-                "Reward Redemption Updated",
-                "Twitch/Channel Points",
-                "twitch",
-                &args,
-                |_| true,
-            );
-            engine.emit("Twitch", "RewardRedemptionUpdated", || json!(args));
-        }
-        "channel.channel_points_custom_reward.add" => {
-            let mut args = Obj::new();
-            populate_broadcaster_vars(&mut args, broadcaster);
-            let rid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
-            let rtitle = event.pointer("/title").and_then(Value::as_str).unwrap_or("");
-            let rcost = event.pointer("/cost").and_then(Value::as_u64).unwrap_or(0);
-            let rprompt = event.pointer("/prompt").and_then(Value::as_str).unwrap_or("");
-            args.insert("rewardId".into(), rid.into());
-            args.insert("rewardTitle".into(), rtitle.into());
-            args.insert("rewardCost".into(), rcost.into());
-            args.insert("rewardPrompt".into(), rprompt.into());
-            engine.fire(
-                T_REWARD_CREATED,
-                "Reward Created",
-                "Twitch/Channel Points",
-                "twitch",
-                &args,
-                |_| true,
-            );
-            engine.emit("Twitch", "RewardCreated", || json!(args));
-        }
-        "channel.channel_points_custom_reward.update" => {
-            let mut args = Obj::new();
-            populate_broadcaster_vars(&mut args, broadcaster);
-            let rid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
-            let rtitle = event.pointer("/title").and_then(Value::as_str).unwrap_or("");
-            let rcost = event.pointer("/cost").and_then(Value::as_u64).unwrap_or(0);
-            let rprompt = event.pointer("/prompt").and_then(Value::as_str).unwrap_or("");
-            args.insert("rewardId".into(), rid.into());
-            args.insert("rewardTitle".into(), rtitle.into());
-            args.insert("rewardCost".into(), rcost.into());
-            args.insert("rewardPrompt".into(), rprompt.into());
-            engine.fire(
-                T_REWARD_UPDATED,
-                "Reward Updated",
-                "Twitch/Channel Points",
-                "twitch",
-                &args,
-                |_| true,
-            );
-            engine.emit("Twitch", "RewardUpdated", || json!(args));
-        }
-        "channel.channel_points_custom_reward.remove" => {
-            let mut args = Obj::new();
-            populate_broadcaster_vars(&mut args, broadcaster);
-            let rid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
-            let rtitle = event.pointer("/title").and_then(Value::as_str).unwrap_or("");
-            args.insert("rewardId".into(), rid.into());
-            args.insert("rewardTitle".into(), rtitle.into());
-            engine.fire(
-                T_REWARD_DELETED,
-                "Reward Deleted",
-                "Twitch/Channel Points",
-                "twitch",
-                &args,
-                |_| true,
-            );
-            engine.emit("Twitch", "RewardDeleted", || json!(args));
-        }
-        "channel.poll.begin" => {
-            let mut args = Obj::new();
-            populate_broadcaster_vars(&mut args, broadcaster);
-            let pid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
-            let ptitle = event.pointer("/title").and_then(Value::as_str).unwrap_or("");
-            let duration = event.pointer("/duration").and_then(Value::as_u64).unwrap_or(0);
-            args.insert("pollId".into(), pid.into());
-            args.insert("pollTitle".into(), ptitle.into());
-            args.insert("duration".into(), duration.into());
-            args.insert("status".into(), "active".into());
-            engine.fire(T_POLL_CREATED, "Poll Created", "Twitch/Polls", "twitch", &args, |_| {
-                true
-            });
-            engine.emit("Twitch", "PollCreated", || json!(args));
-        }
-        "channel.poll.progress" => {
-            let mut args = Obj::new();
-            populate_broadcaster_vars(&mut args, broadcaster);
-            let pid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
-            let ptitle = event.pointer("/title").and_then(Value::as_str).unwrap_or("");
-            args.insert("pollId".into(), pid.into());
-            args.insert("pollTitle".into(), ptitle.into());
-            args.insert("status".into(), "active".into());
-            engine.fire(T_POLL_UPDATED, "Poll Updated", "Twitch/Polls", "twitch", &args, |_| {
-                true
-            });
-            engine.emit("Twitch", "PollUpdated", || json!(args));
-        }
-        "channel.poll.end" => {
-            let mut args = Obj::new();
-            populate_broadcaster_vars(&mut args, broadcaster);
-            let pid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
-            let ptitle = event.pointer("/title").and_then(Value::as_str).unwrap_or("");
-            let status = event.pointer("/status").and_then(Value::as_str).unwrap_or("completed");
-            args.insert("pollId".into(), pid.into());
-            args.insert("pollTitle".into(), ptitle.into());
-            args.insert("status".into(), status.into());
-            if status.eq_ignore_ascii_case("terminated") {
-                engine.fire(
-                    T_POLL_TERMINATED,
-                    "Poll Terminated",
-                    "Twitch/Polls",
-                    "twitch",
+            event_user(&mut args, event, "user");
+            let input = es(event, "/user_input");
+            let rid = es(event, "/reward/id");
+            for (k, v) in [
+                ("id", event["id"].clone()),
+                ("redemptionId", event["id"].clone()),
+                ("rewardId", rid.into()),
+                ("rewardTitle", event["reward"]["title"].clone()),
+                ("rewardName", event["reward"]["title"].clone()),
+                ("rewardPrompt", event["reward"]["prompt"].clone()),
+                ("rewardCost", event["reward"]["cost"].clone()),
+                ("userInput", input.into()),
+                ("rawInput", input.into()),
+                ("rawInputEscaped", commands::escape(input).into()),
+                ("rawInputUrlEncoded", commands::url_encode(input).into()),
+                ("status", event["status"].clone()),
+                ("rewardStatus", event["status"].clone()),
+                ("redeemedAt", event["redeemed_at"].clone()),
+            ] {
+                args.insert(k.into(), v);
+            }
+            // The rest of the reward's settings, from its last known state.
+            if let Some(r) = SEEN.with_borrow(|s| s.rewards.get(rid).cloned()) {
+                for (k, v) in [
+                    ("skipsQueue", r["should_redemptions_skip_request_queue"].clone()),
+                    ("requiresUserInput", r["is_user_input_required"].clone()),
+                    ("maxPerStream", r["max_per_stream_setting"]["max_per_stream"].clone()),
+                    (
+                        "maxPerUserPerStream",
+                        r["max_per_user_per_stream_setting"]["max_per_user_per_stream"].clone(),
+                    ),
+                    (
+                        "globalCooldown",
+                        r["global_cooldown_setting"]["global_cooldown_seconds"].clone(),
+                    ),
+                    ("backgroundColor", r["background_color"].clone()),
+                ] {
+                    args.insert(k.into(), v);
+                }
+            }
+            if sub_type.ends_with(".add") {
+                go(
+                    engine,
+                    T_REWARD_REDEMPTION,
+                    "Reward Redemption",
+                    "Twitch/Channel Points",
+                    "RewardRedemption",
                     &args,
-                    |_| true,
                 );
-                engine.emit("Twitch", "PollTerminated", || json!(args));
-            } else if status.eq_ignore_ascii_case("archived") {
-                engine.fire(
-                    T_POLL_ARCHIVED,
-                    "Poll Archived",
-                    "Twitch/Polls",
-                    "twitch",
-                    &args,
-                    |_| true,
-                );
-                engine.emit("Twitch", "PollArchived", || json!(args));
             } else {
-                engine.fire(
-                    T_POLL_COMPLETED,
-                    "Poll Completed",
-                    "Twitch/Polls",
-                    "twitch",
+                go(
+                    engine,
+                    T_REWARD_REDEMPTION_UPDATED,
+                    "Reward Redemption Updated",
+                    "Twitch/Channel Points",
+                    "RewardRedemptionUpdated",
                     &args,
-                    |_| true,
                 );
-                engine.emit("Twitch", "PollCompleted", || json!(args));
             }
         }
-        "channel.prediction.begin" => {
+        "channel.channel_points_custom_reward.add"
+        | "channel.channel_points_custom_reward.update"
+        | "channel.channel_points_custom_reward.remove" => {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            let pid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
-            let ptitle = event.pointer("/title").and_then(Value::as_str).unwrap_or("");
-            args.insert("predictionId".into(), pid.into());
-            args.insert("predictionTitle".into(), ptitle.into());
-            args.insert("status".into(), "active".into());
-            engine.fire(
-                T_PREDICTION_CREATED,
-                "Prediction Created",
-                "Twitch/Predictions",
-                "twitch",
-                &args,
-                |_| true,
-            );
-            engine.emit("Twitch", "PredictionCreated", || json!(args));
-        }
-        "channel.prediction.progress" => {
-            let mut args = Obj::new();
-            populate_broadcaster_vars(&mut args, broadcaster);
-            let pid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
-            let ptitle = event.pointer("/title").and_then(Value::as_str).unwrap_or("");
-            args.insert("predictionId".into(), pid.into());
-            args.insert("predictionTitle".into(), ptitle.into());
-            args.insert("status".into(), "active".into());
-            engine.fire(
-                T_PREDICTION_UPDATED,
-                "Prediction Updated",
-                "Twitch/Predictions",
-                "twitch",
-                &args,
-                |_| true,
-            );
-            engine.emit("Twitch", "PredictionUpdated", || json!(args));
-        }
-        "channel.prediction.lock" => {
-            let mut args = Obj::new();
-            populate_broadcaster_vars(&mut args, broadcaster);
-            let pid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
-            let ptitle = event.pointer("/title").and_then(Value::as_str).unwrap_or("");
-            args.insert("predictionId".into(), pid.into());
-            args.insert("predictionTitle".into(), ptitle.into());
-            args.insert("status".into(), "locked".into());
-            engine.fire(
-                T_PREDICTION_LOCKED,
-                "Prediction Locked",
-                "Twitch/Predictions",
-                "twitch",
-                &args,
-                |_| true,
-            );
-            engine.emit("Twitch", "PredictionLocked", || json!(args));
-        }
-        "channel.prediction.end" => {
-            let mut args = Obj::new();
-            populate_broadcaster_vars(&mut args, broadcaster);
-            let pid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
-            let ptitle = event.pointer("/title").and_then(Value::as_str).unwrap_or("");
-            let status = event.pointer("/status").and_then(Value::as_str).unwrap_or("resolved");
-            let winning_id = event
-                .pointer("/winning_outcome_id")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            args.insert("predictionId".into(), pid.into());
-            args.insert("predictionTitle".into(), ptitle.into());
-            args.insert("status".into(), status.into());
-            args.insert("winningOutcomeId".into(), winning_id.into());
-            if status.eq_ignore_ascii_case("canceled") {
-                engine.fire(
-                    T_PREDICTION_CANCELED,
-                    "Prediction Canceled",
-                    "Twitch/Predictions",
-                    "twitch",
-                    &args,
-                    |_| true,
-                );
-                engine.emit("Twitch", "PredictionCanceled", || json!(args));
-            } else {
-                engine.fire(
-                    T_PREDICTION_COMPLETED,
-                    "Prediction Completed",
-                    "Twitch/Predictions",
-                    "twitch",
-                    &args,
-                    |_| true,
-                );
-                engine.emit("Twitch", "PredictionCompleted", || json!(args));
+            let id = es(event, "/id").to_string();
+            for (k, f) in [
+                ("rewardId", "id"),
+                ("rewardTitle", "title"),
+                ("rewardCost", "cost"),
+                ("rewardPrompt", "prompt"),
+            ] {
+                args.insert(k.into(), event[f].clone());
             }
+            SEEN.with_borrow_mut(|s| {
+                if sub_type.ends_with("remove") {
+                    s.rewards.remove(&id);
+                } else {
+                    s.rewards.insert(id, event.clone());
+                }
+            });
+            let (code, name, ev) = match sub_type {
+                "channel.channel_points_custom_reward.add" => (T_REWARD_CREATED, "Reward Created", "RewardCreated"),
+                "channel.channel_points_custom_reward.update" => (T_REWARD_UPDATED, "Reward Updated", "RewardUpdated"),
+                _ => (T_REWARD_DELETED, "Reward Deleted", "RewardDeleted"),
+            };
+            go(engine, code, name, "Twitch/Channel Points", ev, &args);
+        }
+        "channel.poll.begin" | "channel.poll.progress" | "channel.poll.end" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            // EventSub has no duration: it's from the start to the end.
+            let mut p = event.clone();
+            let start = crate::engine::rest_parse_iso(es(event, "/started_at"));
+            let end = crate::engine::rest_parse_iso(es(event, "/ends_at"))
+                .or_else(|| crate::engine::rest_parse_iso(es(event, "/ended_at")));
+            if let (Some(a), Some(b)) = (start, end) {
+                p["duration"] = (b - a).into();
+            }
+            crate::engine::poll_args(&p, &mut args);
+            args.insert("pollId".into(), event["id"].clone());
+            args.insert("pollTitle".into(), event["title"].clone());
+            let status = es(event, "/status");
+            args.insert(
+                "status".into(),
+                if status.is_empty() { "active" } else { status }.into(),
+            );
+            if sub_type == "channel.poll.end" {
+                args.insert("active".into(), false.into());
+                args.insert("poll.endedAt".into(), event["ended_at"].clone());
+                let choices = event["choices"].as_array().cloned().unwrap_or_default();
+                let total = |c: &Value| c["votes"].as_i64().unwrap_or(0);
+                if let Some((i, c)) = choices.iter().enumerate().max_by_key(|(_, c)| total(c)) {
+                    let points = c["channel_points_votes"].as_i64().unwrap_or(0);
+                    args.insert("poll.winningIndex".into(), i.into());
+                    args.insert("poll.winningChoice.id".into(), c["id"].clone());
+                    args.insert("poll.winningChoice.title".into(), c["title"].clone());
+                    args.insert("poll.winningChoice.votes".into(), (total(c) - points).into());
+                    args.insert("poll.winningChoice.rewardVotes".into(), points.into());
+                    args.insert("poll.winningChoice.totalVotes".into(), total(c).into());
+                }
+            }
+            args.insert("poll._json".into(), Value::Object(args.clone()).to_string().into());
+            let (code, name, ev) = match (sub_type, status) {
+                ("channel.poll.begin", _) => (T_POLL_CREATED, "Poll Created", "PollCreated"),
+                ("channel.poll.progress", _) => (T_POLL_UPDATED, "Poll Updated", "PollUpdated"),
+                (_, "terminated") => (T_POLL_TERMINATED, "Poll Terminated", "PollTerminated"),
+                (_, "archived") => (T_POLL_ARCHIVED, "Poll Archived", "PollArchived"),
+                _ => (T_POLL_COMPLETED, "Poll Completed", "PollCompleted"),
+            };
+            go(engine, code, name, "Twitch/Polls", ev, &args);
+        }
+        "channel.prediction.begin"
+        | "channel.prediction.progress"
+        | "channel.prediction.lock"
+        | "channel.prediction.end" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            let mut p = event.clone();
+            p["created_at"] = event["started_at"].clone();
+            if let (Some(a), Some(b)) = (
+                crate::engine::rest_parse_iso(es(event, "/started_at")),
+                crate::engine::rest_parse_iso(es(event, "/locks_at")),
+            ) {
+                p["prediction_window"] = (b - a).into();
+            }
+            let status = es(event, "/status");
+            p["status"] = if status.is_empty() { "ACTIVE" } else { status }.into();
+            crate::engine::prediction_args(&p, &mut args);
+            args.insert("prediction.LockedAt".into(), event["locked_at"].clone());
+            args.insert("prediction.EndedAt".into(), event["ended_at"].clone());
+            args.insert("predictionId".into(), event["id"].clone());
+            args.insert("predictionTitle".into(), event["title"].clone());
+            args.insert("status".into(), status.into());
+            let won = es(event, "/winning_outcome_id");
+            args.insert("winningOutcomeId".into(), won.into());
+            let outcomes = event["outcomes"].as_array().cloned().unwrap_or_default();
+            if let Some((i, o)) = outcomes.iter().enumerate().find(|(_, o)| o["id"] == won) {
+                args.insert("prediction.winningIndex".into(), i.into());
+                for (k, f) in [
+                    ("id", "id"),
+                    ("title", "title"),
+                    ("users", "users"),
+                    ("points", "channel_points"),
+                    ("color", "color"),
+                ] {
+                    args.insert(format!("prediction.winningOutcome.{k}"), o[f].clone());
+                }
+            }
+            args.insert(
+                "prediction._json".into(),
+                Value::Object(args.clone()).to_string().into(),
+            );
+            let (code, name, ev) = match (sub_type, status) {
+                ("channel.prediction.begin", _) => (T_PREDICTION_CREATED, "Prediction Created", "PredictionCreated"),
+                ("channel.prediction.progress", _) => (T_PREDICTION_UPDATED, "Prediction Updated", "PredictionUpdated"),
+                ("channel.prediction.lock", _) => (T_PREDICTION_LOCKED, "Prediction Locked", "PredictionLocked"),
+                (_, "canceled") => (T_PREDICTION_CANCELED, "Prediction Canceled", "PredictionCanceled"),
+                _ => (T_PREDICTION_COMPLETED, "Prediction Completed", "PredictionCompleted"),
+            };
+            go(engine, code, name, "Twitch/Predictions", ev, &args);
         }
         "channel.hype_train.begin" => {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            let level = event.pointer("/level").and_then(Value::as_u64).unwrap_or(1);
-            let total = event.pointer("/total").and_then(Value::as_u64).unwrap_or(0);
-            let goal = event.pointer("/goal").and_then(Value::as_u64).unwrap_or(0);
-            args.insert("level".into(), level.into());
-            args.insert("total".into(), total.into());
-            args.insert("goal".into(), goal.into());
-            engine.fire(
+            hype_args(&mut args, event);
+            SEEN.with_borrow_mut(|s| s.hype_level = event["level"].as_u64().unwrap_or(1));
+            go(
+                engine,
                 T_HYPE_TRAIN_START,
                 "Hype Train Starts",
                 "Twitch/Hype Train",
-                "twitch",
+                "HypeTrainStart",
                 &args,
-                |_| true,
             );
-            engine.emit("Twitch", "HypeTrainStart", || json!(args));
         }
         "channel.hype_train.progress" => {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            let level = event.pointer("/level").and_then(Value::as_u64).unwrap_or(1);
-            let total = event.pointer("/total").and_then(Value::as_u64).unwrap_or(0);
-            let goal = event.pointer("/goal").and_then(Value::as_u64).unwrap_or(0);
-            args.insert("level".into(), level.into());
-            args.insert("total".into(), total.into());
-            args.insert("goal".into(), goal.into());
-            engine.fire(
+            hype_args(&mut args, event);
+            let level = event["level"].as_u64().unwrap_or(1);
+            let prev = SEEN.with_borrow_mut(|s| std::mem::replace(&mut s.hype_level, level));
+            go(
+                engine,
                 T_HYPE_TRAIN_UPDATE,
                 "Hype Train Update",
                 "Twitch/Hype Train",
-                "twitch",
+                "HypeTrainUpdate",
                 &args,
-                |_| true,
             );
-            engine.emit("Twitch", "HypeTrainUpdate", || json!(args));
+            if level > prev && prev > 0 {
+                args.insert("prevLevel".into(), prev.into());
+                go(
+                    engine,
+                    T_HYPE_TRAIN_LEVEL_UP,
+                    "Hype Train Level Up",
+                    "Twitch/Hype Train",
+                    "HypeTrainLevelUp",
+                    &args,
+                );
+            }
         }
         "channel.hype_train.end" => {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            let level = event.pointer("/level").and_then(Value::as_u64).unwrap_or(1);
-            let total = event.pointer("/total").and_then(Value::as_u64).unwrap_or(0);
-            args.insert("level".into(), level.into());
-            args.insert("total".into(), total.into());
-            engine.fire(
+            hype_args(&mut args, event);
+            SEEN.with_borrow_mut(|s| s.hype_level = 0);
+            go(
+                engine,
                 T_HYPE_TRAIN_END,
                 "Hype Train End",
                 "Twitch/Hype Train",
-                "twitch",
+                "HypeTrainEnd",
                 &args,
-                |_| true,
             );
-            engine.emit("Twitch", "HypeTrainEnd", || json!(args));
         }
-        "channel.goal.begin" => {
+        "channel.goal.begin" | "channel.goal.progress" | "channel.goal.end" => {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            let gid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
-            let gtype = event.pointer("/type").and_then(Value::as_str).unwrap_or("");
-            let desc = event.pointer("/description").and_then(Value::as_str).unwrap_or("");
-            let curr = event.pointer("/current_amount").and_then(Value::as_u64).unwrap_or(0);
-            let target = event.pointer("/target_amount").and_then(Value::as_u64).unwrap_or(0);
-            args.insert("goalId".into(), gid.into());
-            args.insert("goalType".into(), gtype.into());
-            args.insert("goalDescription".into(), desc.into());
-            args.insert("currentAmount".into(), curr.into());
-            args.insert("targetAmount".into(), target.into());
-            engine.fire(T_GOAL_BEGIN, "Goal Begin", "Twitch/Goals", "twitch", &args, |_| true);
-            engine.emit("Twitch", "GoalBegin", || json!(args));
-        }
-        "channel.goal.progress" => {
-            let mut args = Obj::new();
-            populate_broadcaster_vars(&mut args, broadcaster);
-            let gid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
-            let gtype = event.pointer("/type").and_then(Value::as_str).unwrap_or("");
-            let desc = event.pointer("/description").and_then(Value::as_str).unwrap_or("");
-            let curr = event.pointer("/current_amount").and_then(Value::as_u64).unwrap_or(0);
-            let target = event.pointer("/target_amount").and_then(Value::as_u64).unwrap_or(0);
-            args.insert("goalId".into(), gid.into());
-            args.insert("goalType".into(), gtype.into());
-            args.insert("goalDescription".into(), desc.into());
-            args.insert("currentAmount".into(), curr.into());
-            args.insert("targetAmount".into(), target.into());
-            engine.fire(
-                T_GOAL_PROGRESS,
-                "Goal Progress",
-                "Twitch/Goals",
-                "twitch",
-                &args,
-                |_| true,
-            );
-            engine.emit("Twitch", "GoalProgress", || json!(args));
-        }
-        "channel.goal.end" => {
-            let mut args = Obj::new();
-            populate_broadcaster_vars(&mut args, broadcaster);
-            let gid = event.pointer("/id").and_then(Value::as_str).unwrap_or("");
-            let gtype = event.pointer("/type").and_then(Value::as_str).unwrap_or("");
-            let desc = event.pointer("/description").and_then(Value::as_str).unwrap_or("");
-            let curr = event.pointer("/current_amount").and_then(Value::as_u64).unwrap_or(0);
-            let target = event.pointer("/target_amount").and_then(Value::as_u64).unwrap_or(0);
-            args.insert("goalId".into(), gid.into());
-            args.insert("goalType".into(), gtype.into());
-            args.insert("goalDescription".into(), desc.into());
-            args.insert("currentAmount".into(), curr.into());
-            args.insert("targetAmount".into(), target.into());
-            engine.fire(T_GOAL_END, "Goal End", "Twitch/Goals", "twitch", &args, |_| true);
-            engine.emit("Twitch", "GoalEnd", || json!(args));
+            for (old, new, f) in [
+                ("goalId", "id", "id"),
+                ("goalType", "type", "type"),
+                ("goalDescription", "description", "description"),
+                ("currentAmount", "currentAmount", "current_amount"),
+                ("targetAmount", "targetAmount", "target_amount"),
+                ("startedAt", "startedAt", "started_at"),
+                ("endedAt", "endedAt", "ended_at"),
+            ] {
+                if let Some(v) = event.get(f) {
+                    args.insert(old.into(), v.clone());
+                    args.insert(format!("goal.{new}"), v.clone());
+                }
+            }
+            let (code, name, ev) = match sub_type {
+                "channel.goal.begin" => (T_GOAL_BEGIN, "Goal Begin", "GoalBegin"),
+                "channel.goal.progress" => (T_GOAL_PROGRESS, "Goal Progress", "GoalProgress"),
+                _ => (T_GOAL_END, "Goal End", "GoalEnd"),
+            };
+            go(engine, code, name, "Twitch/Goals", ev, &args);
         }
         "channel.update" => {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            let title = event.pointer("/title").and_then(Value::as_str).unwrap_or("");
-            let game_name = event.pointer("/category_name").and_then(Value::as_str).unwrap_or("");
-            let game_id = event.pointer("/category_id").and_then(Value::as_str).unwrap_or("");
-            args.insert("status".into(), title.into());
-            args.insert("game".into(), game_name.into());
-            args.insert("gameId".into(), game_id.into());
-            engine.fire(
+            let (title, game_id, game) = (
+                es(event, "/title"),
+                es(event, "/category_id"),
+                es(event, "/category_name"),
+            );
+            let art = |id: &str| format!("https://static-cdn.jtvnw.net/ttv-boxart/{id}-144x192.jpg");
+            let (old_title, (old_id, old_game)) = SEEN.with_borrow_mut(|s| {
+                let old = (s.title.clone(), s.game.clone());
+                s.title = title.into();
+                s.game = (game_id.into(), game.into());
+                old
+            });
+            for (k, v) in [
+                ("status", title.to_string()),
+                ("game", game.into()),
+                ("gameName", game.into()),
+                ("gameId", game_id.into()),
+                ("gameBoxArt", art(game_id)),
+                ("oldStatus", old_title.clone()),
+                ("oldGameId", old_id.clone()),
+                ("oldGameName", old_game),
+                ("oldGameBoxArt", art(&old_id)),
+            ] {
+                args.insert(k.into(), v.into());
+            }
+            args.insert("statusUpdate".into(), (old_title != title).into());
+            args.insert("gameUpdate".into(), (old_id != game_id).into());
+            go(
+                engine,
                 T_STREAM_UPDATE,
                 "Stream Update",
                 "Twitch/Channel",
-                "twitch",
+                "StreamUpdate",
                 &args,
-                |_| true,
             );
-            engine.emit("Twitch", "StreamUpdate", || json!(args));
         }
         "channel.ad_break.begin" => {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            let length = event.pointer("/duration_seconds").and_then(Value::as_u64).unwrap_or(0);
-            let auto = event.pointer("/is_automatic").and_then(Value::as_bool).unwrap_or(false);
-            args.insert("duration".into(), length.into());
-            args.insert("length".into(), length.into());
-            args.insert("isAutomatic".into(), auto.into());
-            engine.fire(T_AD_RUN, "Ad Run", "Twitch/Ads", "twitch", &args, |_| true);
-            engine.emit("Twitch", "AdRun", || json!(args));
+            let length = event["duration_seconds"].as_u64().unwrap_or(0);
+            let auto = event["is_automatic"].as_bool().unwrap_or(false);
+            for (k, v) in [
+                ("duration", length.into()),
+                ("length", length.into()),
+                ("adLength", length.into()),
+                ("adLengthMs", (length * 1000).into()),
+                ("isAutomatic", auto.into()),
+                ("adScheduled", auto.into()),
+                ("startedAt", event["started_at"].clone()),
+            ] {
+                args.insert(k.into(), v);
+            }
+            go(engine, T_AD_RUN, "Ad Run", "Twitch/Ads", "AdRun", &args);
         }
         "channel.ban" => {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            let uid = event.pointer("/user_id").and_then(Value::as_str).unwrap_or("");
-            let ulogin = event.pointer("/user_login").and_then(Value::as_str).unwrap_or("");
-            let uname = event.pointer("/user_name").and_then(Value::as_str).unwrap_or("");
-            let reason = event.pointer("/reason").and_then(Value::as_str).unwrap_or("");
-            let is_perm = event.pointer("/is_permanent").and_then(Value::as_bool).unwrap_or(true);
-            populate_user_vars(&mut args, uid, ulogin, uname, 1, false);
-            args.insert("reason".into(), reason.into());
-            args.insert("isPermanent".into(), is_perm.into());
-            if is_perm {
-                engine.fire(
+            event_user(&mut args, event, "user");
+            event_by(&mut args, event, "moderator", "createdBy");
+            let perm = event["is_permanent"].as_bool().unwrap_or(true);
+            args.insert("reason".into(), es(event, "/reason").into());
+            args.insert("isPermanent".into(), perm.into());
+            if perm {
+                go(
+                    engine,
                     T_USER_BANNED,
                     "User Banned",
                     "Twitch/Moderation",
-                    "twitch",
+                    "UserBanned",
                     &args,
-                    |_| true,
                 );
-                engine.emit("Twitch", "UserBanned", || json!(args));
             } else {
-                let ends = event.pointer("/ends_at").and_then(Value::as_str).unwrap_or("");
-                args.insert("endsAt".into(), ends.into());
-                engine.fire(
+                let (from, to) = (es(event, "/banned_at"), es(event, "/ends_at"));
+                args.insert("endsAt".into(), to.into());
+                if let (Some(a), Some(b)) = (crate::engine::rest_parse_iso(from), crate::engine::rest_parse_iso(to)) {
+                    args.insert("duration".into(), (b - a).into());
+                }
+                go(
+                    engine,
                     T_USER_TIMED_OUT,
                     "User Timed Out",
                     "Twitch/Moderation",
-                    "twitch",
+                    "UserTimedOut",
                     &args,
-                    |_| true,
                 );
-                engine.emit("Twitch", "UserTimedOut", || json!(args));
             }
         }
         "channel.unban" => {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            let uid = event.pointer("/user_id").and_then(Value::as_str).unwrap_or("");
-            let ulogin = event.pointer("/user_login").and_then(Value::as_str).unwrap_or("");
-            let uname = event.pointer("/user_name").and_then(Value::as_str).unwrap_or("");
-            populate_user_vars(&mut args, uid, ulogin, uname, 1, false);
-            engine.fire(
+            event_user(&mut args, event, "user");
+            event_by(&mut args, event, "moderator", "createdBy");
+            // EventSub has one unban for both; Streamer.bot has two triggers.
+            go(
+                engine,
                 T_USER_UNBANNED,
                 "User Unbanned",
                 "Twitch/Moderation",
-                "twitch",
+                "UserUnbanned",
                 &args,
-                |_| true,
             );
-            engine.fire(
+            go(
+                engine,
                 T_USER_UNTIMED_OUT,
                 "User Untimed Out",
                 "Twitch/Moderation",
-                "twitch",
+                "UserUntimedOut",
                 &args,
-                |_| true,
             );
-            engine.emit("Twitch", "UserUnbanned", || json!(args));
-            engine.emit("Twitch", "UserUntimedOut", || json!(args));
         }
         "channel.moderator.add" => {
             let mut args = Obj::new();
@@ -2670,30 +2612,32 @@ fn handle_notification(
         "channel.shoutout.create" => {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            let to_login = event
-                .pointer("/to_broadcaster_user_login")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let to_name = event
-                .pointer("/to_broadcaster_user_name")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let to_id = event
-                .pointer("/to_broadcaster_user_id")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            args.insert("targetUser".into(), to_name.into());
-            args.insert("targetUserName".into(), to_login.into());
-            args.insert("targetUserId".into(), to_id.into());
-            engine.fire(
+            let (login, name, id) = (
+                es(event, "/to_broadcaster_user_login"),
+                es(event, "/to_broadcaster_user_name"),
+                es(event, "/to_broadcaster_user_id"),
+            );
+            for (k, v) in [
+                ("targetUser", name),
+                ("targetUserName", login),
+                ("targetUserLogin", login),
+                ("targetUserDisplayName", name),
+                ("targetUserId", id),
+                ("cooldownEndsAt", es(event, "/cooldown_ends_at")),
+                ("targetCooldownEndsAt", es(event, "/target_cooldown_ends_at")),
+            ] {
+                args.insert(k.into(), v.into());
+            }
+            args.insert("viewerCount".into(), event["viewer_count"].as_u64().unwrap_or(0).into());
+            event_moderator(&mut args, event);
+            go(
+                engine,
                 T_SHOUTOUT_CREATED,
                 "Shoutout Created",
                 "Twitch/Moderation",
-                "twitch",
+                "ShoutoutCreated",
                 &args,
-                |_| true,
             );
-            engine.emit("Twitch", "ShoutoutCreated", || json!(args));
         }
         "channel.shoutout.receive" => {
             let mut args = Obj::new();
@@ -2738,256 +2682,1044 @@ fn handle_notification(
             );
             engine.emit("Twitch", "ChatCleared", || json!(args));
         }
-        "channel.chat.clear_user_messages" => {
-            let mut args = Obj::new();
-            populate_broadcaster_vars(&mut args, broadcaster);
-            let uid = event.pointer("/target_user_id").and_then(Value::as_str).unwrap_or("");
-            let ulogin = event
-                .pointer("/target_user_login")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let uname = event.pointer("/target_user_name").and_then(Value::as_str).unwrap_or("");
-            populate_user_vars(&mut args, uid, ulogin, uname, 1, false);
-            engine.fire(
-                T_CHAT_MESSAGE_DELETED,
-                "Chat Message Deleted",
-                "Twitch/Moderation",
-                "twitch",
-                &args,
-                |_| true,
-            );
-            engine.emit("Twitch", "ChatMessageDeleted", || json!(args));
-        }
         "channel.chat_settings.update" => {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            if let Some(emote) = event.pointer("/emote_mode").and_then(Value::as_bool) {
-                let tid = if emote {
-                    T_CHAT_MODE_EMOTE_ON
-                } else {
-                    T_CHAT_MODE_EMOTE_OFF
-                };
-                engine.fire(tid, "Emote Mode Changed", "Twitch/Chat Modes", "twitch", &args, |_| {
-                    true
-                });
+            let f = |k: &str| event[k].as_bool().unwrap_or(false);
+            let n = |k: &str| event[k].as_u64().unwrap_or(0);
+            for (k, v) in [
+                ("emoteMode", f("emote_mode").into()),
+                ("followerMode", f("follower_mode").into()),
+                ("followerModeDuration", n("follower_mode_duration_minutes").into()),
+                ("slowMode", f("slow_mode").into()),
+                ("slowModeWaitTime", n("slow_mode_wait_time_seconds").into()),
+                ("subscriberOnly", f("subscriber_mode").into()),
+                ("uniqueMode", f("unique_chat_mode").into()),
+            ] {
+                args.insert(k.into(), v);
             }
-            if let Some(sub) = event.pointer("/subscriber_mode").and_then(Value::as_bool) {
-                let tid = if sub {
-                    T_CHAT_MODE_SUBSCRIBER_ON
-                } else {
-                    T_CHAT_MODE_SUBSCRIBER_OFF
-                };
-                engine.fire(
-                    tid,
-                    "Subscriber Mode Changed",
-                    "Twitch/Chat Modes",
-                    "twitch",
-                    &args,
-                    |_| true,
-                );
+            // Only what changed since the last update (or since connecting) fires.
+            let old = SEEN
+                .with_borrow_mut(|s| s.settings.replace(event.clone()))
+                .unwrap_or_default();
+            let was = |k: &str| old[k].as_bool().unwrap_or(false);
+            let modes = [
+                (
+                    "emote_mode",
+                    T_CHAT_MODE_EMOTE_ON,
+                    T_CHAT_MODE_EMOTE_OFF,
+                    "Emote Mode",
+                    "EmoteMode",
+                ),
+                (
+                    "subscriber_mode",
+                    T_CHAT_MODE_SUBSCRIBER_ON,
+                    T_CHAT_MODE_SUBSCRIBER_OFF,
+                    "Subscriber Mode",
+                    "SubscriberMode",
+                ),
+                (
+                    "unique_chat_mode",
+                    T_CHAT_MODE_UNIQUE_ON,
+                    T_CHAT_MODE_UNIQUE_OFF,
+                    "Unique Mode",
+                    "UniqueMode",
+                ),
+                (
+                    "slow_mode",
+                    T_CHAT_MODE_SLOW_ON,
+                    T_CHAT_MODE_SLOW_OFF,
+                    "Slow Mode",
+                    "SlowMode",
+                ),
+                (
+                    "follower_mode",
+                    T_CHAT_MODE_FOLLOWER_ON,
+                    T_CHAT_MODE_FOLLOWER_OFF,
+                    "Follower Mode",
+                    "FollowerMode",
+                ),
+            ];
+            for (k, on, off, name, ev) in modes {
+                if f(k) != was(k) {
+                    let (code, state) = if f(k) { (on, "On") } else { (off, "Off") };
+                    go(
+                        engine,
+                        code,
+                        &format!("{name} {state}"),
+                        "Twitch/Chat Modes",
+                        &format!("{ev}{state}"),
+                        &args,
+                    );
+                }
             }
-            if let Some(slow) = event.pointer("/slow_mode").and_then(Value::as_bool) {
-                let tid = if slow {
-                    T_CHAT_MODE_SLOW_ON
-                } else {
-                    T_CHAT_MODE_SLOW_OFF
-                };
-                engine.fire(tid, "Slow Mode Changed", "Twitch/Chat Modes", "twitch", &args, |_| true);
-            }
-            if let Some(follower) = event.pointer("/follower_mode").and_then(Value::as_bool) {
-                let tid = if follower {
-                    T_CHAT_MODE_FOLLOWER_ON
-                } else {
-                    T_CHAT_MODE_FOLLOWER_OFF
-                };
-                engine.fire(
-                    tid,
+            for (k, length, code, name, ev) in [
+                (
+                    "slow_mode",
+                    "slow_mode_wait_time_seconds",
+                    T_CHAT_MODE_SLOW_CHANGED,
+                    "Slow Mode Changed",
+                    "SlowModeChanged",
+                ),
+                (
+                    "follower_mode",
+                    "follower_mode_duration_minutes",
+                    T_CHAT_MODE_FOLLOWER_CHANGED,
                     "Follower Mode Changed",
-                    "Twitch/Chat Modes",
-                    "twitch",
-                    &args,
-                    |_| true,
-                );
-            }
-            if let Some(unique) = event.pointer("/unique_chat_mode").and_then(Value::as_bool) {
-                let tid = if unique {
-                    T_CHAT_MODE_UNIQUE_ON
-                } else {
-                    T_CHAT_MODE_UNIQUE_OFF
-                };
-                engine.fire(tid, "Unique Mode Changed", "Twitch/Chat Modes", "twitch", &args, |_| {
-                    true
-                });
+                    "FollowerModeChanged",
+                ),
+            ] {
+                if f(k) != was(k) || (f(k) && old[length] != event[length]) {
+                    go(engine, code, name, "Twitch/Chat Modes", ev, &args);
+                }
             }
         }
         "channel.charity_campaign.donate" => {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            let uid = event.pointer("/user_id").and_then(Value::as_str).unwrap_or("");
-            let ulogin = event.pointer("/user_login").and_then(Value::as_str).unwrap_or("");
-            let uname = event.pointer("/user_name").and_then(Value::as_str).unwrap_or("");
-            let amt = event.pointer("/amount/value").and_then(Value::as_u64).unwrap_or(0);
-            populate_user_vars(&mut args, uid, ulogin, uname, 1, false);
-            args.insert("amount".into(), amt.into());
-            engine.fire(
+            event_user(&mut args, event, "user");
+            charity_args(&mut args, event);
+            args.insert("amount".into(), event["amount"]["value"].clone());
+            go(
+                engine,
                 T_CHARITY_DONATION,
                 "Charity Donation",
                 "Twitch/Charity",
-                "twitch",
+                "CharityDonation",
                 &args,
-                |_| true,
             );
-            engine.emit("Twitch", "CharityDonation", || json!(args));
         }
         "channel.charity_campaign.start" => {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            let name = event.pointer("/charity_name").and_then(Value::as_str).unwrap_or("");
-            args.insert("charityName".into(), name.into());
-            engine.fire(
+            charity_args(&mut args, event);
+            args.insert("charityName".into(), es(event, "/charity_name").into());
+            go(
+                engine,
                 T_CHARITY_STARTED,
                 "Charity Started",
                 "Twitch/Charity",
-                "twitch",
+                "CharityStarted",
                 &args,
-                |_| true,
             );
-            engine.emit("Twitch", "CharityStarted", || json!(args));
         }
         "channel.charity_campaign.progress" => {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            let curr = event
-                .pointer("/current_amount/value")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            let target = event
-                .pointer("/target_amount/value")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            args.insert("currentAmount".into(), curr.into());
-            args.insert("targetAmount".into(), target.into());
-            engine.fire(
+            charity_args(&mut args, event);
+            args.insert("currentAmount".into(), event["current_amount"]["value"].clone());
+            args.insert("targetAmount".into(), event["target_amount"]["value"].clone());
+            go(
+                engine,
                 T_CHARITY_PROGRESS,
                 "Charity Progress",
                 "Twitch/Charity",
-                "twitch",
+                "CharityProgress",
                 &args,
-                |_| true,
             );
-            engine.emit("Twitch", "CharityProgress", || json!(args));
         }
         "channel.charity_campaign.stop" => {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            engine.fire(
+            charity_args(&mut args, event);
+            go(
+                engine,
                 T_CHARITY_COMPLETED,
                 "Charity Completed",
                 "Twitch/Charity",
-                "twitch",
+                "CharityCompleted",
                 &args,
-                |_| true,
             );
-            engine.emit("Twitch", "CharityCompleted", || json!(args));
         }
-        "channel.guest_star_session.begin" => {
+        "channel.guest_star_session.begin" | "channel.guest_star_session.end" => {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            engine.fire(
-                T_GUEST_STAR_SESSION_BEGIN,
-                "Guest Star Session Begin",
-                "Twitch/Guest Star",
-                "twitch",
-                &args,
-                |_| true,
-            );
-            engine.emit("Twitch", "GuestStarSessionBegin", || json!(args));
-        }
-        "channel.guest_star_session.end" => {
-            let mut args = Obj::new();
-            populate_broadcaster_vars(&mut args, broadcaster);
-            engine.fire(
-                T_GUEST_STAR_SESSION_END,
-                "Guest Star Session End",
-                "Twitch/Guest Star",
-                "twitch",
-                &args,
-                |_| true,
-            );
-            engine.emit("Twitch", "GuestStarSessionEnd", || json!(args));
+            args.insert("sessionId".into(), event["session_id"].clone());
+            if sub_type.ends_with("begin") {
+                go(
+                    engine,
+                    T_GUEST_STAR_SESSION_BEGIN,
+                    "Guest Star Session Begin",
+                    "Twitch/Guest Star",
+                    "GuestStarSessionBegin",
+                    &args,
+                );
+            } else {
+                go(
+                    engine,
+                    T_GUEST_STAR_SESSION_END,
+                    "Guest Star Session End",
+                    "Twitch/Guest Star",
+                    "GuestStarSessionEnd",
+                    &args,
+                );
+            }
         }
         "channel.guest_star_guest.update" => {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            engine.fire(
+            for (k, f) in [
+                ("sessionId", "session_id"),
+                ("moderatorUserName", "moderator_user_name"),
+                ("moderatorUserLogin", "moderator_user_login"),
+                ("moderatorUserId", "moderator_user_id"),
+                ("guestUserName", "guest_user_name"),
+                ("guestUserLogin", "guest_user_login"),
+                ("guestUserId", "guest_user_id"),
+                ("slotId", "slot_id"),
+                ("state", "state"),
+                ("hostVideoEnabled", "host_video_enabled"),
+                ("hostAudioEnabled", "host_audio_enabled"),
+                ("hostVolume", "host_volume"),
+            ] {
+                args.insert(k.into(), event[f].clone());
+            }
+            go(
+                engine,
                 T_GUEST_STAR_GUEST_UPDATE,
                 "Guest Star Guest Update",
                 "Twitch/Guest Star",
-                "twitch",
+                "GuestStarGuestUpdate",
                 &args,
-                |_| true,
             );
-            engine.emit("Twitch", "GuestStarGuestUpdate", || json!(args));
         }
         "channel.guest_star_settings.update" => {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            engine.fire(
+            for (k, f) in [
+                ("isModeratorSendLiveEnabled", "is_moderator_send_live_enabled"),
+                ("slotCount", "slot_count"),
+                ("isBrowserSourceAudioEnabled", "is_browser_source_audio_enabled"),
+                ("groupLayout", "group_layout"),
+            ] {
+                args.insert(k.into(), event[f].clone());
+            }
+            go(
+                engine,
                 T_GUEST_STAR_SETTINGS_UPDATE,
                 "Guest Star Settings Update",
                 "Twitch/Guest Star",
-                "twitch",
+                "GuestStarSettingsUpdate",
                 &args,
-                |_| true,
             );
-            engine.emit("Twitch", "GuestStarSettingsUpdate", || json!(args));
         }
-        "channel.shared_chat.begin" => {
+        "channel.shared_chat.begin" | "channel.shared_chat.update" | "channel.shared_chat.end" => {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            engine.fire(
-                T_SHARED_CHAT_SESSION_BEGIN,
-                "Shared Chat Session Begin",
-                "Twitch/Shared Chat",
-                "twitch",
-                &args,
-                |_| true,
-            );
-            engine.emit("Twitch", "SharedChatSessionBegin", || json!(args));
+            for (k, f) in [("userId", "id"), ("userLogin", "login"), ("userName", "name")] {
+                args.insert(
+                    format!("host.{k}"),
+                    es(event, &format!("/host_broadcaster_user_{f}")).into(),
+                );
+            }
+            for k in ["isSubscribed", "isModerator", "isVip"] {
+                args.insert(format!("host.{k}"), false.into());
+            }
+            args.insert("sessionId".into(), event["session_id"].clone());
+            let (code, name, ev) = match sub_type {
+                "channel.shared_chat.begin" => (
+                    T_SHARED_CHAT_SESSION_BEGIN,
+                    "Twitch Shared Chat Session Begin",
+                    "SharedChatSessionBegin",
+                ),
+                "channel.shared_chat.update" => (
+                    T_SHARED_CHAT_SESSION_UPDATE,
+                    "Twitch Shared Chat Session Update",
+                    "SharedChatSessionUpdate",
+                ),
+                _ => (
+                    T_SHARED_CHAT_SESSION_END,
+                    "Twitch Shared Chat Session End",
+                    "SharedChatSessionEnd",
+                ),
+            };
+            go(engine, code, name, "Twitch/Shared Chat", ev, &args);
         }
-        "channel.shared_chat.update" => {
+        "channel.chat.message_delete" => {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            engine.fire(
-                T_SHARED_CHAT_SESSION_UPDATE,
-                "Shared Chat Session Update",
-                "Twitch/Shared Chat",
-                "twitch",
+            event_user(&mut args, event, "target");
+            let id = es(event, "/message_id");
+            let text = SEEN.with_borrow(|s| s.messages.iter().find(|m| m.0 == id).map(|m| m.1.clone()));
+            args.insert("targetMessageId".into(), id.into());
+            args.insert("message".into(), text.unwrap_or_default().into());
+            go(
+                engine,
+                T_CHAT_MESSAGE_DELETED,
+                "Chat Message Deleted",
+                "Twitch/Moderation",
+                "ChatMessageDeleted",
                 &args,
-                |_| true,
             );
-            engine.emit("Twitch", "SharedChatSessionUpdate", || json!(args));
         }
-        "channel.shared_chat.end" => {
+        "channel.moderate" => {
+            // Only shared chat's: this channel's own come as their own events.
+            let source = es(event, "/source_broadcaster_user_id");
+            if source.is_empty() || source == broadcaster.user_id {
+                return;
+            }
+            let action = es(event, "/action");
+            let d = &event[action.replace("shared_chat_", "")];
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            engine.fire(
-                T_SHARED_CHAT_SESSION_END,
-                "Shared Chat Session End",
-                "Twitch/Shared Chat",
-                "twitch",
-                &args,
-                |_| true,
+            event_by(&mut args, event, "moderator", "createdBy");
+            event_by(&mut args, event, "source_broadcaster", "sourceBroadcaster");
+            populate_user_vars(
+                &mut args,
+                es(d, "/user_id"),
+                es(d, "/user_login"),
+                es(d, "/user_name"),
+                1,
+                false,
             );
-            engine.emit("Twitch", "SharedChatSessionEnd", || json!(args));
+            args.insert("reason".into(), d["reason"].clone());
+            args.insert("fromSharedChat".into(), true.into());
+            let (code, name, ev) = match action {
+                "shared_chat_ban" => (
+                    T_SHARED_CHAT_USER_BANNED,
+                    "Shared Chat User Banned",
+                    "SharedChatUserBanned",
+                ),
+                "shared_chat_timeout" => (
+                    T_SHARED_CHAT_USER_TIMED_OUT,
+                    "Shared Chat User Timed Out",
+                    "SharedChatUserTimedOut",
+                ),
+                "shared_chat_unban" => (
+                    T_SHARED_CHAT_USER_UNBANNED,
+                    "Shared Chat User Unbanned",
+                    "SharedChatUserUnbanned",
+                ),
+                "shared_chat_untimeout" => (
+                    T_SHARED_CHAT_USER_UNTIMED_OUT,
+                    "Shared Chat User Untimed Out",
+                    "SharedChatUserUntimedOut",
+                ),
+                "shared_chat_delete" => {
+                    args.insert("targetMessageId".into(), d["message_id"].clone());
+                    args.insert("message".into(), d["message_body"].clone());
+                    (
+                        T_SHARED_CHAT_MESSAGE_DELETED,
+                        "Shared Chat Message Deleted",
+                        "SharedChatMessageDeleted",
+                    )
+                }
+                _ => return,
+            };
+            if let Some(t) = d["expires_at"].as_str() {
+                args.insert("endsAt".into(), t.into());
+            }
+            go(engine, code, name, "Twitch/Shared Chat", ev, &args);
+        }
+        "automod.message.hold" | "automod.message.update" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            event_user(&mut args, event, "user");
+            let text = es(event, "/message/text");
+            commands::input_args(text, text, &mut args);
+            args.insert("messageId".into(), event["message_id"].clone());
+            args.insert("rawInput".into(), text.into());
+            args.insert("category".into(), event["automod"]["category"].clone());
+            args.insert("level".into(), event["automod"]["level"].clone());
+            args.insert("reason".into(), event["reason"].clone());
+            args.insert("heldAt".into(), event["held_at"].clone());
+            if sub_type.ends_with("hold") {
+                go(
+                    engine,
+                    T_AUTOMOD_MESSAGE_HELD,
+                    "AutoMod Message Held",
+                    "Twitch/Moderation",
+                    "AutomodMessageHeld",
+                    &args,
+                );
+            } else {
+                args.insert("status".into(), event["status"].clone());
+                event_moderator(&mut args, event);
+                go(
+                    engine,
+                    T_AUTOMOD_MESSAGE_UPDATED,
+                    "AutoMod Message Updated",
+                    "Twitch/Moderation",
+                    "AutomodMessageUpdated",
+                    &args,
+                );
+            }
+        }
+        "automod.terms.update" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            event_by(&mut args, event, "moderator", "moderator");
+            // Streamer.bot's names: moderatorUsername is the display name, moderatorDisplayName the login.
+            args.insert("moderatorUsername".into(), es(event, "/moderator_user_name").into());
+            args.insert("moderatorDisplayName".into(), es(event, "/moderator_user_login").into());
+            let terms = event["terms"].as_array().cloned().unwrap_or_default();
+            args.insert("termCount".into(), terms.len().into());
+            for (i, t) in terms.iter().enumerate() {
+                args.insert(format!("term.[{i}]"), t.clone());
+            }
+            args.insert(
+                "fromAutomod".into(),
+                event["from_automod"].as_bool().unwrap_or(false).into(),
+            );
+            args.insert("createdAt".into(), crate::fmt::date(&crate::fmt::now(), "o").into());
+            let (code, name, ev) = match es(event, "/action") {
+                "add_blocked" => (T_BLOCKED_TERMS_ADDED, "Blocked Terms Added", "BlockedTermsAdded"),
+                "remove_blocked" => (T_BLOCKED_TERMS_DELETED, "Blocked Terms Deleted", "BlockedTermsDeleted"),
+                "add_permitted" => (T_PERMITTED_TERMS_ADDED, "Permitted Terms Added", "PermittedTermsAdded"),
+                "remove_permitted" => (
+                    T_PERMITTED_TERMS_DELETED,
+                    "Permitted Terms Deleted",
+                    "PermittedTermsDeleted",
+                ),
+                _ => return,
+            };
+            go(engine, code, name, "Twitch/Moderation", ev, &args);
+        }
+        "channel.unban_request.create" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            event_user(&mut args, event, "user");
+            args.insert("requestId".into(), event["id"].clone());
+            args.insert("text".into(), event["text"].clone());
+            args.insert("createdAt".into(), event["created_at"].clone());
+            go(
+                engine,
+                T_UNBAN_REQUEST_CREATED,
+                "Unban Request Created",
+                "Twitch/Moderation",
+                "UnbanRequestCreated",
+                &args,
+            );
+        }
+        "channel.unban_request.resolve" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            event_user(&mut args, event, "user");
+            event_moderator(&mut args, event);
+            args.insert("requestId".into(), event["id"].clone());
+            args.insert("message".into(), event["resolution_text"].clone());
+            args.insert("createdAt".into(), crate::fmt::date(&crate::fmt::now(), "o").into());
+            if es(event, "/status") == "approved" {
+                go(
+                    engine,
+                    T_UNBAN_REQUEST_APPROVED,
+                    "Unban Request Approved",
+                    "Twitch/Moderation",
+                    "UnbanRequestApproved",
+                    &args,
+                );
+            } else {
+                go(
+                    engine,
+                    T_UNBAN_REQUEST_DENIED,
+                    "Unban Request Denied",
+                    "Twitch/Moderation",
+                    "UnbanRequestDenied",
+                    &args,
+                );
+            }
+        }
+        "channel.warning.send" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            event_user(&mut args, event, "user");
+            event_moderator(&mut args, event);
+            args.insert("reason".into(), event["reason"].clone());
+            go(
+                engine,
+                T_WARNED_USER,
+                "Warned User",
+                "Twitch/Moderation",
+                "WarnedUser",
+                &args,
+            );
+        }
+        "channel.warning.acknowledge" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            event_user(&mut args, event, "user");
+            go(
+                engine,
+                T_WARNING_ACKNOWLEDGED,
+                "Warning Acknowledged",
+                "Twitch/Moderation",
+                "WarningAcknowledged",
+                &args,
+            );
+        }
+        "channel.suspicious_user.update" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            event_user(&mut args, event, "user");
+            event_moderator(&mut args, event);
+            args.insert("lowTrustStatus".into(), event["low_trust_status"].clone());
+            go(
+                engine,
+                T_SUSPICIOUS_USER_UPDATE,
+                "Suspicious User Update",
+                "Twitch/Moderation",
+                "SuspiciousUserUpdate",
+                &args,
+            );
+        }
+        "channel.suspicious_user.message" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            event_user(&mut args, event, "user");
+            let text = es(event, "/message/text");
+            populate_chat_vars(
+                &mut args,
+                &ChatContext {
+                    text,
+                    msg_id: es(event, "/message/message_id"),
+                    ..Default::default()
+                },
+            );
+            args.insert("lowTrustStatus".into(), event["low_trust_status"].clone());
+            args.insert("banEvasionEvaluation".into(), event["ban_evasion_evaluation"].clone());
+            args.insert("sharedBanChannelIds".into(), event["shared_ban_channel_ids"].clone());
+            go(
+                engine,
+                T_SUSPICIOUS_USER_MESSAGE,
+                "Suspicious User Message",
+                "Twitch/Moderation",
+                "SuspiciousUserMessage",
+                &args,
+            );
+        }
+        "channel.channel_points_automatic_reward_redemption.add" => {
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            event_user(&mut args, event, "user");
+            let r = &event["reward"];
+            let kind = es(r, "/type");
+            args.insert("redemptionId".into(), event["id"].clone());
+            args.insert("rewardType".into(), kind.into());
+            args.insert("rewardCost".into(), r["channel_points"].clone());
+            args.insert("userInput".into(), event["message"]["text"].clone());
+            let (id, name) = (es(r, "/emote/id"), es(r, "/emote/name"));
+            if kind == "gigantify_an_emote" {
+                args.insert("gigantifiedEmoteId".into(), id.into());
+                args.insert("gigantifiedEmoteName".into(), name.into());
+                let url = format!("https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/3.0");
+                args.insert("gigantifiedEmoteUrl".into(), url.into());
+            } else if !id.is_empty() {
+                args.insert("unlockedEmoteId".into(), id.into());
+                args.insert("unlockedEmoteName".into(), name.into());
+            }
+            go(
+                engine,
+                T_AUTOMATIC_REWARD_REDEMPTION,
+                "Automatic Reward Redemption",
+                "Twitch/Channel Points",
+                "AutomaticRewardRedemption",
+                &args,
+            );
+        }
+        "channel.bits.use" => {
+            // Cheers come with the chat message; this is for power-ups.
+            if es(event, "/type") != "power_up" {
+                return;
+            }
+            let mut args = Obj::new();
+            populate_broadcaster_vars(&mut args, broadcaster);
+            event_user(&mut args, event, "user");
+            let p = &event["power_up"];
+            args.insert("bits".into(), event["bits"].clone());
+            args.insert("powerUpType".into(), p["type"].clone());
+            args.insert("emoteId".into(), p["emote"]["id"].clone());
+            args.insert("emoteName".into(), p["emote"]["name"].clone());
+            args.insert("messageEffectId".into(), p["message_effect_id"].clone());
+            args.insert("message".into(), event["message"]["text"].clone());
+            go(
+                engine,
+                T_POWER_UP_REDEMPTION,
+                "Power Up Redemption",
+                "Twitch/Channel Points",
+                "PowerUpRedemption",
+                &args,
+            );
         }
         _ => {}
+    }
+}
+
+/// A string field of an EventSub event ("" when missing).
+fn es<'a>(e: &'a Value, p: &str) -> &'a str {
+    e.pointer(p).and_then(Value::as_str).unwrap_or("")
+}
+
+/// Fire a Twitch trigger and send its WebSocket event, with the same arguments.
+fn go(engine: &Rc<Engine>, code: u32, name: &str, cat: &str, ev: &str, args: &Obj) {
+    engine.fire(code, name, cat, "twitch", args, |_| true);
+    engine.emit("Twitch", ev, || json!(args));
+}
+
+/// The event's `{who}_user_id/_login/_name` as the user arguments.
+fn event_user(args: &mut Obj, e: &Value, who: &str) {
+    let f = |k: &str| es(e, &format!("/{who}_user_{k}")).to_string();
+    populate_user_vars(args, &f("id"), &f("login"), &f("name"), 1, false);
+}
+
+/// The event's `{who}_user_*` as `{prefix}Id`, `{prefix}Username`, `{prefix}DisplayName` (createdBy,
+/// moderator...).
+fn event_by(args: &mut Obj, e: &Value, who: &str, prefix: &str) {
+    for (k, f) in [("Id", "id"), ("Username", "login"), ("DisplayName", "name")] {
+        args.insert(format!("{prefix}{k}"), es(e, &format!("/{who}_user_{f}")).into());
+    }
+}
+
+/// The moderator as Streamer.bot's `moderator.userName/login/id`.
+fn event_moderator(args: &mut Obj, e: &Value) {
+    for (k, f) in [("userName", "name"), ("login", "login"), ("id", "id")] {
+        args.insert(format!("moderator.{k}"), es(e, &format!("/moderator_user_{f}")).into());
+    }
+}
+
+/// "tier 1", "tier 2", "tier 3" or "prime".
+fn tier_name(tier: &str, prime: bool) -> &'static str {
+    match tier {
+        _ if prime => "prime",
+        "2000" => "tier 2",
+        "3000" => "tier 3",
+        _ => "tier 1",
+    }
+}
+
+/// A Twitch money amount (`value` in minor units, `decimal_places`) as `{key}.value/.valueMinor/.currency`.
+fn money(args: &mut Obj, key: &str, m: &Value) {
+    let minor = m["value"].as_i64().unwrap_or(0);
+    let places = m["decimal_places"].as_i64().unwrap_or(2) as i32;
+    args.insert(format!("{key}.value"), (minor as f64 / 10f64.powi(places)).into());
+    args.insert(format!("{key}.valueMinor"), minor.into());
+    args.insert(format!("{key}.currency"), m["currency"].clone());
+}
+
+/// A charity campaign event as `charity.*`.
+fn charity_args(args: &mut Obj, e: &Value) {
+    for (k, f) in [
+        ("id", "id"),
+        ("campaignId", "campaign_id"),
+        ("name", "charity_name"),
+        ("description", "charity_description"),
+        ("logo", "charity_logo"),
+        ("website", "charity_website"),
+        ("startedAt", "started_at"),
+        ("stoppedAt", "stopped_at"),
+    ] {
+        if let Some(v) = e.get(f) {
+            args.insert(format!("charity.{k}"), v.clone());
+        }
+    }
+    for (k, f) in [
+        ("currentAmount", "current_amount"),
+        ("targetAmount", "target_amount"),
+        ("amount", "amount"),
+    ] {
+        if e.get(f).is_some() {
+            money(args, &format!("charity.{k}"), &e[f]);
+        }
+    }
+}
+
+/// A hype train (EventSub v2) as Streamer.bot's arguments.
+fn hype_args(args: &mut Obj, e: &Value) {
+    let (level, total, progress, goal) = (
+        e["level"].as_u64().unwrap_or(1),
+        e["total"].as_u64().unwrap_or(0),
+        e["progress"].as_u64().unwrap_or(0),
+        e["goal"].as_u64().unwrap_or(0),
+    );
+    let pct = if goal > 0 { progress as f64 / goal as f64 } else { 0.0 };
+    let kind = es(e, "/type");
+    for (k, v) in [
+        ("id", e["id"].clone()),
+        ("level", level.into()),
+        ("total", total.into()),
+        ("progress", progress.into()),
+        ("goal", goal.into()),
+        ("percent", format!("{}%", (pct * 100.0).round()).into()),
+        ("percentDecimal", ((pct * 100.0).round() / 100.0).into()),
+        ("startedAt", e["started_at"].clone()),
+        ("trainType", kind.into()),
+        ("isGoldenKappaTrain", (kind == "golden_kappa").into()),
+        ("isTreasureTrain", (kind == "treasure").into()),
+        ("isSharedTrain", e["is_shared_train"].as_bool().unwrap_or(false).into()),
+        ("isInSharedChat", e["is_shared_train"].as_bool().unwrap_or(false).into()),
+        ("isSharedChatHost", false.into()),
+    ] {
+        args.insert(k.into(), v);
+    }
+    for (k, f) in [
+        ("expiresAt", "expires_at"),
+        ("endedAt", "ended_at"),
+        ("cooldownEndsAt", "cooldown_ends_at"),
+    ] {
+        if let Some(v) = e.get(f) {
+            args.insert(k.into(), v.clone());
+        }
+    }
+    if let (Some(a), Some(b)) = (e["started_at"].as_str(), e["expires_at"].as_str()) {
+        if let (Some(a), Some(b)) = (crate::engine::rest_parse_iso(a), crate::engine::rest_parse_iso(b)) {
+            args.insert("duration".into(), (b - a).into());
+        }
+    }
+    for (k, f) in [
+        ("allTimeHighLevel", "all_time_high_level"),
+        ("allTimeHighTotal", "all_time_high_total"),
+    ] {
+        if let Some(v) = e.get(f) {
+            args.insert(k.into(), v.clone());
+        }
+    }
+    for c in e["top_contributions"].as_array().into_iter().flatten() {
+        let t = format!("top.{}", c["type"].as_str().unwrap_or("other"));
+        for (k, f) in [
+            ("user", "user_name"),
+            ("userName", "user_login"),
+            ("userId", "user_id"),
+            ("total", "total"),
+        ] {
+            args.insert(format!("{t}.{k}"), c[f].clone());
+        }
+    }
+}
+
+/// Count `n` subs on the sub counter; at the rollover it starts again and Sub Counter Rollover fires.
+fn count_subs(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>, broadcaster: &TwitchAccount, n: u64) {
+    let rollover = cfg.borrow().twitch.sub_counter_rollover;
+    let get = |c: &Config, k: &str| c.counters.get(k).and_then(Value::as_u64).unwrap_or(0);
+    let mut hit = None;
+    engine.change(|c| {
+        let (mut count, mut times) = (get(c, "twitch:subCounter") + n, get(c, "twitch:subCounterRollovers"));
+        if rollover > 0 && count >= rollover {
+            count %= rollover;
+            times += 1;
+            hit = Some((count, times));
+        }
+        c.counters.insert("twitch:subCounter".into(), count.into());
+        c.counters.insert("twitch:subCounterRollovers".into(), times.into());
+    });
+    if let Some((count, times)) = hit {
+        let mut args = Obj::new();
+        populate_broadcaster_vars(&mut args, broadcaster);
+        args.insert("subCounter".into(), count.into());
+        args.insert("rollover".into(), rollover.into());
+        args.insert("rolloverCount".into(), times.into());
+        go(
+            engine,
+            T_SUB_COUNTER_ROLLOVER,
+            "Sub Counter Rollover",
+            "Twitch/Subscriptions",
+            "SubCounterRollover",
+            &args,
+        );
+    }
+}
+
+/// What the event stream remembers between events: the hype train's level, gift bombs (for each
+/// gift's subBombCount), the chat settings, title and game (for the Changed triggers and old*
+/// arguments), the custom rewards' settings, recent messages (for Chat Message Deleted) and the
+/// pyramid being built.
+#[derive(Default)]
+struct Seen {
+    hype_level: u64,
+    bombs: HashMap<String, u64>,
+    settings: Option<Value>,
+    title: String,
+    game: (String, String),
+    rewards: HashMap<String, Value>,
+    messages: std::collections::VecDeque<(String, String)>,
+    pyramid: Pyramid,
+    pyramids: HashMap<String, (u64, u64)>,
+}
+
+#[derive(Default)]
+struct Pyramid {
+    owner: Who,
+    word: String,
+    at: usize,
+    top: usize,
+    falling: bool,
+}
+
+thread_local!(static SEEN: RefCell<Seen> = RefCell::default());
+
+/// A user's id, login and display name.
+type Who = (String, String, String);
+
+/// Pyramids: one user sends "X", "X X", "X X X"... then back down to "X" (at least 3 wide). Another
+/// user's message in the middle breaks it. What happened, if anything: (success, owner, word, width).
+fn pyramid(user: (&str, &str, &str), text: &str) -> Option<(bool, Who, String, usize)> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let same = !words.is_empty() && words.iter().all(|w| *w == words[0]);
+    SEEN.with_borrow_mut(|s| {
+        let p = &mut s.pyramid;
+        let mine = p.at > 0 && p.owner.0 == user.0;
+        let mut out = None;
+        if p.at > 0 && !mine {
+            if p.top >= 2 {
+                out = Some((false, p.owner.clone(), p.word.clone(), p.top));
+            }
+            *p = Pyramid::default();
+        }
+        let n = words.len();
+        if p.at > 0 && same && words[0] == p.word {
+            if !p.falling && n == p.at + 1 {
+                p.at = n;
+                p.top = n;
+                return out;
+            }
+            if n + 1 == p.at && p.top >= 2 {
+                p.falling = true;
+                p.at = n;
+                if n == 1 {
+                    let done = (p.top >= 3).then(|| (true, p.owner.clone(), p.word.clone(), p.top));
+                    *p = Pyramid::default();
+                    return done.or(out);
+                }
+                return out;
+            }
+        }
+        *p = Pyramid::default();
+        if same && n == 1 {
+            *p = Pyramid {
+                owner: (user.0.into(), user.1.into(), user.2.into()),
+                word: words[0].into(),
+                at: 1,
+                top: 1,
+                falling: false,
+            };
+        }
+        out
+    })
+}
+
+/// Remember what later events compare against (chat settings, title and game, the custom rewards).
+async fn seed(engine: &Rc<Engine>) {
+    let Some(tw) = engine.twitch() else { return };
+    let b = vec![("broadcaster_id", "{broadcaster_id}")];
+    let settings = tw.helix("GET", "chat/settings", b.clone(), None, false, false).await;
+    let channel = tw.helix("GET", "channels", b.clone(), None, false, false).await;
+    let rewards = tw
+        .helix("GET", "channel_points/custom_rewards", b, None, false, false)
+        .await;
+    SEEN.with_borrow_mut(|s| {
+        if let Ok(v) = settings {
+            s.settings = Some(v["data"][0].clone());
+        }
+        if let Ok(v) = channel {
+            let c = &v["data"][0];
+            s.title = c["title"].as_str().unwrap_or("").into();
+            s.game = (
+                c["game_id"].as_str().unwrap_or("").into(),
+                c["game_name"].as_str().unwrap_or("").into(),
+            );
+        }
+        if let Ok(v) = rewards {
+            for r in v["data"].as_array().into_iter().flatten() {
+                s.rewards.insert(r["id"].as_str().unwrap_or("").into(), r.clone());
+            }
+        }
+    });
+}
+
+/// While connected: viewer count (every minute), present viewers (every 5) and the next ad (every
+/// minute, once 5 minutes before it), each only when an action uses its trigger and the stream is live.
+async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
+    let mut tick = tokio::time::interval(Duration::from_secs(60));
+    let (mut viewers, mut warned, mut n) = (None, String::new(), 0u64);
+    loop {
+        tick.tick().await;
+        n += 1;
+        let want = [T_VIEWER_COUNT_UPDATE, T_PRESENT_VIEWERS, T_UPCOMING_AD].map(|t| engine.uses_trigger(t));
+        let Some(tw) = engine.twitch().filter(|_| want.iter().any(|w| *w)) else {
+            continue;
+        };
+        let id = broadcaster.user_id.as_str();
+        let Ok(s) = tw
+            .helix("GET", "streams", vec![("user_id", id)], None, false, false)
+            .await
+        else {
+            continue;
+        };
+        let live = s["data"][0]["type"] == "live";
+        let mut args = Obj::new();
+        populate_broadcaster_vars(&mut args, &broadcaster);
+        if want[0] && live {
+            let count = s["data"][0]["viewer_count"].as_u64().unwrap_or(0);
+            if viewers != Some(count) {
+                viewers = Some(count);
+                let mut a = args.clone();
+                a.insert("viewerCount".into(), count.into());
+                go(
+                    &engine,
+                    T_VIEWER_COUNT_UPDATE,
+                    "Viewer Count Update",
+                    "Twitch/General",
+                    "ViewerCountUpdate",
+                    &a,
+                );
+            }
+        }
+        if want[1] && live && n % 5 == 1 {
+            let q = vec![("broadcaster_id", id), ("moderator_id", id), ("first", "1000")];
+            if let Ok(c) = tw.helix("GET", "chat/chatters", q, None, false, false).await {
+                let users: Vec<Value> = c["data"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|u| json!({"id": u["user_id"], "login": u["user_login"], "display": u["user_name"]}))
+                    .collect();
+                let mut a = args.clone();
+                a.insert("users".into(), users.into());
+                a.insert("isLive".into(), live.into());
+                a.insert("isTest".into(), false.into());
+                go(
+                    &engine,
+                    T_PRESENT_VIEWERS,
+                    "Present Viewers",
+                    "Twitch/General",
+                    "PresentViewers",
+                    &a,
+                );
+            }
+        }
+        if want[2] && live {
+            if let Ok(ad) = tw
+                .helix("GET", "channels/ads", vec![("broadcaster_id", id)], None, false, false)
+                .await
+            {
+                let d = &ad["data"][0];
+                let next = d["next_ad_at"].as_str().unwrap_or("");
+                let at = crate::engine::rest_parse_iso(next).unwrap_or(0);
+                let left = (at - crate::fmt::unix_now().as_secs() as i64) / 60;
+                if !next.is_empty() && (0..=5).contains(&left) && warned != next {
+                    warned = next.to_string();
+                    let mut a = args.clone();
+                    a.insert("minutes".into(), left.into());
+                    a.insert("nextAdAt".into(), next.into());
+                    a.insert("snoozesLeft".into(), d["snooze_count"].clone());
+                    a.insert("adLength".into(), d["duration"].clone());
+                    go(&engine, T_UPCOMING_AD, "Upcoming Ad", "Twitch/Ads", "UpcomingAd", &a);
+                }
+            }
+        }
     }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn events_fire_once_with_their_variables() {
+        use crate::engine::tests::{action, engine, log, run};
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        let watch: &[(u32, &str)] = &[
+            (T_SUB, "%tier% %isMultiMonth%"),
+            (T_SHARED_CHAT_SUB, "%sourceBroadcasterUsername%"),
+            (T_CHAT_MODE_EMOTE_ON, "%emoteMode%"),
+            (T_CHAT_MODE_SLOW_ON, "%slowModeWaitTime%"),
+            (T_CHAT_MODE_SLOW_CHANGED, "%slowModeWaitTime%"),
+            (
+                T_PYRAMID_SUCCESS,
+                "%pyramidWidth% %pyramidEmote% %user% %totalPyramids%",
+            ),
+            (T_PYRAMID_BROKEN, "%pyramidOwnerUsername% %userName%"),
+            (T_HYPE_TRAIN_LEVEL_UP, "%prevLevel% %level% %percent% %top.bits.user%"),
+            (T_BLOCKED_TERMS_ADDED, "%termCount% %term.[0]%"),
+            (T_USER_BANNED, "%createdByUsername%"),
+            (T_STREAM_UPDATE, "%oldStatus%>%status% %statusUpdate% %gameUpdate%"),
+            (T_SUB_COUNTER_ROLLOVER, "%subCounter% %rollover% %rolloverCount%"),
+        ];
+        let actions: Vec<Value> = watch
+            .iter()
+            .map(|(code, vars)| {
+                let mut a = action(&code.to_string(), "a", json!([log(&format!("T {code} {vars}"))]));
+                a["triggers"] = json!([{"id": "t", "type": code, "enabled": true}]);
+                a
+            })
+            .collect();
+        let e = engine(json!({ "actions": actions }));
+        let mut c = Config::default();
+        c.twitch.sub_counter_rollover = 2;
+        let cfg = Arc::new(watch::channel(c).0);
+        let b = TwitchAccount {
+            user_id: "1".into(),
+            login: "me".into(),
+            ..Default::default()
+        };
+        let out = run(async move {
+            let mut seen = HashSet::new();
+            let mut go = |kind: &str, v: Value| handle_notification(&e, &b, &cfg, &mut seen, kind, &v);
+            let note = |t: &str, d: Value| json!({"notice_type": t, "chatter_user_id": "5", "chatter_user_login": "ann", t: d});
+            go(
+                "channel.chat.notification",
+                note("sub", json!({"sub_tier": "2000", "duration_months": 3})),
+            );
+            let mut shared = note("shared_chat_sub", json!({"sub_tier": "1000"}));
+            shared["source_broadcaster_user_login"] = "other".into();
+            go("channel.chat.notification", shared);
+            go(
+                "channel.chat.notification",
+                note("resub", json!({"sub_tier": "1000", "cumulative_months": 4})),
+            );
+            let settings =
+                |slow: u64| json!({"emote_mode": true, "slow_mode": slow > 0, "slow_mode_wait_time_seconds": slow});
+            go("channel.chat_settings.update", settings(0));
+            go("channel.chat_settings.update", settings(30));
+            go("channel.chat_settings.update", settings(60));
+            go("channel.chat_settings.update", settings(60));
+            let say = |id: &str, text: &str| {
+                json!({"chatter_user_id": id, "chatter_user_login": format!("u{id}"), "chatter_user_name": id,
+                    "message_id": "m", "message": {"text": text}})
+            };
+            for t in ["Kappa", "Kappa Kappa", "Kappa Kappa Kappa", "Kappa Kappa", "Kappa"] {
+                go("channel.chat.message", say("7", t));
+            }
+            go("channel.chat.message", say("7", "LUL"));
+            go("channel.chat.message", say("7", "LUL LUL"));
+            go("channel.chat.message", say("8", "nope"));
+            let train = |level: u64| {
+                json!({"level": level, "progress": 40, "goal": 100, "type": "regular",
+                    "top_contributions": [{"type": "bits", "user_name": "Bitsy", "user_login": "bitsy", "user_id": "9", "total": 500}]})
+            };
+            go("channel.hype_train.begin", train(1));
+            go("channel.hype_train.progress", train(1));
+            go("channel.hype_train.progress", train(2));
+            go(
+                "automod.terms.update",
+                json!({"action": "add_blocked", "terms": ["badword"], "moderator_user_login": "mod"}),
+            );
+            go(
+                "channel.ban",
+                json!({"user_id": "4", "is_permanent": true, "moderator_user_login": "boss"}),
+            );
+            SEEN.with_borrow_mut(|s| s.title = "old".into());
+            go("channel.update", json!({"title": "new", "category_id": ""}));
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+        let want = [
+            "T 103 tier 2 True",
+            "T 486 other",
+            "T 451 True",
+            "T 456 30",
+            "T 458 30",
+            "T 458 60",
+            "T 162 3 Kappa 7 1",
+            "T 163 u7 u8",
+            "T 110 1 2 40% Bitsy",
+            "T 465 1 badword",
+            "T 137 boss",
+            "T 118 old>new True False",
+            "T 121 0 2 1",
+        ];
+        for w in want {
+            assert_eq!(out.iter().filter(|x| *x == w).count(), 1, "{w} once: {out:?}");
+        }
+        assert_eq!(out.len(), want.len(), "nothing else: {out:?}");
+    }
 
     #[test]
     fn refresh_timing() {
