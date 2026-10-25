@@ -183,13 +183,13 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Triggers** (131)
 
-- [x] ads: Ad Mid-Roll
+- [ ] ads: Ad Mid-Roll (no type code in Streamer.bot 1.0.7, and no EventSub event for it)
 - [x] ads: Ad Run
 - [x] ads: Upcoming Ad
 - [x] channel-goal: Goal Begin
 - [x] channel-goal: Goal End
 - [x] channel-goal: Goal Progress
-- [x] channel-power-ups: Custom Power Up Redemption
+- [ ] channel-power-ups: Custom Power Up Redemption (not in EventSub; the other power-ups come from `channel.bits.use`)
 - [x] channel-reward: Automatic Reward Redemption
 - [x] channel-reward: Reward Redemption Updated
 - [x] channel-reward: Reward Redemption
@@ -218,11 +218,11 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] chat/mode: Subscriber Mode On
 - [x] chat/mode: Unique Mode Off
 - [x] chat/mode: Unique Mode On
-- [x] chat: Modiversary
-- [x] chat: Watch Streak
+- [ ] chat: Modiversary (an IRC notice only; streamerz reads chat through EventSub)
+- [ ] chat: Watch Streak (an IRC notice only; streamerz reads chat through EventSub)
 - [x] chat: Whispers
-- [x] community-goal: Community Goal Contribution
-- [x] community-goal: Community Goal Ended
+- [ ] community-goal: Community Goal Contribution (PubSub only, which Twitch shut down; no EventSub or Helix)
+- [ ] community-goal: Community Goal Ended (PubSub only, which Twitch shut down; no EventSub or Helix)
 - [x] connections: Bot Chat Connected
 - [x] connections: Bot Chat Disconnected
 - [x] connections: Broadcaster Authenticated
@@ -293,7 +293,7 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] shared-chat: Shared Community Sub Gift
 - [x] shared-chat: Shared Gift Paid Upgrade
 - [x] shared-chat: Shared Chat Message Deleted
-- [x] shared-chat: Shared Modiversary
+- [ ] shared-chat: Shared Modiversary (an IRC notice only)
 - [x] shared-chat: Shared Pay It Forward
 - [x] shared-chat: Shared Prime Paid Upgrade
 - [x] shared-chat: Shared Resub

@@ -156,7 +156,7 @@ fn list(v: Option<&Value>) -> Vec<String> {
 }
 
 /// A Helix poll as Streamer.bot's poll.* arguments.
-fn poll_args(p: &Value, args: &mut Obj) {
+pub(crate) fn poll_args(p: &Value, args: &mut Obj) {
     let now = crate::fmt::unix_now().as_secs() as i64;
     let started = p["started_at"].as_str().and_then(parse_iso).unwrap_or(now);
     let duration = p["duration"].as_i64().unwrap_or(0);
@@ -194,7 +194,7 @@ fn poll_args(p: &Value, args: &mut Obj) {
 }
 
 /// A Helix prediction as Streamer.bot's prediction.* arguments.
-fn prediction_args(p: &Value, args: &mut Obj) {
+pub(crate) fn prediction_args(p: &Value, args: &mut Obj) {
     args.insert("active".into(), (p["status"] == "ACTIVE").into());
     for (k, f) in [
         ("Id", "id"),
@@ -2200,18 +2200,16 @@ impl Engine {
                 }
             }
             // Get Twitch Sub Counter Count (551) / Set Twitch Sub Counter Count (552)
-            // ponytail: a plain persisted count (no rollover setting yet); subs add to it.
+            // Twitch subs, resubs and gifted subs add to it (twitch.rs `count_subs`).
             551 => {
-                let c = self
-                    .cfg
-                    .borrow()
-                    .counters
-                    .get("twitch:subCounter")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0);
-                ctx.args.insert("subCounter.count".into(), c.into());
-                ctx.args.insert("subCounter.rollover".into(), 0.into());
-                ctx.args.insert("subCounter.rolloverCount".into(), 0.into());
+                let c = self.cfg.borrow();
+                let get = |k: &str| c.counters.get(k).and_then(Value::as_i64).unwrap_or(0);
+                let (count, times) = (get("twitch:subCounter"), get("twitch:subCounterRollovers"));
+                let rollover = c.twitch.sub_counter_rollover;
+                drop(c);
+                ctx.args.insert("subCounter.count".into(), count.into());
+                ctx.args.insert("subCounter.rollover".into(), rollover.into());
+                ctx.args.insert("subCounter.rolloverCount".into(), times.into());
             }
             552 => {
                 let v = self.expand(ctx, s(o, "value")).trim().parse::<i64>();

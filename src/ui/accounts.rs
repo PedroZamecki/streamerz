@@ -54,8 +54,10 @@ impl P {
                     } else {
                         crate::twitch::BROADCASTER_SCOPES
                     };
+                    if a.token.access_token.is_empty() {
+                        format!("{} (login expired: log in again)", a.display_name)
                     // Logged in before streamerz asked for more: some sub-actions would fail.
-                    if want.iter().any(|w| !a.token.scope.iter().any(|g| g == w)) {
+                    } else if want.iter().any(|w| !a.token.scope.iter().any(|g| g == w)) {
                         format!("{} (log in again: new permissions)", a.display_name)
                     } else {
                         a.display_name.clone()
@@ -427,7 +429,7 @@ pub fn tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
         let auto = CheckButton::default().with_label("Connect on start");
         top.fixed(&auto, 140);
         let connect = button(&mut top, "Connect", 100);
-        if matches!(p, P::YouTube | P::Kick) {
+        if matches!(p, P::Twitch | P::YouTube | P::Kick) {
             let mut adv = button(&mut top, "Advanced…", 100);
             let cfg = cfg.clone();
             adv.set_callback(move |_| advanced(&cfg, p));
@@ -669,7 +671,12 @@ fn advanced(cfg: &Cfg, p: P) {
     let c = cfg.borrow();
     // (label, value, secret)
     let fields: Vec<(&str, String, bool)> = match p {
-        P::Twitch | P::TikTok => return,
+        P::TikTok => return,
+        P::Twitch => vec![(
+            "Sub counter rollover (0: never)",
+            c.twitch.sub_counter_rollover.to_string(),
+            false,
+        )],
         P::Kick => vec![
             ("Client ID", c.kick.client_id.clone(), false),
             ("Client secret", c.kick.client_secret.clone(), true),
@@ -689,7 +696,10 @@ fn advanced(cfg: &Cfg, p: P) {
         P::YouTube => "Sending on YouTube needs your own Google client: console.cloud.google.com > new project > \
              enable YouTube Data API v3 > OAuth consent screen (External, Publish) > Credentials > OAuth client, Desktop app. \
              Leave Video ID empty to follow the channel's current live.".into(),
-        P::Twitch | P::TikTok => String::new(),
+        P::Twitch => "The sub counter counts every sub, resub and gifted sub (Get/Set Twitch Sub Counter \
+            Count). Every time it reaches the rollover it starts again and Sub Counter Rollover fires."
+            .into(),
+        P::TikTok => String::new(),
     };
     drop(c);
     let h = 132 + fields.len() as i32 * (ROW + 6);
@@ -746,7 +756,8 @@ fn advanced(cfg: &Cfg, p: P) {
             c.youtube.client_id.clone_from(&v[1]);
             c.youtube.client_secret.clone_from(&v[2]);
         }
-        P::Twitch | P::TikTok => {}
+        P::Twitch => c.twitch.sub_counter_rollover = v[0].parse().unwrap_or(0),
+        P::TikTok => {}
     });
 }
 

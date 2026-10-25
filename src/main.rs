@@ -5,6 +5,7 @@ mod commands;
 pub mod decks;
 pub mod donations;
 mod edit;
+mod emote_events;
 pub mod engine;
 pub mod fileio;
 mod fmt;
