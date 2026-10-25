@@ -53,6 +53,7 @@ pub const BROADCASTER_SCOPES: &[&str] = &[
     "channel:manage:broadcast",
     "clips:edit",
     "moderation:read",
+    "channel:moderate",
     "moderator:manage:banned_users",
     "moderator:read:banned_users",
     "moderator:manage:chat_messages",
@@ -167,7 +168,6 @@ pub const T_PYRAMID_BROKEN: u32 = 163;
 pub const T_GUEST_STAR_SESSION_BEGIN: u32 = 165;
 pub const T_GUEST_STAR_SESSION_END: u32 = 166;
 pub const T_GUEST_STAR_GUEST_UPDATE: u32 = 167;
-pub const T_GUEST_STAR_SLOT_UPDATE: u32 = 168;
 pub const T_GUEST_STAR_SETTINGS_UPDATE: u32 = 169;
 pub const T_SEVEN_TV_EMOTE_ADDED: u32 = 180;
 pub const T_SEVEN_TV_EMOTE_REMOVED: u32 = 181;
@@ -1454,9 +1454,9 @@ async fn create_all_subscriptions(sid: &str, token: &str, bid: &str) {
         ("channel.prediction.progress", "1", json!({"broadcaster_user_id": bid})),
         ("channel.prediction.lock", "1", json!({"broadcaster_user_id": bid})),
         ("channel.prediction.end", "1", json!({"broadcaster_user_id": bid})),
-        ("channel.hype_train.begin", "1", json!({"broadcaster_user_id": bid})),
-        ("channel.hype_train.progress", "1", json!({"broadcaster_user_id": bid})),
-        ("channel.hype_train.end", "1", json!({"broadcaster_user_id": bid})),
+        ("channel.hype_train.begin", "2", json!({"broadcaster_user_id": bid})),
+        ("channel.hype_train.progress", "2", json!({"broadcaster_user_id": bid})),
+        ("channel.hype_train.end", "2", json!({"broadcaster_user_id": bid})),
         ("channel.goal.begin", "1", json!({"broadcaster_user_id": bid})),
         ("channel.goal.progress", "1", json!({"broadcaster_user_id": bid})),
         ("channel.goal.end", "1", json!({"broadcaster_user_id": bid})),
@@ -1501,7 +1501,7 @@ async fn create_all_subscriptions(sid: &str, token: &str, bid: &str) {
         (
             "channel.chat_settings.update",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "user_id": bid}),
         ),
         (
             "channel.charity_campaign.donate",
@@ -1535,11 +1535,6 @@ async fn create_all_subscriptions(sid: &str, token: &str, bid: &str) {
         ),
         (
             "channel.guest_star_guest.update",
-            "beta",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
-        ),
-        (
-            "channel.guest_star_slot.update",
             "beta",
             json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
         ),
@@ -2927,19 +2922,6 @@ fn handle_notification(
                 |_| true,
             );
             engine.emit("Twitch", "GuestStarGuestUpdate", || json!(args));
-        }
-        "channel.guest_star_slot.update" => {
-            let mut args = Obj::new();
-            populate_broadcaster_vars(&mut args, broadcaster);
-            engine.fire(
-                T_GUEST_STAR_SLOT_UPDATE,
-                "Guest Star Slot Update",
-                "Twitch/Guest Star",
-                "twitch",
-                &args,
-                |_| true,
-            );
-            engine.emit("Twitch", "GuestStarSlotUpdate", || json!(args));
         }
         "channel.guest_star_settings.update" => {
             let mut args = Obj::new();
