@@ -304,35 +304,50 @@ async fn avatar(e: &Rc<Engine>, cfg: &Cfg, p: P, bot: bool) -> Option<String> {
     v?.as_str().filter(|u| u.starts_with("http")).map(str::to_string)
 }
 
-/// The account's profile picture, `size` px and round; looked up (once) when not known yet.
+/// The account's profile picture, `size` px and round. Its URL is kept in the cache: used at once,
+/// looked up again (in the background) when older than a day or not known yet.
 fn picture(cmds: &Cmds, cfg: &Cfg, p: P, bot: bool, name: &str, size: i32) -> Option<fltk::image::RgbImage> {
+    const FRESH: u64 = 24 * 60 * 60;
     let key = format!("{}:{bot}:{name}", p.name());
     let mut a = AVATARS.lock().ok()?;
-    match a.iter().find(|(k, _)| *k == key) {
-        Some((_, url)) => {
-            let url = url.clone();
-            drop(a);
-            super::img::get(cmds, &url, size, true).map(|p| p.first())
-        }
+    let url = match a.iter().find(|(k, _)| *k == key) {
+        Some((_, url)) => url.clone(),
         None => {
-            a.push((key.clone(), String::new()));
-            let cfg = cfg.clone();
-            tell(cmds, move |e| {
-                let e = e.clone();
-                tokio::task::spawn_local(async move {
-                    if let Some(url) = avatar(&e, &cfg, p, bot).await {
+            let now = crate::fmt::unix_now().as_secs();
+            let saved = super::img::saved("avatars").map(|v| v.1).unwrap_or_default();
+            let (url, at) = (
+                saved[&key][0].as_str().unwrap_or("").to_string(),
+                saved[&key][1].as_u64().unwrap_or(0),
+            );
+            a.push((key.clone(), url.clone()));
+            if now.saturating_sub(at) >= FRESH {
+                let cfg = cfg.clone();
+                tell(cmds, move |e| {
+                    let e = e.clone();
+                    tokio::task::spawn_local(async move {
+                        let Some(url) = avatar(&e, &cfg, p, bot).await else {
+                            return;
+                        };
                         if let Ok(mut a) = AVATARS.lock() {
                             if let Some(slot) = a.iter_mut().find(|(k, _)| *k == key) {
-                                slot.1 = url;
+                                slot.1.clone_from(&url);
                             }
                         }
+                        let mut all = super::img::saved("avatars").map(|v| v.1).unwrap_or_default();
+                        if !all.is_object() {
+                            all = serde_json::json!({});
+                        }
+                        all[&key] = serde_json::json!([url, crate::fmt::unix_now().as_secs()]);
+                        super::img::save("avatars", &all);
                         super::wake(super::Msg::Image);
-                    }
+                    });
                 });
-            });
-            None
+            }
+            url
         }
-    }
+    };
+    drop(a);
+    super::img::get(cmds, &url, size, true).map(|p| p.first())
 }
 
 /// Connect platform `i` (Twitch, YouTube, Kick, TikTok) now.

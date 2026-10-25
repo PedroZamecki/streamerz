@@ -76,10 +76,65 @@ pub static ARRIVED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUs
 /// Downloads at a time (opening the emoji picker asks for a few hundred pictures).
 static FETCHING: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(6);
 
+fn dir() -> PathBuf {
+    crate::config_path().with_file_name("cache")
+}
+
 fn path(url: &str) -> PathBuf {
     let h = Sha256::digest(url.as_bytes());
     let name: String = h[..12].iter().map(|b| format!("{b:02x}")).collect();
-    crate::config_path().with_file_name("cache").join(name)
+    dir().join(name)
+}
+
+/// What was saved as `name` in the cache (emote lists, picture URLs...), and how many seconds ago.
+pub fn saved(name: &str) -> Option<(u64, serde_json::Value)> {
+    let file = dir().join(format!("{name}.json"));
+    let age = file
+        .metadata()
+        .ok()?
+        .modified()
+        .ok()?
+        .elapsed()
+        .map_or(0, |d| d.as_secs());
+    Some((age, serde_json::from_slice(&std::fs::read(file).ok()?).ok()?))
+}
+
+/// Save `v` as `name` in the cache (whole or nothing).
+pub fn save(name: &str, v: &serde_json::Value) {
+    let file = dir().join(format!("{name}.json"));
+    let tmp = file.with_extension("part");
+    let _ = std::fs::create_dir_all(dir());
+    let _ = std::fs::write(&tmp, v.to_string()).and_then(|()| std::fs::rename(&tmp, &file));
+}
+
+/// The pictures kept at most, in bytes; past it the least recently used go.
+const KEEP_BYTES: u64 = 50 * 1024 * 1024;
+
+/// Drop the least recently used pictures (by modified time: a picture shown is touched) until the
+/// pictures take at most `keep` bytes. The saved lists (`.json`) stay.
+fn prune(dir: &std::path::Path, keep: u64) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = rd
+        .flatten()
+        .filter(|e| e.path().extension().is_none())
+        .filter_map(|e| {
+            let m = e.metadata().ok()?;
+            Some((m.modified().ok()?, m.len(), e.path()))
+        })
+        .collect();
+    let mut total: u64 = files.iter().map(|f| f.1).sum();
+    if total <= keep {
+        return;
+    }
+    files.sort_unstable_by_key(|f| f.0);
+    for (_, len, p) in files {
+        if total <= keep {
+            break;
+        }
+        if std::fs::remove_file(&p).is_ok() {
+            total -= len;
+        }
+    }
 }
 
 /// The picture at `url`, `h` px high (round for profile pictures). None until it's on disk: then
@@ -94,6 +149,10 @@ pub fn get(cmds: &UnboundedSender<UiCmd>, url: &str, h: i32, round: bool) -> Opt
     }
     let file = path(url);
     let Ok(bytes) = std::fs::read(&file) else {
+        // The first download of a run, then every 200th, keeps the folder in size.
+        if ASKED.with_borrow(HashSet::is_empty) {
+            prune(&dir(), KEEP_BYTES);
+        }
         if ASKED.with_borrow_mut(|a| a.insert(url.to_string())) {
             let url = url.to_string();
             tell(cmds, move |_| {
@@ -108,7 +167,10 @@ pub fn get(cmds: &UnboundedSender<UiCmd>, url: &str, h: i32, round: bool) -> Opt
                                 .and_then(|()| std::fs::rename(&tmp, &file))
                                 .is_ok()
                             {
-                                ARRIVED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                let n = ARRIVED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                if n % 200 == 199 {
+                                    prune(&dir(), KEEP_BYTES);
+                                }
                                 super::wake(Msg::Image);
                             }
                         }
@@ -119,6 +181,11 @@ pub fn get(cmds: &UnboundedSender<UiCmd>, url: &str, h: i32, round: bool) -> Opt
         }
         return None;
     };
+    // Shown: recently used, so pruning keeps it.
+    let _ = std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .and_then(|f| f.set_modified(std::time::SystemTime::now()));
     let frames: Vec<_> = decode(&bytes).into_iter().map(|(i, d)| (fit(i, h, round), d)).collect();
     let pic = (!frames.is_empty()).then(|| Pic {
         total: frames.iter().map(|f| f.1).sum(),
@@ -320,6 +387,33 @@ mod tests {
         let i = RgbImage::new(&px, 2, 2, ColorDepth::Rgba8).unwrap();
         let s = shrink(&i, 1, 1);
         assert_eq!(s.to_rgb_data(), [255, 0, 0, 127], "pure red, half see-through");
+    }
+
+    #[test]
+    fn prunes_least_recently_used_pictures() {
+        let d = std::env::temp_dir().join(format!("szprune{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let now = std::time::SystemTime::now();
+        for (i, name) in ["old", "mid", "new"].iter().enumerate() {
+            let f = d.join(name);
+            std::fs::write(&f, [0u8; 100]).unwrap();
+            let t = now - std::time::Duration::from_secs(300 - i as u64 * 100);
+            std::fs::File::options()
+                .write(true)
+                .open(&f)
+                .unwrap()
+                .set_modified(t)
+                .unwrap();
+        }
+        std::fs::write(d.join("list.json"), [0u8; 500]).unwrap();
+        prune(&d, 200);
+        let left: Vec<bool> = ["old", "mid", "new", "list.json"]
+            .iter()
+            .map(|n| d.join(n).exists())
+            .collect();
+        assert_eq!(left, [false, true, true, true]);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

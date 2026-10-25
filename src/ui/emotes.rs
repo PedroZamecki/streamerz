@@ -1,6 +1,6 @@
 //! What chat shows as pictures besides the platforms' own emotes: Unicode emoji (as Twemoji's
 //! pictures, CC-BY 4.0) and the channels' third-party emotes (BTTV, FFZ and 7TV for Twitch, 7TV for
-//! Kick), loaded once a run, when the chat tab first shows.
+//! Kick), loaded once a run when the chat tab first shows, and kept in the cache for a day.
 
 use super::{tell, Msg};
 use crate::engine::UiCmd;
@@ -149,64 +149,100 @@ fn seventv(set: &Value, x: u8, into: &mut HashMap<String, String>) {
     }
 }
 
+/// How long saved emote lists are used before they're fetched again (in the background).
+const FRESH: u64 = 24 * 60 * 60;
+
+/// Put the lists in, and lay the lines shown out again (like when a picture arrives).
+fn set(tw: HashMap<String, String>, kick: HashMap<String, String>) {
+    if let Ok(mut t) = THIRD.lock() {
+        *t = [Some(tw), Some(kick)];
+    }
+    super::wake(Msg::Image);
+}
+
 /// Load the third-party emotes (once a run) for the Twitch channel `twitch_id` and the Kick user
-/// `kick_id` (either may be empty); the chat lays its lines out again when they're in.
+/// `kick_id` (either may be empty): the saved lists at once, fetched again when older than a day.
 pub fn load(cmds: &UnboundedSender<UiCmd>, twitch_id: String, kick_id: String) {
     if LOADING.swap(true, Ordering::Relaxed) {
         return;
     }
     // 2x on scaled screens (sharp), else 1x (an animated 2x can be megabytes).
     let x: u8 = if fltk::app::screen_scale(0) > 1.25 { 2 } else { 1 };
+    let name = format!("emotes-{twitch_id}-{kick_id}-{x}x");
+    let map = |v: &Value| -> HashMap<String, String> {
+        v.as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(k, u)| Some((k.clone(), u.as_str()?.to_string())))
+            .collect()
+    };
+    let fresh = match super::img::saved(&name) {
+        Some((age, v)) => {
+            set(map(&v["twitch"]), map(&v["kick"]));
+            age < FRESH
+        }
+        None => false,
+    };
+    if fresh {
+        return;
+    }
     tell(cmds, move |_| {
         tokio::task::spawn_local(async move {
-            let mut global = HashMap::new();
-            let f = get("https://api.frankerfacez.com/v1/set/global").await;
-            ffz(&f["sets"], x, &mut global);
-            bttv(
-                &get("https://api.betterttv.net/3/cached/emotes/global").await,
-                x,
-                &mut global,
-            );
-            let seven = get("https://7tv.io/v3/emote-sets/global").await;
-            seventv(&seven, x, &mut global);
-            let mut tw = global.clone();
-            if !twitch_id.is_empty() {
-                ffz(
-                    &get(&format!("https://api.frankerfacez.com/v1/room/id/{twitch_id}")).await["sets"],
-                    x,
-                    &mut tw,
-                );
-                let b = get(&format!("https://api.betterttv.net/3/cached/users/twitch/{twitch_id}")).await;
-                bttv(&b["channelEmotes"], x, &mut tw);
-                bttv(&b["sharedEmotes"], x, &mut tw);
-                seventv(
-                    &get(&format!("https://7tv.io/v3/users/twitch/{twitch_id}")).await["emote_set"],
-                    x,
-                    &mut tw,
-                );
-            }
-            // BTTV and FFZ are Twitch only; 7TV's global set works on Kick too.
-            let mut kick = HashMap::new();
-            seventv(&seven, x, &mut kick);
-            if !kick_id.is_empty() {
-                seventv(
-                    &get(&format!("https://7tv.io/v3/users/kick/{kick_id}")).await["emote_set"],
-                    x,
-                    &mut kick,
-                );
+            let (tw, kick) = fetch(&twitch_id, &kick_id, x).await;
+            // Nothing came (offline): keep what was saved.
+            if tw.is_empty() && kick.is_empty() {
+                return;
             }
             crate::say(format!(
                 "Chat: {} Twitch and {} Kick third-party emotes",
                 tw.len(),
                 kick.len()
             ));
-            if let Ok(mut t) = THIRD.lock() {
-                *t = [Some(tw), Some(kick)];
-            }
-            // Lines already shown get laid out again, like when a picture arrives.
-            super::wake(Msg::Image);
+            super::img::save(&name, &serde_json::json!({"twitch": tw, "kick": kick}));
+            set(tw, kick);
         });
     });
+}
+
+/// The channels' third-party emotes, from BTTV, FFZ and 7TV.
+async fn fetch(twitch_id: &str, kick_id: &str, x: u8) -> (HashMap<String, String>, HashMap<String, String>) {
+    let mut global = HashMap::new();
+    let f = get("https://api.frankerfacez.com/v1/set/global").await;
+    ffz(&f["sets"], x, &mut global);
+    bttv(
+        &get("https://api.betterttv.net/3/cached/emotes/global").await,
+        x,
+        &mut global,
+    );
+    let seven = get("https://7tv.io/v3/emote-sets/global").await;
+    seventv(&seven, x, &mut global);
+    let mut tw = global.clone();
+    if !twitch_id.is_empty() {
+        ffz(
+            &get(&format!("https://api.frankerfacez.com/v1/room/id/{twitch_id}")).await["sets"],
+            x,
+            &mut tw,
+        );
+        let b = get(&format!("https://api.betterttv.net/3/cached/users/twitch/{twitch_id}")).await;
+        bttv(&b["channelEmotes"], x, &mut tw);
+        bttv(&b["sharedEmotes"], x, &mut tw);
+        seventv(
+            &get(&format!("https://7tv.io/v3/users/twitch/{twitch_id}")).await["emote_set"],
+            x,
+            &mut tw,
+        );
+    }
+    // BTTV and FFZ are Twitch only; 7TV's global set works on Kick too.
+    let mut kick = HashMap::new();
+    seventv(&seven, x, &mut kick);
+    if !kick_id.is_empty() {
+        seventv(
+            &get(&format!("https://7tv.io/v3/users/kick/{kick_id}")).await["emote_set"],
+            x,
+            &mut kick,
+        );
+    }
+    (tw, kick)
 }
 
 #[cfg(test)]
