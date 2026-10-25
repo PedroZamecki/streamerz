@@ -726,6 +726,23 @@ impl Runner {
                     });
                     crate::say(format!("Twitch: refreshed the {who} token"));
                 }
+                // A refresh token is good once: refused, it never works again. Forget it so nothing
+                // retries it (every start and every Twitch sub-action did) and Accounts says so.
+                Err(e) if e.contains("Invalid refresh token") => {
+                    self.engine.change(move |c| {
+                        let a = if bot {
+                            &mut c.twitch.bot
+                        } else {
+                            &mut c.twitch.broadcaster
+                        };
+                        if let Some(a) = a {
+                            a.token = TwitchToken::default();
+                        }
+                    });
+                    crate::say(format!(
+                        "Twitch: the {who} login expired for good; log in again in Accounts"
+                    ));
+                }
                 Err(e) => crate::say(format!("Twitch: can't refresh the {who} token ({e}); log in again")),
             }
         }
@@ -869,6 +886,10 @@ impl Runner {
         let (broadcaster, bot, url) = {
             let c = self.cfg.borrow();
             let b = match &c.twitch.broadcaster {
+                Some(b) if b.token.access_token.is_empty() => {
+                    crate::say("Twitch connect: the broadcaster has to log in again (Accounts)".into());
+                    return;
+                }
                 Some(b) => b.clone(),
                 None => {
                     crate::say("Twitch connect: no broadcaster account configured".into());
@@ -884,6 +905,7 @@ impl Runner {
             (b, bot, u)
         };
 
+        SUBS_URL.with_borrow_mut(|s| *s = subs_url(&url));
         crate::say(format!("Connecting to Twitch EventSub at {url}..."));
         let ws = match crate::http::ws_connect(&url).await {
             Ok((ws, _)) => ws,
@@ -1652,9 +1674,27 @@ async fn create_all_subscriptions(sid: &str, token: &str, bid: &str) {
     }
 }
 
+thread_local! {
+    /// Where subscriptions are made: Helix, or the mock server when `eventsub_url` points to one
+    /// (the Twitch CLI's `twitch event websocket start-server`: ws://127.0.0.1:PORT/ws).
+    static SUBS_URL: RefCell<String> = RefCell::new(format!("{HELIX_URL}/eventsub/subscriptions"));
+}
+
+/// The subscriptions endpoint that goes with an EventSub WebSocket URL.
+fn subs_url(ws: &str) -> String {
+    match ws.strip_prefix("ws://").or_else(|| ws.strip_prefix("wss://")) {
+        Some(rest) if ws != DEFAULT_EVENTSUB_URL => {
+            let host = rest.split('/').next().unwrap_or(rest);
+            let scheme = if ws.starts_with("wss") { "https" } else { "http" };
+            format!("{scheme}://{host}/eventsub/subscriptions")
+        }
+        _ => format!("{HELIX_URL}/eventsub/subscriptions"),
+    }
+}
+
 /// False when the token was refused: every other subscription would be too.
 async fn create_sub(sid: &str, token: &str, sub_type: &str, version: &str, condition: Value) -> bool {
-    let url = format!("{HELIX_URL}/eventsub/subscriptions");
+    let url = SUBS_URL.with_borrow(Clone::clone);
     let headers = vec![
         ("Client-Id".into(), CLIENT_ID.into()),
         ("Authorization".into(), format!("Bearer {token}")),
@@ -3309,9 +3349,15 @@ fn go(engine: &Rc<Engine>, code: u32, name: &str, cat: &str, ev: &str, args: &Ob
     engine.emit("Twitch", ev, || json!(args));
 }
 
-/// The event's `{who}_user_id/_login/_name` as the user arguments.
+/// The event's `user_*` (or `{who}_user_*`) as the user arguments.
 fn event_user(args: &mut Obj, e: &Value, who: &str) {
-    let f = |k: &str| es(e, &format!("/{who}_user_{k}")).to_string();
+    // The user is `user_id`; the others are `target_user_id`, `moderator_user_id`...
+    let pre = if who == "user" {
+        String::new()
+    } else {
+        format!("{who}_")
+    };
+    let f = |k: &str| es(e, &format!("/{pre}user_{k}")).to_string();
     populate_user_vars(args, &f("id"), &f("login"), &f("name"), 1, false);
 }
 

@@ -734,3 +734,21 @@ The second number is CPU ticks (1/100 s) used in 30 s idle. The tray can be togg
 magick icon_streamerz.png -define icon:auto-resize=64,48,32,16 icon_streamerz.ico
 magick icon_streamerz.png -resize 64x64 -depth 8 rgba:src/icon.rgba
 ```
+
+## Twitch events without a Twitch login (Twitch CLI mock)
+
+The [Twitch CLI](https://dev.twitch.tv/docs/cli/) runs a mock EventSub WebSocket; streamerz sends its
+subscriptions there too when `twitch.eventsubUrl` points at it.
+
+1. A throwaway folder with a copy of the binary and a `streamerz.json` holding a fake broadcaster
+   (`"twitch": {"autoConnect": true, "eventsubUrl": "ws://127.0.0.1:8099/ws", "broadcaster": {"userId":
+   "5555", "login": "tester", "token": {"accessToken": "fake"}}}`) and one action per trigger, each a Log
+   sub-action with the variables to check.
+2. `twitch event websocket start-server -p 8099` (not `-S`: CLI 1.1.24 refuses the newer subscription
+   types, e.g. `channel.chat.message`, that real Twitch takes).
+3. Start streamerz there, then `twitch event trigger channel.ban --transport=websocket --to-user 5555` for
+   each event (`--from-user 5555` for a raid sent). The log shows what fired, with its variables.
+
+The CLI can't send chat messages or chat notifications (subs, gifts, incoming raids, cheers come that
+way); `twitch::tests::events_fire_once_with_their_variables` covers those. Whether Twitch takes each
+subscription needs a real login: run with the real config and look for `Create sub` lines.

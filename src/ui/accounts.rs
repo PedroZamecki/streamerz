@@ -54,8 +54,10 @@ impl P {
                     } else {
                         crate::twitch::BROADCASTER_SCOPES
                     };
+                    if a.token.access_token.is_empty() {
+                        format!("{} (login expired: log in again)", a.display_name)
                     // Logged in before streamerz asked for more: some sub-actions would fail.
-                    if want.iter().any(|w| !a.token.scope.iter().any(|g| g == w)) {
+                    } else if want.iter().any(|w| !a.token.scope.iter().any(|g| g == w)) {
                         format!("{} (log in again: new permissions)", a.display_name)
                     } else {
                         a.display_name.clone()
