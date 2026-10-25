@@ -143,6 +143,8 @@ pub async fn run(e: Rc<Engine>) {
             }
             last = Some(now);
         }
+        // Opt-in: listens only while a Hotkey Press (or Mouse Click) trigger is used.
+        e.hotkeys_sync();
         if rx.changed().await.is_err() {
             return;
         }

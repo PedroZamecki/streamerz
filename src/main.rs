@@ -9,6 +9,7 @@ mod emote_events;
 pub mod engine;
 pub mod fileio;
 mod fmt;
+pub mod hotkeys;
 pub mod http;
 pub mod inputs;
 pub mod kick;

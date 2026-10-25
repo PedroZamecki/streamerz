@@ -49,6 +49,8 @@ pub enum W {
     Map,
     /// A list of texts, one per line.
     Lines,
+    /// A key combination, captured: SharpHook's key code here, its modifier mask in `modifierMask`.
+    Keys,
 }
 
 use W::*;
@@ -964,8 +966,8 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
             ("channel", "Channel", Int),
             ("status", "Status / Type", Text),
         ],
-        16001 => &[("key", "Key", Text), ("modifiers", "Modifiers", Int)],
-        16002 => &[("button", "Button", Text)],
+        16001 => &[("keyCode", "Keys", Keys)],
+        16002 => &[],
         705 => &[("actionName", "Action Name", Text)],
         17001 => &[("buttonId", "Button ID", Text)],
         17002 => &[("device", "Device", Text)],
@@ -1106,6 +1108,7 @@ enum Widget {
     Name(InputChoice),
     Map(MultilineInput),
     Lines(MultilineInput),
+    Keys(Rc<Cell<(i64, i64)>>),
 }
 
 /// The form's answer.
@@ -1250,6 +1253,30 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
                 i.set_value(&lines.join("\n"));
                 Widget::Lines(i)
             }
+            Keys => {
+                let n = |k: &str| o.get(k).and_then(Value::as_i64).unwrap_or(0);
+                let combo = Rc::new(Cell::new((n("keyCode"), n("modifierMask"))));
+                let mut b = fltk::button::Button::default();
+                let show = |b: &mut fltk::button::Button, (k, m): (i64, i64)| {
+                    b.set_label(&if k == 0 {
+                        "Press to set the keys…".to_string()
+                    } else {
+                        crate::hotkeys::label(k, m).replace('&', "&&").replace('@', "@@")
+                    });
+                };
+                show(&mut b, combo.get());
+                b.set_tooltip("Click, then press the key combination");
+                b.set_callback({
+                    let combo = combo.clone();
+                    move |b| {
+                        if let Some(c) = super::dialogs::capture_keys() {
+                            combo.set(c);
+                            show(b, c);
+                        }
+                    }
+                });
+                Widget::Keys(combo)
+            }
             Bool | Bit(_) => unreachable!(),
         };
         r.end();
@@ -1355,6 +1382,15 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
                         .collect(),
                 ),
                 Widget::Lines(i) => i.value().lines().map(Value::from).collect(),
+                Widget::Keys(c) => {
+                    let (k, m) = c.get();
+                    if k == 0 {
+                        dialog::alert_default("Keys: click it and press the key combination.");
+                        return false;
+                    }
+                    out.insert("modifierMask".into(), m.into());
+                    k.into()
+                }
             };
             match out.get_mut(*key) {
                 Some(x) => *x = v,

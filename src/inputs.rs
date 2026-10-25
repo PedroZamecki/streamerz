@@ -13,14 +13,10 @@
 //! - 301: SpeechToTextDictation
 //! - 302: SpeechToTextCommand
 //! - 15001: MidiMessage
-//! - 16001: InputKeyPress
-//! - 16002: InputMouseClick
 
 pub const T_SPEECH_DICTATION: u32 = 301;
 pub const T_SPEECH_COMMAND: u32 = 302;
 pub const T_MIDI_MESSAGE: u32 = 15001;
-pub const T_INPUT_KEY_PRESS: u32 = 16001;
-pub const T_INPUT_MOUSE_CLICK: u32 = 16002;
 
 pub const S_KEYBOARD_PRESS: u32 = 1012;
 pub const S_SET_VOICE_COMMAND: u32 = 1018;

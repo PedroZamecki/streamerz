@@ -276,7 +276,7 @@ platform handles through channels, never through shared locks held across awaits
 - [x] 31. Connections: the status bar counts every connection that's set up (platforms, OBS, Streamlabs
   Desktop, donations...); clicking it shows each one's state (connecting, connected, failed and why) with a
   retry button and a link to its settings.
-- [ ] 32. Hotkeys: Hotkey Press triggers through the desktop's Global Shortcuts portal on Linux (no sudo, no
+- [x] 32. Hotkeys: Hotkey Press triggers through the desktop's Global Shortcuts portal on Linux (no sudo, no
   input group: the desktop asks the user) and RegisterHotKey on Windows; mouse clicks on Windows only (on
   Linux only the input group could see them, which lets any program read every key); "press the keys" to
   set a trigger's shortcut.
