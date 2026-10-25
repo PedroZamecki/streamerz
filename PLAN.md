@@ -247,7 +247,16 @@ platform handles through channels, never through shared locks held across awaits
   chatters, thank follows, subscriptions, gifted subs, cheers/Super Chats, TikTok gifts, raid welcome and
   shoutout, OBS scene on raid, socials and hydrate timers, `!lurk` and `!discord`. Ordinary actions (one per
   platform where they send differently), commands and timers in a "Templates" group.
-- [ ] 27. Output variables: every sub-action sets all the variables the docs list (about 60 are missing some).
+- [x] 27a. Twitch triggers: about 45 triggers that never fired now do (Hype Train Level Up, Pyramids, AutoMod,
+  blocked/permitted terms, unban requests, warnings, suspicious users, automatic rewards, power-ups, Prime/gift
+  upgrades, Pay It Forward, Bits badge tier, shared chat notices/bans/deletes, Viewer Count, Present Viewers,
+  Upcoming Ad, Sub Counter Rollover, BTTV/7TV emote changes), with every documented variable. Subs, resubs,
+  gift bombs, raids and cheers fired twice (chat notifications and their own subscriptions): now once. Chat
+  mode triggers fire only on a change. Polled ones (viewers, present viewers, next ad) poll only while live
+  and an action uses them; BTTV/7TV sockets open only for their triggers. New scopes: blocked terms, moderators,
+  VIPs (log in again). Not deliverable without IRC/PubSub: Watch Streak, Modiversary, community goals.
+- [ ] 27b. The same for YouTube (16 triggers never fire), Kick, OBS, core and the integrations; sub-action
+  output variables (OBS group children, remote `instanceVersion`).
 - [ ] 28. Points: Streamer.bot's Points sub-actions and triggers.
 - [ ] 29. Quotes, credits, users and first words.
 - [ ] 30. TikTok triggers and sub-actions beyond chat, gifts, likes and follows (viewers, top gifters, live
