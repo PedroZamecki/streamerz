@@ -192,7 +192,12 @@ fn webp(b: &[u8]) -> Option<Vec<(RgbImage, u32)>> {
 
 /// Resized to `h` high (in screen pixels, so it's sharp on scaled screens), cut round if asked.
 fn fit(i: RgbImage, h: i32, round: bool) -> RgbImage {
-    let scale = fltk::app::screen_scale(0).max(1.0);
+    fit_at(i, h, round, fltk::app::screen_scale(0))
+}
+
+/// `fit` for a screen scaled by `scale`.
+fn fit_at(i: RgbImage, h: i32, round: bool, scale: f32) -> RgbImage {
+    let scale = scale.max(1.0);
     let ph = (h as f32 * scale).ceil() as i32;
     let pw = (i.data_w() * ph / i.data_h().max(1)).max(1);
     let w = (pw as f32 / scale).round() as i32;
@@ -233,8 +238,8 @@ mod tests {
         let i = &decode(&webp)[0].0;
         assert_eq!((i.data_w(), i.data_h()), (1, 1));
         let svg = include_bytes!("../../assets/icons/kick.svg");
-        let r = fit(decode(svg).remove(0).0, 8, true);
-        assert_eq!((r.w(), r.h()), (8, 8));
+        let r = fit_at(decode(svg).remove(0).0, 8, true, 2.0);
+        assert_eq!((r.w(), r.h(), r.data_w()), (8, 8, 16));
         let d = r.to_rgb_data();
         assert_eq!(d[3], 0, "corner cut away");
         assert!(decode(b"not a picture").is_empty());
