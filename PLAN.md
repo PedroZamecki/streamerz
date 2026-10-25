@@ -243,9 +243,10 @@ platform handles through channels, never through shared locks held across awaits
   drawing). The picker shows pictures: emotes seen, third-party ones, every emoji by group. GIFs show their
   first frame (FLTK's animated GIF doesn't give out frames; BTTV/FFZ/7TV are asked for WebP); TikTok's
   subscriber emotes stay text until a live with them can be checked.
-- [ ] 26. Ready-made actions: "New from template" (nothing created by itself): welcome first chatters, thank
-  follows/subs/raids (with a shoutout), cheers and gifts, TikTok gifts, socials and hydrate timers, `!lurk`,
-  OBS scene on raid.
+- [x] 26. Ready-made actions: Actions > Templates (nothing created by itself), in `templates.rs`: welcome first
+  chatters, thank follows, subscriptions, gifted subs, cheers/Super Chats, TikTok gifts, raid welcome and
+  shoutout, OBS scene on raid, socials and hydrate timers, `!lurk` and `!discord`. Ordinary actions (one per
+  platform where they send differently), commands and timers in a "Templates" group.
 - [ ] 27. Output variables: every sub-action sets all the variables the docs list (about 60 are missing some).
 - [ ] 28. Points: Streamer.bot's Points sub-actions and triggers.
 - [ ] 29. Quotes, credits, users and first words.

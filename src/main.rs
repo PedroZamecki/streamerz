@@ -19,6 +19,7 @@ pub mod remote;
 mod secrets;
 pub mod servers;
 mod slobs;
+mod templates;
 pub mod tiktok;
 #[cfg(windows)]
 mod tiktok_web;
