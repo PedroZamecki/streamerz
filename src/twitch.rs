@@ -990,25 +990,35 @@ impl Runner {
         let token = &broadcaster.token.access_token;
         let from_id = &broadcaster.user_id;
 
-        // Resolve target user
-        let target = fetch_user(CLIENT_ID, token, Some(target_login)).await?;
-        let to_id = &target.user_id;
-
-        let url = format!("{HELIX_URL}/raids?from_broadcaster_id={from_id}&to_broadcaster_id={to_id}");
+        // Resolve target user (and their picture, for the raid triggers)
+        let url = format!("{HELIX_URL}/users?login={}", commands::url_encode(target_login));
         let headers = vec![
             ("Client-Id".into(), CLIENT_ID.into()),
             ("Authorization".into(), format!("Bearer {token}")),
         ];
+        let r = crate::http::request("GET", &url, &headers, b"").await?;
+        let user = serde_json::from_slice::<Value>(&r.body).unwrap_or_default()["data"][0].clone();
+        let to_id = user["id"]
+            .as_str()
+            .ok_or_else(|| format!("no Twitch user {target_login}"))?;
+
+        let url = format!("{HELIX_URL}/raids?from_broadcaster_id={from_id}&to_broadcaster_id={to_id}");
         let res = crate::http::request("POST", &url, &headers, b"").await?;
         if res.status == 200 || res.status == 204 {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            args.insert("raidUser".into(), target.display_name.into());
-            args.insert("raidUserName".into(), target.login.into());
-            args.insert("raidUserId".into(), target.user_id.into());
-            self.engine
-                .fire(T_RAID_START, "Raid Start", "Twitch/Raid", "twitch", &args, |_| true);
-            self.engine.emit("Twitch", "RaidStart", || json!(args));
+            let raided = raid_target(&user);
+            args.extend(raided.clone());
+            // Raid Send and Raid Cancelled say who too.
+            SEEN.with_borrow_mut(|s| s.raid = Some(raided));
+            go(
+                &self.engine,
+                T_RAID_START,
+                "Raid Start",
+                "Twitch/Raid",
+                "RaidStart",
+                &args,
+            );
             Ok(true)
         } else {
             crate::say(format!("Start raid failed: HTTP {} {}", res.status, res.text()));
@@ -1031,6 +1041,7 @@ impl Runner {
         if res.status == 200 || res.status == 204 {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
+            args.extend(SEEN.with_borrow_mut(|s| s.raid.take()).unwrap_or_default());
             self.engine.fire(
                 T_RAID_CANCELLED,
                 "Raid Cancelled",
@@ -1976,6 +1987,21 @@ fn handle_notification(
                         "GiftSub",
                         &args,
                     );
+                    let who = [
+                        &d["recipient_user_name"],
+                        &d["recipient_user_login"],
+                        &d["recipient_user_id"],
+                    ]
+                    .map(Clone::clone);
+                    let complete = SEEN.with_borrow_mut(|s| {
+                        s.pending.get_mut(&bomb).is_some_and(|p| {
+                            p.3.push(who);
+                            p.3.len() as u64 >= p.2
+                        })
+                    });
+                    if complete {
+                        gift_bomb(engine, &bomb);
+                    }
                 }
                 "community_sub_gift" => {
                     let total = d["total"].as_u64().unwrap_or(1);
@@ -1991,7 +2017,15 @@ fn handle_notification(
                     args.insert("totalGiftsShared".into(), d["cumulative_total"].is_u64().into());
                     args.insert("bonusGifts".into(), false.into());
                     let code = pick(T_GIFT_BOMB, T_SHARED_CHAT_COMMUNITY_SUB_GIFT);
-                    go(engine, code, "Gift Bomb", "Twitch/Subscriptions", "GiftBomb", &args);
+                    // It fires once its gifts have come (each a sub_gift), to list who got them; or
+                    // after 5 seconds with those that came.
+                    let id = es(d, "/id").to_string();
+                    SEEN.with_borrow_mut(|s| s.pending.insert(id.clone(), (code, args, total, Vec::new())));
+                    let engine = engine.clone();
+                    tokio::task::spawn_local(async move {
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        gift_bomb(&engine, &id);
+                    });
                 }
                 "gift_paid_upgrade" => {
                     gifter(&mut args);
@@ -2079,7 +2113,27 @@ fn handle_notification(
             args.insert("raidUserName".into(), es(event, "/to_broadcaster_user_login").into());
             args.insert("raidUserId".into(), es(event, "/to_broadcaster_user_id").into());
             args.insert("viewers".into(), event["viewers"].as_u64().unwrap_or(0).into());
-            go(engine, T_RAID_SEND, "Raid Send", "Twitch/Raid", "RaidSend", &args);
+            let to = es(event, "/to_broadcaster_user_id").to_string();
+            let known = SEEN
+                .with_borrow_mut(|s| s.raid.take())
+                .filter(|r| r["raidUserId"] == to.as_str());
+            let engine = engine.clone();
+            // The raided channel's picture: from Raid Start, else looked up.
+            tokio::task::spawn_local(async move {
+                let raided = match known {
+                    Some(r) => r,
+                    None => match engine.twitch() {
+                        Some(tw) => tw
+                            .helix("GET", "users", vec![("id", to.as_str())], None, false, false)
+                            .await
+                            .map(|v| raid_target(&v["data"][0]))
+                            .unwrap_or_default(),
+                        None => Obj::new(),
+                    },
+                };
+                args.extend(raided);
+                go(&engine, T_RAID_SEND, "Raid Send", "Twitch/Raid", "RaidSend", &args);
+            });
         }
         "stream.online" => {
             if cfg.borrow().twitch.first_words_auto_reset {
@@ -3432,6 +3486,40 @@ struct Seen {
     messages: std::collections::VecDeque<(String, String)>,
     pyramid: Pyramid,
     pyramids: HashMap<String, (u64, u64)>,
+    raid: Option<Obj>,
+    pending: HashMap<String, Bomb>,
+}
+
+/// A gift bomb waiting for its gifts: trigger, arguments, how many, recipients so far.
+type Bomb = (u32, Obj, u64, Vec<[Value; 3]>);
+
+/// Fire a waiting gift bomb (if it's still waiting) with its recipients as `gift.recipient*#`.
+fn gift_bomb(engine: &Rc<Engine>, id: &str) {
+    let Some((code, mut args, _, who)) = SEEN.with_borrow_mut(|s| s.pending.remove(id)) else {
+        return;
+    };
+    for (i, [name, login, uid]) in who.into_iter().enumerate() {
+        args.insert(format!("gift.recipientUser{i}"), name);
+        args.insert(format!("gift.recipientUserName{i}"), login);
+        args.insert(format!("gift.recipientId{i}"), uid);
+    }
+    go(engine, code, "Gift Bomb", "Twitch/Subscriptions", "GiftBomb", &args);
+}
+
+/// A Helix user as the raid triggers' raidUser* arguments.
+fn raid_target(u: &Value) -> Obj {
+    let pic = u["profile_image_url"].as_str().unwrap_or("");
+    let mut a = Obj::new();
+    for (k, v) in [
+        ("raidUser", u["display_name"].clone()),
+        ("raidUserName", u["login"].clone()),
+        ("raidUserId", u["id"].clone()),
+        ("raidUserProfileImageURL", pic.into()),
+        ("raidUserProfileImageEscaped", commands::escape(pic).into()),
+    ] {
+        a.insert(k.into(), v);
+    }
+    a
 }
 
 #[derive(Default)]
@@ -3632,6 +3720,8 @@ pub(crate) mod tests {
             (T_USER_BANNED, "%createdByUsername%"),
             (T_STREAM_UPDATE, "%oldStatus%>%status% %statusUpdate% %gameUpdate%"),
             (T_SUB_COUNTER_ROLLOVER, "%subCounter% %rollover% %rolloverCount%"),
+            (T_GIFT_BOMB, "%gifts% %gift.recipientUser0% %gift.recipientUser1%"),
+            (T_GIFT_SUB, "%recipientUser% %subBombCount% %fromGiftBomb%"),
         ];
         let actions: Vec<Value> = watch
             .iter()
@@ -3667,6 +3757,14 @@ pub(crate) mod tests {
             );
             let settings =
                 |slow: u64| json!({"emote_mode": true, "slow_mode": slow > 0, "slow_mode_wait_time_seconds": slow});
+            go(
+                "channel.chat.notification",
+                note("community_sub_gift", json!({"id": "b1", "total": 2})),
+            );
+            for r in ["R1", "R2"] {
+                let gift = json!({"recipient_user_name": r, "community_gift_id": "b1"});
+                go("channel.chat.notification", note("sub_gift", gift));
+            }
             go("channel.chat_settings.update", settings(0));
             go("channel.chat_settings.update", settings(30));
             go("channel.chat_settings.update", settings(60));
@@ -3714,6 +3812,10 @@ pub(crate) mod tests {
             "T 137 boss",
             "T 118 old>new True False",
             "T 121 0 2 1",
+            "T 121 0 2 2",
+            "T 106 2 R1 R2",
+            "T 105 R1 2 True",
+            "T 105 R2 2 True",
         ];
         for w in want {
             assert_eq!(out.iter().filter(|x| *x == w).count(), 1, "{w} once: {out:?}");
