@@ -503,14 +503,14 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Triggers** (24)
 
-- [x] broadcast: Broadcast Added
+- [ ] broadcast: Broadcast Added (Data API scheduled broadcasts: not watched)
 - [x] broadcast: Broadcast Ended
 - [x] broadcast: Broadcast Monitoring Ended
 - [x] broadcast: Broadcast Monitoring Started
-- [x] broadcast: Broadcast Removed
+- [ ] broadcast: Broadcast Removed (Data API scheduled broadcasts: not watched)
 - [x] broadcast: Broadcast Started
 - [x] broadcast: Statistics Updated
-- [x] broadcast: Broadcast Updated
+- [ ] broadcast: Broadcast Updated (Data API scheduled broadcasts: not watched)
 - [x] chat: First Words
 - [x] chat: Jewels Gifted
 - [x] chat: Message
@@ -522,7 +522,7 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] general: Sponsor Only Ended
 - [x] general: Sponsor Only Started
 - [x] general: User Banned
-- [x] general: User Timed Out
+- [ ] general: User Timed Out (InnerTube shows a removal, not a ban or timeout: User Banned fires with banType unknown)
 - [x] membership: Gift Membership Received
 - [x] membership: Membership Gift
 - [x] membership: Member Milestone
@@ -581,20 +581,20 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] Shop Order
 - [x] Subscription
 
-**Triggers: streamelements** (4)
+**Triggers: streamelements** (4) (only through a webhook nothing sends: needs its socket.io client, phase 27c)
 
-- [x] Connected
-- [x] Disconnected
-- [x] Merch
-- [x] Tip
+- [ ] Connected
+- [ ] Disconnected
+- [ ] Merch
+- [ ] Tip
 
-**Triggers: streamlabs** (5)
+**Triggers: streamlabs** (5) (only through a webhook nothing sends: needs its socket.io client, phase 27c)
 
-- [x] Charity Donation
-- [x] Connected
-- [x] Disconnected
-- [x] Donation
-- [x] Merchandise
+- [ ] Charity Donation
+- [ ] Connected
+- [ ] Disconnected
+- [ ] Donation
+- [ ] Merchandise
 
 **Triggers: patreon** (5)
 

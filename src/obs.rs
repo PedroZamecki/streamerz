@@ -495,6 +495,9 @@ async fn run_conn_loop(
                             let op = v.get("op").and_then(Value::as_u64).unwrap_or(99);
                             if op == OP_HELLO {
                                 let d = v.get("d").cloned().unwrap_or(json!({}));
+                                let ws = d["obsWebSocketVersion"].as_str().unwrap_or("").to_string();
+                                let studio = d["obsStudioVersion"].as_str().unwrap_or("").to_string();
+                                SEEN.with_borrow_mut(|m| m.entry(info.id.clone()).or_default().0 = (studio, ws));
                                 let auth_obj = d.get("authentication");
                                 let identify_data = if let Some(auth) = auth_obj {
                                     let salt = auth.get("salt").and_then(Value::as_str).unwrap_or("");
@@ -527,9 +530,7 @@ async fn run_conn_loop(
                                     info.name, info.id
                                 ));
 
-                                let mut args = Obj::new();
-                                args.insert("connectionId".into(), info.id.clone().into());
-                                args.insert("connectionName".into(), info.name.clone().into());
+                                let args = obs_args(&info);
                                 engine.fire(T_OBS_CONNECTED, "ObsConnected", "OBS Studio", "obs", &args, |t| {
                                     field_matches(t, "connectionId", &info.id)
                                 });
@@ -644,10 +645,33 @@ async fn run_conn_loop(
     }
 }
 
+/// A connection's (OBS Studio version, obs-websocket version), and its program scene.
+type Seen = ((String, String), String);
+
+thread_local! {
+    static SEEN: std::cell::RefCell<HashMap<String, Seen>> = Default::default();
+}
+
+/// Streamer.bot's obs.* variables for a connection (and the old names streamerz used).
+fn obs_args(info: &ObsConnInfo) -> Obj {
+    let ((studio, ws), _) = SEEN.with_borrow(|m| m.get(&info.id).cloned().unwrap_or_default());
+    let mut a = Obj::new();
+    for (k, v) in [
+        ("obs.id", info.id.clone()),
+        ("obs.name", info.name.clone()),
+        ("obs.host", format!("{}:{}", info.host, info.port)),
+        ("obs.studioVersion", studio),
+        ("obs.websocketVersion", ws),
+        ("connectionId", info.id.clone()),
+        ("connectionName", info.name.clone()),
+    ] {
+        a.insert(k.into(), v.into());
+    }
+    a
+}
+
 fn fire_disconnected(engine: &Rc<Engine>, info: &ObsConnInfo) {
-    let mut args = Obj::new();
-    args.insert("connectionId".into(), info.id.clone().into());
-    args.insert("connectionName".into(), info.name.clone().into());
+    let args = obs_args(info);
     engine.fire(T_OBS_DISCONNECTED, "ObsDisconnected", "OBS Studio", "obs", &args, |t| {
         field_matches(t, "connectionId", &info.id)
     });
@@ -676,14 +700,14 @@ fn handle_obs_message(
             let event_type = d.get("eventType").and_then(Value::as_str).unwrap_or("");
             let event_data = d.get("eventData").and_then(Value::as_object);
 
-            let mut args = Obj::new();
-            args.insert("connectionId".into(), info.id.clone().into());
-            args.insert("connectionName".into(), info.name.clone().into());
+            let mut args = obs_args(info);
             args.insert("eventType".into(), event_type.to_string().into());
+            args.insert("obsEvent.eventType".into(), event_type.to_string().into());
 
             if let Some(data) = event_data {
                 for (k, val) in data {
                     args.insert(k.clone(), val.clone());
+                    args.insert(format!("obsEvent.{k}"), val.clone());
                 }
             }
 
@@ -706,6 +730,11 @@ fn handle_obs_message(
                     let info_id = info.id.clone();
                     let scene_clone = scene_name.clone();
                     let mut scene_args = args.clone();
+                    let old = SEEN.with_borrow_mut(|m| {
+                        std::mem::replace(&mut m.entry(info.id.clone()).or_default().1, scene_name.clone())
+                    });
+                    scene_args.insert("obs.sceneName".into(), scene_name.clone().into());
+                    scene_args.insert("obs.oldSceneName".into(), old.into());
                     scene_args.insert("sceneName".into(), scene_name.into());
                     engine.fire(
                         T_OBS_SCENE_CHANGED,
@@ -720,10 +749,15 @@ fn handle_obs_message(
                     engine.emit("ObsStudio", "SceneChanged", || json!(scene_args));
                 }
                 "StreamStateChanged" => {
-                    let active = d
-                        .pointer("/eventData/outputActive")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false);
+                    // Starting and stopping are their own states (outputActive false while starting).
+                    let state = d
+                        .pointer("/eventData/outputState")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    if state != "OBS_WEBSOCKET_OUTPUT_STARTED" && state != "OBS_WEBSOCKET_OUTPUT_STOPPED" {
+                        return;
+                    }
+                    let active = state == "OBS_WEBSOCKET_OUTPUT_STARTED";
                     let info_id = info.id.clone();
                     if active {
                         engine.fire(
@@ -748,10 +782,15 @@ fn handle_obs_message(
                     }
                 }
                 "RecordStateChanged" => {
-                    let active = d
-                        .pointer("/eventData/outputActive")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false);
+                    // Starting and stopping are their own states (outputActive false while starting).
+                    let state = d
+                        .pointer("/eventData/outputState")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    if state != "OBS_WEBSOCKET_OUTPUT_STARTED" && state != "OBS_WEBSOCKET_OUTPUT_STOPPED" {
+                        return;
+                    }
+                    let active = state == "OBS_WEBSOCKET_OUTPUT_STARTED";
                     let info_id = info.id.clone();
                     if active {
                         engine.fire(
@@ -787,6 +826,9 @@ fn handle_obs_message(
                         .unwrap_or("")
                         .to_string();
                     let info_id = info.id.clone();
+                    let mut args = args.clone();
+                    args.insert("obsVendorEvent.vendor".into(), vendor_name.clone().into());
+                    args.insert("obsVendorEvent.event".into(), v_ev_type.clone().into());
                     let vendor_clone = vendor_name.clone();
                     let v_type_clone = v_ev_type.clone();
                     engine.fire(
@@ -937,6 +979,64 @@ mod tests {
                 let _ = task.await;
             })
             .await;
+    }
+
+    #[test]
+    fn stream_states_and_scene_variables() {
+        use crate::engine::tests::{action, engine, log, run};
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        let watch: &[(u32, &str)] = &[
+            (T_OBS_STREAMING_STARTED, "started %obs.name% %obs.host%"),
+            (T_OBS_STREAMING_STOPPED, "stopped"),
+            (T_OBS_SCENE_CHANGED, "%obs.oldSceneName%>%obs.sceneName%"),
+        ];
+        let actions: Vec<Value> = watch
+            .iter()
+            .map(|(code, vars)| {
+                let mut a = action(&code.to_string(), "a", json!([log(&format!("T {vars}"))]));
+                a["triggers"] = json!([{"id": "t", "type": code, "enabled": true}]);
+                a
+            })
+            .collect();
+        let e = engine(json!({ "actions": actions }));
+        let info = ObsConnInfo {
+            id: "c".into(),
+            name: "Main".into(),
+            host: "127.0.0.1".into(),
+            port: 4455,
+            password: String::new(),
+            auto_connect: false,
+            reconnect: false,
+            retry_interval: 0,
+            version: 5,
+        };
+        let out = run(async move {
+            let (mut p, mut b) = (HashMap::new(), HashMap::new());
+            let ev = |t: &str, d: Value| json!({"op": OP_EVENT, "d": {"eventType": t, "eventData": d}}).to_string();
+            for (state, active) in [
+                ("STARTING", false),
+                ("STARTED", true),
+                ("STOPPING", true),
+                ("STOPPED", false),
+            ] {
+                let d = json!({"outputActive": active, "outputState": format!("OBS_WEBSOCKET_OUTPUT_{state}")});
+                handle_obs_message(&e, &info, &ev("StreamStateChanged", d), &mut p, &mut b);
+            }
+            for scene in ["Intro", "Game"] {
+                handle_obs_message(
+                    &e,
+                    &info,
+                    &ev("CurrentProgramSceneChanged", json!({"sceneName": scene})),
+                    &mut p,
+                    &mut b,
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+        assert_eq!(
+            out,
+            ["T started Main 127.0.0.1:4455", "T stopped", "T >Intro", "T Intro>Game"]
+        );
     }
 
     #[tokio::test]

@@ -886,6 +886,17 @@ pub async fn run_pusher_loop_url(
                     |_| true,
                 );
                 engine.emit("Kick", "BroadcasterChatConnected", || json!(args));
+                if let Some(b) = cfg.borrow().kick.broadcaster.clone() {
+                    let mut a = Obj::new();
+                    kick_user(&mut a, &json!({"id": b.user_id, "username": b.username}));
+                    kick(
+                        &engine,
+                        T_KICK_AUTHENTICATED,
+                        "KickBroadcasterAuthenticated",
+                        "BroadcasterAuthenticated",
+                        &a,
+                    );
+                }
 
                 // Subscribe to channels
                 let sub_chatroom = json!({
