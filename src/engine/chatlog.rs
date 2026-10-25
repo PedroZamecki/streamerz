@@ -23,8 +23,15 @@ pub struct Line {
     pub user: String,
     pub user_id: String,
     pub text: String,
-    /// The emote names in `text`.
-    pub emotes: Vec<String>,
+    /// The emotes in `text`: name and picture URL.
+    pub emotes: Vec<(String, String)>,
+    /// Roles, shown as badges.
+    pub broadcaster: bool,
+    pub moderator: bool,
+    pub vip: bool,
+    pub subscriber: bool,
+    /// The name's colour ("#RRGGBB") when the platform has one.
+    pub color: String,
     /// Not a chat message: a send that failed, or (dev mode) one kept instead of sent.
     pub note: bool,
 }
@@ -33,8 +40,9 @@ pub struct Line {
 pub struct Log {
     lines: VecDeque<Line>,
     seq: u64,
-    /// Per platform, each emote's raw token (Twitch "Kappa", YouTube ":yt:", Kick "[emote:1:KEKW]").
-    emotes: [VecDeque<String>; 4],
+    /// Per platform, each emote's raw token (Twitch "Kappa", YouTube ":yt:", Kick "[emote:1:KEKW]") and
+    /// picture URL.
+    emotes: [VecDeque<(String, String)>; 4],
 }
 
 fn index(platform: &str) -> Option<usize> {
@@ -89,10 +97,10 @@ impl Engine {
         for e in &c.emotes {
             if c.platform != "twitch" {
                 // Spaced, so "[emote:1:A][emote:1:A]" or ":a::b:" shows as separate emotes.
-                text = text.replace(e.as_str(), &format!(" {} ", shown(e)));
+                text = text.replace(e.0.as_str(), &format!(" {} ", shown(&e.0)));
             }
             let seen = &mut log.emotes[i];
-            if let Some(at) = seen.iter().position(|x| x == e) {
+            if let Some(at) = seen.iter().position(|x| x.0 == e.0) {
                 seen.remove(at);
             } else if seen.len() == EMOTES {
                 seen.pop_front();
@@ -108,7 +116,16 @@ impl Engine {
             user: c.user.clone(),
             user_id: c.user_id.clone(),
             text,
-            emotes: c.emotes.iter().map(|e| shown(e).to_string()).collect(),
+            emotes: c
+                .emotes
+                .iter()
+                .map(|e| (shown(&e.0).to_string(), e.1.clone()))
+                .collect(),
+            broadcaster: c.broadcaster,
+            moderator: c.moderator,
+            vip: c.vip,
+            subscriber: c.subscriber,
+            color: c.args.get("color").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             ..Default::default()
         });
         drop(st);
@@ -152,14 +169,14 @@ impl Engine {
         seen
     }
 
-    /// The emotes seen on `platform`, most recent first, by display name.
-    pub fn chat_emotes(&self, platform: &str) -> Vec<String> {
+    /// The emotes seen on `platform`, most recent first: display name and picture URL.
+    pub fn chat_emotes(&self, platform: &str) -> Vec<(String, String)> {
         let st = self.st.borrow();
         let i = index(platform).unwrap_or(0);
-        let mut v: Vec<String> = st.chat_log.emotes[i]
+        let mut v: Vec<(String, String)> = st.chat_log.emotes[i]
             .iter()
             .rev()
-            .map(|e| shown(e).to_string())
+            .map(|e| (shown(&e.0).to_string(), e.1.clone()))
             .collect();
         v.dedup();
         v
@@ -192,7 +209,10 @@ impl Engine {
         if to.is_empty() {
             self.chat_note(platform, "nothing connected to send to".into());
         }
-        let kick_known: Vec<String> = self.st.borrow().chat_log.emotes[2].iter().cloned().collect();
+        let kick_known: Vec<String> = self.st.borrow().chat_log.emotes[2]
+            .iter()
+            .map(|e| e.0.clone())
+            .collect();
         for &p in &to {
             let text = for_platform(text, p, &kick_known);
             if self.dev_out(p, &text, bot) {
@@ -233,7 +253,10 @@ mod tests {
         assert_eq!(for_platform("hi KEKW", "youtube", &known), "hi KEKW");
         assert_eq!(for_platform("[emote:37226:KEKW]", "kick", &known), "[emote:37226:KEKW]");
         assert_eq!(
-            crate::kick::kick_emotes("a [emote:1:A] b [emote:x:B] [emote:22:C]"),
+            crate::kick::kick_emotes("a [emote:1:A] b [emote:x:B] [emote:22:C]")
+                .iter()
+                .map(|e| e.0.as_str())
+                .collect::<Vec<_>>(),
             ["[emote:1:A]", "[emote:22:C]"]
         );
     }

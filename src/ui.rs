@@ -5,6 +5,7 @@ mod accounts;
 mod actions;
 mod chat;
 mod dialogs;
+mod emotes;
 mod forms;
 mod img;
 mod lists;
@@ -429,6 +430,8 @@ pub fn run(
     // wait_for blocks until a tray message or UI event arrives.
     loop {
         let _ = app::wait_for(1e9);
+        // Pictures come in bursts (the emoji picker asks for hundreds): redraw for them once.
+        let mut pictures = false;
         while let Some(m) = rx.recv() {
             match m {
                 Msg::Toggle if win.visible() => close(&mut win),
@@ -440,7 +443,7 @@ pub fn run(
                 }
                 Msg::Log => log.refresh(),
                 Msg::Chat => views.chat_refresh(&tabs),
-                Msg::Image => views.images(),
+                Msg::Image => pictures = true,
                 Msg::Changed => {
                     status_bar();
                     acts.borrow_mut().refresh();
@@ -456,6 +459,9 @@ pub fn run(
                     }
                 }
             }
+        }
+        if pictures {
+            views.images();
         }
     }
 }

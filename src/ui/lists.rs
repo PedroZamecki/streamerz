@@ -524,6 +524,9 @@ impl Views {
         if let Ok(mut a) = self.accounts.try_borrow_mut() {
             a.refresh();
         }
+        if let Ok(c) = self.chat.try_borrow() {
+            c.images();
+        }
     }
 
     /// Redraw what the config shows, and the live views on the tab that's up.
@@ -563,7 +566,7 @@ impl Views {
 
 pub fn tabs(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Views {
     let accounts = super::accounts::tab(tabs, cfg, cmds);
-    let chat = super::chat::tab(tabs, cmds);
+    let chat = super::chat::tab(tabs, cfg, cmds);
     let mut col = tab(tabs, "Commands");
     let commands = list(&mut col, cfg, cmds, &COMMANDS, Some("enabled"));
     col.end();

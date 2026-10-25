@@ -758,8 +758,8 @@ async fn api(token: &str, method: &str, path: &str, body: Option<Value>) -> Resu
     }
 }
 
-/// Kick's emotes in a message: each `[emote:<id>:<name>]`.
-pub fn kick_emotes(text: &str) -> Vec<String> {
+/// Kick's emotes in a message: each `[emote:<id>:<name>]`, with its picture.
+pub fn kick_emotes(text: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut rest = text;
     while let Some(i) = rest.find("[emote:") {
@@ -769,7 +769,8 @@ pub fn kick_emotes(text: &str) -> Vec<String> {
             .split_once(':')
             .is_some_and(|(id, _)| id.bytes().all(|b| b.is_ascii_digit()))
         {
-            out.push(tag.to_string());
+            let id = tag[7..].split(':').next().unwrap_or("");
+            out.push((tag.to_string(), format!("https://files.kick.com/emotes/{id}/fullsize")));
         }
         rest = &rest[i + j + 1..];
     }

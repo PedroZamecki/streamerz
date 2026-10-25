@@ -237,9 +237,12 @@ platform handles through channels, never through shared locks held across awaits
   Platform and app logos (Simple Icons, CC0) on the section titles; profile pictures in Accounts (Twitch, Kick
   and YouTube from their APIs, TikTok seen at login, or its live lookup). The status bar shows "2/4 connected"
   (each platform, and OBS/Streamlabs when set up, in its tooltip; a click opens Accounts).
-- [ ] 25. Emotes in chat: a chat view that draws text, emote images and badges. Twitch emotes, BTTV, FFZ and 7TV
-  (7TV on Kick too), Kick, YouTube and TikTok emotes; animated ones move only while the chat is on screen
-  (one timer). The emote picker shows images and the whole Unicode emoji list.
+- [x] 25. Emotes in chat: a chat view that draws text, emote pictures, platform logos, role badges and name
+  colours. Twitch, Kick and YouTube emotes, the channel's BTTV, FFZ and 7TV ones (7TV on Kick too), Unicode
+  emoji as Twemoji pictures; animated WebP moves only while it's on screen (one 50 ms timeout, re-armed by
+  drawing). The picker shows pictures: emotes seen, third-party ones, every emoji by group. GIFs show their
+  first frame (FLTK's animated GIF doesn't give out frames; BTTV/FFZ/7TV are asked for WebP); TikTok's
+  subscriber emotes stay text until a live with them can be checked.
 - [ ] 26. Ready-made actions: "New from template" (nothing created by itself): welcome first chatters, thank
   follows/subs/raids (with a shoutout), cheers and gifts, TikTok gifts, socials and hydrate timers, `!lurk`,
   OBS scene on raid.

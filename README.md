@@ -129,3 +129,15 @@ dual-output scene a source's horizontal and vertical copies both change unless "
 - **File Tail**: Set File Tail State sub-action and File Tail Changed trigger for monitoring log and text file appends.
 - **File Watcher**: File Changed, File Created, File Deleted, and File Renamed triggers for monitoring filesystem directory modifications.
 - **Process Triggers**: Process Started and Process Stopped triggers to react to application launches and terminations.
+
+## Chat
+
+- One view for every platform's chat (together, side by side, or one platform), drawn with the platforms' logos, role badges and name colours.
+- Emotes as pictures: Twitch, Kick and YouTube's own, the channel's BTTV, FFZ and 7TV emotes (7TV on Kick too), animated ones moving while the chat is on screen; Unicode emoji as Twemoji pictures.
+- An emote picker with the emotes seen in chat, the channel's third-party emotes and every emoji by group. Right click a message to copy it.
+
+## Credits
+
+- Platform logos: [Simple Icons](https://simpleicons.org) (CC0 1.0).
+- Emoji pictures: [Twemoji](https://github.com/jdecked/twemoji) by Twitter and contributors (CC-BY 4.0), loaded from jsDelivr when shown.
+- Emoji list: Unicode's [emoji-test.txt](https://unicode.org/Public/emoji/latest/emoji-test.txt) (Unicode License v3).
