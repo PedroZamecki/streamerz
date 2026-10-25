@@ -257,12 +257,16 @@ platform handles through channels, never through shared locks held across awaits
   VIPs (log in again). Not deliverable without IRC/PubSub: Watch Streak, Modiversary, community goals.
 - [ ] 27b. The same for YouTube (16 triggers never fire), Kick, OBS, core and the integrations; sub-action
   output variables (OBS group children, remote `instanceVersion`).
-- [ ] 28. Points: Streamer.bot's Points sub-actions and triggers.
-- [ ] 29. Quotes, credits, users and first words.
-- [ ] 30. TikTok triggers and sub-actions beyond chat, gifts, likes and follows (viewers, top gifters, live
+- [x] 28. MCP: `streamerz --mcp`, a Model Context Protocol server (stdio, no new dependency) driving a running
+  instance through its WebSocket: status, log, actions, run an action, list/fire triggers, inject chat and
+  read what would have been sent. New dev-only requests (`STREAMERZ_DEV=1`): FireTrigger, GetLog, GetStatus.
+  The repo's `.mcp.json` points at a dev instance on 8090. Phase 27b moves after it.
+- [ ] 29. Points: Streamer.bot's Points sub-actions and triggers.
+- [ ] 30. Quotes, credits, users and first words.
+- [ ] 31. TikTok triggers and sub-actions beyond chat, gifts, likes and follows (viewers, top gifters, live
   start/end and more).
-- [ ] 31. Visual polish across every tab: layout, spacing, status colours, icons.
-- [ ] 32+. Later extras, one phase each, order chosen then (see Decisions).
+- [ ] 32. Visual polish across every tab: layout, spacing, status colours, icons.
+- [ ] 33+. Later extras, one phase each, order chosen then (see Decisions).
 
 ## Open points (decide when the phase starts, ask first)
 

@@ -141,3 +141,15 @@ dual-output scene a source's horizontal and vertical copies both change unless "
 - Platform logos: [Simple Icons](https://simpleicons.org) (CC0 1.0).
 - Emoji pictures: [Twemoji](https://github.com/jdecked/twemoji) by Twitter and contributors (CC-BY 4.0), loaded from jsDelivr when shown.
 - Emoji list: Unicode's [emoji-test.txt](https://unicode.org/Public/emoji/latest/emoji-test.txt) (Unicode License v3).
+
+## MCP (AI assistants)
+
+`streamerz --mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server on stdin/stdout that
+drives a running streamerz through its WebSocket server: status, log, actions, run an action, list and
+fire triggers, inject a chat message and read what would have been sent. Start streamerz with
+`STREAMERZ_DEV=1` for the testing tools (it then keeps chat replies instead of sending them). It connects to
+the address in `streamerz.json` next to the exe, or `STREAMERZ_URL`.
+
+- Claude Code: `claude mcp add streamerz -- /path/to/streamerz --mcp` (this repo's `.mcp.json` points at
+  `target/release/streamerz` and a dev instance on port 8090).
+- Other clients: command `/path/to/streamerz`, argument `--mcp`.

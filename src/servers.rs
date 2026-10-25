@@ -597,6 +597,38 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
             Err(m) => error(&id, &m),
         },
         "GetChatOut" if e.dev() => ok(&id, json!({"messages": e.dev_take().unwrap_or_default()})),
+        // Dev mode only: fire any trigger (code or name, e.g. 101 or "TwitchFollow") with these
+        // arguments, as its platform would; how many actions ran.
+        "FireTrigger" if e.dev() => {
+            let t = req.get("trigger").cloned().unwrap_or_default();
+            let found = crate::types::TRIGGERS.iter().find(|(c, n)| {
+                t.as_u64() == Some(u64::from(*c)) || t.as_str().is_some_and(|s| s.eq_ignore_ascii_case(n))
+            });
+            match found {
+                Some(&(code, name)) => {
+                    let args = req.get("args").and_then(Value::as_object).cloned().unwrap_or_default();
+                    let ran = e.fire(code, name, "Test", "test", &args, |_| true);
+                    ok(&id, json!({"trigger": code, "name": name, "ran": ran}))
+                }
+                None => error(&id, &format!("no trigger {t}")),
+            }
+        }
+        // Dev mode only: the log's last lines (up to `lines`, default 50).
+        "GetLog" if e.dev() => {
+            let n = req.get("lines").and_then(Value::as_u64).unwrap_or(50) as usize;
+            ok(&id, json!({"lines": crate::log_tail(n)}))
+        }
+        // Dev mode only: what's connected, and how much is set up.
+        "GetStatus" if e.dev() => {
+            let c = e.config();
+            ok(
+                &id,
+                json!({"info": info(e), "connected": {
+                    "twitch": e.twitch_connected(), "youtube": e.youtube_connected(), "kick": e.kick_connected(),
+                    "tiktok": e.tiktok_connected(), "obs": e.obs_connected(None), "streamlabs": e.slobs_connected()},
+                    "actions": c.actions.actions.len(), "commands": c.commands.len(), "timers": c.timers.len()}),
+            )
+        }
         _ => return None,
     })
 }
