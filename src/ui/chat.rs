@@ -1,12 +1,14 @@
-//! The Chat tab: every platform's chat together or side by side (or one platform), and one box to
-//! send to a platform or all of them, as the bot or the broadcaster, with an emote picker. Lines are
-//! drawn here (not a text box) so emotes, emoji, logos and badges show as pictures.
+//! The Chat tab: every set-up platform's chat together or side by side (or one platform), and one box
+//! to send to a platform or all of them, as the bot or the broadcaster, with an emote picker. Lines are
+//! drawn here (not a text box) so emotes, emoji, logos and badges show as pictures. Clicking a name
+//! shows what's known about that user.
 
 use super::img::{self, Pic};
 use super::{button, emotes, query, tell, ROW};
 use crate::engine::chatlog::{Line, PLATFORMS};
 use crate::Config;
 use fltk::app;
+use fltk::browser::HoldBrowser;
 use fltk::button::Button;
 use fltk::draw;
 use fltk::enums::{Align, Color, Event, Font, FrameType, Key};
@@ -28,8 +30,6 @@ use tokio::sync::{mpsc::UnboundedSender, watch};
 type Cmds = UnboundedSender<crate::engine::UiCmd>;
 
 const NAMES: [&str; 4] = ["Twitch", "YouTube", "Kick", "TikTok"];
-/// Views: 0 all together, 1 side by side, 2.. one platform.
-const VIEWS: &str = "All together|Side by side|Twitch|YouTube|Kick|TikTok";
 /// Text size, emote height, and a line's least height.
 const TEXT: i32 = 14;
 const EMOTE: i32 = 28;
@@ -370,8 +370,56 @@ impl Pane {
         }
     }
 
+    /// The line whose name is under the pointer.
+    fn name_at(&self, f: &Frame) -> Option<Line> {
+        let (ex, ey) = (app::event_x() - f.x() - 6, app::event_y());
+        let st = self.st.borrow();
+        let mut y = f.y() + 4 - st.top;
+        for (l, (laid, h)) in st.lines.iter().zip(&st.laid) {
+            if !(y..y + h).contains(&ey) {
+                y += h;
+                continue;
+            }
+            for (row, rh) in laid {
+                if (y..y + rh).contains(&ey) {
+                    let name = row.iter().find(|(it, x)| {
+                        matches!(it, It::Text(_, Font::HelveticaBold, _)) && (*x..x + it.size().0).contains(&ex)
+                    });
+                    return name.filter(|_| !l.note && !l.user_id.is_empty()).map(|_| l.clone());
+                }
+                y += rh;
+            }
+            return None;
+        }
+        None
+    }
+
     fn handle(&self, f: &mut Frame, ev: Event) -> bool {
         match ev {
+            Event::Enter => true,
+            Event::Move => {
+                let hand = self.name_at(f).is_some();
+                if let Some(mut w) = f.window() {
+                    w.set_cursor(if hand {
+                        fltk::enums::Cursor::Hand
+                    } else {
+                        fltk::enums::Cursor::Default
+                    });
+                }
+                true
+            }
+            Event::Leave => {
+                if let Some(mut w) = f.window() {
+                    w.set_cursor(fltk::enums::Cursor::Default);
+                }
+                true
+            }
+            Event::Push if app::event_mouse_button() == app::MouseButton::Left => {
+                if let Some(l) = self.name_at(f) {
+                    card(&self.cmds, &l);
+                }
+                true
+            }
             Event::MouseWheel => {
                 let mut st = self.st.borrow_mut();
                 st.top += app::event_dy_value() * 3 * LINE;
@@ -443,6 +491,9 @@ pub struct Chat {
     cfg: Arc<watch::Sender<Config>>,
     cmds: Cmds,
     view: Choice,
+    to: Choice,
+    /// The set-up platforms (indexes in PLATFORMS), as the view and send lists show them.
+    plats: Rc<RefCell<Vec<usize>>>,
     /// All together / one platform, then one per platform for side by side.
     main: Pane,
     side: Vec<Pane>,
@@ -469,6 +520,13 @@ impl Chat {
             (tw, kick)
         };
         emotes::load(&self.cmds, tw, kick);
+        let plats = set_up(&self.cfg.borrow());
+        if *self.plats.borrow() != plats {
+            *self.plats.borrow_mut() = plats;
+            self.lists();
+            self.rebuild();
+            return;
+        }
         let seen = self.seen;
         let lines = query(&self.cmds, move |e| e.chat_since(seen)).unwrap_or_default();
         let v = self.view.value();
@@ -479,7 +537,7 @@ impl Chat {
                     self.side[p].add(l);
                 }
                 0 => self.main.add(l),
-                _ if PLATFORMS[(v - 2) as usize] == l.platform => self.main.add(l),
+                _ if self.shown() == Some(l.platform.as_str()) => self.main.add(l),
                 _ => {}
             }
             self.seen = l.seq;
@@ -494,8 +552,69 @@ impl Chat {
         }
     }
 
+    /// The one platform the view shows, if it shows one.
+    fn shown(&self) -> Option<&'static str> {
+        let v = self.view.value();
+        (v >= 2)
+            .then(|| self.plats.borrow().get((v - 2) as usize).map(|i| PLATFORMS[*i]))
+            .flatten()
+    }
+
+    /// The view and send lists for the set-up platforms, keeping what was picked when it's still there.
+    fn lists(&mut self) {
+        let plats = self.plats.borrow();
+        let names: Vec<&str> = plats.iter().map(|i| NAMES[*i]).collect();
+        let keep = |c: &Choice, fixed: i32| {
+            let v = c.value();
+            if v < fixed {
+                v
+            } else {
+                c.choice()
+                    .and_then(|n| names.iter().position(|x| *x == n))
+                    .map_or(0, |i| i as i32 + fixed)
+            }
+        };
+        let (view, to) = (keep(&self.view, 2), keep(&self.to, 1));
+        self.view.clear();
+        self.view.add_choice(
+            &["All together", "Side by side"]
+                .iter()
+                .chain(&names)
+                .copied()
+                .collect::<Vec<_>>()
+                .join("|"),
+        );
+        self.view.set_value(view);
+        self.to.clear();
+        self.to.add_choice(
+            &["All connected"]
+                .iter()
+                .chain(&names)
+                .copied()
+                .collect::<Vec<_>>()
+                .join("|"),
+        );
+        self.to.set_value(to);
+    }
+
     fn rebuild(&mut self) {
         let side = self.view.value() == 1;
+        // One platform shown: what's sent goes there.
+        match self
+            .shown()
+            .and_then(|p| self.plats.borrow().iter().position(|i| PLATFORMS[*i] == p))
+        {
+            Some(i) => {
+                self.to.set_value(i as i32 + 1);
+                self.to.deactivate();
+            }
+            None => {
+                if !self.to.active() {
+                    self.to.set_value(0);
+                }
+                self.to.activate();
+            }
+        }
         self.main.clear();
         self.main.st.borrow_mut().tag = self.view.value() == 0;
         for p in &mut self.side {
@@ -503,8 +622,13 @@ impl Chat {
         }
         if side {
             self.main.group.hide();
-            for p in &mut self.side {
-                p.group.show();
+            let plats = self.plats.borrow();
+            for (i, p) in self.side.iter_mut().enumerate() {
+                if plats.contains(&i) {
+                    p.group.show();
+                } else {
+                    p.group.hide();
+                }
             }
         } else {
             self.main.group.show();
@@ -525,11 +649,9 @@ pub fn tab(tabs: &Tabs, cfg: &Arc<watch::Sender<Config>>, cmds: &Cmds) -> Rc<Ref
     let l = Frame::default().with_label("Show:");
     top.fixed(&l, 50);
     let mut view = Choice::default();
-    view.add_choice(VIEWS);
-    view.set_value(0);
     top.fixed(&view, 140);
     let hint = Frame::default()
-        .with_label("Right click a message to copy it")
+        .with_label("Click a name for that user, right click a message to copy it")
         .with_align(Align::Right | Align::Inside);
     let _ = hint;
     let mut clear = button(&mut top, "Clear", 70);
@@ -554,9 +676,7 @@ pub fn tab(tabs: &Tabs, cfg: &Arc<watch::Sender<Config>>, cmds: &Cmds) -> Rc<Ref
     let mut bottom = Flex::default().row();
     let l = Frame::default().with_label("To:");
     bottom.fixed(&l, 30);
-    let mut to = Choice::default();
-    to.add_choice("All connected|Twitch|YouTube|Kick|TikTok");
-    to.set_value(0);
+    let to = Choice::default();
     bottom.fixed(&to, 120);
     let mut who = Choice::default();
     who.add_choice("as bot|as broadcaster");
@@ -576,10 +696,19 @@ pub fn tab(tabs: &Tabs, cfg: &Arc<watch::Sender<Config>>, cmds: &Cmds) -> Rc<Ref
         cfg: cfg.clone(),
         cmds: cmds.clone(),
         view: view.clone(),
+        to: to.clone(),
+        plats: Rc::default(),
         main,
         side,
         seen: 0,
     }));
+    {
+        let mut m = me.borrow_mut();
+        *m.plats.borrow_mut() = set_up(&cfg.borrow());
+        m.lists();
+        m.view.set_value(0);
+        m.to.set_value(0);
+    }
     // Side by side needs room: titles above each pane.
     panes.set_margins(0, if view.value() == 1 { 20 } else { 0 }, 0, 0);
 
@@ -604,8 +733,9 @@ pub fn tab(tabs: &Tabs, cfg: &Arc<watch::Sender<Config>>, cmds: &Cmds) -> Rc<Ref
 
     let target = {
         let to = to.clone();
-        move || match to.value() {
-            1..=4 => PLATFORMS[(to.value() - 1) as usize],
+        let plats = me.borrow().plats.clone();
+        move || match plats.borrow().get((to.value() - 1).max(-1) as usize) {
+            Some(i) if to.value() > 0 => PLATFORMS[*i],
             _ => "all",
         }
     };
@@ -769,4 +899,179 @@ fn picker(cmds: &Cmds, p: &'static str) -> Option<String> {
     win.hide();
     app::delete_widget(win);
     picked.take()
+}
+
+/// The platforms set up (logged in, or a TikTok channel), as indexes in PLATFORMS.
+fn set_up(c: &Config) -> Vec<usize> {
+    let on = [
+        c.twitch.broadcaster.is_some(),
+        c.youtube.broadcaster.is_some() || !c.youtube.channel_id.is_empty(),
+        c.kick.broadcaster.is_some() || !c.kick.channel.is_empty(),
+        c.tiktok.broadcaster.is_some() || !c.tiktok.channel.is_empty(),
+    ];
+    (0..4).filter(|i| on[*i]).collect()
+}
+
+/// Label and value rows.
+type Facts = Vec<(String, String)>;
+
+/// A chatter's card: what chat said about them this session, then what their platform says (asked
+/// when it opens). Double click a row to copy its value.
+fn card(cmds: &Cmds, l: &Line) {
+    let (p, id) = (l.platform.clone(), l.user_id.clone());
+    let seen = query(cmds, move |e| e.chatter(&p, &id)).flatten().unwrap_or_default();
+    let platform = NAMES[PLATFORMS.iter().position(|x| *x == l.platform).unwrap_or(0)];
+    let mut win = Window::default()
+        .with_size(460, 480)
+        .with_label(&format!("{} on {platform}", l.user));
+    win.set_xclass("streamerz");
+    let mut col = Flex::new(10, 10, 440, 460, None).column();
+    col.set_pad(8);
+    let mut head = Flex::default().row();
+    let mut pic = Frame::default();
+    head.fixed(&pic, 64);
+    let mut name = Frame::default()
+        .with_label(&format!("  {}", l.user.replace('@', "@@")))
+        .with_align(Align::Left | Align::Inside | Align::ImageNextToText);
+    name.set_label_font(Font::HelveticaBold);
+    name.set_label_size(20);
+    name.set_label_color(name_color(l));
+    name.set_image(img::logo(platform, 20));
+    head.end();
+    col.fixed(&head, 64);
+    let mut rows = HoldBrowser::default();
+    rows.set_column_widths(&[150]);
+    rows.set_column_char('\t');
+    rows.set_format_char('\u{1}');
+    let mut bottom = Flex::default().row();
+    Frame::default();
+    let mut open = button(&mut bottom, "Open profile", 110);
+    let mut close = button(&mut bottom, "Close", 80);
+    bottom.end();
+    col.fixed(&bottom, ROW);
+    col.end();
+    win.end();
+    win.resizable(&rows);
+
+    let add = |rows: &mut HoldBrowser, k: &str, v: &str| {
+        rows.add(&format!("{k}\t{}", v.replace(['\n', '\t'], " ")));
+    };
+    let roles: Vec<&str> = [
+        (l.broadcaster, "broadcaster"),
+        (l.moderator, "moderator"),
+        (l.vip, "VIP"),
+        (l.subscriber, "subscriber"),
+    ]
+    .iter()
+    .filter(|r| r.0)
+    .map(|r| r.1)
+    .collect();
+    add(
+        &mut rows,
+        "Roles",
+        &if roles.is_empty() {
+            "viewer".into()
+        } else {
+            roles.join(", ")
+        },
+    );
+    add(&mut rows, "Messages this session", &seen.messages.to_string());
+    add(&mut rows, "First message at", &seen.first);
+    if !seen.args.contains_key("userId") {
+        add(&mut rows, "userId", &l.user_id);
+    }
+    let s = |v: &serde_json::Value| v.as_str().map_or_else(|| v.to_string(), str::to_string);
+    // As the actions get them (%userName%...); "user" is the name above.
+    for (k, v) in seen.args.iter().filter(|a| a.0 != "user") {
+        add(&mut rows, k, &s(v));
+    }
+    let asks = matches!(l.platform.as_str(), "twitch" | "kick");
+    if asks {
+        add(&mut rows, &format!("{platform} says"), "looking up...");
+    }
+    rows.set_callback(|b| {
+        if app::event_clicks() {
+            if let Some(t) = b.selected_text() {
+                app::copy(t.split_once('\t').map_or(t.as_str(), |x| x.1));
+                crate::say("Copied".into());
+            }
+        }
+    });
+    let login = seen.args.get("userName").map(s).unwrap_or_else(|| l.user.clone());
+    let url: Rc<RefCell<String>> = Rc::new(RefCell::new(match l.platform.as_str() {
+        "twitch" => format!("https://twitch.tv/{}", login.to_lowercase()),
+        "youtube" => format!("https://youtube.com/channel/{}", l.user_id),
+        "kick" => format!("https://kick.com/{}", login.to_lowercase()),
+        _ => format!("https://tiktok.com/@{login}"),
+    }));
+    open.set_callback({
+        let url = url.clone();
+        move |_| crate::oauth::open_browser(&url.borrow())
+    });
+    close.set_callback({
+        let mut win = win.clone();
+        move |_| win.hide()
+    });
+    win.show();
+
+    // The platform's answer and the profile picture fill in as they come (checked 5 times a second,
+    // for 15 s at most, while the card is open).
+    let picture = seen
+        .args
+        .iter()
+        .find(|(k, v)| k.contains("rofile") && s(v).starts_with("http"))
+        .map(|(_, v)| s(v))
+        .unwrap_or_default();
+    let picture = Rc::new(RefCell::new(picture));
+    let answer: Arc<std::sync::Mutex<Option<Facts>>> = Arc::default();
+    if asks {
+        let (p, id, answer) = (l.platform.clone(), l.user_id.clone(), answer.clone());
+        tell(cmds, move |e| {
+            let e = e.clone();
+            tokio::task::spawn_local(async move {
+                let r = e.chatter_lookup(&p, &id).await;
+                if let Ok(mut a) = answer.lock() {
+                    *a = Some(r);
+                }
+            });
+        });
+    }
+    let (cmds, tries) = (cmds.clone(), Rc::new(Cell::new(0)));
+    let mut asked = asks;
+    app::add_timeout3(0.0, move |h| {
+        if !win.shown() {
+            return;
+        }
+        tries.set(tries.get() + 1);
+        if asked {
+            if let Some(found) = answer.lock().ok().and_then(|mut a| a.take()) {
+                asked = false;
+                rows.remove(rows.size());
+                if found.is_empty() {
+                    add(&mut rows, &format!("{platform} says"), "nothing (not connected?)");
+                }
+                for (k, v) in found {
+                    match k.as_str() {
+                        "Picture" => *picture.borrow_mut() = v,
+                        "Channel" => *url.borrow_mut() = format!("https://kick.com/{v}"),
+                        _ => add(&mut rows, &k, &v),
+                    }
+                }
+                rows.redraw();
+            }
+        }
+        let mut waiting = asked;
+        if pic.image().is_none() && !picture.borrow().is_empty() {
+            match img::get(&cmds, &picture.borrow(), 64, true) {
+                Some(p) => {
+                    pic.set_image(Some(p.first()));
+                    pic.redraw();
+                }
+                None => waiting = true,
+            }
+        }
+        if waiting && tries.get() < 75 {
+            app::repeat_timeout3(0.2, h);
+        }
+    });
 }

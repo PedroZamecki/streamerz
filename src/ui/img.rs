@@ -5,7 +5,7 @@
 use super::{tell, Msg};
 use crate::engine::UiCmd;
 use fltk::enums::ColorDepth;
-use fltk::image::{GifImage, JpegImage, PngImage, RgbImage, SvgImage};
+use fltk::image::{JpegImage, PngImage, RgbImage, SvgImage};
 use fltk::prelude::*;
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
@@ -136,7 +136,7 @@ pub fn forget() {
 /// Frames kept of an animation (memory: each is a full picture).
 const MAX_FRAMES: usize = 150;
 
-/// PNG, JPEG, GIF (first frame), WebP (animated too) or SVG, as RGB(A) frames with their time in ms; none when
+/// PNG, JPEG, GIF and WebP (animated too) or SVG, as RGB(A) frames with their time in ms; none when
 /// it isn't a picture.
 pub fn decode(b: &[u8]) -> Vec<(RgbImage, u32)> {
     let still = |i: Option<RgbImage>| i.map(|i| (i, 1000)).into_iter().collect();
@@ -145,9 +145,7 @@ pub fn decode(b: &[u8]) -> Vec<(RgbImage, u32)> {
     } else if b.starts_with(&[0xff, 0xd8]) {
         still(JpegImage::from_data(b).ok().and_then(|i| i.to_rgb().ok()))
     } else if b.starts_with(b"GIF") {
-        // ponytail: first frame only; FLTK's animated GIF doesn't hand out its frames. BTTV, FFZ and 7TV
-        // are asked for WebP, which animates; Twitch's own animated emotes would need a GIF decoder.
-        still(GifImage::from_data(b).ok().and_then(|i| i.to_rgb().ok()))
+        gif(b).unwrap_or_default()
     } else if b.starts_with(b"RIFF") && b.get(8..12) == Some(b"WEBP") {
         webp(b).unwrap_or_default()
     } else {
@@ -163,6 +161,46 @@ pub fn decode(b: &[u8]) -> Vec<(RgbImage, u32)> {
         i.normalize();
         still(i.to_rgb().ok())
     }
+}
+
+/// A GIF's frames, each painted on the canvas as the previous ones left it.
+fn gif(b: &[u8]) -> Option<Vec<(RgbImage, u32)>> {
+    let mut o = gif::DecodeOptions::new();
+    o.set_color_output(gif::ColorOutput::RGBA);
+    let mut d = o.read_info(b).ok()?;
+    let (w, h) = (usize::from(d.width()), usize::from(d.height()));
+    let mut canvas = vec![0u8; w * h * 4];
+    let mut out = Vec::new();
+    while let Ok(Some(f)) = d.read_next_frame() {
+        let before = (f.dispose == gif::DisposalMethod::Previous).then(|| canvas.clone());
+        let (fx, fy, fw) = (usize::from(f.left), usize::from(f.top), usize::from(f.width));
+        for (i, px) in f.buffer.as_chunks::<4>().0.iter().enumerate() {
+            let (x, y) = (fx + i % fw, fy + i / fw);
+            if px[3] != 0 && x < w && y < h {
+                canvas[(y * w + x) * 4..][..4].copy_from_slice(px);
+            }
+        }
+        if let Ok(i) = RgbImage::new(&canvas, w as i32, h as i32, ColorDepth::Rgba8) {
+            // In 10 ms; browsers show 0 and 1 as 100 ms.
+            let ms = u32::from(f.delay) * 10;
+            out.push((i, if ms < 20 { 100 } else { ms }));
+        }
+        if out.len() == MAX_FRAMES {
+            break;
+        }
+        match (f.dispose, before) {
+            (_, Some(b)) => canvas = b,
+            (gif::DisposalMethod::Background, _) => {
+                for y in fy..(fy + usize::from(f.height)).min(h) {
+                    for x in fx..(fx + fw).min(w) {
+                        canvas[(y * w + x) * 4..][..4].fill(0);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(out)
 }
 
 fn webp(b: &[u8]) -> Option<Vec<(RgbImage, u32)>> {
@@ -227,6 +265,23 @@ fn fit_at(i: RgbImage, h: i32, round: bool, scale: f32) -> RgbImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decodes_animated_gif() {
+        // 2x2, two frames: 50 ms, then 200 ms.
+        let gif = [
+            0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x02, 0x00, 0x02, 0x00, 0x81, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0xff, 0x0b, 0x4e, 0x45, 0x54, 0x53, 0x43, 0x41, 0x50, 0x45,
+            0x32, 0x2e, 0x30, 0x03, 0x01, 0x00, 0x00, 0x00, 0x21, 0xf9, 0x04, 0x00, 0x05, 0x00, 0x00, 0x00, 0x2c, 0x00,
+            0x00, 0x00, 0x00, 0x02, 0x00, 0x02, 0x00, 0x00, 0x08, 0x06, 0x00, 0x01, 0x08, 0x04, 0x10, 0x10, 0x00, 0x21,
+            0xf9, 0x04, 0x01, 0x14, 0x00, 0x01, 0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x02, 0x00, 0x81, 0x00,
+            0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x06, 0x00, 0x01, 0x08, 0x04, 0x10,
+            0x10, 0x00, 0x3b,
+        ];
+        let f = decode(&gif);
+        assert_eq!(f.iter().map(|f| f.1).collect::<Vec<_>>(), [50, 200]);
+        assert_eq!(f[0].0.to_rgb_data()[..4], [0xff, 0, 0, 0xff]);
+    }
 
     #[test]
     fn decodes_webp_and_svg_and_cuts_round() {

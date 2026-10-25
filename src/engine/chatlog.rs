@@ -4,7 +4,9 @@
 
 use super::Engine;
 use crate::commands::Chat;
-use std::collections::VecDeque;
+use crate::model::Obj;
+use serde_json::Value;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 pub const PLATFORMS: [&str; 4] = ["twitch", "youtube", "kick", "tiktok"];
@@ -43,6 +45,44 @@ pub struct Log {
     /// Per platform, each emote's raw token (Twitch "Kappa", YouTube ":yt:", Kick "[emote:1:KEKW]") and
     /// picture URL.
     emotes: [VecDeque<(String, String)>; 4],
+    /// What each chatter's messages said about them, by (platform, user id).
+    users: HashMap<(String, String), Seen>,
+}
+
+/// A chatter, as seen in chat this session.
+#[derive(Clone, Default)]
+pub struct Seen {
+    /// Their latest message's arguments about them (userName, isSubscribed, pronouns...).
+    pub args: Obj,
+    pub messages: u32,
+    /// When they first chatted ("HH:mm"), and the log's seq of their latest message.
+    pub first: String,
+    last: u64,
+}
+
+/// Whether an argument is about the user rather than the message.
+fn about_user(k: &str) -> bool {
+    const ABOUT: [&str; 18] = [
+        "user",
+        "isSubscribed",
+        "isModerator",
+        "isVip",
+        "isVerified",
+        "isMember",
+        "isSponsor",
+        "isOwner",
+        "isFollow",
+        "pronoun",
+        "follow",
+        "gifter",
+        "member",
+        "months",
+        "subscri",
+        "tier",
+        "profile",
+        "team",
+    ];
+    ABOUT.iter().any(|p| k.starts_with(p))
 }
 
 fn index(platform: &str) -> Option<usize> {
@@ -110,9 +150,29 @@ impl Engine {
         if c.platform != "twitch" && !c.emotes.is_empty() {
             text = text.split_whitespace().collect::<Vec<_>>().join(" ");
         }
+        let time = crate::fmt::date(&crate::fmt::now(), "HH:mm");
+        let key = (c.platform.clone(), c.user_id.clone());
+        if !log.users.contains_key(&key) && log.users.len() == KEEP {
+            // ponytail: O(n) at 500 chatters, once per new chatter; an ordered map if that shows up.
+            if let Some(old) = log.users.iter().min_by_key(|u| u.1.last).map(|u| u.0.clone()) {
+                log.users.remove(&old);
+            }
+        }
+        let seen = log.users.entry(key).or_insert_with(|| Seen {
+            first: time.clone(),
+            ..Default::default()
+        });
+        seen.messages += 1;
+        seen.last = log.seq + 1;
+        seen.args = c
+            .args
+            .iter()
+            .filter(|(k, v)| about_user(k) && !v.is_array() && !v.is_object())
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         log.push(Line {
             platform: c.platform.clone(),
-            time: crate::fmt::date(&crate::fmt::now(), "HH:mm"),
+            time,
             user: c.user.clone(),
             user_id: c.user_id.clone(),
             text,
@@ -149,6 +209,97 @@ impl Engine {
     pub fn chat_since(&self, seq: u64) -> Vec<Line> {
         let st = self.st.borrow();
         st.chat_log.lines.iter().filter(|l| l.seq > seq).cloned().collect()
+    }
+
+    /// What chat said about a chatter this session.
+    pub fn chatter(&self, platform: &str, user_id: &str) -> Option<Seen> {
+        let st = self.st.borrow();
+        st.chat_log
+            .users
+            .get(&(platform.to_string(), user_id.to_string()))
+            .cloned()
+    }
+
+    /// What the platform says about a chatter (for the chat's user card): label and value. Twitch and
+    /// Kick are asked; YouTube and TikTok tell only what their chat messages carry.
+    pub async fn chatter_lookup(self: &Rc<Self>, platform: &str, user_id: &str) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let mut add = |k: &str, v: &Value| {
+            let v = match v {
+                Value::String(s) => s.clone(),
+                Value::Null => return,
+                v => v.to_string(),
+            };
+            if !v.is_empty() {
+                out.push((k.to_string(), v));
+            }
+        };
+        match platform {
+            "twitch" => {
+                let Some(tw) = self.twitch() else {
+                    return out;
+                };
+                let id = user_id;
+                let get = |path: &'static str, q: Vec<(&'static str, String)>| {
+                    let tw = tw.clone();
+                    async move {
+                        let q: Vec<(&str, &str)> = q.iter().map(|(k, v)| (*k, v.as_str())).collect();
+                        tw.helix("GET", path, q, None, false, true)
+                            .await
+                            .map(|v| v["data"][0].clone())
+                            .unwrap_or_default()
+                    }
+                };
+                let me = || "{broadcaster_id}".to_string();
+                let (u, f, s, c) = tokio::join!(
+                    get("users", vec![("id", id.into())]),
+                    get(
+                        "channels/followers",
+                        vec![("broadcaster_id", me()), ("user_id", id.into())]
+                    ),
+                    get("subscriptions", vec![("broadcaster_id", me()), ("user_id", id.into())]),
+                    get("channels", vec![("broadcaster_id", id.into())]),
+                );
+                add("Picture", &u["profile_image_url"]);
+                add("Account created", &u["created_at"]);
+                add("Type", &u["broadcaster_type"]);
+                add("About", &u["description"]);
+                let since = if f.is_object() {
+                    f["followed_at"].clone()
+                } else {
+                    "not following".into()
+                };
+                add("Following since", &since);
+                if s.is_object() {
+                    let tier = s["tier"].as_str().unwrap_or("1000").trim_end_matches("000").to_string();
+                    add("Subscribed", &format!("tier {tier}").into());
+                    if s["is_gift"] == true {
+                        add("Gifted by", &s["gifter_name"]);
+                    }
+                }
+                add("Their last category", &c["game_name"]);
+                add("Their stream title", &c["title"]);
+            }
+            "kick" => {
+                let Some(k) = self.kick() else { return out };
+                let (users, channels) = (
+                    format!("/users?id={user_id}"),
+                    format!("/channels?broadcaster_user_id={user_id}"),
+                );
+                let (u, c) = tokio::join!(k.api("GET", &users, None), k.api("GET", &channels, None));
+                let (u, c) = (u.unwrap_or_default(), c.unwrap_or_default());
+                add("Picture", &u["data"][0]["profile_picture"]);
+                let c = &c["data"][0];
+                add("Channel", &c["slug"]);
+                add("Their stream title", &c["stream_title"]);
+                add("Their category", &c["category"]["name"]);
+                if c["stream"]["is_live"] == true {
+                    add("Live now", &c["stream"]["viewer_count"]);
+                }
+            }
+            _ => {}
+        }
+        out
     }
 
     /// The people who chatted on `platform` this session (newest first): name and id.
