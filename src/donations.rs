@@ -1095,6 +1095,12 @@ async fn donordrive(e: Rc<Engine>, base: String, id: String) {
 
 impl Engine {
     /// Start, restart or stop the donation connections to match the settings.
+    /// Connect the donation services again now (the window's Retry).
+    pub fn donations_retry(self: &Rc<Self>) {
+        self.donations.borrow_mut().cfg = None;
+        self.donations_sync();
+    }
+
     pub fn donations_sync(self: &Rc<Self>) {
         let cfg = self.config().donations.clone();
         let mut live = self.donations.borrow_mut();
