@@ -268,13 +268,16 @@ pub fn run(
     };
     let _ = UI.set(tx);
     theme(c_dark);
+    // Pictures drawn bigger than they are come out smooth, not blocky.
+    RgbImage::set_scaling_algorithm(fltk::image::RgbScaling::Bilinear);
+    fltk::image::Image::set_scaling_algorithm(fltk::image::RgbScaling::Bilinear);
     let mut win = Window::default().with_size(W, H).with_label(&crate::version());
     win.set_xclass("streamerz");
     use crate::tray::{ICON, SIZE};
     if let Ok(icon) = RgbImage::new(ICON, SIZE, SIZE, ColorDepth::Rgba8) {
         win.set_icon(Some(icon));
     }
-    let tabs = Tabs::new(5, 5, W - 10, H - 50, None);
+    let mut tabs = Tabs::new(5, 5, W - 10, H - 50, None);
 
     let acts = actions::tab(&tabs, cfg.clone(), cmds.clone());
     let views = lists::tabs(&tabs, &cfg, &cmds);
@@ -334,6 +337,32 @@ pub fn run(
     bar.end();
     win.end();
     win.resizable(&tabs);
+    // Back as it was left: size and tab.
+    {
+        let c = cfg.borrow();
+        if c.window.w >= 600 && c.window.h >= 400 {
+            win.set_size(c.window.w, c.window.h);
+        }
+        if let Some(t) = (0..tabs.children())
+            .filter_map(|i| tabs.child(i))
+            .find(|t| t.label() == c.window.tab)
+        {
+            if let Some(g) = t.as_group() {
+                let _ = tabs.set_value(&g);
+            }
+        }
+    }
+    // Kept as it changes, written with the next save (and when the window hides or streamerz quits).
+    let remember = {
+        let cfg = cfg.clone();
+        move |w: &Window| {
+            cfg.send_if_modified(|c| {
+                (c.window.w, c.window.h) = (w.w(), w.h());
+                false
+            });
+            let _ = crate::save(&cfg.borrow());
+        }
+    };
     conns.set_callback({
         let (tabs, tab) = (tabs.clone(), views.accounts.borrow().tab.clone());
         move |_| {
@@ -362,7 +391,15 @@ pub fn run(
     let views = Rc::new(views);
     tabs.clone().set_callback({
         let views = views.clone();
-        move |t| views.refresh(t)
+        let cfg = cfg.clone();
+        move |t| {
+            let tab = t.value().map(|w| w.label()).unwrap_or_default();
+            cfg.send_if_modified(|c| {
+                c.window.tab = tab;
+                false
+            });
+            views.refresh(t)
+        }
     });
 
     dark.clone().set_callback({
@@ -387,24 +424,32 @@ pub fn run(
             Err(e) => format!("Can't save: {e}"),
         });
     });
-    quit.set_callback(|_| std::process::exit(0));
-    let close = |w: &mut Window| {
+    quit.set_callback({
+        let (win, remember) = (win.clone(), remember.clone());
+        move |_| {
+            remember(&win);
+            std::process::exit(0)
+        }
+    });
+    let close = move |w: &mut Window| {
+        remember(w);
         SHOWN.store(false, Ordering::Relaxed);
         w.hide();
         img::forget();
     };
     hide.set_callback({
         let mut win = win.clone();
+        let close = close.clone();
         move |_| close(&mut win)
     });
     let tray_ok = Rc::new(Cell::new(true));
     win.set_callback({
         let tray_ok = tray_ok.clone();
+        let close = close.clone();
         move |w| {
             if app::event() == Event::Close {
-                if tray_ok.get() {
-                    close(w);
-                } else {
+                close(w);
+                if !tray_ok.get() {
                     std::process::exit(0);
                 }
             }

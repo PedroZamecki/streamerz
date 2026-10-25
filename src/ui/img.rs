@@ -228,6 +228,53 @@ fn webp(b: &[u8]) -> Option<Vec<(RgbImage, u32)>> {
     Some(out)
 }
 
+/// `i` at `w`x`h`. Shrinking averages every pixel each one covers (alpha-weighted, so no dark
+/// fringes): FLTK's copy picks one pixel, which looks jagged; growing is left to FLTK (bilinear).
+fn shrink(i: &RgbImage, w: i32, h: i32) -> RgbImage {
+    let (sw, sh, d) = (i.data_w() as usize, i.data_h() as usize, i.depth() as usize);
+    let (w, h) = (w.max(1) as usize, h.max(1) as usize);
+    if w >= sw || h >= sh || d == 0 {
+        return i.copy_sized(w as i32, h as i32);
+    }
+    let src = i.to_rgb_data();
+    // The alpha channel, if any: grey+alpha or RGBA.
+    let alpha = matches!(d, 2 | 4).then_some(d - 1);
+    let mut out = vec![0u8; w * h * d];
+    for y in 0..h {
+        let (y0, y1) = (y * sh / h, ((y + 1) * sh / h).max(y * sh / h + 1));
+        for x in 0..w {
+            let (x0, x1) = (x * sw / w, ((x + 1) * sw / w).max(x * sw / w + 1));
+            let (mut sum, mut weight, mut n) = ([0u64; 4], 0u64, 0u64);
+            for sy in y0..y1 {
+                for sx in x0..x1 {
+                    let px = &src[(sy * sw + sx) * d..][..d];
+                    let a = alpha.map_or(255, |k| u64::from(px[k]));
+                    for c in 0..d {
+                        sum[c] += u64::from(px[c]) * if Some(c) == alpha { 1 } else { a };
+                    }
+                    weight += a;
+                    n += 1;
+                }
+            }
+            let o = &mut out[(y * w + x) * d..][..d];
+            for c in 0..d {
+                o[c] = if Some(c) == alpha {
+                    (sum[c] / n) as u8
+                } else {
+                    sum[c].checked_div(weight).unwrap_or(0) as u8
+                };
+            }
+        }
+    }
+    let depth = match d {
+        1 => ColorDepth::L8,
+        2 => ColorDepth::La8,
+        3 => ColorDepth::Rgb8,
+        _ => ColorDepth::Rgba8,
+    };
+    RgbImage::new(&out, w as i32, h as i32, depth).unwrap_or_else(|_| i.copy_sized(w as i32, h as i32))
+}
+
 /// Resized to `h` high (in screen pixels, so it's sharp on scaled screens), cut round if asked.
 fn fit(i: RgbImage, h: i32, round: bool) -> RgbImage {
     fit_at(i, h, round, fltk::app::screen_scale(0))
@@ -239,7 +286,7 @@ fn fit_at(i: RgbImage, h: i32, round: bool, scale: f32) -> RgbImage {
     let ph = (h as f32 * scale).ceil() as i32;
     let pw = (i.data_w() * ph / i.data_h().max(1)).max(1);
     let w = (pw as f32 / scale).round() as i32;
-    let mut i = i.copy_sized(pw, ph);
+    let mut i = shrink(&i, pw, ph);
     if round {
         if let Ok(rgba) = i.convert(ColorDepth::Rgba8) {
             let mut d = rgba.to_rgb_data();
@@ -265,6 +312,15 @@ fn fit_at(i: RgbImage, h: i32, round: bool, scale: f32) -> RgbImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shrinks_by_averaging_without_dark_edges() {
+        // 2x2 to 1x1: red, transparent black, red, transparent black.
+        let px = [255, 0, 0, 255, 0, 0, 0, 0, 255, 0, 0, 255, 0, 0, 0, 0];
+        let i = RgbImage::new(&px, 2, 2, ColorDepth::Rgba8).unwrap();
+        let s = shrink(&i, 1, 1);
+        assert_eq!(s.to_rgb_data(), [255, 0, 0, 127], "pure red, half see-through");
+    }
 
     #[test]
     fn decodes_animated_gif() {

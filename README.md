@@ -80,8 +80,10 @@ Added once on first run, in the Built-in group: edit, turn off or re-alias them 
 - **Groups**: add and delete user groups (their Added/Removed triggers fire). Users join them from chat.
 - **Servers**: the WebSocket, HTTP and UDP servers, WebSocket clients and custom WebSocket servers.
 - **Accounts**: one row per platform (Twitch, YouTube, Kick, TikTok): connected or not (and why), the
-  channel (a URL or @handle works), **Connect**, **Connect on start**, and **Login** for the broadcaster and
-  the bot. Chat is sent as the bot when one is logged in. **Advanced…** has the rest:
+  channel read (the broadcaster's own), **Connect**, **Connect on start**, and **Login** for the broadcaster
+  and the bot, with their profile pictures. Chat is sent as the bot when one is logged in. **Advanced…**
+  has the rest, and for YouTube, Kick and TikTok an **Other channel** to read instead of the broadcaster's
+  (a URL or @handle works; empty: the broadcaster's again):
   - Kick: sending needs your own Kick app (kick.com > Settings > Developer > Create app, redirect URL
     `http://127.0.0.1:45563/callback`, every scope; the bot account is only asked for chat). Paste its client ID and secret, then Login. Reading
     chat needs no login.
@@ -90,11 +92,13 @@ Added once on first run, in the Built-in group: edit, turn off or re-alias them 
     (External, then **Publish app**; unpublished apps log you out every 7 days) > Credentials > Create
     OAuth client ID, type **Desktop app**. Paste its ID and secret, then Login. Google warns that the app
     is unverified: it's yours, so continue. Reading chat needs no login.
-  - TikTok has no Advanced: streamerz reads the channel's live itself, with no login (it waits while the
+  - TikTok: streamerz reads the channel's live itself, with no login (it waits while the
     channel is offline). Login opens TikTok's own login page; sending types into the live page's chat in a
     hidden window (`streamerz-tiktok` next to streamerz on Linux), which closes after 2 idle minutes.
 - **Stream Apps**: OBS Studio and Streamlabs Desktop connections.
 - **Settings**: window options and this instance's name (what GetInfo reports).
+
+The window comes back as it was left: its size, its tab and the chat's view.
 
 ## Streamlabs Desktop
 

@@ -91,6 +91,9 @@ pub struct Config {
     /// The built-in chat commands were added (once: deleting one keeps it deleted).
     #[serde(default)]
     builtins: bool,
+    /// The window as it was left.
+    #[serde(default)]
+    pub window: WindowState,
     /// Fields this build doesn't know (e.g. written by a newer one): kept, so a save loses nothing.
     #[serde(flatten)]
     rest: Map<String, Value>,
@@ -123,7 +126,39 @@ impl Default for Config {
             tiktok: tiktok::TikTokConfig::default(),
             donations: donations::DonationsConfig::default(),
             builtins: false,
+            window: WindowState::default(),
             rest: Map::new(),
+        }
+    }
+}
+
+/// The window as it was left: its tab, the chat's view and its size (0: the default).
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WindowState {
+    pub tab: String,
+    pub chat_view: String,
+    pub w: i32,
+    pub h: i32,
+}
+
+impl Config {
+    /// Each platform reads the broadcaster's own channel unless another is set (in Advanced).
+    pub fn own_channels(&mut self) {
+        if self.youtube.channel_id.trim().is_empty() {
+            if let Some(b) = &self.youtube.broadcaster {
+                self.youtube.channel_id.clone_from(&b.channel_id);
+            }
+        }
+        if self.kick.channel.trim().is_empty() {
+            if let Some(b) = &self.kick.broadcaster {
+                self.kick.channel = b.username.to_lowercase();
+            }
+        }
+        if self.tiktok.channel.trim().is_empty() {
+            if let Some(b) = &self.tiktok.broadcaster {
+                self.tiktok.channel = b.username.trim_start_matches('@').to_string();
+            }
         }
     }
 }
@@ -279,7 +314,7 @@ fn load_from(path: &Path) -> Config {
             })
         })
     };
-    let c = match read(path) {
+    let mut c = match read(path) {
         Ok(Ok(c)) => c,
         Err(_) => Config::default(),
         Ok(Err(e)) => {
@@ -296,6 +331,7 @@ fn load_from(path: &Path) -> Config {
             };
         }
     };
+    c.own_channels();
     let _ = save_to(path, &c);
     c
 }

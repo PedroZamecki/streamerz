@@ -245,6 +245,25 @@ pub async fn ttwid() -> Result<String, String> {
         .ok_or_else(|| "TikTok sent no ttwid cookie".into())
 }
 
+/// A TikTok user's profile picture, from their public creator embed (no cookie, not rate limited
+/// like `user/room`, and it works when they're not live). TikTok often answers 503: a few tries.
+pub async fn avatar(user: &str) -> Option<String> {
+    let url = format!("https://www.tiktok.com/embed/@{}", crate::commands::url_encode(user));
+    let mut page = String::new();
+    for _ in 0..5 {
+        match crate::http::request("GET", &url, &[("User-Agent".into(), UA.into())], b"").await {
+            Ok(r) if r.status == 200 => {
+                page = r.text();
+                break;
+            }
+            _ => tokio::time::sleep(std::time::Duration::from_secs(2)).await,
+        }
+    }
+    let raw = page.split("\"avatarThumbUrl\":\"").nth(1)?.split('"').next()?;
+    let url = raw.replace("\\u0026", "&").replace("\\/", "/");
+    url.starts_with("https://").then_some(url)
+}
+
 /// The channel's `user/room` answer (user, live room). TikTok rate limits this lookup much less with a
 /// `ttwid`.
 pub async fn user_room(channel: &str, ttwid: &str) -> Result<Value, String> {
