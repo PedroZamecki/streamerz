@@ -4664,4 +4664,40 @@ mod tests {
             assert!(e.dev_take().unwrap().is_empty());
         });
     }
+
+    #[test]
+    fn templates_run() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        let e = engine(json!({"actions": []}));
+        e.st.borrow_mut().dev_out = Some(Vec::new());
+        e.cfg.send_modify(|c| {
+            for t in crate::templates::TEMPLATES {
+                let m = (t.make)();
+                c.actions.actions.extend(m.actions);
+                c.commands.extend(m.commands);
+                c.timers.extend(m.timers);
+            }
+        });
+        run(async move {
+            let args = |v: Value| v.as_object().cloned().unwrap();
+            e.fire(101, "Follow", "Twitch", "twitch", &args(json!({"user": "ana"})), |_| {
+                true
+            });
+            e.fire(
+                41002,
+                "Gift",
+                "TikTok",
+                "tiktok",
+                &args(json!({"user": "bo", "giftName": "Rose", "repeatCount": 5})),
+                |_| true,
+            );
+            assert_eq!(e.inject_chat("kick", "cy", "viewer", "!lurk").unwrap(), 1);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let out = e.dev_take().unwrap();
+            let said = |p: &str, t: &str| out.iter().any(|o| o["platform"] == p && o["text"] == t);
+            assert!(said("twitch", "Thanks for the follow, ana! 💜"), "{out:?}");
+            assert!(said("tiktok", "Thanks for the 5x Rose, bo! 🌹"), "{out:?}");
+            assert!(said("kick", "cy is now lurking. Enjoy the stream! 👀"), "{out:?}");
+        });
+    }
 }

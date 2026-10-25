@@ -580,7 +580,7 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
     let actions_tree = tree();
     let lb = bar(&mut left, &["Add", "Edit", "Duplicate"]);
     let lb2 = bar(&mut left, &["Delete", "Test"]);
-    let lb3 = bar(&mut left, &["Import", "Export"]);
+    let lb3 = bar(&mut left, &["Import", "Export", "Templates"]);
     left.end();
     row.fixed(&left, 300);
     let mut right = Flex::default().column();
@@ -786,6 +786,43 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
             }
         }),
     );
+    {
+        let me2 = me.clone();
+        let mut b = lb3[2].clone();
+        b.set_tooltip("Add ready-made actions, commands and timers");
+        b.set_callback(move |_| {
+            let Some(t) = pick_template() else { return };
+            let made = (t.make)();
+            let names: Vec<String> = made
+                .actions
+                .iter()
+                .map(|a| a.name.clone())
+                .chain(
+                    made.commands
+                        .iter()
+                        .map(|c| format!("command {}", c["command"].as_str().unwrap_or(""))),
+                )
+                .chain(
+                    made.timers
+                        .iter()
+                        .map(|x| format!("timer {}", x["name"].as_str().unwrap_or(""))),
+                )
+                .collect();
+            let timers = !made.timers.is_empty();
+            let mut m = me2.borrow_mut();
+            m.selected = made.actions.first().map(|a| a.id.clone());
+            m.edit(|c| {
+                c.actions.actions.extend(made.actions);
+                c.commands.extend(made.commands);
+                c.timers.extend(made.timers);
+            });
+            if timers {
+                super::tell(&m.cmds, |e| e.timers());
+            }
+            super::changed();
+            crate::say(format!("Added from the template \"{}\": {}", t.name, names.join(", ")));
+        });
+    }
     on(
         &lb3[1],
         Box::new(|m| {
@@ -1400,4 +1437,67 @@ fn edit_sub(me: &Rc<RefCell<Actions>>) {
             edit::update(&mut a.sub_actions, &p, |x| *x = new);
         });
     }
+}
+
+/// The template picker: each one's name and what it does. The one picked.
+fn pick_template() -> Option<&'static crate::templates::Template> {
+    use crate::templates::TEMPLATES;
+    let mut win = fltk::window::Window::default()
+        .with_size(560, 380)
+        .with_label("New from template");
+    win.set_xclass("streamerz");
+    win.make_modal(true);
+    let mut col = Flex::new(10, 10, 540, 360, None).column();
+    col.set_pad(6);
+    let mut list = HoldBrowser::default();
+    for t in TEMPLATES {
+        list.add(&t.name.replace('@', "@@"));
+    }
+    list.select(1);
+    let mut about = Frame::default().with_align(Align::Left | Align::Inside | Align::Wrap | Align::Top);
+    about.set_label(TEMPLATES[0].about);
+    col.fixed(&about, 60);
+    let mut row = Flex::default().row();
+    Frame::default();
+    let mut add = button(&mut row, "Add", 90);
+    let mut cancel = button(&mut row, "Cancel", 90);
+    row.end();
+    col.fixed(&row, ROW + 4);
+    col.end();
+    win.end();
+    let answer = Rc::new(std::cell::Cell::new(None::<bool>));
+    list.set_callback({
+        let mut about = about.clone();
+        let a = answer.clone();
+        move |l| {
+            if let Some(t) = TEMPLATES.get((l.value() - 1).max(0) as usize) {
+                about.set_label(&t.about.replace('@', "@@"));
+            }
+            // Double click adds.
+            if fltk::app::event_clicks() {
+                a.set(Some(true));
+            }
+        }
+    });
+    add.set_callback({
+        let a = answer.clone();
+        move |_| a.set(Some(true))
+    });
+    cancel.set_callback({
+        let a = answer.clone();
+        move |_| a.set(Some(false))
+    });
+    win.set_callback({
+        let a = answer.clone();
+        move |_| a.set(Some(false))
+    });
+    win.show();
+    while win.shown() && answer.get().is_none() {
+        if !fltk::app::wait() {
+            break;
+        }
+    }
+    win.hide();
+    let picked = answer.get() == Some(true) && list.value() > 0;
+    picked.then(|| &TEMPLATES[(list.value() - 1) as usize])
 }
