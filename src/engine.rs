@@ -162,6 +162,11 @@ pub fn supported(kind: u32) -> bool {
 
 pub(crate) use rest::{poll_args, prediction_args};
 
+/// A UTC civil date and time from Unix seconds.
+pub fn civil_time(secs: i64) -> crate::fmt::Time {
+    rest::civil_pub(secs)
+}
+
 /// Unix seconds from an ISO 8601 UTC time ("2024-08-17T12:34:56Z").
 pub fn rest_parse_iso(t: &str) -> Option<i64> {
     rest::parse_iso_pub(t)
