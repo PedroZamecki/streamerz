@@ -676,6 +676,7 @@ impl Runner {
         // Auto connect if configured
         if self.cfg.borrow().twitch.auto_connect && self.cfg.borrow().twitch.broadcaster.is_some() {
             crate::say("Twitch auto-connecting...".into());
+            self.refresh_if_needed().await;
             self.connect_eventsub().await;
         }
 
@@ -1340,7 +1341,7 @@ async fn run_bot_eventsub_loop(
                 let bid = bot.user_id.clone();
                 let sid = sid.to_string();
                 tokio::task::spawn_local(async move {
-                    create_sub(&sid, &token, "user.whisper.message", "1", json!({"user_id": bid})).await;
+                    let _ = create_sub(&sid, &token, "user.whisper.message", "1", json!({"user_id": bid})).await;
                 });
             }
             "notification" => {
@@ -1553,11 +1554,14 @@ async fn create_all_subscriptions(sid: &str, token: &str, bid: &str) {
     ];
 
     for (stype, ver, cond) in subs {
-        create_sub(sid, token, stype, ver, cond).await;
+        if !create_sub(sid, token, stype, ver, cond).await {
+            break;
+        }
     }
 }
 
-async fn create_sub(sid: &str, token: &str, sub_type: &str, version: &str, condition: Value) {
+/// False when the token was refused: every other subscription would be too.
+async fn create_sub(sid: &str, token: &str, sub_type: &str, version: &str, condition: Value) -> bool {
     let url = format!("{HELIX_URL}/eventsub/subscriptions");
     let headers = vec![
         ("Client-Id".into(), CLIENT_ID.into()),
@@ -1578,12 +1582,17 @@ async fn create_sub(sid: &str, token: &str, sub_type: &str, version: &str, condi
         Ok(r) => r,
         Err(e) => {
             crate::say(format!("Create sub {sub_type}: {e}"));
-            return;
+            return true;
         }
     };
+    if res.status == 401 {
+        crate::say("Twitch refused the login (expired or revoked); log in again".into());
+        return false;
+    }
     if res.status != 202 && res.status != 200 {
         crate::say(format!("Create sub {sub_type} HTTP {}: {}", res.status, res.text()));
     }
+    true
 }
 
 fn handle_notification(
