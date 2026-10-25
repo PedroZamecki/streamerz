@@ -120,6 +120,11 @@ fn wanted(state: u64, now: bool) -> bool {
 }
 
 impl Engine {
+    /// Any Streamlabs Desktop connection up.
+    pub fn slobs_connected(&self) -> bool {
+        self.slobs.conns.borrow().values().any(|c| c.up.get())
+    }
+
     /// Match the running connections to the settings: drop removed ones, restart changed ones, and
     /// (`start`) start those set to connect at start.
     pub fn slobs_sync(self: &Rc<Self>, start: bool) {

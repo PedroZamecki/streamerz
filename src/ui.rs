@@ -324,12 +324,40 @@ pub fn run(
     let mut save = button(&mut bar, "Save", 90);
     save.set_shortcut(Shortcut::Ctrl | 's');
     save.set_tooltip("Save and apply (Ctrl+S)");
+    let mut conns = Button::default().with_align(Align::Left | Align::Inside);
+    conns.set_frame(fltk::enums::FrameType::NoBox);
+    bar.fixed(&conns, 150);
     let mut saved = Frame::default().with_align(Align::Left | Align::Inside);
     let mut hide = button(&mut bar, "Hide", 90);
     let mut quit = button(&mut bar, "Quit", 90);
     bar.end();
     win.end();
     win.resizable(&tabs);
+    conns.set_callback({
+        let (tabs, tab) = (tabs.clone(), views.accounts.borrow().tab.clone());
+        move |_| {
+            let mut t = tabs.clone();
+            let _ = t.set_value(&tab);
+            t.do_callback();
+        }
+    });
+    // The status bar's "2/4 connected", its tooltip listing each one.
+    let status_bar = {
+        let (cfg, cmds) = (cfg.clone(), cmds.clone());
+        let conns = conns.clone();
+        move || {
+            let mut conns = conns.clone();
+            let (label, tip, all) = accounts::summary(&cfg, &cmds);
+            conns.set_label(&label);
+            conns.set_tooltip(&tip);
+            conns.set_label_color(match all {
+                Some(true) => fltk::enums::Color::from_rgb(0x3c, 0xb3, 0x71),
+                Some(false) => fltk::enums::Color::from_rgb(0x99, 0x99, 0x99),
+                None => fltk::enums::Color::from_rgb(0xe0, 0xa8, 0x30),
+            });
+            conns.redraw();
+        }
+    };
     let views = Rc::new(views);
     tabs.clone().set_callback({
         let views = views.clone();
@@ -389,6 +417,7 @@ pub fn run(
             SHOWN.store(true, Ordering::Relaxed);
             acts.borrow_mut().refresh();
             views.refresh(&tabs);
+            status_bar();
             win.show();
             log.refresh();
         }
@@ -413,6 +442,7 @@ pub fn run(
                 Msg::Chat => views.chat_refresh(&tabs),
                 Msg::Image => views.images(),
                 Msg::Changed => {
+                    status_bar();
                     acts.borrow_mut().refresh();
                     views.refresh(&tabs);
                 }
