@@ -458,8 +458,12 @@ pub fn trigger_description(code: u32, _raw_name: &str, title: &str, category: &s
         14007 => "Fires when OBS Studio begins video recording.".into(),
         14008 => "Fires when OBS Studio stops video recording.".into(),
         15001 => "Fires when an incoming MIDI message (note or CC) is received from a device.".into(),
-        16001 => "Fires when a configured keyboard shortcut is pressed.".into(),
-        16002 => "Fires when a configured mouse button click is detected.".into(),
+        16001 => "Fires when its key combination is pressed, whichever program has focus. Set it by \
+            pressing the keys; on Linux the desktop asks you to allow it (Hyprland: a line for hyprland.conf)."
+            .into(),
+        16002 => "Fires on a mouse click anywhere (mouse.button: 1 left, 2 right, 3 middle). Windows only: \
+            on Linux only reading every input device could see clicks, which streamerz doesn't do."
+            .into(),
         17001 => "Fires when a Stream Deck key or dial action is triggered.".into(),
         21001..=21020 => format!("Fires on Elgato Wave Link audio event: {title}."),
         21301..=21390 => format!("Fires on Elgato Camera Hub webcam event: {title}."),

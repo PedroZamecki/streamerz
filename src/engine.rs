@@ -118,6 +118,7 @@ pub struct Engine {
     tiktok: RefCell<Option<crate::tiktok::TikTokHandle>>,
     pub(crate) slobs: crate::slobs::Slobs,
     pub(crate) donations: RefCell<crate::donations::Live>,
+    pub(crate) hotkeys: RefCell<crate::hotkeys::Live>,
 }
 
 /// A running action's context.
@@ -268,6 +269,7 @@ impl Engine {
             tiktok: RefCell::default(),
             slobs: Default::default(),
             donations: RefCell::default(),
+            hotkeys: RefCell::default(),
         })
     }
 
@@ -698,69 +700,6 @@ impl Engine {
                 "data1": data1,
                 "data2": data2,
                 "type": type_name
-            })
-        });
-    }
-
-    pub fn fire_input_key(self: &Rc<Self>, key: &str, modifiers: u32, event_type: &str) {
-        let mut args = Obj::new();
-        args.insert("key".into(), key.into());
-        args.insert("modifiers".into(), (modifiers as u64).into());
-        args.insert(
-            "modifierNames".into(),
-            crate::inputs::format_modifiers(modifiers).into(),
-        );
-        args.insert("event".into(), event_type.into());
-        args.insert("eventType".into(), event_type.into());
-        let key_str = key.to_string();
-        self.fire(
-            crate::inputs::T_INPUT_KEY_PRESS,
-            "Key Press",
-            "Core/Inputs",
-            "inputs",
-            &args,
-            |t| {
-                let want_key = s(t, "key");
-                let want_mods = n(t, "modifiers") as u32;
-                (want_key.is_empty() || want_key.eq_ignore_ascii_case(&key_str))
-                    && (want_mods == 0 || want_mods == modifiers)
-            },
-        );
-        self.emit("Inputs", "InputKeyPress", || {
-            json!({
-                "key": key,
-                "modifiers": modifiers,
-                "event": event_type
-            })
-        });
-    }
-
-    pub fn fire_input_mouse(self: &Rc<Self>, button: &str, event_type: &str, x: i32, y: i32) {
-        let mut args = Obj::new();
-        args.insert("button".into(), button.into());
-        args.insert("buttonName".into(), button.into());
-        args.insert("event".into(), event_type.into());
-        args.insert("eventType".into(), event_type.into());
-        args.insert("x".into(), (x as i64).into());
-        args.insert("y".into(), (y as i64).into());
-        let btn_str = button.to_string();
-        self.fire(
-            crate::inputs::T_INPUT_MOUSE_CLICK,
-            "Mouse Click",
-            "Core/Inputs",
-            "inputs",
-            &args,
-            |t| {
-                let want_btn = s(t, "button");
-                want_btn.is_empty() || want_btn.eq_ignore_ascii_case(&btn_str)
-            },
-        );
-        self.emit("Inputs", "InputMouseClick", || {
-            json!({
-                "button": button,
-                "event": event_type,
-                "x": x,
-                "y": y
             })
         });
     }
@@ -2418,12 +2357,12 @@ pub(crate) mod tests {
             "queue": crate::engine::DEFAULT_QUEUE,
             "triggers": [{
                 "id": "t_key",
-                "type": crate::inputs::T_INPUT_KEY_PRESS,
+                "type": crate::hotkeys::T_KEY_PRESS,
                 "enabled": true,
-                "key": "F14",
-                "modifiers": 6 // Ctrl + Shift
+                "keyCode": -4095, // F14
+                "modifierMask": 3 // Shift + Ctrl
             }],
-            "subActions": [log("T key %key% %modifierNames% %eventType%")]
+            "subActions": [log("T key %key% %modifier% %hasCtrl% %hasAlt% %hasShift%")]
         });
 
         let a_input_mouse = json!({
@@ -2434,11 +2373,10 @@ pub(crate) mod tests {
             "queue": crate::engine::DEFAULT_QUEUE,
             "triggers": [{
                 "id": "t_mouse",
-                "type": crate::inputs::T_INPUT_MOUSE_CLICK,
-                "enabled": true,
-                "button": "Right"
+                "type": crate::hotkeys::T_MOUSE_CLICK,
+                "enabled": true
             }],
-            "subActions": [log("T mouse %buttonName% %x% %y%")]
+            "subActions": [log("T mouse %mouse.button% %mouse.clicks% %mouse.x% %mouse.y%")]
         });
 
         let e = engine(json!({
@@ -2455,9 +2393,11 @@ pub(crate) mod tests {
             // Fire MIDI note on (0x90 = NoteOn ch 1)
             e.fire_midi_message("Launchpad", 1, 0x90, 60, 100);
             // Fire key press
-            e.fire_input_key("F14", 6, "KeyDown");
+            // Right-hand Shift counts as Shift; another combination fires nothing.
+            e.fire_hotkey(-4095, 2 | 16);
+            e.fire_hotkey(-4095, 2);
             // Fire mouse click
-            e.fire_input_mouse("Right", "Click", 300, 450);
+            e.fire_mouse(2, 1, 300, 450);
 
             settle().await;
         });
@@ -2465,8 +2405,9 @@ pub(crate) mod tests {
         assert!(out.contains(&"T dictation hello world en-US".to_string()));
         assert!(out.contains(&"T speech_cmd vcmd1 turn on the lights".to_string()));
         assert!(out.contains(&"T midi Launchpad 1 C4 100".to_string()));
-        assert!(out.contains(&"T key F14 Control + Shift KeyDown".to_string()));
-        assert!(out.contains(&"T mouse Right 300 450".to_string()));
+        assert_eq!(out.iter().filter(|l| l.starts_with("T key")).count(), 1, "{out:?}");
+        assert!(out.contains(&"T key -4095 18 True False True".to_string()), "{out:?}");
+        assert!(out.contains(&"T mouse 2 1 300 450".to_string()), "{out:?}");
 
         // Check voice command state and voice input changes
         let st = e.st.borrow();

@@ -138,7 +138,18 @@ Charity Donation triggers have Streamer.bot's Range (Min and Max amount).
 
 ## Hotkeys, inputs, MIDI and voice control
 
-- **Inputs & Hotkeys**: Key Press sub-actions (keyboard press simulation with modifiers) and Input Key Press / Mouse Click triggers with key, button, and modifier filters.
+- **Inputs & Hotkeys**: Key Press sub-actions (keyboard press simulation with modifiers), and the Key Press
+  and Mouse Click triggers, stored as Streamer.bot stores them (SharpHook's `keyCode` and `modifierMask`).
+  Set a trigger's keys by clicking **Keys** and pressing the combination. They work whichever program has
+  focus, and listen only while an enabled action uses them:
+  - Linux: through the desktop's Global Shortcuts portal (xdg-desktop-portal), with no root and no `input`
+    group. KDE and GNOME ask you to allow each shortcut; Hyprland binds them in its config, so the capture
+    window shows the line to add to hyprland.lua or hyprland.conf (**Copy line**). The portal needs an app
+    id, so a hidden `streamerz.desktop` is written to `~/.local/share/applications` the first time.
+    Mouse Click doesn't work on Linux: only reading every input device could see clicks, which also sees
+    every key typed.
+  - Windows: RegisterHotKey (a combination another program already holds can't be taken), and a mouse hook
+    only while a Mouse Click trigger is used (`mouse.button` 1 left, 2 right, 3 middle).
 - **MIDI**: MIDI Message triggers (note on/off, CC, pitch bend, sysex) with device, channel, and status filters, and Note On, Control Change, and Generic MIDI Out sub-actions.
 - **Voice Control**: Speech to Text Dictation and Speech to Text Command triggers, plus Set Voice Control Command, Set Command State, and Set Voice Input sub-actions.
 

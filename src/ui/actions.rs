@@ -173,16 +173,20 @@ pub fn trigger_label(t: &Obj, names: &Names) -> String {
     } else {
         "Unknown".to_string()
     };
-    let detail = t
-        .iter()
-        .filter(|(k, _)| !["id", "type", "enabled", "exclusions"].contains(&k.as_str()))
-        .filter_map(|(k, x)| {
-            let x = crate::vars::text(x);
-            let x = names.get(&x).cloned().unwrap_or(x);
-            (!x.is_empty()).then(|| format!("{}: {x}", k.trim_end_matches("Id")))
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
+    let n = |f: &str| t.get(f).and_then(Value::as_i64).unwrap_or(0);
+    let detail = if k == crate::hotkeys::T_KEY_PRESS {
+        crate::hotkeys::label(n("keyCode"), n("modifierMask"))
+    } else {
+        t.iter()
+            .filter(|(k, _)| !["id", "type", "enabled", "exclusions"].contains(&k.as_str()))
+            .filter_map(|(k, x)| {
+                let x = crate::vars::text(x);
+                let x = names.get(&x).cloned().unwrap_or(x);
+                (!x.is_empty()).then(|| format!("{}: {x}", k.trim_end_matches("Id")))
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     let on = t.get("enabled").and_then(Value::as_bool).unwrap_or(true);
     let mut out = if detail.is_empty() {
         what.to_string()

@@ -388,3 +388,112 @@ pub fn export(
     });
     run(&mut win, &answer, || true);
 }
+
+/// Wait for a key combination to be pressed, as games set a key: SharpHook's key code and modifier
+/// mask (see `hotkeys`), or None when cancelled.
+pub fn capture_keys() -> Option<(i64, i64)> {
+    use crate::hotkeys::{self, ALT, CTRL, META, SHIFT};
+    let hypr = std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.contains("Hyprland"));
+    let (mut win, answer) = window(560, if hypr { 230 } else { 170 }, "Press the keys");
+    let mut col = Flex::new(10, 10, 540, if hypr { 210 } else { 150 }, None).column();
+    col.set_pad(6);
+    let mut shown = Frame::default().with_label("Press the key combination (e.g. Ctrl+Shift+F9)");
+    shown.set_label_size(18);
+    shown.set_label_font(Font::HelveticaBold);
+    col.fixed(&shown, 50);
+    let how = if cfg!(windows) {
+        "It works whichever program has focus; one another program already uses can't be taken."
+    } else if hypr {
+        "Hyprland binds shortcuts in its config: add the line below to it (Copy; hyprland.lua or hyprland.conf), then save the action."
+    } else {
+        "When the action is saved, the desktop asks you to allow the shortcut (no root needed)."
+    };
+    let mut note = Frame::default()
+        .with_label(how)
+        .with_align(Align::Left | Align::Inside | Align::Wrap);
+    note.set_label_size(12);
+    col.fixed(&note, 34);
+    let mut line = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+    line.set_label_font(Font::Courier);
+    line.set_label_size(12);
+    if hypr {
+        col.fixed(&line, ROW);
+    } else {
+        line.hide();
+    }
+    let mut bar = Flex::default().row();
+    let mut copy = button(&mut bar, "Copy line", 100);
+    if !hypr {
+        copy.hide();
+    }
+    Frame::default();
+    let mut ok = button(&mut bar, "OK", 90);
+    let mut cancel = button(&mut bar, "Cancel", 90);
+    bar.end();
+    col.fixed(&bar, ROW);
+    col.end();
+    win.end();
+    // Buttons don't take the keys: every key goes to the window.
+    for b in [&mut copy, &mut ok, &mut cancel] {
+        b.visible_focus(false);
+    }
+    ok.deactivate();
+    let got: Rc<Cell<Option<(i64, i64)>>> = Rc::default();
+    ok.set_callback({
+        let a = answer.clone();
+        move |_| a.set(Some(true))
+    });
+    cancel.set_callback({
+        let a = answer.clone();
+        move |_| a.set(Some(false))
+    });
+    copy.set_callback({
+        let got = got.clone();
+        move |_| {
+            if let Some(l) = got
+                .get()
+                .and_then(|(k, m)| hotkeys::hyprland_bind(k, m, hotkeys::hyprland_lua()))
+            {
+                app::copy(&l);
+            }
+        }
+    });
+    win.handle({
+        let got = got.clone();
+        move |_, ev| {
+            if !matches!(ev, fltk::enums::Event::KeyDown | fltk::enums::Event::Shortcut) {
+                return false;
+            }
+            let st = app::event_state();
+            let mut mask = 0;
+            for (on, bit) in [
+                (Shortcut::Ctrl, CTRL),
+                (Shortcut::Alt, ALT),
+                (Shortcut::Shift, SHIFT),
+                (Shortcut::Meta, META),
+            ] {
+                if st.contains(on) {
+                    mask |= bit;
+                }
+            }
+            let k = app::event_key().bits();
+            // A modifier alone: wait for the key.
+            if (0xffe1..=0xffee).contains(&k) {
+                return true;
+            }
+            match hotkeys::by_fltk(k) {
+                Some(key) => {
+                    got.set(Some((key.code, mask)));
+                    shown.set_label(&hotkeys::label(key.code, mask).replace('&', "&&").replace('@', "@@"));
+                    if let Some(l) = hotkeys::hyprland_bind(key.code, mask, hotkeys::hyprland_lua()) {
+                        line.set_label(&l.replace('@', "@@"));
+                    }
+                    ok.activate();
+                }
+                None => shown.set_label("That key can't be used; try another"),
+            }
+            true
+        }
+    });
+    run(&mut win, &answer, || true).then(|| got.get()).flatten()
+}
