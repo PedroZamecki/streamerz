@@ -293,7 +293,7 @@ pub fn tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
         let auto = CheckButton::default().with_label("Connect on start");
         top.fixed(&auto, 140);
         let connect = button(&mut top, "Connect", 100);
-        if p != P::Twitch {
+        if matches!(p, P::YouTube | P::Kick) {
             let mut adv = button(&mut top, "Advanced…", 100);
             let cfg = cfg.clone();
             adv.set_callback(move |_| advanced(&cfg, p));
@@ -347,7 +347,7 @@ pub fn tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
             "• Login opens your browser (Twitch shows a code to type at twitch.tv/activate).\n\
              • Chat is sent as the bot when one is logged in, else as the broadcaster.\n\
              • Kick and YouTube send with your own app: Advanced shows how to make one (once).\n\
-             • TikTok reads through tikstream or TikFinity (Advanced) until it connects by itself.",
+             • TikTok reads the channel's live by itself; its login window comes with tikstream.",
         )
         .with_align(Align::Left | Align::Inside | Align::Wrap);
     col.fixed(&guide, 70);
@@ -531,10 +531,9 @@ fn browser_login<T: Send + 'static>(
 /// The settings few people need, per platform.
 fn advanced(cfg: &Cfg, p: P) {
     let c = cfg.borrow();
-    let tiktok_channel = c.tiktok.channel.clone();
     // (label, value, secret)
     let fields: Vec<(&str, String, bool)> = match p {
-        P::Twitch => return,
+        P::Twitch | P::TikTok => return,
         P::Kick => vec![
             ("Client ID", c.kick.client_id.clone(), false),
             ("Client secret", c.kick.client_secret.clone(), true),
@@ -544,7 +543,6 @@ fn advanced(cfg: &Cfg, p: P) {
             ("Google client ID", c.youtube.client_id.clone(), false),
             ("Google client secret", c.youtube.client_secret.clone(), true),
         ],
-        P::TikTok => vec![("Bridge URL", c.tiktok.bridge_url.clone(), false)],
     };
     let help = match p {
         P::Kick => format!(
@@ -555,8 +553,7 @@ fn advanced(cfg: &Cfg, p: P) {
         P::YouTube => "Sending on YouTube needs your own Google client: console.cloud.google.com > new project > \
              enable YouTube Data API v3 > OAuth consent screen (External, Publish) > Credentials > OAuth client, Desktop app. \
              Leave Video ID empty to follow the channel's current live.".into(),
-        P::TikTok => "tikstream or TikFinity serve TikTok's events here (default ws://127.0.0.1:21213/).".into(),
-        P::Twitch => String::new(),
+        P::Twitch | P::TikTok => String::new(),
     };
     drop(c);
     let h = 132 + fields.len() as i32 * (ROW + 6);
@@ -583,21 +580,9 @@ fn advanced(cfg: &Cfg, p: P) {
         col.fixed(&r, ROW);
     }
     let mut bar = Flex::default().row();
-    match p {
-        P::Kick => {
-            let mut b = button(&mut bar, "Copy redirect URL", 150);
-            b.set_callback(|_| fltk::app::copy(crate::kick::KICK_REDIRECT));
-        }
-        P::TikTok if crate::tiktok::find_tikstream_binary().is_some() => {
-            let mut b = button(&mut bar, "Start tikstream", 130);
-            let ch = tiktok_channel.clone();
-            b.set_callback(move |_| {
-                if let Err(e) = crate::tiktok::launch_tikstream(&ch) {
-                    dialog::alert_default(&e);
-                }
-            });
-        }
-        _ => {}
+    if p == P::Kick {
+        let mut b = button(&mut bar, "Copy redirect URL", 150);
+        b.set_callback(|_| fltk::app::copy(crate::kick::KICK_REDIRECT));
     }
     dialogs::ok_cancel(&mut bar, &answer, true);
     bar.end();
@@ -625,8 +610,7 @@ fn advanced(cfg: &Cfg, p: P) {
             c.youtube.client_id.clone_from(&v[1]);
             c.youtube.client_secret.clone_from(&v[2]);
         }
-        P::TikTok => c.tiktok.bridge_url.clone_from(&v[0]),
-        P::Twitch => {}
+        P::Twitch | P::TikTok => {}
     });
 }
 

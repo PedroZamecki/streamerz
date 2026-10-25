@@ -482,8 +482,8 @@ pub fn trigger_description(code: u32, _raw_name: &str, title: &str, category: &s
         41005 => "Fires when a viewer shares the TikTok live stream.".into(),
         41006 => "Fires when a viewer subscribes to the TikTok channel.".into(),
         41007 => "Fires when a viewer joins the TikTok live stream.".into(),
-        41008 => "Fires when connected to TikTok Live or the local tikstream bridge.".into(),
-        41009 => "Fires when disconnected from TikTok Live or the local tikstream bridge.".into(),
+        41008 => "Fires when connected to the TikTok channel's live.".into(),
+        41009 => "Fires when the TikTok live ends or the connection drops.".into(),
         42001 => "Fires when the system clipboard content changes.".into(),
         _ => format!("Fires on the {title} event in {}.", category.replace('/', " > ")),
     }
