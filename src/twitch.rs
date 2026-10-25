@@ -21,7 +21,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, watch};
 
 /// Public Client ID from the registered Twitch Developer application.
-pub const CLIENT_ID: &str = "6id5pmouq63yr29ee6pb8fcqufelfb";
+pub const CLIENT_ID: &str = "u1ojrkynb7b8fwcvs8ve3l3c2o838l";
 pub const DEFAULT_EVENTSUB_URL: &str = "wss://eventsub.wss.twitch.tv/ws";
 pub const HELIX_URL: &str = "https://api.twitch.tv/helix";
 pub const OAUTH_DEVICE_URL: &str = "https://id.twitch.tv/oauth2/device";
@@ -53,6 +53,7 @@ pub const BROADCASTER_SCOPES: &[&str] = &[
     "channel:manage:broadcast",
     "clips:edit",
     "moderation:read",
+    "channel:moderate",
     "moderator:manage:banned_users",
     "moderator:read:banned_users",
     "moderator:manage:chat_messages",
@@ -167,7 +168,6 @@ pub const T_PYRAMID_BROKEN: u32 = 163;
 pub const T_GUEST_STAR_SESSION_BEGIN: u32 = 165;
 pub const T_GUEST_STAR_SESSION_END: u32 = 166;
 pub const T_GUEST_STAR_GUEST_UPDATE: u32 = 167;
-pub const T_GUEST_STAR_SLOT_UPDATE: u32 = 168;
 pub const T_GUEST_STAR_SETTINGS_UPDATE: u32 = 169;
 pub const T_SEVEN_TV_EMOTE_ADDED: u32 = 180;
 pub const T_SEVEN_TV_EMOTE_REMOVED: u32 = 181;
@@ -676,6 +676,7 @@ impl Runner {
         // Auto connect if configured
         if self.cfg.borrow().twitch.auto_connect && self.cfg.borrow().twitch.broadcaster.is_some() {
             crate::say("Twitch auto-connecting...".into());
+            self.refresh_if_needed().await;
             self.connect_eventsub().await;
         }
 
@@ -1340,7 +1341,7 @@ async fn run_bot_eventsub_loop(
                 let bid = bot.user_id.clone();
                 let sid = sid.to_string();
                 tokio::task::spawn_local(async move {
-                    create_sub(&sid, &token, "user.whisper.message", "1", json!({"user_id": bid})).await;
+                    let _ = create_sub(&sid, &token, "user.whisper.message", "1", json!({"user_id": bid})).await;
                 });
             }
             "notification" => {
@@ -1453,9 +1454,9 @@ async fn create_all_subscriptions(sid: &str, token: &str, bid: &str) {
         ("channel.prediction.progress", "1", json!({"broadcaster_user_id": bid})),
         ("channel.prediction.lock", "1", json!({"broadcaster_user_id": bid})),
         ("channel.prediction.end", "1", json!({"broadcaster_user_id": bid})),
-        ("channel.hype_train.begin", "1", json!({"broadcaster_user_id": bid})),
-        ("channel.hype_train.progress", "1", json!({"broadcaster_user_id": bid})),
-        ("channel.hype_train.end", "1", json!({"broadcaster_user_id": bid})),
+        ("channel.hype_train.begin", "2", json!({"broadcaster_user_id": bid})),
+        ("channel.hype_train.progress", "2", json!({"broadcaster_user_id": bid})),
+        ("channel.hype_train.end", "2", json!({"broadcaster_user_id": bid})),
         ("channel.goal.begin", "1", json!({"broadcaster_user_id": bid})),
         ("channel.goal.progress", "1", json!({"broadcaster_user_id": bid})),
         ("channel.goal.end", "1", json!({"broadcaster_user_id": bid})),
@@ -1500,7 +1501,7 @@ async fn create_all_subscriptions(sid: &str, token: &str, bid: &str) {
         (
             "channel.chat_settings.update",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "user_id": bid}),
         ),
         (
             "channel.charity_campaign.donate",
@@ -1538,11 +1539,6 @@ async fn create_all_subscriptions(sid: &str, token: &str, bid: &str) {
             json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
         ),
         (
-            "channel.guest_star_slot.update",
-            "beta",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
-        ),
-        (
             "channel.guest_star_settings.update",
             "beta",
             json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
@@ -1553,11 +1549,14 @@ async fn create_all_subscriptions(sid: &str, token: &str, bid: &str) {
     ];
 
     for (stype, ver, cond) in subs {
-        create_sub(sid, token, stype, ver, cond).await;
+        if !create_sub(sid, token, stype, ver, cond).await {
+            break;
+        }
     }
 }
 
-async fn create_sub(sid: &str, token: &str, sub_type: &str, version: &str, condition: Value) {
+/// False when the token was refused: every other subscription would be too.
+async fn create_sub(sid: &str, token: &str, sub_type: &str, version: &str, condition: Value) -> bool {
     let url = format!("{HELIX_URL}/eventsub/subscriptions");
     let headers = vec![
         ("Client-Id".into(), CLIENT_ID.into()),
@@ -1578,12 +1577,17 @@ async fn create_sub(sid: &str, token: &str, sub_type: &str, version: &str, condi
         Ok(r) => r,
         Err(e) => {
             crate::say(format!("Create sub {sub_type}: {e}"));
-            return;
+            return true;
         }
     };
+    if res.status == 401 {
+        crate::say("Twitch refused the login (expired or revoked); log in again".into());
+        return false;
+    }
     if res.status != 202 && res.status != 200 {
         crate::say(format!("Create sub {sub_type} HTTP {}: {}", res.status, res.text()));
     }
+    true
 }
 
 fn handle_notification(
@@ -2918,19 +2922,6 @@ fn handle_notification(
                 |_| true,
             );
             engine.emit("Twitch", "GuestStarGuestUpdate", || json!(args));
-        }
-        "channel.guest_star_slot.update" => {
-            let mut args = Obj::new();
-            populate_broadcaster_vars(&mut args, broadcaster);
-            engine.fire(
-                T_GUEST_STAR_SLOT_UPDATE,
-                "Guest Star Slot Update",
-                "Twitch/Guest Star",
-                "twitch",
-                &args,
-                |_| true,
-            );
-            engine.emit("Twitch", "GuestStarSlotUpdate", || json!(args));
         }
         "channel.guest_star_settings.update" => {
             let mut args = Obj::new();
