@@ -100,6 +100,10 @@ Added once on first run, in the Built-in group: edit, turn off or re-alias them 
 
 The window comes back as it was left: its size, its tab and the chat's view.
 
+Downloads are kept in `cache/` next to the settings file: pictures (at most 50 MB; the least recently
+shown go first), the channels' BTTV/FFZ/7TV emote lists and the accounts' picture addresses (used at
+once, fetched again in the background after a day). Deleting the folder is safe.
+
 The bottom bar counts the connections that are set up (platforms, OBS and Streamlabs Desktop connections,
 StreamElements, Streamlabs, DonorDrive), e.g. "● 3/5 connected". Click it for each one's state (connected,
 connecting, or not and why), with **Retry** and **Settings** (its tab).

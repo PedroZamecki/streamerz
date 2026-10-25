@@ -47,7 +47,15 @@ pub struct Log {
     emotes: [VecDeque<(String, String)>; 4],
     /// What each chatter's messages said about them, by (platform, user id).
     users: HashMap<(String, String), Seen>,
+    /// What the platforms said about chatters (user cards), and when: reopened at once for a while.
+    cards: HashMap<(String, String), (std::time::Instant, Facts)>,
 }
+
+/// Label and value rows about a chatter.
+type Facts = Vec<(String, String)>;
+
+/// How long a user card's lookup is reused.
+const CARD_FOR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// A chatter, as seen in chat this session.
 #[derive(Clone, Default)]
@@ -223,6 +231,25 @@ impl Engine {
     /// What the platform says about a chatter (for the chat's user card): label and value. Twitch and
     /// Kick are asked; YouTube and TikTok tell only what their chat messages carry.
     pub async fn chatter_lookup(self: &Rc<Self>, platform: &str, user_id: &str) -> Vec<(String, String)> {
+        let key = (platform.to_string(), user_id.to_string());
+        if let Some((at, found)) = self.st.borrow().chat_log.cards.get(&key) {
+            if at.elapsed() < CARD_FOR {
+                return found.clone();
+            }
+        }
+        let found = self.chatter_ask(platform, user_id).await;
+        if !found.is_empty() {
+            let cards = &mut self.st.borrow_mut().chat_log.cards;
+            // ponytail: cleared when full; an LRU if 200 cards in 10 minutes ever matters.
+            if cards.len() >= 200 {
+                cards.clear();
+            }
+            cards.insert(key, (std::time::Instant::now(), found.clone()));
+        }
+        found
+    }
+
+    async fn chatter_ask(self: &Rc<Self>, platform: &str, user_id: &str) -> Vec<(String, String)> {
         let mut out = Vec::new();
         let mut add = |k: &str, v: &Value| {
             let v = match v {

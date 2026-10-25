@@ -280,7 +280,9 @@ platform handles through channels, never through shared locks held across awaits
   input group: the desktop asks the user) and RegisterHotKey on Windows; mouse clicks on Windows only (on
   Linux only the input group could see them, which lets any program read every key); "press the keys" to
   set a trigger's shortcut.
-- [ ] 33. Faster start: measure and cut what the window waits for before it shows.
+- [x] 33. Cache: the BTTV/FFZ/7TV emote lists and the accounts' picture URLs kept in `cache/` (used at once,
+  fetched again in the background after a day), user card lookups reused for 10 minutes, and the pictures
+  kept under 50 MB (least recently shown go first). Faster start was dropped: it's fast enough.
 - [ ] 34. Quotes, credits, users and first words.
 - [ ] 35. TikTok triggers and sub-actions beyond chat, gifts, likes and follows (viewers, top gifters, live
   start/end and more).
