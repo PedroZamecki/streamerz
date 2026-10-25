@@ -419,6 +419,8 @@ fn main() {
             if tt_cfg.auto_connect {
                 e.tiktok_start();
             }
+            // Opt-in: only the donation services with a token (or a DonorDrive participant) set.
+            e.donations_sync();
             tokio::task::spawn_local(servers::run(e.clone()));
             e.started();
             e.timers();

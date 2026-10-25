@@ -21,7 +21,7 @@ pub fn logo(name: &str, size: i32) -> Option<SvgImage> {
         "YouTube" => include_str!("../../assets/icons/youtube.svg"),
         "TikTok" => include_str!("../../assets/icons/tiktok.svg"),
         "OBS Studio" => include_str!("../../assets/icons/obsstudio.svg"),
-        "Streamlabs Desktop" => include_str!("../../assets/icons/streamlabs.svg"),
+        "Streamlabs Desktop" | "Streamlabs" => include_str!("../../assets/icons/streamlabs.svg"),
         "Discord" => include_str!("../../assets/icons/discord.svg"),
         _ => return None,
     };

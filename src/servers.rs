@@ -625,7 +625,9 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
                 &id,
                 json!({"info": info(e), "connected": {
                     "twitch": e.twitch_connected(), "youtube": e.youtube_connected(), "kick": e.kick_connected(),
-                    "tiktok": e.tiktok_connected(), "obs": e.obs_connected(None), "streamlabs": e.slobs_connected()},
+                    "tiktok": e.tiktok_connected(), "obs": e.obs_connected(None), "streamlabsDesktop": e.slobs_connected(),
+                    "streamElements": e.donations.borrow().streamelements.get(),
+                    "streamlabs": e.donations.borrow().streamlabs.get()},
                     "actions": c.actions.actions.len(), "commands": c.commands.len(), "timers": c.timers.len()}),
             )
         }

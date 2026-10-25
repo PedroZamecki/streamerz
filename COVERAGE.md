@@ -581,20 +581,20 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] Shop Order
 - [x] Subscription
 
-**Triggers: streamelements** (4) (only through a webhook nothing sends: needs its socket.io client, phase 27c)
+**Triggers: streamelements** (4)
 
-- [ ] Connected
-- [ ] Disconnected
-- [ ] Merch
-- [ ] Tip
+- [x] Connected
+- [x] Disconnected
+- [x] Merch
+- [x] Tip
 
-**Triggers: streamlabs** (5) (only through a webhook nothing sends: needs its socket.io client, phase 27c)
+**Triggers: streamlabs** (5)
 
-- [ ] Charity Donation
-- [ ] Connected
-- [ ] Disconnected
-- [ ] Donation
-- [ ] Merchandise
+- [x] Charity Donation
+- [x] Connected
+- [x] Disconnected
+- [x] Donation
+- [x] Merchandise
 
 **Triggers: patreon** (5)
 

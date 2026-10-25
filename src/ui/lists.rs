@@ -504,6 +504,7 @@ pub struct Views {
     pub globals: Rc<RefCell<Globals>>,
     pub servers: Rc<RefCell<Servers>>,
     pub groups: Rc<RefCell<Groups>>,
+    pub donations: Rc<RefCell<Donations>>,
     pub accounts: Rc<RefCell<super::accounts::Accounts>>,
     pub chat: Rc<RefCell<super::chat::Chat>>,
 }
@@ -546,6 +547,11 @@ impl Views {
             }
         }
         self.chat_refresh(tabs);
+        if let Ok(mut d) = self.donations.try_borrow_mut() {
+            if is(&d.tab) {
+                d.refresh();
+            }
+        }
         if let Ok(mut q) = self.queues.try_borrow_mut() {
             if is(&q.tab) {
                 q.refresh();
@@ -630,6 +636,7 @@ pub fn tabs(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Views {
     let c = cmds.clone();
     b_disconnect.set_callback(move |_| tell(&c, |e| e.slobs_disconnect("")));
     col.end();
+    let donations = donations_tab(tabs, cfg, cmds);
 
     Views {
         lists: vec![commands, timers, clients, custom, obs, slobs],
@@ -638,6 +645,7 @@ pub fn tabs(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Views {
         globals,
         servers,
         groups,
+        donations,
         accounts,
         chat,
     }
@@ -1178,6 +1186,110 @@ fn servers_box(col: &mut Flex, cfg: &Cfg) -> Rc<RefCell<Servers>> {
         });
         me.borrow_mut().lines.push(f);
     }
+    me
+}
+
+/// The donation services that connect out (StreamElements, Streamlabs) or poll (DonorDrive).
+pub struct Donations {
+    tab: Flex,
+    cfg: Cfg,
+    cmds: Cmds,
+    lines: Vec<Frame>,
+}
+
+impl Donations {
+    pub fn refresh(&mut self) {
+        let (se, sl) = query(&self.cmds, |e| {
+            let d = e.donations.borrow();
+            (d.streamelements.get(), d.streamlabs.get())
+        })
+        .unwrap_or_default();
+        let c = self.cfg.borrow();
+        let d = &c.donations;
+        let state = |token: &str, up: bool| match (token.trim().is_empty(), up) {
+            (true, _) => "off (no token)",
+            (_, true) => "connected",
+            _ => "not connected",
+        };
+        let texts = [
+            format!("Status: {}", state(&d.streamelements_token, se)),
+            format!("Status: {}", state(&d.streamlabs_token, sl)),
+            match (d.donordrive_instance.trim(), d.donordrive_participant_id.trim()) {
+                ("", _) | (_, "") => "Status: off".into(),
+                (site, id) => format!("Status: participant {id} on {site}, checked every 15 s"),
+            },
+        ];
+        for (f, t) in self.lines.iter_mut().zip(texts) {
+            f.set_label(&t.replace('@', "@@"));
+        }
+    }
+
+    fn edit(&mut self, which: usize) {
+        let fields: &[F] = match which {
+            0 => &[("streamelementsToken", "JWT token", Text)],
+            1 => &[("streamlabsToken", "Socket API token", Text)],
+            _ => &[
+                ("donordriveInstance", "Site", Text),
+                (
+                    "donordriveParticipantId",
+                    "Participant ID (the number in your page's address)",
+                    Text,
+                ),
+            ],
+        };
+        let title = ["StreamElements", "Streamlabs", "DonorDrive"][which.min(2)];
+        let o = to_obj(&self.cfg.borrow().donations);
+        let Some(o) = ask(title, fields, &o, &Lists::default()) else {
+            return;
+        };
+        if let Ok(d) = serde_json::from_value(Value::Object(o)) {
+            save(&self.cfg, |c| c.donations = d);
+            tell(&self.cmds, |e| e.donations_sync());
+        }
+        self.refresh();
+    }
+}
+
+fn donations_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Donations>> {
+    let mut col = tab(tabs, "Donations");
+    let me = Rc::new(RefCell::new(Donations {
+        tab: col.clone(),
+        cfg: cfg.clone(),
+        cmds: cmds.clone(),
+        lines: Vec::new(),
+    }));
+    let guides = [
+        "Dashboard > your account > Channels > Show secrets, copy the JWT token.",
+        "Dashboard > Settings > API Settings > API Tokens, copy Your Socket API Token.",
+        "Extra Life and other DonorDrive charities: the site (www.extra-life.org) and the number ending your page's address.",
+    ];
+    for (i, (name, guide)) in ["StreamElements", "Streamlabs", "DonorDrive"]
+        .iter()
+        .zip(guides)
+        .enumerate()
+    {
+        title(&mut col, name);
+        let g = Frame::default()
+            .with_label(guide)
+            .with_align(Align::Left | Align::Inside | Align::Wrap);
+        col.fixed(&g, ROW);
+        let mut r = Flex::default().row();
+        let f = Frame::default().with_align(Align::Left | Align::Inside);
+        let mut b = button(&mut r, "Edit", 70);
+        r.end();
+        col.fixed(&r, ROW);
+        b.set_callback({
+            let me = me.clone();
+            move |_| {
+                if let Ok(mut m) = me.try_borrow_mut() {
+                    m.edit(i);
+                }
+            }
+        });
+        me.borrow_mut().lines.push(f);
+    }
+    Frame::default();
+    col.end();
     me
 }
 

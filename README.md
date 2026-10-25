@@ -103,6 +103,22 @@ Streamlabs Desktop trigger and sub-action of Streamer.bot works, with the same a
 Set Browser Source URL and Set GDI Text work (in Streamer.bot 1.0.7 they do nothing), and in a
 dual-output scene a source's horizontal and vertical copies both change unless "Display" picks one.
 
+## Donations: StreamElements, Streamlabs, DonorDrive
+
+In the Donations tab:
+
+- **StreamElements**: paste the JWT token (StreamElements dashboard → your account → Channels → Show
+  secrets). Streamer.bot logs in with OAuth instead; the token does the same. Tips and merch arrive
+  live, including the dashboard's Emulate buttons.
+- **Streamlabs**: paste Your Socket API Token (Dashboard → Settings → API Settings → API Tokens).
+  Donations, charity donations and merch arrive live, including test alerts.
+- **DonorDrive** (Extra Life and other charities on DonorDrive): the site and your participant ID.
+  streamerz asks every 15 s whether your page changed (what DonorDrive asks for), so a donation
+  shows up within 15 s.
+
+Each one connects only when it's filled in, and reconnects a minute after it drops. Tip, Donation and
+Charity Donation triggers have Streamer.bot's Range (Min and Max amount).
+
 ## Webhooks and remote integrations
 
 - **Discord Webhook**: post basic messages, embeds, custom username/avatar and TTS directly to Discord webhooks.

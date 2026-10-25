@@ -316,7 +316,16 @@ fn picture(cmds: &Cmds, cfg: &Cfg, p: P, bot: bool, name: &str, size: i32) -> Op
 /// stream app that has a connection set up; all, some or none up).
 pub fn summary(cfg: &Cfg, cmds: &Cmds) -> (String, String, Option<bool>) {
     let (on, _) = states(cmds);
-    let (obs, slobs) = query(cmds, |e| (e.obs_connected(None), e.slobs_connected())).unwrap_or_default();
+    let (obs, slobs, se, sl) = query(cmds, |e| {
+        let d = e.donations.borrow();
+        (
+            e.obs_connected(None),
+            e.slobs_connected(),
+            d.streamelements.get(),
+            d.streamlabs.get(),
+        )
+    })
+    .unwrap_or_default();
     let mut items: Vec<(&str, bool)> = ALL.iter().map(|p| p.name()).zip(on).collect();
     {
         let c = cfg.borrow();
@@ -325,6 +334,12 @@ pub fn summary(cfg: &Cfg, cmds: &Cmds) -> (String, String, Option<bool>) {
         }
         if !c.slobs.connections.is_empty() {
             items.push(("Streamlabs Desktop", slobs));
+        }
+        if !c.donations.streamelements_token.trim().is_empty() {
+            items.push(("StreamElements", se));
+        }
+        if !c.donations.streamlabs_token.trim().is_empty() {
+            items.push(("Streamlabs", sl));
         }
     }
     let up = items.iter().filter(|i| i.1).count();

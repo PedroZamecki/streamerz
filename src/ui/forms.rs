@@ -936,8 +936,9 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
         | 4001..=4031
         | 35001..=35003
         | 35008..=35025
-        | 201..=206
-        | 1201..=1205
+        | 202..=204
+        | 206
+        | 1202..=1205
         | 3001..=3003
         | 7001..=7005
         | 8001..=8005
@@ -948,6 +949,11 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
         | 28001..=28003
         | 36001..=36004
         | 37001..=37003 => &[],
+        // Range: neither (any amount), only Max (exactly it), only Min (at least it), or both.
+        201 | 205 | 1201 => &[
+            ("min", "Min amount (0: none)", Num),
+            ("max", "Max amount (0: none)", Num),
+        ],
         29001 | 29002 => &[("instanceId", "Instance", Text)],
         29003 => &[("instanceId", "Instance", Text), ("eventName", "Event Name", Text)],
         29004 => &[("instanceId", "Instance", Text), ("signalName", "Signal Name", Text)],
