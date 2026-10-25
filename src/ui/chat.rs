@@ -524,7 +524,7 @@ impl Chat {
         if *self.plats.borrow() != plats {
             *self.plats.borrow_mut() = plats;
             self.lists();
-            self.rebuild();
+            self.rebuild(true);
             return;
         }
         let seen = self.seen;
@@ -597,7 +597,8 @@ impl Chat {
         self.to.set_value(to);
     }
 
-    fn rebuild(&mut self) {
+    /// Lay the view out again, and fill it (only while the window is up: filling loads the emotes).
+    fn rebuild(&mut self, fill: bool) {
         let side = self.view.value() == 1;
         // One platform shown: what's sent goes there.
         match self
@@ -637,7 +638,9 @@ impl Chat {
             }
         }
         self.seen = 0;
-        self.refresh();
+        if fill {
+            self.refresh();
+        }
         self.tab.layout();
         self.tab.redraw();
     }
@@ -706,8 +709,14 @@ pub fn tab(tabs: &Tabs, cfg: &Arc<watch::Sender<Config>>, cmds: &Cmds) -> Rc<Ref
         let mut m = me.borrow_mut();
         *m.plats.borrow_mut() = set_up(&cfg.borrow());
         m.lists();
-        m.view.set_value(0);
+        // The view it was left on.
+        let was = cfg.borrow().window.chat_view.clone();
+        let at = m.view.find_index(&was);
+        m.view.set_value(at.max(0));
         m.to.set_value(0);
+        if at > 0 {
+            m.rebuild(false);
+        }
     }
     // Side by side needs room: titles above each pane.
     panes.set_margins(0, if view.value() == 1 { 20 } else { 0 }, 0, 0);
@@ -715,9 +724,15 @@ pub fn tab(tabs: &Tabs, cfg: &Arc<watch::Sender<Config>>, cmds: &Cmds) -> Rc<Ref
     view.set_callback({
         let me = me.clone();
         let mut panes = panes.clone();
+        let cfg = cfg.clone();
         move |v| {
+            let view = v.choice().unwrap_or_default();
+            cfg.send_if_modified(|c| {
+                c.window.chat_view = view;
+                false
+            });
             panes.set_margins(0, if v.value() == 1 { 20 } else { 0 }, 0, 0);
-            me.borrow_mut().rebuild();
+            me.borrow_mut().rebuild(true);
         }
     });
     clear.set_callback({

@@ -271,7 +271,7 @@ platform handles through channels, never through shared locks held across awaits
 - [x] 29. Chat: animated Twitch emotes (GIF, `gif` crate); click a name for a card with everything known about
   that user on its platform; sending goes to the platform shown; only platforms that are set up show in the
   views, the side-by-side panes and the send list.
-- [ ] 30. Accounts and pictures: TikTok's profile picture, sharper pictures everywhere, another channel than the
+- [x] 30. Accounts and pictures: TikTok's profile picture, sharper pictures everywhere, another channel than the
   broadcaster's only under Advanced, and the window coming back as it was left (tab, chat view, size).
 - [ ] 31. Connections: the status bar counts every connection that's set up (platforms, OBS, Streamlabs
   Desktop, donations...); clicking it shows each one's state (connecting, connected, failed and why) with a

@@ -48,7 +48,11 @@ fn yes(b: bool, t: &str) -> String {
 
 /// Change the config and save it.
 pub(super) fn save(cfg: &Cfg, f: impl FnOnce(&mut Config)) {
-    cfg.send_modify(f);
+    cfg.send_modify(|c| {
+        f(c);
+        // A login (or a channel emptied in Advanced) reads the broadcaster's own channel.
+        c.own_channels();
+    });
     let _ = crate::save(&cfg.borrow());
 }
 

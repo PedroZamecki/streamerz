@@ -134,6 +134,27 @@ impl P {
         }
     }
 
+    /// Whether the channel read is the broadcaster's own (by id, or by name ignoring case, spaces and @).
+    fn own(self, c: &Config) -> bool {
+        let norm = |s: &str| s.trim_start_matches('@').replace(' ', "").to_lowercase();
+        let ch = norm(self.channel(c));
+        let mine = match self {
+            P::Twitch => return true,
+            P::YouTube => c
+                .youtube
+                .broadcaster
+                .as_ref()
+                .map(|b| [norm(&b.channel_id), norm(&b.name)]),
+            P::Kick => c.kick.broadcaster.as_ref().map(|b| [norm(&b.username), String::new()]),
+            P::TikTok => c
+                .tiktok
+                .broadcaster
+                .as_ref()
+                .map(|b| [norm(&b.username), String::new()]),
+        };
+        ch.is_empty() || mine.is_some_and(|m| m.contains(&ch))
+    }
+
     /// Set the channel from what was typed (a URL or @handle works); what was kept.
     fn set_channel(self, c: &mut Config, raw: &str) -> String {
         let (v, slot) = match self {
@@ -266,14 +287,16 @@ async fn avatar(e: &Rc<Engine>, cfg: &Cfg, p: P, bot: bool) -> Option<String> {
                 let a = if bot { &c.tiktok.bot } else { &c.tiktok.broadcaster }.clone()?;
                 (a.username, a.avatar)
             };
-            if !seen.is_empty() {
+            if seen.starts_with("http") {
                 return Some(seen);
+            }
+            let name = name.trim_start_matches('@').to_string();
+            if let Some(url) = crate::webcast::avatar(&name).await {
+                return Some(url);
             }
             let ttwid = crate::webcast::ttwid().await.ok()?;
             at(
-                crate::webcast::user_room(name.trim_start_matches('@'), &ttwid)
-                    .await
-                    .ok(),
+                crate::webcast::user_room(&name, &ttwid).await.ok(),
                 "/data/user/avatarThumb",
             )
         }
@@ -365,9 +388,10 @@ pub fn summary(cfg: &Cfg, cmds: &Cmds) -> (String, String, Option<bool>) {
 struct Row {
     p: P,
     status: Frame,
-    channel: Option<Input>,
+    channel: Frame,
     auto: CheckButton,
     connect: Button,
+    adv: Button,
     /// Broadcaster, then bot: profile picture, name and Login/Logout.
     who: [(Frame, Frame, Button); 2],
 }
@@ -392,7 +416,7 @@ impl Accounts {
                     P::Twitch if c.twitch.broadcaster.is_none() => "log in the broadcaster first".into(),
                     P::Twitch => String::new(),
                     P::TikTok if !tiktok.is_empty() => tiktok.clone(),
-                    p if p.channel(&c).is_empty() => "set the channel".into(),
+                    p if p.channel(&c).is_empty() => "log in the broadcaster first".into(),
                     _ => String::new(),
                 };
                 let t = if why.is_empty() {
@@ -405,11 +429,11 @@ impl Accounts {
             r.status.set_label(&text);
             r.status.set_label_color(color);
             r.connect.set_label(if on[i] { "Disconnect" } else { "Connect" });
-            if let Some(input) = &mut r.channel {
-                if input.value() != r.p.channel(&c) {
-                    input.set_value(r.p.channel(&c));
-                }
-            }
+            r.channel.set_label(&if r.p.own(&c) {
+                "Channel: the broadcaster's".to_string()
+            } else {
+                format!("Channel: {} (Advanced)", r.p.channel(&c).replace('@', "@@"))
+            });
             r.auto.set_checked(r.p.auto(&c));
             for (bot, (pic, name, b)) in r.who.iter_mut().enumerate() {
                 let who = if bot == 1 { "Bot" } else { "Broadcaster" };
@@ -444,33 +468,13 @@ pub fn tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
         let auto = CheckButton::default().with_label("Connect on start");
         top.fixed(&auto, 140);
         let connect = button(&mut top, "Connect", 100);
-        if matches!(p, P::Twitch | P::YouTube | P::Kick) {
-            let mut adv = button(&mut top, "Advanced…", 100);
-            let cfg = cfg.clone();
-            adv.set_callback(move |_| advanced(&cfg, p));
-        } else {
-            let f = Frame::default();
-            top.fixed(&f, 100);
-        }
+        let adv = button(&mut top, "Advanced…", 100);
         top.end();
         col.fixed(&top, ROW);
 
         let mut bottom = Flex::default().row();
-        let channel = if p == P::Twitch {
-            let f = Frame::default()
-                .with_label("Channel: the broadcaster's")
-                .with_align(Align::Left | Align::Inside);
-            bottom.fixed(&f, 300);
-            None
-        } else {
-            let l = Frame::default()
-                .with_label("Channel:")
-                .with_align(Align::Left | Align::Inside);
-            bottom.fixed(&l, 60);
-            let i = Input::default();
-            bottom.fixed(&i, 240);
-            Some(i)
-        };
+        let channel = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+        bottom.fixed(&channel, 300);
         let gap = Frame::default();
         bottom.fixed(&gap, 20);
         let mut who = Vec::new();
@@ -490,6 +494,7 @@ pub fn tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
             p,
             status,
             channel,
+            adv,
             auto,
             connect,
             who,
@@ -500,10 +505,11 @@ pub fn tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
             "• Login opens your browser (Twitch shows a code to type at twitch.tv/activate).\n\
              • Chat is sent as the bot when one is logged in, else as the broadcaster.\n\
              • Kick and YouTube send with your own app: Advanced shows how to make one (once).\n\
-             • TikTok reads the channel's live by itself; Login opens TikTok's own page.",
+             • TikTok reads the channel's live by itself; Login opens TikTok's own page.\n\
+             • Each platform reads the broadcaster's channel; another one can be set in Advanced.",
         )
         .with_align(Align::Left | Align::Inside | Align::Wrap);
-    col.fixed(&guide, 70);
+    col.fixed(&guide, 88);
     Frame::default();
     col.end();
 
@@ -523,19 +529,14 @@ pub fn tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
                 }
             }
         };
-        if let Some(input) = &mut r.channel {
+        r.adv.set_callback({
             let cfg = cfg.clone();
             let refresh = refresh.clone();
-            input.set_callback(move |i| {
-                let raw = i.value();
-                let mut kept = String::new();
-                save(&cfg, |c| kept = p.set_channel(c, &raw));
-                if kept != raw {
-                    i.set_value(&kept);
-                }
+            move |_| {
+                advanced(&cfg, p);
                 refresh();
-            });
-        }
+            }
+        });
         r.auto.set_callback({
             let cfg = cfg.clone();
             move |b| {
@@ -685,8 +686,8 @@ fn browser_login<T: Send + 'static>(
 fn advanced(cfg: &Cfg, p: P) {
     let c = cfg.borrow();
     // (label, value, secret)
-    let fields: Vec<(&str, String, bool)> = match p {
-        P::TikTok => return,
+    let mut fields: Vec<(&str, String, bool)> = match p {
+        P::TikTok => Vec::new(),
         P::Twitch => vec![(
             "Sub counter rollover (0: never)",
             c.twitch.sub_counter_rollover.to_string(),
@@ -715,6 +716,16 @@ fn advanced(cfg: &Cfg, p: P) {
             Count). Every time it reaches the rollover it starts again and Sub Counter Rollover fires."
             .into(),
         P::TikTok => String::new(),
+    };
+    // Twitch reads only the broadcaster's own channel.
+    let help = if p == P::Twitch {
+        help
+    } else {
+        let other = if p.own(&c) { "" } else { p.channel(&c) };
+        fields.insert(0, ("Other channel", other.to_string(), false));
+        format!("{help}\nOther channel: read this channel instead of the broadcaster's (empty: theirs).")
+            .trim_start()
+            .to_string()
     };
     drop(c);
     let h = 132 + fields.len() as i32 * (ROW + 6);
@@ -760,19 +771,25 @@ fn advanced(cfg: &Cfg, p: P) {
     if answer.get() != Some(true) {
         return;
     }
-    let v: Vec<String> = inputs.iter().map(|i| i().trim().to_string()).collect();
-    save(cfg, |c| match p {
-        P::Kick => {
-            c.kick.client_id.clone_from(&v[0]);
-            c.kick.client_secret.clone_from(&v[1]);
+    let mut v: Vec<String> = inputs.iter().map(|i| i().trim().to_string()).collect();
+    save(cfg, |c| {
+        if p != P::Twitch {
+            // Emptied: the save puts the broadcaster's back.
+            p.set_channel(c, &v.remove(0));
         }
-        P::YouTube => {
-            c.youtube.video_id = crate::youtube::clean_youtube_video(&v[0]);
-            c.youtube.client_id.clone_from(&v[1]);
-            c.youtube.client_secret.clone_from(&v[2]);
+        match p {
+            P::Kick => {
+                c.kick.client_id.clone_from(&v[0]);
+                c.kick.client_secret.clone_from(&v[1]);
+            }
+            P::YouTube => {
+                c.youtube.video_id = crate::youtube::clean_youtube_video(&v[0]);
+                c.youtube.client_id.clone_from(&v[1]);
+                c.youtube.client_secret.clone_from(&v[2]);
+            }
+            P::Twitch => c.twitch.sub_counter_rollover = v[0].parse().unwrap_or(0),
+            P::TikTok => {}
         }
-        P::Twitch => c.twitch.sub_counter_rollover = v[0].parse().unwrap_or(0),
-        P::TikTok => {}
     });
 }
 
