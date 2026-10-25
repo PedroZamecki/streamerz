@@ -29,6 +29,8 @@ wry = { version = "0.57", default-features = false, features = ["os-webview"] }
 tao = "0.37"
 # WebP emotes and avatars (BTTV, 7TV, Kick, TikTok serve WebP); FLTK decodes PNG/JPEG/GIF/SVG itself.
 image-webp = "0.2"
+# Twitch serves animated emotes only as GIF; FLTK reads only their first frame (and not into RGB).
+gif = { version = "0.14.2", default-features = false, features = ["std"] }
 
 [profile.dev]
 opt-level = 0

@@ -268,14 +268,29 @@ platform handles through channels, never through shared locks held across awaits
   instance through its WebSocket: status, log, actions, run an action, list/fire triggers, inject chat and
   read what would have been sent. New dev-only requests (`STREAMERZ_DEV=1`): FireTrigger, GetLog, GetStatus.
   The repo's `.mcp.json` points at a dev instance on 8090. Phase 27b moves after it.
-- [ ] 29. Points: Streamer.bot's Points sub-actions and triggers.
-- [ ] 30. Quotes, credits, users and first words.
-- [ ] 31. TikTok triggers and sub-actions beyond chat, gifts, likes and follows (viewers, top gifters, live
+- [x] 29. Chat: animated Twitch emotes (GIF, `gif` crate); click a name for a card with everything known about
+  that user on its platform; sending goes to the platform shown; only platforms that are set up show in the
+  views, the side-by-side panes and the send list.
+- [ ] 30. Accounts and pictures: TikTok's profile picture, sharper pictures everywhere, another channel than the
+  broadcaster's only under Advanced, and the window coming back as it was left (tab, chat view, size).
+- [ ] 31. Connections: the status bar counts every connection that's set up (platforms, OBS, Streamlabs
+  Desktop, donations...); clicking it shows each one's state (connecting, connected, failed and why) with a
+  retry button and a link to its settings.
+- [ ] 32. Hotkeys: Hotkey Press triggers through the desktop's Global Shortcuts portal on Linux (no sudo, no
+  input group: the desktop asks the user) and RegisterHotKey on Windows; mouse clicks on Windows only (on
+  Linux only the input group could see them, which lets any program read every key); "press the keys" to
+  set a trigger's shortcut.
+- [ ] 33. Faster start: measure and cut what the window waits for before it shows.
+- [ ] 34. Quotes, credits, users and first words.
+- [ ] 35. TikTok triggers and sub-actions beyond chat, gifts, likes and follows (viewers, top gifters, live
   start/end and more).
-- [ ] 32. Visual polish across every tab: layout, spacing, status colours, icons.
-- [ ] 33+. Later extras, one phase each, order chosen then (see Decisions).
+- [ ] 36. Visual polish across every tab: layout, spacing, status colours, icons.
+- [ ] 37+. Later extras, one phase each, order chosen then (see Decisions).
 
 ## Open points (decide when the phase starts, ask first)
+
+- Points: its sub-actions are new in Streamer.bot 1.1.0, unreleased (1.0.7 is the latest). When it's out,
+  read the type codes and the point definitions' format from it, then add them.
 
 - Cron trigger: new in Streamer.bot 1.1.0. When the real Streamer.bot is updated, read its type code and
   fields from the metadata, then add it (and a small cron parser).

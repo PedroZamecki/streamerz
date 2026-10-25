@@ -46,8 +46,10 @@ streamerz are kept, shown greyed out with "(not supported)", and skipped.
 
 The other tabs, as in Streamer.bot:
 
-- **Chat**: every connected platform's chat **all together** (tagged TW/YT/KI/TT), **side by side** (one
-  column each), or one platform alone. Emoji show as they are, and platform emotes (Twitch, Kick, YouTube's
+- **Chat**: every set-up platform's chat **all together** (tagged TW/YT/KI/TT), **side by side** (one
+  column each), or one platform alone (then what you send goes to that platform). Click a name for that
+  user's card: roles, messages this session, their variables (%userName%...), and what Twitch or Kick says
+  (account age, following since, subscription, their channel). Emoji show as they are, and platform emotes (Twitch, Kick, YouTube's
   own) are highlighted by name. Send at the bottom: **To** a platform or **All connected**, **as bot** (the
   broadcaster when no bot is logged in) or **as broadcaster**, Enter or **Send**. **Emotes** offers emoji
   and the emotes seen in chat; each platform gets its own format (on Kick an emote name becomes Kick's
@@ -148,8 +150,8 @@ Charity Donation triggers have Streamer.bot's Range (Min and Max amount).
 
 ## Chat
 
-- One view for every platform's chat (together, side by side, or one platform), drawn with the platforms' logos, role badges and name colours.
-- Emotes as pictures: Twitch, Kick and YouTube's own, the channel's BTTV, FFZ and 7TV emotes (7TV on Kick too), animated ones moving while the chat is on screen; Unicode emoji as Twemoji pictures.
+- One view for every set-up platform's chat (together, side by side, or one platform), drawn with the platforms' logos, role badges and name colours. Click a name for what's known about that user.
+- Emotes as pictures: Twitch (animated ones too), Kick and YouTube's own, the channel's BTTV, FFZ and 7TV emotes (7TV on Kick too), animated ones moving while the chat is on screen; Unicode emoji as Twemoji pictures.
 - An emote picker with the emotes seen in chat, the channel's third-party emotes and every emoji by group. Right click a message to copy it.
 
 ## Credits
