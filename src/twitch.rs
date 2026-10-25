@@ -21,7 +21,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, watch};
 
 /// Public Client ID from the registered Twitch Developer application.
-pub const CLIENT_ID: &str = "6id5pmouq63yr29ee6pb8fcqufelfb";
+pub const CLIENT_ID: &str = "u1ojrkynb7b8fwcvs8ve3l3c2o838l";
 pub const DEFAULT_EVENTSUB_URL: &str = "wss://eventsub.wss.twitch.tv/ws";
 pub const HELIX_URL: &str = "https://api.twitch.tv/helix";
 pub const OAUTH_DEVICE_URL: &str = "https://id.twitch.tv/oauth2/device";
