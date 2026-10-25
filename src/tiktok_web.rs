@@ -2,7 +2,7 @@
 //! `streamerz-tiktok` on Linux (so streamerz itself doesn't load WebKitGTK), `streamerz.exe --tiktok`
 //! on Windows. TikTok signs its web chat requests, so chat is sent by typing into its live page.
 //!
-//! - `login <profile>`: TikTok's login page. Once logged in, prints {"username","cookies"} and exits 0;
+//! - `login <profile>`: TikTok's login page. Once logged in, prints {"username","cookies","avatar"} and exits 0;
 //!   closing the window exits 1.
 //! - `send <profile> <channel>`: the channel's live page in a hidden window, its video paused. Each stdin
 //!   line is a JSON string to send; each gets one stdout line, {"ok":true} or {"error":"..."}. Exits when
@@ -26,11 +26,12 @@ const KEEP: [&str; 6] = [
     "tt-target-idc",
 ];
 
-/// Logged-in user, from the data TikTok's own page loads with.
+/// Logged-in user and profile picture, from the data TikTok's own page loads with.
 const WHO: &str = r#"(() => { try {
   const d = JSON.parse(document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__').textContent);
-  return d.__DEFAULT_SCOPE__['webapp.app-context'].user.uniqueId || '';
-} catch (e) { return ''; } })()"#;
+  const u = d.__DEFAULT_SCOPE__['webapp.app-context'].user;
+  return [u.uniqueId || '', (u.avatarUri || [])[0] || u.avatarThumb || ''];
+} catch (e) { return ['', '']; } })()"#;
 
 /// Sends one chat message on the live page, in order, then posts the outcome back. The box is TikTok's
 /// own (`disabled` with the reason as placeholder when this account can't comment).
@@ -145,9 +146,9 @@ pub fn run(args: &[std::ffi::OsString]) -> ! {
             }
             // Login: the home page's answer to WHO.
             Event::UserEvent(Ev::Result(r)) => {
-                let user: String = serde_json::from_str(&r).unwrap_or_default();
+                let (user, avatar): (String, String) = serde_json::from_str(&r).unwrap_or_default();
                 if !user.is_empty() {
-                    done(&cookies, &user);
+                    done(&cookies, &user, &avatar);
                 }
             }
             Event::NewEvents(StartCause::ResumeTimeReached { .. }) if send => {
@@ -175,7 +176,7 @@ pub fn run(args: &[std::ffi::OsString]) -> ! {
                 });
                 // ponytail: page layout can change; after 20s give up and let them type the username
                 if since.elapsed() > Duration::from_secs(20) {
-                    done(&cookies, "");
+                    done(&cookies, "", "");
                 }
             }
             _ => {}
@@ -183,8 +184,11 @@ pub fn run(args: &[std::ffi::OsString]) -> ! {
     })
 }
 
-fn done(cookies: &str, user: &str) -> ! {
-    println!("{}", serde_json::json!({ "username": user, "cookies": cookies }));
+fn done(cookies: &str, user: &str, avatar: &str) -> ! {
+    println!(
+        "{}",
+        serde_json::json!({ "username": user, "cookies": cookies, "avatar": avatar })
+    );
     std::process::exit(0)
 }
 

@@ -259,7 +259,14 @@ async fn avatar(e: &Rc<Engine>, cfg: &Cfg, p: P, bot: bool) -> Option<String> {
             )
         }
         P::TikTok => {
-            let name = p.account(&cfg.borrow(), bot)?;
+            let (name, seen) = {
+                let c = cfg.borrow();
+                let a = if bot { &c.tiktok.bot } else { &c.tiktok.broadcaster }.clone()?;
+                (a.username, a.avatar)
+            };
+            if !seen.is_empty() {
+                return Some(seen);
+            }
             let ttwid = crate::webcast::ttwid().await.ok()?;
             at(
                 crate::webcast::user_room(name.trim_start_matches('@'), &ttwid)
@@ -727,11 +734,8 @@ fn tiktok_login(cfg: &Cfg, bot: bool) {
     while win.shown() && answer.get().is_none() {
         if let Ok(res) = rx.try_recv() {
             match res {
-                Ok((username, cookies)) => save(cfg, |c| {
-                    let a = Some(crate::tiktok::TikTokAccount {
-                        username,
-                        session_cookie: cookies,
-                    });
+                Ok(a) => save(cfg, |c| {
+                    let a = Some(a);
                     *if bot {
                         &mut c.tiktok.bot
                     } else {
