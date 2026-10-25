@@ -36,6 +36,9 @@ pub struct TikTokAccount {
     pub username: String,
     /// Session cookie string (must contain sessionid=...).
     pub session_cookie: String,
+    /// Profile picture URL, seen at login (TikTok's profile pages are behind a bot check).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub avatar: String,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -95,8 +98,8 @@ fn helper(args: &[&std::ffi::OsStr]) -> Result<std::process::Command, String> {
     Ok(cmd)
 }
 
-/// Opens TikTok's login in the TikTok window; blocks until it closes. (username, session cookies).
-pub fn login(bot: bool) -> Result<(String, String), String> {
+/// Opens TikTok's login in the TikTok window; blocks until it closes.
+pub fn login(bot: bool) -> Result<TikTokAccount, String> {
     let p = profile(bot);
     let out = helper(&["login".as_ref(), p.as_os_str()])?
         .output()
@@ -109,7 +112,11 @@ pub fn login(bot: bool) -> Result<(String, String), String> {
     }
     let v: Value = serde_json::from_slice(&out.stdout).map_err(|_| "the login window answered nothing".to_string())?;
     match v["cookies"].as_str().filter(|c| !c.is_empty()) {
-        Some(c) => Ok((v["username"].as_str().unwrap_or("").to_string(), c.to_string())),
+        Some(c) => Ok(TikTokAccount {
+            username: v["username"].as_str().unwrap_or("").into(),
+            session_cookie: c.into(),
+            avatar: v["avatar"].as_str().unwrap_or("").into(),
+        }),
         None => Err("no TikTok session after login".into()),
     }
 }

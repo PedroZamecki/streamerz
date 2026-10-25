@@ -35,7 +35,7 @@ phase, following `CLAUDE.md`.
 | Integrations | Opt-in and off by default; a disabled one opens nothing. In scope: donations/shops (Ko-fi, StreamElements, Streamlabs, Patreon, Fourthwall, Throne, Tipeee, Treatstream, DonorDrive, Pally, Shopify, Streamloots) and webhooks/remote (Discord, IFTTT, pronouns, Streamer.bot remote instances). |
 | OS | Windows + Linux (Wayland, ksni tray). CI releases a Windows exe and a Linux binary on every release. |
 | Budget | Hidden window, Twitch + OBS connected: < 25 MB RSS and ~0% idle CPU, measured and written in every PR. Streamer.bot uses ~300 MB. |
-| Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, fltk, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only), **wry** + **tao** (the TikTok window, child process only). HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. **tokio-native-tls** (the crate tokio-tungstenite's native-tls feature uses, for HTTPS), **regex-lite** (If/Else, While, Switch and regex commands; .NET's backreferences and lookaround aren't supported). Anything else needs a question first. |
+| Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, fltk, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only), **wry** + **tao** (the TikTok window, child process only). **image-webp** (WebP emotes and avatars; FLTK decodes the other formats itself). HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. **tokio-native-tls** (the crate tokio-tungstenite's native-tls feature uses, for HTTPS), **regex-lite** (If/Else, While, Switch and regex commands; .NET's backreferences and lookaround aren't supported). Anything else needs a question first. |
 | TikTok | Read natively, no bridge app: `webcast.rs` ports the part of piratetok-live-rs (0BSD) streamerz uses (ttwid cookie, room lookup, WebSocket, ~10 protobuf messages) onto the HTTP/WebSocket code and flate2 already here, instead of vendoring it with reqwest, prost and tracing. Send through streamerz's own TikTok window (OS webview via wry/tao, a child process: `streamerz-tiktok` on Linux so streamerz never loads WebKitGTK, `streamerz.exe --tiktok` on Windows) typing into the logged-in live page's chat, since TikTok signs its chat requests; it runs only around sends (~1 GB while open, closes after 2 idle minutes). Its login replaces tikstream-login. Broadcaster + bot accounts like the other platforms. |
 | Chat commands | Commands keep Streamer.bot's `sources` bitmask (Twitch 1/2/8, YouTube 1024, Kick 2097152, TikTok 4194304), so each command chooses its platforms. Built-in commands (`!commands`, `!command add/edit/remove`, `!command platforms`, `!so`, `!uptime`, `!title`) are normal commands created on first run, editable and disable-able. Replies go to the platform the command came from; a command can opt in to reply on all connected platforms. |
 | Not in scope | Meld, PolyPop, Elgato, VTube Studio/Voicemod/Speaker.bot/TITS/Crowd Control/HypeRate/Pulsoid/Lumia/Streamfog/mtion, the Streamer.bot website integration/cloud, C# and plugins. |
@@ -232,7 +232,24 @@ platform handles through channels, never through shared locks held across awaits
   live page's chat in a hidden window (video paused) that opens on first send and closes after 2 idle
   minutes. Its own `streamerz-tiktok` binary on Linux, `streamerz.exe --tiktok` on Windows; tikstream-login
   no longer needed.
-- [ ] 24+. Later extras, one phase each, order chosen then (see Decisions).
+- [x] 24. Images and icons: FLTK's own PNG/JPEG/GIF/SVG plus `image-webp`; web pictures fetched on the engine's
+  thread into `cache/` next to `streamerz.json`, decoded only while the window shows them and freed when it hides.
+  Platform and app logos (Simple Icons, CC0) on the section titles; profile pictures in Accounts (Twitch, Kick
+  and YouTube from their APIs, TikTok seen at login, or its live lookup). The status bar shows "2/4 connected"
+  (each platform, and OBS/Streamlabs when set up, in its tooltip; a click opens Accounts).
+- [ ] 25. Emotes in chat: a chat view that draws text, emote images and badges. Twitch emotes, BTTV, FFZ and 7TV
+  (7TV on Kick too), Kick, YouTube and TikTok emotes; animated ones move only while the chat is on screen
+  (one timer). The emote picker shows images and the whole Unicode emoji list.
+- [ ] 26. Ready-made actions: "New from template" (nothing created by itself): welcome first chatters, thank
+  follows/subs/raids (with a shoutout), cheers and gifts, TikTok gifts, socials and hydrate timers, `!lurk`,
+  OBS scene on raid.
+- [ ] 27. Output variables: every sub-action sets all the variables the docs list (about 60 are missing some).
+- [ ] 28. Points: Streamer.bot's Points sub-actions and triggers.
+- [ ] 29. Quotes, credits, users and first words.
+- [ ] 30. TikTok triggers and sub-actions beyond chat, gifts, likes and follows (viewers, top gifters, live
+  start/end and more).
+- [ ] 31. Visual polish across every tab: layout, spacing, status colours, icons.
+- [ ] 32+. Later extras, one phase each, order chosen then (see Decisions).
 
 ## Open points (decide when the phase starts, ask first)
 

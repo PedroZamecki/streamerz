@@ -245,9 +245,9 @@ pub async fn ttwid() -> Result<String, String> {
         .ok_or_else(|| "TikTok sent no ttwid cookie".into())
 }
 
-/// The channel's live room ID; an error says why there's none (not found, not live, rate limited).
-/// TikTok rate limits this lookup much less with a `ttwid`.
-pub async fn room_id(channel: &str, ttwid: &str) -> Result<u64, String> {
+/// The channel's `user/room` answer (user, live room). TikTok rate limits this lookup much less with a
+/// `ttwid`.
+pub async fn user_room(channel: &str, ttwid: &str) -> Result<Value, String> {
     let url = format!(
         "https://www.tiktok.com/api-live/user/room?aid=1988&app_name=tiktok_web&device_platform=web_pc\
          &app_language=en&browser_language=en-US&region=US&user_is_login=false&uniqueId={}\
@@ -269,6 +269,12 @@ pub async fn room_id(channel: &str, ttwid: &str) -> Result<u64, String> {
         Some(19881007) => return Err(format!("@{channel} not found")),
         c => return Err(format!("TikTok error {}", c.unwrap_or(-1))),
     }
+    Ok(v)
+}
+
+/// The channel's live room ID; an error says why there's none (not found, not live, rate limited).
+pub async fn room_id(channel: &str, ttwid: &str) -> Result<u64, String> {
+    let v = user_room(channel, ttwid).await?;
     let room = v["data"]["user"]["roomId"]
         .as_str()
         .and_then(|r| r.parse().ok())

@@ -3,6 +3,7 @@
 
 use super::lists::{save, title};
 use super::{button, dialogs, query, tell, ROW};
+use crate::engine::Engine;
 use crate::model::Obj;
 use crate::Config;
 use fltk::button::{Button, CheckButton};
@@ -12,11 +13,11 @@ use fltk::frame::Frame;
 use fltk::group::{Flex, Tabs};
 use fltk::input::{Input, SecretInput};
 use fltk::prelude::*;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc::UnboundedSender, watch};
 
 type Cfg = Arc<watch::Sender<Config>>;
@@ -218,14 +219,140 @@ fn states(cmds: &Cmds) -> ([bool; 4], String) {
     .unwrap_or_default()
 }
 
+/// Profile picture URLs by "platform:bot:name", looked up once a run; "" while looking (or failed).
+static AVATARS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+/// The account's profile picture URL, from the platform (on the engine's thread).
+async fn avatar(e: &Rc<Engine>, cfg: &Cfg, p: P, bot: bool) -> Option<String> {
+    let get = |url: String, h: Vec<(String, String)>| async move {
+        let r = crate::http::request("GET", &url, &h, b"").await.ok()?;
+        serde_json::from_slice::<Value>(&r.body).ok()
+    };
+    let at = |v: Option<Value>, ptr: &str| v?.pointer(ptr).cloned();
+    let bearer = |t: &str| ("Authorization".to_string(), format!("Bearer {t}"));
+    let v = match p {
+        P::Twitch => {
+            let (id, t) = {
+                let c = cfg.borrow();
+                let a = if bot { &c.twitch.bot } else { &c.twitch.broadcaster }.clone()?;
+                (a.user_id, a.token.access_token)
+            };
+            let h = vec![("Client-Id".into(), crate::twitch::CLIENT_ID.into()), bearer(&t)];
+            at(
+                get(format!("{}/users?id={id}", crate::twitch::HELIX_URL), h).await,
+                "/data/0/profile_image_url",
+            )
+        }
+        P::Kick => {
+            let t = crate::kick::token(e, cfg, bot, false).await.ok()?;
+            at(
+                get(format!("{}/users", crate::kick::KICK_API_BASE), vec![bearer(&t)]).await,
+                "/data/0/profile_picture",
+            )
+        }
+        P::YouTube => {
+            let t = crate::youtube::token(e, cfg, bot, false).await.ok()?;
+            let url = format!("{}/channels?part=snippet&mine=true", crate::youtube::YOUTUBE_API_BASE);
+            at(
+                get(url, vec![bearer(&t)]).await,
+                "/items/0/snippet/thumbnails/default/url",
+            )
+        }
+        P::TikTok => {
+            let (name, seen) = {
+                let c = cfg.borrow();
+                let a = if bot { &c.tiktok.bot } else { &c.tiktok.broadcaster }.clone()?;
+                (a.username, a.avatar)
+            };
+            if !seen.is_empty() {
+                return Some(seen);
+            }
+            let ttwid = crate::webcast::ttwid().await.ok()?;
+            at(
+                crate::webcast::user_room(name.trim_start_matches('@'), &ttwid)
+                    .await
+                    .ok(),
+                "/data/user/avatarThumb",
+            )
+        }
+    };
+    v?.as_str().filter(|u| u.starts_with("http")).map(str::to_string)
+}
+
+/// The account's profile picture, `size` px and round; looked up (once) when not known yet.
+fn picture(cmds: &Cmds, cfg: &Cfg, p: P, bot: bool, name: &str, size: i32) -> Option<fltk::image::RgbImage> {
+    let key = format!("{}:{bot}:{name}", p.name());
+    let mut a = AVATARS.lock().ok()?;
+    match a.iter().find(|(k, _)| *k == key) {
+        Some((_, url)) => {
+            let url = url.clone();
+            drop(a);
+            super::img::get(cmds, &url, size, true)
+        }
+        None => {
+            a.push((key.clone(), String::new()));
+            let cfg = cfg.clone();
+            tell(cmds, move |e| {
+                let e = e.clone();
+                tokio::task::spawn_local(async move {
+                    if let Some(url) = avatar(&e, &cfg, p, bot).await {
+                        if let Ok(mut a) = AVATARS.lock() {
+                            if let Some(slot) = a.iter_mut().find(|(k, _)| *k == key) {
+                                slot.1 = url;
+                            }
+                        }
+                        super::wake(super::Msg::Image);
+                    }
+                });
+            });
+            None
+        }
+    }
+}
+
+/// What's connected, for the window's status bar: ("2/4 connected", one line per platform, and per
+/// stream app that has a connection set up; all, some or none up).
+pub fn summary(cfg: &Cfg, cmds: &Cmds) -> (String, String, Option<bool>) {
+    let (on, _) = states(cmds);
+    let (obs, slobs) = query(cmds, |e| (e.obs_connected(None), e.slobs_connected())).unwrap_or_default();
+    let mut items: Vec<(&str, bool)> = ALL.iter().map(|p| p.name()).zip(on).collect();
+    {
+        let c = cfg.borrow();
+        if !c.obs.connections.is_empty() {
+            items.push(("OBS Studio", obs));
+        }
+        if !c.slobs.connections.is_empty() {
+            items.push(("Streamlabs Desktop", slobs));
+        }
+    }
+    let up = items.iter().filter(|i| i.1).count();
+    let tip = items
+        .iter()
+        .map(|(n, u)| {
+            format!(
+                "{} {n}: {}",
+                if *u { "●" } else { "○" },
+                if *u { "connected" } else { "not connected" }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let all = match up {
+        0 => Some(false),
+        n if n == items.len() => Some(true),
+        _ => None,
+    };
+    (format!("● {up}/{} connected", items.len()), tip, all)
+}
+
 struct Row {
     p: P,
     status: Frame,
     channel: Option<Input>,
     auto: CheckButton,
     connect: Button,
-    /// Broadcaster, then bot: name and Login/Logout.
-    who: [(Frame, Button); 2],
+    /// Broadcaster, then bot: profile picture, name and Login/Logout.
+    who: [(Frame, Frame, Button); 2],
 }
 
 pub struct Accounts {
@@ -267,9 +394,10 @@ impl Accounts {
                 }
             }
             r.auto.set_checked(r.p.auto(&c));
-            for (bot, (name, b)) in r.who.iter_mut().enumerate() {
+            for (bot, (pic, name, b)) in r.who.iter_mut().enumerate() {
                 let who = if bot == 1 { "Bot" } else { "Broadcaster" };
-                match r.p.account(&c, bot == 1) {
+                let account = r.p.account(&c, bot == 1);
+                match &account {
                     Some(n) => {
                         name.set_label(&format!("{who}: {}", n.replace('@', "@@")));
                         b.set_label("Logout");
@@ -279,6 +407,9 @@ impl Accounts {
                         b.set_label("Login");
                     }
                 }
+                // The name without the "(log in again…)" note: the lookup is per account.
+                let id = account.as_deref().map(|n| n.split(" (").next().unwrap_or(n));
+                pic.set_image(id.and_then(|n| picture(&self.cmds, &self.cfg, r.p, bot == 1, n, ROW - 4)));
             }
         }
         drop(c);
@@ -327,15 +458,17 @@ pub fn tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
         bottom.fixed(&gap, 20);
         let mut who = Vec::new();
         for _ in 0..2 {
+            let pic = Frame::default();
+            bottom.fixed(&pic, ROW);
             let f = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
             let b = button(&mut bottom, "Login", 80);
-            who.push((f, b));
+            who.push((pic, f, b));
         }
         bottom.end();
         col.fixed(&bottom, ROW);
         let sep = Frame::default();
         col.fixed(&sep, 6);
-        let who: [(Frame, Button); 2] = [who.remove(0), who.remove(0)];
+        let who: [(Frame, Frame, Button); 2] = [who.remove(0), who.remove(0)];
         rows.push(Row {
             p,
             status,
@@ -401,7 +534,7 @@ pub fn tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
                 refresh();
             }
         });
-        for (bot, (_, b)) in r.who.iter_mut().enumerate() {
+        for (bot, (_, _, b)) in r.who.iter_mut().enumerate() {
             let bot = bot == 1;
             let cfg = cfg.clone();
             let cmds = cmds.clone();
@@ -636,11 +769,8 @@ fn tiktok_login(cfg: &Cfg, bot: bool) {
     while win.shown() && answer.get().is_none() {
         if let Ok(res) = rx.try_recv() {
             match res {
-                Ok((username, cookies)) => save(cfg, |c| {
-                    let a = Some(crate::tiktok::TikTokAccount {
-                        username,
-                        session_cookie: cookies,
-                    });
+                Ok(a) => save(cfg, |c| {
+                    let a = Some(a);
                     *if bot {
                         &mut c.tiktok.bot
                     } else {

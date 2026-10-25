@@ -23,10 +23,12 @@ regex-lite = "0.1"
 native-tls = "0.2"
 tokio-native-tls = "0.3"
 serde = { version = "1.0.229", features = ["derive"] }
-fltk = { version = "1.5.23", features = ["no-images"] }
+fltk = "1.5.23"
 # The OS webview (WebKitGTK / WebView2) for TikTok's login and chat, in a child process only.
 wry = { version = "0.57", default-features = false, features = ["os-webview"] }
 tao = "0.37"
+# WebP emotes and avatars (BTTV, 7TV, Kick, TikTok serve WebP); FLTK decodes PNG/JPEG/GIF/SVG itself.
+image-webp = "0.2"
 
 [profile.dev]
 opt-level = 0
