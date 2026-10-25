@@ -13,6 +13,7 @@ pub mod http;
 pub mod inputs;
 pub mod kick;
 mod math;
+mod mcp;
 pub mod model;
 mod oauth;
 pub mod obs;
@@ -135,6 +136,13 @@ struct Status {
 }
 
 const LOG_LINES: usize = 200;
+
+/// The log's last `n` lines (the dev WebSocket's GetLog).
+pub fn log_tail(n: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    status(|s| out = s.log.iter().rev().take(n).rev().cloned().collect());
+    out
+}
 
 static STATUS: Mutex<Status> = Mutex::new(Status {
     log: VecDeque::new(),
@@ -353,6 +361,11 @@ fn main() {
     #[cfg(windows)]
     if std::env::args_os().nth(1).is_some_and(|a| a == "--tiktok") {
         tiktok_web::run(&std::env::args_os().skip(2).collect::<Vec<_>>());
+    }
+    // An MCP server for AI assistants, driving the running instance (mcp.rs); no window.
+    if std::env::args_os().nth(1).is_some_and(|a| a == "--mcp") {
+        mcp::run();
+        return;
     }
     say(version());
     secrets::init(&config_path());
