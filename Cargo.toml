@@ -3,6 +3,12 @@ name = "streamerz"
 version = "0.0.0" # unused: releases are versioned by git tags (see build workflow)
 edition = "2021"
 
+# Linux only: TikTok's pages (login, sending chat) in their own binary, so streamerz itself doesn't load
+# WebKitGTK. On Windows it's built into streamerz.exe (`--tiktok`), and this one is just never shipped.
+[[bin]]
+name = "streamerz-tiktok"
+path = "src/tiktok_web.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["rt", "macros", "sync", "time", "net", "io-util", "process"] }
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
@@ -18,6 +24,9 @@ native-tls = "0.2"
 tokio-native-tls = "0.3"
 serde = { version = "1.0.229", features = ["derive"] }
 fltk = { version = "1.5.23", features = ["no-images"] }
+# The OS webview (WebKitGTK / WebView2) for TikTok's login and chat, in a child process only.
+wry = { version = "0.57", default-features = false, features = ["os-webview"] }
+tao = "0.37"
 
 [profile.dev]
 opt-level = 0

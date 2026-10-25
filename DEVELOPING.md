@@ -501,6 +501,14 @@ every few seconds. Then run streamerz with `"tiktok": {"channel": NAME, "autoCon
 to the TikTok events on its WebSocket. Chat on a quiet live can take minutes; joins and likes come at once.
 An emote-only comment has no text (its emotes are in field 13).
 
+Sending (src/tiktok_web.rs) types into the live page's chat. To test it without posting anywhere, point
+the window at a local copy of that page: `STREAMERZ_TIKTOK_URL=http://127.0.0.1:8765` loads
+`{url}/@{channel}/live`, so serve files `@NAME/live` holding a `contenteditable` element with
+`data-e2e="room-chat-input-field"` (add `disabled` and a `placeholder` for a room that refuses comments)
+and a `data-e2e="room-chat-send-btn"`, whose Enter or click handler records the text (e.g. fetches
+`/sent?text`). Run `streamerz-tiktok send <profile dir> NAME` and write JSON strings to its stdin; each
+gets `{"ok":true}` or `{"error":...}`. `STREAMERZ_TIKTOK_SHOW=1` shows the window.
+
 ## OBS sub-actions against a real OBS
 
 A throwaway OBS on the hidden display, so the user's own profile and devices aren't touched: its own config

@@ -89,7 +89,8 @@ Added once on first run, in the Built-in group: edit, turn off or re-alias them 
     OAuth client ID, type **Desktop app**. Paste its ID and secret, then Login. Google warns that the app
     is unverified: it's yours, so continue. Reading chat needs no login.
   - TikTok has no Advanced: streamerz reads the channel's live itself, with no login (it waits while the
-    channel is offline). Login opens tikstream-login (it comes with tikstream), for 18+ lives and sending.
+    channel is offline). Login opens TikTok's own login page; sending types into the live page's chat in a
+    hidden window (`streamerz-tiktok` next to streamerz on Linux), which closes after 2 idle minutes.
 - **Stream Apps**: OBS Studio and Streamlabs Desktop connections.
 - **Settings**: window options and this instance's name (what GetInfo reports).
 

@@ -9,7 +9,7 @@ use crate::Config;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -70,85 +70,97 @@ pub fn clean_tiktok_channel(input: &str) -> String {
     s.trim_start_matches('@').trim_end_matches('/').trim().to_string()
 }
 
-/// Find local `tikstream-login` (or `tikstream` on Windows) companion binary.
-pub fn find_tikstream_login_binary() -> Option<PathBuf> {
-    let bin_name = if cfg!(windows) {
-        "tikstream.exe"
-    } else {
-        "tikstream-login"
-    };
-
-    // 1. Next to current executable
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join(bin_name);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-
-    // 2. Relative repos directory if in dev workspace
-    if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
-        for profile in &["release", "debug"] {
-            let p = Path::new(&home).join(format!("Documents/repos/tikstream/target/{profile}/{bin_name}"));
-            if p.is_file() {
-                return Some(p);
-            }
-        }
-    }
-
-    // 3. Search PATH
-    if let Ok(path_var) = std::env::var("PATH") {
-        let sep = if cfg!(windows) { ';' } else { ':' };
-        for part in path_var.split(sep) {
-            let candidate = Path::new(part).join(bin_name);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-
-    None
+/// The TikTok window's browser data per account, next to streamerz.json, so logging in again is one
+/// click and sending uses the same session. Log out deletes it.
+pub fn profile(bot: bool) -> PathBuf {
+    crate::config_path().with_file_name(if bot { "tiktok-bot" } else { "tiktok-broadcaster" })
 }
 
-/// Spawns the login window companion and captures user credentials on success.
-pub fn run_tikstream_login(is_bot: bool) -> Result<(String, String), String> {
-    let bin = find_tikstream_login_binary().ok_or_else(|| "tikstream-login companion binary not found".to_string())?;
-
-    let profile_name = if is_bot {
-        "streamerz-tiktok-bot"
+/// The TikTok window (tiktok_web.rs) with `args`: its own binary on Linux, `streamerz.exe --tiktok` on
+/// Windows.
+fn helper(args: &[&std::ffi::OsStr]) -> Result<std::process::Command, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut cmd = if cfg!(windows) {
+        let mut c = std::process::Command::new(exe);
+        c.arg("--tiktok");
+        c
     } else {
-        "streamerz-tiktok-broadcaster"
-    };
-    let profile_dir = std::env::temp_dir().join(profile_name);
-
-    let mut cmd = std::process::Command::new(&bin);
-    if cfg!(windows) {
-        cmd.args(["--login", profile_dir.to_str().unwrap_or("")]);
-    } else {
-        cmd.arg(&profile_dir);
-    }
-
-    let output = cmd
-        .output()
-        .map_err(|e| format!("Failed to spawn {}: {e}", bin.display()))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Login window was closed or cancelled. {stderr}"));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        if let Ok(v) = serde_json::from_str::<Value>(line.trim()) {
-            if let Some(cookies) = v["cookies"].as_str().filter(|s| !s.is_empty()) {
-                let username = v["username"].as_str().unwrap_or("").to_string();
-                return Ok((username, cookies.to_string()));
-            }
+        let bin = exe.with_file_name("streamerz-tiktok");
+        if !bin.is_file() {
+            return Err(format!("{} is missing (it comes with streamerz)", bin.display()));
         }
+        std::process::Command::new(bin)
+    };
+    cmd.args(args);
+    Ok(cmd)
+}
+
+/// Opens TikTok's login in the TikTok window; blocks until it closes. (username, session cookies).
+pub fn login(bot: bool) -> Result<(String, String), String> {
+    let p = profile(bot);
+    let out = helper(&["login".as_ref(), p.as_os_str()])?
+        .output()
+        .map_err(|e| format!("can't open the TikTok window: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "the login window was closed. {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let v: Value = serde_json::from_slice(&out.stdout).map_err(|_| "the login window answered nothing".to_string())?;
+    match v["cookies"].as_str().filter(|c| !c.is_empty()) {
+        Some(c) => Ok((v["username"].as_str().unwrap_or("").to_string(), c.to_string())),
+        None => Err("no TikTok session after login".into()),
+    }
+}
+
+/// A running send window: the account's session on the channel's live page.
+struct Sender {
+    channel: String,
+    _child: tokio::process::Child,
+    stdin: tokio::process::ChildStdin,
+    out: tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+}
+
+impl Sender {
+    fn spawn(bot: bool, channel: &str) -> Result<Sender, String> {
+        let p = profile(bot);
+        let mut cmd = tokio::process::Command::from(helper(&["send".as_ref(), p.as_os_str(), channel.as_ref()])?);
+        let mut child = cmd
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| format!("can't open the TikTok window: {e}"))?;
+        let (Some(stdin), Some(out)) = (child.stdin.take(), child.stdout.take()) else {
+            return Err("can't talk to the TikTok window".into());
+        };
+        use tokio::io::AsyncBufReadExt;
+        Ok(Sender {
+            channel: channel.into(),
+            _child: child,
+            stdin,
+            out: tokio::io::BufReader::new(out).lines(),
+        })
     }
 
-    Err("No session credentials returned from login companion".to_string())
+    /// None: the window is gone (it closes after 2 idle minutes); start another.
+    async fn send(&mut self, text: &str) -> Option<Result<(), String>> {
+        use tokio::io::AsyncWriteExt;
+        let line = format!("{}\n", serde_json::to_string(text).unwrap_or_default());
+        self.stdin.write_all(line.as_bytes()).await.ok()?;
+        // The first message waits for the live page to load.
+        let r = tokio::time::timeout(Duration::from_secs(90), self.out.next_line()).await;
+        let v: Value = match r {
+            Ok(Ok(Some(l))) => serde_json::from_str(&l).unwrap_or_default(),
+            Ok(_) => return None,
+            Err(_) => return Some(Err("TikTok's page didn't answer in 90s".into())),
+        };
+        Some(match v["error"].as_str() {
+            Some(e) => Err(e.to_string()),
+            None => Ok(()),
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -236,6 +248,7 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> TikTokHand
         rx,
         shared: shared.clone(),
         read_task: None,
+        senders: [None, None],
     };
     tokio::task::spawn_local(runner.run());
     TikTokHandle { tx, shared }
@@ -247,6 +260,8 @@ struct Runner {
     rx: mpsc::UnboundedReceiver<TikTokCmd>,
     shared: Shared,
     read_task: Option<tokio::task::JoinHandle<()>>,
+    /// Broadcaster's and bot's send windows, opened on first use.
+    senders: [Option<Sender>; 2],
 }
 
 impl Runner {
@@ -280,81 +295,42 @@ impl Runner {
         }
     }
 
-    async fn send_chat_message(&self, text: &str, use_bot: bool, fallback: bool) -> Result<(), String> {
-        let (cookie, mut room_id) = {
+    async fn send_chat_message(&mut self, text: &str, use_bot: bool, fallback: bool) -> Result<(), String> {
+        let (bot, channel) = {
             let c = self.cfg.borrow();
-            let acc = if use_bot {
-                let mut a = c.tiktok.bot.as_ref();
-                if a.is_none() && fallback {
-                    a = c.tiktok.broadcaster.as_ref();
-                }
-                a
-            } else {
-                let mut a = c.tiktok.broadcaster.as_ref();
-                if a.is_none() && fallback {
-                    a = c.tiktok.bot.as_ref();
-                }
-                a
-            };
-            let acc = acc.ok_or_else(|| {
-                if use_bot {
-                    "No TikTok bot account configured (and no fallback)".to_string()
+            let has = |bot: bool| {
+                if bot {
+                    c.tiktok.bot.is_some()
                 } else {
-                    "No TikTok broadcaster account configured (and no fallback)".to_string()
+                    c.tiktok.broadcaster.is_some()
                 }
-            })?;
-            let cookie = acc.session_cookie.clone();
-            let rid = self.shared.room_id.lock().ok().and_then(|r| r.clone());
-            (cookie, rid)
+            };
+            let bot = if has(use_bot) {
+                use_bot
+            } else if fallback && has(!use_bot) {
+                !use_bot
+            } else {
+                return Err(format!(
+                    "TikTok: log in the {} first",
+                    if use_bot { "bot" } else { "broadcaster" }
+                ));
+            };
+            (bot, clean_tiktok_channel(&c.tiktok.channel))
         };
-
-        if room_id.is_none() {
-            let chan = clean_tiktok_channel(&self.cfg.borrow().tiktok.channel);
-            if let Ok(t) = crate::webcast::ttwid().await {
-                room_id = crate::webcast::room_id(&chan, &t).await.ok().map(|r| r.to_string());
-            }
+        if channel.is_empty() {
+            return Err("TikTok: set the channel first".into());
         }
-
-        let rid = room_id
-            .ok_or_else(|| "No TikTok live room ID available (ensure stream is live and channel is set)".to_string())?;
-
-        let cookie_header = if cookie.contains('=') {
-            cookie
-        } else {
-            format!("sessionid={cookie}")
-        };
-
-        let url = "https://webcast.tiktok.com/webcast/room/chat/?aid=1988&app_language=en&app_name=tiktok_web";
-        let body = format!(
-            "content={}&room_id={}",
-            crate::commands::url_encode(text),
-            crate::commands::url_encode(&rid),
-        );
-        let headers = vec![
-            ("Content-Type".into(), "application/x-www-form-urlencoded".into()),
-            ("Cookie".into(), cookie_header),
-            ("User-Agent".into(), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".into()),
-            ("Referer".into(), "https://www.tiktok.com/".into()),
-        ];
-
-        let resp = crate::http::request("POST", url, &headers, body.as_bytes())
-            .await
-            .map_err(|e| format!("TikTok chat request error: {e}"))?;
-
-        if (200..300).contains(&resp.status) {
-            if let Ok(val) = serde_json::from_slice::<Value>(&resp.body) {
-                if let Some(code) = val.get("status_code").and_then(Value::as_i64) {
-                    if code != 0 {
-                        let msg = val.get("message").and_then(Value::as_str).unwrap_or("TikTok error");
-                        return Err(format!("TikTok chat error (status_code {code}): {msg}"));
-                    }
-                }
+        let slot = &mut self.senders[usize::from(bot)];
+        for _ in 0..2 {
+            if slot.as_ref().is_none_or(|s| s.channel != channel) {
+                *slot = Some(Sender::spawn(bot, &channel)?);
             }
-            Ok(())
-        } else {
-            let body_str = String::from_utf8_lossy(&resp.body);
-            Err(format!("TikTok chat failed HTTP {}: {}", resp.status, body_str))
+            if let Some(r) = slot.as_mut().unwrap().send(text).await {
+                return r;
+            }
+            *slot = None;
         }
+        Err("the TikTok window closed".into())
     }
 
     fn connect(&mut self) {

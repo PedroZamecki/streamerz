@@ -102,8 +102,11 @@ impl P {
                     e(&a.token.access_token)
                 )
             }),
-            // A cookie: only TikTok's own logout ends the session.
-            P::TikTok => None,
+            // A cookie: only TikTok's own logout ends the session; forget the window's copy of it.
+            P::TikTok => {
+                let _ = std::fs::remove_dir_all(crate::tiktok::profile(bot));
+                None
+            }
         };
         match (self, bot) {
             (P::Twitch, false) => c.twitch.broadcaster = None,
@@ -347,7 +350,7 @@ pub fn tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
             "• Login opens your browser (Twitch shows a code to type at twitch.tv/activate).\n\
              • Chat is sent as the bot when one is logged in, else as the broadcaster.\n\
              • Kick and YouTube send with your own app: Advanced shows how to make one (once).\n\
-             • TikTok reads the channel's live by itself; its login window comes with tikstream.",
+             • TikTok reads the channel's live by itself; Login opens TikTok's own page.",
         )
         .with_align(Align::Left | Align::Inside | Align::Wrap);
     col.fixed(&guide, 70);
@@ -614,15 +617,11 @@ fn advanced(cfg: &Cfg, p: P) {
     });
 }
 
-/// TikTok: the tikstream-login window (its own browser profile per account) returns the cookies.
+/// TikTok: the TikTok window (its own browser profile per account) returns the cookies.
 fn tiktok_login(cfg: &Cfg, bot: bool) {
     let who = if bot { "bot" } else { "broadcaster" };
-    if crate::tiktok::find_tikstream_login_binary().is_none() {
-        dialog::alert_default("TikTok login needs tikstream-login next to streamerz (it comes with tikstream).");
-        return;
-    }
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || drop(tx.send(crate::tiktok::run_tikstream_login(bot))));
+    std::thread::spawn(move || drop(tx.send(crate::tiktok::login(bot))));
     let (mut win, answer) = dialogs::window(420, 110, &format!("TikTok login ({who})"));
     let mut col = Flex::new(10, 10, 400, 90, None).column();
     let msg = Frame::default()
