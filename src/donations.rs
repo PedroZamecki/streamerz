@@ -8,9 +8,13 @@
 
 use crate::engine::Engine;
 use crate::model::Obj;
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::cell::Cell;
 use std::rc::Rc;
+use std::time::Duration;
+use tokio_tungstenite::tungstenite::Message;
 
 // 1. Ko-fi Triggers (7001..=7005)
 pub const T_KOFI_DONATION: u32 = 7001;
@@ -153,138 +157,157 @@ pub fn handle_kofi(engine: &Rc<Engine>, data: &Value) {
     }
 }
 
-pub fn handle_streamelements(engine: &Rc<Engine>, event: &str, data: &Value) {
+fn text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Null => String::new(),
+        v => v.to_string(),
+    }
+}
+
+/// A number sent as a number or as text ("13.37").
+fn number(v: &Value) -> f64 {
+    v.as_f64()
+        .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+        .unwrap_or(0.0)
+}
+
+/// A trigger's Range: none (any), only Max (exactly it), only Min (at least it), or both.
+fn in_range(t: &Obj, v: f64) -> bool {
+    let bound = |k: &str| t.get(k).and_then(Value::as_f64).filter(|x| *x > 0.0);
+    match (bound("min"), bound("max")) {
+        (None, None) => true,
+        (None, Some(max)) => v == max,
+        (Some(min), None) => v >= min,
+        (Some(min), Some(max)) => (min..=max).contains(&v),
+    }
+}
+
+fn se_fire(engine: &Rc<Engine>, code: u32, name: &str, args: &Obj, amount: Option<f64>) {
+    engine.fire(code, name, "StreamElements", "streamelements", args, |t| {
+        amount.is_none_or(|a| in_range(t, a))
+    });
+    engine.emit("StreamElements", name, || json!(args));
+}
+
+/// A StreamElements event: its type ("tip", "merch", "connected", ...) and its `data`.
+pub fn handle_streamelements(engine: &Rc<Engine>, event: &str, d: &Value) {
     let mut args = Obj::new();
-    let user = data["username"].as_str().unwrap_or("Anonymous");
-    let amount = data["amount"].as_f64().unwrap_or(0.0);
-    let currency = data["currency"].as_str().unwrap_or("USD");
-    let message = data["message"].as_str().unwrap_or("");
-
-    args.insert("user".into(), user.into());
-    args.insert("userName".into(), user.into());
-    args.insert("amount".into(), amount.into());
-    args.insert("currency".into(), currency.into());
-    args.insert("message".into(), message.into());
-
     match event {
+        "connected" => se_fire(engine, T_SE_CONNECTED, "Connected", &args, None),
+        "disconnected" => se_fire(engine, T_SE_DISCONNECTED, "Disconnected", &args, None),
+        "authenticated" => se_fire(engine, T_SE_AUTHENTICATED, "Authenticated", &args, None),
         "merch" | "merchandise" => {
-            engine.fire(
-                T_SE_MERCH,
-                "StreamElementsMerch",
-                "StreamElements",
-                "streamelements",
-                &args,
-                |_| true,
-            );
-            engine.emit("StreamElements", "Merch", || json!(args));
-        }
-        "connected" => {
-            engine.fire(
-                T_SE_CONNECTED,
-                "StreamElementsConnected",
-                "StreamElements",
-                "streamelements",
-                &args,
-                |_| true,
-            );
-            engine.emit("StreamElements", "Connected", || json!(args));
-        }
-        "disconnected" => {
-            engine.fire(
-                T_SE_DISCONNECTED,
-                "StreamElementsDisconnected",
-                "StreamElements",
-                "streamelements",
-                &args,
-                |_| true,
-            );
-            engine.emit("StreamElements", "Disconnected", || json!(args));
+            let items = d["items"].as_array().cloned().unwrap_or_default();
+            let mut quantity = 0;
+            for (i, it) in items.iter().enumerate() {
+                args.insert(format!("merchItem{i}.name"), text(&it["name"]).into());
+                args.insert(format!("merchItem{i}.price"), number(&it["price"]).into());
+                let q = it["quantity"].as_u64().unwrap_or(1);
+                args.insert(format!("merchItem{i}.quantity"), q.into());
+                quantity += q;
+            }
+            let quantity = d["quantity"].as_u64().unwrap_or(quantity);
+            for (k, v) in [
+                ("merchUsername", text(&d["username"]).into()),
+                ("merchAvatar", text(&d["avatar"]).into()),
+                ("merchAmount", number(&d["amount"]).into()),
+                ("merchCurrency", text(&d["currency"]).into()),
+                ("merchMessage", text(&d["message"]).into()),
+                ("merchQuantity", quantity.into()),
+                ("merchItems", items.len().into()),
+            ] {
+                args.insert(k.into(), v);
+            }
+            se_fire(engine, T_SE_MERCH, "Merch", &args, None);
         }
         _ => {
-            engine.fire(
-                T_SE_TIP,
-                "StreamElementsTip",
-                "StreamElements",
-                "streamelements",
-                &args,
-                |_| true,
-            );
-            engine.emit("StreamElements", "Tip", || json!(args));
+            let amount = number(&d["amount"]);
+            for (k, v) in [
+                ("tipUsername", text(&d["username"]).into()),
+                ("tipAvatar", text(&d["avatar"]).into()),
+                ("tipAmount", amount.into()),
+                ("tipCurrency", text(&d["currency"]).into()),
+                ("tipMessage", text(&d["message"]).into()),
+            ] {
+                args.insert(k.into(), v);
+            }
+            se_fire(engine, T_SE_TIP, "Tip", &args, Some(amount));
         }
     }
 }
 
-pub fn handle_streamlabs(engine: &Rc<Engine>, event: &str, data: &Value) {
+fn sl_fire(engine: &Rc<Engine>, code: u32, name: &str, args: &Obj, amount: Option<f64>) {
+    engine.fire(code, name, "Streamlabs", "streamlabs", args, |t| {
+        amount.is_none_or(|a| in_range(t, a))
+    });
+    engine.emit("Streamlabs", name, || json!(args));
+}
+
+/// A Streamlabs event: its type ("donation", "merch", "streamlabscharitydonation", "connected", ...)
+/// and one item of its `message` list.
+pub fn handle_streamlabs(engine: &Rc<Engine>, event: &str, m: &Value) {
     let mut args = Obj::new();
-    let name = data["name"]
-        .as_str()
-        .or_else(|| data["from"].as_str())
-        .unwrap_or("Anonymous");
-    let amount = data["amount"].as_f64().unwrap_or(0.0);
-    let currency = data["currency"].as_str().unwrap_or("USD");
-    let message = data["message"].as_str().unwrap_or("");
-
-    args.insert("user".into(), name.into());
-    args.insert("from".into(), name.into());
-    args.insert("amount".into(), amount.into());
-    args.insert("currency".into(), currency.into());
-    args.insert("message".into(), message.into());
-
+    let from = text(if m["from"].is_null() { &m["name"] } else { &m["from"] });
+    let formatted = text(if m["formatted_amount"].is_null() {
+        &m["formattedAmount"]
+    } else {
+        &m["formatted_amount"]
+    });
     match event {
-        "merchandise" => {
-            engine.fire(
-                T_SL_MERCHANDISE,
-                "StreamlabsMerchandise",
-                "Streamlabs",
-                "streamlabs",
-                &args,
-                |_| true,
-            );
-            engine.emit("Streamlabs", "Merchandise", || json!(args));
+        "connected" => sl_fire(engine, T_SL_CONNECTED, "Connected", &args, None),
+        "disconnected" => sl_fire(engine, T_SL_DISCONNECTED, "Disconnected", &args, None),
+        "authenticated" => sl_fire(engine, T_SL_AUTHENTICATED, "Authenticated", &args, None),
+        "merch" | "merchandise" => {
+            let image = text(if m["imageHref"].is_null() {
+                &m["image_href"]
+            } else {
+                &m["imageHref"]
+            });
+            for (k, v) in [
+                ("merchandiseFrom", from),
+                ("merchandiseMessage", text(&m["message"])),
+                ("merchandiseProduct", text(&m["product"])),
+                ("merchandiseImageEscaped", crate::commands::url_encode(&image)),
+                ("merchandiseImageUrl", image),
+            ] {
+                args.insert(k.into(), v.into());
+            }
+            sl_fire(engine, T_SL_MERCHANDISE, "Merchandise", &args, None);
         }
-        "charity" => {
-            engine.fire(
-                T_SL_CHARITY_DONATION,
-                "StreamlabsCharityDonation",
-                "Streamlabs",
-                "streamlabs",
-                &args,
-                |_| true,
-            );
-            engine.emit("Streamlabs", "CharityDonation", || json!(args));
-        }
-        "connected" => {
-            engine.fire(
-                T_SL_CONNECTED,
-                "StreamlabsConnected",
-                "Streamlabs",
-                "streamlabs",
-                &args,
-                |_| true,
-            );
-            engine.emit("Streamlabs", "Connected", || json!(args));
-        }
-        "disconnected" => {
-            engine.fire(
-                T_SL_DISCONNECTED,
-                "StreamlabsDisconnected",
-                "Streamlabs",
-                "streamlabs",
-                &args,
-                |_| true,
-            );
-            engine.emit("Streamlabs", "Disconnected", || json!(args));
+        "streamlabscharitydonation" | "charity" => {
+            let amount = number(&m["amount"]);
+            let at = if m["createdAt"].is_null() {
+                &m["created_at"]
+            } else {
+                &m["createdAt"]
+            };
+            for (k, v) in [
+                ("charityDonationFrom", from.into()),
+                ("charityDonationAmount", amount.into()),
+                ("charityDonationCurrency", text(&m["currency"]).into()),
+                ("charityDonationFormattedAmount", formatted.into()),
+                ("charityDonationMessage", text(&m["message"]).into()),
+                ("charityDonationGif", text(&m["gif"]).into()),
+                ("charityDonationIconClassName", text(&m["iconClassName"]).into()),
+                ("charityDonationCreatedAt", text(at).into()),
+            ] {
+                args.insert(k.into(), v);
+            }
+            sl_fire(engine, T_SL_CHARITY_DONATION, "CharityDonation", &args, Some(amount));
         }
         _ => {
-            engine.fire(
-                T_SL_DONATION,
-                "StreamlabsDonation",
-                "Streamlabs",
-                "streamlabs",
-                &args,
-                |_| true,
-            );
-            engine.emit("Streamlabs", "Donation", || json!(args));
+            let amount = number(&m["amount"]);
+            for (k, v) in [
+                ("donationFrom", from.into()),
+                ("donationAmount", amount.into()),
+                ("donationCurrency", text(&m["currency"]).into()),
+                ("donationFormattedAmount", formatted.into()),
+                ("donationMessage", text(&m["message"]).into()),
+            ] {
+                args.insert(k.into(), v);
+            }
+            sl_fire(engine, T_SL_DONATION, "Donation", &args, Some(amount));
         }
     }
 }
@@ -607,47 +630,81 @@ pub fn handle_treatstream(engine: &Rc<Engine>, data: &Value) {
     engine.emit("TreatStream", "Treat", || json!(args));
 }
 
-pub fn handle_donordrive(engine: &Rc<Engine>, event: &str, data: &Value) {
-    let mut args = Obj::new();
-    for (k, v) in data.as_object().into_iter().flatten() {
-        args.insert(k.clone(), v.clone());
+/// DonorDrive's profile variables, from a participant (or team) object and its recent donations.
+fn dd_profile(p: &Value, donations: &Value) -> Obj {
+    let mut a = Obj::new();
+    let team = p["participantID"].is_null() && !p["teamID"].is_null();
+    for (k, v) in [
+        ("name", text(&p["displayName"]).into()),
+        ("teamName", text(if team { &p["name"] } else { &p["teamName"] }).into()),
+        ("eventName", text(&p["eventName"]).into()),
+        ("goal", number(&p["fundraisingGoal"]).into()),
+        ("donations", donations.clone()),
+        ("raised", number(&p["sumDonations"]).into()),
+        ("isTeam", team.into()),
+        ("isParticipant", (!team).into()),
+    ] {
+        a.insert(k.into(), v);
     }
+    a
+}
 
-    match event {
-        "incentive" | "Incentive" => {
-            engine.fire(
-                T_DONORDRIVE_INCENTIVE,
-                "DonorDriveIncentive",
-                "DonorDrive",
-                "donordrive",
-                &args,
-                |_| true,
-            );
-            engine.emit("DonorDrive", "Incentive", || json!(args));
-        }
-        "profile" | "ProfileUpdated" => {
-            engine.fire(
-                T_DONORDRIVE_PROFILE_UPDATED,
-                "DonorDriveProfileUpdated",
-                "DonorDrive",
-                "donordrive",
-                &args,
-                |_| true,
-            );
-            engine.emit("DonorDrive", "ProfileUpdated", || json!(args));
-        }
-        _ => {
-            engine.fire(
-                T_DONORDRIVE_DONATION,
-                "DonorDriveDonation",
-                "DonorDrive",
-                "donordrive",
-                &args,
-                |_| true,
-            );
-            engine.emit("DonorDrive", "Donation", || json!(args));
-        }
+/// A DonorDrive event: "ProfileUpdated" (`data` is the profile), "Donation" or "Incentive" (`data`
+/// is the donation, with the profile's variables in `profile` and the incentive in `incentive`).
+pub fn handle_donordrive(engine: &Rc<Engine>, event: &str, data: &Value) {
+    let profile = dd_profile(&data["profile"], &data["profile"]["donations"]);
+    let fire = |code: u32, name: &str, args: &Obj| {
+        engine.fire(code, name, "DonorDrive", "donordrive", args, |_| true);
+        engine.emit("DonorDrive", name, || json!(args));
+    };
+    if event.eq_ignore_ascii_case("profileupdated") || event == "profile" {
+        return fire(
+            T_DONORDRIVE_PROFILE_UPDATED,
+            "ProfileUpdated",
+            &dd_profile(data, &data["donations"]),
+        );
     }
+    let name = text(&data["displayName"]);
+    let mut args = Obj::new();
+    for (k, v) in [
+        ("donorIsAnonymous", name.is_empty().into()),
+        (
+            "donorName",
+            if name.is_empty() { "Anonymous".into() } else { name }.into(),
+        ),
+        ("donorAvatarUrl", text(&data["avatarImageURL"]).into()),
+        ("recipientName", text(&data["recipientName"]).into()),
+        ("donorMessage", text(&data["message"]).into()),
+        ("donorAmount", number(&data["amount"]).into()),
+        ("profileName", profile["name"].clone()),
+        ("profileTeamName", profile["teamName"].clone()),
+    ] {
+        args.insert(k.into(), v);
+    }
+    for k in ["isTeam", "isParticipant", "eventName", "goal", "raised", "donations"] {
+        args.insert(k.into(), profile[k].clone());
+    }
+    let inc = &data["incentive"];
+    if !event.eq_ignore_ascii_case("incentive") || inc.is_null() {
+        return fire(T_DONORDRIVE_DONATION, "Donation", &args);
+    }
+    args.remove("donations");
+    args.insert("isIncentive".into(), true.into());
+    for (k, v) in [
+        ("id", text(&inc["incentiveID"]).into()),
+        ("isActive", inc["isActive"].as_bool().unwrap_or(false).into()),
+        ("amount", number(&inc["amount"]).into()),
+        ("description", text(&inc["description"]).into()),
+        ("image", text(&inc["incentiveImageURL"]).into()),
+        ("quantity", inc["quantity"].as_i64().unwrap_or(-1).into()),
+        ("quantityClaimed", inc["quantityClaimed"].as_i64().unwrap_or(0).into()),
+        ("links.donate", text(&inc["links"]["donate"]).into()),
+        ("startDate", text(&inc["startDateUTC"]).into()),
+        ("endDate", text(&inc["endDateUTC"]).into()),
+    ] {
+        args.insert(format!("incentive.{k}"), v);
+    }
+    fire(T_DONORDRIVE_INCENTIVE, "Incentive", &args);
 }
 
 pub fn handle_pallygg(engine: &Rc<Engine>, event: &str, data: &Value) {
@@ -847,6 +904,263 @@ pub fn handle_webhook(engine: &Rc<Engine>, platform: &str, body: &[u8]) -> Resul
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Live connections: StreamElements and Streamlabs over socket.io, DonorDrive polled
+// ---------------------------------------------------------------------------
+
+const SE_URL: &str = "wss://realtime.streamelements.com/socket.io/?EIO=3&transport=websocket";
+
+/// The running connections: each only while its token (or participant) is set.
+#[derive(Default)]
+pub struct Live {
+    cfg: Option<DonationsConfig>,
+    tasks: Vec<crate::emote_events::Abort>,
+    pub streamelements: Rc<Cell<bool>>,
+    pub streamlabs: Rc<Cell<bool>>,
+}
+
+/// One socket.io session (Engine.IO 3, what both services speak): `hello` is sent once connected,
+/// `on` gets each event's name and first argument and returns Some(why) to stop. Returns why it ended.
+async fn socket_io(url: &str, hello: Option<String>, mut on: impl FnMut(&str, &Value) -> Option<String>) -> String {
+    let mut ws = match crate::http::ws_connect(url).await {
+        Ok((ws, _)) => ws,
+        Err(e) => return e.to_string(),
+    };
+    // The server's ping interval; the client pings (Engine.IO 3).
+    let mut ping = tokio::time::interval(Duration::from_secs(25));
+    ping.reset();
+    loop {
+        let m = tokio::select! {
+            _ = ping.tick() => {
+                if ws.send(Message::Text("2".into())).await.is_err() {
+                    return "connection lost".into();
+                }
+                continue;
+            }
+            m = ws.next() => m,
+        };
+        let t = match m {
+            Some(Ok(Message::Text(t))) => t,
+            Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return "connection closed".into(),
+            Some(Ok(_)) => continue,
+        };
+        if let Some(open) = t.strip_prefix('0') {
+            let v: Value = serde_json::from_str(open).unwrap_or_default();
+            let every = Duration::from_millis(v["pingInterval"].as_u64().unwrap_or(25000).max(1000));
+            ping = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+        } else if t.as_str() == "40" {
+            if let Some(h) = &hello {
+                let _ = ws.send(Message::Text(h.clone().into())).await;
+            }
+            if let Some(why) = on("connect", &Value::Null) {
+                return why;
+            }
+        } else if let Some(err) = t.strip_prefix("44") {
+            return format!("refused: {}", text(&serde_json::from_str(err).unwrap_or_default()));
+        } else if let Some(ev) = t.strip_prefix("42") {
+            let v: Value = serde_json::from_str(ev).unwrap_or_default();
+            if let Some(why) = on(v[0].as_str().unwrap_or(""), &v[1]) {
+                return why;
+            }
+        } else if t.as_str() == "41" || t.as_str() == "1" {
+            return "disconnected by the server".into();
+        }
+    }
+}
+
+/// Keep reconnecting a socket.io service, a minute apart; the Connected and Disconnected triggers
+/// follow the connection.
+async fn keep(
+    e: Rc<Engine>,
+    who: &'static str,
+    url: String,
+    hello: Option<String>,
+    up: Rc<Cell<bool>>,
+    handle: fn(&Rc<Engine>, &str, &Value),
+) {
+    loop {
+        let why = socket_io(&url, hello.clone(), |name, d| {
+            match (who, name) {
+                // Streamlabs checks the token before it lets the socket connect; StreamElements after.
+                ("Streamlabs", "connect") | ("StreamElements", "authenticated") => {
+                    up.set(true);
+                    crate::say(format!("{who}: connected"));
+                    handle(&e, "connected", &Value::Null);
+                    handle(&e, "authenticated", &Value::Null);
+                }
+                ("StreamElements", "unauthorized") => return Some("the JWT token was refused".into()),
+                ("StreamElements", "event") => handle(&e, d["type"].as_str().unwrap_or(""), &d["data"]),
+                // The dashboard's Emulate buttons.
+                ("StreamElements", "event:test") => {
+                    let ev = &d["event"];
+                    let data = json!({"username": ev["name"], "amount": ev["amount"], "message": ev["message"],
+                        "avatar": ev["avatar"], "items": ev["items"], "quantity": ev["quantity"], "currency": ev["currency"]});
+                    match d["listener"].as_str() {
+                        Some("tip-latest") => handle(&e, "tip", &data),
+                        Some("merch-latest") => handle(&e, "merch", &data),
+                        _ => {}
+                    }
+                }
+                ("Streamlabs", "event") => {
+                    let kind = d["type"].as_str().unwrap_or("");
+                    if matches!(kind, "donation" | "merch" | "streamlabscharitydonation") {
+                        for m in d["message"].as_array().into_iter().flatten() {
+                            handle(&e, kind, m);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            None
+        })
+        .await;
+        crate::say(format!("{who}: {why}; trying again in a minute"));
+        if up.replace(false) {
+            handle(&e, "disconnected", &Value::Null);
+        }
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    }
+}
+
+/// A DonorDrive GET: the answer's status, ETag and JSON.
+async fn dd_get(url: &str, etag: &str) -> (u16, String, Value) {
+    let h = [("If-None-Match".to_string(), etag.to_string())];
+    match crate::http::request("GET", url, if etag.is_empty() { &[] } else { &h }, b"").await {
+        Ok(r) => {
+            let tag = r
+                .headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("etag"))
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default();
+            (r.status, tag, serde_json::from_slice(&r.body).unwrap_or_default())
+        }
+        Err(_) => (0, String::new(), Value::Null),
+    }
+}
+
+/// Poll a DonorDrive participant every 15 s (what DonorDrive asks for), asking only whether it
+/// changed; on a change, its new donations.
+async fn donordrive(e: Rc<Engine>, base: String, id: String) {
+    let api = format!("{}/api/participants/{id}", base.trim_end_matches('/'));
+    let (mut etag, mut seen, mut first) = (String::new(), std::collections::HashSet::new(), true);
+    loop {
+        let (status, tag, mut profile) = dd_get(&api, &etag).await;
+        match status {
+            200 => {
+                etag = tag;
+                let (_, _, list) = dd_get(&format!("{api}/donations?limit=20"), "").await;
+                let new: Vec<Value> = list
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|d| seen.insert(text(&d["donationID"])))
+                    .cloned()
+                    .collect();
+                profile["donations"] = list;
+                if !first {
+                    handle_donordrive(&e, "ProfileUpdated", &profile);
+                    let incentives = if new.iter().any(|d| !d["incentiveID"].is_null()) {
+                        dd_get(&format!("{api}/incentives"), "").await.2
+                    } else {
+                        Value::Null
+                    };
+                    // Oldest first.
+                    for mut d in new.into_iter().rev() {
+                        d["profile"] = profile.clone();
+                        let inc = incentives
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .find(|i| i["incentiveID"] == d["incentiveID"] && !i["incentiveID"].is_null());
+                        handle_donordrive(&e, "Donation", &d);
+                        if let Some(i) = inc {
+                            d["incentive"] = i.clone();
+                            handle_donordrive(&e, "Incentive", &d);
+                        }
+                    }
+                } else {
+                    crate::say(format!("DonorDrive: watching {}", text(&profile["displayName"])));
+                }
+                first = false;
+            }
+            304 => {}
+            404 => crate::say(format!("DonorDrive: no participant {id} at {base}")),
+            429 => tokio::time::sleep(Duration::from_secs(45)).await,
+            _ => {}
+        }
+        tokio::time::sleep(Duration::from_secs(15)).await;
+    }
+}
+
+impl Engine {
+    /// Start, restart or stop the donation connections to match the settings.
+    pub fn donations_sync(self: &Rc<Self>) {
+        let cfg = self.config().donations.clone();
+        let mut live = self.donations.borrow_mut();
+        if live.cfg.as_ref() == Some(&cfg) {
+            return;
+        }
+        live.tasks.clear();
+        for (up, who) in [
+            (&live.streamelements, "streamelements"),
+            (&live.streamlabs, "streamlabs"),
+        ] {
+            if up.replace(false) {
+                let handle = if who == "streamlabs" {
+                    handle_streamlabs
+                } else {
+                    handle_streamelements
+                };
+                handle(self, "disconnected", &Value::Null);
+            }
+        }
+        use crate::emote_events::Abort;
+        use tokio::task::spawn_local;
+        let se = cfg.streamelements_token.trim();
+        if !se.is_empty() {
+            let hello = json!(["authenticate", {"method": "jwt", "token": se}]);
+            let (up, url) = (live.streamelements.clone(), SE_URL.to_string());
+            let hello = Some(format!("42{hello}"));
+            live.tasks.push(Abort(spawn_local(keep(
+                self.clone(),
+                "StreamElements",
+                url,
+                hello,
+                up,
+                handle_streamelements,
+            ))));
+        }
+        let sl = cfg.streamlabs_token.trim();
+        if !sl.is_empty() {
+            let url = format!(
+                "wss://sockets.streamlabs.com/socket.io/?token={}&EIO=3&transport=websocket",
+                crate::commands::url_encode(sl)
+            );
+            let up = live.streamlabs.clone();
+            live.tasks.push(Abort(spawn_local(keep(
+                self.clone(),
+                "Streamlabs",
+                url,
+                None,
+                up,
+                handle_streamlabs,
+            ))));
+        }
+        let (base, id) = (cfg.donordrive_instance.trim(), cfg.donordrive_participant_id.trim());
+        if !base.is_empty() && !id.is_empty() {
+            let base = if base.contains("://") {
+                base.to_string()
+            } else {
+                format!("https://{base}")
+            };
+            live.tasks
+                .push(Abort(spawn_local(donordrive(self.clone(), base, id.into()))));
+        }
+        live.cfg = Some(cfg);
+    }
+}
+
 fn urlencoding_decode(s: &str) -> String {
     let mut res = String::new();
     let mut chars = s.chars().peekable();
@@ -1023,5 +1337,168 @@ mod tests {
         )
         .is_ok());
         assert!(handle_webhook(&engine, "streamloots", br#"{"type":"Reaction","reaction":"clap"}"#).is_ok());
+    }
+
+    /// A fake socket.io server: the handshake, (`hello`) what the client says back, then `send`.
+    async fn fake_socket_io(hello: bool, send: Vec<String>) -> (String, tokio::sync::oneshot::Receiver<String>) {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/socket.io/?EIO=3&transport=websocket", l.local_addr().unwrap());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (s, _) = l.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(s).await.unwrap();
+            for m in [r#"0{"sid":"x","pingInterval":50,"pingTimeout":20000}"#, "40"] {
+                ws.send(Message::Text(m.into())).await.unwrap();
+            }
+            // The client's hello or its first ping.
+            if hello {
+                if let Some(Ok(Message::Text(t))) = ws.next().await {
+                    let _ = tx.send(t.to_string());
+                }
+            }
+            for m in send {
+                ws.send(Message::Text(m.into())).await.unwrap();
+            }
+            while ws.next().await.is_some() {}
+        });
+        (url, rx)
+    }
+
+    #[test]
+    fn socket_events_fire_with_their_variables() {
+        use crate::engine::tests::{action, engine, log, run};
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        let watch: &[(u32, &str, Value)] = &[
+            (
+                T_SE_TIP,
+                "%tipUsername% %tipAmount% %tipCurrency% %tipMessage%",
+                json!({"min": 5}),
+            ),
+            (
+                T_SE_MERCH,
+                "%merchUsername% %merchQuantity% %merchItems% %merchItem1.name%",
+                json!({}),
+            ),
+            (T_SE_AUTHENTICATED, "se auth", json!({})),
+            (T_SL_CONNECTED, "sl up", json!({})),
+            (
+                T_SL_DONATION,
+                "%donationFrom% %donationFormattedAmount% %donationMessage%",
+                json!({}),
+            ),
+            (
+                T_SL_CHARITY_DONATION,
+                "%charityDonationFrom% %charityDonationAmount%",
+                json!({}),
+            ),
+            (T_SL_MERCHANDISE, "%merchandiseFrom% %merchandiseProduct%", json!({})),
+            (
+                T_DONORDRIVE_DONATION,
+                "%donorName% %donorAmount% %raised% %donorIsAnonymous%",
+                json!({}),
+            ),
+            (
+                T_DONORDRIVE_INCENTIVE,
+                "%donorName% %incentive.description% %incentive.quantity%",
+                json!({}),
+            ),
+            (
+                T_DONORDRIVE_PROFILE_UPDATED,
+                "%name% %goal% %raised% %teamName%",
+                json!({}),
+            ),
+        ];
+        let actions: Vec<Value> = watch
+            .iter()
+            .map(|(code, vars, t)| {
+                let mut a = action(&code.to_string(), "a", json!([log(&format!("T {code} {vars}"))]));
+                let mut t = t.clone();
+                t["id"] = "t".into();
+                t["type"] = (*code).into();
+                t["enabled"] = true.into();
+                a["triggers"] = json!([t]);
+                a
+            })
+            .collect();
+        let e = engine(json!({ "actions": actions }));
+        let out = run(async move {
+            let ev = |name: &str, d: Value| format!("42{}", json!([name, d]));
+            let (url, hello) = fake_socket_io(true, vec![
+                ev("authenticated", json!({"channelId": "c"})),
+                ev("event", json!({"type": "tip", "data": {"username": "small", "amount": 1, "currency": "USD"}})),
+                ev("event", json!({"type": "tip", "data": {"username": "Ana", "amount": 10.5, "currency": "EUR", "message": "hi"}})),
+                ev("event:test", json!({"listener": "merch-latest", "event": {"name": "Bo", "amount": 30,
+                    "items": [{"name": "Mug", "price": 10, "quantity": 2}, {"name": "Cap", "price": 10, "quantity": 1}]}})),
+            ])
+            .await;
+            let up = Rc::new(Cell::new(false));
+            let se = crate::emote_events::Abort(tokio::task::spawn_local(keep(
+                e.clone(),
+                "StreamElements",
+                url,
+                Some("42[\"authenticate\",{\"method\":\"jwt\",\"token\":\"t\"}]".into()),
+                up.clone(),
+                handle_streamelements,
+            )));
+            let (url, _) = fake_socket_io(
+                false,
+                vec![
+                    ev(
+                        "event",
+                        json!({"type": "donation", "message": [{"name": "Cy", "amount": "13.37",
+                    "formatted_amount": "$13.37", "currency": "USD", "message": "gg"}]}),
+                    ),
+                    ev(
+                        "event",
+                        json!({"type": "streamlabscharitydonation", "for": "streamlabscharity",
+                    "message": [{"from": "Di", "amount": 5, "currency": "USD"}]}),
+                    ),
+                    ev(
+                        "event",
+                        json!({"type": "merch", "message": [{"from": "Ed", "product": "Hoodie"}]}),
+                    ),
+                ],
+            )
+            .await;
+            let sl = crate::emote_events::Abort(tokio::task::spawn_local(keep(
+                e.clone(),
+                "Streamlabs",
+                url,
+                None,
+                Rc::new(Cell::new(false)),
+                handle_streamlabs,
+            )));
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert!(up.get());
+            assert!(hello.await.unwrap().contains("jwt"));
+            drop((se, sl));
+            let profile = json!({"displayName": "Jane", "teamName": "", "fundraisingGoal": 200, "sumDonations": 110,
+                "participantID": 1});
+            handle_donordrive(&e, "ProfileUpdated", &profile);
+            let d = json!({"amount": 10, "message": null, "incentiveID": "i", "profile": profile,
+                "incentive": {"incentiveID": "i", "description": "Shoutout", "amount": 10, "isActive": true}});
+            handle_donordrive(&e, "Donation", &d);
+            handle_donordrive(&e, "Incentive", &d);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+        let want = [
+            "T 1205 se auth",
+            "T 1201 Ana 10.5 EUR hi",
+            "T 1202 Bo 3 2 Cap",
+            "T 203 sl up",
+            "T 201 Cy $13.37 gg",
+            "T 205 Di 5",
+            "T 202 Ed Hoodie",
+            "T 3002 Jane 200 110 ",
+            "T 3001 Anonymous 10 110 True",
+            "T 3003 Anonymous Shoutout -1",
+        ];
+        for w in want {
+            assert!(out.iter().any(|x| x == w), "{w} missing: {out:?}");
+        }
+        assert!(
+            !out.iter().any(|x| x.contains("small")),
+            "the range let a 1 tip through: {out:?}"
+        );
     }
 }

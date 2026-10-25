@@ -117,6 +117,7 @@ pub struct Engine {
     youtube: RefCell<Option<crate::youtube::YouTubeHandle>>,
     tiktok: RefCell<Option<crate::tiktok::TikTokHandle>>,
     pub(crate) slobs: crate::slobs::Slobs,
+    pub(crate) donations: RefCell<crate::donations::Live>,
 }
 
 /// A running action's context.
@@ -266,6 +267,7 @@ impl Engine {
             youtube: RefCell::default(),
             tiktok: RefCell::default(),
             slobs: Default::default(),
+            donations: RefCell::default(),
         })
     }
 

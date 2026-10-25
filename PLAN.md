@@ -262,7 +262,7 @@ platform handles through channels, never through shared locks held across awaits
   from kick.com's Pusher (bans came with an object user, so names were blank), with KickChat/KickUser
   variables, recipients, Kicks, stream and category changes; Viewer Count and Present Viewers poll only when
   used. OBS: obs.* variables, old scene, and Streaming/Recording Stopped no longer fire when an output starts.
-- [ ] 27c. StreamElements and Streamlabs alerts over their socket.io APIs (only a webhook nothing sends was
+- [x] 27c. StreamElements and Streamlabs alerts over their socket.io APIs (only a webhook nothing sends was
   there); DonorDrive polling.
 - [x] 28. MCP: `streamerz --mcp`, a Model Context Protocol server (stdio, no new dependency) driving a running
   instance through its WebSocket: status, log, actions, run an action, list/fire triggers, inject chat and
