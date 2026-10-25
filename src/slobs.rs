@@ -125,6 +125,11 @@ impl Engine {
         self.slobs.conns.borrow().values().any(|c| c.up.get())
     }
 
+    /// The Streamlabs Desktop connection `id` is up.
+    pub fn slobs_up(&self, id: &str) -> bool {
+        self.slobs.conns.borrow().get(id).is_some_and(|c| c.up.get())
+    }
+
     /// Match the running connections to the settings: drop removed ones, restart changed ones, and
     /// (`start`) start those set to connect at start.
     pub fn slobs_sync(self: &Rc<Self>, start: bool) {

@@ -4,6 +4,7 @@
 mod accounts;
 mod actions;
 mod chat;
+mod conns;
 mod dialogs;
 mod emotes;
 mod forms;
@@ -363,23 +364,15 @@ pub fn run(
             let _ = crate::save(&cfg.borrow());
         }
     };
-    conns.set_callback({
-        let (tabs, tab) = (tabs.clone(), views.accounts.borrow().tab.clone());
-        move |_| {
-            let mut t = tabs.clone();
-            let _ = t.set_value(&tab);
-            t.do_callback();
-        }
-    });
-    // The status bar's "2/4 connected", its tooltip listing each one.
+    // The status bar's "3/5 connected"; a click lists each connection.
     let status_bar = {
         let (cfg, cmds) = (cfg.clone(), cmds.clone());
         let conns = conns.clone();
         move || {
             let mut conns = conns.clone();
-            let (label, tip, all) = accounts::summary(&cfg, &cmds);
+            let (label, all) = conns::summary(&cfg, &cmds);
             conns.set_label(&label);
-            conns.set_tooltip(&tip);
+            conns.set_tooltip("Click for each connection: its state, Retry and its settings");
             conns.set_label_color(match all {
                 Some(true) => fltk::enums::Color::from_rgb(0x3c, 0xb3, 0x71),
                 Some(false) => fltk::enums::Color::from_rgb(0x99, 0x99, 0x99),
@@ -388,6 +381,24 @@ pub fn run(
             conns.redraw();
         }
     };
+    conns.set_callback({
+        let (cfg, cmds, tabs, status_bar) = (cfg.clone(), cmds.clone(), tabs.clone(), status_bar.clone());
+        move |_| {
+            let tabs = tabs.clone();
+            let go = move |label: &str| {
+                let mut t = tabs.clone();
+                if let Some(g) = (0..t.children())
+                    .filter_map(|i| t.child(i))
+                    .find(|c| c.label() == label)
+                    .and_then(|c| c.as_group())
+                {
+                    let _ = t.set_value(&g);
+                    t.do_callback();
+                }
+            };
+            conns::popup(&cfg, &cmds, go, status_bar.clone());
+        }
+    });
     let views = Rc::new(views);
     tabs.clone().set_callback({
         let views = views.clone();

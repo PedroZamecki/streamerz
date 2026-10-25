@@ -100,6 +100,10 @@ Added once on first run, in the Built-in group: edit, turn off or re-alias them 
 
 The window comes back as it was left: its size, its tab and the chat's view.
 
+The bottom bar counts the connections that are set up (platforms, OBS and Streamlabs Desktop connections,
+StreamElements, Streamlabs, DonorDrive), e.g. "● 3/5 connected". Click it for each one's state (connected,
+connecting, or not and why), with **Retry** and **Settings** (its tab).
+
 ## Streamlabs Desktop
 
 In Streamlabs Desktop, open Settings → Remote Control, click the QR code to show the details, and copy

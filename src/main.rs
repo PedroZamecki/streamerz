@@ -172,6 +172,13 @@ struct Status {
 
 const LOG_LINES: usize = 200;
 
+/// How many lines were ever logged (to tell which lines came after a moment).
+pub fn log_count() -> u64 {
+    let mut n = 0;
+    status(|s| n = s.logged);
+    n
+}
+
 /// The log's last `n` lines (the dev WebSocket's GetLog).
 pub fn log_tail(n: usize) -> Vec<String> {
     let mut out = Vec::new();

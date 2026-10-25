@@ -273,7 +273,7 @@ platform handles through channels, never through shared locks held across awaits
   views, the side-by-side panes and the send list.
 - [x] 30. Accounts and pictures: TikTok's profile picture, sharper pictures everywhere, another channel than the
   broadcaster's only under Advanced, and the window coming back as it was left (tab, chat view, size).
-- [ ] 31. Connections: the status bar counts every connection that's set up (platforms, OBS, Streamlabs
+- [x] 31. Connections: the status bar counts every connection that's set up (platforms, OBS, Streamlabs
   Desktop, donations...); clicking it shows each one's state (connecting, connected, failed and why) with a
   retry button and a link to its settings.
 - [ ] 32. Hotkeys: Hotkey Press triggers through the desktop's Global Shortcuts portal on Linux (no sudo, no
