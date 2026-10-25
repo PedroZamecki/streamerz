@@ -235,7 +235,7 @@ platform handles through channels, never through shared locks held across awaits
 - [x] 24. Images and icons: FLTK's own PNG/JPEG/GIF/SVG plus `image-webp`; web pictures fetched on the engine's
   thread into `cache/` next to `streamerz.json`, decoded only while the window shows them and freed when it hides.
   Platform and app logos (Simple Icons, CC0) on the section titles; profile pictures in Accounts (Twitch, Kick
-  and YouTube from their APIs, TikTok seen at login, or its live lookup)). The status bar shows "2/4 connected"
+  and YouTube from their APIs, TikTok seen at login, or its live lookup). The status bar shows "2/4 connected"
   (each platform, and OBS/Streamlabs when set up, in its tooltip; a click opens Accounts).
 - [ ] 25. Emotes in chat: a chat view that draws text, emote images and badges. Twitch emotes, BTTV, FFZ and 7TV
   (7TV on Kick too), Kick, YouTube and TikTok emotes; animated ones move only while the chat is on screen
