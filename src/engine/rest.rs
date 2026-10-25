@@ -371,6 +371,11 @@ impl Engine {
             subscriber: role == "subscriber",
             msg_id: super::uuid(),
             text: text.into(),
+            emotes: if platform == "kick" {
+                crate::kick::kick_emotes(text)
+            } else {
+                Vec::new()
+            },
             args,
             ..Default::default()
         }))

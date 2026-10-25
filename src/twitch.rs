@@ -1691,7 +1691,13 @@ fn handle_notification(
                     .into_iter()
                     .flatten()
                     .filter(|f| f["type"] == "emote")
-                    .filter_map(|f| f["text"].as_str().map(String::from))
+                    .filter_map(|f| {
+                        let url = format!(
+                            "https://static-cdn.jtvnw.net/emoticons/v2/{}/default/dark/2.0",
+                            f.pointer("/emote/id")?.as_str()?
+                        );
+                        Some((f["text"].as_str()?.to_string(), url))
+                    })
                     .collect(),
                 args: args.clone(),
             };

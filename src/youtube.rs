@@ -1031,8 +1031,9 @@ pub async fn read_chat(
 }
 
 /// A message's text from its runs: text as is, standard emoji as the character, YouTube's own
-/// emoji as their shortcut (":yt:"), which are also returned as the message's emotes.
-pub fn runs_text(runs: Option<&Value>) -> (String, Vec<String>) {
+/// emoji as their shortcut (":yt:"), which are also returned as the message's emotes (with their
+/// picture).
+pub fn runs_text(runs: Option<&Value>) -> (String, Vec<(String, String)>) {
     let (mut text, mut emotes) = (String::new(), Vec::new());
     for r in runs.and_then(Value::as_array).into_iter().flatten() {
         if let Some(t) = r["text"].as_str() {
@@ -1041,7 +1042,12 @@ pub fn runs_text(runs: Option<&Value>) -> (String, Vec<String>) {
             let short = e["shortcuts"][0].as_str().unwrap_or("");
             if e["isCustomEmoji"].as_bool() == Some(true) && !short.is_empty() {
                 text.push_str(short);
-                emotes.push(short.to_string());
+                let url = e
+                    .pointer("/image/thumbnails")
+                    .and_then(Value::as_array)
+                    .and_then(|t| t.last());
+                let url = url.and_then(|t| t["url"].as_str()).unwrap_or("");
+                emotes.push((short.to_string(), url.to_string()));
             } else {
                 text.push_str(e["emojiId"].as_str().unwrap_or(short));
             }
@@ -1569,7 +1575,7 @@ mod tests {
             assert_eq!(live.borrow().0, "vid123");
             let lines = engine.chat_since(0);
             assert_eq!(lines[0].text, "hi 😀 :yt:");
-            assert_eq!(lines[0].emotes, [":yt:"]);
+            assert_eq!(lines[0].emotes[0].0, ":yt:");
         });
     }
 }

@@ -287,7 +287,7 @@ fn picture(cmds: &Cmds, cfg: &Cfg, p: P, bot: bool, name: &str, size: i32) -> Op
         Some((_, url)) => {
             let url = url.clone();
             drop(a);
-            super::img::get(cmds, &url, size, true)
+            super::img::get(cmds, &url, size, true).map(|p| p.first())
         }
         None => {
             a.push((key.clone(), String::new()));
