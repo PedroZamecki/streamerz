@@ -20,6 +20,8 @@ mod secrets;
 pub mod servers;
 mod slobs;
 pub mod tiktok;
+#[cfg(windows)]
+mod tiktok_web;
 mod tray;
 pub mod twitch;
 pub mod types;
@@ -345,6 +347,11 @@ fn autostart(on: bool) -> std::io::Result<()> {
 }
 
 fn main() {
+    // The TikTok window (tiktok_web.rs), its own process; on Linux it's the streamerz-tiktok binary.
+    #[cfg(windows)]
+    if std::env::args_os().nth(1).is_some_and(|a| a == "--tiktok") {
+        tiktok_web::run(&std::env::args_os().skip(2).collect::<Vec<_>>());
+    }
     say(version());
     secrets::init(&config_path());
     let cfg = load_from(&config_path());
