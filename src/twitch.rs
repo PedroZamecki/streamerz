@@ -3958,50 +3958,27 @@ pub(crate) mod tests {
 
     #[test]
     fn raid_send_notification() {
-        let (tx, _rx) = watch::channel(Config::default());
-        let cfg = Arc::new(tx);
-        let engine = Engine::new(cfg.clone(), |_| {});
-
-        let broadcaster = TwitchAccount {
+        use crate::engine::tests::{action, engine, log, run};
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        let mut a = action("a", "a", json!([log("T send %raidUserName% %viewers%")]));
+        a["triggers"] = json!([{"id": "t", "type": T_RAID_SEND, "enabled": true}]);
+        let e = engine(json!({ "actions": [a] }));
+        let cfg = Arc::new(watch::channel(Config::default()).0);
+        let b = TwitchAccount {
             user_id: "123".into(),
-            login: "streamer".into(),
-            display_name: "Streamer".into(),
             ..Default::default()
         };
-
-        // Outgoing raid (Raid Send)
-        let outgoing = json!({
-            "from_broadcaster_user_id": "123",
-            "to_broadcaster_user_id": "789",
-            "to_broadcaster_user_login": "target",
-            "to_broadcaster_user_name": "Target",
-            "viewers": 42
+        let out = run(async move {
+            let raid = |from: &str| {
+                json!({"from_broadcaster_user_id": from, "to_broadcaster_user_id": "789",
+                    "to_broadcaster_user_login": "target", "viewers": 42})
+            };
+            // Outgoing: Raid Send. Incoming ones come as chat notifications, so this one does nothing.
+            handle_notification(&e, &b, &cfg, &mut HashSet::new(), "channel.raid", &raid("123"));
+            handle_notification(&e, &b, &cfg, &mut HashSet::new(), "channel.raid", &raid("456"));
+            tokio::time::sleep(Duration::from_millis(100)).await;
         });
-        handle_notification(
-            &engine,
-            &broadcaster,
-            &cfg,
-            &mut HashSet::new(),
-            "channel.raid",
-            &outgoing,
-        );
-
-        // Incoming raid
-        let incoming = json!({
-            "from_broadcaster_user_id": "789",
-            "from_broadcaster_user_login": "target",
-            "from_broadcaster_user_name": "Target",
-            "to_broadcaster_user_id": "123",
-            "viewers": 42
-        });
-        handle_notification(
-            &engine,
-            &broadcaster,
-            &cfg,
-            &mut HashSet::new(),
-            "channel.raid",
-            &incoming,
-        );
+        assert_eq!(out, ["T send target 42"]);
     }
 
     #[test]
