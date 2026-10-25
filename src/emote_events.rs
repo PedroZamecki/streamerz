@@ -11,6 +11,15 @@ use std::rc::Rc;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 
+/// A task that stops when this is dropped.
+pub struct Abort(pub tokio::task::JoinHandle<()>);
+
+impl Drop for Abort {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// The four triggers for one platform: 7TV added, 7TV removed, BTTV added, BTTV removed.
 pub struct Codes {
     pub platform: &'static str,

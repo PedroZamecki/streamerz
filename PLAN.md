@@ -255,8 +255,15 @@ platform handles through channels, never through shared locks held across awaits
   mode triggers fire only on a change. Polled ones (viewers, present viewers, next ad) poll only while live
   and an action uses them; BTTV/7TV sockets open only for their triggers. New scopes: blocked terms, moderators,
   VIPs (log in again). Not deliverable without IRC/PubSub: Watch Streak, Modiversary, community goals.
-- [ ] 27b. The same for YouTube (16 triggers never fire), Kick, OBS, core and the integrations; sub-action
-  output variables (OBS group children, remote `instanceVersion`).
+- [x] 27b. YouTube, Kick, OBS: YouTube's Broadcast Started/Ended, Statistics Updated, Present Viewers, New
+  Subscriber, Sponsor Only, Poll Updated and BTTV/7TV emote triggers fire, and every item has the documented
+  YouTubeUser/Broadcaster/Broadcast variables (publishedAt, profile picture, input#, emotes/parts, Super Chat
+  amount in micros and currency, member months and level, poll options). Kick follows the payloads recorded
+  from kick.com's Pusher (bans came with an object user, so names were blank), with KickChat/KickUser
+  variables, recipients, Kicks, stream and category changes; Viewer Count and Present Viewers poll only when
+  used. OBS: obs.* variables, old scene, and Streaming/Recording Stopped no longer fire when an output starts.
+- [ ] 27c. StreamElements and Streamlabs alerts over their socket.io APIs (only a webhook nothing sends was
+  there); DonorDrive polling.
 - [x] 28. MCP: `streamerz --mcp`, a Model Context Protocol server (stdio, no new dependency) driving a running
   instance through its WebSocket: status, log, actions, run an action, list/fire triggers, inject chat and
   read what would have been sent. New dev-only requests (`STREAMERZ_DEV=1`): FireTrigger, GetLog, GetStatus.

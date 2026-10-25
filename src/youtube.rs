@@ -977,6 +977,9 @@ pub async fn read_chat(
         };
         *live.borrow_mut() = (video.clone(), String::new());
         crate::say(format!("YouTube: reading the chat of {video}"));
+        broadcast_started(engine, cfg, &video).await;
+        let extras =
+            (!run_once).then(|| tokio::task::spawn_local(while_live(engine.clone(), cfg.clone(), video.clone())));
         let json_headers = [("Content-Type".to_string(), "application/json".to_string())];
         let url = format!("{web}/youtubei/v1/live_chat/get_live_chat?prettyPrint=false");
         loop {
@@ -1023,6 +1026,10 @@ pub async fn read_chat(
         }
         set(false);
         *live.borrow_mut() = Default::default();
+        if let Some(t) = extras {
+            t.abort();
+        }
+        broadcast_ended(engine);
         if run_once {
             return;
         }
@@ -1056,343 +1063,559 @@ pub fn runs_text(runs: Option<&Value>) -> (String, Vec<(String, String)>) {
     (text, emotes)
 }
 
+/// Plain text of a `simpleText` or `runs` field.
+fn text_of(v: &Value) -> String {
+    match v["simpleText"].as_str() {
+        Some(t) => t.to_string(),
+        None => v["runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r["text"].as_str())
+            .collect(),
+    }
+}
+
+/// The last (largest) thumbnail URL.
+fn thumb(v: &Value) -> String {
+    v["thumbnails"]
+        .as_array()
+        .and_then(|t| t.last())
+        .and_then(|t| t["url"].as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// "$5.00", "R$ 10,00", "€2.50", "CA$20.00", "JPY 500": (micros, ISO 4217 code). ponytail: the common
+/// symbols only; InnerTube gives the text the viewer saw, not the currency.
+pub fn money(text: &str) -> (u64, String) {
+    const SYMBOLS: [(&str, &str); 16] = [
+        ("CA$", "CAD"),
+        ("A$", "AUD"),
+        ("NZ$", "NZD"),
+        ("MX$", "MXN"),
+        ("R$", "BRL"),
+        ("HK$", "HKD"),
+        ("NT$", "TWD"),
+        ("$", "USD"),
+        ("€", "EUR"),
+        ("£", "GBP"),
+        ("¥", "JPY"),
+        ("₹", "INR"),
+        ("₩", "KRW"),
+        ("₱", "PHP"),
+        ("₽", "RUB"),
+        ("₺", "TRY"),
+    ];
+    let t = text.trim();
+    let code = SYMBOLS
+        .iter()
+        .find(|(s, _)| t.starts_with(s))
+        .map(|(_, c)| c.to_string())
+        .or_else(|| {
+            let w: String = t.chars().take_while(char::is_ascii_alphabetic).collect();
+            (w.len() == 3).then(|| w.to_uppercase())
+        })
+        .unwrap_or_default();
+    let digits: String = t
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '.' || *c == ',')
+        .collect();
+    // The last separator followed by exactly two digits is the decimal one.
+    let (whole, cents) = match digits.rfind(['.', ',']) {
+        Some(i) if digits.len() - i == 3 => (&digits[..i], &digits[i + 1..]),
+        _ => (digits.as_str(), "0"),
+    };
+    let whole: u64 = whole.replace(['.', ','], "").parse().unwrap_or(0);
+    let cents: u64 = cents.parse().unwrap_or(0);
+    (whole * 1_000_000 + cents * 10_000, code)
+}
+
+/// The first number in a text ("Member for 6 months", "Gifted 5 memberships").
+fn number_in(t: &str) -> u64 {
+    t.split(|c: char| !c.is_ascii_digit())
+        .find(|w| !w.is_empty())
+        .and_then(|w| w.parse().ok())
+        .unwrap_or(0)
+}
+
+/// Streamer.bot's YouTubeUser, YouTubeBroadcaster and YouTubeBroadcast variables, plus the item's
+/// id and time, for one chat item.
+fn yt_base(engine: &Rc<Engine>, r: &Value) -> (Obj, bool, bool, bool) {
+    let badges = r["authorBadges"].as_array().cloned().unwrap_or_default();
+    let icon = |t: &str| {
+        badges.iter().any(|b| {
+            b.pointer("/liveChatAuthorBadgeRenderer/icon/iconType")
+                .and_then(Value::as_str)
+                == Some(t)
+        })
+    };
+    let (owner, moderator) = (icon("OWNER"), icon("MODERATOR"));
+    let member = badges
+        .iter()
+        .any(|b| b.pointer("/liveChatAuthorBadgeRenderer/customThumbnail").is_some());
+    let name = text_of(&r["authorName"]);
+    let mut a = Obj::new();
+    let mut put = |k: &str, v: Value| drop(a.insert(k.into(), v));
+    put("user", name.trim_start_matches('@').into());
+    put("userName", name.clone().into());
+    put("userId", r["authorExternalChannelId"].clone());
+    put("userType", "youtube".into());
+    put("userProfileUrl", thumb(&r["authorPhoto"]).into());
+    put("isSubscribed", member.into());
+    put("userIsSponsor", member.into());
+    put("isSponsor", member.into());
+    put("isModerator", moderator.into());
+    put("isOwner", owner.into());
+    put("isVerified", icon("VERIFIED").into());
+    put("messageId", r["id"].clone());
+    put("id", r["id"].clone());
+    let usec = r["timestampUsec"]
+        .as_str()
+        .and_then(|t| t.parse::<i64>().ok())
+        .unwrap_or(0);
+    if usec > 0 {
+        let t = crate::engine::civil_time(usec / 1_000_000);
+        put("publishedAt", crate::fmt::date(&t, "o").into());
+    }
+    let c = engine.config();
+    if let Some(b) = &c.youtube.broadcaster {
+        put("broadcastUsername", b.name.clone().into());
+        put("broadcastUserId", b.channel_id.clone().into());
+    }
+    drop(c);
+    BROADCAST.with_borrow(|b| a.extend(b.clone()));
+    (a, owner, moderator, member)
+}
+
+thread_local! {
+    /// The live broadcast's variables (broadcastId, broadcast.*), set when its chat is read.
+    static BROADCAST: std::cell::RefCell<Obj> = Default::default();
+    /// The poll on screen (for Poll Updated/Closed): its arguments.
+    static POLL: std::cell::RefCell<Obj> = Default::default();
+    /// Who chatted, and when (Present Viewers: those in the last 10 minutes).
+    static ACTIVE: std::cell::RefCell<std::collections::HashMap<String, (Value, std::time::Instant)>> = Default::default();
+}
+
+/// Fire a YouTube trigger and its WebSocket event.
+fn yt(engine: &Rc<Engine>, code: u32, name: &str, ev: &str, args: &Obj) {
+    engine.fire(code, name, "YouTube", "youtube", args, |_| true);
+    engine.emit("YouTube", ev, || json!(args));
+}
+
+/// A poll panel as Streamer.bot's poll.* arguments (InnerTube gives each option's share, not its votes).
+fn poll_args(p: &Value) -> Obj {
+    let mut a = Obj::new();
+    let question = text_of(&p["header"]["pollHeaderRenderer"]["pollQuestion"]);
+    a.insert("poll.id".into(), p["liveChatPollId"].clone());
+    a.insert("poll.question".into(), question.clone().into());
+    a.insert("question".into(), question.into());
+    let choices = p["choices"].as_array().cloned().unwrap_or_default();
+    a.insert("poll.options.count".into(), choices.len().into());
+    let mut best: Option<(usize, f64)> = None;
+    for (i, c) in choices.iter().enumerate() {
+        let ratio = c["voteRatio"].as_f64().unwrap_or(0.0);
+        a.insert(format!("poll.option{i}.text"), text_of(&c["text"]).into());
+        a.insert(
+            format!("poll.option{i}.votePercentage"),
+            text_of(&c["votePercentage"]).into(),
+        );
+        a.insert(format!("poll.option{i}.voteRatio"), ratio.into());
+        if best.is_none_or(|b| ratio > b.1) {
+            best = Some((i, ratio));
+        }
+    }
+    let total = number_in(&text_of(&p["header"]["pollHeaderRenderer"]["metadataText"]));
+    a.insert("poll.totalVotes".into(), total.into());
+    for (i, c) in choices.iter().enumerate() {
+        let votes = (c["voteRatio"].as_f64().unwrap_or(0.0) * total as f64).round() as u64;
+        a.insert(format!("poll.option{i}.votes"), votes.into());
+        if best.is_some_and(|b| b.0 == i) {
+            a.insert("poll.winningOption.text".into(), text_of(&c["text"]).into());
+            a.insert("poll.winningOption.votes".into(), votes.into());
+        }
+    }
+    a
+}
+
 pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value], speakers: &mut HashSet<String>) {
     for act in actions {
-        if let Some(add) = act.get("addChatItemAction").and_then(|a| a.get("item")) {
-            // 1. Text Message
-            if let Some(msg) = add.get("liveChatTextMessageRenderer") {
-                let id = msg["id"].as_str().unwrap_or("").to_string();
-                let author_name = msg
-                    .pointer("/authorName/simpleText")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let author_id = msg["authorExternalChannelId"].as_str().unwrap_or("").to_string();
-                let (text, emotes) = runs_text(msg.pointer("/message/runs"));
-
-                let badges = msg
-                    .pointer("/authorBadges")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                let is_owner = badges.iter().any(|b| {
-                    b.pointer("/liveChatAuthorBadgeRenderer/icon/iconType")
-                        .and_then(Value::as_str)
-                        == Some("OWNER")
-                });
-                let is_mod = badges.iter().any(|b| {
-                    b.pointer("/liveChatAuthorBadgeRenderer/icon/iconType")
-                        .and_then(Value::as_str)
-                        == Some("MODERATOR")
-                });
-                let is_member = badges
-                    .iter()
-                    .any(|b| b.pointer("/liveChatAuthorBadgeRenderer/customThumbnail").is_some());
-
-                let mut args = Obj::new();
-                args.insert("user".into(), author_name.clone().into());
-                args.insert("userName".into(), author_name.clone().into());
-                args.insert("userId".into(), author_id.clone().into());
-                args.insert(
-                    "userType".into(),
-                    (if is_owner {
-                        "broadcaster"
-                    } else if is_mod {
-                        "moderator"
-                    } else {
-                        "viewer"
-                    })
-                    .into(),
-                );
-                args.insert("message".into(), text.clone().into());
-                args.insert("messageId".into(), id.clone().into());
-                args.insert("isOwner".into(), is_owner.into());
-                args.insert("isModerator".into(), is_mod.into());
-                args.insert("isSponsor".into(), is_member.into());
-
-                // First words trigger
-                let lower_user = author_name.to_lowercase();
-                if !speakers.contains(&lower_user) {
-                    speakers.insert(lower_user);
-                    engine.fire(
-                        T_YT_FIRST_WORDS,
-                        "YouTubeFirstWords",
-                        "YouTube",
-                        "youtube",
-                        &args,
-                        |_| true,
-                    );
-                    engine.emit("YouTube", "FirstWords", || json!(args));
-                }
-
-                // Chat Message trigger
-                engine.fire(T_YT_MESSAGE, "YouTubeMessage", "YouTube", "youtube", &args, |_| true);
-                engine.emit("YouTube", "Message", || json!(args));
-
-                // Feed chat command into engine
-                let chat = Chat {
-                    platform: "youtube".into(),
-                    source: 1024,
-                    user: author_name,
-                    user_id: author_id,
-                    text,
-                    emotes,
-                    msg_id: id,
-                    broadcaster: is_owner,
-                    moderator: is_mod,
-                    subscriber: is_member,
-                    args: args.clone(),
-                    ..Default::default()
-                };
-                engine.chat(&chat);
+        let item = act.pointer("/addChatItemAction/item").cloned().unwrap_or_default();
+        if let Some(msg) = item.get("liveChatTextMessageRenderer") {
+            let (mut args, owner, moderator, member) = yt_base(engine, msg);
+            let (text, emotes) = runs_text(msg.pointer("/message/runs"));
+            crate::commands::input_args(&text, &text, &mut args);
+            args.insert("message".into(), text.clone().into());
+            let parts: Vec<Value> = msg["message"]["runs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|r| match r["text"].as_str() {
+                    Some(t) => json!({"text": t}),
+                    None => json!({"emoji": r["emoji"]["shortcuts"][0], "url": thumb(&r["emoji"]["image"])}),
+                })
+                .collect();
+            args.insert("parts".into(), Value::Array(parts).to_string().into());
+            let mut at = 0;
+            let list: Vec<Value> = emotes
+                .iter()
+                .map(|(name, url)| {
+                    let start = text[at..].find(name.as_str()).map_or(at, |i| at + i);
+                    at = start + name.len();
+                    json!({"name": name, "startIndex": start, "endIndex": at - 1, "imageUrl": url})
+                })
+                .collect();
+            args.insert("emotes".into(), Value::Array(list).to_string().into());
+            let id = msg["authorExternalChannelId"].as_str().unwrap_or("").to_string();
+            ACTIVE.with_borrow_mut(|m| {
+                let who = json!({"userId": id, "userName": args["userName"], "user": args["user"]});
+                m.insert(id.clone(), (who, std::time::Instant::now()));
+            });
+            if speakers.insert(id.to_lowercase()) {
+                yt(engine, T_YT_FIRST_WORDS, "YouTubeFirstWords", "FirstWords", &args);
             }
-
-            // 2. Super Chat (Paid Message)
-            if let Some(sc) = add.get("liveChatPaidMessageRenderer") {
-                let author_name = sc
-                    .pointer("/authorName/simpleText")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
+            yt(engine, T_YT_MESSAGE, "YouTubeMessage", "Message", &args);
+            engine.chat(&Chat {
+                platform: "youtube".into(),
+                source: 1024,
+                user: args["user"].as_str().unwrap_or("").into(),
+                user_id: id,
+                text,
+                emotes,
+                msg_id: msg["id"].as_str().unwrap_or("").into(),
+                broadcaster: owner,
+                moderator,
+                subscriber: member,
+                args: args.clone(),
+                ..Default::default()
+            });
+        }
+        if let Some(sc) = item.get("liveChatPaidMessageRenderer") {
+            let (mut args, ..) = yt_base(engine, sc);
+            let amount = text_of(&sc["purchaseAmountText"]);
+            let (micros, code) = money(&amount);
+            args.insert("amount".into(), amount.into());
+            args.insert("microAmount".into(), micros.into());
+            args.insert("currencyCode".into(), code.into());
+            args.insert("tier".into(), sc["headerBackgroundColor"].clone());
+            args.insert("message".into(), text_of(&sc["message"]).into());
+            yt(engine, T_YT_SUPER_CHAT, "YouTubeSuperChat", "SuperChat", &args);
+        }
+        if let Some(ss) = item.get("liveChatPaidStickerRenderer") {
+            let (mut args, ..) = yt_base(engine, ss);
+            let amount = text_of(&ss["purchaseAmountText"]);
+            let (micros, code) = money(&amount);
+            let label = ss.pointer("/sticker/accessibility/accessibilityData/label").cloned();
+            args.insert("amount".into(), amount.into());
+            args.insert("microAmount".into(), micros.into());
+            args.insert("currencyCode".into(), code.into());
+            args.insert("tier".into(), ss["backgroundColor"].clone());
+            args.insert("stickerAltText".into(), label.unwrap_or_default());
+            args.insert("stickerImageUrl".into(), thumb(&ss["sticker"]).into());
+            args.insert("stickerLanguage".into(), "en".into());
+            yt(engine, T_YT_SUPER_STICKER, "YouTubeSuperSticker", "SuperSticker", &args);
+        }
+        if let Some(m) = item.get("liveChatMembershipItemRenderer") {
+            let (mut args, ..) = yt_base(engine, m);
+            let primary = text_of(&m["headerPrimaryText"]);
+            let sub = text_of(&m["headerSubtext"]);
+            if primary.is_empty() {
+                // "Welcome to <level>!" or "Upgraded membership to <level>!"
+                let level = sub
+                    .trim_end_matches('!')
+                    .rsplit_once(" to ")
+                    .map_or(sub.as_str(), |x| x.1)
                     .to_string();
-                let author_id = sc["authorExternalChannelId"].as_str().unwrap_or("").to_string();
-                let amount = sc
-                    .pointer("/purchaseAmountText/simpleText")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let text = sc
-                    .pointer("/message/runs")
-                    .and_then(Value::as_array)
-                    .map(|runs| {
-                        runs.iter()
-                            .filter_map(|r| r["text"].as_str())
-                            .collect::<Vec<_>>()
-                            .join("")
-                    })
-                    .unwrap_or_default();
-
-                let mut args = Obj::new();
-                args.insert("user".into(), author_name.into());
-                args.insert("userId".into(), author_id.into());
-                args.insert("amount".into(), amount.into());
-                args.insert("message".into(), text.into());
-
-                engine.fire(T_YT_SUPER_CHAT, "YouTubeSuperChat", "YouTube", "youtube", &args, |_| {
-                    true
-                });
-                engine.emit("YouTube", "SuperChat", || json!(args));
-            }
-
-            // 3. Super Sticker (Paid Sticker)
-            if let Some(ss) = add.get("liveChatPaidStickerRenderer") {
-                let author_name = ss
-                    .pointer("/authorName/simpleText")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let author_id = ss["authorExternalChannelId"].as_str().unwrap_or("").to_string();
-                let amount = ss
-                    .pointer("/purchaseAmountText/simpleText")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-
-                let mut args = Obj::new();
-                args.insert("user".into(), author_name.into());
-                args.insert("userId".into(), author_id.into());
-                args.insert("amount".into(), amount.into());
-
-                engine.fire(
-                    T_YT_SUPER_STICKER,
-                    "YouTubeSuperSticker",
-                    "YouTube",
-                    "youtube",
+                args.insert("levelName".into(), level.into());
+                args.insert("isUpgrade".into(), sub.to_lowercase().starts_with("upgraded").into());
+                yt(engine, T_YT_NEW_SPONSOR, "YouTubeNewSponsor", "NewSponsor", &args);
+            } else {
+                args.insert("months".into(), number_in(&primary).into());
+                args.insert("levelName".into(), sub.into());
+                args.insert("message".into(), text_of(&m["message"]).into());
+                yt(
+                    engine,
+                    T_YT_MEMBER_MILESTONE,
+                    "YouTubeMemberMileStone",
+                    "MemberMileStone",
                     &args,
-                    |_| true,
                 );
-                engine.emit("YouTube", "SuperSticker", || json!(args));
-            }
-
-            // 4. Membership item
-            if let Some(mem) = add.get("liveChatMembershipItemRenderer") {
-                let author_name = mem
-                    .pointer("/authorName/simpleText")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let author_id = mem["authorExternalChannelId"].as_str().unwrap_or("").to_string();
-                let header = mem
-                    .pointer("/headerSubtext/runs")
-                    .and_then(Value::as_array)
-                    .map(|runs| {
-                        runs.iter()
-                            .filter_map(|r| r["text"].as_str())
-                            .collect::<Vec<_>>()
-                            .join("")
-                    })
-                    .unwrap_or_default();
-
-                let mut args = Obj::new();
-                args.insert("user".into(), author_name.into());
-                args.insert("userId".into(), author_id.into());
-                args.insert("header".into(), header.clone().into());
-
-                if header.to_lowercase().contains("month") {
-                    engine.fire(
-                        T_YT_MEMBER_MILESTONE,
-                        "YouTubeMemberMileStone",
-                        "YouTube",
-                        "youtube",
-                        &args,
-                        |_| true,
-                    );
-                    engine.emit("YouTube", "MemberMileStone", || json!(args));
-                } else {
-                    engine.fire(
-                        T_YT_NEW_SPONSOR,
-                        "YouTubeNewSponsor",
-                        "YouTube",
-                        "youtube",
-                        &args,
-                        |_| true,
-                    );
-                    engine.emit("YouTube", "NewSponsor", || json!(args));
-                }
-            }
-
-            // 5. Membership Gift
-            if let Some(gift) = add.get("liveChatSponsorshipsGiftPurchaseAnnouncementRenderer") {
-                let author_name = gift
-                    .pointer("/header/liveChatSponsorshipsHeaderRenderer/authorName/simpleText")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let mut args = Obj::new();
-                args.insert("user".into(), author_name.into());
-                engine.fire(
-                    T_YT_MEMBERSHIP_GIFT,
-                    "YouTubeMembershipGift",
-                    "YouTube",
-                    "youtube",
-                    &args,
-                    |_| true,
-                );
-                engine.emit("YouTube", "MembershipGift", || json!(args));
-            }
-
-            // 6. Gift Membership Received
-            if let Some(rec) = add.get("liveChatSponsorshipsGiftRedemptionAnnouncementRenderer") {
-                let author_name = rec
-                    .pointer("/authorName/simpleText")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let mut args = Obj::new();
-                args.insert("user".into(), author_name.into());
-                engine.fire(
-                    T_YT_GIFT_MEMBERSHIP_RECEIVED,
-                    "YouTubeGiftMembershipReceived",
-                    "YouTube",
-                    "youtube",
-                    &args,
-                    |_| true,
-                );
-                engine.emit("YouTube", "GiftMembershipReceived", || json!(args));
-            }
-
-            // 7. Jewels Gifted
-            if let Some(jewel) = add.get("liveChatJewelsGiftRenderer") {
-                let author_name = jewel
-                    .pointer("/authorName/simpleText")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let count = jewel["jewelCount"].as_u64().unwrap_or(0);
-                let mut args = Obj::new();
-                args.insert("user".into(), author_name.into());
-                args.insert("jewelCount".into(), count.into());
-                engine.fire(
-                    T_YT_JEWELS_GIFTED,
-                    "YouTubeJewelsGifted",
-                    "YouTube",
-                    "youtube",
-                    &args,
-                    |_| true,
-                );
-                engine.emit("YouTube", "JewelsGifted", || json!(args));
             }
         }
-
-        // Deleted item
+        if let Some(g) = item.get("liveChatSponsorshipsGiftPurchaseAnnouncementRenderer") {
+            let h = &g["header"]["liveChatSponsorshipsHeaderRenderer"];
+            let mut r = h.clone();
+            r["authorExternalChannelId"] = g["authorExternalChannelId"].clone();
+            r["id"] = g["id"].clone();
+            r["timestampUsec"] = g["timestampUsec"].clone();
+            let (mut args, ..) = yt_base(engine, &r);
+            let primary = text_of(&h["primaryText"]);
+            args.insert("count".into(), number_in(&primary).into());
+            args.insert("tier".into(), primary.into());
+            yt(
+                engine,
+                T_YT_MEMBERSHIP_GIFT,
+                "YouTubeMembershipGift",
+                "MembershipGift",
+                &args,
+            );
+        }
+        if let Some(g) = item.get("liveChatSponsorshipsGiftRedemptionAnnouncementRenderer") {
+            let (mut args, ..) = yt_base(engine, g);
+            // "received a gift membership by @someone"
+            let msg = text_of(&g["message"]);
+            let gifter = msg.rsplit_once(" by ").map_or("", |x| x.1).trim().to_string();
+            args.insert("gifterUser".into(), gifter.trim_start_matches('@').into());
+            args.insert("gifterUserName".into(), gifter.clone().into());
+            args.insert("gifterUserType".into(), "youtube".into());
+            args.insert("message".into(), msg.into());
+            yt(
+                engine,
+                T_YT_GIFT_MEMBERSHIP_RECEIVED,
+                "YouTubeGiftMembershipReceived",
+                "GiftMembershipReceived",
+                &args,
+            );
+        }
+        if let Some(j) = item.get("liveChatJewelsGiftRenderer") {
+            let (mut args, ..) = yt_base(engine, j);
+            args.insert("jewelCount".into(), j["jewelCount"].clone());
+            args.insert("gift.jewelsAmount".into(), j["jewelCount"].clone());
+            yt(engine, T_YT_JEWELS_GIFTED, "YouTubeJewelsGifted", "JewelsGifted", &args);
+        }
+        if let Some(mc) = item.get("liveChatModeChangeMessageRenderer") {
+            let (args, ..) = yt_base(engine, mc);
+            let t = format!("{} {}", text_of(&mc["text"]), text_of(&mc["subtext"])).to_lowercase();
+            if t.contains("members-only") || t.contains("members only") {
+                if t.contains(" off") || t.contains("disabled") {
+                    yt(
+                        engine,
+                        T_YT_SPONSOR_ONLY_ENDED,
+                        "YouTubeSponsorOnlyEnded",
+                        "SponsorOnlyEnded",
+                        &args,
+                    );
+                } else {
+                    yt(
+                        engine,
+                        T_YT_SPONSOR_ONLY_STARTED,
+                        "YouTubeSponsorOnlyStarted",
+                        "SponsorOnlyStarted",
+                        &args,
+                    );
+                }
+            }
+        }
         if let Some(del) = act.get("markChatItemAsDeletedAction") {
-            let target_id = del["targetItemId"].as_str().unwrap_or("").to_string();
-            let mut args = Obj::new();
-            args.insert("messageId".into(), target_id.into());
-            engine.fire(
+            let mut args = BROADCAST.with_borrow(Clone::clone);
+            args.insert("messageId".into(), del["targetItemId"].clone());
+            yt(
+                engine,
                 T_YT_MESSAGE_DELETED,
                 "YouTubeMessageDeleted",
-                "YouTube",
-                "youtube",
+                "MessageDeleted",
                 &args,
-                |_| true,
             );
-            engine.emit("YouTube", "MessageDeleted", || json!(args));
         }
-
-        // Author deleted / banned
         if let Some(ban) = act.get("markChatItemsByAuthorAsDeletedAction") {
-            let author_id = ban["externalChannelId"].as_str().unwrap_or("").to_string();
-            let mut args = Obj::new();
-            args.insert("userId".into(), author_id.into());
-            engine.fire(
-                T_YT_USER_BANNED,
-                "YouTubeUserBanned",
-                "YouTube",
-                "youtube",
-                &args,
-                |_| true,
-            );
-            engine.emit("YouTube", "UserBanned", || json!(args));
+            // ponytail: InnerTube doesn't say ban or timeout; viewers' chat only sees the removal.
+            let mut args = BROADCAST.with_borrow(Clone::clone);
+            let id = ban["externalChannelId"].clone();
+            if let Some((who, _)) = ACTIVE.with_borrow(|m| m.get(id.as_str().unwrap_or("")).cloned()) {
+                args.extend(who.as_object().cloned().unwrap_or_default());
+            }
+            args.insert("userId".into(), id);
+            args.insert("userType".into(), "youtube".into());
+            args.insert("banType".into(), "unknown".into());
+            yt(engine, T_YT_USER_BANNED, "YouTubeUserBanned", "UserBanned", &args);
         }
+        let shown = act.pointer("/showLiveChatActionPanelAction/panel/liveChatPollRenderer");
+        let updated = act.pointer("/updateLiveChatPollAction/pollToUpdate/pollRenderer");
+        if let Some(p) = shown.or(updated) {
+            let mut args = BROADCAST.with_borrow(Clone::clone);
+            args.extend(poll_args(p));
+            POLL.with_borrow_mut(|x| *x = args.clone());
+            if shown.is_some() {
+                yt(engine, T_YT_POLL_STARTED, "YouTubePollStarted", "PollStarted", &args);
+            } else {
+                yt(engine, T_YT_POLL_UPDATED, "YouTubePollUpdated", "PollUpdated", &args);
+            }
+        }
+        if let Some(close) = act.get("closeLiveChatActionPanelAction") {
+            let mut args = POLL.with_borrow_mut(std::mem::take);
+            if args.is_empty() {
+                continue;
+            }
+            args.insert("panelId".into(), close["targetPanelId"].clone());
+            yt(engine, T_YT_POLL_CLOSED, "YouTubePollClosed", "PollClosed", &args);
+        }
+    }
+}
 
-        // Polls
-        if let Some(poll) = act
-            .get("showLiveChatActionPanelAction")
-            .and_then(|p| p.get("panel"))
-            .and_then(|p| p.get("liveChatPollRenderer"))
-        {
-            let question = poll
-                .pointer("/header/pollHeaderRenderer/metadataText/runs/0/text")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let mut args = Obj::new();
-            args.insert("question".into(), question.into());
-            engine.fire(
-                T_YT_POLL_STARTED,
-                "YouTubePollStarted",
-                "YouTube",
-                "youtube",
-                &args,
-                |_| true,
-            );
-            engine.emit("YouTube", "PollStarted", || json!(args));
+/// The live video's broadcast.* (and broadcastId) for every YouTube trigger; Broadcast Started.
+async fn broadcast_started(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>, video: &str) {
+    let mut b = Obj::new();
+    b.insert("broadcastId".into(), video.into());
+    b.insert("broadcast.id".into(), video.into());
+    // The title and so on need the Data API (a login); without one, just the id.
+    if let Ok(t) = token(engine, cfg, false, true).await {
+        let url = format!("{YOUTUBE_API_BASE}/videos?part=snippet,status&id={video}");
+        let h = [("Authorization".to_string(), format!("Bearer {t}"))];
+        if let Ok(r) = crate::http::request("GET", &url, &h, b"").await {
+            let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
+            let (s, st) = (&v["items"][0]["snippet"], &v["items"][0]["status"]);
+            for (k, x) in [
+                ("title", &s["title"]),
+                ("description", &s["description"]),
+                ("publishedAt", &s["publishedAt"]),
+                ("defaultLanguage", &s["defaultLanguage"]),
+                ("defaultAudioLanguage", &s["defaultAudioLanguage"]),
+                ("privacy", &st["privacyStatus"]),
+                ("status", &s["liveBroadcastContent"]),
+            ] {
+                b.insert(format!("broadcast.{k}"), x.clone());
+            }
+            let tags: Vec<&str> = s["tags"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            b.insert("broadcast.tags".into(), tags.join(", ").into());
+            b.insert("broadcastUserProfileImage".into(), thumb(&s["thumbnails"]).into());
         }
+    }
+    BROADCAST.with_borrow_mut(|x| *x = b.clone());
+    yt(
+        engine,
+        T_YT_BROADCAST_STARTED,
+        "YouTubeBroadcastStarted",
+        "BroadcastStarted",
+        &b,
+    );
+}
 
-        if let Some(close_panel) = act.get("closeLiveChatActionPanelAction") {
-            let panel_id = close_panel["targetPanelId"].as_str().unwrap_or("").to_string();
-            let mut args = Obj::new();
-            args.insert("panelId".into(), panel_id.into());
-            engine.fire(
-                T_YT_POLL_CLOSED,
-                "YouTubePollClosed",
-                "YouTube",
-                "youtube",
-                &args,
-                |_| true,
-            );
-            engine.emit("YouTube", "PollClosed", || json!(args));
+fn broadcast_ended(engine: &Rc<Engine>) {
+    let b = BROADCAST.with_borrow_mut(std::mem::take);
+    if !b.is_empty() {
+        yt(
+            engine,
+            T_YT_BROADCAST_ENDED,
+            "YouTubeBroadcastEnded",
+            "BroadcastEnded",
+            &b,
+        );
+    }
+}
+
+/// While live: Statistics Updated (a minute apart, Data API: needs a login), Present Viewers (who
+/// chatted in the last 10 minutes, every 5) and New Subscriber (recent public subscribers, every 2
+/// minutes), each only when an action uses it; and the BTTV/7TV emote changes when used.
+async fn while_live(engine: Rc<Engine>, cfg: Arc<watch::Sender<Config>>, video: String) {
+    let channel = cfg.borrow().youtube.channel_id.clone();
+    let codes = crate::emote_events::Codes {
+        platform: "youtube",
+        source: "YouTube",
+        seventv: (T_YT_SEVENTV_EMOTE_ADDED, T_YT_SEVENTV_EMOTE_REMOVED),
+        bttv: (T_YT_BTTV_EMOTE_ADDED, T_YT_BTTV_EMOTE_REMOVED),
+    };
+    let emotes = (codes.wanted(&engine) && !channel.is_empty())
+        .then(|| tokio::task::spawn_local(crate::emote_events::watch(engine.clone(), codes, channel)));
+    let mut tick = tokio::time::interval(Duration::from_secs(60));
+    let (mut n, mut subs): (u64, Option<HashSet<String>>) = (0, None);
+    loop {
+        tick.tick().await;
+        n += 1;
+        let base = BROADCAST.with_borrow(Clone::clone);
+        if engine.uses_trigger(T_YT_STATISTICS_UPDATED) {
+            if let Ok(t) = token(&engine, &cfg, false, true).await {
+                let url = format!("{YOUTUBE_API_BASE}/videos?part=statistics,liveStreamingDetails&id={video}");
+                let h = [("Authorization".to_string(), format!("Bearer {t}"))];
+                if let Ok(r) = crate::http::request("GET", &url, &h, b"").await {
+                    let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
+                    let (s, l) = (&v["items"][0]["statistics"], &v["items"][0]["liveStreamingDetails"]);
+                    let num = |x: &Value| x.as_str().and_then(|x| x.parse::<u64>().ok()).unwrap_or(0);
+                    let mut a = base.clone();
+                    for k in [
+                        "likeCount",
+                        "dislikeCount",
+                        "viewCount",
+                        "favoriteCount",
+                        "commentCount",
+                    ] {
+                        a.insert(k.into(), num(&s[k]).into());
+                    }
+                    a.insert("concurrentViewers".into(), num(&l["concurrentViewers"]).into());
+                    yt(
+                        &engine,
+                        T_YT_STATISTICS_UPDATED,
+                        "YouTubeStatisticsUpdated",
+                        "StatisticsUpdated",
+                        &a,
+                    );
+                }
+            }
         }
+        if n % 5 == 0 && engine.uses_trigger(T_YT_PRESENT_VIEWERS) {
+            let users: Vec<Value> = ACTIVE.with_borrow_mut(|m| {
+                m.retain(|_, (_, at)| at.elapsed() < Duration::from_secs(600));
+                m.values().map(|(u, _)| u.clone()).collect()
+            });
+            let mut a = base.clone();
+            a.insert("users".into(), users.into());
+            a.insert("isLive".into(), true.into());
+            a.insert("isTest".into(), false.into());
+            yt(
+                &engine,
+                T_YT_PRESENT_VIEWERS,
+                "YouTubePresentViewers",
+                "PresentViewers",
+                &a,
+            );
+        }
+        if n % 2 == 0 && engine.uses_trigger(T_YT_NEW_SUBSCRIBER) {
+            if let Ok(t) = token(&engine, &cfg, false, false).await {
+                let url = format!(
+                    "{YOUTUBE_API_BASE}/subscriptions?part=subscriberSnippet&myRecentSubscribers=true&maxResults=50"
+                );
+                let h = [("Authorization".to_string(), format!("Bearer {t}"))];
+                if let Ok(r) = crate::http::request("GET", &url, &h, b"").await {
+                    let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
+                    let now: Vec<&Value> = v["items"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|i| &i["subscriberSnippet"])
+                        .collect();
+                    let ids: HashSet<String> = now
+                        .iter()
+                        .filter_map(|s| s["channelId"].as_str().map(String::from))
+                        .collect();
+                    if let Some(old) = &subs {
+                        for s in now
+                            .iter()
+                            .filter(|s| !old.contains(s["channelId"].as_str().unwrap_or("")))
+                        {
+                            let mut a = base.clone();
+                            a.insert("user".into(), s["title"].clone());
+                            a.insert("userName".into(), s["title"].clone());
+                            a.insert("userId".into(), s["channelId"].clone());
+                            a.insert("userType".into(), "youtube".into());
+                            a.insert("userProfileUrl".into(), thumb(&s["thumbnails"]).into());
+                            yt(
+                                &engine,
+                                T_YT_NEW_SUBSCRIBER,
+                                "YouTubeNewSubscriber",
+                                "NewSubscriber",
+                                &a,
+                            );
+                        }
+                    }
+                    subs = Some(ids);
+                }
+            }
+        }
+        let _ = &emotes;
     }
 }
 
@@ -1429,6 +1652,108 @@ mod tests {
     }
 
     #[test]
+    fn items_fire_with_their_variables() {
+        use crate::engine::tests::{action, engine, log, run};
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        assert_eq!(money("$5.00"), (5_000_000, "USD".into()));
+        assert_eq!(money("R$ 1.234,50"), (1_234_500_000, "BRL".into()));
+        assert_eq!(money("¥500"), (500_000_000, "JPY".into()));
+        let watch: &[(u32, &str)] = &[
+            (
+                T_YT_MESSAGE,
+                "%user% %userName% %input0% %publishedAt% %userProfileUrl%",
+            ),
+            (T_YT_SUPER_CHAT, "%amount% %microAmount% %currencyCode% %message%"),
+            (T_YT_MEMBER_MILESTONE, "%months% %levelName% %message%"),
+            (T_YT_NEW_SPONSOR, "%levelName% %isUpgrade%"),
+            (T_YT_MEMBERSHIP_GIFT, "%user% %count%"),
+            (T_YT_GIFT_MEMBERSHIP_RECEIVED, "%user% %gifterUser%"),
+            (
+                T_YT_POLL_STARTED,
+                "%poll.question% %poll.option1.text% %poll.winningOption.text%",
+            ),
+            (T_YT_POLL_CLOSED, "%poll.question% %poll.totalVotes%"),
+            (T_YT_SPONSOR_ONLY_STARTED, "on"),
+        ];
+        let actions: Vec<Value> = watch
+            .iter()
+            .map(|(code, vars)| {
+                let mut a = action(&code.to_string(), "a", json!([log(&format!("T {code} {vars}"))]));
+                a["triggers"] = json!([{"id": "t", "type": code, "enabled": true}]);
+                a
+            })
+            .collect();
+        let e = engine(json!({ "actions": actions }));
+        let out = run(async move {
+            let author = json!({"authorName": {"simpleText": "@ana"}, "authorExternalChannelId": "UCa",
+                "authorPhoto": {"thumbnails": [{"url": "s"}, {"url": "big"}]}, "timestampUsec": "1700000000000000"});
+            let with = |extra: Value| {
+                let mut a = author.clone();
+                a.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+                a
+            };
+            let add = |kind: &str, r: Value| json!({"addChatItemAction": {"item": {kind: r}}});
+            let choices = json!([{"text": {"simpleText": "Cats"}, "voteRatio": 0.25}, {"text": {"simpleText": "Dogs"}, "voteRatio": 0.75}]);
+            let poll = json!({"liveChatPollId": "p", "choices": choices, "header": {"pollHeaderRenderer": {
+                "pollQuestion": {"simpleText": "Pets?"}, "metadataText": {"runs": [{"text": "40 votes"}]}}}});
+            let actions = [
+                add(
+                    "liveChatTextMessageRenderer",
+                    with(json!({"id": "m", "message": {"runs": [{"text": "hi there"}]}})),
+                ),
+                add(
+                    "liveChatPaidMessageRenderer",
+                    with(json!({"purchaseAmountText": {"simpleText": "€2.50"}, "message": {"runs": [{"text": "gg"}]}})),
+                ),
+                add(
+                    "liveChatMembershipItemRenderer",
+                    with(
+                        json!({"headerPrimaryText": {"runs": [{"text": "Member for "}, {"text": "6"}, {"text": " months"}]},
+                    "headerSubtext": {"simpleText": "Gold"}, "message": {"runs": [{"text": "yay"}]}}),
+                    ),
+                ),
+                add(
+                    "liveChatMembershipItemRenderer",
+                    with(json!({"headerSubtext": {"runs": [{"text": "Welcome to Gold!"}]}})),
+                ),
+                add(
+                    "liveChatSponsorshipsGiftPurchaseAnnouncementRenderer",
+                    json!({"authorExternalChannelId": "UCa",
+                    "header": {"liveChatSponsorshipsHeaderRenderer": {"authorName": {"simpleText": "@ana"},
+                    "primaryText": {"runs": [{"text": "Gifted "}, {"text": "5"}, {"text": " Gold memberships"}]}}}}),
+                ),
+                add(
+                    "liveChatSponsorshipsGiftRedemptionAnnouncementRenderer",
+                    json!({"authorName": {"simpleText": "@bo"},
+                    "message": {"runs": [{"text": "received a gift membership by "}, {"text": "@ana"}]}}),
+                ),
+                add(
+                    "liveChatModeChangeMessageRenderer",
+                    json!({"text": {"runs": [{"text": "Members-only mode is on"}]}}),
+                ),
+                json!({"showLiveChatActionPanelAction": {"panel": {"liveChatPollRenderer": poll}}}),
+                json!({"closeLiveChatActionPanelAction": {"targetPanelId": "p"}}),
+            ];
+            handle_innertube_actions(&e, &actions, &mut HashSet::new());
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+        let want = [
+            "T 4003 ana @ana hi 2023-11-14T22:13:20.0000000+00:00 big",
+            "T 4006 €2.50 2500000 EUR gg",
+            "T 4009 6 Gold yay",
+            "T 4008 Gold False",
+            "T 4014 ana 5",
+            "T 4015 bo ana",
+            "T 4028 Pets? Dogs Dogs",
+            "T 4027 Pets? 40",
+            "T 4010 on",
+        ];
+        for w in want {
+            assert!(out.iter().any(|x| x == w), "{w} missing: {out:?}");
+        }
+    }
+
+    #[test]
     fn parse_innertube_chat_message() {
         let (tx, _rx) = watch::channel(Config::default());
         let engine = Engine::new(Arc::new(tx), |_| {});
@@ -1455,7 +1780,7 @@ mod tests {
         })];
 
         handle_innertube_actions(&engine, &actions, &mut speakers);
-        assert!(speakers.contains("ytuser1"));
+        assert!(speakers.contains("uc1234567890"));
     }
 
     #[test]
@@ -1570,7 +1895,7 @@ mod tests {
             let live = Rc::new(std::cell::RefCell::new((String::new(), String::new())));
             let mut speakers = HashSet::new();
             read_chat(&engine, &cfg, &connected, &live, &mut speakers, &format!("http://{addr}"), true).await;
-            assert!(speakers.contains("pollviewer"));
+            assert!(speakers.contains("ucpoll"));
             assert!(connected.load(Ordering::Relaxed));
             assert_eq!(live.borrow().0, "vid123");
             let lines = engine.chat_since(0);

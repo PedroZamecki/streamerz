@@ -44,6 +44,10 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468
 }
 
+pub(super) fn civil_pub(secs: i64) -> crate::fmt::Time {
+    civil(secs)
+}
+
 /// A UTC civil date and time from Unix seconds.
 fn civil(secs: i64) -> crate::fmt::Time {
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
