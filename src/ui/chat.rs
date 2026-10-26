@@ -520,7 +520,7 @@ impl Chat {
             (tw, kick)
         };
         emotes::load(&self.cmds, tw, kick);
-        let plats = set_up(&self.cfg.borrow());
+        let plats = shown_platforms(&self.cmds);
         if *self.plats.borrow() != plats {
             *self.plats.borrow_mut() = plats;
             self.lists();
@@ -707,7 +707,7 @@ pub fn tab(tabs: &Tabs, cfg: &Arc<watch::Sender<Config>>, cmds: &Cmds) -> Rc<Ref
     }));
     {
         let mut m = me.borrow_mut();
-        *m.plats.borrow_mut() = set_up(&cfg.borrow());
+        *m.plats.borrow_mut() = shown_platforms(cmds);
         m.lists();
         // The view it was left on.
         let was = cfg.borrow().window.chat_view.clone();
@@ -889,7 +889,6 @@ fn picker(cmds: &Cmds, p: &'static str) -> Option<String> {
             scroll.redraw();
         }
     };
-    fill(0);
     which.set_callback({
         let fill = fill.clone();
         move |c| fill(c.value().max(0) as usize)
@@ -899,6 +898,9 @@ fn picker(cmds: &Cmds, p: &'static str) -> Option<String> {
         move |_| done.set(true)
     });
     win.show();
+    // Filled once shown: before, the scroll area has no width yet (one emote a row).
+    col.layout();
+    fill(0);
     // Refill when pictures came in (checked twice a second), until something's picked.
     let arrived = || img::ARRIVED.load(std::sync::atomic::Ordering::Relaxed);
     let mut seen = arrived();
@@ -916,15 +918,15 @@ fn picker(cmds: &Cmds, p: &'static str) -> Option<String> {
     picked.take()
 }
 
-/// The platforms set up (logged in, or a TikTok channel), as indexes in PLATFORMS.
-fn set_up(c: &Config) -> Vec<usize> {
-    let on = [
-        c.twitch.broadcaster.is_some(),
-        c.youtube.broadcaster.is_some() || !c.youtube.channel_id.is_empty(),
-        c.kick.broadcaster.is_some() || !c.kick.channel.is_empty(),
-        c.tiktok.broadcaster.is_some() || !c.tiktok.channel.is_empty(),
-    ];
-    (0..4).filter(|i| on[*i]).collect()
+/// The platforms shown: connected ones, and ones whose chat is in the log (so lines stay when one
+/// drops), as indexes in PLATFORMS.
+fn shown_platforms(cmds: &Cmds) -> Vec<usize> {
+    query(cmds, |e| {
+        (0..4)
+            .filter(|i| e.chat_connected(PLATFORMS[*i]) || e.chat_has(PLATFORMS[*i]))
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 /// Label and value rows.

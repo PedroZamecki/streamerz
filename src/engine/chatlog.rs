@@ -213,6 +213,16 @@ impl Engine {
         crate::ui::chat();
     }
 
+    /// Whether `platform`'s chat is in the log.
+    pub fn chat_has(&self, platform: &str) -> bool {
+        self.st
+            .borrow()
+            .chat_log
+            .lines
+            .iter()
+            .any(|l| l.platform == platform && !l.note)
+    }
+
     /// The lines after `seq`.
     pub fn chat_since(&self, seq: u64) -> Vec<Line> {
         let st = self.st.borrow();

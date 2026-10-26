@@ -46,6 +46,10 @@ pub fn update(subs: &mut Subs, events: &Value, add: bool) {
 impl Engine {
     /// Send an event to the connections subscribed to it; `data` is only built if one is.
     pub fn emit(&self, source: &str, kind: &str, data: impl FnOnce() -> Value) {
+        // A connection came or went: the window's status and chat follow.
+        if kind.ends_with("Connected") || kind == "BroadcastMonitoringStarted" {
+            crate::ui::changed();
+        }
         let mut hub = self.hub.borrow_mut();
         if !hub.iter().any(|l| wants(&l.subs, source, kind)) {
             return;
