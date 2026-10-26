@@ -23,6 +23,17 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// What a chat message's actions do.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Moderate {
+    Delete,
+    /// Seconds.
+    Timeout(u64),
+    Ban,
+    /// Until the stream ends.
+    Pin,
+}
+
 /// One chat line, as the window shows it: emotes by their display name.
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -656,6 +667,96 @@ impl Engine {
         self.send_chat_list(&to, text, bot, true)
     }
 
+    /// Drops `platform`'s line `msg_id`, or all of `user_id`'s lines: deleted, banned or timed out.
+    pub fn chat_remove(&self, platform: &str, msg_id: &str, user_id: &str) {
+        let mut st = self.st.borrow_mut();
+        let log = &mut st.chat_log;
+        let n = log.lines.len();
+        log.lines.retain(|l| {
+            l.platform != platform
+                || l.note
+                || !((!msg_id.is_empty() && l.msg_id == msg_id) || (!user_id.is_empty() && l.user_id == user_id))
+        });
+        if log.lines.len() != n {
+            log.reset_gen += 1;
+            drop(st);
+            // Gone for good: not back from the saved history on the next start.
+            self.save_chat_history();
+            crate::ui::chat();
+        }
+    }
+
+    /// Deletes `l`, or times out or bans its sender, as the broadcaster; what failed goes in the chat.
+    pub fn moderate(self: &Rc<Self>, l: &Line, act: Moderate) {
+        let what = match act {
+            Moderate::Delete => format!("/delete {}", l.msg_id),
+            Moderate::Timeout(s) => format!("/timeout {} {s}", l.user),
+            Moderate::Ban => format!("/ban {}", l.user),
+            Moderate::Pin => format!("/pin {}", l.msg_id),
+        };
+        if self.dev_out(&l.platform, &what, false) {
+            self.chat_note(&l.platform, format!("(dev, not sent) {what}"));
+            if act == Moderate::Delete {
+                self.chat_remove(&l.platform, &l.msg_id, "");
+            }
+            return;
+        }
+        let (e, l) = (self.clone(), l.clone());
+        tokio::task::spawn_local(async move {
+            let ban = |secs: Option<u64>| {
+                let mut b = serde_json::json!({"user_id": l.user_id});
+                if let Some(s) = secs {
+                    b["duration"] = s.into();
+                }
+                serde_json::json!({ "data": b })
+            };
+            let twitch = |method, path, q: Option<(&'static str, String)>, body| {
+                let t = e.twitch();
+                async move {
+                    let Some(t) = t else {
+                        return Err("Twitch isn't connected".to_string());
+                    };
+                    let mut query = vec![
+                        ("broadcaster_id", "{broadcaster_id}"),
+                        ("moderator_id", "{broadcaster_id}"),
+                    ];
+                    if let Some((k, v)) = &q {
+                        query.push((k, v.as_str()));
+                    }
+                    t.helix(method, path, query, body, false, true).await.map(drop)
+                }
+            };
+            let r = match (l.platform.as_str(), act) {
+                ("twitch", Moderate::Delete) => {
+                    twitch(
+                        "DELETE",
+                        "moderation/chat",
+                        Some(("message_id", l.msg_id.clone())),
+                        None,
+                    )
+                    .await
+                }
+                ("twitch", Moderate::Timeout(s)) => twitch("POST", "moderation/bans", None, Some(ban(Some(s)))).await,
+                ("twitch", Moderate::Ban) => twitch("POST", "moderation/bans", None, Some(ban(None))).await,
+                ("twitch", Moderate::Pin) => {
+                    twitch("PUT", "chat/pins", Some(("message_id", l.msg_id.clone())), None).await
+                }
+                ("kick", Moderate::Delete) => crate::kick::delete_message(&e, &e.cfg, &l.msg_id).await,
+                ("kick", Moderate::Timeout(s)) => e.kick_start().timeout_user(&l.user, s, "").await,
+                ("kick", Moderate::Ban) => e.kick_start().ban_user(&l.user, "").await,
+                ("youtube", Moderate::Timeout(s)) => e.youtube_start().timeout_user("", &l.user_id, s).await,
+                ("youtube", Moderate::Ban) => e.youtube_start().ban_user("", &l.user_id).await,
+                _ => Err("not possible on this platform".into()),
+            };
+            match r {
+                Ok(()) if act == Moderate::Delete => e.chat_remove(&l.platform, &l.msg_id, ""),
+                Ok(()) if act == Moderate::Pin => {}
+                Ok(()) => e.chat_remove(&l.platform, "", &l.user_id),
+                Err(err) => e.chat_note(&l.platform, format!("{what}: {err}")),
+            }
+        });
+    }
+
     /// Send `text` to an explicit list of platforms with configurable account fallback.
     pub fn send_chat_list(
         self: &Rc<Self>,
@@ -709,6 +810,34 @@ mod tests {
         assert_eq!(shown(":yt:"), ":yt:");
         assert_eq!(for_platform("hi KEKW 😀", "kick", &known), "hi [emote:37226:KEKW] 😀");
         assert_eq!(for_platform("hi [emote:37226:KEKW] 😀", "twitch", &known), "hi KEKW 😀");
+    }
+
+    #[test]
+    fn removes_deleted_and_banned_lines() {
+        let cfg = std::sync::Arc::new(tokio::sync::watch::channel(crate::Config::default()).0);
+        let e = Engine::new(cfg, |_| {});
+        let line = |p: &str, id: &str, user: &str| Line {
+            platform: p.into(),
+            msg_id: id.into(),
+            user_id: user.into(),
+            text: id.into(),
+            ..Default::default()
+        };
+        let lines = [
+            line("twitch", "a", "1"),
+            line("twitch", "b", "2"),
+            line("twitch", "c", "2"),
+            line("kick", "d", "2"),
+        ];
+        e.chat_welcome("twitch", lines[..3].to_vec());
+        e.chat_welcome("kick", lines[3..].to_vec());
+        let (g, _, _) = e.chat_sync(999, 0);
+        e.chat_remove("twitch", "a", "");
+        e.chat_remove("twitch", "", "2");
+        let (g2, _, left) = e.chat_sync(g, 0);
+        assert_ne!(g, g2);
+        let texts: Vec<&str> = left.iter().filter(|l| !l.note).map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, ["d"]);
     }
 
     #[test]

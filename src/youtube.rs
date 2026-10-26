@@ -1712,6 +1712,7 @@ pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value], speakers
             }
         }
         if let Some(del) = act.get("markChatItemAsDeletedAction") {
+            engine.chat_remove("youtube", del["targetItemId"].as_str().unwrap_or(""), "");
             let mut args = BROADCAST.with_borrow(Clone::clone);
             args.insert("messageId".into(), del["targetItemId"].clone());
             yt(
@@ -1726,6 +1727,7 @@ pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value], speakers
             // ponytail: InnerTube doesn't say ban or timeout; viewers' chat only sees the removal.
             let mut args = BROADCAST.with_borrow(Clone::clone);
             let id = ban["externalChannelId"].clone();
+            engine.chat_remove("youtube", "", id.as_str().unwrap_or(""));
             if let Some((who, _)) = ACTIVE.with_borrow(|m| m.get(id.as_str().unwrap_or("")).cloned()) {
                 args.extend(who.as_object().cloned().unwrap_or_default());
             }

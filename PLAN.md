@@ -289,7 +289,8 @@ platform handles through channels, never through shared locks held across awaits
   shown (it was one emote a row on first open).
 - [x] 35. Real badges: Twitch's own badge pictures (sharp) instead of drawn role badges, the ones the
   chatter wears, with spacing; chat settings: timestamps on/off, badges on/off.
-- [ ] 36. Message actions on hover (Twitch-like): delete, reply, pin, copy, per platform where allowed.
+- [x] 36. Message actions on hover (Twitch-like): reply, copy, pin (Twitch), delete (Twitch, Kick), timeout and
+  ban (Twitch, Kick, YouTube); lines deleted or banned anywhere leave the chat.
 - [x] 37. Emote picker like 7TV's: per-platform and per-account provider tabs (Favorites, platform native
   via Twitch Helix `chat/emotes/user` & Kick `/emotes/{slug}`, 7TV, BTTV, FFZ, Emoji), search across tabs,
   collapsible section headers, empty-state notes, and right-click `★` favorites.
