@@ -2931,6 +2931,7 @@ fn handle_notification(
             go(engine, T_AD_RUN, "Ad Run", "Twitch/Ads", "AdRun", &args);
         }
         "channel.ban" => {
+            engine.chat_remove("twitch", "", es(event, "/user_id"));
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
             event_user(&mut args, event, "user");
@@ -3133,6 +3134,7 @@ fn handle_notification(
             );
             engine.emit("Twitch", "ShoutoutReceived", || json!(args));
         }
+        "channel.chat.clear_user_messages" => engine.chat_remove("twitch", "", es(event, "/target_user_id")),
         "channel.chat.clear" => {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
@@ -3404,6 +3406,7 @@ fn handle_notification(
             populate_broadcaster_vars(&mut args, broadcaster);
             event_user(&mut args, event, "target");
             let id = es(event, "/message_id");
+            engine.chat_remove("twitch", id, "");
             let text = SEEN.with_borrow(|s| s.messages.iter().find(|m| m.0 == id).map(|m| m.1.clone()));
             args.insert("targetMessageId".into(), id.into());
             args.insert("message".into(), text.unwrap_or_default().into());

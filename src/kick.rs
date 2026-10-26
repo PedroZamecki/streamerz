@@ -601,10 +601,16 @@ async fn run_pusher_loop(
     run_pusher_loop_url(engine, cfg, connected, speakers, KICK_PUSHER_URL, false).await;
 }
 
+/// Deletes a chat message, as the broadcaster.
+pub async fn delete_message(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>, id: &str) -> Result<(), String> {
+    let token = token(engine, cfg, false, false).await?;
+    api(&token, "DELETE", &format!("/chat/{id}"), None).await.map(drop)
+}
+
 pub const KICK_REDIRECT: &str = "http://127.0.0.1:45563/callback";
 const KICK_TOKEN_URL: &str = "https://id.kick.com/oauth/token";
 const KICK_SCOPES: &str =
-    "user:read channel:read channel:write chat:write moderation:ban events:subscribe channel:rewards:read channel:rewards:write";
+    "user:read channel:read channel:write chat:write moderation:ban moderation:chat_message:manage events:subscribe channel:rewards:read channel:rewards:write";
 /// The bot only chats.
 const KICK_BOT_SCOPES: &str = "user:read chat:write";
 
@@ -1509,7 +1515,21 @@ pub fn handle_kick_event(
                 );
             }
         }
+        "MessageDeletedEvent" => {
+            engine.chat_remove(
+                "kick",
+                data.pointer("/message/id").and_then(Value::as_str).unwrap_or(""),
+                "",
+            );
+        }
         "UserBannedEvent" => {
+            let id = &data["user"]["id"];
+            engine.chat_remove(
+                "kick",
+                "",
+                &id.as_u64()
+                    .map_or_else(|| id.as_str().unwrap_or("").to_string(), |n| n.to_string()),
+            );
             kick_user(&mut args, &data["user"]);
             let by = &data["banned_by"];
             args.insert("createdById".into(), by["id"].clone());
