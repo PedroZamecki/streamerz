@@ -706,6 +706,14 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("backgroundColor", "Background color", Text),
             ("random", "Random", Bool),
         ],
+        43002 => &[("count", "How many", Int)],
+        43003 | 1026 | 1027 | 1035 => &[],
+        1000 => &[
+            ("quoteType", "Type", Pick(&["Random", "Specific"])),
+            ("quoteId", "Quote ID (Specific)", Int),
+        ],
+        1036 => &[("quoteId", "Quote ID", Int)],
+        1037 => &[("quoteVariable", "Quote", Text)],
         43001 => &[
             ("text", "Message", Text),
             ("useBot", "Use Bot Account", Bool),

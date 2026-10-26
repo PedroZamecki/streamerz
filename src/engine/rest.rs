@@ -3774,6 +3774,15 @@ impl Engine {
                 }
             }
 
+            // 43002: Get Top Gifters, 43003: Get Stream Info (this live's, as read)
+            43002 => ctx
+                .args
+                .extend(crate::tiktok::top_gifters(n(o, "count").max(1.0) as usize)),
+            43003 => {
+                let live = self.tiktok().is_some_and(|t| t.is_connected());
+                ctx.args.extend(crate::tiktok::stream_info(live));
+            }
+
             // Discord Basic Webhook (7001)
             7001 => {
                 let url = self.expand(ctx, s(o, "webhookUrl"));

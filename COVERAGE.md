@@ -807,3 +807,16 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] Top channel rewards
 - [ ] Top bits (all, month, week) and editors: need Helix bits/leaderboard and channel/editors
 - [x] Auto reset 12 hours after the last write
+
+## Phase 41: TikTok beyond chat
+
+**Triggers** (3)
+
+- [x] Viewer Count Update (only on a change; topViewers from TikTok's ranks list)
+- [x] Stream Online (a room not seen before; resets TikTok's First Words)
+- [x] Stream Offline (with the live's viewers, likes and coins)
+
+**Sub-actions** (2)
+
+- [x] Get Top Gifters
+- [x] Get Stream Info
