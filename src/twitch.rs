@@ -559,6 +559,20 @@ pub fn populate_user_vars(args: &mut Obj, user_id: &str, login: &str, display: &
     args.insert("badgeCount".into(), 0.into());
 }
 
+/// Streamer.bot's `badges` (Name, Version, ImageUrl) and `badgeCount`, from a message's badges.
+pub fn set_badges(args: &mut Obj, badges: &[Value]) {
+    let list: Vec<Value> = badges
+        .iter()
+        .map(|b| {
+            let (set, v) = (b["set_id"].as_str().unwrap_or(""), b["id"].as_str().unwrap_or(""));
+            let url = SEEN.with_borrow(|s| s.badges.get(&format!("{set}/{v}")).cloned().unwrap_or_default());
+            json!({"name": set, "version": v.parse::<i64>().unwrap_or(0), "imageUrl": url})
+        })
+        .collect();
+    args.insert("badgeCount".into(), list.len().into());
+    args.insert("badges".into(), list.into());
+}
+
 #[derive(Default)]
 pub struct ReplyInfo {
     pub msg_id: String,
@@ -1775,6 +1789,7 @@ fn handle_notification(
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
             populate_user_vars(&mut args, chatter_id, chatter_login, chatter_name, role, sub);
+            set_badges(&mut args, badges);
             populate_chat_vars(
                 &mut args,
                 &ChatContext {
@@ -3534,6 +3549,8 @@ struct Seen {
     pyramids: HashMap<String, (u64, u64)>,
     raid: Option<Obj>,
     pending: HashMap<String, Bomb>,
+    /// Badge pictures by "set/version" (the channel's over Twitch's global ones).
+    badges: HashMap<String, String>,
 }
 
 /// A gift bomb waiting for its gifts: trigger, arguments, how many, recipients so far.
@@ -3636,9 +3653,27 @@ async fn seed(engine: &Rc<Engine>) {
     let settings = tw.helix("GET", "chat/settings", b.clone(), None, false, false).await;
     let channel = tw.helix("GET", "channels", b.clone(), None, false, false).await;
     let rewards = tw
-        .helix("GET", "channel_points/custom_rewards", b, None, false, false)
+        .helix("GET", "channel_points/custom_rewards", b.clone(), None, false, false)
         .await;
+    let global = tw.helix("GET", "chat/badges/global", vec![], None, false, false).await;
+    let own = tw.helix("GET", "chat/badges", b, None, false, false).await;
     SEEN.with_borrow_mut(|s| {
+        for sets in [global, own].into_iter().flatten() {
+            for set in sets["data"].as_array().into_iter().flatten() {
+                for v in set["versions"].as_array().into_iter().flatten() {
+                    // 72 px: sharp once shrunk, on any screen scale.
+                    let url = v["image_url_4x"].as_str().or(v["image_url_1x"].as_str()).unwrap_or("");
+                    s.badges.insert(
+                        format!(
+                            "{}/{}",
+                            set["set_id"].as_str().unwrap_or(""),
+                            v["id"].as_str().unwrap_or("")
+                        ),
+                        url.into(),
+                    );
+                }
+            }
+        }
         if let Ok(v) = settings {
             s.settings = Some(v["data"][0].clone());
         }

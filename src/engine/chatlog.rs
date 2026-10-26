@@ -32,6 +32,8 @@ pub struct Line {
     pub moderator: bool,
     pub vip: bool,
     pub subscriber: bool,
+    /// The badges the chatter wears, as the platform shows them: name and picture URL (Twitch).
+    pub badges: Vec<(String, String)>,
     /// The name's colour ("#RRGGBB") when the platform has one.
     pub color: String,
     /// Not a chat message: a send that failed, or (dev mode) one kept instead of sent.
@@ -194,6 +196,14 @@ impl Engine {
             vip: c.vip,
             subscriber: c.subscriber,
             color: c.args.get("color").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            badges: c
+                .args
+                .get("badges")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|b| Some((b["name"].as_str()?.to_string(), b["imageUrl"].as_str()?.to_string())))
+                .collect(),
             ..Default::default()
         });
         drop(st);

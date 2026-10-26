@@ -594,7 +594,13 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
             ok(&id, json!({}))
         }
         // Dev mode only (STREAMERZ_DEV=1): fake chat in, and the chat that would have gone out.
-        "InjectChat" if e.dev() => match e.inject_chat(get("platform"), get("user"), get("role"), get("text")) {
+        "InjectChat" if e.dev() => match e.inject_chat(
+            get("platform"),
+            get("user"),
+            get("role"),
+            get("text"),
+            req.get("badges").cloned(),
+        ) {
             Ok(ran) => ok(&id, json!({"ran": ran})),
             Err(m) => error(&id, &m),
         },

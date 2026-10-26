@@ -287,7 +287,7 @@ platform handles through channels, never through shared locks held across awaits
   found" for those) and logs a reason once, not every 30 s; chat shows only the platforms connected or with
   chat in the log, and follows connections as they come and go; the emote picker fills its grid after it's
   shown (it was one emote a row on first open).
-- [ ] 35. Real badges: Twitch's own badge pictures (sharp) instead of drawn role badges, the ones the
+- [x] 35. Real badges: Twitch's own badge pictures (sharp) instead of drawn role badges, the ones the
   chatter wears, with spacing; chat settings: timestamps on/off, badges on/off.
 - [ ] 36. Message actions on hover (Twitch-like): delete, reply, pin, copy, per platform where allowed.
 - [ ] 37. Emote picker like 7TV's: sections per provider and set (channel, global, emoji) with headers,

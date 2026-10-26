@@ -350,7 +350,14 @@ impl Engine {
 
     /// Dev mode: a chat message as if it came from `platform`, run through the commands. How many
     /// ran. `role`: broadcaster, moderator, vip, subscriber or viewer.
-    pub fn inject_chat(self: &Rc<Self>, platform: &str, user: &str, role: &str, text: &str) -> Result<usize, String> {
+    pub fn inject_chat(
+        self: &Rc<Self>,
+        platform: &str,
+        user: &str,
+        role: &str,
+        text: &str,
+        badges: Option<Value>,
+    ) -> Result<usize, String> {
         let source = match platform {
             "twitch" => 1,
             "youtube" => 1024,
@@ -364,6 +371,10 @@ impl Engine {
         }
         args.insert("message".into(), text.into());
         args.insert("platform".into(), platform.into());
+        // As Streamer.bot passes them: [{name, version, imageUrl}].
+        if let Some(b) = badges.filter(Value::is_array) {
+            args.insert("badges".into(), b);
+        }
         Ok(self.chat(&Chat {
             platform: platform.into(),
             source,
@@ -4656,9 +4667,9 @@ mod tests {
             ];
         });
         run(async move {
-            assert_eq!(e.inject_chat("twitch", "ana", "viewer", "!hi").unwrap(), 0);
-            assert_eq!(e.inject_chat("kick", "bo", "viewer", "!hi").unwrap(), 1);
-            assert!(e.inject_chat("nope", "bo", "viewer", "!hi").is_err());
+            assert_eq!(e.inject_chat("twitch", "ana", "viewer", "!hi", None).unwrap(), 0);
+            assert_eq!(e.inject_chat("kick", "bo", "viewer", "!hi", None).unwrap(), 1);
+            assert!(e.inject_chat("nope", "bo", "viewer", "!hi", None).is_err());
             tokio::time::sleep(Duration::from_millis(100)).await;
             let out = e.dev_take().unwrap();
             assert_eq!(out[0], json!({"platform": "kick", "text": "hi bo", "bot": false}));
@@ -4693,7 +4704,7 @@ mod tests {
                 &args(json!({"user": "bo", "giftName": "Rose", "repeatCount": 5})),
                 |_| true,
             );
-            assert_eq!(e.inject_chat("kick", "cy", "viewer", "!lurk").unwrap(), 1);
+            assert_eq!(e.inject_chat("kick", "cy", "viewer", "!lurk", None).unwrap(), 1);
             tokio::time::sleep(Duration::from_millis(200)).await;
             let out = e.dev_take().unwrap();
             let said = |p: &str, t: &str| out.iter().any(|o| o["platform"] == p && o["text"] == t);
