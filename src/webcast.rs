@@ -4,9 +4,32 @@
 //! WebSocket code already here instead of its own HTTP and protobuf stacks.
 
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::io::Read;
+use std::sync::{Mutex, OnceLock};
 
 pub const UA: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0";
+
+/// Accounts confirmed to exist during this session so transient 503/WAF responses on TikTok's embed
+/// endpoint never misreport a valid account as "not found".
+fn existed_cache() -> &'static Mutex<HashSet<String>> {
+    static EXISTED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    EXISTED.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+pub fn remember_existing_user(user: &str) {
+    let key = user.trim().trim_start_matches('@').to_lowercase();
+    if !key.is_empty() {
+        if let Ok(mut set) = existed_cache().lock() {
+            set.insert(key);
+        }
+    }
+}
+
+fn has_existed(user: &str) -> bool {
+    let key = user.trim().trim_start_matches('@').to_lowercase();
+    existed_cache().lock().map(|s| s.contains(&key)).unwrap_or(false)
+}
 
 /// One protobuf field value: varints and fixed numbers as `I`, length-delimited as `B`.
 #[derive(Clone, Copy)]
@@ -161,6 +184,25 @@ fn with(mut a: Value, b: Value) -> Value {
     a
 }
 
+/// Extract badge image URLs directly from TikTok's `User` protobuf (`badge_image_list` 21 and `badge_list` 64).
+fn user_badge_urls(u: Msg) -> Vec<String> {
+    let mut urls = Vec::new();
+    let mut push = |url: String| {
+        if url.starts_with("https://") && !urls.contains(&url) {
+            urls.push(url);
+        }
+    };
+    for img in u.all(21) {
+        push(Msg(img).str(1));
+    }
+    for b in u.all(64) {
+        let b = Msg(b);
+        push(b.msg(20).msg(2).str(1));
+        push(b.msg(23).msg(2).str(1));
+    }
+    urls
+}
+
 /// TikTok-Live-Connector's flat user fields (what TikFinity and tikstream send).
 fn user(u: Msg, common: Msg) -> Value {
     json!({
@@ -168,6 +210,7 @@ fn user(u: Msg, common: Msg) -> Value {
         "uniqueId": u.str(38),
         "nickname": u.str(3),
         "profilePictureUrl": u.msg(9).str(1),
+        "badgeUrls": user_badge_urls(u),
         "msgId": common.int(2).to_string(),
         "createTime": common.int(4),
     })
@@ -182,14 +225,110 @@ fn role(i: Msg) -> Value {
     })
 }
 
+/// Inline custom emotes on a `WebcastChatMessage` (field 13: repeated `EmoteWithIndex`).
+fn chat_comment_and_emotes(raw_comment: String, m: Msg) -> (String, Vec<Value>) {
+    let mut indexed: Vec<(usize, String, String)> = m
+        .all(13)
+        .filter_map(|raw| {
+            let ew = Msg(raw);
+            let idx = ew.int(1) as usize;
+            let em = ew.msg(2);
+            let id = em.str(1);
+            let url = em.msg(2).str(1);
+            if id.is_empty() || !url.starts_with("https://") {
+                return None;
+            }
+            Some((idx, format!("[tiktok:{id}]"), url))
+        })
+        .collect();
+    if indexed.is_empty() {
+        return (raw_comment, Vec::new());
+    }
+    let emotes_json: Vec<Value> = indexed
+        .iter()
+        .map(|(_, tok, url)| json!({ "token": tok, "url": url }))
+        .collect();
+    if raw_comment.contains('\u{FFFC}') {
+        let mut out = String::new();
+        let mut it = indexed.iter();
+        for ch in raw_comment.chars() {
+            if ch == '\u{FFFC}' {
+                if let Some((_, tok, _)) = it.next() {
+                    if !out.is_empty() && !out.ends_with(' ') {
+                        out.push(' ');
+                    }
+                    out.push_str(tok);
+                    out.push(' ');
+                    continue;
+                }
+            }
+            out.push(ch);
+        }
+        for (_, tok, _) in it {
+            if !out.is_empty() && !out.ends_with(' ') {
+                out.push(' ');
+            }
+            out.push_str(tok);
+        }
+        return (out.trim().to_string(), emotes_json);
+    }
+    let mut chars: Vec<char> = raw_comment.chars().collect();
+    indexed.sort_by_key(|a| std::cmp::Reverse(a.0));
+    for (idx, tok, _) in &indexed {
+        let pos = (*idx).min(chars.len());
+        let need_leading = pos > 0 && !chars[pos - 1].is_whitespace();
+        let need_trailing = pos < chars.len() && !chars[pos].is_whitespace();
+        let mut insert = String::new();
+        if need_leading {
+            insert.push(' ');
+        }
+        insert.push_str(tok);
+        if need_trailing {
+            insert.push(' ');
+        }
+        chars.splice(pos..pos, insert.chars());
+    }
+    (chars.into_iter().collect::<String>().trim().to_string(), emotes_json)
+}
+
 /// A Webcast message as streamerz's TikTok event name and data.
 pub fn event(kind: &str, m: Msg) -> Option<(&'static str, Value)> {
     let c = m.msg(1);
     Some(match kind {
-        "WebcastChatMessage" => (
-            "chat",
-            with(with(user(m.msg(2), c), role(m.msg(18))), json!({ "comment": m.str(3) })),
-        ),
+        "WebcastChatMessage" => {
+            let (comment, emotes) = chat_comment_and_emotes(m.str(3), m);
+            (
+                "chat",
+                with(
+                    with(user(m.msg(2), c), role(m.msg(18))),
+                    json!({ "comment": comment, "emotes": emotes }),
+                ),
+            )
+        }
+        "WebcastEmoteChatMessage" => {
+            let mut toks = Vec::new();
+            let mut emotes = Vec::new();
+            for raw in m.all(3) {
+                let em = Msg(raw);
+                let id = em.str(1);
+                let url = em.msg(2).str(1);
+                if !id.is_empty() && url.starts_with("https://") {
+                    let tok = format!("[tiktok:{id}]");
+                    toks.push(tok.clone());
+                    emotes.push(json!({ "token": tok, "url": url }));
+                }
+            }
+            if toks.is_empty() {
+                return None;
+            }
+            (
+                "chat",
+                with(
+                    with(user(m.msg(2), c), role(m.msg(5))),
+                    json!({ "comment": toks.join(" "), "emotes": emotes }),
+                ),
+            )
+        }
         "WebcastLikeMessage" => (
             "like",
             with(
@@ -245,28 +384,79 @@ pub async fn ttwid() -> Result<String, String> {
         .ok_or_else(|| "TikTok sent no ttwid cookie".into())
 }
 
-/// A TikTok user's profile picture, from their public creator embed (no cookie, not rate limited
-/// like `user/room`, and it works when they're not live). TikTok often answers 503: a few tries.
-pub async fn avatar(user: &str) -> Option<String> {
-    let url = format!("https://www.tiktok.com/embed/@{}", crate::commands::url_encode(user));
-    let mut page = String::new();
-    for _ in 0..5 {
-        match crate::http::request("GET", &url, &[("User-Agent".into(), UA.into())], b"").await {
-            Ok(r) if r.status == 200 => {
-                page = r.text();
-                break;
-            }
-            _ => tokio::time::sleep(std::time::Duration::from_secs(2)).await,
-        }
-    }
-    let raw = page.split("\"avatarThumbUrl\":\"").nth(1)?.split('"').next()?;
-    let url = raw.replace("\\u0026", "&").replace("\\/", "/");
-    url.starts_with("https://").then_some(url)
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EmbedProbe {
+    Exists,
+    NotFound,
+    Transient,
 }
 
-/// The channel's `user/room` answer (user, live room). TikTok rate limits this lookup much less with a
-/// `ttwid`.
-pub async fn user_room(channel: &str, ttwid: &str) -> Result<Value, String> {
+async fn probe_embed(user: &str) -> (EmbedProbe, Option<String>) {
+    let url = format!("https://www.tiktok.com/embed/@{}", crate::commands::url_encode(user));
+    let mut saw_not_found = false;
+    for attempt in 0..3 {
+        match crate::http::request("GET", &url, &[("User-Agent".into(), UA.into())], b"").await {
+            Ok(r) if r.status == 200 => {
+                let page = r.text();
+                if let Some(raw) = page
+                    .split("\"avatarThumbUrl\":\"")
+                    .nth(1)
+                    .and_then(|s| s.split('"').next())
+                {
+                    let avatar = raw.replace("\\u0026", "&").replace("\\/", "/");
+                    if avatar.starts_with("https://") {
+                        remember_existing_user(user);
+                        return (EmbedProbe::Exists, Some(avatar));
+                    }
+                }
+                if page.contains("\"uniqueId\":\"") {
+                    remember_existing_user(user);
+                    return (EmbedProbe::Exists, None);
+                }
+                if page.contains("Couldn't find this account") || page.contains("user-not-found") {
+                    saw_not_found = true;
+                    break;
+                }
+                // Likely a bot-check / challenge HTML page rather than a missing user.
+                return (EmbedProbe::Transient, None);
+            }
+            Ok(r) if r.status == 404 => {
+                saw_not_found = true;
+                break;
+            }
+            _ if attempt < 2 => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
+            _ => {}
+        }
+    }
+    if saw_not_found && !has_existed(user) {
+        (EmbedProbe::NotFound, None)
+    } else if has_existed(user) {
+        (EmbedProbe::Exists, None)
+    } else {
+        (EmbedProbe::Transient, None)
+    }
+}
+
+/// A TikTok user's profile picture, from their public creator embed (no cookie, not rate limited
+/// like `user/room`, and it works when they're not live).
+pub async fn avatar(user: &str) -> Option<String> {
+    probe_embed(user).await.1
+}
+
+/// Structured reason why a TikTok channel currently has no active live room.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RoomLookupError {
+    /// Account exists (logged-in, cached, or verified via embed) and has never started a live stream yet.
+    NeverLive,
+    /// Account exists (or embed probe was rate-limited/challenged) and is currently offline.
+    Offline,
+    /// Embed explicitly confirmed the `@handle` does not exist on TikTok.
+    NotFound,
+    /// Network, HTTP 429, or unexpected upstream error.
+    Transient(String),
+}
+
+async fn fetch_user_room_raw(channel: &str, ttwid: &str) -> Result<Value, String> {
     let url = format!(
         "https://www.tiktok.com/api-live/user/room?aid=1988&app_name=tiktok_web&device_platform=web_pc\
          &app_language=en&browser_language=en-US&region=US&user_is_login=false&uniqueId={}\
@@ -280,22 +470,60 @@ pub async fn user_room(channel: &str, ttwid: &str) -> Result<Value, String> {
     ];
     let r = crate::http::request("GET", &url, &h, b"").await?;
     if r.status == 429 {
-        return Err("TikTok is rate limiting, retrying later".into());
+        return Err("TikTok rate limit reached; backing off".into());
     }
-    let v: Value = serde_json::from_slice(&r.body).map_err(|_| format!("TikTok answered HTTP {}", r.status))?;
-    match v["statusCode"].as_i64() {
-        Some(0) => {}
-        // The live service knows only accounts that have gone live: one that exists is just not live.
-        Some(19881007) if avatar(channel).await.is_some() => return Err(format!("@{channel} has never gone live")),
-        Some(19881007) => return Err(format!("@{channel} not found")),
-        c => return Err(format!("TikTok error {}", c.unwrap_or(-1))),
-    }
-    Ok(v)
+    serde_json::from_slice(&r.body).map_err(|_| format!("TikTok answered HTTP {}", r.status))
 }
 
-/// The channel's live room ID; an error says why there's none (not found, not live, rate limited).
-pub async fn room_id(channel: &str, ttwid: &str) -> Result<u64, String> {
-    let v = user_room(channel, ttwid).await?;
+/// The channel's `user/room` answer (user, live room). TikTok rate limits this lookup much less with a
+/// `ttwid`.
+pub async fn user_room(channel: &str, ttwid: &str) -> Result<Value, String> {
+    let v = fetch_user_room_raw(channel, ttwid).await?;
+    match v["statusCode"].as_i64() {
+        Some(0) => {
+            remember_existing_user(channel);
+            Ok(v)
+        }
+        Some(19881007) => match probe_embed(channel).await.0 {
+            EmbedProbe::Exists => Err(format!("@{channel} has never gone live yet")),
+            EmbedProbe::Transient => Err(format!("@{channel} is offline")),
+            EmbedProbe::NotFound => Err(format!("@{channel} not found")),
+        },
+        c => Err(format!("TikTok error {}", c.unwrap_or(-1))),
+    }
+}
+
+/// The channel's live room ID, distinguishing normal offline/standby states from missing handles or
+/// transient errors. When `known_account` is true (e.g. a logged-in TikTok account), never hits the
+/// public embed endpoint on `19881007`.
+pub async fn room_id(channel: &str, ttwid: &str, known_account: bool) -> Result<u64, RoomLookupError> {
+    if known_account {
+        remember_existing_user(channel);
+    }
+    let v = fetch_user_room_raw(channel, ttwid)
+        .await
+        .map_err(RoomLookupError::Transient)?;
+    match v["statusCode"].as_i64() {
+        Some(0) => remember_existing_user(channel),
+        // TikTok's Live service returns 19881007 (LIVE_USER_NOT_EXIST) for valid accounts that have
+        // never started a livestream.
+        Some(19881007) => {
+            if known_account || has_existed(channel) {
+                return Err(RoomLookupError::NeverLive);
+            }
+            return Err(match probe_embed(channel).await.0 {
+                EmbedProbe::Exists => RoomLookupError::NeverLive,
+                EmbedProbe::Transient => RoomLookupError::Offline,
+                EmbedProbe::NotFound => RoomLookupError::NotFound,
+            });
+        }
+        c => {
+            return Err(RoomLookupError::Transient(format!(
+                "TikTok upstream code {}",
+                c.unwrap_or(-1)
+            )))
+        }
+    }
     let room = v["data"]["user"]["roomId"]
         .as_str()
         .and_then(|r| r.parse().ok())
@@ -304,7 +532,7 @@ pub async fn room_id(channel: &str, ttwid: &str) -> Result<u64, String> {
         .as_i64()
         .or(v["data"]["user"]["status"].as_i64());
     if room == 0 || status != Some(2) {
-        return Err(format!("@{channel} isn't live"));
+        return Err(RoomLookupError::Offline);
     }
     Ok(room)
 }
@@ -321,7 +549,7 @@ pub fn ws_url(room: u64) -> String {
          &browser_version=5.0%20(X11)&browser_online=true&tz_name=UTC&app_name=tiktok_web\
          &sup_ws_ds_opt=1&update_version_code=2.0.0&compress=gzip&webcast_language=en&ws_direct=1\
          &aid=1988&live_id=12&app_language=en&client_enter=1&room_id={room}&identity=audience\
-         &history_comment_count=0&last_rtt={rtt}.000&heartbeat_duration=10000\
+         &history_comment_count=30&last_rtt={rtt}.000&heartbeat_duration=10000\
          &resp_content_type=protobuf&did_rule=3"
     )
 }
@@ -331,16 +559,28 @@ mod tests {
     use super::*;
 
     fn chat_frame(gzip: bool, ack: bool) -> Vec<u8> {
+        let mut badge_img = Vec::new();
+        put_bytes(&mut badge_img, 1, b"https://p16-webcast.tiktokcdn.com/badge.png");
         let mut u = Vec::new();
         put_int(&mut u, 1, 42);
         put_bytes(&mut u, 3, "Ana 🎉".as_bytes());
+        put_bytes(&mut u, 21, &badge_img);
         put_bytes(&mut u, 38, b"ana");
         let mut who = Vec::new();
         put_int(&mut who, 4, 1);
         put_int(&mut who, 5, 1);
+        let mut em_img = Vec::new();
+        put_bytes(&mut em_img, 1, b"https://p16-webcast.tiktokcdn.com/emote1.png");
+        let mut em = Vec::new();
+        put_bytes(&mut em, 1, b"em1");
+        put_bytes(&mut em, 2, &em_img);
+        let mut ewi = Vec::new();
+        put_int(&mut ewi, 1, 7);
+        put_bytes(&mut ewi, 2, &em);
         let mut chat = Vec::new();
         put_bytes(&mut chat, 2, &u);
         put_bytes(&mut chat, 3, b"!uptime");
+        put_bytes(&mut chat, 13, &ewi);
         put_bytes(&mut chat, 18, &who);
         let mut m = Vec::new();
         put_bytes(&mut m, 1, b"WebcastChatMessage");
@@ -371,7 +611,9 @@ mod tests {
             assert_eq!(ev.len(), 1);
             let (name, d) = &ev[0];
             assert_eq!(*name, "chat");
-            assert_eq!(d["comment"], "!uptime");
+            assert_eq!(d["comment"], "!uptime [tiktok:em1]");
+            assert_eq!(d["emotes"][0]["token"], "[tiktok:em1]");
+            assert_eq!(d["badgeUrls"][0], "https://p16-webcast.tiktokcdn.com/badge.png");
             assert_eq!(d["uniqueId"], "ana");
             assert_eq!(d["nickname"], "Ana 🎉");
             assert_eq!(d["userId"], "42");
@@ -395,6 +637,7 @@ mod tests {
         let e = enter_room(5);
         let p = Msg(&e).msg(8);
         assert_eq!((p.int(1), p.int(4), p.str(5).as_str()), (5, 12, "audience"));
+        assert!(ws_url(5).contains("history_comment_count=30"));
     }
 
     #[test]

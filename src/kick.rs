@@ -446,7 +446,7 @@ impl Runner {
         let connected = self.connected.clone();
         let mut speakers = std::mem::take(&mut self.speakers);
 
-        crate::say(format!("Kick: connecting to public Pusher for channel '{channel}'..."));
+        crate::say(format!("Kick: connecting (@{channel})..."));
 
         self.read_task = Some(tokio::task::spawn_local(async move {
             run_pusher_loop(engine, cfg, connected, &mut speakers).await;
@@ -630,8 +630,20 @@ pub async fn token(
         let c = cfg.borrow();
         match (pick(&c, bot), fallback) {
             (Some(a), _) => (a, bot),
-            (None, true) => (pick(&c, !bot).ok_or("No Kick account logged in")?, !bot),
+            (None, true) => (
+                pick(&c, !bot).ok_or_else(|| {
+                    if crate::secrets::is_locked() {
+                        "System keyring is locked; unlock it to use saved Kick login"
+                    } else {
+                        "No Kick account logged in"
+                    }
+                })?,
+                !bot,
+            ),
             (None, false) => {
+                if crate::secrets::is_locked() {
+                    return Err("System keyring is locked; unlock it to use saved Kick login".into());
+                }
                 return Err(format!(
                     "Kick {} isn't logged in",
                     if bot { "bot" } else { "broadcaster" }
@@ -809,33 +821,42 @@ pub async fn run_pusher_loop_url(
     let chatroom_id = cfg.borrow().kick.chatroom_id;
     let channel_id = cfg.borrow().kick.channel_id;
 
-    // Resolve channel_id and chatroom_id if not present
-    let (c_id, cr_id) = match (channel_id, chatroom_id) {
-        (Some(cid), Some(crid)) => (cid, crid),
-        _ => {
-            // Fetch public channel details
-            let url = format!("https://kick.com/api/v2/channels/{channel}");
-            let details = crate::http::request("GET", &url, &[], b"").await.ok();
-            let parsed = details
-                .as_ref()
-                .and_then(|r| serde_json::from_slice::<Value>(&r.body).ok());
-            let cid = parsed
-                .as_ref()
-                .and_then(|v| v.pointer("/id").and_then(Value::as_u64))
-                .or(channel_id)
-                .unwrap_or(1);
-            let crid = parsed
-                .as_ref()
-                .and_then(|v| v.pointer("/chatroom/id").and_then(Value::as_u64))
-                .or(chatroom_id)
-                .unwrap_or(cid);
-
+    let is_live_pusher = pusher_url == KICK_PUSHER_URL && !run_once;
+    // Resolve channel_id, chatroom_id, and custom subscriber badge images
+    let (c_id, cr_id) = if is_live_pusher || channel_id.is_none() || chatroom_id.is_none() {
+        let url = format!("https://kick.com/api/v2/channels/{channel}");
+        let headers = [("Accept".to_string(), "application/json".to_string())];
+        let details = if is_live_pusher || (channel_id.is_none() && !run_once) {
+            crate::http::request("GET", &url, &headers, b"").await.ok()
+        } else {
+            None
+        };
+        let parsed = details
+            .as_ref()
+            .filter(|r| r.status == 200)
+            .and_then(|r| serde_json::from_slice::<Value>(&r.body).ok());
+        if let Some(v) = &parsed {
+            cache_sub_badges(&v["subscriber_badges"]);
+        }
+        let cid = parsed
+            .as_ref()
+            .and_then(|v| v.pointer("/id").and_then(Value::as_u64))
+            .or(channel_id)
+            .unwrap_or(1);
+        let crid = parsed
+            .as_ref()
+            .and_then(|v| v.pointer("/chatroom/id").and_then(Value::as_u64))
+            .or(chatroom_id)
+            .unwrap_or(cid);
+        if channel_id != Some(cid) || chatroom_id != Some(crid) {
             engine.change(|c| {
                 c.kick.channel_id = Some(cid);
                 c.kick.chatroom_id = Some(crid);
             });
-            (cid, crid)
         }
+        (cid, crid)
+    } else {
+        (channel_id.unwrap_or(1), chatroom_id.unwrap_or(1))
     };
 
     loop {
@@ -871,7 +892,15 @@ pub async fn run_pusher_loop_url(
 
                 connected.store(true, Ordering::Relaxed);
                 crate::ui::changed();
-                crate::say(format!("Kick: connected to chatroom {cr_id} and channel {c_id}"));
+                crate::say(format!("Kick: connected (@{channel}, chatroom {cr_id})"));
+                if is_live_pusher {
+                    let e_hist = engine.clone();
+                    let ch_hist = channel.clone();
+                    tokio::task::spawn_local(async move {
+                        let hist = fetch_kick_recent_messages(c_id, &ch_hist).await;
+                        e_hist.chat_welcome("kick", hist);
+                    });
+                }
 
                 let mut args = Obj::new();
                 args.insert("channel".into(), channel.clone().into());
@@ -991,6 +1020,182 @@ thread_local! {
     static STREAM: std::cell::RefCell<(String, (Value, Value, Value), String)> = Default::default();
     /// Who chatted, and when (Present Viewers: those in the last 10 minutes).
     static ACTIVE: std::cell::RefCell<std::collections::HashMap<String, (Value, std::time::Instant)>> = Default::default();
+    /// Channel custom subscriber badge URLs sorted by months descending: `(months, image_url)`.
+    static SUB_BADGES: std::cell::RefCell<Vec<(u64, String)>> = Default::default();
+}
+
+fn cache_sub_badges(arr: &Value) {
+    let mut list: Vec<(u64, String)> = arr
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|b| {
+            let months = b["months"].as_u64()?;
+            let src = b.pointer("/badge_image/src").and_then(Value::as_str)?.trim();
+            if src.is_empty() {
+                None
+            } else {
+                Some((months, src.to_string()))
+            }
+        })
+        .collect();
+    list.sort_by_key(|a| std::cmp::Reverse(a.0));
+    SUB_BADGES.with_borrow_mut(|s| *s = list);
+}
+
+/// Build Kick's authentic `(badge_key, image_url)` list from a chatter's `sender.identity`.
+pub fn kick_badge_list(identity: &Value) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for b in identity["badges"].as_array().into_iter().flatten() {
+        if b.get("active").and_then(Value::as_bool) == Some(false) {
+            continue;
+        }
+        let kind = b["type"].as_str().unwrap_or("");
+        let count = b["count"].as_u64().unwrap_or(0);
+        let (key, url) = match kind {
+            "broadcaster" => ("kick:broadcaster", String::new()),
+            "moderator" => ("kick:moderator", String::new()),
+            "vip" => ("kick:vip", String::new()),
+            "og" => ("kick:og", String::new()),
+            "founder" => ("kick:founder", String::new()),
+            "verified" => ("kick:verified", String::new()),
+            "staff" => ("kick:staff", String::new()),
+            "sidekick" => ("kick:sidekick", String::new()),
+            // ponytail: one gifter badge; kick.com has ~30 tiers by count, add them if they matter.
+            "sub_gifter" => ("kick:sub_gifter", String::new()),
+            "subscriber" => {
+                let months = count.max(1);
+                let custom = SUB_BADGES.with_borrow(|s| {
+                    s.iter()
+                        .find(|(m, _)| months >= *m)
+                        .or_else(|| s.last())
+                        .map(|(_, u)| u.clone())
+                        .unwrap_or_default()
+                });
+                ("kick:subscriber", custom)
+            }
+            _ => continue,
+        };
+        out.push((key.to_string(), url));
+    }
+    // kick.com's own order.
+    const ORDER: [&str; 11] = [
+        "staff",
+        "broadcaster",
+        "moderator",
+        "vip",
+        "og",
+        "subscriber",
+        "founder",
+        "sub_gifter",
+        "sidekick",
+        "verified",
+        "custom",
+    ];
+    out.sort_by_key(|(k, _)| {
+        ORDER
+            .iter()
+            .position(|o| k.strip_prefix("kick:") == Some(o))
+            .unwrap_or(ORDER.len())
+    });
+    for b in identity["badges_v2"].as_array().into_iter().flatten() {
+        if b.get("selected").and_then(Value::as_bool) == Some(false) {
+            continue;
+        }
+        if let Some(url) = b["image_url"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            if !out.iter().any(|(_, u)| u == url) {
+                out.push(("kick:custom".into(), url.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// Convert a Kick `/api/v2/channels/{id}/messages` item into a historical chat `Line`.
+pub fn parse_kick_message_line(data: &Value, channel: &str) -> Option<crate::engine::chatlog::Line> {
+    let raw_content = data["content"].as_str()?.trim();
+    if raw_content.is_empty() {
+        return None;
+    }
+    let msg_id = data["id"].as_str().unwrap_or("").to_string();
+    let sender = &data["sender"];
+    let user = sender["username"].as_str().unwrap_or("").to_string();
+    if user.is_empty() {
+        return None;
+    }
+    let user_id = sender["id"]
+        .as_u64()
+        .map(|n| n.to_string())
+        .or_else(|| sender["id"].as_str().map(String::from))
+        .unwrap_or_default();
+    let identity = &sender["identity"];
+    let color = identity["color"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("#53FC18")
+        .to_string();
+    let raw_badges = identity["badges"].as_array().cloned().unwrap_or_default();
+    let has = |t: &str| raw_badges.iter().any(|b| b["type"] == t);
+    let broadcaster = has("broadcaster") || user.eq_ignore_ascii_case(channel);
+    let moderator = has("moderator");
+    let vip = has("vip");
+    let subscriber = has("subscriber") || has("founder");
+    let badges = kick_badge_list(identity);
+
+    let raw_emotes = kick_emotes(raw_content);
+    let (text, emotes) = crate::engine::chatlog::normalize_line_emotes("kick", raw_content.to_string(), &raw_emotes);
+    let time = data["created_at"]
+        .as_str()
+        .and_then(crate::engine::rest_parse_iso)
+        .map_or_else(String::new, crate::engine::chatlog::local_hhmm);
+
+    Some(crate::engine::chatlog::Line {
+        platform: "kick".into(),
+        msg_id,
+        time,
+        user,
+        user_id,
+        text,
+        emotes,
+        broadcaster,
+        moderator,
+        vip,
+        subscriber,
+        badges,
+        color,
+        historical: true,
+        ..Default::default()
+    })
+}
+
+async fn fetch_kick_recent_messages(channel_id: u64, channel: &str) -> Vec<crate::engine::chatlog::Line> {
+    if channel_id == 0 {
+        return Vec::new();
+    }
+    let url = format!("https://kick.com/api/v2/channels/{channel_id}/messages");
+    let headers = [("Accept".to_string(), "application/json".to_string())];
+    let Ok(res) = crate::http::request("GET", &url, &headers, b"").await else {
+        return Vec::new();
+    };
+    if res.status != 200 {
+        return Vec::new();
+    }
+    let Ok(val) = serde_json::from_slice::<Value>(&res.body) else {
+        return Vec::new();
+    };
+    let Some(arr) = val
+        .pointer("/data/messages")
+        .or_else(|| val.get("messages"))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    // Kick returns messages newest-first; reverse into chronological order.
+    arr.iter()
+        .rev()
+        .filter_map(|m| parse_kick_message_line(m, channel))
+        .collect()
 }
 
 /// Fire a Kick trigger and its WebSocket event.
@@ -1077,18 +1282,21 @@ pub fn handle_kick_event(
             kick_user(&mut args, sender);
             let user_id = sender["id"].as_u64().unwrap_or(0);
             let username = sender["username"].as_str().unwrap_or("").to_string();
-            let color = sender
-                .pointer("/identity/color")
-                .and_then(Value::as_str)
+            let identity = &sender["identity"];
+            let color = identity["color"]
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
                 .unwrap_or("#53FC18");
-            let badges = sender
-                .pointer("/identity/badges")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
+            let badges = identity["badges"].as_array().cloned().unwrap_or_default();
             let has = |t: &str| badges.iter().any(|b| b["type"] == t);
             let is_broadcaster = has("broadcaster") || username.eq_ignore_ascii_case(channel);
-            let (is_moderator, is_subscriber, is_vip) = (has("moderator"), has("subscriber"), has("vip"));
+            let (is_moderator, is_subscriber, is_vip) =
+                (has("moderator"), has("subscriber") || has("founder"), has("vip"));
+            let ui_badges: Vec<Value> = kick_badge_list(identity)
+                .into_iter()
+                .map(|(k, u)| json!({"key": k, "name": k, "imageUrl": u}))
+                .collect();
             // The message without its emote tags (Streamer.bot's messageStripped).
             let mut stripped = content.clone();
             for (tag, _) in &emotes {
@@ -1115,6 +1323,7 @@ pub fn handle_kick_event(
                 ("emotes", Value::Array(list).to_string().into()),
                 ("badgeCount", badges.len().into()),
                 ("badge", names.into()),
+                ("badges", ui_badges.into()),
                 ("isBroadcaster", is_broadcaster.into()),
                 ("isModerator", is_moderator.into()),
                 ("isSubscribed", is_subscriber.into()),
@@ -1781,5 +1990,48 @@ mod tests {
         });
         let token_bot2 = cfg.bot.as_ref().map(|b| b.token.access_token.clone());
         assert_eq!(token_bot2.as_deref(), Some("bot_token_456"));
+    }
+
+    #[test]
+    fn kick_badges_and_history_line() {
+        cache_sub_badges(&json!([
+            {"months": 1, "badge_image": {"src": "https://files.kick.com/sub1.png"}},
+            {"months": 6, "badge_image": {"src": "https://files.kick.com/sub6.png"}}
+        ]));
+        let msg = json!({
+            "id": "k-msg-1",
+            "content": "hello [emote:37226:KEKW]",
+            "created_at": "2026-10-26T15:40:12Z",
+            "sender": {
+                "id": 99,
+                "username": "PedroZamecki",
+                "identity": {
+                    "color": "#B27CFF",
+                    "badges": [
+                        {"type": "broadcaster", "active": true},
+                        {"type": "subscriber", "count": 6, "active": true},
+                        {"type": "sub_gifter", "count": 55, "active": true}
+                    ],
+                    "badges_v2": [
+                        {"selected": true, "image_url": "https://files.kick.com/seasonal.webp"}
+                    ]
+                }
+            }
+        });
+        let l = parse_kick_message_line(&msg, "pedrozamecki").expect("valid kick line");
+        assert_eq!(l.msg_id, "k-msg-1");
+        assert_eq!(l.text, "hello KEKW");
+        assert_eq!(l.color, "#B27CFF");
+        assert_eq!(l.emotes[0].0, "KEKW");
+        assert_eq!(l.badges[0], ("kick:broadcaster".into(), String::new()));
+        assert_eq!(
+            l.badges[1],
+            ("kick:subscriber".into(), "https://files.kick.com/sub6.png".into())
+        );
+        assert_eq!(l.badges[2], ("kick:sub_gifter".into(), String::new()));
+        assert_eq!(
+            l.badges[3],
+            ("kick:custom".into(), "https://files.kick.com/seasonal.webp".into())
+        );
     }
 }

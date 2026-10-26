@@ -760,6 +760,7 @@ fn handle_obs_message(
                     let active = state == "OBS_WEBSOCKET_OUTPUT_STARTED";
                     let info_id = info.id.clone();
                     if active {
+                        engine.notify_stream_started();
                         engine.fire(
                             T_OBS_STREAMING_STARTED,
                             "ObsStreamingStarted",

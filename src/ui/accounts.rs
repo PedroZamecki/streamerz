@@ -34,6 +34,16 @@ enum P {
 const ALL: [P; 4] = [P::Twitch, P::YouTube, P::Kick, P::TikTok];
 
 impl P {
+    fn from_slug(s: &str) -> Option<Self> {
+        match s {
+            "twitch" => Some(P::Twitch),
+            "youtube" => Some(P::YouTube),
+            "kick" => Some(P::Kick),
+            "tiktok" => Some(P::TikTok),
+            _ => None,
+        }
+    }
+
     fn name(self) -> &'static str {
         match self {
             P::Twitch => "Twitch",
@@ -43,26 +53,12 @@ impl P {
         }
     }
 
-    /// The logged-in broadcaster's or bot's name.
-    fn account(self, c: &Config, bot: bool) -> Option<String> {
+    /// Raw display name of the logged-in broadcaster or bot (without status suffixes).
+    fn raw_account_name(self, c: &Config, bot: bool) -> Option<String> {
         match self {
             P::Twitch => if bot { &c.twitch.bot } else { &c.twitch.broadcaster }
                 .as_ref()
-                .map(|a| {
-                    let want = if bot {
-                        crate::twitch::BOT_SCOPES
-                    } else {
-                        crate::twitch::BROADCASTER_SCOPES
-                    };
-                    if a.token.access_token.is_empty() {
-                        format!("{} (login expired: log in again)", a.display_name)
-                    // Logged in before streamerz asked for more: some sub-actions would fail.
-                    } else if want.iter().any(|w| !a.token.scope.iter().any(|g| g == w)) {
-                        format!("{} (log in again: new permissions)", a.display_name)
-                    } else {
-                        a.display_name.clone()
-                    }
-                }),
+                .map(|a| a.display_name.clone()),
             P::YouTube => if bot { &c.youtube.bot } else { &c.youtube.broadcaster }
                 .as_ref()
                 .map(|a| a.name.clone()),
@@ -72,6 +68,56 @@ impl P {
             P::TikTok => if bot { &c.tiktok.bot } else { &c.tiktok.broadcaster }
                 .as_ref()
                 .map(|a| a.username.clone()),
+        }
+        .filter(|s| !s.is_empty())
+    }
+
+    /// Optional status warning on the account (locked keyring, expired token, or new scopes).
+    fn account_note(self, c: &Config, bot: bool) -> Option<&'static str> {
+        let locked = crate::secrets::is_locked();
+        match self {
+            P::Twitch => {
+                let a = if bot { &c.twitch.bot } else { &c.twitch.broadcaster }.as_ref()?;
+                let want = if bot {
+                    crate::twitch::BOT_SCOPES
+                } else {
+                    crate::twitch::BROADCASTER_SCOPES
+                };
+                if a.token.access_token.is_empty() {
+                    Some(if locked {
+                        "keyring locked — click Unlock Logins"
+                    } else {
+                        "login expired: log in again"
+                    })
+                } else if want.iter().any(|w| !a.token.scope.iter().any(|g| g == w)) {
+                    Some("log in again: new permissions")
+                } else {
+                    None
+                }
+            }
+            P::YouTube => {
+                let a = if bot { &c.youtube.bot } else { &c.youtube.broadcaster }.as_ref()?;
+                (a.token.access_token.is_empty() && a.token.refresh_token.is_empty() && locked)
+                    .then_some("keyring locked — click Unlock Logins")
+            }
+            P::Kick => {
+                let a = if bot { &c.kick.bot } else { &c.kick.broadcaster }.as_ref()?;
+                (a.token.access_token.is_empty() && a.token.refresh_token.is_empty() && locked)
+                    .then_some("keyring locked — click Unlock Logins")
+            }
+            P::TikTok => {
+                let a = if bot { &c.tiktok.bot } else { &c.tiktok.broadcaster }.as_ref()?;
+                (a.session_cookie.is_empty() && locked).then_some("keyring locked — click Unlock Logins")
+            }
+        }
+    }
+
+    /// The logged-in broadcaster's or bot's name (with any warning note).
+    fn account(self, c: &Config, bot: bool) -> Option<String> {
+        let name = self.raw_account_name(c, bot)?;
+        match self.account_note(c, bot) {
+            Some(note) => Some(format!("{name} ({note})")),
+            None => Some(name),
         }
     }
 
@@ -222,11 +268,77 @@ impl P {
     }
 }
 
-/// Each platform's state, read on the engine's thread: connected, and TikTok's status text.
-fn states(cmds: &Cmds) -> ([bool; 4], String) {
+/// Information about a logged-in account slot (Broadcaster or Bot) for Chat's account indicator & selector.
+pub(super) struct AccountSlot {
+    pub name: String,
+    pub note: Option<&'static str>,
+    pub pic: Option<fltk::image::RgbImage>,
+}
+
+/// Look up `[broadcaster, bot]` account info and round avatars for `platform` (`"twitch"`, `"youtube"`, `"kick"`, `"tiktok"`).
+pub(super) fn platform_accounts(cmds: &Cmds, cfg: &Cfg, platform: &str, size: i32) -> [Option<AccountSlot>; 2] {
+    let Some(p) = P::from_slug(platform) else {
+        return [None, None];
+    };
+    let raw = {
+        let c = cfg.borrow();
+        [
+            p.raw_account_name(&c, false).map(|n| (n, p.account_note(&c, false))),
+            p.raw_account_name(&c, true).map(|n| (n, p.account_note(&c, true))),
+        ]
+    };
+    let build = |(bot, item): (usize, Option<(String, Option<&'static str>)>)| {
+        let (name, note) = item?;
+        let pic = picture(cmds, cfg, p, bot == 1, &name, size);
+        Some(AccountSlot { name, note, pic })
+    };
+    let [b0, b1] = raw;
+    [build((0, b0)), build((1, b1))]
+}
+
+/// Trigger an interactive keyring unlock on the engine thread and alert only if it fails.
+pub(super) fn unlock_logins_interactive(cmds: &Cmds) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    tell(cmds, move |e| {
+        let e = e.clone();
+        tokio::task::spawn_local(async move {
+            let _ = tx.send(e.unlock_saved_logins(true).await);
+        });
+    });
+    let mut waited = 0;
+    loop {
+        if let Ok(res) = rx.try_recv() {
+            match res {
+                Ok(true) => {
+                    crate::ui::changed();
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    dialog::alert_default(&format!(
+                        "Still couldn't unlock your saved logins from the system keyring:\n{err}\n\n\
+                         Make sure your desktop keyring (e.g. GNOME Keyring / KDE Wallet) is running and unlocked."
+                    ));
+                }
+            }
+            break;
+        }
+        waited += 1;
+        if waited > 300 {
+            break;
+        }
+        let _ = fltk::app::wait_for(0.05);
+    }
+}
+
+/// Each platform's state, read on the engine's thread: connected, standby, and TikTok's status text.
+fn states(cmds: &Cmds) -> ([bool; 4], [bool; 4], String) {
     query(cmds, |e| {
         let tiktok = match e.tiktok().map(|t| t.current_status()) {
-            Some(crate::tiktok::TikTokStatus::Error(m) | crate::tiktok::TikTokStatus::Connecting(m)) => m,
+            Some(
+                crate::tiktok::TikTokStatus::Error(m)
+                | crate::tiktok::TikTokStatus::Connecting(m)
+                | crate::tiktok::TikTokStatus::Standby(m),
+            ) => m,
             _ => String::new(),
         };
         (
@@ -236,6 +348,7 @@ fn states(cmds: &Cmds) -> ([bool; 4], String) {
                 e.kick_connected(),
                 e.tiktok_connected(),
             ],
+            [false, e.youtube_standby(), false, e.tiktok_standby()],
             tiktok,
         )
     })
@@ -260,6 +373,9 @@ async fn avatar(e: &Rc<Engine>, cfg: &Cfg, p: P, bot: bool) -> Option<String> {
                 let a = if bot { &c.twitch.bot } else { &c.twitch.broadcaster }.clone()?;
                 (a.user_id, a.token.access_token)
             };
+            if t.is_empty() {
+                return None;
+            }
             let h = vec![("Client-Id".into(), crate::twitch::CLIENT_ID.into()), bearer(&t)];
             at(
                 get(format!("{}/users?id={id}", crate::twitch::HELIX_URL), h).await,
@@ -370,17 +486,44 @@ pub struct Accounts {
     pub tab: Flex,
     cfg: Cfg,
     cmds: Cmds,
+    lock_bar: Flex,
+    lock_msg: Frame,
     rows: Vec<Row>,
 }
 
 impl Accounts {
     pub fn refresh(&mut self) {
         // Before borrowing the config: the engine may be waiting to write it.
-        let (on, tiktok) = states(&self.cmds);
+        let (on, standby, tiktok) = states(&self.cmds);
+        let locked = crate::secrets::is_locked();
+        if locked {
+            let detail = match crate::secrets::locked_reason() {
+                Some(reason) if !reason.is_empty() => format!("🔒 Saved logins locked ({reason})"),
+                _ => "🔒 Saved logins are locked because the system keyring wasn't ready or is locked.".to_string(),
+            };
+            self.lock_msg.set_label(&detail.replace('@', "@@"));
+            self.lock_msg.set_label_color(Color::from_rgb(0xe0, 0xa8, 0x30));
+            self.lock_bar.show();
+        } else {
+            self.lock_bar.hide();
+        }
+
         let c = self.cfg.borrow();
         for (i, r) in self.rows.iter_mut().enumerate() {
+            let active = on[i] || standby[i];
             let (text, color) = if on[i] {
                 ("● Connected".to_string(), Color::from_rgb(0x3c, 0xb3, 0x71))
+            } else if standby[i] {
+                let s = match r.p {
+                    P::TikTok if !tiktok.is_empty() => format!("◐ {tiktok}"),
+                    _ => "◐ Standby — waiting for live stream (wakes on stream start)".to_string(),
+                };
+                (s, Color::from_rgb(0x64, 0xb5, 0xf6))
+            } else if locked && r.p.raw_account_name(&c, false).is_some() {
+                (
+                    "🔒 Keyring locked — click Unlock Logins above".to_string(),
+                    Color::from_rgb(0xe0, 0xa8, 0x30),
+                )
             } else {
                 let why = match r.p {
                     P::Twitch if c.twitch.broadcaster.is_none() => "log in the broadcaster first".into(),
@@ -400,7 +543,7 @@ impl Accounts {
             r.status.set_label(&text.replace('@', "@@"));
             r.status.set_tooltip(&text.replace('@', "@@"));
             r.status.set_label_color(color);
-            r.connect.set_label(if on[i] { "Disconnect" } else { "Connect" });
+            r.connect.set_label(if active { "Disconnect" } else { "Connect" });
             r.channel.set_label(&if r.p.own(&c) {
                 "Channel: the broadcaster's".to_string()
             } else {
@@ -420,18 +563,26 @@ impl Accounts {
                         b.set_label("Login");
                     }
                 }
-                // The name without the "(log in again…)" note: the lookup is per account.
-                let id = account.as_deref().map(|n| n.split(" (").next().unwrap_or(n));
-                pic.set_image(id.and_then(|n| picture(&self.cmds, &self.cfg, r.p, bot == 1, n, ROW - 4)));
+                let raw_name = r.p.raw_account_name(&c, bot == 1);
+                pic.set_image(raw_name.and_then(|n| picture(&self.cmds, &self.cfg, r.p, bot == 1, &n, ROW - 4)));
             }
         }
         drop(c);
+        self.tab.layout();
         self.tab.redraw();
     }
 }
 
 pub fn tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
     let mut col = super::tab(tabs, "Accounts");
+
+    let mut lock_bar = Flex::default().row();
+    let lock_msg = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+    let mut unlock_btn = button(&mut lock_bar, "Unlock Logins", 120);
+    lock_bar.end();
+    col.fixed(&lock_bar, ROW);
+    lock_bar.hide();
+
     let mut rows = Vec::new();
     for p in ALL {
         title(&mut col, p.name());
@@ -475,9 +626,9 @@ pub fn tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
     let guide = Frame::default()
         .with_label(
             "• Login opens your browser (Twitch shows a code to type at twitch.tv/activate).\n\
-             • Chat is sent as the bot when one is logged in, else as the broadcaster.\n\
+             • In Chat, click the avatar next to any chat box to switch between Bot and Broadcaster.\n\
              • Kick and YouTube send with your own app: Advanced shows how to make one (once).\n\
-             • TikTok reads the channel's live by itself; Login opens TikTok's own page.\n\
+             • YouTube & TikTok stand by quietly while offline and wake up automatically on stream start.\n\
              • Each platform reads the broadcaster's channel; another one can be set in Advanced.",
         )
         .with_align(Align::Left | Align::Inside | Align::Wrap);
@@ -489,8 +640,20 @@ pub fn tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
         tab: col,
         cfg: cfg.clone(),
         cmds: cmds.clone(),
+        lock_bar,
+        lock_msg,
         rows: Vec::new(),
     }));
+    unlock_btn.set_callback({
+        let cmds = cmds.clone();
+        let me = me.clone();
+        move |_| {
+            unlock_logins_interactive(&cmds);
+            if let Ok(mut m) = me.try_borrow_mut() {
+                m.refresh();
+            }
+        }
+    });
     for r in &mut rows {
         let p = r.p;
         let refresh = {
@@ -916,6 +1079,7 @@ fn device_login(cfg: &Cfg, cmds: &Cmds, as_bot: bool) {
                                         |_| true,
                                     );
                                     e.emit("Twitch", "BroadcasterAuthenticated", || json!({"user": name}));
+                                    e.twitch_start().connect();
                                 }
                                 crate::say(format!("Twitch {who} logged in as {name}"));
                                 let _ = done_tx.send(Ok(name));

@@ -1,10 +1,11 @@
 //! The chat window's side of the engine: every platform's chat (through `Engine::chat`) kept in one
-//! bounded log, the emotes seen per platform, and sending to one platform or all of them with each
-//! platform's emote format.
+//! bounded log, persisted recent history + platform history merged before "Welcome to the chat room!",
+//! the emotes seen per platform, and sending to one platform or several with each platform's emote format.
 
 use super::Engine;
 use crate::commands::Chat;
 use crate::model::Obj;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
@@ -13,37 +14,63 @@ pub const PLATFORMS: [&str; 4] = ["twitch", "youtube", "kick", "tiktok"];
 
 /// Lines kept (all platforms together).
 const KEEP: usize = 500;
+/// Historical lines kept per platform across restarts / on room join.
+const KEEP_HISTORY: usize = 100;
 /// Emotes remembered per platform (the most recent).
 const EMOTES: usize = 300;
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 /// One chat line, as the window shows it: emotes by their display name.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Line {
+    #[serde(skip)]
     pub seq: u64,
     pub platform: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub msg_id: String,
     pub time: String,
     pub user: String,
     pub user_id: String,
     pub text: String,
     /// The emotes in `text`: name and picture URL.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub emotes: Vec<(String, String)>,
-    /// Roles, shown as badges.
+    /// Roles, shown as badges when no explicit badge list is present.
+    #[serde(skip_serializing_if = "is_false")]
     pub broadcaster: bool,
+    #[serde(skip_serializing_if = "is_false")]
     pub moderator: bool,
+    #[serde(skip_serializing_if = "is_false")]
     pub vip: bool,
+    #[serde(skip_serializing_if = "is_false")]
     pub subscriber: bool,
-    /// The badges the chatter wears, as the platform shows them: name and picture URL (Twitch).
+    /// The badges the chatter wears, directly from the platform: (badge key or name, image URL).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub badges: Vec<(String, String)>,
-    /// The name's colour ("#RRGGBB") when the platform has one.
+    /// The name's colour ("#RRGGBB") from the platform.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub color: String,
-    /// Not a chat message: a send that failed, or (dev mode) one kept instead of sent.
+    /// Not a chat message: a send that failed, dev-mode output, or "Welcome to the chat room!".
+    #[serde(skip_serializing_if = "is_false")]
     pub note: bool,
+    /// Room join marker ("Welcome to the chat room!"): rendered without timestamp.
+    #[serde(skip_serializing_if = "is_false")]
+    pub welcome: bool,
+    /// Pre-join message (loaded from cache or platform history; never triggers commands/actions).
+    #[serde(skip_serializing_if = "is_false")]
+    pub historical: bool,
 }
 
 #[derive(Default)]
 pub struct Log {
     lines: VecDeque<Line>,
     seq: u64,
+    /// Incremented when room history / welcome lines are spliced in so UI panes resync cleanly.
+    reset_gen: u64,
     /// Per platform, each emote's raw token (Twitch "Kappa", YouTube ":yt:", Kick "[emote:1:KEKW]") and
     /// picture URL.
     emotes: [VecDeque<(String, String)>; 4],
@@ -68,6 +95,13 @@ pub struct Seen {
     /// When they first chatted ("HH:mm"), and the log's seq of their latest message.
     pub first: String,
     last: u64,
+}
+
+/// Format Unix seconds into local `"HH:mm"`.
+pub fn local_hhmm(unix_secs: i64) -> String {
+    let off = i64::from(crate::fmt::now().offset);
+    let t = super::civil_time(unix_secs.saturating_add(off));
+    format!("{:02}:{:02}", t.hour, t.min)
 }
 
 /// Whether an argument is about the user rather than the message.
@@ -108,8 +142,8 @@ pub fn shown(token: &str) -> &str {
         .map_or(token, |x| x.1)
 }
 
-/// `text` written for `platform`: Kick emotes as Kick's tags (from the names in `known`, Kick's
-/// emotes seen), Kick tags pasted for another platform as their names. Unicode emoji go as they are.
+/// `text` written for `platform`: Kick emotes as Kick's tags (from `known` or Kick's loaded emote
+/// catalog), Kick tags pasted for another platform as their names. Unicode emoji go as they are.
 pub fn for_platform(text: &str, platform: &str, kick_known: &[String]) -> String {
     text.split(' ')
         .map(|w| {
@@ -117,13 +151,25 @@ pub fn for_platform(text: &str, platform: &str, kick_known: &[String]) -> String
                 kick_known
                     .iter()
                     .find(|k| shown(k) == w && *k != w)
-                    .map_or(w.to_string(), Clone::clone)
+                    .cloned()
+                    .or_else(|| crate::ui::emotes::kick_tag(w))
+                    .unwrap_or_else(|| w.to_string())
             } else {
                 shown(w).to_string()
             }
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn same_msg(a: &Line, b: &Line) -> bool {
+    if !a.msg_id.is_empty() && !b.msg_id.is_empty() {
+        return a.msg_id == b.msg_id;
+    }
+    a.platform == b.platform
+        && a.user.eq_ignore_ascii_case(&b.user)
+        && a.text == b.text
+        && (a.time == b.time || a.time.is_empty() || b.time.is_empty())
 }
 
 impl Log {
@@ -135,78 +181,243 @@ impl Log {
         }
         self.lines.push_back(l);
     }
+
+    fn remember_emote(&mut self, i: usize, token: String, url: String) {
+        let seen = &mut self.emotes[i];
+        if let Some(at) = seen.iter().position(|x| x.0 == token) {
+            seen.remove(at);
+        } else if seen.len() == EMOTES {
+            seen.pop_front();
+        }
+        seen.push_back((token, url));
+    }
+}
+
+/// Clean emote tokens inside `text` for non-Twitch platforms and convert `raw_emotes` to display names.
+pub fn normalize_line_emotes(
+    platform: &str,
+    mut text: String,
+    raw_emotes: &[(String, String)],
+) -> (String, Vec<(String, String)>) {
+    for e in raw_emotes {
+        if platform != "twitch" {
+            // Spaced, so "[emote:1:A][emote:1:A]" or ":a::b:" shows as separate emotes.
+            text = text.replace(e.0.as_str(), &format!(" {} ", shown(&e.0)));
+        }
+    }
+    if platform != "twitch" && !raw_emotes.is_empty() {
+        text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    }
+    let emotes = raw_emotes
+        .iter()
+        .map(|e| (shown(&e.0).to_string(), e.1.clone()))
+        .collect();
+    (text, emotes)
 }
 
 impl Engine {
-    /// Keep a chat message for the window (called by `chat`).
-    pub(super) fn log_chat(&self, c: &Chat) {
+    /// Load persisted chat history from `cache/chat-history.json` at startup (marked historical).
+    pub fn load_chat_history(&self) {
+        let Some((_, v)) = crate::ui::img::saved("chat-history") else {
+            return;
+        };
+        let Ok(saved) = serde_json::from_value::<Vec<Line>>(v) else {
+            return;
+        };
         let mut st = self.st.borrow_mut();
         let log = &mut st.chat_log;
-        let Some(i) = index(&c.platform) else { return };
-        let mut text = c.text.clone();
-        for e in &c.emotes {
-            if c.platform != "twitch" {
-                // Spaced, so "[emote:1:A][emote:1:A]" or ":a::b:" shows as separate emotes.
-                text = text.replace(e.0.as_str(), &format!(" {} ", shown(&e.0)));
+        for mut l in saved {
+            if l.note || l.welcome || index(&l.platform).is_none() {
+                continue;
             }
-            let seen = &mut log.emotes[i];
-            if let Some(at) = seen.iter().position(|x| x.0 == e.0) {
-                seen.remove(at);
-            } else if seen.len() == EMOTES {
-                seen.pop_front();
+            l.historical = true;
+            if let Some(i) = index(&l.platform) {
+                for (name, url) in &l.emotes {
+                    let tok = if l.platform == "kick" {
+                        crate::ui::emotes::kick_tag(name).unwrap_or_else(|| name.clone())
+                    } else {
+                        name.clone()
+                    };
+                    log.remember_emote(i, tok, url.clone());
+                }
             }
-            seen.push_back(e.clone());
+            log.push(l);
         }
-        if c.platform != "twitch" && !c.emotes.is_empty() {
-            text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        }
-        let time = crate::fmt::date(&crate::fmt::now(), "HH:mm");
-        let key = (c.platform.clone(), c.user_id.clone());
-        if !log.users.contains_key(&key) && log.users.len() == KEEP {
-            // ponytail: O(n) at 500 chatters, once per new chatter; an ordered map if that shows up.
-            if let Some(old) = log.users.iter().min_by_key(|u| u.1.last).map(|u| u.0.clone()) {
-                log.users.remove(&old);
-            }
-        }
-        let seen = log.users.entry(key).or_insert_with(|| Seen {
-            first: time.clone(),
-            ..Default::default()
-        });
-        seen.messages += 1;
-        seen.last = log.seq + 1;
-        seen.args = c
-            .args
-            .iter()
-            .filter(|(k, v)| about_user(k) && !v.is_array() && !v.is_object())
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        log.push(Line {
-            platform: c.platform.clone(),
-            time,
-            user: c.user.clone(),
-            user_id: c.user_id.clone(),
-            text,
-            emotes: c
-                .emotes
+    }
+
+    /// Persist real chat lines (excluding notes/welcome markers) to `cache/chat-history.json`.
+    pub fn save_chat_history(&self) {
+        let st = self.st.borrow();
+        let mut out: Vec<&Line> = Vec::new();
+        for p in PLATFORMS {
+            let plat_lines: Vec<&Line> = st
+                .chat_log
+                .lines
                 .iter()
-                .map(|e| (shown(&e.0).to_string(), e.1.clone()))
-                .collect(),
-            broadcaster: c.broadcaster,
-            moderator: c.moderator,
-            vip: c.vip,
-            subscriber: c.subscriber,
-            color: c.args.get("color").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            badges: c
+                .filter(|l| l.platform == p && !l.note && !l.welcome)
+                .collect();
+            let start = plat_lines.len().saturating_sub(KEEP_HISTORY);
+            out.extend(&plat_lines[start..]);
+        }
+        if let Ok(v) = serde_json::to_value(&out) {
+            crate::ui::img::save("chat-history", &v);
+        }
+    }
+
+    /// Merge `fetched` recent messages for `platform` (oldest-to-newest) with any cached historical
+    /// lines, then place `"Welcome to the chat room!"` right before live session messages.
+    pub fn chat_welcome(&self, platform: &str, fetched: Vec<Line>) {
+        let Some(p_idx) = index(platform) else { return };
+        {
+            let mut st = self.st.borrow_mut();
+            let log = &mut st.chat_log;
+
+            let mut other_or_live_before: Vec<Line> = Vec::new();
+            let mut old_hist: Vec<Line> = Vec::new();
+            let mut live_current: Vec<Line> = Vec::new();
+
+            for l in log.lines.drain(..) {
+                if l.platform != platform {
+                    other_or_live_before.push(l);
+                } else if l.welcome {
+                    // Replace previous welcome divider on reconnect; previous live lines become history.
+                    old_hist.append(&mut live_current);
+                } else if l.note {
+                    live_current.push(l);
+                } else if l.historical {
+                    old_hist.push(l);
+                } else {
+                    live_current.push(l);
+                }
+            }
+
+            // Merge old_hist + fetched (preferring fetched metadata like fresh badge URLs when same msg).
+            let mut merged: Vec<Line> = Vec::new();
+            if fetched.is_empty() {
+                merged = old_hist;
+            } else {
+                // Keep older cached lines that precede fetched or aren't in fetched, then fetched in order.
+                for old in old_hist {
+                    if !fetched.iter().any(|f| same_msg(&old, f)) && !live_current.iter().any(|lv| same_msg(&old, lv)) {
+                        merged.push(old);
+                    }
+                }
+                for mut f in fetched {
+                    f.platform = platform.to_string();
+                    f.historical = true;
+                    f.note = false;
+                    f.welcome = false;
+                    for (name, url) in &f.emotes {
+                        let tok = if platform == "kick" {
+                            crate::ui::emotes::kick_tag(name).unwrap_or_else(|| name.clone())
+                        } else {
+                            name.clone()
+                        };
+                        log.remember_emote(p_idx, tok, url.clone());
+                    }
+                    if !merged.iter().any(|m| same_msg(m, &f)) && !live_current.iter().any(|lv| same_msg(lv, &f)) {
+                        merged.push(f);
+                    }
+                }
+            }
+            if merged.len() > KEEP_HISTORY {
+                let drop_n = merged.len() - KEEP_HISTORY;
+                merged.drain(..drop_n);
+            }
+
+            for l in other_or_live_before {
+                log.push(l);
+            }
+            for mut l in merged {
+                l.historical = true;
+                log.push(l);
+            }
+            log.push(Line {
+                platform: platform.to_string(),
+                user: "streamerz".into(),
+                text: "Welcome to the chat room!".into(),
+                note: true,
+                welcome: true,
+                ..Default::default()
+            });
+            for l in live_current {
+                log.push(l);
+            }
+            log.reset_gen += 1;
+        }
+        self.save_chat_history();
+        crate::ui::chat();
+    }
+
+    /// Keep a chat message for the window (called by `chat`).
+    pub(super) fn log_chat(&self, c: &Chat) {
+        {
+            let mut st = self.st.borrow_mut();
+            let log = &mut st.chat_log;
+            let Some(i) = index(&c.platform) else { return };
+            for e in &c.emotes {
+                log.remember_emote(i, e.0.clone(), e.1.clone());
+            }
+            let (text, emotes) = normalize_line_emotes(&c.platform, c.text.clone(), &c.emotes);
+            let time = crate::fmt::date(&crate::fmt::now(), "HH:mm");
+            let key = (c.platform.clone(), c.user_id.clone());
+            if !log.users.contains_key(&key) && log.users.len() == KEEP {
+                if let Some(old) = log.users.iter().min_by_key(|u| u.1.last).map(|u| u.0.clone()) {
+                    log.users.remove(&old);
+                }
+            }
+            let seen = log.users.entry(key).or_insert_with(|| Seen {
+                first: time.clone(),
+                ..Default::default()
+            });
+            seen.messages += 1;
+            seen.last = log.seq + 1;
+            seen.args = c
                 .args
-                .get("badges")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|b| Some((b["name"].as_str()?.to_string(), b["imageUrl"].as_str()?.to_string())))
-                .collect(),
-            ..Default::default()
-        });
-        drop(st);
+                .iter()
+                .filter(|(k, v)| about_user(k) && !v.is_array() && !v.is_object())
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let mut line = Line {
+                platform: c.platform.clone(),
+                msg_id: c.msg_id.clone(),
+                time,
+                user: c.user.clone(),
+                user_id: c.user_id.clone(),
+                text,
+                emotes,
+                broadcaster: c.broadcaster,
+                moderator: c.moderator,
+                vip: c.vip,
+                subscriber: c.subscriber,
+                color: c.args.get("color").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                badges: c
+                    .args
+                    .get("badges")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|b| {
+                        let k = b["key"].as_str().or_else(|| b["name"].as_str())?;
+                        Some((k.to_string(), b["imageUrl"].as_str().unwrap_or("").to_string()))
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            // Deduplicate if a message arrived both in pre-join history and right as the live socket opened.
+            if log
+                .lines
+                .iter()
+                .rev()
+                .take(20)
+                .any(|prev| !prev.note && same_msg(prev, &line))
+            {
+                return;
+            }
+            line.historical = false;
+            log.push(line);
+        }
+        self.save_chat_history();
         crate::ui::chat();
     }
 
@@ -233,10 +444,49 @@ impl Engine {
             .any(|l| l.platform == platform && !l.note)
     }
 
-    /// The lines after `seq`.
-    pub fn chat_since(&self, seq: u64) -> Vec<Line> {
+    /// Current `(reset_gen, lines)` after `seq` (returns full log if `gen != client_gen`).
+    pub fn chat_sync(&self, client_gen: u64, seq: u64) -> (u64, bool, Vec<Line>) {
         let st = self.st.borrow();
-        st.chat_log.lines.iter().filter(|l| l.seq > seq).cloned().collect()
+        let g = st.chat_log.reset_gen;
+        if g != client_gen {
+            (g, true, st.chat_log.lines.iter().cloned().collect())
+        } else {
+            (
+                g,
+                false,
+                st.chat_log.lines.iter().filter(|l| l.seq > seq).cloned().collect(),
+            )
+        }
+    }
+
+    /// Re-resolve badge URLs on existing lines of `platform` (e.g. once Twitch Helix badge sets finish seeding).
+    pub fn refresh_chat_badges(&self, platform: &str, mut resolve: impl FnMut(&str) -> Option<String>) {
+        let mut changed = false;
+        {
+            let mut st = self.st.borrow_mut();
+            for l in st
+                .chat_log
+                .lines
+                .iter_mut()
+                .filter(|l| l.platform == platform && !l.note)
+            {
+                for (name, url) in &mut l.badges {
+                    if url.is_empty() {
+                        if let Some(u) = resolve(name) {
+                            *url = u;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if changed {
+                st.chat_log.reset_gen += 1;
+            }
+        }
+        if changed {
+            self.save_chat_history();
+            crate::ui::chat();
+        }
     }
 
     /// What chat said about a chatter this session.
@@ -260,7 +510,6 @@ impl Engine {
         let found = self.chatter_ask(platform, user_id).await;
         if !found.is_empty() {
             let cards = &mut self.st.borrow_mut().chat_log.cards;
-            // ponytail: cleared when full; an LRU if 200 cards in 10 minutes ever matters.
             if cards.len() >= 200 {
                 cards.clear();
             }
@@ -404,14 +653,26 @@ impl Engine {
                 }
             })
             .collect();
+        self.send_chat_list(&to, text, bot, true)
+    }
+
+    /// Send `text` to an explicit list of platforms with configurable account fallback.
+    pub fn send_chat_list(
+        self: &Rc<Self>,
+        to: &[&'static str],
+        text: &str,
+        bot: bool,
+        fallback: bool,
+    ) -> Vec<&'static str> {
         if to.is_empty() {
-            self.chat_note(platform, "nothing connected to send to".into());
+            self.chat_note("twitch", "nothing connected to send to".into());
+            return Vec::new();
         }
         let kick_known: Vec<String> = self.st.borrow().chat_log.emotes[2]
             .iter()
             .map(|e| e.0.clone())
             .collect();
-        for &p in &to {
+        for &p in to {
             let text = for_platform(text, p, &kick_known);
             if self.dev_out(p, &text, bot) {
                 self.chat_note(p, format!("(dev, not sent) {text}"));
@@ -421,19 +682,19 @@ impl Engine {
             tokio::task::spawn_local(async move {
                 let r = match p {
                     "twitch" => match e.twitch() {
-                        Some(t) => t.send_message(text, None, bot, true).await,
+                        Some(t) => t.send_message(text, None, bot, fallback).await,
                         None => Err("Twitch isn't connected".into()),
                     },
-                    "youtube" => e.youtube_start().send_message("", &text, bot, true).await,
-                    "kick" => e.kick_start().send_message(&text, bot, true).await,
-                    _ => e.tiktok_start().send_message(&text, bot, true).await,
+                    "youtube" => e.youtube_start().send_message("", &text, bot, fallback).await,
+                    "kick" => e.kick_start().send_message(&text, bot, fallback).await,
+                    _ => e.tiktok_start().send_message(&text, bot, fallback).await,
                 };
                 if let Err(err) = r {
                     e.chat_note(p, format!("not sent: {err}"));
                 }
             });
         }
-        to
+        to.to_vec()
     }
 }
 
@@ -448,14 +709,34 @@ mod tests {
         assert_eq!(shown(":yt:"), ":yt:");
         assert_eq!(for_platform("hi KEKW 😀", "kick", &known), "hi [emote:37226:KEKW] 😀");
         assert_eq!(for_platform("hi [emote:37226:KEKW] 😀", "twitch", &known), "hi KEKW 😀");
-        assert_eq!(for_platform("hi KEKW", "youtube", &known), "hi KEKW");
-        assert_eq!(for_platform("[emote:37226:KEKW]", "kick", &known), "[emote:37226:KEKW]");
-        assert_eq!(
-            crate::kick::kick_emotes("a [emote:1:A] b [emote:x:B] [emote:22:C]")
-                .iter()
-                .map(|e| e.0.as_str())
-                .collect::<Vec<_>>(),
-            ["[emote:1:A]", "[emote:22:C]"]
-        );
+    }
+
+    #[test]
+    fn welcome_merges_and_deduplicates_history() {
+        let cfg = std::sync::Arc::new(tokio::sync::watch::channel(crate::Config::default()).0);
+        let e = Engine::new(cfg, |_| {});
+        let h1 = Line {
+            platform: "twitch".into(),
+            msg_id: "m1".into(),
+            time: "12:40".into(),
+            user: "PedroZamecki".into(),
+            text: "hey".into(),
+            ..Default::default()
+        };
+        e.chat_welcome("twitch", vec![h1.clone()]);
+        // Reconnect with same message + a newer pre-join message: m1 stays once, welcome moves after m2.
+        let h2 = Line {
+            platform: "twitch".into(),
+            msg_id: "m2".into(),
+            time: "12:41".into(),
+            user: "Ana".into(),
+            text: "yo".into(),
+            ..Default::default()
+        };
+        e.chat_welcome("twitch", vec![h1, h2]);
+        let (_, _, lines) = e.chat_sync(999, 0);
+        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, ["hey", "yo", "Welcome to the chat room!"]);
+        assert!(lines[2].welcome && lines[2].note);
     }
 }

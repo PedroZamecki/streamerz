@@ -272,6 +272,9 @@ impl Engine {
                         None if result["_type"] == "EVENT" => {
                             let data = &result["data"];
                             if let Some((kind, trigger, ev)) = event(result["resourceId"].as_str().unwrap_or(""), data) {
+                                if kind == 22004 {
+                                    self.notify_stream_started();
+                                }
                                 self.slobs_fire(o, kind, trigger, ev, data["name"].as_str());
                             }
                         }

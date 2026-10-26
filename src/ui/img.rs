@@ -204,6 +204,24 @@ pub fn forget() {
     SHOWN.with_borrow_mut(HashMap::clear);
 }
 
+/// The PNG without its colour profile: libpng warns on stderr about many emotes' broken one, and
+/// colours are drawn as sRGB anyway.
+fn no_iccp(b: &[u8]) -> Vec<u8> {
+    let mut out = b[..8.min(b.len())].to_vec();
+    let mut i = 8;
+    while let Some(len) = b
+        .get(i..i + 4)
+        .map(|l| u32::from_be_bytes(l.try_into().unwrap()) as usize)
+    {
+        let end = (i + 12 + len).min(b.len());
+        if b.get(i + 4..i + 8) != Some(b"iCCP") {
+            out.extend_from_slice(&b[i..end]);
+        }
+        i = end;
+    }
+    out
+}
+
 /// Frames kept of an animation (memory: each is a full picture).
 const MAX_FRAMES: usize = 150;
 
@@ -212,7 +230,7 @@ const MAX_FRAMES: usize = 150;
 pub fn decode(b: &[u8]) -> Vec<(RgbImage, u32)> {
     let still = |i: Option<RgbImage>| i.map(|i| (i, 1000)).into_iter().collect();
     if b.starts_with(b"\x89PNG") {
-        still(PngImage::from_data(b).ok().and_then(|i| i.to_rgb().ok()))
+        still(PngImage::from_data(&no_iccp(b)).ok().and_then(|i| i.to_rgb().ok()))
     } else if b.starts_with(&[0xff, 0xd8]) {
         still(JpegImage::from_data(b).ok().and_then(|i| i.to_rgb().ok()))
     } else if b.starts_with(b"GIF") {
@@ -383,6 +401,21 @@ fn fit_at(i: RgbImage, h: i32, round: bool, scale: f32) -> RgbImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drops_only_the_colour_profile() {
+        let chunk = |t: &[u8], d: &[u8]| {
+            let mut c = (d.len() as u32).to_be_bytes().to_vec();
+            c.extend_from_slice(t);
+            c.extend_from_slice(d);
+            c.extend_from_slice(&[0; 4]);
+            c
+        };
+        let sig = b"\x89PNG\r\n\x1a\n".to_vec();
+        let (ihdr, iccp, iend) = (chunk(b"IHDR", &[1; 13]), chunk(b"iCCP", &[2; 5]), chunk(b"IEND", &[]));
+        let png = [sig.clone(), ihdr.clone(), iccp, iend.clone()].concat();
+        assert_eq!(no_iccp(&png), [sig, ihdr, iend].concat());
+    }
 
     #[test]
     fn shrinks_by_averaging_without_dark_edges() {

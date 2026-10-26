@@ -1,3 +1,10 @@
+# Fast local iteration aliases (skip WebKitGTK/wry/tao and fat LTO; pair with STREAMERZ_CONFIG or --config).
+[alias]
+fcheck = "check --no-default-features --bin streamerz"
+fbuild = "build --profile fast --no-default-features --bin streamerz"
+frun = "run --profile fast --no-default-features --bin streamerz --"
+ftest = "test --no-default-features --bin streamerz"
+
 # Put the C runtime inside streamerz.exe, so it runs without the Visual C++ redistributable.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]

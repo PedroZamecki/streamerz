@@ -168,11 +168,16 @@ pub enum YouTubeCmd {
 pub struct YouTubeHandle {
     tx: mpsc::UnboundedSender<YouTubeCmd>,
     connected: Arc<AtomicBool>,
+    standby: Arc<AtomicBool>,
 }
 
 impl YouTubeHandle {
     pub fn is_connected(&self) -> bool {
         self.connected.load(Ordering::Relaxed)
+    }
+
+    pub fn is_standby(&self) -> bool {
+        self.standby.load(Ordering::Relaxed) && !self.is_connected()
     }
 
     pub fn connect(&self) {
@@ -334,18 +339,36 @@ impl YouTubeHandle {
     }
 }
 
+fn channel_label(y: &YouTubeConfig) -> String {
+    if let Some(b) = &y.broadcaster {
+        if !b.name.trim().is_empty() {
+            return b.name.trim().to_string();
+        }
+    }
+    if !y.video_id.trim().is_empty() {
+        return format!("video {}", y.video_id.trim());
+    }
+    if !y.channel_id.trim().is_empty() {
+        return y.channel_id.trim().to_string();
+    }
+    "unconfigured channel".into()
+}
+
 pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHandle {
     let (tx, mut rx) = mpsc::unbounded_channel::<YouTubeCmd>();
     let connected = Arc::new(AtomicBool::new(false));
+    let standby = Arc::new(AtomicBool::new(false));
     let handle = YouTubeHandle {
         tx,
         connected: connected.clone(),
+        standby: standby.clone(),
     };
 
     let runner = YouTubeRunner {
         engine: engine.clone(),
         cfg: cfg.clone(),
         connected: connected.clone(),
+        standby: standby.clone(),
         live: Default::default(),
         poll: Default::default(),
     };
@@ -362,7 +385,6 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
                 YouTubeCmd::Connect => {
                     if !active {
                         active = true;
-                        crate::say("YouTube: monitoring started".into());
                         let args = Obj::new();
                         runner.engine.fire(
                             T_YT_BROADCAST_MONITORING_STARTED,
@@ -380,12 +402,15 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
                         poll_task = Some(tokio::task::spawn_local(async move {
                             runner_clone.run_poll_loop().await;
                         }));
+                    } else {
+                        runner.engine.live_wake.notify_waiters();
                     }
                 }
                 YouTubeCmd::Disconnect => {
                     if active {
                         active = false;
                         connected.store(false, Ordering::Relaxed);
+                        standby.store(false, Ordering::Relaxed);
                         crate::ui::changed();
                         if let Some(task) = poll_task.take() {
                             task.abort();
@@ -501,8 +526,21 @@ pub async fn token(
         let c = cfg.borrow();
         match (pick(&c, bot), fallback) {
             (Some(a), _) => (a, bot, client(&c)),
-            (None, true) => (pick(&c, !bot).ok_or("No YouTube account logged in")?, !bot, client(&c)),
+            (None, true) => (
+                pick(&c, !bot).ok_or_else(|| {
+                    if crate::secrets::is_locked() {
+                        "System keyring is locked; unlock it to use saved YouTube login"
+                    } else {
+                        "No YouTube account logged in"
+                    }
+                })?,
+                !bot,
+                client(&c),
+            ),
             (None, false) => {
+                if crate::secrets::is_locked() {
+                    return Err("System keyring is locked; unlock it to use saved YouTube login".into());
+                }
                 return Err(format!(
                     "YouTube {} isn't logged in",
                     if bot { "bot" } else { "broadcaster" }
@@ -598,6 +636,7 @@ struct YouTubeRunner {
     engine: Rc<Engine>,
     cfg: Arc<watch::Sender<Config>>,
     connected: Arc<AtomicBool>,
+    standby: Arc<AtomicBool>,
     /// The live video being read, and its Data API live chat id once looked up (for sending).
     live: Rc<std::cell::RefCell<(String, String)>>,
     /// The poll created here (its chat message id), to end it.
@@ -607,10 +646,11 @@ struct YouTubeRunner {
 impl YouTubeRunner {
     async fn run_poll_loop(&self) {
         let mut speakers = HashSet::new();
-        read_chat(
+        read_chat_with_standby(
             &self.engine,
             &self.cfg,
             &self.connected,
+            Some(&self.standby),
             &self.live,
             &mut speakers,
             YOUTUBE_WEB,
@@ -909,10 +949,76 @@ async fn live_video(web: &str, channel: &str) -> Result<String, String> {
     }
 }
 
-/// Read a live chat through InnerTube (what youtube.com's chat uses): the video is the configured
-/// one, else the channel's live; the first continuation comes from its chat page, and each fetch
-/// waits the `timeoutMs` the server returns (the server sets the pace). Not live: tries again every
-/// minute. `run_once` (tests): one fetch.
+/// Extract `ytInitialData`'s initial `actions` array from a `/live_chat` popout HTML page, if present.
+pub fn extract_initial_actions(page: &str) -> Vec<Value> {
+    for marker in ["window[\"ytInitialData\"] = ", "var ytInitialData = "] {
+        if let Some(idx) = page.find(marker) {
+            let rest = page[idx + marker.len()..].trim_start();
+            if let Some(end) = rest.find(";</script>") {
+                if let Ok(v) = serde_json::from_str::<Value>(&rest[..end]) {
+                    if let Some(arr) = v
+                        .pointer("/contents/liveChatRenderer/actions")
+                        .and_then(Value::as_array)
+                    {
+                        return arr.clone();
+                    }
+                }
+            }
+        }
+    }
+    Vec::new()
+}
+
+/// Check OAuth `liveBroadcasts.list(mine=true)` (when logged in) for an active live video ID or an
+/// upcoming scheduled broadcast start timestamp (Unix seconds).
+async fn oauth_broadcast_hint(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> (Option<String>, Option<i64>) {
+    let has_oauth = cfg
+        .borrow()
+        .youtube
+        .broadcaster
+        .as_ref()
+        .is_some_and(|b| !b.token.access_token.is_empty());
+    if !has_oauth {
+        return (None, None);
+    }
+    let Ok(tok) = token(engine, cfg, false, false).await else {
+        return (None, None);
+    };
+    let headers = [("Authorization".to_string(), format!("Bearer {tok}"))];
+    let url = format!("{YOUTUBE_API_BASE}/liveBroadcasts?part=snippet,status&mine=true&maxResults=5");
+    let Ok(res) = crate::http::request("GET", &url, &headers, b"").await else {
+        return (None, None);
+    };
+    if res.status != 200 {
+        return (None, None);
+    }
+    let Ok(v) = serde_json::from_slice::<Value>(&res.body) else {
+        return (None, None);
+    };
+    let mut nearest_sched: Option<i64> = None;
+    for item in v["items"].as_array().into_iter().flatten() {
+        let state = item
+            .pointer("/status/lifeCycleStatus")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if matches!(state, "live" | "liveStarting") {
+            if let Some(id) = item["id"].as_str().filter(|s| !s.is_empty()) {
+                return (Some(id.to_string()), None);
+            }
+        }
+        if matches!(state, "ready" | "created" | "testing") {
+            if let Some(ts) = item
+                .pointer("/snippet/scheduledStartTime")
+                .and_then(Value::as_str)
+                .and_then(crate::engine::rest_parse_iso)
+            {
+                nearest_sched = Some(nearest_sched.map_or(ts, |prev| prev.min(ts)));
+            }
+        }
+    }
+    (None, nearest_sched)
+}
+
 pub async fn read_chat(
     engine: &Rc<Engine>,
     cfg: &Arc<watch::Sender<Config>>,
@@ -922,8 +1028,30 @@ pub async fn read_chat(
     web: &str,
     run_once: bool,
 ) {
-    let set = |on: bool| {
-        if connected.swap(on, Ordering::Relaxed) != on {
+    read_chat_with_standby(engine, cfg, connected, None, live, speakers, web, run_once).await;
+}
+
+/// Read a live chat through InnerTube (what youtube.com's chat uses): the video is the configured
+/// one, else the channel's live; the first continuation comes from its chat page, and each fetch
+/// waits the `timeoutMs` the server returns. When offline, enters Standby, deduplicates logs,
+/// wakes immediately when OBS/SLOBS starts streaming, and checks scheduled OAuth broadcasts.
+#[allow(clippy::too_many_arguments)]
+pub async fn read_chat_with_standby(
+    engine: &Rc<Engine>,
+    cfg: &Arc<watch::Sender<Config>>,
+    connected: &Arc<AtomicBool>,
+    standby: Option<&Arc<AtomicBool>>,
+    live: &Rc<std::cell::RefCell<(String, String)>>,
+    speakers: &mut HashSet<String>,
+    web: &str,
+    run_once: bool,
+) {
+    let set_state = |on: bool, sb: bool| {
+        let mut ch = connected.swap(on, Ordering::Relaxed) != on;
+        if let Some(s) = standby {
+            ch |= s.swap(sb, Ordering::Relaxed) != sb;
+        }
+        if ch {
             crate::ui::changed();
         }
     };
@@ -931,18 +1059,37 @@ pub async fn read_chat(
         ("User-Agent".to_string(), UA.to_string()),
         ("Accept-Language".to_string(), "en".to_string()),
     ];
+    let mut last_offline_note = String::new();
+    let mut last_oauth_check: Option<std::time::Instant> = None;
+    let mut scheduled_at: Option<i64> = None;
+
     loop {
-        let (video, channel) = {
+        let (video_cfg, channel, label) = {
             let c = cfg.borrow();
-            (c.youtube.video_id.clone(), c.youtube.channel_id.clone())
+            (
+                c.youtube.video_id.trim().to_string(),
+                c.youtube.channel_id.trim().to_string(),
+                channel_label(&c.youtube),
+            )
         };
-        let video = if !video.is_empty() {
-            Ok(video)
+        let mut video = if !video_cfg.is_empty() {
+            Ok(video_cfg)
         } else if !channel.is_empty() {
             live_video(web, &channel).await
         } else {
-            Err("no channel set".into())
+            Err("no channel or video configured".into())
         };
+        if video.is_err() && !run_once && web == YOUTUBE_WEB {
+            let due = last_oauth_check.is_none_or(|t| t.elapsed() >= Duration::from_secs(300));
+            if due {
+                last_oauth_check = Some(std::time::Instant::now());
+                let (live_id, sched) = oauth_broadcast_hint(engine, cfg).await;
+                scheduled_at = sched;
+                if let Some(id) = live_id {
+                    video = Ok(id);
+                }
+            }
+        }
         let start = match video {
             Ok(v) => crate::http::request("GET", &format!("{web}/live_chat?is_popout=1&v={v}"), &headers, b"")
                 .await
@@ -952,12 +1099,34 @@ pub async fn read_chat(
         let (video, page) = match start {
             Ok(x) => x,
             Err(e) => {
-                set(false);
+                let is_offline = e == "not live";
+                set_state(false, is_offline);
                 if run_once {
                     return;
                 }
-                crate::say(format!("YouTube: {e}; trying again in a minute"));
-                tokio::time::sleep(Duration::from_secs(60)).await;
+                // Not live is no news: the connections window shows the standby.
+                let msg = if is_offline {
+                    String::new()
+                } else {
+                    format!("YouTube: {label} — {e}")
+                };
+                if last_offline_note != msg && !msg.is_empty() {
+                    crate::say(msg.clone());
+                    last_offline_note = msg;
+                }
+                let now_unix = crate::fmt::unix_now().as_secs() as i64;
+                let near_sched = scheduled_at.is_some_and(|ts| (ts - now_unix).abs() <= 900);
+                let wait = if engine.stream_warming_up() {
+                    Duration::from_secs(5)
+                } else if near_sched {
+                    Duration::from_secs(15)
+                } else {
+                    Duration::from_secs(90)
+                };
+                tokio::select! {
+                    _ = tokio::time::sleep(wait) => {}
+                    _ = engine.live_wake.notified() => {}
+                }
                 continue;
             }
         };
@@ -967,16 +1136,35 @@ pub async fn read_chat(
                 .unwrap_or("2.20261023.01.00")
                 .to_string(),
         ) else {
-            set(false);
+            set_state(false, true);
             if run_once {
                 return;
             }
-            crate::say(format!("YouTube: {video} has no live chat; trying again in a minute"));
-            tokio::time::sleep(Duration::from_secs(60)).await;
+
+            let wait = if engine.stream_warming_up() {
+                Duration::from_secs(5)
+            } else {
+                Duration::from_secs(60)
+            };
+            tokio::select! {
+                _ = tokio::time::sleep(wait) => {}
+                _ = engine.live_wake.notified() => {}
+            }
             continue;
         };
+        last_offline_note.clear();
         *live.borrow_mut() = (video.clone(), String::new());
-        crate::say(format!("YouTube: reading the chat of {video}"));
+        crate::say(format!("YouTube: connected to live chat ({label}, video {video})"));
+        let joined_usec = (crate::fmt::unix_now().as_millis() as i64) * 1000;
+        let mut initial_hist: Vec<crate::engine::chatlog::Line> = if !run_once {
+            extract_initial_actions(&page)
+                .iter()
+                .filter_map(innertube_action_to_line)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut welcomed = run_once;
         broadcast_started(engine, cfg, &video).await;
         let extras =
             (!run_once).then(|| tokio::task::spawn_local(while_live(engine.clone(), cfg.clone(), video.clone())));
@@ -1013,9 +1201,32 @@ pub async fn read_chat(
                 // The stream ended (or the read failed): look for a live again.
                 break;
             };
-            set(true);
+            set_state(true, false);
             cont = n.to_string();
-            if let Some(actions) = c["actions"].as_array() {
+            if !welcomed {
+                welcomed = true;
+                let mut live_actions = Vec::new();
+                if let Some(actions) = c["actions"].as_array() {
+                    for act in actions {
+                        let ts_usec = act
+                            .pointer("/addChatItemAction/item/liveChatTextMessageRenderer/timestampUsec")
+                            .and_then(Value::as_str)
+                            .and_then(|s| s.parse::<i64>().ok())
+                            .unwrap_or(0);
+                        if ts_usec > 0 && ts_usec + 3_000_000 < joined_usec {
+                            if let Some(l) = innertube_action_to_line(act) {
+                                initial_hist.push(l);
+                            }
+                        } else {
+                            live_actions.push(act.clone());
+                        }
+                    }
+                }
+                engine.chat_welcome("youtube", std::mem::take(&mut initial_hist));
+                if !live_actions.is_empty() {
+                    handle_innertube_actions(engine, &live_actions, speakers);
+                }
+            } else if let Some(actions) = c["actions"].as_array() {
                 handle_innertube_actions(engine, actions, speakers);
             }
             if run_once {
@@ -1024,12 +1235,13 @@ pub async fn read_chat(
             let wait = next["timeoutMs"].as_u64().unwrap_or(5000).clamp(1000, 30000);
             tokio::time::sleep(Duration::from_millis(wait)).await;
         }
-        set(false);
+        set_state(false, true);
         *live.borrow_mut() = Default::default();
         if let Some(t) = extras {
             t.abort();
         }
         broadcast_ended(engine);
+        crate::say(format!("YouTube: live stream ended ({label}); back to standby"));
         if run_once {
             return;
         }
@@ -1139,6 +1351,92 @@ fn number_in(t: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// Official YouTube Live Chat author name color by role (or paid message ARGB int).
+pub fn youtube_author_color(r: &Value, owner: bool, moderator: bool, member: bool) -> String {
+    if let Some(argb) = r["authorNameTextColor"].as_u64() {
+        let rgb = (argb as u32) & 0x00FF_FFFF;
+        if rgb != 0 {
+            return format!("#{rgb:06X}");
+        }
+    }
+    if owner {
+        "#FFD600".into()
+    } else if moderator {
+        "#5E84F1".into()
+    } else if member {
+        "#2BA640".into()
+    } else {
+        "#AAAAAA".into()
+    }
+}
+
+/// Extract YouTube Live Chat's authentic `(badge_key, image_url)` list from `authorBadges`.
+pub fn yt_badge_list(r: &Value) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for b in r["authorBadges"].as_array().into_iter().flatten() {
+        let br = &b["liveChatAuthorBadgeRenderer"];
+        let custom = thumb(&br["customThumbnail"]);
+        if !custom.is_empty() {
+            out.push(("youtube:member".into(), custom));
+            continue;
+        }
+        match br.pointer("/icon/iconType").and_then(Value::as_str).unwrap_or("") {
+            "OWNER" => out.push(("youtube:owner".into(), String::new())),
+            "MODERATOR" => out.push(("youtube:moderator".into(), String::new())),
+            "VERIFIED" => out.push(("youtube:verified".into(), String::new())),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Convert an InnerTube `addChatItemAction` text message into a historical chat `Line` (no triggers).
+pub fn innertube_action_to_line(act: &Value) -> Option<crate::engine::chatlog::Line> {
+    let msg = act.pointer("/addChatItemAction/item/liveChatTextMessageRenderer")?;
+    let raw_name = text_of(&msg["authorName"]);
+    let user = raw_name.trim_start_matches('@').to_string();
+    if user.is_empty() {
+        return None;
+    }
+    let user_id = msg["authorExternalChannelId"].as_str().unwrap_or("").to_string();
+    let msg_id = msg["id"].as_str().unwrap_or("").to_string();
+    let (raw_text, raw_emotes) = runs_text(msg.pointer("/message/runs"));
+    let (text, emotes) = crate::engine::chatlog::normalize_line_emotes("youtube", raw_text, &raw_emotes);
+    if text.is_empty() && emotes.is_empty() {
+        return None;
+    }
+    let badges = yt_badge_list(msg);
+    let owner = badges.iter().any(|(k, _)| k == "youtube:owner");
+    let moderator = badges.iter().any(|(k, _)| k == "youtube:moderator");
+    let member = badges.iter().any(|(k, _)| k == "youtube:member");
+    let color = youtube_author_color(msg, owner, moderator, member);
+    let usec = msg["timestampUsec"]
+        .as_str()
+        .and_then(|t| t.parse::<i64>().ok())
+        .unwrap_or(0);
+    let time = if usec > 0 {
+        crate::engine::chatlog::local_hhmm(usec / 1_000_000)
+    } else {
+        String::new()
+    };
+    Some(crate::engine::chatlog::Line {
+        platform: "youtube".into(),
+        msg_id,
+        time,
+        user,
+        user_id,
+        text,
+        emotes,
+        broadcaster: owner,
+        moderator,
+        subscriber: member,
+        badges,
+        color,
+        historical: true,
+        ..Default::default()
+    })
+}
+
 /// Streamer.bot's YouTubeUser, YouTubeBroadcaster and YouTubeBroadcast variables, plus the item's
 /// id and time, for one chat item.
 fn yt_base(engine: &Rc<Engine>, r: &Value) -> (Obj, bool, bool, bool) {
@@ -1154,6 +1452,11 @@ fn yt_base(engine: &Rc<Engine>, r: &Value) -> (Obj, bool, bool, bool) {
     let member = badges
         .iter()
         .any(|b| b.pointer("/liveChatAuthorBadgeRenderer/customThumbnail").is_some());
+    let ui_badges: Vec<Value> = yt_badge_list(r)
+        .into_iter()
+        .map(|(k, u)| json!({"key": k, "name": k, "imageUrl": u}))
+        .collect();
+    let color = youtube_author_color(r, owner, moderator, member);
     let name = text_of(&r["authorName"]);
     let mut a = Obj::new();
     let mut put = |k: &str, v: Value| drop(a.insert(k.into(), v));
@@ -1162,6 +1465,8 @@ fn yt_base(engine: &Rc<Engine>, r: &Value) -> (Obj, bool, bool, bool) {
     put("userId", r["authorExternalChannelId"].clone());
     put("userType", "youtube".into());
     put("userProfileUrl", thumb(&r["authorPhoto"]).into());
+    put("color", color.into());
+    put("badges", ui_badges.into());
     put("isSubscribed", member.into());
     put("userIsSponsor", member.into());
     put("isSponsor", member.into());
@@ -1898,9 +2203,46 @@ mod tests {
             assert!(speakers.contains("ucpoll"));
             assert!(connected.load(Ordering::Relaxed));
             assert_eq!(live.borrow().0, "vid123");
-            let lines = engine.chat_since(0);
+            let (_, _, lines) = engine.chat_sync(999, 0);
             assert_eq!(lines[0].text, "hi 😀 :yt:");
             assert_eq!(lines[0].emotes[0].0, ":yt:");
+            assert_eq!(lines[0].color, "#AAAAAA");
         });
+    }
+
+    #[test]
+    fn youtube_badges_colors_and_initial_history() {
+        let act = json!({
+            "addChatItemAction": {
+                "item": {
+                    "liveChatTextMessageRenderer": {
+                        "id": "yt-m-1",
+                        "authorName": {"simpleText": "@ModPerson"},
+                        "authorExternalChannelId": "UCmod",
+                        "timestampUsec": "1700000000000000",
+                        "message": {"runs": [{"text": "welcome!"}]},
+                        "authorBadges": [
+                            {"liveChatAuthorBadgeRenderer": {"icon": {"iconType": "MODERATOR"}}},
+                            {"liveChatAuthorBadgeRenderer": {"customThumbnail": {"thumbnails": [{"url": "https://yt3.ggpht.com/member.png"}]}}}
+                        ]
+                    }
+                }
+            }
+        });
+        let l = innertube_action_to_line(&act).expect("valid yt line");
+        assert_eq!(l.user, "ModPerson");
+        assert_eq!(l.color, "#5E84F1");
+        assert!(l.moderator && l.subscriber && l.historical);
+        assert_eq!(l.badges[0], ("youtube:moderator".into(), String::new()));
+        assert_eq!(
+            l.badges[1],
+            ("youtube:member".into(), "https://yt3.ggpht.com/member.png".into())
+        );
+
+        let html = format!(
+            "<script>var ytInitialData = {};</script>",
+            json!({"contents": {"liveChatRenderer": {"actions": [act]}}})
+        );
+        assert_eq!(extract_initial_actions(&html).len(), 1);
     }
 }

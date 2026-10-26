@@ -21,7 +21,38 @@ cargo build --release
 ./target/release/streamerz
 ```
 
-Settings live in `streamerz.json` next to the binary (`target/release/streamerz.json` here). It's written
+### Fast builds and testing
+
+Full release builds compile `wry`/`tao`/WebKitGTK (`242` crates, LTO, single codegen unit). For rapid
+day-to-day iteration, `.cargo/config.toml` and `Cargo.toml` provide a `[profile.fast]` (`opt-level = 1`,
+incremental, line-table debug info) and make `tiktok-web` (`streamerz-tiktok`) optional (`141` crates):
+
+```
+cargo fcheck                  # fast type-check (--no-default-features)
+cargo fbuild                  # fast optimized dev binary -> target/fast/streamerz
+cargo frun                    # build & run target/fast/streamerz
+cargo ftest                   # run all tests without building wry/tao
+cargo ftest twitch::tests     # run only matching unit tests
+```
+
+`target/fast/streamerz` automatically reuses `target/release/streamerz-tiktok` (or `target/debug/`) if
+already built once. To share your existing release `streamerz.json` and `cache/` without copying files:
+
+```
+STREAMERZ_CONFIG=target/release/streamerz.json cargo frun
+# or:
+./target/fast/streamerz --config target/release/streamerz.json
+```
+
+Optional host tools for even faster linking and clean rebuilds on Linux:
+
+```
+RUSTFLAGS="-C link-arg=-fuse-ld=mold" cargo fbuild   # fast linker (mold or wild)
+RUSTC_WRAPPER=sccache cargo fbuild                   # shared rustc artifact cache
+```
+
+Settings live in `streamerz.json` next to the binary (`target/release/streamerz.json` by default, or the
+path given via `--config <path>` / `STREAMERZ_CONFIG`). It's written
 to a temp file and renamed over the old one, and the previous version is kept as `streamerz.json.bak`;
 when the file is invalid, the `.bak` is loaded instead and the broken file is left alone.
 

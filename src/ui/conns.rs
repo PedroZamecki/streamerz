@@ -1,6 +1,6 @@
 //! The connections set up (platforms, stream apps, donation services): the status bar's "3/5
-//! connected", and on a click each one's state (connected, connecting, or not and why, from its last
-//! log line), with Retry and a way to its settings.
+//! connected", and on a click each one's state (connected, standby, connecting, or not and why, from its
+//! last log line), with Retry and a way to its settings.
 
 use super::{button, img, query, tell, ROW};
 use crate::Config;
@@ -35,6 +35,7 @@ struct Conn {
     name: String,
     logo: &'static str,
     up: bool,
+    standby: bool,
     /// The tab with its settings.
     tab: &'static str,
     retry: Retry,
@@ -42,7 +43,7 @@ struct Conn {
     log: Vec<String>,
 }
 
-/// Every connection that's set up, with whether it's up.
+/// Every connection that's set up, with whether it's up or standing by.
 fn list(cfg: &Cfg, cmds: &Cmds) -> Vec<Conn> {
     let (obs, slobs, se, sl, dd) = {
         let c = cfg.borrow();
@@ -73,7 +74,7 @@ fn list(cfg: &Cfg, cmds: &Cmds) -> Vec<Conn> {
         ]
     };
     let (o, s) = (obs.clone(), slobs.clone());
-    let (plats, obs_up, slobs_up, se_up, sl_up) = query(cmds, move |e| {
+    let (plats, plats_standby, obs_up, slobs_up, se_up, sl_up) = query(cmds, move |e| {
         let d = e.donations.borrow();
         (
             [
@@ -82,6 +83,7 @@ fn list(cfg: &Cfg, cmds: &Cmds) -> Vec<Conn> {
                 e.kick_connected(),
                 e.tiktok_connected(),
             ],
+            [false, e.youtube_standby(), false, e.tiktok_standby()],
             o.iter().map(|(id, _)| e.obs_connected(Some(id))).collect::<Vec<_>>(),
             s.iter().map(|(id, _)| e.slobs_up(id)).collect::<Vec<_>>(),
             d.streamelements.get(),
@@ -97,9 +99,10 @@ fn list(cfg: &Cfg, cmds: &Cmds) -> Vec<Conn> {
                 name: name.into(),
                 logo: name,
                 up: plats[i],
+                standby: plats_standby[i],
                 tab: "Accounts",
                 retry: Retry::Platform(i),
-                log: vec![format!("{name}:"), format!("{name} EventSub")],
+                log: vec![format!("{name}:"), format!("{name} ("), format!("{name} EventSub")],
             });
         }
     }
@@ -109,6 +112,7 @@ fn list(cfg: &Cfg, cmds: &Cmds) -> Vec<Conn> {
             name: format!("OBS: {name}"),
             logo: "OBS Studio",
             up: obs_up.get(k).copied().unwrap_or(false),
+            standby: false,
             tab: "Stream Apps",
             retry: Retry::Obs(id),
         });
@@ -119,6 +123,7 @@ fn list(cfg: &Cfg, cmds: &Cmds) -> Vec<Conn> {
             name: format!("Streamlabs Desktop: {name}"),
             logo: "Streamlabs Desktop",
             up: slobs_up.get(k).copied().unwrap_or(false),
+            standby: false,
             tab: "Stream Apps",
             retry: Retry::Slobs(id),
         });
@@ -130,6 +135,7 @@ fn list(cfg: &Cfg, cmds: &Cmds) -> Vec<Conn> {
                 name: name.into(),
                 logo: name,
                 up,
+                standby: false,
                 tab: "Donations",
                 retry: Retry::Donations,
             });
@@ -143,6 +149,7 @@ fn list(cfg: &Cfg, cmds: &Cmds) -> Vec<Conn> {
             name: "DonorDrive".into(),
             logo: "DonorDrive",
             up,
+            standby: false,
             tab: "Donations",
             retry: Retry::Donations,
             log: vec!["DonorDrive:".into()],
@@ -157,23 +164,33 @@ fn last_line<'a>(log: &'a [String], prefixes: &[String]) -> Option<&'a String> {
         .find(|l| prefixes.iter().any(|p| l.starts_with(p.as_str())))
 }
 
-/// "3/5 connected" for the status bar, and whether all, some (None) or none are up.
+/// "3/5 connected" (plus standby count or keyring warning) for the status bar.
 pub fn summary(cfg: &Cfg, cmds: &Cmds) -> (String, Option<bool>) {
+    if crate::secrets::is_locked() {
+        return ("🔒 Keyring locked (click to unlock)".into(), None);
+    }
     let l = list(cfg, cmds);
     let up = l.iter().filter(|c| c.up).count();
+    let sb = l.iter().filter(|c| !c.up && c.standby).count();
     if l.is_empty() {
         return ("○ nothing set up".into(), Some(false));
     }
-    let all = match up {
-        0 => Some(false),
-        n if n == l.len() => Some(true),
+    let all = match (up, sb) {
+        (0, 0) => Some(false),
+        (n, s) if n + s == l.len() && n > 0 => Some(true),
         _ => None,
     };
-    (format!("● {up}/{} connected", l.len()), all)
+    let text = if sb > 0 {
+        format!("● {up}/{} connected · {sb} standby", l.len())
+    } else {
+        format!("● {up}/{} connected", l.len())
+    };
+    (text, all)
 }
 
 enum State {
     Up,
+    Standby(String),
     Connecting,
     Down(String),
 }
@@ -188,10 +205,16 @@ fn state(c: &Conn, log: &[String], count: u64, retried: Option<&(Instant, u64)>)
         let since = (count - then).min(log.len() as u64) as usize;
         let new = &log[log.len() - since..];
         match last_line(new, &c.log) {
-            Some(l) if !l.to_lowercase().contains("connecting") => {}
+            Some(l) if !l.to_lowercase().contains("connecting") && !l.to_lowercase().contains("checking") => {}
             _ if at.elapsed() < TRYING => return State::Connecting,
             _ => {}
         }
+    }
+    if c.standby {
+        let detail = last_line(log, &c.log)
+            .and_then(|l| l.split_once(": ").map(|x| x.1))
+            .unwrap_or("offline — standing by for stream start");
+        return State::Standby(detail.to_string());
     }
     match last_line(log, &c.log) {
         Some(l) if l.to_lowercase().contains("connecting") => State::Connecting,
@@ -216,11 +239,32 @@ fn retry(cmds: &Cmds, r: &Retry) {
 /// The connections window: one row each, kept up to date (once a second, while it's open).
 pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: impl Fn() + 'static) {
     let conns = list(cfg, cmds);
-    let rows_h = conns.len().max(1) as i32 * (ROW + 8);
-    let mut win = Window::default().with_size(760, rows_h + 60).with_label("Connections");
+    let extra_lock = i32::from(crate::secrets::is_locked()) * (ROW + 8);
+    let rows_h = conns.len().max(1) as i32 * (ROW + 8) + extra_lock;
+    let mut win = Window::default().with_size(780, rows_h + 60).with_label("Connections");
     win.set_xclass("streamerz");
-    let mut col = Flex::new(10, 10, 740, rows_h + 40, None).column();
+    let mut col = Flex::new(10, 10, 760, rows_h + 40, None).column();
     col.set_pad(8);
+
+    if crate::secrets::is_locked() {
+        let mut lrow = Flex::default().row();
+        let mut msg = Frame::default()
+            .with_label("🔒 Saved logins couldn't be decrypted from your system keyring.")
+            .with_align(Align::Left | Align::Inside | Align::Clip);
+        msg.set_label_color(Color::from_rgb(0xe0, 0xa8, 0x30));
+        let mut ubtn = button(&mut lrow, "Unlock Now", 110);
+        lrow.end();
+        col.fixed(&lrow, ROW);
+        let cmds = cmds.clone();
+        let mut win_c = win.clone();
+        ubtn.set_callback(move |_| {
+            super::accounts::unlock_logins_interactive(&cmds);
+            if !crate::secrets::is_locked() {
+                win_c.hide();
+            }
+        });
+    }
+
     if conns.is_empty() {
         let f = Frame::default()
             .with_label("Nothing is set up yet: log in on Accounts, add OBS on Stream Apps.")
@@ -241,8 +285,8 @@ pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: im
         name.set_label_font(Font::HelveticaBold);
         row.fixed(&name, 190);
         let st = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
-        let mut r = button(&mut row, "Retry", 70);
-        r.set_tooltip("Connect again now");
+        let mut r = button(&mut row, if c.standby { "Check" } else { "Retry" }, 70);
+        r.set_tooltip("Connect or check live status right now");
         let mut s = button(&mut row, "Settings", 80);
         row.end();
         col.fixed(&row, ROW);
@@ -255,7 +299,7 @@ pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: im
                     .insert(name.clone(), (Instant::now(), crate::log_count()));
                 retry(&cmds, &why);
                 // Shown at once; the next second says how it went.
-                st.set_label("◌ Connecting…");
+                st.set_label("◌ Checking…");
                 st.set_label_color(Color::from_rgb(0xe0, 0xa8, 0x30));
                 st.redraw();
             }
@@ -291,6 +335,7 @@ pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: im
         for (c, (st, r)) in now.iter().zip(states.iter_mut()) {
             let (text, color) = match state(c, &log, count, retried.borrow().get(&c.name)) {
                 State::Up => ("● Connected".to_string(), Color::from_rgb(0x3c, 0xb3, 0x71)),
+                State::Standby(why) => (format!("◐ {why}"), Color::from_rgb(0x64, 0xb5, 0xf6)),
                 State::Connecting => ("◌ Connecting…".to_string(), Color::from_rgb(0xe0, 0xa8, 0x30)),
                 State::Down(why) if why.is_empty() => {
                     ("○ Not connected".to_string(), Color::from_rgb(0x99, 0x99, 0x99))
@@ -305,6 +350,7 @@ pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: im
                 retried.borrow_mut().remove(&c.name);
                 r.deactivate();
             } else {
+                r.set_label(if c.standby { "Check" } else { "Retry" });
                 r.activate();
             }
             st.set_label(&text.replace('@', "@@"));
@@ -333,6 +379,7 @@ mod tests {
             name: "OBS: Main".into(),
             logo: "OBS Studio",
             up: false,
+            standby: false,
             tab: "Stream Apps",
             retry: Retry::Donations,
             log: vec!["OBS 'Main':".into()],
@@ -347,6 +394,27 @@ mod tests {
         assert!(matches!(state(&c, &log, 3, Some(&r)), State::Connecting));
         log.push("OBS 'Main': failed: again".into());
         assert!(matches!(state(&c, &log, 4, Some(&r)), State::Down(w) if w == "failed: again"));
-        assert!(matches!(state(&Conn { up: true, ..c }, &log, 4, None), State::Up));
+        assert!(matches!(
+            state(&Conn { up: true, ..c.clone() }, &log, 4, None),
+            State::Up
+        ));
+        assert!(matches!(
+            state(&Conn { standby: true, ..c }, &log, 4, None),
+            State::Standby(_)
+        ));
+    }
+
+    impl Clone for Conn {
+        fn clone(&self) -> Self {
+            Conn {
+                name: self.name.clone(),
+                logo: self.logo,
+                up: self.up,
+                standby: self.standby,
+                tab: self.tab,
+                retry: self.retry.clone(),
+                log: self.log.clone(),
+            }
+        }
     }
 }

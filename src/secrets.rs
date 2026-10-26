@@ -1,16 +1,18 @@
 //! Secrets (OAuth tokens, cookies, client secrets, passwords) never sit in streamerz.json as plain
 //! text: they're taken out of the config on save and written back as one encrypted `secrets` value.
 //! - Windows: DPAPI (only this Windows user can decrypt it).
-//! - Linux: a random key kept in the Secret Service (GNOME Keyring, KWallet, KeePassXC), read once
-//!   at start; the value is HMAC-SHA256 in counter mode, encrypt-then-MAC. Without a keyring, the
-//!   secrets stay in the file, which is only readable by its owner (0600).
+//! - Linux: a random key kept in the Secret Service (GNOME Keyring, KWallet, KeePassXC); the value
+//!   is HMAC-SHA256 in counter mode, encrypt-then-MAC. Without a keyring, new secrets stay in the
+//!   file, which is only readable by its owner (0600).
 //!
-//! When the key can't be read (keyring locked or gone), the encrypted value is kept as it was, so
-//! nothing is lost; the accounts just show logged out until it can be read again.
+//! When the key can't be read right away (transient D-Bus hiccup or locked keyring), streamerz
+//! retries transient D-Bus errors immediately, keeps the encrypted value intact if still locked,
+//! and automatically unlocks and reconnects once the keyring becomes available.
 
 use crate::model::Obj;
 use base64::Engine as _;
 use serde_json::Value;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 /// Top-level parts of the config that are the user's own data, never searched for secrets.
@@ -111,13 +113,26 @@ pub fn random(n: usize) -> Vec<u8> {
 
 /// The encrypted value read at start, kept as is while it can't be decrypted.
 static KEPT: Mutex<Option<String>> = Mutex::new(None);
+/// Why `KEPT` is currently locked, if it is.
+static LOCKED: Mutex<Option<String>> = Mutex::new(None);
+static WARNED_NO_KEYRING: AtomicBool = AtomicBool::new(false);
+
+/// Why saved logins are currently locked (keyring locked or unreachable), or `None` when unlocked.
+pub fn locked_reason() -> Option<String> {
+    LOCKED.lock().ok().and_then(|l| l.clone())
+}
+
+/// Whether saved logins are waiting on the keyring to unlock.
+pub fn is_locked() -> bool {
+    locked_reason().is_some()
+}
 
 /// Before saving: move the secrets of `v` into its `secrets` value, if they can be protected.
 pub fn seal(v: &mut Value) {
     let Value::Object(_) = v else { return };
     let mut secrets = split(v);
     if let Some(old) = KEPT.lock().ok().and_then(|k| k.clone()) {
-        // Undecryptable: keep it, and whatever is new stays in the file until it can be merged.
+        // Undecryptable right now: keep the encrypted blob intact, and any new login stays in 0600 file until merged.
         if let Some(o) = v.as_object_mut() {
             o.insert("secrets".into(), old.into());
         }
@@ -129,12 +144,19 @@ pub fn seal(v: &mut Value) {
     }
     let plain = serde_json::to_vec(&secrets).unwrap_or_default();
     match protect(&plain) {
-        Some(blob) => {
+        Ok(blob) => {
             if let Some(o) = v.as_object_mut() {
                 o.insert("secrets".into(), blob.into());
             }
         }
-        None => restore(v, &std::mem::take(&mut secrets)),
+        Err(e) => {
+            if !WARNED_NO_KEYRING.swap(true, Ordering::Relaxed) {
+                crate::say(format!(
+                    "Keyring unavailable ({e}): keeping new logins in streamerz.json (0600)"
+                ));
+            }
+            restore(v, &std::mem::take(&mut secrets));
+        }
     }
 }
 
@@ -146,7 +168,7 @@ fn restore(v: &mut Value, secrets: &Obj) {
     }
 }
 
-/// After reading: put the secrets back from the `secrets` value.
+/// After reading: put the secrets back from the `secrets` value, retrying transient keyring errors.
 pub fn open(v: &mut Value) {
     let Some(blob) = v.as_object_mut().and_then(|o| o.remove("secrets")) else {
         return;
@@ -154,13 +176,61 @@ pub fn open(v: &mut Value) {
     let Some(blob) = blob.as_str().map(String::from) else {
         return;
     };
-    match unprotect(&blob).and_then(|p| serde_json::from_slice::<Obj>(&p).ok()) {
-        Some(secrets) => merge(v, &secrets),
-        None => {
-            crate::say("can't decrypt the saved logins (keyring locked or missing?): they're kept for later".into());
+    match unprotect(&blob, true, 3).and_then(|p| serde_json::from_slice::<Obj>(&p).map_err(|e| e.to_string())) {
+        Ok(secrets) => {
+            if let Ok(mut k) = KEPT.lock() {
+                *k = None;
+            }
+            if let Ok(mut l) = LOCKED.lock() {
+                *l = None;
+            }
+            merge(v, &secrets);
+        }
+        Err(why) => {
+            crate::say(format!(
+                "Keyring: saved logins are locked ({why}); keeping them safe and retrying automatically"
+            ));
             if let Ok(mut k) = KEPT.lock() {
                 *k = Some(blob);
             }
+            if let Ok(mut l) = LOCKED.lock() {
+                *l = Some(why);
+            }
+        }
+    }
+}
+
+/// Try to unlock previously undecrypted `KEPT` secrets and merge them into `v`.
+/// When `interactive` is false (background polling), never opens a password prompt dialog.
+pub fn retry_unlock(v: &mut Value, interactive: bool) -> Result<bool, String> {
+    let Some(blob) = KEPT.lock().ok().and_then(|k| k.clone()) else {
+        if let Ok(mut l) = LOCKED.lock() {
+            *l = None;
+        }
+        return Ok(false);
+    };
+    let retries = if interactive { 2 } else { 0 };
+    match unprotect(&blob, interactive, retries)
+        .and_then(|p| serde_json::from_slice::<Obj>(&p).map_err(|e| e.to_string()))
+    {
+        Ok(secrets) => {
+            if let Ok(mut k) = KEPT.lock() {
+                *k = None;
+            }
+            if let Ok(mut l) = LOCKED.lock() {
+                *l = None;
+            }
+            merge(v, &secrets);
+            crate::say("Keyring: saved logins unlocked and restored".into());
+            Ok(true)
+        }
+        Err(why) => {
+            if interactive {
+                if let Ok(mut l) = LOCKED.lock() {
+                    *l = Some(why.clone());
+                }
+            }
+            Err(why)
         }
     }
 }
@@ -212,19 +282,25 @@ fn dpapi(data: &[u8], protect: bool) -> Option<Vec<u8>> {
 }
 
 #[cfg(windows)]
-fn protect(plain: &[u8]) -> Option<String> {
-    dpapi(plain, true).map(|c| format!("dpapi:{}", b64().encode(c)))
+fn protect(plain: &[u8]) -> Result<String, String> {
+    dpapi(plain, true)
+        .map(|c| format!("dpapi:{}", b64().encode(c)))
+        .ok_or_else(|| "DPAPI protect failed".into())
 }
 
 #[cfg(windows)]
-fn unprotect(blob: &str) -> Option<Vec<u8>> {
-    dpapi(&b64().decode(blob.strip_prefix("dpapi:")?).ok()?, false)
+fn unprotect(blob: &str, _interactive: bool, _retries: usize) -> Result<Vec<u8>, String> {
+    let raw = blob
+        .strip_prefix("dpapi:")
+        .ok_or_else(|| "not a DPAPI secret".to_string())?;
+    let bytes = b64().decode(raw).map_err(|e| e.to_string())?;
+    dpapi(&bytes, false).ok_or_else(|| "DPAPI unprotect failed".into())
 }
 
-/// The key from the keyring, read (or made) the first time a secret is saved or opened, so
-/// someone who never logs in never touches the keyring.
+/// Cached 32-byte key from the Secret Service. Only populated on success so a transient D-Bus
+/// error never poisons the process for its whole lifetime.
 #[cfg(not(windows))]
-static KEY: std::sync::OnceLock<Option<[u8; 32]>> = std::sync::OnceLock::new();
+static KEY: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
 
 /// The config file the key belongs to (its keyring attribute).
 static CONFIG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -233,39 +309,75 @@ pub fn init(config: &std::path::Path) {
     let _ = CONFIG.set(config.display().to_string());
 }
 
+/// Whether a D-Bus / keyring error is a transient daemon wake-up or disconnect hiccup worth retrying.
+#[cfg(not(windows))]
+fn is_transient(err: &str) -> bool {
+    const TRANSIENT: &[&str] = &[
+        "NoReply",
+        "Remote peer disconnected",
+        "ServiceUnknown",
+        "NameHasNoOwner",
+        "TimedOut",
+        "ActivateServiceByName",
+        "Connection reset",
+        "Broken pipe",
+        "I/O error",
+        "EOF",
+    ];
+    TRANSIENT.iter().any(|m| err.contains(m))
+}
+
 /// The keyring call runs on its own thread with its own small runtime: this may be called from the
 /// window or from inside the engine's runtime, and an unlock prompt may wait for the user.
 #[cfg(not(windows))]
-fn key() -> Option<&'static [u8; 32]> {
-    KEY.get_or_init(|| {
-        let path = CONFIG.get()?.clone();
-        let got = std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .ok()?;
-            Some(rt.block_on(async {
-                tokio::time::timeout(std::time::Duration::from_secs(120), keyring::key(&path)).await
-            }))
+fn key(interactive: bool, retries: usize) -> Result<[u8; 32], String> {
+    if let Some(k) = KEY.get() {
+        return Ok(*k);
+    }
+    let path = CONFIG
+        .get()
+        .cloned()
+        .ok_or_else(|| "config path not initialized".to_string())?;
+    let got = std::thread::spawn(move || -> Result<[u8; 32], String> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?;
+        rt.block_on(async move {
+            let wait = std::time::Duration::from_secs(if interactive { 120 } else { 8 });
+            let delays = [250u64, 500, 1000, 1500];
+            let mut last = String::new();
+            for attempt in 0..=retries {
+                if attempt > 0 {
+                    let ms = delays[(attempt - 1).min(delays.len() - 1)];
+                    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                }
+                match tokio::time::timeout(wait, keyring::key(&path, interactive)).await {
+                    Ok(Ok(k)) => return Ok(k),
+                    Ok(Err(e)) => {
+                        last = e;
+                        if !is_transient(&last) {
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        last = "the keyring timed out".into();
+                        if !interactive {
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(last)
         })
-        .join()
-        .ok()
-        .flatten();
-        match got {
-            Some(Ok(Ok(k))) => Some(k),
-            Some(Ok(Err(e))) => {
-                crate::say(format!(
-                    "no keyring ({e}): logins are kept in streamerz.json, readable only by you"
-                ));
-                None
-            }
-            _ => {
-                crate::say("the keyring didn't answer: logins are kept in streamerz.json, readable only by you".into());
-                None
-            }
-        }
     })
-    .as_ref()
+    .join()
+    .map_err(|_| "keyring thread panicked".to_string())?;
+
+    if let Ok(k) = got {
+        let _ = KEY.set(k);
+    }
+    got
 }
 
 #[cfg(not(windows))]
@@ -320,14 +432,19 @@ fn open_with(key: &[u8; 32], sealed: &[u8]) -> Option<Vec<u8>> {
 }
 
 #[cfg(not(windows))]
-fn protect(plain: &[u8]) -> Option<String> {
-    let k = key()?;
-    Some(format!("keyring:{}", b64().encode(seal_with(k, &random(16), plain))))
+fn protect(plain: &[u8]) -> Result<String, String> {
+    let k = key(true, 2)?;
+    Ok(format!("keyring:{}", b64().encode(seal_with(&k, &random(16), plain))))
 }
 
 #[cfg(not(windows))]
-fn unprotect(blob: &str) -> Option<Vec<u8>> {
-    open_with(key()?, &b64().decode(blob.strip_prefix("keyring:")?).ok()?)
+fn unprotect(blob: &str, interactive: bool, retries: usize) -> Result<Vec<u8>, String> {
+    let raw = blob
+        .strip_prefix("keyring:")
+        .ok_or_else(|| "unknown secret format".to_string())?;
+    let bytes = b64().decode(raw).map_err(|e| e.to_string())?;
+    let k = key(interactive, retries)?;
+    open_with(&k, &bytes).ok_or_else(|| "keyring key mismatch".into())
 }
 
 /// The freedesktop Secret Service over D-Bus (zbus, which the tray already uses).
@@ -344,10 +461,13 @@ mod keyring {
     }
 
     /// Run a prompt ("/" is none) and wait for it: unlocking may ask for the keyring password.
-    async fn prompt(c: &Connection, path: &OwnedObjectPath) -> zbus::Result<()> {
+    async fn prompt(c: &Connection, path: &OwnedObjectPath, interactive: bool) -> zbus::Result<()> {
         use futures_util::StreamExt;
         if path.as_str() == "/" {
             return Ok(());
+        }
+        if !interactive {
+            return Err(zbus::Error::Failure("keyring is locked".into()));
         }
         let p = proxy(c, path.as_str(), "org.freedesktop.Secret.Prompt").await?;
         let mut done = p.receive_signal("Completed").await?;
@@ -363,13 +483,18 @@ mod keyring {
         Ok(())
     }
 
-    async fn unlock(c: &Connection, svc: &Proxy<'_>, paths: Vec<OwnedObjectPath>) -> zbus::Result<()> {
+    async fn unlock(
+        c: &Connection,
+        svc: &Proxy<'_>,
+        paths: Vec<OwnedObjectPath>,
+        interactive: bool,
+    ) -> zbus::Result<()> {
         let (_, p): (Vec<OwnedObjectPath>, OwnedObjectPath) = svc.call("Unlock", &(paths,)).await?;
-        prompt(c, &p).await
+        prompt(c, &p, interactive).await
     }
 
     /// streamerz's key for this config file: read, or made and stored.
-    pub async fn key(config: &str) -> Result<[u8; 32], String> {
+    pub async fn key(config: &str, interactive: bool) -> Result<[u8; 32], String> {
         let e = |x: zbus::Error| x.to_string();
         let c = Connection::session().await.map_err(e)?;
         let svc = proxy(&c, "/org/freedesktop/secrets", "org.freedesktop.Secret.Service")
@@ -381,7 +506,7 @@ mod keyring {
         let (mut found, locked): (Vec<OwnedObjectPath>, Vec<OwnedObjectPath>) =
             svc.call("SearchItems", &(&attrs,)).await.map_err(e)?;
         if found.is_empty() && !locked.is_empty() {
-            unlock(&c, &svc, locked.clone()).await.map_err(e)?;
+            unlock(&c, &svc, locked.clone(), interactive).await.map_err(e)?;
             found = locked;
         }
         let parse = |v: &[u8]| -> Option<[u8; 32]> {
@@ -400,13 +525,16 @@ mod keyring {
                 item.call("GetSecret", &(&session,)).await.map_err(e)?;
             return parse(&value).ok_or_else(|| "the keyring's streamerz key is damaged".into());
         }
+        if !interactive {
+            return Err("keyring item not available yet".into());
+        }
         // None yet: make one in the default collection.
         let key: [u8; 32] = super::random(32).try_into().map_err(|_| "no random".to_string())?;
         let mut coll: OwnedObjectPath = svc.call("ReadAlias", &("default",)).await.map_err(e)?;
         if coll.as_str() == "/" {
             coll = OwnedObjectPath::try_from("/org/freedesktop/secrets/collection/login").map_err(|x| x.to_string())?;
         }
-        unlock(&c, &svc, vec![coll.clone()]).await.map_err(e)?;
+        unlock(&c, &svc, vec![coll.clone()], interactive).await.map_err(e)?;
         let col = proxy(&c, coll.as_str(), "org.freedesktop.Secret.Collection")
             .await
             .map_err(e)?;
@@ -419,7 +547,7 @@ mod keyring {
         let secret = (&session, Vec::<u8>::new(), value, "text/plain");
         let (_, p): (OwnedObjectPath, OwnedObjectPath) =
             col.call("CreateItem", &(props, secret, true)).await.map_err(e)?;
-        prompt(&c, &p).await.map_err(e)?;
+        prompt(&c, &p, interactive).await.map_err(e)?;
         Ok(key)
     }
 }
@@ -455,7 +583,7 @@ mod tests {
 
     #[cfg(not(windows))]
     #[test]
-    fn cipher() {
+    fn cipher_and_transient_errors() {
         let k = [7u8; 32];
         let plain = b"{\"a\":\"some secret longer than one 32 byte block\"}";
         let mut sealed = seal_with(&k, &random(16), plain);
@@ -464,5 +592,12 @@ mod tests {
         sealed[20] ^= 1;
         assert!(open_with(&k, &sealed).is_none());
         assert_ne!(random(16), random(16));
+        assert!(is_transient(
+            "org.freedesktop.DBus.Error.NoReply: Remote peer disconnected"
+        ));
+        assert!(is_transient(
+            "org.freedesktop.DBus.Error.ServiceUnknown: The name was not provided"
+        ));
+        assert!(!is_transient("keyring unlock dismissed"));
     }
 }

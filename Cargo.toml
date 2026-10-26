@@ -1,23 +1,42 @@
 [package]
 name = "streamerz"
-version = "0.0.0" # unused: releases are versioned by git tags (see build workflow)
+version = "0.0.0"         # unused: releases are versioned by git tags (see build workflow)
 edition = "2021"
+default-run = "streamerz"
+
+[features]
+default = ["tiktok-web"]
+# Optional so local dev builds (`--no-default-features`) skip compiling 141 WebKitGTK/GTK3/wry/tao crates.
+tiktok-web = ["dep:wry", "dep:tao"]
 
 # Linux only: TikTok's pages (login, sending chat) in their own binary, so streamerz itself doesn't load
 # WebKitGTK. On Windows it's built into streamerz.exe (`--tiktok`), and this one is just never shipped.
 [[bin]]
 name = "streamerz-tiktok"
 path = "src/tiktok_web.rs"
+required-features = ["tiktok-web"]
 
 [dependencies]
-tokio = { version = "1", features = ["rt", "macros", "sync", "time", "net", "io-util", "process"] }
+tokio = { version = "1", features = [
+    "rt",
+    "macros",
+    "sync",
+    "time",
+    "net",
+    "io-util",
+    "process",
+] }
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
-futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+futures-util = { version = "0.3", default-features = false, features = [
+    "sink",
+] }
 sha2 = "0.11"
 serde_json = { version = "1", features = ["preserve_order"] }
 base64 = "0.22"
 # Import/export strings are gzipped; miniz_oxide is pure Rust.
-flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+flate2 = { version = "1", default-features = false, features = [
+    "rust_backend",
+] }
 regex-lite = "0.1"
 # HTTPS with the OS TLS (SChannel / OpenSSL); the same crates tokio-tungstenite uses for wss://.
 native-tls = "0.2"
@@ -25,8 +44,10 @@ tokio-native-tls = "0.3"
 serde = { version = "1.0.229", features = ["derive"] }
 fltk = "1.5.23"
 # The OS webview (WebKitGTK / WebView2) for TikTok's login and chat, in a child process only.
-wry = { version = "0.57", default-features = false, features = ["os-webview"] }
-tao = "0.37"
+wry = { version = "0.57", default-features = false, features = [
+    "os-webview",
+], optional = true }
+tao = { version = "0.37", optional = true }
 # WebP emotes and avatars (BTTV, 7TV, Kick, TikTok serve WebP); FLTK decodes PNG/JPEG/GIF/SVG itself.
 image-webp = "0.2"
 # Twitch serves animated emotes only as GIF; FLTK reads only their first frame (and not into RGB).
@@ -39,6 +60,11 @@ incremental = true
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# Fast local builds (`cargo fbuild` / `cargo frun`): incremental, no fat LTO, optimized deps.
+[profile.fast]
+inherits = "dev"
+opt-level = 1
 
 [profile.release]
 opt-level = "z"
@@ -56,7 +82,18 @@ zbus = { version = "5", default-features = false, features = ["tokio"] }
 [target."cfg(windows)".dependencies]
 fltk = { version = "1.5.23", features = ["static-msvcrt"] }
 tray-icon = { version = "0.26.0", default-features = false }
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security_Cryptography", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_Time", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Security_Cryptography",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Time",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [build-dependencies]
 embed-resource = "3.0.11"
