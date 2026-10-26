@@ -15,14 +15,14 @@ pub mod picker;
 use crate::engine::{Engine, UiCmd};
 use crate::{status, Config};
 use fltk::button::{Button, CheckButton};
-use fltk::enums::{Align, ColorDepth, Event, Font, Shortcut};
+use fltk::enums::{Align, Color, ColorDepth, Event, Font, FrameType, Shortcut};
 use fltk::frame::Frame;
 use fltk::group::{Flex, Tabs};
 use fltk::image::RgbImage;
 use fltk::prelude::*;
 use fltk::text::{TextBuffer, TextDisplay};
 use fltk::window::Window;
-use fltk::{app, dialog};
+use fltk::{app, dialog, draw};
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -168,17 +168,53 @@ pub fn fatal(msg: &str) -> ! {
     std::process::exit(1);
 }
 
+/// Flat, rounded and quiet (zinc colours, like shadcn/ui): every button, field, list and tab is drawn
+/// by the two box functions below, so the whole window follows.
 fn theme(dark: bool) {
     if dark {
-        app::background(45, 45, 48);
-        app::background2(30, 30, 32);
-        app::foreground(225, 225, 225);
-        app::set_selection_color(70, 110, 170);
+        app::background(24, 24, 27);
+        app::background2(9, 9, 11);
+        app::foreground(244, 244, 245);
+        app::set_selection_color(59, 130, 246);
     } else {
-        app::background(192, 192, 192);
+        app::background(244, 244, 245);
         app::background2(255, 255, 255);
-        app::foreground(0, 0, 0);
-        app::set_selection_color(0, 0, 128);
+        app::foreground(9, 9, 11);
+        app::set_selection_color(37, 99, 235);
+    }
+    // Raised: a button, a tab, a menu button. Sunken: a field, a list, a check box.
+    // Small boxes (check boxes) get small corners.
+    fn r(w: i32, h: i32) -> i32 {
+        (w.min(h) / 5).clamp(1, 6)
+    }
+    fn up(x: i32, y: i32, w: i32, h: i32, c: Color) {
+        let fg = Color::Foreground;
+        draw::set_draw_color(Color::color_average(c, fg, 0.9));
+        draw::draw_rounded_rectf(x, y, w, h, r(w, h));
+        draw::set_draw_color(Color::color_average(c, fg, 0.78));
+        draw::draw_rounded_rect(x, y, w, h, r(w, h));
+    }
+    fn down(x: i32, y: i32, w: i32, h: i32, c: Color) {
+        draw::set_draw_color(c);
+        draw::draw_rounded_rectf(x, y, w, h, r(w, h));
+        draw::set_draw_color(Color::color_average(c, Color::Foreground, 0.7));
+        draw::draw_rounded_rect(x, y, w, h, r(w, h));
+    }
+    for f in [
+        FrameType::UpBox,
+        FrameType::ThinUpBox,
+        FrameType::GtkUpBox,
+        FrameType::GtkThinUpBox,
+    ] {
+        app::set_frame_type_cb(f, up, 2, 2, 4, 4);
+    }
+    for f in [
+        FrameType::DownBox,
+        FrameType::ThinDownBox,
+        FrameType::GtkDownBox,
+        FrameType::GtkThinDownBox,
+    ] {
+        app::set_frame_type_cb(f, down, 2, 2, 4, 4);
     }
 }
 
@@ -279,6 +315,10 @@ pub fn run(
         win.set_icon(Some(icon));
     }
     let mut tabs = Tabs::new(5, 5, W - 10, H - 50, None);
+    // The open tab like its page, the others darker.
+    tabs.set_selection_color(Color::Background);
+    tabs.set_color(Color::Background2);
+    tabs.clear_visible_focus();
 
     let acts = actions::tab(&tabs, cfg.clone(), cmds.clone());
     let views = lists::tabs(&tabs, &cfg, &cmds);

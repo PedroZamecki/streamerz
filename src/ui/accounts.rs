@@ -556,6 +556,7 @@ impl Accounts {
                 match &account {
                     Some(n) => {
                         name.set_label(&format!("{who}: {}", n.replace('@', "@@")));
+                        name.set_tooltip(&n.replace('@', "@@"));
                         b.set_label("Logout");
                     }
                     None => {
@@ -597,9 +598,9 @@ pub fn tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
 
         let mut bottom = Flex::default().row();
         let channel = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
-        bottom.fixed(&channel, 300);
+        bottom.fixed(&channel, 230);
         let gap = Frame::default();
-        bottom.fixed(&gap, 20);
+        bottom.fixed(&gap, 8);
         let mut who = Vec::new();
         for _ in 0..2 {
             let pic = Frame::default();
