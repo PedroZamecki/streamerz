@@ -1,5 +1,6 @@
 /target
 streamerz.json*
+community.json*
 *.bak
 *.tmp
 .claude/

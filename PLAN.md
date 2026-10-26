@@ -301,7 +301,9 @@ platform handles through channels, never through shared locks held across awaits
   under each chat pane with an account selector popup, discrete `"Message all"` popup in the top bar,
   D-Bus keyring retry + background/interactive unlock, Twitch EventSub supervisor, and OBS/Streamlabs-woken
   standby mode for offline YouTube & TikTok channels.
-- [ ] 40. Quotes, credits, users and first words.
+- [x] 40. Quotes, credits, users and first words: a Community tab (users seen in chat, quotes with
+  add/edit/delete, the stream's credits); quote sub-actions and Quote Added; GetCredits/TestCredits/
+  ClearCredits filled; one First Words cache for every platform (Reset First Words, ClearFirstWordsCache).
 - [ ] 41. TikTok triggers and sub-actions beyond chat, gifts, likes and follows (viewers, top gifters, live
   start/end and more).
 - [ ] 42. Visual polish across every tab: layout, spacing, status colours, icons.

@@ -146,8 +146,8 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] ClearFirstWordsCache
 - [x] DoAction
 - [x] GetActions
-- [x] GetCredits (empty, like a fresh Streamer.bot: credits are a later phase)
-- [x] TestCredits (empty: credits are a later phase)
+- [x] GetCredits (the stream's events and who spoke, phase 40)
+- [x] TestCredits (test names in every list, phase 40)
 
 **UDP requests** (1)
 
@@ -161,8 +161,8 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] GetActions
 - [x] DoAction
 - [x] GetBroadcaster (no platform yet: answers as Streamer.bot with them disconnected; filled in as each connects (phase 6+))
-- [x] GetCredits (empty, like a fresh Streamer.bot: credits are a later phase)
-- [x] TestCredits (empty: credits are a later phase)
+- [x] GetCredits (the stream's events and who spoke, phase 40)
+- [x] TestCredits (test names in every list, phase 40)
 - [x] ClearCredits
 - [x] GetInfo
 - [x] GetActiveViewers (empty until the platforms (phase 6+))
@@ -779,3 +779,31 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 - [x] Process Started
 - [x] Process Stopped
+
+## Phase 40: Quotes, credits, users and first words
+
+**Sub-actions: quotes** (4)
+
+- [x] Get Quote
+- [x] Get Quote Count
+- [x] Delete Quote
+- [x] Add Quote
+
+**Sub-actions: settings** (2)
+
+- [x] Reset First Words (every platform's)
+- [x] Reset Credits
+
+**Triggers: quotes** (2)
+
+- [x] Quote Added
+- [x] ~~Quote Show~~ (Streamer.bot 1.0 dropped its !quote command, so it never fires there either)
+
+**Credits** (5)
+
+- [x] Events: follows, cheers, subs, resubs, gift subs, gift bombs, raids, rewards, goals, game updates,
+  pyramids, hype trains
+- [x] Users present: users, moderators, VIPs, subscribers
+- [x] Top channel rewards
+- [ ] Top bits (all, month, week) and editors: need Helix bits/leaderboard and channel/editors
+- [x] Auto reset 12 hours after the last write

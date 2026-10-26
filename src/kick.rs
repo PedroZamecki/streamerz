@@ -12,7 +12,6 @@ use crate::Config;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -316,7 +315,6 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> KickHandle
         rx,
         connected,
         read_task: None,
-        speakers: HashSet::new(),
         ids: Default::default(),
     };
     tokio::task::spawn_local(runner.run());
@@ -329,7 +327,6 @@ struct Runner {
     rx: mpsc::UnboundedReceiver<KickCmd>,
     connected: Arc<AtomicBool>,
     read_task: Option<tokio::task::JoinHandle<()>>,
-    speakers: HashSet<String>,
     /// The channel (slug) and its broadcaster user id, looked up once.
     ids: std::cell::RefCell<Option<(String, u64)>>,
 }
@@ -444,12 +441,11 @@ impl Runner {
         let engine = self.engine.clone();
         let cfg = self.cfg.clone();
         let connected = self.connected.clone();
-        let mut speakers = std::mem::take(&mut self.speakers);
 
         crate::say(format!("Kick: connecting (@{channel})..."));
 
         self.read_task = Some(tokio::task::spawn_local(async move {
-            run_pusher_loop(engine, cfg, connected, &mut speakers).await;
+            run_pusher_loop(engine, cfg, connected).await;
         }));
     }
 
@@ -592,13 +588,8 @@ impl Runner {
     }
 }
 
-async fn run_pusher_loop(
-    engine: Rc<Engine>,
-    cfg: Arc<watch::Sender<Config>>,
-    connected: Arc<AtomicBool>,
-    speakers: &mut HashSet<String>,
-) {
-    run_pusher_loop_url(engine, cfg, connected, speakers, KICK_PUSHER_URL, false).await;
+async fn run_pusher_loop(engine: Rc<Engine>, cfg: Arc<watch::Sender<Config>>, connected: Arc<AtomicBool>) {
+    run_pusher_loop_url(engine, cfg, connected, KICK_PUSHER_URL, false).await;
 }
 
 /// Deletes a chat message, as the broadcaster.
@@ -819,7 +810,6 @@ pub async fn run_pusher_loop_url(
     engine: Rc<Engine>,
     cfg: Arc<watch::Sender<Config>>,
     connected: Arc<AtomicBool>,
-    speakers: &mut HashSet<String>,
     pusher_url: &str,
     run_once: bool,
 ) {
@@ -982,7 +972,7 @@ pub async fn run_pusher_loop_url(
                                     continue;
                                 }
 
-                                handle_kick_event(&engine, &channel, event_name, &v["data"], speakers);
+                                handle_kick_event(&engine, &channel, event_name, &v["data"]);
                             }
                         }
                         Message::Ping(data) => {
@@ -1264,13 +1254,7 @@ fn category(l: &Value) -> (Value, Value, Value) {
     (c["id"].clone(), c["name"].clone(), thumb)
 }
 
-pub fn handle_kick_event(
-    engine: &Rc<Engine>,
-    channel: &str,
-    event: &str,
-    data_val: &Value,
-    speakers: &mut HashSet<String>,
-) {
+pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_val: &Value) {
     let data: Value = match data_val {
         Value::String(s) => serde_json::from_str(s).unwrap_or(Value::Null),
         v => v.clone(),
@@ -1354,7 +1338,7 @@ pub fn handle_kick_event(
                 let who = json!({"userId": user_id, "userName": args["userName"], "user": username});
                 m.insert(user_id.to_string(), (who, std::time::Instant::now()));
             });
-            if speakers.insert(user_id.to_string()) {
+            if engine.first_words("kick", &user_id.to_string()) {
                 let mut a = args.clone();
                 a.insert("firstMessage".into(), true.into());
                 kick(engine, T_KICK_FIRST_WORDS, "KickFirstWords", "FirstWords", &a);
@@ -1763,20 +1747,11 @@ mod tests {
         let cfg_sender = Arc::new(tx);
         let engine = Engine::new(cfg_sender.clone(), |_| {});
         let connected = Arc::new(AtomicBool::new(false));
-        let mut speakers = HashSet::new();
 
         let ws_url = format!("ws://{addr}");
-        run_pusher_loop_url(
-            engine.clone(),
-            cfg_sender.clone(),
-            connected.clone(),
-            &mut speakers,
-            &ws_url,
-            true,
-        )
-        .await;
+        run_pusher_loop_url(engine.clone(), cfg_sender.clone(), connected.clone(), &ws_url, true).await;
 
-        assert!(speakers.contains("1234"));
+        assert!(!engine.first_words("kick", "1234"));
         assert!(!connected.load(Ordering::Relaxed));
     }
 
@@ -1819,8 +1794,7 @@ mod tests {
             .collect();
         let e = engine(json!({ "actions": actions }));
         let out = run(async move {
-            let mut sp = HashSet::new();
-            let mut go = |ev: &str, d: Value| handle_kick_event(&e, "chan", ev, &d, &mut sp);
+            let go = |ev: &str, d: Value| handle_kick_event(&e, "chan", ev, &d);
             go(
                 "App\\Events\\ChatMessageEvent",
                 json!({"id": "m", "content": "hi [emote:1:KEKW] there",
@@ -1873,7 +1847,6 @@ mod tests {
     fn parse_kick_chat_message() {
         let (tx, _rx) = watch::channel(Config::default());
         let engine = Engine::new(Arc::new(tx), |_| {});
-        let mut speakers = HashSet::new();
 
         let event = "App\\Events\\ChatMessageEvent";
         let payload = json!({
@@ -1892,15 +1865,14 @@ mod tests {
             }
         });
 
-        handle_kick_event(&engine, "gamer123", event, &payload, &mut speakers);
-        assert!(speakers.contains("100"));
+        handle_kick_event(&engine, "gamer123", event, &payload);
+        assert!(!engine.first_words("kick", "100"));
     }
 
     #[test]
     fn parse_kick_follow_event() {
         let (tx, _rx) = watch::channel(Config::default());
         let engine = Engine::new(Arc::new(tx), |_| {});
-        let mut speakers = HashSet::new();
 
         let event = "App\\Events\\FollowersUpdated";
         let payload = json!({
@@ -1908,72 +1880,53 @@ mod tests {
             "username": "coolfollower"
         });
 
-        handle_kick_event(&engine, "channel", event, &payload, &mut speakers);
+        handle_kick_event(&engine, "channel", event, &payload);
     }
 
     #[test]
     fn parse_kick_other_events() {
         let (tx, _rx) = watch::channel(Config::default());
         let engine = Engine::new(Arc::new(tx), |_| {});
-        let mut speakers = HashSet::new();
 
         // Subscription
         let sub = json!({ "username": "subber", "months": 1 });
-        handle_kick_event(&engine, "chan", "App\\Events\\SubscriptionEvent", &sub, &mut speakers);
+        handle_kick_event(&engine, "chan", "App\\Events\\SubscriptionEvent", &sub);
 
         // Resub
         let resub = json!({ "username": "resubber", "months": 5 });
-        handle_kick_event(&engine, "chan", "App\\Events\\SubscriptionEvent", &resub, &mut speakers);
+        handle_kick_event(&engine, "chan", "App\\Events\\SubscriptionEvent", &resub);
 
         // Gift sub
         let gift = json!({ "gifter_username": "santa", "gifted_usernames": ["u1", "u2"] });
-        handle_kick_event(
-            &engine,
-            "chan",
-            "App\\Events\\GiftedSubscriptionsEvent",
-            &gift,
-            &mut speakers,
-        );
+        handle_kick_event(&engine, "chan", "App\\Events\\GiftedSubscriptionsEvent", &gift);
 
         // Ban & Timeout
         let timeout = json!({ "user": "troll", "banned_by": "mod", "reason": "spam", "duration": 300 });
-        handle_kick_event(&engine, "chan", "App\\Events\\UserBannedEvent", &timeout, &mut speakers);
+        handle_kick_event(&engine, "chan", "App\\Events\\UserBannedEvent", &timeout);
         let ban = json!({ "user": "hacker", "banned_by": "mod", "reason": "rules", "duration": 0 });
-        handle_kick_event(&engine, "chan", "App\\Events\\UserBannedEvent", &ban, &mut speakers);
+        handle_kick_event(&engine, "chan", "App\\Events\\UserBannedEvent", &ban);
 
         // Channel update
         let chan_up = json!({ "title": "New Title", "category": "Gaming" });
-        handle_kick_event(
-            &engine,
-            "chan",
-            "App\\Events\\ChannelUpdateEvent",
-            &chan_up,
-            &mut speakers,
-        );
+        handle_kick_event(&engine, "chan", "App\\Events\\ChannelUpdateEvent", &chan_up);
 
         // Kicks gifted
         let kicks = json!({ "amount": 100, "sender": "tipper" });
-        handle_kick_event(&engine, "chan", "App\\Events\\KicksGiftedEvent", &kicks, &mut speakers);
+        handle_kick_event(&engine, "chan", "App\\Events\\KicksGiftedEvent", &kicks);
 
         // Reward redemption
         let reward = json!({ "reward_id": "r1", "user": "viewer", "user_input": "hello" });
-        handle_kick_event(
-            &engine,
-            "chan",
-            "App\\Events\\RewardRedeemedEvent",
-            &reward,
-            &mut speakers,
-        );
+        handle_kick_event(&engine, "chan", "App\\Events\\RewardRedeemedEvent", &reward);
 
         // 7TV emotes
         let em_add = json!({ "name": "KEKW" });
-        handle_kick_event(&engine, "chan", "7tv:emote_added", &em_add, &mut speakers);
+        handle_kick_event(&engine, "chan", "7tv:emote_added", &em_add);
         let em_rem = json!({ "name": "OMEGALUL" });
-        handle_kick_event(&engine, "chan", "7tv:emote_removed", &em_rem, &mut speakers);
+        handle_kick_event(&engine, "chan", "7tv:emote_removed", &em_rem);
 
         // Viewer count
         let vc = json!({ "viewers": 1500 });
-        handle_kick_event(&engine, "chan", "App\\Events\\ViewerCountUpdated", &vc, &mut speakers);
+        handle_kick_event(&engine, "chan", "App\\Events\\ViewerCountUpdated", &vc);
     }
 
     #[test]

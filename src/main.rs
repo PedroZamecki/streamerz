@@ -67,6 +67,9 @@ pub struct Config {
     /// users.dat groups: id, name, bots, userIds).
     timers: Vec<model::Obj>,
     groups: Vec<model::Obj>,
+    /// Quotes, in Streamer.bot's quotes.dat shape (id, timestamp, userId, user, platform, gameId,
+    /// gameName, quote).
+    quotes: Vec<model::Obj>,
     /// Persisted command counters: by command id, and by "command id:user id".
     counters: model::Obj,
     /// Twitch configuration (broadcaster, bot, auto-connect, settings).
@@ -119,6 +122,7 @@ impl Default for Config {
             timers: Vec::new(),
             groups: Vec::new(),
             counters: Map::new(),
+            quotes: Vec::new(),
             twitch: twitch::TwitchConfig::default(),
             obs: obs::ObsConfig::default(),
             slobs: slobs::Settings::default(),
@@ -480,6 +484,7 @@ fn main() {
                 let _ = save(c);
             });
             e.load_chat_history();
+            e.load_community();
             e.add_builtins();
             e.auto_connect();
             if secrets::is_locked() {

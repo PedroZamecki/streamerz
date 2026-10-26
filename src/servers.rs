@@ -409,10 +409,6 @@ fn find_action(e: &Engine, a: &Value) -> Option<String> {
         .map(|x| x.id.clone())
 }
 
-fn credits() -> Value {
-    json!({"events": {}, "hypeTrain": {"conductors": [], "contributors": []}, "users": {}, "groups": {}, "custom": {}})
-}
-
 /// Prefix `id`, then the fields, then status ok.
 fn ok(id: &Value, fields: Value) -> Value {
     let mut out = json!({"id": id});
@@ -486,9 +482,12 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
                 json!({"platforms": platforms, "connected": connected, "disconnected": disconnected}),
             )
         }
-        // Credits are a later phase: empty, like a fresh Streamer.bot.
-        "GetCredits" | "TestCredits" => ok(&id, credits()),
-        "ClearCredits" => ok(&id, json!({})),
+        "GetCredits" => ok(&id, e.credits()),
+        "TestCredits" => ok(&id, e.test_credits()),
+        "ClearCredits" => {
+            e.reset_credits();
+            ok(&id, json!({}))
+        }
         "GetActiveViewers" => ok(&id, json!({"count": 0, "viewers": []})),
         // Code triggers are registered by C#, which streamerz doesn't run.
         "GetCodeTriggers" => ok(&id, json!({"count": 0, "triggers": []})),
@@ -773,10 +772,14 @@ fn http_answer(e: &Rc<Engine>, method: &str, path: &str, body: &[u8]) -> (u16, O
                 .collect();
             (200, Some(json!({"count": actions.len(), "actions": actions})))
         }
-        ("GET", "/GetCredits" | "/TestCredits") => (200, Some(credits())),
-        ("GET", "/ClearCredits") => (204, None),
+        ("GET", "/GetCredits") => (200, Some(e.credits())),
+        ("GET", "/TestCredits") => (200, Some(e.test_credits())),
+        ("GET", "/ClearCredits") => {
+            e.reset_credits();
+            (204, None)
+        }
         ("GET", "/ClearFirstWordsCache") => {
-            e.clear_first_words();
+            e.reset_first_words(None);
             (204, None)
         }
         ("GET", "/") => (500, None),
