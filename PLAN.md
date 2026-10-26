@@ -307,7 +307,8 @@ platform handles through channels, never through shared locks held across awaits
 - [x] 41. TikTok triggers and sub-actions beyond chat, gifts, likes and follows: Viewer Count Update (with
   the top viewers), Stream Online/Offline; Get Top Gifters and Get Stream Info from per-live tallies (combo
   gifts counted once, when they end); TikTok in GetEvents.
-- [ ] 42. Visual polish across every tab: layout, spacing, status colours, icons.
+- [x] 42. Visual polish across every tab: flat rounded look in zinc colours (like shadcn/ui) for every
+  button, field, list and tab, drawn by two box functions; the open tab joins its page; light theme too.
 - [ ] 43+. Later extras, one phase each, order chosen then (see Decisions).
 
 ## Open points (decide when the phase starts, ask first)
