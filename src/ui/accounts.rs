@@ -396,7 +396,9 @@ impl Accounts {
                 };
                 (t, Color::from_rgb(0x99, 0x99, 0x99))
             };
-            r.status.set_label(&text);
+            // "@name" would be read as a symbol and cut the label.
+            r.status.set_label(&text.replace('@', "@@"));
+            r.status.set_tooltip(&text.replace('@', "@@"));
             r.status.set_label_color(color);
             r.connect.set_label(if on[i] { "Disconnect" } else { "Connect" });
             r.channel.set_label(&if r.p.own(&c) {
@@ -434,7 +436,7 @@ pub fn tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
     for p in ALL {
         title(&mut col, p.name());
         let mut top = Flex::default().row();
-        let status = Frame::default().with_align(Align::Left | Align::Inside);
+        let status = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
         let auto = CheckButton::default().with_label("Connect on start");
         top.fixed(&auto, 140);
         let connect = button(&mut top, "Connect", 100);

@@ -283,11 +283,22 @@ platform handles through channels, never through shared locks held across awaits
 - [x] 33. Cache: the BTTV/FFZ/7TV emote lists and the accounts' picture URLs kept in `cache/` (used at once,
   fetched again in the background after a day), user card lookups reused for 10 minutes, and the pictures
   kept under 50 MB (least recently shown go first). Faster start was dropped: it's fast enough.
-- [ ] 34. Quotes, credits, users and first words.
-- [ ] 35. TikTok triggers and sub-actions beyond chat, gifts, likes and follows (viewers, top gifters, live
+- [x] 34. Fixes: TikTok says when an account has never gone live (TikTok's live service answers "not
+  found" for those) and logs a reason once, not every 30 s; chat shows only the platforms connected or with
+  chat in the log, and follows connections as they come and go; the emote picker fills its grid after it's
+  shown (it was one emote a row on first open).
+- [ ] 35. Real badges: Twitch's own badge pictures (sharp) instead of drawn role badges, the ones the
+  chatter wears, with spacing; chat settings: timestamps on/off, badges on/off.
+- [ ] 36. Message actions on hover (Twitch-like): delete, reply, pin, copy, per platform where allowed.
+- [ ] 37. Emote picker like 7TV's: sections per provider and set (channel, global, emoji) with headers,
+  search, and a note when a set is empty.
+- [ ] 38. Recent chat on connect: Twitch's recent messages (and the platforms' where they offer it).
+- [ ] 39. Side by side: a send box under each platform's column, and the global one below.
+- [ ] 40. Quotes, credits, users and first words.
+- [ ] 41. TikTok triggers and sub-actions beyond chat, gifts, likes and follows (viewers, top gifters, live
   start/end and more).
-- [ ] 36. Visual polish across every tab: layout, spacing, status colours, icons.
-- [ ] 37+. Later extras, one phase each, order chosen then (see Decisions).
+- [ ] 42. Visual polish across every tab: layout, spacing, status colours, icons.
+- [ ] 43+. Later extras, one phase each, order chosen then (see Decisions).
 
 ## Open points (decide when the phase starts, ask first)
 

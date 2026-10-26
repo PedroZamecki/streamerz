@@ -346,6 +346,8 @@ impl Runner {
         }
         let (engine, cfg, shared) = (self.engine.clone(), self.cfg.clone(), self.shared.clone());
         self.read_task = Some(tokio::task::spawn_local(async move {
+            // The log gets a reason once, not every retry.
+            let mut said = String::new();
             loop {
                 let channel = clean_tiktok_channel(&cfg.borrow().tiktok.channel);
                 if channel.is_empty() {
@@ -353,12 +355,18 @@ impl Runner {
                     return;
                 }
                 let wait = match live(&engine, &cfg, &channel, &shared).await {
-                    Ok(()) => 2,
+                    Ok(()) => {
+                        said.clear();
+                        2
+                    }
                     Err((e, wait)) => {
                         if shared.connected.load(Ordering::Relaxed) {
                             disconnected(&engine, &channel);
                         }
-                        crate::say(format!("TikTok: {e}"));
+                        if e != said {
+                            crate::say(format!("TikTok: {e}"));
+                            said.clone_from(&e);
+                        }
                         shared.set(TikTokStatus::Error(format!("{e}, retrying in {wait}s")));
                         wait
                     }

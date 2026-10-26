@@ -285,6 +285,8 @@ pub async fn user_room(channel: &str, ttwid: &str) -> Result<Value, String> {
     let v: Value = serde_json::from_slice(&r.body).map_err(|_| format!("TikTok answered HTTP {}", r.status))?;
     match v["statusCode"].as_i64() {
         Some(0) => {}
+        // The live service knows only accounts that have gone live: one that exists is just not live.
+        Some(19881007) if avatar(channel).await.is_some() => return Err(format!("@{channel} has never gone live")),
         Some(19881007) => return Err(format!("@{channel} not found")),
         c => return Err(format!("TikTok error {}", c.unwrap_or(-1))),
     }
