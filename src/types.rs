@@ -399,6 +399,8 @@ pub const SUB_ACTIONS: &[(u32, &str)] = &[
     (41016, "MeldStudioSetBrowserLayerUrl"),
     (41017, "MeldStudioTakeVerticalScreenshot"),
     (43001, "TikTokSendMessage"),
+    (43002, "TikTokGetTopGifters"),
+    (43003, "TikTokGetStreamInfo"),
     (44001, "StreamlabsWebsiteSpinWheel"),
     (99900, "Group"),
     (99901, "IfTrueGroup"),
@@ -883,6 +885,9 @@ pub const TRIGGERS: &[(u32, &str)] = &[
     (41007, "TikTokJoin"),
     (41008, "TikTokConnected"),
     (41009, "TikTokDisconnected"),
+    (41010, "TikTokViewerCountUpdate"),
+    (41011, "TikTokStreamOnline"),
+    (41012, "TikTokStreamOffline"),
     (42001, "SystemClipboardChanged"),
 ];
 
@@ -2302,6 +2307,8 @@ pub const SUB_ACTION_INFO: &[(u32, &str, &str, &[&str])] = &[
         "TikTok/Chat",
         &["text", "useBot", "fallback"],
     ),
+    (43002, "Get Top Gifters", "TikTok/Gifts", &["count"]),
+    (43003, "Get Stream Info", "TikTok", &[]),
     (44001, "Spin Wheel", "Integrations/Streamlabs", &[]),
     (99900, "Group", "", &["subActions", "random", "name", "color"]),
     (

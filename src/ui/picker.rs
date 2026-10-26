@@ -282,6 +282,8 @@ pub fn trigger_categorize(name: &str) -> String {
             "TikTok/Gifts & Coins".into()
         } else if rest.contains("Connected") || rest.contains("Disconnected") {
             "TikTok/Connection".into()
+        } else if rest.contains("Stream") || rest.contains("Viewer") {
+            "TikTok/Stream".into()
         } else {
             "TikTok/Community".into()
         }
@@ -488,6 +490,9 @@ pub fn trigger_description(code: u32, _raw_name: &str, title: &str, category: &s
         41007 => "Fires when a viewer joins the TikTok live stream.".into(),
         41008 => "Fires when connected to the TikTok channel's live.".into(),
         41009 => "Fires when the TikTok live ends or the connection drops.".into(),
+        41010 => "Fires when the TikTok live's viewer count changes (with the top viewers by coins).".into(),
+        41011 => "Fires when a new TikTok live is found (the first connection to its room).".into(),
+        41012 => "Fires when the TikTok live ends, with its viewers, likes and coins.".into(),
         42001 => "Fires when the system clipboard content changes.".into(),
         _ => format!("Fires on the {title} event in {}.", category.replace('/', " > ")),
     }
@@ -544,6 +549,11 @@ pub fn sub_action_description(code: u32, name: &str, category: &str) -> String {
         1018 => "Suspends, resumes, or clears all pending tasks in a named queue.".into(),
         35001 => "Sends a chat message to Kick chat from the configured broadcaster or bot account.".into(),
         43001 => "Sends a chat message to TikTok live chat from the configured broadcaster or bot account.".into(),
+        43002 => {
+            "Sets topGifterCount and topGifter0.. (name, UserId, Coins) for who sent the most coins this TikTok live."
+                .into()
+        }
+        43003 => "Sets isLive, roomId, viewerCount, totalLikes and totalCoins for the TikTok live being read.".into(),
         99900 => "Executes child sub-actions concurrently on separate thread worker pools.".into(),
         99903 => "Matches a variable against defined case branches to execute corresponding sub-actions.".into(),
         _ => format!("Executes the {name} operation in {}.", category.replace('/', " > ")),

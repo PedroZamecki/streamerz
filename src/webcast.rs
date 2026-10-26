@@ -343,7 +343,17 @@ pub fn event(kind: &str, m: Msg) -> Option<(&'static str, Value)> {
         },
         "WebcastMemberMessage" if m.int(10) == 1 => ("member", user(m.msg(2), c)),
         "WebcastSubNotifyMessage" => ("subscribe", with(user(m.msg(11), c), json!({ "subMonth": m.int(4) }))),
-        "WebcastRoomUserSeqMessage" => ("roomUser", json!({ "viewerCount": m.int(3) })),
+        // ranksList (2): the top viewers by coins sent, each TopUser {coinCount 1, user 2}.
+        "WebcastRoomUserSeqMessage" => {
+            let top: Vec<Value> = m
+                .all(2)
+                .map(|t| {
+                    let t = Msg(t);
+                    with(user(t.msg(2), c), json!({ "coinCount": t.int(1) }))
+                })
+                .collect();
+            ("roomUser", json!({ "viewerCount": m.int(3), "topViewers": top }))
+        }
         "WebcastGiftMessage" => {
             let g = m.msg(15);
             (
@@ -662,6 +672,20 @@ mod tests {
             (Some("Rose"), Some(3))
         );
         assert_eq!(v["repeatEnd"], true);
+        let mut u = Vec::new();
+        put_bytes(&mut u, 38, b"bigfan");
+        let mut top = Vec::new();
+        put_int(&mut top, 1, 500);
+        put_bytes(&mut top, 2, &u);
+        let mut seq = Vec::new();
+        put_bytes(&mut seq, 2, &top);
+        put_int(&mut seq, 3, 77);
+        let (_, v) = event("WebcastRoomUserSeqMessage", Msg(&seq)).unwrap();
+        assert_eq!(
+            (v["viewerCount"].as_u64(), v["topViewers"][0]["uniqueId"].as_str()),
+            (Some(77), Some("bigfan"))
+        );
+        assert_eq!(v["topViewers"][0]["coinCount"], 500);
     }
 
     /// Frames captured from a real live (`STREAMERZ_TIKTOK_FRAMES=dir`, *.bin, each holding a chat):

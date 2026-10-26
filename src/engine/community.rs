@@ -420,6 +420,7 @@ impl Engine {
             )
         });
         self.fire(T_QUOTE_ADDED, "Quote Added", "Core/Quotes", "Quote", &args, |_| true);
+        self.emit("Quote", "Added", || json!(args));
         q
     }
 }

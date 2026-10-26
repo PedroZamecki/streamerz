@@ -30,6 +30,52 @@ pub const T_TIKTOK_SUBSCRIBE: u32 = 41006;
 pub const T_TIKTOK_JOIN: u32 = 41007;
 pub const T_TIKTOK_CONNECTED: u32 = 41008;
 pub const T_TIKTOK_DISCONNECTED: u32 = 41009;
+pub const T_TIKTOK_VIEWER_COUNT: u32 = 41010;
+pub const T_TIKTOK_STREAM_ONLINE: u32 = 41011;
+pub const T_TIKTOK_STREAM_OFFLINE: u32 = 41012;
+
+/// The live being read: its viewers, likes and gifts, for Get Stream Info and Get Top Gifters.
+#[derive(Default)]
+struct Stream {
+    room: String,
+    viewers: u64,
+    likes: u64,
+    coins: u64,
+    /// By user id: name and coins sent.
+    gifters: std::collections::HashMap<String, (String, u64)>,
+}
+
+thread_local!(static STREAM: std::cell::RefCell<Stream> = std::cell::RefCell::default());
+
+/// Get Stream Info's variables.
+pub fn stream_info(live: bool) -> Obj {
+    STREAM.with_borrow(|s| {
+        let mut a = Obj::new();
+        a.insert("isLive".into(), live.into());
+        a.insert("roomId".into(), s.room.clone().into());
+        a.insert("viewerCount".into(), s.viewers.into());
+        a.insert("totalLikes".into(), s.likes.into());
+        a.insert("totalCoins".into(), s.coins.into());
+        a
+    })
+}
+
+/// Get Top Gifters' variables: the `count` who sent the most coins this live.
+pub fn top_gifters(count: usize) -> Obj {
+    STREAM.with_borrow(|s| {
+        let mut top: Vec<(&String, &(String, u64))> = s.gifters.iter().collect();
+        top.sort_by(|a, b| b.1 .1.cmp(&a.1 .1).then_with(|| a.1 .0.cmp(&b.1 .0)));
+        top.truncate(count);
+        let mut a = Obj::new();
+        a.insert("topGifterCount".into(), top.len().into());
+        for (i, (id, (name, coins))) in top.iter().enumerate() {
+            a.insert(format!("topGifter{i}"), name.clone().into());
+            a.insert(format!("topGifter{i}UserId"), (*id).clone().into());
+            a.insert(format!("topGifter{i}Coins"), (*coins).into());
+        }
+        a
+    })
+}
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
@@ -546,6 +592,29 @@ async fn live(
     let mut args = Obj::new();
     args.insert("channel".into(), channel.into());
     args.insert("roomId".into(), room.to_string().into());
+    // A room not seen before is a new live: its tallies start over, and Stream Online fires.
+    let new_live = STREAM.with_borrow_mut(|s| {
+        let new = s.room != room.to_string();
+        if new {
+            *s = Stream {
+                room: room.to_string(),
+                ..Stream::default()
+            };
+        }
+        new
+    });
+    if new_live {
+        engine.fire(
+            T_TIKTOK_STREAM_ONLINE,
+            "TikTokStreamOnline",
+            "TikTok",
+            "tiktok",
+            &args,
+            |_| true,
+        );
+        engine.emit("TikTok", "StreamOnline", || json!(args));
+        engine.reset_first_words(Some("tiktok"));
+    }
     engine.fire(T_TIKTOK_CONNECTED, "TikTokConnected", "TikTok", "tiktok", &args, |_| {
         true
     });
@@ -575,6 +644,10 @@ async fn live(
                     for (name, data) in events {
                         if name == "streamEnd" {
                             crate::say(format!("TikTok: @{channel}'s live stream ended"));
+                            let mut args = stream_info(false);
+                            args.insert("channel".into(), channel.into());
+                            engine.fire(T_TIKTOK_STREAM_OFFLINE, "TikTokStreamOffline", "TikTok", "tiktok", &args, |_| true);
+                            engine.emit("TikTok", "StreamOffline", || json!(args));
                             return Err(LiveEnd::Standby { never_live: false });
                         }
                         if prejoin_window_open && name == "chat" && is_prejoin_comment(&data, joined_sec) {
@@ -726,8 +799,16 @@ pub fn handle_tiktok_event(engine: &Rc<Engine>, channel: &str, event: &str, d: &
         "share" => (T_TIKTOK_SHARE, "TikTokShare", "Share"),
         "subscribe" => (T_TIKTOK_SUBSCRIBE, "TikTokSubscribe", "Subscribe"),
         "member" => (T_TIKTOK_JOIN, "TikTokJoin", "Join"),
+        "roomUser" => (T_TIKTOK_VIEWER_COUNT, "TikTokViewerCountUpdate", "ViewerCountUpdate"),
         _ => return,
     };
+    // Every few seconds, mostly the same: only a change fires.
+    if event == "roomUser" {
+        let n = d["viewerCount"].as_u64().unwrap_or(0);
+        if STREAM.with_borrow_mut(|s| std::mem::replace(&mut s.viewers, n)) == n {
+            return;
+        }
+    }
     let s = |k: &str| d[k].as_str().unwrap_or("").to_string();
     let user = Some(s("nickname"))
         .filter(|n| !n.is_empty())
@@ -749,9 +830,21 @@ pub fn handle_tiktok_event(engine: &Rc<Engine>, channel: &str, event: &str, d: &
         "gift" => {
             let coins = d["diamondCount"].as_u64().unwrap_or(0) * d["repeatCount"].as_u64().unwrap_or(1).max(1);
             args.insert("coins".into(), coins.into());
+            // A combo gift (type 1) repeats with a growing count while it lasts: counted when it ends.
+            let done = d["giftType"].as_u64() != Some(1) || d["repeatEnd"].as_bool().unwrap_or(true);
+            let total = STREAM.with_borrow_mut(|st| {
+                let g = st.gifters.entry(s("userId")).or_insert_with(|| (user.clone(), 0));
+                if done {
+                    g.1 += coins;
+                    st.coins += coins;
+                }
+                g.1
+            });
+            args.insert("userTotalCoins".into(), total.into());
         }
         "like" => {
             args.insert("totalLikes".into(), d["totalLikeCount"].clone());
+            STREAM.with_borrow_mut(|st| st.likes = st.likes.max(d["totalLikeCount"].as_u64().unwrap_or(0)));
         }
         _ => {}
     }
@@ -820,5 +913,28 @@ pub mod tests {
         let gift = json!({ "nickname": "G", "giftName": "Rose", "diamondCount": 1, "repeatCount": 10 });
         handle_tiktok_event(&engine, "mychannel", "gift", &gift);
         handle_tiktok_event(&engine, "mychannel", "roomUser", &json!({}));
+    }
+
+    /// Combo gifts count once, when they end; the top gifters and stream info come from that.
+    #[test]
+    fn tallies_gifts_and_viewers() {
+        let cfg = Arc::new(watch::channel(Config::default()).0);
+        let engine = Engine::new(cfg, |_| {});
+        let gift = |id: &str, n: u64, end: bool| json!({ "userId": id, "nickname": id, "giftType": 1, "diamondCount": 5, "repeatCount": n, "repeatEnd": end });
+        for (id, n, end) in [("a", 1, false), ("a", 3, true), ("b", 2, true), ("b", 1, true)] {
+            handle_tiktok_event(&engine, "me", "gift", &gift(id, n, end));
+        }
+        handle_tiktok_event(&engine, "me", "roomUser", &json!({ "viewerCount": 42 }));
+        let top = top_gifters(5);
+        assert_eq!(
+            (top["topGifter0"].clone(), top["topGifter0Coins"].clone()),
+            (json!("a"), json!(15))
+        );
+        assert_eq!(top["topGifter1Coins"], 15);
+        let info = stream_info(true);
+        assert_eq!(
+            (info["totalCoins"].clone(), info["viewerCount"].clone()),
+            (json!(30), json!(42))
+        );
     }
 }

@@ -304,8 +304,9 @@ platform handles through channels, never through shared locks held across awaits
 - [x] 40. Quotes, credits, users and first words: a Community tab (users seen in chat, quotes with
   add/edit/delete, the stream's credits); quote sub-actions and Quote Added; GetCredits/TestCredits/
   ClearCredits filled; one First Words cache for every platform (Reset First Words, ClearFirstWordsCache).
-- [ ] 41. TikTok triggers and sub-actions beyond chat, gifts, likes and follows (viewers, top gifters, live
-  start/end and more).
+- [x] 41. TikTok triggers and sub-actions beyond chat, gifts, likes and follows: Viewer Count Update (with
+  the top viewers), Stream Online/Offline; Get Top Gifters and Get Stream Info from per-live tallies (combo
+  gifts counted once, when they end); TikTok in GetEvents.
 - [ ] 42. Visual polish across every tab: layout, spacing, status colours, icons.
 - [ ] 43+. Later extras, one phase each, order chosen then (see Decisions).
 
