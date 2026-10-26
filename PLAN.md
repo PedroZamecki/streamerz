@@ -290,10 +290,16 @@ platform handles through channels, never through shared locks held across awaits
 - [x] 35. Real badges: Twitch's own badge pictures (sharp) instead of drawn role badges, the ones the
   chatter wears, with spacing; chat settings: timestamps on/off, badges on/off.
 - [ ] 36. Message actions on hover (Twitch-like): delete, reply, pin, copy, per platform where allowed.
-- [ ] 37. Emote picker like 7TV's: sections per provider and set (channel, global, emoji) with headers,
-  search, and a note when a set is empty.
-- [ ] 38. Recent chat on connect: Twitch's recent messages (and the platforms' where they offer it).
-- [ ] 39. Side by side: a send box under each platform's column, and the global one below.
+- [x] 37. Emote picker like 7TV's: per-platform and per-account provider tabs (Favorites, platform native
+  via Twitch Helix `chat/emotes/user` & Kick `/emotes/{slug}`, 7TV, BTTV, FFZ, Emoji), search across tabs,
+  collapsible section headers, empty-state notes, and right-click `★` favorites.
+- [x] 38. Recent chat on connect: persisted `cache/chat-history.json` plus pre-join platform history
+  (Twitch recent-messages, Kick v2 messages, YouTube initial/pre-join live chat, TikTok history comments)
+  merged before `"Welcome to the chat room!"`; platform-authentic badges and colours everywhere.
+- [x] 39. Per-pane chat boxes & connection self-healing: individual `[Avatar] [Input] [Emotes] [Send]` bar
+  under each chat pane with an account selector popup, discrete `"Message all"` popup in the top bar,
+  D-Bus keyring retry + background/interactive unlock, Twitch EventSub supervisor, and OBS/Streamlabs-woken
+  standby mode for offline YouTube & TikTok channels.
 - [ ] 40. Quotes, credits, users and first words.
 - [ ] 41. TikTok triggers and sub-actions beyond chat, gifts, likes and follows (viewers, top gifters, live
   start/end and more).

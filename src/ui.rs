@@ -6,9 +6,9 @@ mod actions;
 mod chat;
 mod conns;
 mod dialogs;
-mod emotes;
+pub(crate) mod emotes;
 mod forms;
-mod img;
+pub(crate) mod img;
 mod lists;
 pub mod picker;
 
@@ -331,7 +331,7 @@ pub fn run(
     save.set_tooltip("Save and apply (Ctrl+S)");
     let mut conns = Button::default().with_align(Align::Left | Align::Inside);
     conns.set_frame(fltk::enums::FrameType::NoBox);
-    bar.fixed(&conns, 150);
+    bar.fixed(&conns, 240);
     let mut saved = Frame::default().with_align(Align::Left | Align::Inside);
     let mut hide = button(&mut bar, "Hide", 90);
     let mut quit = button(&mut bar, "Quit", 90);
@@ -356,12 +356,14 @@ pub fn run(
     // Kept as it changes, written with the next save (and when the window hides or streamerz quits).
     let remember = {
         let cfg = cfg.clone();
+        let cmds = cmds.clone();
         move |w: &Window| {
             cfg.send_if_modified(|c| {
                 (c.window.w, c.window.h) = (w.w(), w.h());
                 false
             });
             let _ = crate::save(&cfg.borrow());
+            tell(&cmds, |e| e.save_chat_history());
         }
     };
     // The status bar's "3/5 connected"; a click lists each connection.
@@ -421,19 +423,22 @@ pub fn run(
         }
     });
     let show = !c_hidden;
-    save.set_callback(move |_| {
-        cfg.send_modify(|c| {
-            c.dark = dark.is_checked();
-            c.start_hidden = hidden.is_checked();
-            c.autostart = autostart.is_checked();
-            c.instance_name = instance.value().trim().to_string();
-        });
-        let c = cfg.borrow();
-        let done = crate::save(&c).and_then(|()| crate::autostart(c.autostart));
-        saved.set_label(&match done {
-            Ok(()) => "Saved, applied.".to_string(),
-            Err(e) => format!("Can't save: {e}"),
-        });
+    save.set_callback({
+        let cfg = cfg.clone();
+        move |_| {
+            cfg.send_modify(|c| {
+                c.dark = dark.is_checked();
+                c.start_hidden = hidden.is_checked();
+                c.autostart = autostart.is_checked();
+                c.instance_name = instance.value().trim().to_string();
+            });
+            let c = cfg.borrow();
+            let done = crate::save(&c).and_then(|()| crate::autostart(c.autostart));
+            saved.set_label(&match done {
+                Ok(()) => "Saved, applied.".to_string(),
+                Err(e) => format!("Can't save: {e}"),
+            });
+        }
     });
     quit.set_callback({
         let (win, remember) = (win.clone(), remember.clone());
@@ -467,6 +472,7 @@ pub fn run(
         }
     });
 
+    let prompted_unlock = Rc::new(Cell::new(false));
     // The tabs are filled only when shown: filling a list measures its text, which opens the display
     // and loads the fonts (~14 MB) even with the window hidden.
     let open = |win: &mut Window, log: &mut Log| {
@@ -477,6 +483,22 @@ pub fn run(
             status_bar();
             win.show();
             log.refresh();
+            if crate::secrets::is_locked() && !prompted_unlock.get() {
+                prompted_unlock.set(true);
+                let cmds = cmds.clone();
+                app::add_timeout3(0.25, move |_| {
+                    if crate::secrets::is_locked()
+                        && dialog::choice2_default(
+                            "streamerz couldn't read your saved logins because the system keyring was locked or still starting up.\n\nUnlock your saved logins and reconnect now?",
+                            "Later",
+                            "Unlock Now",
+                            "",
+                        ) == Some(1)
+                    {
+                        accounts::unlock_logins_interactive(&cmds);
+                    }
+                });
+            }
         }
     };
     if show {

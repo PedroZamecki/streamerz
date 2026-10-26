@@ -24,7 +24,7 @@ pub mod servers;
 mod slobs;
 mod templates;
 pub mod tiktok;
-#[cfg(windows)]
+#[cfg(all(windows, feature = "tiktok-web"))]
 mod tiktok_web;
 mod tray;
 pub mod twitch;
@@ -39,7 +39,7 @@ use serde_json::{Map, Value};
 use std::collections::VecDeque;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::watch;
 
 #[derive(Serialize, Deserialize)]
@@ -144,6 +144,15 @@ pub struct WindowState {
     /// Chat: hide the time, hide the badges.
     pub chat_no_time: bool,
     pub chat_no_badges: bool,
+    /// Platforms where the individual chat box sends as broadcaster instead of bot-with-fallback.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chat_as_broadcaster: Vec<String>,
+    /// Selected target platform in "All together" chat view's input bar.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub chat_all_platform: String,
+    /// Starred favorite emotes and emoji in the picker: (name, image URL).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub favorite_emotes: Vec<(String, String)>,
 }
 
 impl Config {
@@ -267,10 +276,45 @@ fn version() -> String {
     format!("streamerz {}", option_env!("STREAMERZ_VERSION").unwrap_or("dev"))
 }
 
-fn config_path() -> PathBuf {
-    let exe = std::env::current_exe().unwrap_or_default();
-    exe.parent()
-        .map_or_else(|| "streamerz.json".into(), |d| d.join("streamerz.json"))
+fn resolve_config_path(raw: PathBuf) -> PathBuf {
+    if let Ok(canon) = std::fs::canonicalize(&raw) {
+        return canon;
+    }
+    let abs = if raw.is_absolute() {
+        raw
+    } else {
+        std::env::current_dir().unwrap_or_default().join(raw)
+    };
+    if let (Some(parent), Some(name)) = (abs.parent(), abs.file_name()) {
+        if let Ok(p) = std::fs::canonicalize(parent) {
+            return p.join(name);
+        }
+    }
+    abs
+}
+
+pub(crate) fn config_path() -> PathBuf {
+    static CFG_PATH: OnceLock<PathBuf> = OnceLock::new();
+    CFG_PATH
+        .get_or_init(|| {
+            let mut args = std::env::args_os().skip(1);
+            while let Some(a) = args.next() {
+                if a == "--config" {
+                    if let Some(p) = args.next() {
+                        return resolve_config_path(PathBuf::from(p));
+                    }
+                } else if let Some(s) = a.to_str().and_then(|s| s.strip_prefix("--config=")) {
+                    return resolve_config_path(PathBuf::from(s));
+                }
+            }
+            if let Some(p) = std::env::var_os("STREAMERZ_CONFIG").filter(|p| !p.is_empty()) {
+                return resolve_config_path(PathBuf::from(p));
+            }
+            let exe = std::env::current_exe().unwrap_or_default();
+            exe.parent()
+                .map_or_else(|| "streamerz.json".into(), |d| d.join("streamerz.json"))
+        })
+        .clone()
 }
 
 /// `path` with `ext` added: streamerz.json -> streamerz.json.bak.
@@ -405,12 +449,12 @@ fn autostart(on: bool) -> std::io::Result<()> {
 
 fn main() {
     // The TikTok window (tiktok_web.rs), its own process; on Linux it's the streamerz-tiktok binary.
-    #[cfg(windows)]
+    #[cfg(all(windows, feature = "tiktok-web"))]
     if std::env::args_os().nth(1).is_some_and(|a| a == "--tiktok") {
         tiktok_web::run(&std::env::args_os().skip(2).collect::<Vec<_>>());
     }
     // An MCP server for AI assistants, driving the running instance (mcp.rs); no window.
-    if std::env::args_os().nth(1).is_some_and(|a| a == "--mcp") {
+    if std::env::args_os().any(|a| a == "--mcp") {
         mcp::run();
         return;
     }
@@ -435,39 +479,12 @@ fn main() {
             let e = engine::Engine::new(engine_cfg.clone(), |c| {
                 let _ = save(c);
             });
-            // Opt-in: no Twitch task unless an account is set to connect at start.
-            let tw = engine_cfg.borrow().twitch.clone();
-            if tw.auto_connect && tw.broadcaster.is_some() {
-                e.twitch_start();
-            }
-            // Opt-in: OBS auto-connect if any connection is set to connect at start.
-            let obs_cfg = engine_cfg.borrow().obs.clone();
-            if obs_cfg
-                .connections
-                .iter()
-                .any(|c| c.get("autoConnect").and_then(Value::as_bool).unwrap_or(false))
-            {
-                e.obs_start();
-            }
-            // Opt-in: only the Streamlabs Desktop connections set to connect at start.
-            e.slobs_sync(true);
+            e.load_chat_history();
             e.add_builtins();
-            // Opt-in: YouTube auto-connect if configured.
-            let yt_cfg = engine_cfg.borrow().youtube.clone();
-            if yt_cfg.auto_connect && (!yt_cfg.video_id.trim().is_empty() || !yt_cfg.channel_id.trim().is_empty()) {
-                e.youtube_start().send(youtube::YouTubeCmd::Connect);
+            e.auto_connect();
+            if secrets::is_locked() {
+                engine::spawn_secret_recovery(e.clone());
             }
-            // Opt-in: Kick auto-connect if channel is set and auto_connect is true.
-            let kick_cfg = engine_cfg.borrow().kick.clone();
-            if kick_cfg.auto_connect && !kick_cfg.channel.trim().is_empty() {
-                e.kick_start();
-            }
-            let tt_cfg = engine_cfg.borrow().tiktok.clone();
-            if tt_cfg.auto_connect {
-                e.tiktok_start();
-            }
-            // Opt-in: only the donation services with a token (or a DonorDrive participant) set.
-            e.donations_sync();
             tokio::task::spawn_local(servers::run(e.clone()));
             e.started();
             e.timers();

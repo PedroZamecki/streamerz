@@ -119,6 +119,8 @@ pub struct Engine {
     pub(crate) slobs: crate::slobs::Slobs,
     pub(crate) donations: RefCell<crate::donations::Live>,
     pub(crate) hotkeys: RefCell<crate::hotkeys::Live>,
+    pub(crate) live_wake: tokio::sync::Notify,
+    streaming_since: std::cell::Cell<Option<std::time::Instant>>,
 }
 
 /// A running action's context.
@@ -270,7 +272,109 @@ impl Engine {
             slobs: Default::default(),
             donations: RefCell::default(),
             hotkeys: RefCell::default(),
+            live_wake: tokio::sync::Notify::new(),
+            streaming_since: std::cell::Cell::new(None),
         })
+    }
+
+    /// Wake YouTube and TikTok live monitors immediately when OBS/Streamlabs starts streaming.
+    pub fn notify_stream_started(&self) {
+        self.streaming_since.set(Some(std::time::Instant::now()));
+        self.live_wake.notify_waiters();
+    }
+
+    /// Whether a stream started recently (< 90 s), so YouTube/TikTok poll faster while ingesting.
+    pub fn stream_warming_up(&self) -> bool {
+        self.streaming_since
+            .get()
+            .is_some_and(|t| t.elapsed() < Duration::from_secs(90))
+    }
+
+    /// Start or reconnect every opt-in service configured to auto-connect.
+    pub fn auto_connect(self: &Rc<Self>) {
+        let (tw, obs_on, yt, kick, tt) = {
+            let c = self.cfg.borrow();
+            (
+                c.twitch.auto_connect && c.twitch.broadcaster.is_some(),
+                c.obs
+                    .connections
+                    .iter()
+                    .any(|o| o.get("autoConnect").and_then(Value::as_bool).unwrap_or(false)),
+                c.youtube.auto_connect
+                    && (!c.youtube.video_id.trim().is_empty() || !c.youtube.channel_id.trim().is_empty()),
+                c.kick.auto_connect && !c.kick.channel.trim().is_empty(),
+                c.tiktok.auto_connect,
+            )
+        };
+        if tw {
+            if let Some(t) = self.twitch() {
+                t.connect();
+            } else {
+                self.twitch_start();
+            }
+        }
+        if obs_on {
+            let o = self.obs_start();
+            let ids: Vec<String> = self
+                .cfg
+                .borrow()
+                .obs
+                .connections
+                .iter()
+                .filter(|c| c.get("autoConnect").and_then(Value::as_bool).unwrap_or(false))
+                .filter_map(|c| c.get("id").and_then(Value::as_str).map(String::from))
+                .collect();
+            for id in ids {
+                if !self.obs_connected(Some(&id)) {
+                    o.connect(Some(&id));
+                }
+            }
+        }
+        self.slobs_sync(true);
+        if yt {
+            self.youtube_start().send(crate::youtube::YouTubeCmd::Connect);
+        }
+        if kick {
+            if let Some(k) = self.kick() {
+                if !k.is_connected() {
+                    k.send(crate::kick::KickCmd::Connect);
+                }
+            } else {
+                self.kick_start();
+            }
+        }
+        if tt {
+            if let Some(t) = self.tiktok() {
+                if !t.is_connected() {
+                    t.send(crate::tiktok::TikTokCmd::Connect);
+                }
+            } else {
+                self.tiktok_start();
+            }
+        }
+        self.donations_sync();
+    }
+
+    /// Attempt to unlock saved keyring logins and, when unlocked, merge, save and auto-connect.
+    pub async fn unlock_saved_logins(self: &Rc<Self>, interactive: bool) -> Result<bool, String> {
+        let mut v = serde_json::to_value(&*self.cfg.borrow()).unwrap_or_default();
+        let (res, v) = tokio::task::spawn_blocking(move || {
+            let r = crate::secrets::retry_unlock(&mut v, interactive);
+            (r, v)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let unlocked = res?;
+        if unlocked {
+            if let Ok(mut next) = serde_json::from_value::<Config>(v) {
+                next.own_channels();
+                self.cfg.send_replace(next);
+                (self.save)(&self.cfg.borrow());
+                self.auto_connect();
+                crate::ui::changed();
+            }
+        }
+        Ok(unlocked)
     }
 
     pub fn set_youtube(&self, handle: crate::youtube::YouTubeHandle) {
@@ -292,6 +396,10 @@ impl Engine {
 
     pub fn youtube_connected(&self) -> bool {
         self.youtube().is_some_and(|y| y.is_connected())
+    }
+
+    pub fn youtube_standby(&self) -> bool {
+        self.youtube().is_some_and(|y| y.is_standby())
     }
 
     pub fn set_kick(&self, handle: crate::kick::KickHandle) {
@@ -334,6 +442,10 @@ impl Engine {
 
     pub fn tiktok_connected(&self) -> bool {
         self.tiktok().is_some_and(|t| t.is_connected())
+    }
+
+    pub fn tiktok_standby(&self) -> bool {
+        self.tiktok().is_some_and(|t| t.is_standby())
     }
 
     pub fn set_obs(&self, handle: crate::obs::ObsHandle) {
@@ -2043,6 +2155,26 @@ fn with_sub(list: &mut [Obj], id: &str, f: &mut dyn FnMut(&mut Obj)) {
             *children = objs.into_iter().map(Value::Object).collect();
         }
     }
+}
+
+/// Background self-healing while saved keyring logins are locked: checks silently without popping
+/// repeated password dialogs, and exits immediately once unlocked.
+pub fn spawn_secret_recovery(e: Rc<Engine>) {
+    tokio::task::spawn_local(async move {
+        let mut step = 0usize;
+        const DELAYS: [u64; 5] = [2, 4, 8, 15, 30];
+        while crate::secrets::is_locked() {
+            let secs = DELAYS[step.min(DELAYS.len() - 1)];
+            step += 1;
+            tokio::time::sleep(Duration::from_secs(secs)).await;
+            if !crate::secrets::is_locked() {
+                break;
+            }
+            if matches!(e.unlock_saved_logins(false).await, Ok(true)) {
+                break;
+            }
+        }
+    });
 }
 
 #[cfg(test)]

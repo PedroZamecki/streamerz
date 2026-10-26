@@ -3,8 +3,10 @@
 //! logged-in account's session. Login is the tikstream-login window.
 
 use crate::commands::Chat;
+use crate::engine::chatlog::{local_hhmm, normalize_line_emotes, Line};
 use crate::engine::Engine;
 use crate::model::Obj;
+use crate::webcast::RoomLookupError;
 use crate::Config;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -13,7 +15,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
@@ -80,7 +82,7 @@ pub fn profile(bot: bool) -> PathBuf {
 }
 
 /// The TikTok window (tiktok_web.rs) with `args`: its own binary on Linux, `streamerz.exe --tiktok` on
-/// Windows.
+/// Windows. Also checks sibling target profiles (`release`/`debug`) so fast dev builds reuse it.
 fn helper(args: &[&std::ffi::OsStr]) -> Result<std::process::Command, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut cmd = if cfg!(windows) {
@@ -88,9 +90,23 @@ fn helper(args: &[&std::ffi::OsStr]) -> Result<std::process::Command, String> {
         c.arg("--tiktok");
         c
     } else {
-        let bin = exe.with_file_name("streamerz-tiktok");
+        let mut bin = exe.with_file_name("streamerz-tiktok");
         if !bin.is_file() {
-            return Err(format!("{} is missing (it comes with streamerz)", bin.display()));
+            if let Some(target_dir) = exe.parent().and_then(|p| p.parent()) {
+                for profile in ["release", "debug"] {
+                    let alt = target_dir.join(profile).join("streamerz-tiktok");
+                    if alt.is_file() {
+                        bin = alt;
+                        break;
+                    }
+                }
+            }
+        }
+        if !bin.is_file() {
+            return Err(format!(
+                "{} is missing (build with `--features tiktok-web` when developing)",
+                bin.display()
+            ));
         }
         std::process::Command::new(bin)
     };
@@ -174,6 +190,8 @@ impl Sender {
 pub enum TikTokStatus {
     #[default]
     Disconnected,
+    /// Account exists and is currently offline, waiting for stream start.
+    Standby(String),
     Connecting(String),
     Connected(String),
     Error(String),
@@ -228,6 +246,10 @@ impl TikTokHandle {
         self.shared.connected.load(Ordering::Relaxed)
     }
 
+    pub fn is_standby(&self) -> bool {
+        matches!(self.current_status(), TikTokStatus::Standby(_))
+    }
+
     pub fn current_status(&self) -> TikTokStatus {
         self.shared.status.lock().map(|s| s.clone()).unwrap_or_default()
     }
@@ -271,6 +293,26 @@ struct Runner {
     senders: [Option<Sender>; 2],
 }
 
+fn account_matches_channel(acct: &Option<TikTokAccount>, channel: &str) -> bool {
+    let Some(a) = acct else { return false };
+    let norm = |s: &str| {
+        clean_tiktok_channel(s)
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>()
+            .to_lowercase()
+    };
+    let u = norm(&a.username);
+    let ch = norm(channel);
+    !ch.is_empty() && u == ch
+}
+
+enum LiveEnd {
+    Standby { never_live: bool },
+    NotFound,
+    Error(String, u64),
+}
+
 impl Runner {
     async fn run(mut self) {
         if self.cfg.borrow().tiktok.auto_connect {
@@ -305,6 +347,9 @@ impl Runner {
     async fn send_chat_message(&mut self, text: &str, use_bot: bool, fallback: bool) -> Result<(), String> {
         let (bot, channel) = {
             let c = self.cfg.borrow();
+            if crate::secrets::is_locked() {
+                return Err("TikTok: keyring is locked — click Unlock in Accounts".into());
+            }
             let has = |bot: bool| {
                 if bot {
                     c.tiktok.bot.is_some()
@@ -346,49 +391,105 @@ impl Runner {
         }
         let (engine, cfg, shared) = (self.engine.clone(), self.cfg.clone(), self.shared.clone());
         self.read_task = Some(tokio::task::spawn_local(async move {
-            // The log gets a reason once, not every retry.
             let mut said = String::new();
+            let mut standby_logged = false;
             loop {
-                let channel = clean_tiktok_channel(&cfg.borrow().tiktok.channel);
+                let (channel, known_account) = {
+                    let c = cfg.borrow();
+                    let ch = clean_tiktok_channel(&c.tiktok.channel);
+                    let known = account_matches_channel(&c.tiktok.broadcaster, &ch)
+                        || account_matches_channel(&c.tiktok.bot, &ch);
+                    (ch, known)
+                };
                 if channel.is_empty() {
                     shared.set(TikTokStatus::Error("set the channel".into()));
                     return;
                 }
-                let wait = match live(&engine, &cfg, &channel, &shared).await {
+                let wait = match live(&engine, &cfg, &channel, known_account, &shared).await {
                     Ok(()) => {
                         said.clear();
+                        standby_logged = false;
                         2
                     }
-                    Err((e, wait)) => {
+                    Err(LiveEnd::Standby { never_live }) => {
+                        if shared.connected.load(Ordering::Relaxed) {
+                            disconnected(&engine, &channel);
+                        }
+                        // Not live is no news: the connections window shows the standby.
+                        if !standby_logged {
+                            standby_logged = true;
+                            said.clear();
+                        }
+                        let label = if never_live {
+                            format!("@{channel} — standby (no live stream yet)")
+                        } else {
+                            format!("@{channel} — standby (waiting for live)")
+                        };
+                        shared.set(TikTokStatus::Standby(label));
+                        if engine.stream_warming_up() {
+                            10
+                        } else if never_live {
+                            120
+                        } else {
+                            90
+                        }
+                    }
+                    Err(LiveEnd::NotFound) => {
+                        if shared.connected.load(Ordering::Relaxed) {
+                            disconnected(&engine, &channel);
+                        }
+                        let msg = format!("@{channel} not found — check the channel @handle in Accounts");
+                        if msg != said {
+                            crate::say(format!("TikTok: {msg}"));
+                            said.clone_from(&msg);
+                            standby_logged = false;
+                        }
+                        shared.set(TikTokStatus::Error(msg));
+                        180
+                    }
+                    Err(LiveEnd::Error(e, wait)) => {
                         if shared.connected.load(Ordering::Relaxed) {
                             disconnected(&engine, &channel);
                         }
                         if e != said {
-                            crate::say(format!("TikTok: {e}"));
+                            crate::say(format!("TikTok (@{channel}): {e}"));
                             said.clone_from(&e);
+                            standby_logged = false;
                         }
                         shared.set(TikTokStatus::Error(format!("{e}, retrying in {wait}s")));
                         wait
                     }
                 };
-                tokio::time::sleep(Duration::from_secs(wait)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(wait)) => {}
+                    _ = engine.live_wake.notified() => {
+                        crate::say(format!("TikTok: stream start detected — checking @{channel} now..."));
+                    }
+                }
             }
         }));
     }
 }
 
-/// One connection to the channel's live, until it drops or the stream ends. The error says why, and
-/// how many seconds to wait before trying again.
+/// One connection to the channel's live, until it drops or the stream ends.
 async fn live(
     engine: &Rc<Engine>,
     cfg: &watch::Sender<Config>,
     channel: &str,
+    known_account: bool,
     shared: &Shared,
-) -> Result<(), (String, u64)> {
-    shared.set(TikTokStatus::Connecting(format!("looking for @{channel}'s live...")));
-    let ttwid = crate::webcast::ttwid().await.map_err(|e| (e, 10))?;
-    // ponytail: fixed 30s while offline; TikTok answers 429 to faster lookups
-    let room = crate::webcast::room_id(channel, &ttwid).await.map_err(|e| (e, 30))?;
+) -> Result<(), LiveEnd> {
+    if !matches!(shared.status.lock().map(|s| s.clone()), Ok(TikTokStatus::Standby(_))) {
+        shared.set(TikTokStatus::Connecting(format!("checking @{channel}'s live...")));
+    }
+    let ttwid = crate::webcast::ttwid().await.map_err(|e| LiveEnd::Error(e, 15))?;
+    let room = match crate::webcast::room_id(channel, &ttwid, known_account).await {
+        Ok(r) => r,
+        Err(RoomLookupError::NeverLive) => return Err(LiveEnd::Standby { never_live: true }),
+        Err(RoomLookupError::Offline) => return Err(LiveEnd::Standby { never_live: false }),
+        Err(RoomLookupError::NotFound) => return Err(LiveEnd::NotFound),
+        Err(RoomLookupError::Transient(e)) => return Err(LiveEnd::Error(e, 30)),
+    };
     if let Ok(mut r) = shared.room_id.lock() {
         *r = Some(room.to_string());
     }
@@ -405,7 +506,7 @@ async fn live(
     }
     let mut req = crate::webcast::ws_url(room)
         .into_client_request()
-        .map_err(|e| (e.to_string(), 30))?;
+        .map_err(|e| LiveEnd::Error(e.to_string(), 30))?;
     for (k, v) in [
         ("User-Agent", crate::webcast::UA),
         ("Referer", "https://www.tiktok.com/"),
@@ -417,7 +518,6 @@ async fn live(
         }
     }
     let (ws, _) = crate::http::ws_connect(req).await.map_err(|e| {
-        // A rejected handshake says why in its headers (DEVICE_BLOCKED: a new ttwid fixes it).
         let why = match &e {
             tokio_tungstenite::tungstenite::Error::Http(r) => r
                 .headers()
@@ -427,16 +527,19 @@ async fn live(
                 .to_string(),
             e => e.to_string(),
         };
-        (format!("couldn't join @{channel}'s live ({why})"), 5)
+        LiveEnd::Error(format!("couldn't join @{channel}'s live ({why})"), 5)
     })?;
     let (mut w, mut r) = ws.split();
     let send = |m: Vec<u8>| Message::Binary(m.into());
     w.send(send(crate::webcast::heartbeat(room)))
         .await
-        .map_err(|e| (e.to_string(), 5))?;
+        .map_err(|e| LiveEnd::Error(e.to_string(), 5))?;
     w.send(send(crate::webcast::enter_room(room)))
         .await
-        .map_err(|e| (e.to_string(), 5))?;
+        .map_err(|e| LiveEnd::Error(e.to_string(), 5))?;
+
+    let joined_sec = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    engine.chat_welcome("tiktok", Vec::new());
 
     shared.set(TikTokStatus::Connected(format!("live @{channel}")));
     crate::say(format!("TikTok: connected to @{channel}'s live (room {room})"));
@@ -450,11 +553,13 @@ async fn live(
 
     let mut hb = tokio::time::interval(Duration::from_secs(10));
     hb.tick().await;
+    let mut prejoin_window_open = true;
+    let joined_inst = std::time::Instant::now();
     loop {
         tokio::select! {
             _ = hb.tick() => {
                 if let Err(e) = w.send(send(crate::webcast::heartbeat(room))).await {
-                    return Err((format!("connection lost ({e})"), 2));
+                    return Err(LiveEnd::Error(format!("connection lost ({e})"), 2));
                 }
             }
             m = tokio::time::timeout(Duration::from_secs(60), r.next()) => match m {
@@ -463,20 +568,137 @@ async fn live(
                     if let Some(a) = ack {
                         let _ = w.send(send(a)).await;
                     }
+                    if prejoin_window_open && joined_inst.elapsed() > Duration::from_secs(4) {
+                        prejoin_window_open = false;
+                    }
+                    let mut prejoin_batch = Vec::new();
                     for (name, data) in events {
                         if name == "streamEnd" {
-                            return Err(("the stream ended".into(), 30));
+                            crate::say(format!("TikTok: @{channel}'s live stream ended"));
+                            return Err(LiveEnd::Standby { never_live: false });
+                        }
+                        if prejoin_window_open && name == "chat" && is_prejoin_comment(&data, joined_sec) {
+                            if let Some(line) = tiktok_chat_line(channel, &data) {
+                                prejoin_batch.push(line);
+                            }
+                            continue;
                         }
                         handle_tiktok_event(engine, channel, name, &data);
                     }
+                    if !prejoin_batch.is_empty() {
+                        engine.chat_welcome("tiktok", prejoin_batch);
+                    }
                 }
                 Ok(Some(Ok(_))) => {}
-                Ok(Some(Err(e))) => return Err((format!("connection lost ({e})"), 2)),
-                Ok(None) => return Err(("TikTok closed the connection".into(), 2)),
-                Err(_) => return Err(("no data for 60s".into(), 2)),
+                Ok(Some(Err(e))) => return Err(LiveEnd::Error(format!("connection lost ({e})"), 2)),
+                Ok(None) => return Err(LiveEnd::Error("TikTok closed the connection".into(), 2)),
+                Err(_) => return Err(LiveEnd::Error("no data for 60s".into(), 2)),
             }
         }
     }
+}
+
+fn comment_unix_sec(d: &Value) -> u64 {
+    let raw = d["createTime"].as_u64().unwrap_or(0);
+    if raw > 10_000_000_000 {
+        raw / 1000
+    } else {
+        raw
+    }
+}
+
+fn is_prejoin_comment(d: &Value, joined_sec: u64) -> bool {
+    let ts = comment_unix_sec(d);
+    ts > 0 && ts.saturating_add(2) < joined_sec
+}
+
+/// Extract TikTok badge list (platform CDN images + role badges) and TikTok Live dark-mode username color.
+pub fn tiktok_badges_and_color(channel: &str, d: &Value) -> (Vec<(String, String)>, String) {
+    let unique_id = d["uniqueId"].as_str().unwrap_or("");
+    let broadcaster = !channel.is_empty() && unique_id.eq_ignore_ascii_case(channel);
+    let moderator = d["isModerator"].as_bool().unwrap_or(false);
+    let subscriber = d["isSubscriber"].as_bool().unwrap_or(false);
+    let friend = d["followRole"].as_u64() == Some(2);
+
+    let mut badges: Vec<(String, String)> = Vec::new();
+    if broadcaster {
+        badges.push(("tiktok:host".into(), String::new()));
+    } else if moderator {
+        badges.push(("tiktok:moderator".into(), String::new()));
+    }
+    let mut has_img_badge = false;
+    for u in d["badgeUrls"].as_array().into_iter().flatten() {
+        if let Some(url) = u.as_str().filter(|u| u.starts_with("https://")) {
+            badges.push(("tiktok:badge".into(), url.to_string()));
+            has_img_badge = true;
+        }
+    }
+    if subscriber && !has_img_badge {
+        badges.push(("tiktok:subscriber".into(), String::new()));
+    }
+    if friend && !broadcaster {
+        badges.push(("tiktok:friend".into(), String::new()));
+    }
+
+    let color = if broadcaster {
+        "#FE2C55"
+    } else if moderator {
+        "#25F4EE"
+    } else if subscriber {
+        "#FF9F2E"
+    } else {
+        "#8EC5FF"
+    };
+    (badges, color.to_string())
+}
+
+fn tiktok_emotes(d: &Value) -> Vec<(String, String)> {
+    d["emotes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| {
+            let tok = e["token"].as_str()?;
+            let url = e["url"].as_str()?;
+            (!tok.is_empty() && url.starts_with("https://")).then(|| (tok.to_string(), url.to_string()))
+        })
+        .collect()
+}
+
+fn tiktok_chat_line(channel: &str, d: &Value) -> Option<Line> {
+    let s = |k: &str| d[k].as_str().unwrap_or("").to_string();
+    let user = Some(s("nickname"))
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| s("uniqueId"));
+    let comment = s("comment");
+    if user.is_empty() || comment.is_empty() {
+        return None;
+    }
+    let raw_emotes = tiktok_emotes(d);
+    let (text, emotes) = normalize_line_emotes("tiktok", comment, &raw_emotes);
+    let (badges, color) = tiktok_badges_and_color(channel, d);
+    let ts = comment_unix_sec(d);
+    let time = if ts > 0 {
+        local_hhmm(ts as i64)
+    } else {
+        crate::fmt::date(&crate::fmt::now(), "HH:mm")
+    };
+    Some(Line {
+        platform: "tiktok".into(),
+        msg_id: s("msgId"),
+        time,
+        user,
+        user_id: s("userId"),
+        text,
+        emotes,
+        broadcaster: s("uniqueId").eq_ignore_ascii_case(channel),
+        moderator: d["isModerator"].as_bool().unwrap_or(false),
+        subscriber: d["isSubscriber"].as_bool().unwrap_or(false),
+        badges,
+        color,
+        historical: true,
+        ..Default::default()
+    })
 }
 
 fn disconnected(engine: &Rc<Engine>, channel: &str) {
@@ -513,9 +735,16 @@ pub fn handle_tiktok_event(engine: &Rc<Engine>, channel: &str, event: &str, d: &
     let mut args: Obj = d.as_object().cloned().unwrap_or_default().into_iter().collect();
     args.insert("user".into(), user.clone().into());
     args.insert("channel".into(), channel.into());
+    let (badges, color) = tiktok_badges_and_color(channel, d);
     match event {
         "chat" => {
             args.insert("message".into(), s("comment").into());
+            args.insert("color".into(), color.into());
+            let badge_json: Vec<Value> = badges
+                .iter()
+                .map(|(k, url)| json!({ "key": k, "name": k, "imageUrl": url }))
+                .collect();
+            args.insert("badges".into(), Value::Array(badge_json));
         }
         "gift" => {
             let coins = d["diamondCount"].as_u64().unwrap_or(0) * d["repeatCount"].as_u64().unwrap_or(1).max(1);
@@ -533,9 +762,11 @@ pub fn handle_tiktok_event(engine: &Rc<Engine>, channel: &str, event: &str, d: &
         engine.chat(&Chat {
             platform: "tiktok".into(),
             source: 4_194_304,
+            msg_id: s("msgId"),
             user,
             user_id: s("userId"),
             text: s("comment"),
+            emotes: tiktok_emotes(d),
             broadcaster: s("uniqueId").eq_ignore_ascii_case(channel),
             moderator: flag("isModerator"),
             subscriber: flag("isSubscriber"),
@@ -556,6 +787,27 @@ pub mod tests {
         assert_eq!(clean_tiktok_channel("@awesome_creator"), "awesome_creator");
         assert_eq!(clean_tiktok_channel("just_name"), "just_name");
         assert_eq!(clean_tiktok_channel("  @spaced_name/  "), "spaced_name");
+    }
+
+    #[test]
+    fn tiktok_badges_and_colors_from_platform_payload() {
+        let d = json!({
+            "uniqueId": "mod_user",
+            "nickname": "Mod",
+            "isModerator": true,
+            "isSubscriber": true,
+            "badgeUrls": ["https://p16-webcast.tiktokcdn.com/sub_lv1.png"],
+        });
+        let (badges, color) = tiktok_badges_and_color("streamer", &d);
+        assert_eq!(color, "#25F4EE");
+        assert_eq!(badges[0].0, "tiktok:moderator");
+        assert_eq!(
+            badges[1],
+            (
+                "tiktok:badge".into(),
+                "https://p16-webcast.tiktokcdn.com/sub_lv1.png".into()
+            )
+        );
     }
 
     /// A chat from TikTok's wire format runs a command, as the real stream would.

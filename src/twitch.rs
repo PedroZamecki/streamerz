@@ -32,6 +32,7 @@ pub const OAUTH_TOKEN_URL: &str = "https://id.twitch.tv/oauth2/token";
 pub const BROADCASTER_SCOPES: &[&str] = &[
     "user:read:chat",
     "user:write:chat",
+    "user:read:emotes",
     "user:bot",
     "channel:bot",
     "channel:read:subscriptions",
@@ -89,6 +90,7 @@ pub const BROADCASTER_SCOPES: &[&str] = &[
 pub const BOT_SCOPES: &[&str] = &[
     "user:read:chat",
     "user:write:chat",
+    "user:read:emotes",
     "user:bot",
     "user:read:whispers",
     "user:manage:whispers",
@@ -352,6 +354,14 @@ impl TwitchHandle {
         let _ = self.tx.send(cmd);
     }
 
+    pub fn connect(&self) {
+        self.send(TwitchCmd::Connect);
+    }
+
+    pub fn disconnect(&self) {
+        self.send(TwitchCmd::Disconnect);
+    }
+
     pub async fn send_message(
         &self,
         text: String,
@@ -559,14 +569,33 @@ pub fn populate_user_vars(args: &mut Obj, user_id: &str, login: &str, display: &
     args.insert("badgeCount".into(), 0.into());
 }
 
+/// Twitch's official 15-color default username palette (used when a chatter hasn't set a custom color).
+pub const DEFAULT_COLORS: [&str; 15] = [
+    "#FF0000", "#0000FF", "#008000", "#B22222", "#FF7F50", "#9ACD32", "#FF4500", "#2E8B57", "#DAA520", "#D2691E",
+    "#5F9EA0", "#1E90FF", "#FF69B4", "#8A2BE2", "#00FF7F",
+];
+
+/// Deterministic default Twitch chat color for `login_or_name`.
+pub fn default_user_color(login_or_name: &str) -> &'static str {
+    let s = login_or_name.trim();
+    if s.is_empty() {
+        return "#ADADB8";
+    }
+    let sum = s
+        .bytes()
+        .fold(0usize, |acc, b| acc.wrapping_add(b.to_ascii_lowercase() as usize));
+    DEFAULT_COLORS[sum % DEFAULT_COLORS.len()]
+}
+
 /// Streamer.bot's `badges` (Name, Version, ImageUrl) and `badgeCount`, from a message's badges.
 pub fn set_badges(args: &mut Obj, badges: &[Value]) {
     let list: Vec<Value> = badges
         .iter()
         .map(|b| {
             let (set, v) = (b["set_id"].as_str().unwrap_or(""), b["id"].as_str().unwrap_or(""));
-            let url = SEEN.with_borrow(|s| s.badges.get(&format!("{set}/{v}")).cloned().unwrap_or_default());
-            json!({"name": set, "version": v.parse::<i64>().unwrap_or(0), "imageUrl": url})
+            let key = format!("{set}/{v}");
+            let url = SEEN.with_borrow(|s| s.badges.get(&key).cloned().unwrap_or_default());
+            json!({"name": set, "version": v.parse::<i64>().unwrap_or(0), "key": key, "imageUrl": url})
         })
         .collect();
     args.insert("badgeCount".into(), list.len().into());
@@ -601,7 +630,16 @@ pub fn populate_chat_vars(args: &mut Obj, ctx: &ChatContext) {
     args.insert("msgId".into(), ctx.msg_id.into());
     args.insert("bits".into(), ctx.bits.into());
     args.insert("role".into(), (ctx.role as i64).into());
-    let color_str = if ctx.color.is_empty() { "#FFFFFF" } else { ctx.color };
+    let fallback_color = args
+        .get("userName")
+        .or_else(|| args.get("user"))
+        .and_then(Value::as_str)
+        .map_or("#ADADB8", default_user_color);
+    let color_str = if ctx.color.is_empty() {
+        fallback_color
+    } else {
+        ctx.color
+    };
     args.insert("color".into(), color_str.into());
     let (r, g, b) = parse_hex_color(color_str);
     args.insert("colorR".into(), r.into());
@@ -662,6 +700,7 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> TwitchHand
         speakers: HashSet::new(),
         session_id: None,
         is_connected,
+        wanted: Arc::new(AtomicBool::new(false)),
         read_task: None,
         bot_read_task: None,
     };
@@ -676,9 +715,10 @@ struct Runner {
     speakers: HashSet<String>,
     session_id: Option<String>,
     is_connected: Arc<AtomicBool>,
-    /// The EventSub read loop; aborted on Disconnect, which closes the socket.
+    wanted: Arc<AtomicBool>,
+    /// The EventSub supervisor + read loop; aborted on Disconnect, which closes the socket.
     read_task: Option<tokio::task::JoinHandle<()>>,
-    /// The Bot EventSub read loop for whispers, aborted on Disconnect.
+    /// Extra bot task slot (also managed inside supervisor).
     bot_read_task: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -693,12 +733,64 @@ fn now_secs() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// Refresh broadcaster and/or bot tokens when about to expire (or unconditionally if `force`).
+async fn refresh_accounts(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>, force: bool) {
+    let now = now_secs();
+    for bot in [false, true] {
+        let rt = {
+            let c = cfg.borrow();
+            let a = if bot { &c.twitch.bot } else { &c.twitch.broadcaster };
+            match a {
+                Some(a) if !a.token.refresh_token.is_empty() && (force || needs_refresh(&a.token, now)) => {
+                    a.token.refresh_token.clone()
+                }
+                _ => continue,
+            }
+        };
+        let who = if bot { "bot" } else { "broadcaster" };
+        match refresh_token(CLIENT_ID, &rt).await {
+            Ok(t) => {
+                let token = TwitchToken {
+                    access_token: t.access_token,
+                    refresh_token: t.refresh_token,
+                    scope: t.scope,
+                    expires_at: now + t.expires_in,
+                };
+                engine.change(move |c| {
+                    let a = if bot {
+                        &mut c.twitch.bot
+                    } else {
+                        &mut c.twitch.broadcaster
+                    };
+                    if let Some(a) = a {
+                        a.token = token;
+                    }
+                });
+                crate::say(format!("Twitch: refreshed {who} token"));
+            }
+            // A refresh token is good once: refused, it never works again. Forget it so nothing
+            // retries it and Accounts shows that re-login is needed.
+            Err(e) if e.contains("Invalid refresh token") => {
+                engine.change(move |c| {
+                    let a = if bot {
+                        &mut c.twitch.bot
+                    } else {
+                        &mut c.twitch.broadcaster
+                    };
+                    if let Some(a) = a {
+                        a.token = TwitchToken::default();
+                    }
+                });
+                crate::say(format!("Twitch: {who} login expired; log in again in Accounts"));
+            }
+            Err(e) => crate::say(format!("Twitch: token refresh failed for {who} ({e}); will retry")),
+        }
+    }
+}
+
 impl Runner {
     async fn run(mut self) {
-        // Auto connect if configured
         if self.cfg.borrow().twitch.auto_connect && self.cfg.borrow().twitch.broadcaster.is_some() {
-            crate::say("Twitch auto-connecting...".into());
-            self.refresh_if_needed().await;
             self.connect_eventsub().await;
         }
 
@@ -707,65 +799,14 @@ impl Runner {
         }
     }
 
-    /// Refresh the broadcaster's and bot's tokens if they're about to expire, and save them.
     async fn refresh_if_needed(&self) {
-        let now = now_secs();
-        for bot in [false, true] {
-            let rt = {
-                let c = self.cfg.borrow();
-                let a = if bot { &c.twitch.bot } else { &c.twitch.broadcaster };
-                match a {
-                    Some(a) if needs_refresh(&a.token, now) => a.token.refresh_token.clone(),
-                    _ => continue,
-                }
-            };
-            let who = if bot { "bot" } else { "broadcaster" };
-            match refresh_token(CLIENT_ID, &rt).await {
-                Ok(t) => {
-                    let token = TwitchToken {
-                        access_token: t.access_token,
-                        refresh_token: t.refresh_token,
-                        scope: t.scope,
-                        expires_at: now + t.expires_in,
-                    };
-                    self.engine.change(move |c| {
-                        let a = if bot {
-                            &mut c.twitch.bot
-                        } else {
-                            &mut c.twitch.broadcaster
-                        };
-                        if let Some(a) = a {
-                            a.token = token;
-                        }
-                    });
-                    crate::say(format!("Twitch: refreshed the {who} token"));
-                }
-                // A refresh token is good once: refused, it never works again. Forget it so nothing
-                // retries it (every start and every Twitch sub-action did) and Accounts says so.
-                Err(e) if e.contains("Invalid refresh token") => {
-                    self.engine.change(move |c| {
-                        let a = if bot {
-                            &mut c.twitch.bot
-                        } else {
-                            &mut c.twitch.broadcaster
-                        };
-                        if let Some(a) = a {
-                            a.token = TwitchToken::default();
-                        }
-                    });
-                    crate::say(format!(
-                        "Twitch: the {who} login expired for good; log in again in Accounts"
-                    ));
-                }
-                Err(e) => crate::say(format!("Twitch: can't refresh the {who} token ({e}); log in again")),
-            }
-        }
+        refresh_accounts(&self.engine, &self.cfg, false).await;
     }
 
     async fn handle_cmd(&mut self, cmd: TwitchCmd) {
         if !matches!(
             cmd,
-            TwitchCmd::Disconnect | TwitchCmd::ClearFirstWords | TwitchCmd::GetStatus(_)
+            TwitchCmd::Connect | TwitchCmd::Disconnect | TwitchCmd::ClearFirstWords | TwitchCmd::GetStatus(_)
         ) {
             self.refresh_if_needed().await;
         }
@@ -778,7 +819,7 @@ impl Runner {
             }
             TwitchCmd::ClearFirstWords => {
                 self.speakers.clear();
-                crate::say("Twitch First Words cache cleared".into());
+                crate::say("Twitch: First Words cache cleared".into());
             }
             TwitchCmd::GetStatus(resp) => {
                 let c = self.cfg.borrow();
@@ -842,6 +883,7 @@ impl Runner {
     }
 
     fn disconnect(&mut self) {
+        self.wanted.store(false, Ordering::Relaxed);
         if let Some(t) = self.read_task.take() {
             t.abort();
         }
@@ -882,13 +924,17 @@ impl Runner {
                 self.engine.emit("Twitch", "BotEventSubDisconnected", || json!({}));
                 self.engine.emit("Twitch", "BotChatDisconnected", || json!({}));
             }
-            crate::say("Twitch EventSub disconnected".into());
+            crate::say("Twitch: disconnected".into());
             crate::ui::changed();
         }
     }
 
     async fn connect_eventsub(&mut self) {
-        if self.is_connected.load(Ordering::Relaxed) {
+        if self.is_connected.load(Ordering::Relaxed) && self.read_task.as_ref().is_some_and(|t| !t.is_finished()) {
+            return;
+        }
+        if self.cfg.borrow().twitch.broadcaster.is_none() {
+            crate::say("Twitch: no broadcaster account configured".into());
             return;
         }
         if let Some(t) = self.read_task.take() {
@@ -897,68 +943,14 @@ impl Runner {
         if let Some(t) = self.bot_read_task.take() {
             t.abort();
         }
-        let (broadcaster, bot, url) = {
-            let c = self.cfg.borrow();
-            let b = match &c.twitch.broadcaster {
-                Some(b) if b.token.access_token.is_empty() => {
-                    crate::say("Twitch connect: the broadcaster has to log in again (Accounts)".into());
-                    return;
-                }
-                Some(b) => b.clone(),
-                None => {
-                    crate::say("Twitch connect: no broadcaster account configured".into());
-                    return;
-                }
-            };
-            let bot = c.twitch.bot.clone();
-            let u = c
-                .twitch
-                .eventsub_url
-                .clone()
-                .unwrap_or_else(|| DEFAULT_EVENTSUB_URL.into());
-            (b, bot, u)
-        };
-
-        SUBS_URL.with_borrow_mut(|s| *s = subs_url(&url));
-        crate::say(format!("Connecting to Twitch EventSub at {url}..."));
-        let ws = match crate::http::ws_connect(&url).await {
-            Ok((ws, _)) => ws,
-            Err(e) => {
-                crate::say(format!("Twitch EventSub connection failed: {e}"));
-                return;
-            }
-        };
-
-        self.is_connected.store(true, Ordering::Relaxed);
-        crate::ui::changed();
-        crate::say("Twitch EventSub connected, waiting for welcome...".into());
-        crate::ui::changed();
-
-        // Spawn read loop
-        let me_engine = self.engine.clone();
-        let me_cfg = self.cfg.clone();
-        let me_is_conn = self.is_connected.clone();
-        let b_acct = broadcaster.clone();
+        self.wanted.store(true, Ordering::Relaxed);
+        let engine = self.engine.clone();
+        let cfg = self.cfg.clone();
+        let is_conn = self.is_connected.clone();
+        let wanted = self.wanted.clone();
         self.read_task = Some(tokio::task::spawn_local(async move {
-            run_eventsub_loop(ws, me_engine, me_cfg, b_acct, me_is_conn).await;
+            supervise_eventsub(engine, cfg, is_conn, wanted).await;
         }));
-
-        if let Some(bot_acct) = bot {
-            let bot_engine = self.engine.clone();
-            let bot_cfg = self.cfg.clone();
-            let bot_url = url.clone();
-            let b_acct = broadcaster.clone();
-            self.bot_read_task = Some(tokio::task::spawn_local(async move {
-                match crate::http::ws_connect(&bot_url).await {
-                    Ok((bot_ws, _)) => {
-                        run_bot_eventsub_loop(bot_ws, bot_engine, bot_cfg, b_acct, bot_acct).await;
-                    }
-                    Err(e) => {
-                        crate::say(format!("Twitch Bot EventSub connection failed: {e}"));
-                    }
-                }
-            }));
-        }
     }
 
     async fn send_chat_message(
@@ -1171,13 +1163,29 @@ impl Runner {
     fn pick_account(&self, use_bot: bool, fallback: bool) -> Result<(String, String, String), String> {
         let c = self.cfg.borrow();
         let broadcaster = c.twitch.broadcaster.as_ref().ok_or("No broadcaster account")?;
+        if broadcaster.token.access_token.is_empty() {
+            if crate::secrets::is_locked() {
+                return Err("System keyring is locked; unlock it to use saved Twitch login".into());
+            }
+            return Err("Twitch broadcaster login expired; log in again in Accounts".into());
+        }
         if use_bot {
             if let Some(bot) = &c.twitch.bot {
-                return Ok((
-                    bot.token.access_token.clone(),
-                    broadcaster.user_id.clone(),
-                    bot.user_id.clone(),
-                ));
+                if !bot.token.access_token.is_empty() {
+                    return Ok((
+                        bot.token.access_token.clone(),
+                        broadcaster.user_id.clone(),
+                        bot.user_id.clone(),
+                    ));
+                } else if fallback {
+                    return Ok((
+                        broadcaster.token.access_token.clone(),
+                        broadcaster.user_id.clone(),
+                        broadcaster.user_id.clone(),
+                    ));
+                } else {
+                    return Err("Twitch bot login expired and fallback disabled".into());
+                }
             } else if fallback {
                 return Ok((
                     broadcaster.token.access_token.clone(),
@@ -1196,12 +1204,151 @@ impl Runner {
     }
 }
 
+async fn supervise_eventsub(
+    engine: Rc<Engine>,
+    cfg: Arc<watch::Sender<Config>>,
+    is_connected: Arc<AtomicBool>,
+    wanted: Arc<AtomicBool>,
+) {
+    let mut backoff_secs = 2u64;
+    let mut logged_locked = false;
+    let mut first_connect_log = true;
+
+    while wanted.load(Ordering::Relaxed) {
+        refresh_accounts(&engine, &cfg, false).await;
+
+        let (broadcaster, bot, url, custom_url) = {
+            let c = cfg.borrow();
+            let Some(b) = c.twitch.broadcaster.clone() else {
+                wanted.store(false, Ordering::Relaxed);
+                break;
+            };
+            if b.token.access_token.is_empty() {
+                if crate::secrets::is_locked() {
+                    if !logged_locked {
+                        crate::say("Twitch: waiting for system keyring to unlock saved login...".into());
+                        logged_locked = true;
+                        crate::ui::changed();
+                    }
+                    drop(c);
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    continue;
+                }
+                crate::say(format!(
+                    "Twitch: @{} login missing or expired; log in again in Accounts",
+                    b.login
+                ));
+                wanted.store(false, Ordering::Relaxed);
+                crate::ui::changed();
+                break;
+            }
+            logged_locked = false;
+            let bot = c.twitch.bot.clone().filter(|bt| !bt.token.access_token.is_empty());
+            let custom = c
+                .twitch
+                .eventsub_url
+                .as_deref()
+                .is_some_and(|u| !u.is_empty() && u != DEFAULT_EVENTSUB_URL);
+            let u = c
+                .twitch
+                .eventsub_url
+                .clone()
+                .unwrap_or_else(|| DEFAULT_EVENTSUB_URL.into());
+            (b, bot, u, custom)
+        };
+
+        SUBS_URL.with_borrow_mut(|s| *s = subs_url(&url));
+        if first_connect_log {
+            crate::say(format!("Twitch: connecting to EventSub (@{})...", broadcaster.login));
+            first_connect_log = false;
+        }
+        let ws = match crate::http::ws_connect(&url).await {
+            Ok((ws, _)) => ws,
+            Err(e) => {
+                crate::say(format!(
+                    "Twitch: EventSub connect failed for @{} ({e}); retrying in {backoff_secs}s",
+                    broadcaster.login
+                ));
+                tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                backoff_secs = (backoff_secs * 2).min(30);
+                continue;
+            }
+        };
+
+        is_connected.store(true, Ordering::Relaxed);
+        crate::ui::changed();
+
+        let bot_task = bot.map(|bot_acct| {
+            let bot_engine = engine.clone();
+            let bot_cfg = cfg.clone();
+            let bot_url = url.clone();
+            let b_acct = broadcaster.clone();
+            tokio::task::spawn_local(async move {
+                match crate::http::ws_connect(&bot_url).await {
+                    Ok((bot_ws, _)) => {
+                        run_bot_eventsub_loop(bot_ws, bot_engine, bot_cfg, b_acct, bot_acct).await;
+                    }
+                    Err(e) => {
+                        crate::say(format!("Twitch: bot EventSub connect failed ({e})"));
+                    }
+                }
+            })
+        });
+
+        let started = std::time::Instant::now();
+        let auth_refused = Arc::new(AtomicBool::new(false));
+        run_eventsub_loop(
+            ws,
+            engine.clone(),
+            cfg.clone(),
+            broadcaster.clone(),
+            is_connected.clone(),
+            custom_url,
+            auth_refused.clone(),
+        )
+        .await;
+
+        if let Some(t) = bot_task {
+            t.abort();
+        }
+
+        if !wanted.load(Ordering::Relaxed) {
+            break;
+        }
+        if started.elapsed() >= Duration::from_secs(15) {
+            backoff_secs = 2;
+        }
+        if auth_refused.load(Ordering::Relaxed) {
+            refresh_accounts(&engine, &cfg, true).await;
+            let still_has_token = cfg
+                .borrow()
+                .twitch
+                .broadcaster
+                .as_ref()
+                .is_some_and(|b| !b.token.access_token.is_empty());
+            if !still_has_token {
+                wanted.store(false, Ordering::Relaxed);
+                crate::ui::changed();
+                break;
+            }
+        }
+        crate::say(format!(
+            "Twitch: reconnecting @{} in {backoff_secs}s...",
+            broadcaster.login
+        ));
+        tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+        backoff_secs = (backoff_secs * 2).min(30);
+    }
+}
+
 async fn run_eventsub_loop(
     mut ws: tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     engine: Rc<Engine>,
     cfg: Arc<watch::Sender<Config>>,
     broadcaster: TwitchAccount,
     is_connected: Arc<AtomicBool>,
+    custom_eventsub: bool,
+    auth_refused: Arc<AtomicBool>,
 ) {
     use futures_util::StreamExt;
     let mut speakers = HashSet::new();
@@ -1230,10 +1377,10 @@ async fn run_eventsub_loop(
             "session_welcome" => {
                 let sid = val.pointer("/payload/session/id").and_then(Value::as_str).unwrap_or("");
                 if std::mem::take(&mut reconnecting) {
-                    crate::say(format!("Twitch EventSub reconnected: {sid}"));
+                    crate::say(format!("Twitch: EventSub reconnected (@{}, {sid})", broadcaster.login));
                     continue;
                 }
-                crate::say(format!("Twitch EventSub session welcome: {sid}"));
+                crate::say(format!("Twitch: connected (@{}, session {sid})", broadcaster.login));
                 let mut args = Obj::new();
                 populate_broadcaster_vars(&mut args, &broadcaster);
                 engine.fire(
@@ -1264,14 +1411,36 @@ async fn run_eventsub_loop(
                 engine.emit("Twitch", "BroadcasterEventSubConnected", || json!(args));
                 engine.emit("Twitch", "BroadcasterChatConnected", || json!(args));
 
-                // Create subscriptions via Helix
+                // Create subscriptions via Helix, seed channel metadata + badges, and load pre-join history.
                 let token = broadcaster.token.access_token.clone();
                 let bid = broadcaster.user_id.clone();
+                let login = broadcaster.login.clone();
                 let sid = sid.to_string();
                 let e = engine.clone();
+                let refused = auth_refused.clone();
                 tokio::task::spawn_local(async move {
-                    create_all_subscriptions(&sid, &token, &bid).await;
-                    seed(&e).await;
+                    create_all_subscriptions(&sid, &token, &bid, &refused).await;
+                    let hist_fut = async {
+                        if custom_eventsub || login.is_empty() {
+                            Vec::new()
+                        } else {
+                            fetch_recent_messages(&login, &bid).await
+                        }
+                    };
+                    let (_, mut hist) = tokio::join!(seed(&e), hist_fut);
+                    SEEN.with_borrow(|s| {
+                        for l in &mut hist {
+                            for (k, u) in &mut l.badges {
+                                if u.is_empty() {
+                                    if let Some(found) = s.badges.get(k) {
+                                        *u = found.clone();
+                                    }
+                                }
+                            }
+                        }
+                    });
+                    e.chat_welcome("twitch", hist);
+                    e.refresh_chat_badges("twitch", |k| SEEN.with_borrow(|s| s.badges.get(k).cloned()));
                 });
                 if let Some(t) = poll_task.replace(tokio::task::spawn_local(poll(engine.clone(), broadcaster.clone())))
                 {
@@ -1301,14 +1470,14 @@ async fn run_eventsub_loop(
                     .pointer("/payload/session/reconnect_url")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                crate::say(format!("Twitch EventSub reconnect request: {url}"));
+                crate::say(format!("Twitch: EventSub session handoff (@{})", broadcaster.login));
                 match crate::http::ws_connect(url).await {
                     Ok((new_ws, _)) => {
                         ws = new_ws;
                         reconnecting = true;
                     }
                     Err(e) => {
-                        crate::say(format!("Twitch EventSub reconnect failed: {e}"));
+                        crate::say(format!("Twitch: EventSub handoff failed ({e})"));
                         break;
                     }
                 }
@@ -1318,7 +1487,7 @@ async fn run_eventsub_loop(
                     .pointer("/payload/subscription/type")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                crate::say(format!("Twitch subscription revoked: {sub_type}"));
+                crate::say(format!("Twitch: subscription revoked ({sub_type})"));
             }
             _ => {}
         }
@@ -1330,7 +1499,7 @@ async fn run_eventsub_loop(
     if !is_connected.swap(false, Ordering::Relaxed) {
         return;
     }
-    crate::say("Twitch EventSub connection dropped".into());
+    crate::say(format!("Twitch: EventSub connection lost (@{})", broadcaster.login));
     let mut args = Obj::new();
     populate_broadcaster_vars(&mut args, &broadcaster);
     engine.fire(
@@ -1395,10 +1564,10 @@ async fn run_bot_eventsub_loop(
             "session_welcome" => {
                 let sid = val.pointer("/payload/session/id").and_then(Value::as_str).unwrap_or("");
                 if std::mem::take(&mut reconnecting) {
-                    crate::say(format!("Twitch Bot EventSub reconnected: {sid}"));
+                    crate::say(format!("Twitch: bot EventSub reconnected (@{})", bot.login));
                     continue;
                 }
-                crate::say(format!("Twitch Bot EventSub session welcome: {sid}"));
+                crate::say(format!("Twitch: bot connected (@{}, session {sid})", bot.login));
                 let mut args = Obj::new();
                 populate_broadcaster_vars(&mut args, &broadcaster);
                 populate_user_vars(&mut args, &bot.user_id, &bot.login, &bot.display_name, 1, false);
@@ -1416,8 +1585,17 @@ async fn run_bot_eventsub_loop(
                 let token = bot.token.access_token.clone();
                 let bid = bot.user_id.clone();
                 let sid = sid.to_string();
+                let dummy = AtomicBool::new(false);
                 tokio::task::spawn_local(async move {
-                    let _ = create_sub(&sid, &token, "user.whisper.message", "1", json!({"user_id": bid})).await;
+                    let _ = create_sub(
+                        &sid,
+                        &token,
+                        "user.whisper.message",
+                        "1",
+                        json!({"user_id": bid}),
+                        &dummy,
+                    )
+                    .await;
                 });
             }
             "notification" => {
@@ -1433,14 +1611,13 @@ async fn run_bot_eventsub_loop(
                     .pointer("/payload/session/reconnect_url")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                crate::say(format!("Twitch Bot EventSub reconnect request: {url}"));
                 match crate::http::ws_connect(url).await {
                     Ok((new_ws, _)) => {
                         ws = new_ws;
                         reconnecting = true;
                     }
                     Err(e) => {
-                        crate::say(format!("Twitch Bot EventSub reconnect failed: {e}"));
+                        crate::say(format!("Twitch: bot EventSub handoff failed ({e})"));
                         break;
                     }
                 }
@@ -1450,13 +1627,12 @@ async fn run_bot_eventsub_loop(
                     .pointer("/payload/subscription/type")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                crate::say(format!("Twitch Bot EventSub subscription revoked: {sub_type}"));
+                crate::say(format!("Twitch: bot subscription revoked ({sub_type})"));
             }
             _ => {}
         }
     }
 
-    crate::say("Twitch Bot EventSub connection dropped".into());
     let mut args = Obj::new();
     populate_broadcaster_vars(&mut args, &broadcaster);
     populate_user_vars(&mut args, &bot.user_id, &bot.login, &bot.display_name, 1, false);
@@ -1472,7 +1648,7 @@ async fn run_bot_eventsub_loop(
     engine.emit("Twitch", "BotChatDisconnected", || json!(args));
 }
 
-async fn create_all_subscriptions(sid: &str, token: &str, bid: &str) {
+async fn create_all_subscriptions(sid: &str, token: &str, bid: &str, auth_refused: &AtomicBool) {
     let subs = [
         (
             "channel.chat.message",
@@ -1682,7 +1858,7 @@ async fn create_all_subscriptions(sid: &str, token: &str, bid: &str) {
     ];
 
     for (stype, ver, cond) in subs {
-        if !create_sub(sid, token, stype, ver, cond).await {
+        if !create_sub(sid, token, stype, ver, cond, auth_refused).await {
             break;
         }
     }
@@ -1707,7 +1883,14 @@ fn subs_url(ws: &str) -> String {
 }
 
 /// False when the token was refused: every other subscription would be too.
-async fn create_sub(sid: &str, token: &str, sub_type: &str, version: &str, condition: Value) -> bool {
+async fn create_sub(
+    sid: &str,
+    token: &str,
+    sub_type: &str,
+    version: &str,
+    condition: Value,
+    auth_refused: &AtomicBool,
+) -> bool {
     let url = SUBS_URL.with_borrow(Clone::clone);
     let headers = vec![
         ("Client-Id".into(), CLIENT_ID.into()),
@@ -1727,18 +1910,190 @@ async fn create_sub(sid: &str, token: &str, sub_type: &str, version: &str, condi
     let res = match crate::http::request("POST", &url, &headers, &body).await {
         Ok(r) => r,
         Err(e) => {
-            crate::say(format!("Create sub {sub_type}: {e}"));
+            crate::say(format!("Twitch: create sub {sub_type}: {e}"));
             return true;
         }
     };
     if res.status == 401 {
-        crate::say("Twitch refused the login (expired or revoked); log in again".into());
+        auth_refused.store(true, Ordering::Relaxed);
+        crate::say("Twitch: token rejected (HTTP 401); refreshing...".into());
         return false;
     }
     if res.status != 202 && res.status != 200 {
-        crate::say(format!("Create sub {sub_type} HTTP {}: {}", res.status, res.text()));
+        crate::say(format!(
+            "Twitch: create sub {sub_type} HTTP {}: {}",
+            res.status,
+            res.text()
+        ));
     }
     true
+}
+
+fn unescape_irc_tag(v: &str) -> String {
+    let mut out = String::with_capacity(v.len());
+    let mut chars = v.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some(':') => out.push(';'),
+                Some('s') => out.push(' '),
+                Some('\\') => out.push('\\'),
+                Some('r') => out.push('\r'),
+                Some('n') => out.push('\n'),
+                Some(other) => out.push(other),
+                None => {}
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Parse an IRCv3 `PRIVMSG` line (e.g. from `recent-messages.robotty.de`) into a historical chat `Line`.
+pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate::engine::chatlog::Line> {
+    let raw = raw.trim_end_matches(['\r', '\n']);
+    let (tags_part, rest) = if let Some(r) = raw.strip_prefix('@') {
+        r.split_once(' ')?
+    } else {
+        ("", raw)
+    };
+    let rest = rest.trim_start();
+    let (prefix, cmd_rest) = if let Some(r) = rest.strip_prefix(':') {
+        r.split_once(' ')?
+    } else {
+        ("", rest)
+    };
+    let login = prefix.split('!').next().unwrap_or("");
+    let cmd_rest = cmd_rest.trim_start();
+    let after_cmd = cmd_rest.strip_prefix("PRIVMSG ")?;
+    let (_, trailing) = after_cmd.split_once(" :")?;
+    let mut text = trailing.to_string();
+    if let Some(act) = text.strip_prefix("\x01ACTION ").and_then(|s| s.strip_suffix('\x01')) {
+        text = act.to_string();
+    }
+
+    let mut msg_id = String::new();
+    let mut user_id = String::new();
+    let mut display_name = String::new();
+    let mut color = String::new();
+    let mut badges_raw = String::new();
+    let mut emotes_raw = String::new();
+    let mut sent_ts: Option<i64> = None;
+
+    for kv in tags_part.split(';') {
+        let Some((k, v)) = kv.split_once('=') else { continue };
+        match k {
+            "id" => msg_id = v.to_string(),
+            "user-id" => user_id = v.to_string(),
+            "display-name" => display_name = unescape_irc_tag(v),
+            "color" => color = v.to_string(),
+            "badges" => badges_raw = v.to_string(),
+            "emotes" => emotes_raw = v.to_string(),
+            "tmi-sent-ts" => sent_ts = v.parse::<i64>().ok(),
+            _ => {}
+        }
+    }
+
+    let user = if display_name.is_empty() {
+        login.to_string()
+    } else {
+        display_name
+    };
+    if user.is_empty() && text.is_empty() {
+        return None;
+    }
+    if color.is_empty() {
+        color = default_user_color(if !login.is_empty() { login } else { &user }).to_string();
+    }
+    let time = sent_ts.map_or_else(String::new, |ms| crate::engine::chatlog::local_hhmm(ms / 1000));
+
+    let mut broadcaster = !broadcaster_id.is_empty() && user_id == broadcaster_id;
+    let mut moderator = false;
+    let mut vip = false;
+    let mut subscriber = false;
+    let mut badges = Vec::new();
+    for b in badges_raw.split(',').filter(|s| !s.is_empty()) {
+        let Some((set, ver)) = b.split_once('/') else { continue };
+        match set {
+            "broadcaster" => broadcaster = true,
+            "moderator" => moderator = true,
+            "vip" => vip = true,
+            "subscriber" | "founder" => subscriber = true,
+            _ => {}
+        }
+        let key = format!("{set}/{ver}");
+        let url = SEEN.with_borrow(|s| s.badges.get(&key).cloned().unwrap_or_default());
+        badges.push((key, url));
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut emotes = Vec::new();
+    for spec in emotes_raw.split('/').filter(|s| !s.is_empty()) {
+        let Some((id, ranges)) = spec.split_once(':') else {
+            continue;
+        };
+        let Some(first_range) = ranges.split(',').next() else {
+            continue;
+        };
+        let Some((a, b)) = first_range.split_once('-') else {
+            continue;
+        };
+        let (Ok(start), Ok(end)) = (a.parse::<usize>(), b.parse::<usize>()) else {
+            continue;
+        };
+        if start <= end && end < chars.len() {
+            let name: String = chars[start..=end].iter().collect();
+            let url = format!("https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/2.0");
+            if !emotes.iter().any(|(n, _): &(String, String)| n == &name) {
+                emotes.push((name, url));
+            }
+        }
+    }
+
+    Some(crate::engine::chatlog::Line {
+        platform: "twitch".into(),
+        msg_id,
+        time,
+        user,
+        user_id,
+        text,
+        emotes,
+        broadcaster,
+        moderator,
+        vip,
+        subscriber,
+        badges,
+        color,
+        historical: true,
+        ..Default::default()
+    })
+}
+
+async fn fetch_recent_messages(login: &str, broadcaster_id: &str) -> Vec<crate::engine::chatlog::Line> {
+    let ch = login.trim().to_ascii_lowercase();
+    if ch.is_empty() {
+        return Vec::new();
+    }
+    let url = format!(
+        "https://recent-messages.robotty.de/api/v2/recent-messages/{}?limit=50&hide_moderation_messages=true&hide_moderated_messages=true",
+        commands::url_encode(&ch)
+    );
+    let Ok(res) = crate::http::request("GET", &url, &[], b"").await else {
+        return Vec::new();
+    };
+    if res.status != 200 {
+        return Vec::new();
+    }
+    let Ok(val) = serde_json::from_slice::<Value>(&res.body) else {
+        return Vec::new();
+    };
+    val["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| parse_irc_recent_message(m.as_str()?, broadcaster_id))
+        .collect()
 }
 
 fn handle_notification(
@@ -4406,5 +4761,26 @@ pub(crate) mod tests {
             "channel.shared_chat.end",
             &json!({}),
         );
+    }
+
+    #[test]
+    fn default_palette_and_irc_history_parser() {
+        let c1 = default_user_color("PedroZamecki");
+        let c2 = default_user_color("pedrozamecki");
+        assert_eq!(c1, c2);
+        assert_ne!(c1, "#FFFFFF");
+        assert!(DEFAULT_COLORS.contains(&c1));
+
+        let raw = "@badge-info=;badges=broadcaster/1,subscriber/12;color=#00FF7F;display-name=PedroZamecki;emotes=25:4-8;id=abc-123;tmi-sent-ts=1700000000000;user-id=42 :pedrozamecki!pedrozamecki@pedrozamecki.tmi.twitch.tv PRIVMSG #pedrozamecki :hey Kappa";
+        let line = parse_irc_recent_message(raw, "42").expect("valid PRIVMSG");
+        assert_eq!(line.msg_id, "abc-123");
+        assert_eq!(line.user, "PedroZamecki");
+        assert_eq!(line.user_id, "42");
+        assert_eq!(line.color, "#00FF7F");
+        assert_eq!(line.text, "hey Kappa");
+        assert!(line.broadcaster && line.subscriber && line.historical);
+        assert_eq!(line.badges[0].0, "broadcaster/1");
+        assert_eq!(line.emotes.len(), 1);
+        assert_eq!(line.emotes[0].0, "Kappa");
     }
 }
