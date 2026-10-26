@@ -645,14 +645,12 @@ struct YouTubeRunner {
 
 impl YouTubeRunner {
     async fn run_poll_loop(&self) {
-        let mut speakers = HashSet::new();
         read_chat_with_standby(
             &self.engine,
             &self.cfg,
             &self.connected,
             Some(&self.standby),
             &self.live,
-            &mut speakers,
             YOUTUBE_WEB,
             false,
         )
@@ -1024,11 +1022,10 @@ pub async fn read_chat(
     cfg: &Arc<watch::Sender<Config>>,
     connected: &Arc<AtomicBool>,
     live: &Rc<std::cell::RefCell<(String, String)>>,
-    speakers: &mut HashSet<String>,
     web: &str,
     run_once: bool,
 ) {
-    read_chat_with_standby(engine, cfg, connected, None, live, speakers, web, run_once).await;
+    read_chat_with_standby(engine, cfg, connected, None, live, web, run_once).await;
 }
 
 /// Read a live chat through InnerTube (what youtube.com's chat uses): the video is the configured
@@ -1042,7 +1039,6 @@ pub async fn read_chat_with_standby(
     connected: &Arc<AtomicBool>,
     standby: Option<&Arc<AtomicBool>>,
     live: &Rc<std::cell::RefCell<(String, String)>>,
-    speakers: &mut HashSet<String>,
     web: &str,
     run_once: bool,
 ) {
@@ -1224,10 +1220,10 @@ pub async fn read_chat_with_standby(
                 }
                 engine.chat_welcome("youtube", std::mem::take(&mut initial_hist));
                 if !live_actions.is_empty() {
-                    handle_innertube_actions(engine, &live_actions, speakers);
+                    handle_innertube_actions(engine, &live_actions);
                 }
             } else if let Some(actions) = c["actions"].as_array() {
-                handle_innertube_actions(engine, actions, speakers);
+                handle_innertube_actions(engine, actions);
             }
             if run_once {
                 return;
@@ -1543,7 +1539,7 @@ fn poll_args(p: &Value) -> Obj {
     a
 }
 
-pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value], speakers: &mut HashSet<String>) {
+pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value]) {
     for act in actions {
         let item = act.pointer("/addChatItemAction/item").cloned().unwrap_or_default();
         if let Some(msg) = item.get("liveChatTextMessageRenderer") {
@@ -1576,7 +1572,7 @@ pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value], speakers
                 let who = json!({"userId": id, "userName": args["userName"], "user": args["user"]});
                 m.insert(id.clone(), (who, std::time::Instant::now()));
             });
-            if speakers.insert(id.to_lowercase()) {
+            if engine.first_words("youtube", &id) {
                 yt(engine, T_YT_FIRST_WORDS, "YouTubeFirstWords", "FirstWords", &args);
             }
             yt(engine, T_YT_MESSAGE, "YouTubeMessage", "Message", &args);
@@ -2041,7 +2037,7 @@ mod tests {
                 json!({"showLiveChatActionPanelAction": {"panel": {"liveChatPollRenderer": poll}}}),
                 json!({"closeLiveChatActionPanelAction": {"targetPanelId": "p"}}),
             ];
-            handle_innertube_actions(&e, &actions, &mut HashSet::new());
+            handle_innertube_actions(&e, &actions);
             tokio::time::sleep(Duration::from_millis(100)).await;
         });
         let want = [
@@ -2064,7 +2060,6 @@ mod tests {
     fn parse_innertube_chat_message() {
         let (tx, _rx) = watch::channel(Config::default());
         let engine = Engine::new(Arc::new(tx), |_| {});
-        let mut speakers = HashSet::new();
 
         let actions = vec![json!({
             "addChatItemAction": {
@@ -2086,15 +2081,14 @@ mod tests {
             }
         })];
 
-        handle_innertube_actions(&engine, &actions, &mut speakers);
-        assert!(speakers.contains("uc1234567890"));
+        handle_innertube_actions(&engine, &actions);
+        assert!(!engine.first_words("youtube", "uc1234567890"));
     }
 
     #[test]
     fn parse_innertube_super_chat_and_stickers() {
         let (tx, _rx) = watch::channel(Config::default());
         let engine = Engine::new(Arc::new(tx), |_| {});
-        let mut speakers = HashSet::new();
 
         let actions = vec![
             json!({
@@ -2153,7 +2147,7 @@ mod tests {
             }),
         ];
 
-        handle_innertube_actions(&engine, &actions, &mut speakers);
+        handle_innertube_actions(&engine, &actions);
     }
 
     #[test]
@@ -2200,9 +2194,8 @@ mod tests {
             let engine = Engine::new(cfg.clone(), |_| {});
             let connected = Arc::new(AtomicBool::new(false));
             let live = Rc::new(std::cell::RefCell::new((String::new(), String::new())));
-            let mut speakers = HashSet::new();
-            read_chat(&engine, &cfg, &connected, &live, &mut speakers, &format!("http://{addr}"), true).await;
-            assert!(speakers.contains("ucpoll"));
+            read_chat(&engine, &cfg, &connected, &live, &format!("http://{addr}"), true).await;
+            assert!(!engine.first_words("youtube", "ucpoll"));
             assert!(connected.load(Ordering::Relaxed));
             assert_eq!(live.borrow().0, "vid123");
             let (_, _, lines) = engine.chat_sync(999, 0);

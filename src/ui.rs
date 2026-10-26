@@ -363,7 +363,11 @@ pub fn run(
                 false
             });
             let _ = crate::save(&cfg.borrow());
-            tell(&cmds, |e| e.save_chat_history());
+            // Waited for: Quit exits right after.
+            let _ = query(&cmds, |e| {
+                e.save_chat_history();
+                e.save_community();
+            });
         }
     };
     // The status bar's "3/5 connected"; a click lists each connection.
@@ -522,11 +526,13 @@ pub fn run(
                 Msg::Log => log.refresh(),
                 Msg::Chat => views.chat_refresh(&tabs),
                 Msg::Image => pictures = true,
-                Msg::Changed => {
+                // Hidden: nothing to redraw (filling a list loads the fonts); opening refreshes.
+                Msg::Changed if win.visible() => {
                     status_bar();
                     acts.borrow_mut().refresh();
                     views.refresh(&tabs);
                 }
+                Msg::Changed => {}
                 Msg::Input => {
                     let asked = QUESTIONS
                         .lock()

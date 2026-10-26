@@ -19,6 +19,7 @@ use tokio::sync::{oneshot, watch};
 
 pub mod builtins;
 pub mod chatlog;
+pub mod community;
 pub mod events;
 pub mod globals;
 mod rest;
@@ -85,6 +86,7 @@ struct State {
     /// Sub-action types already reported as unsupported.
     warned: HashSet<u64>,
     save_pending: bool,
+    community: community::Community,
     /// Command cooldowns: when each command (id) and each command per user ("id:user id") is
     /// usable again; the non-persisted counters, keyed like Config.counters.
     cooldowns: HashMap<String, std::time::Instant>,
@@ -514,12 +516,6 @@ impl Engine {
             }
         });
         Ok(())
-    }
-
-    pub fn clear_first_words(&self) {
-        if let Some(tw) = self.twitch() {
-            tw.clear_first_words();
-        }
     }
 
     /// Run `f` on the config, and save it soon (once for a burst of changes).
@@ -1345,6 +1341,7 @@ impl Engine {
         args: &Obj,
         matches: impl Fn(&Obj) -> bool,
     ) -> usize {
+        self.record(kind, args);
         let hits: Vec<(String, String)> = {
             let c = self.cfg.borrow();
             c.actions
@@ -1674,6 +1671,7 @@ impl Engine {
                 | 35105..=35108
                 | 35113
                 | 43001 => self.rest(ctx, o, kind).await,
+                1000 | 1026 | 1027 | 1035..=1037 => self.community_sub(ctx, o, kind),
                 // Streamlabs Desktop
                 401..=415 | 417 => {
                     let mut x = o.clone();

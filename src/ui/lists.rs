@@ -506,6 +506,7 @@ pub struct Views {
     pub queues: Rc<RefCell<Queues>>,
     pub history: Rc<RefCell<History>>,
     pub globals: Rc<RefCell<Globals>>,
+    pub community: Rc<RefCell<Community>>,
     pub servers: Rc<RefCell<Servers>>,
     pub groups: Rc<RefCell<Groups>>,
     pub donations: Rc<RefCell<Donations>>,
@@ -571,6 +572,11 @@ impl Views {
                 g.refresh();
             }
         }
+        if let Ok(mut c) = self.community.try_borrow_mut() {
+            if is(&c.tab) {
+                c.refresh();
+            }
+        }
     }
 }
 
@@ -588,6 +594,7 @@ pub fn tabs(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Views {
     let queues = queues_tab(tabs, cfg, cmds);
     let history = history_tab(tabs, cmds);
     let globals = globals_tab(tabs, cmds);
+    let community = community_tab(tabs, cfg, cmds);
     let groups = groups_tab(tabs, cfg, cmds);
 
     let mut col = tab(tabs, "Servers");
@@ -647,6 +654,7 @@ pub fn tabs(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Views {
         queues,
         history,
         globals,
+        community,
         servers,
         groups,
         donations,
@@ -1079,6 +1087,260 @@ fn globals_tab(tabs: &Tabs, cmds: &Cmds) -> Rc<RefCell<Globals>> {
         }),
     );
     click(&b[3], Box::new(Globals::refresh));
+    me
+}
+
+/// Users, quotes and credits, one at a time.
+pub struct Community {
+    tab: Flex,
+    cfg: Cfg,
+    cmds: Cmds,
+    show: fltk::menu::Choice,
+    search: fltk::input::Input,
+    views: [Flex; 3],
+    users: HoldBrowser,
+    quotes: HoldBrowser,
+    credits: HoldBrowser,
+}
+
+impl Community {
+    pub fn refresh(&mut self) {
+        let shown = self.show.value().max(0) as usize;
+        for (i, v) in self.views.iter_mut().enumerate() {
+            if i == shown {
+                v.show();
+            } else {
+                v.hide();
+            }
+        }
+        if shown == 0 {
+            self.search.show();
+        } else {
+            self.search.hide();
+        }
+        self.tab.layout();
+        match shown {
+            0 => {
+                let Some(mut users) = query(&self.cmds, |e| e.users()) else {
+                    return;
+                };
+                users.sort_by(|a, b| s(b, "lastActive").cmp(s(a, "lastActive")));
+                let q = self.search.value().to_lowercase();
+                self.users.clear();
+                for u in users
+                    .iter()
+                    .filter(|u| q.is_empty() || s(u, "display").to_lowercase().contains(&q))
+                {
+                    let role = ["", "Viewer", "VIP", "Moderator", "Broadcaster"];
+                    self.users.add(&line(&[
+                        s(u, "type").into(),
+                        s(u, "display").into(),
+                        role.get(u["role"].as_u64().unwrap_or(1) as usize)
+                            .unwrap_or(&"")
+                            .to_string(),
+                        day(s(u, "firstMessage")),
+                        day(s(u, "lastActive")),
+                    ]));
+                }
+            }
+            1 => {
+                let sel = self.quotes.value();
+                self.quotes.clear();
+                for q in &self.cfg.borrow().quotes {
+                    self.quotes.add(&line(&[
+                        format!("#{}", q.get("id").and_then(Value::as_u64).unwrap_or(0)),
+                        s(q, "quote").into(),
+                        s(q, "user").into(),
+                        s(q, "gameName").into(),
+                        day(s(q, "timestamp")),
+                    ]));
+                }
+                self.quotes.select(sel);
+            }
+            _ => {
+                let Some(c) = query(&self.cmds, |e| e.credits()) else {
+                    return;
+                };
+                self.credits.clear();
+                let mut put = |title: &str, v: &Value| {
+                    let names: Vec<&str> = v.as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                    if !names.is_empty() {
+                        self.credits.add(&line(&[title.into(), names.join(", ")]));
+                    }
+                };
+                for (k, v) in c["events"].as_object().into_iter().flatten() {
+                    put(k, v);
+                }
+                for (k, v) in c["users"].as_object().into_iter().flatten() {
+                    put(&format!("{k} (spoke)"), v);
+                }
+                put("top rewards", &c["top"]["channelRewards"]);
+                if self.credits.size() == 0 {
+                    self.credits.add("@.Nothing yet this stream.");
+                }
+            }
+        }
+    }
+
+    fn quote_id(&self) -> Option<u64> {
+        let c = self.cfg.borrow();
+        c.quotes
+            .get((self.quotes.value() - 1).max(-1) as usize)?
+            .get("id")?
+            .as_u64()
+    }
+
+    /// Add (None) or edit a quote.
+    fn edit_quote(&mut self, id: Option<u64>) {
+        let old = id.and_then(|id| self.cfg.borrow().quotes.iter().find(|q| q["id"] == id).cloned());
+        let o = old.clone().unwrap_or_else(|| {
+            let c = self.cfg.borrow();
+            let me = c
+                .twitch
+                .broadcaster
+                .as_ref()
+                .map(|a| (a.display_name.clone(), a.user_id.clone()));
+            let (user, uid) = me.unwrap_or_default();
+            json!({"quote": "", "user": user, "userId": uid, "platform": "twitch"})
+                .as_object()
+                .cloned()
+                .unwrap_or_default()
+        });
+        let fields: &[F] = &[
+            ("quote", "Quote", Multi),
+            ("user", "Said by", Text),
+            ("gameName", "Game", Text),
+        ];
+        let Some(o) = ask("Quote", fields, &o, &Lists::default()) else {
+            return;
+        };
+        if s(&o, "quote").trim().is_empty() {
+            return;
+        }
+        match id {
+            Some(id) => save(&self.cfg, |c| {
+                if let Some(q) = c.quotes.iter_mut().find(|q| q["id"] == id) {
+                    *q = o;
+                }
+            }),
+            None => {
+                let _ = query(&self.cmds, move |e| {
+                    e.add_quote(s(&o, "quote").trim(), s(&o, "user"), s(&o, "userId"), s(&o, "platform"));
+                });
+            }
+        }
+        self.refresh();
+    }
+}
+
+/// The date part of an ISO time ("" for Streamer.bot's never).
+fn day(iso: &str) -> String {
+    match iso.get(..10) {
+        Some("0001-01-01") | None => String::new(),
+        Some(d) => d.into(),
+    }
+}
+
+fn community_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>> {
+    let mut col = tab(tabs, "Community");
+    let mut top = Flex::default().row();
+    top.set_pad(6);
+    let l = Frame::default().with_label("Show:");
+    top.fixed(&l, 44);
+    let mut show = fltk::menu::Choice::default();
+    show.add_choice("Users|Quotes|Credits");
+    show.set_value(0);
+    top.fixed(&show, 120);
+    let mut search = fltk::input::Input::default();
+    search.set_tooltip("Search users");
+    search.set_trigger(fltk::enums::CallbackTrigger::Changed);
+    top.fixed(&search, 220);
+    Frame::default();
+    top.end();
+    col.fixed(&top, ROW);
+
+    let users_v = Flex::default().column();
+    let users = browser(&[90, 220, 110, 110, 110]);
+    users_v.end();
+
+    let mut quotes_v = Flex::default().column();
+    let qb = bar(&mut quotes_v, &["Add", "Edit", "Delete"]);
+    let quotes = browser(&[60, 460, 140, 140, 100]);
+    quotes_v.end();
+
+    let mut credits_v = Flex::default().column();
+    let cb = bar(&mut credits_v, &["Reset", "Fill with test names"]);
+    let credits = browser(&[180, 600]);
+    credits_v.end();
+    col.end();
+
+    let me = Rc::new(RefCell::new(Community {
+        tab: col.clone(),
+        cfg: cfg.clone(),
+        cmds: cmds.clone(),
+        show: show.clone(),
+        search: search.clone(),
+        views: [users_v, quotes_v, credits_v],
+        users,
+        quotes: quotes.clone(),
+        credits,
+    }));
+    for (w, f) in [
+        (
+            show.as_base_widget(),
+            Box::new(Community::refresh) as Box<dyn Fn(&mut Community)>,
+        ),
+        (search.as_base_widget(), Box::new(Community::refresh)),
+        (qb[0].as_base_widget(), Box::new(|m: &mut Community| m.edit_quote(None))),
+        (
+            qb[1].as_base_widget(),
+            Box::new(|m: &mut Community| m.edit_quote(m.quote_id())),
+        ),
+        (
+            qb[2].as_base_widget(),
+            Box::new(|m: &mut Community| {
+                let Some(id) = m.quote_id() else { return };
+                if dialog::choice2_default(&format!("Delete quote #{id}?"), "Cancel", "Delete", "") == Some(1) {
+                    save(&m.cfg, |c| c.quotes.retain(|q| q["id"] != id));
+                    m.refresh();
+                }
+            }),
+        ),
+        (
+            cb[0].as_base_widget(),
+            Box::new(|m: &mut Community| {
+                tell(&m.cmds, |e| e.reset_credits());
+                m.refresh();
+            }),
+        ),
+        (
+            cb[1].as_base_widget(),
+            Box::new(|m: &mut Community| {
+                let _ = query(&m.cmds, |e| drop(e.test_credits()));
+                m.refresh();
+            }),
+        ),
+    ] {
+        let me = me.clone();
+        let mut w = w;
+        w.set_callback(move |_| {
+            if let Ok(mut m) = me.try_borrow_mut() {
+                f(&mut m);
+            }
+        });
+    }
+    quotes.clone().handle({
+        let me = me.clone();
+        move |_, ev| {
+            if ev == Event::Push && fltk::app::event_clicks() {
+                if let Ok(mut m) = me.try_borrow_mut() {
+                    let id = m.quote_id();
+                    m.edit_quote(id);
+                }
+            }
+            false
+        }
+    });
     me
 }
 

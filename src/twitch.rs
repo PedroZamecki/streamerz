@@ -15,7 +15,7 @@ use crate::Config;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -324,7 +324,6 @@ pub enum TwitchCmd {
         login: String,
         resp: oneshot::Sender<Result<String, String>>,
     },
-    ClearFirstWords,
     Connect,
     Disconnect,
     GetStatus(oneshot::Sender<TwitchStatus>),
@@ -442,10 +441,6 @@ impl TwitchHandle {
             resp: resp_tx,
         });
         resp_rx.await.map_err(|_| String::from("Twitch task stopped"))?
-    }
-
-    pub fn clear_first_words(&self) {
-        self.send(TwitchCmd::ClearFirstWords);
     }
 
     pub async fn status(&self) -> TwitchStatus {
@@ -697,7 +692,6 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> TwitchHand
         engine,
         cfg: cfg.clone(),
         rx,
-        speakers: HashSet::new(),
         session_id: None,
         is_connected,
         wanted: Arc::new(AtomicBool::new(false)),
@@ -712,7 +706,6 @@ struct Runner {
     engine: Rc<Engine>,
     cfg: Arc<watch::Sender<Config>>,
     rx: mpsc::UnboundedReceiver<TwitchCmd>,
-    speakers: HashSet<String>,
     session_id: Option<String>,
     is_connected: Arc<AtomicBool>,
     wanted: Arc<AtomicBool>,
@@ -806,7 +799,7 @@ impl Runner {
     async fn handle_cmd(&mut self, cmd: TwitchCmd) {
         if !matches!(
             cmd,
-            TwitchCmd::Connect | TwitchCmd::Disconnect | TwitchCmd::ClearFirstWords | TwitchCmd::GetStatus(_)
+            TwitchCmd::Connect | TwitchCmd::Disconnect | TwitchCmd::GetStatus(_)
         ) {
             self.refresh_if_needed().await;
         }
@@ -816,10 +809,6 @@ impl Runner {
             }
             TwitchCmd::Disconnect => {
                 self.disconnect();
-            }
-            TwitchCmd::ClearFirstWords => {
-                self.speakers.clear();
-                crate::say("Twitch: First Words cache cleared".into());
             }
             TwitchCmd::GetStatus(resp) => {
                 let c = self.cfg.borrow();
@@ -1351,7 +1340,6 @@ async fn run_eventsub_loop(
     auth_refused: Arc<AtomicBool>,
 ) {
     use futures_util::StreamExt;
-    let mut speakers = HashSet::new();
     let mut reconnecting = false;
     let mut poll_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut emote_task: Option<tokio::task::JoinHandle<()>> = None;
@@ -1463,7 +1451,7 @@ async fn run_eventsub_loop(
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 let event = val.pointer("/payload/event").cloned().unwrap_or_default();
-                handle_notification(&engine, &broadcaster, &cfg, &mut speakers, sub_type, &event);
+                handle_notification(&engine, &broadcaster, &cfg, sub_type, &event);
             }
             "session_reconnect" => {
                 let url = val
@@ -1544,7 +1532,6 @@ async fn run_bot_eventsub_loop(
 ) {
     use futures_util::StreamExt;
     let mut reconnecting = false;
-    let mut speakers = HashSet::new();
 
     while let Some(msg) = ws.next().await {
         let raw = match msg {
@@ -1604,7 +1591,7 @@ async fn run_bot_eventsub_loop(
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 let event = val.pointer("/payload/event").cloned().unwrap_or_default();
-                handle_notification(&engine, &broadcaster, &cfg, &mut speakers, sub_type, &event);
+                handle_notification(&engine, &broadcaster, &cfg, sub_type, &event);
             }
             "session_reconnect" => {
                 let url = val
@@ -2100,7 +2087,6 @@ fn handle_notification(
     engine: &Rc<Engine>,
     broadcaster: &TwitchAccount,
     cfg: &Arc<watch::Sender<Config>>,
-    speakers: &mut HashSet<String>,
     sub_type: &str,
     event: &Value,
 ) {
@@ -2207,8 +2193,7 @@ fn handle_notification(
 
             // First Words detection
             let norm_login = chatter_login.to_lowercase();
-            if !speakers.contains(&norm_login) {
-                speakers.insert(norm_login.clone());
+            if engine.first_words("twitch", &norm_login) {
                 let mut fw_args = args.clone();
                 fw_args.insert("firstMessage".into(), true.into());
                 fw_args.insert("first_words".into(), true.into());
@@ -2547,7 +2532,7 @@ fn handle_notification(
         }
         "stream.online" => {
             if cfg.borrow().twitch.first_words_auto_reset {
-                speakers.clear();
+                engine.reset_first_words(Some("twitch"));
             }
             let started_at = event.pointer("/started_at").and_then(Value::as_str).unwrap_or("");
             let mut args = Obj::new();
@@ -3954,6 +3939,11 @@ struct Pyramid {
 
 thread_local!(static SEEN: RefCell<Seen> = RefCell::default());
 
+/// The channel's category (id, name), as the last channel update said.
+pub fn current_game() -> (String, String) {
+    SEEN.with_borrow(|s| s.game.clone())
+}
+
 /// A user's id, login and display name.
 type Who = (String, String, String);
 
@@ -4180,8 +4170,7 @@ pub(crate) mod tests {
             ..Default::default()
         };
         let out = run(async move {
-            let mut seen = HashSet::new();
-            let mut go = |kind: &str, v: Value| handle_notification(&e, &b, &cfg, &mut seen, kind, &v);
+            let go = |kind: &str, v: Value| handle_notification(&e, &b, &cfg, kind, &v);
             let note = |t: &str, d: Value| json!({"notice_type": t, "chatter_user_id": "5", "chatter_user_login": "ann", t: d});
             go(
                 "channel.chat.notification",
@@ -4368,14 +4357,7 @@ pub(crate) mod tests {
             "to_user_id": "123",
             "whisper": { "text": "hello broadcaster" }
         });
-        handle_notification(
-            &engine,
-            &broadcaster,
-            &cfg,
-            &mut HashSet::new(),
-            "user.whisper.message",
-            &event,
-        );
+        handle_notification(&engine, &broadcaster, &cfg, "user.whisper.message", &event);
 
         // Bot whisper to bot
         let bot_event = json!({
@@ -4385,14 +4367,7 @@ pub(crate) mod tests {
             "to_user_id": "999",
             "whisper": { "text": "hello bot" }
         });
-        handle_notification(
-            &engine,
-            &broadcaster,
-            &cfg,
-            &mut HashSet::new(),
-            "user.whisper.message",
-            &bot_event,
-        );
+        handle_notification(&engine, &broadcaster, &cfg, "user.whisper.message", &bot_event);
     }
 
     #[test]
@@ -4413,8 +4388,8 @@ pub(crate) mod tests {
                     "to_broadcaster_user_login": "target", "viewers": 42})
             };
             // Outgoing: Raid Send. Incoming ones come as chat notifications, so this one does nothing.
-            handle_notification(&e, &b, &cfg, &mut HashSet::new(), "channel.raid", &raid("123"));
-            handle_notification(&e, &b, &cfg, &mut HashSet::new(), "channel.raid", &raid("456"));
+            handle_notification(&e, &b, &cfg, "channel.raid", &raid("123"));
+            handle_notification(&e, &b, &cfg, "channel.raid", &raid("456"));
             tokio::time::sleep(Duration::from_millis(100)).await;
         });
         assert_eq!(out, ["T send target 42"]);
@@ -4451,7 +4426,6 @@ pub(crate) mod tests {
             &engine,
             &broadcaster,
             &cfg,
-            &mut HashSet::new(),
             "channel.channel_points_custom_reward_redemption.add",
             &redemption,
         );
@@ -4474,7 +4448,6 @@ pub(crate) mod tests {
             &engine,
             &broadcaster,
             &cfg,
-            &mut HashSet::new(),
             "channel.channel_points_custom_reward_redemption.update",
             &updated,
         );
@@ -4499,22 +4472,8 @@ pub(crate) mod tests {
             "choices": [{"id": "c1", "title": "Rust", "votes": 10}, {"id": "c2", "title": "Other", "votes": 2}],
             "status": "completed"
         });
-        handle_notification(
-            &engine,
-            &broadcaster,
-            &cfg,
-            &mut HashSet::new(),
-            "channel.poll.begin",
-            &poll,
-        );
-        handle_notification(
-            &engine,
-            &broadcaster,
-            &cfg,
-            &mut HashSet::new(),
-            "channel.poll.end",
-            &poll,
-        );
+        handle_notification(&engine, &broadcaster, &cfg, "channel.poll.begin", &poll);
+        handle_notification(&engine, &broadcaster, &cfg, "channel.poll.end", &poll);
 
         let pred = json!({
             "id": "pred-1",
@@ -4523,22 +4482,8 @@ pub(crate) mod tests {
             "outcomes": [{"id": "o1", "title": "Yes", "users": 5, "channel_points": 100}],
             "status": "resolved"
         });
-        handle_notification(
-            &engine,
-            &broadcaster,
-            &cfg,
-            &mut HashSet::new(),
-            "channel.prediction.begin",
-            &pred,
-        );
-        handle_notification(
-            &engine,
-            &broadcaster,
-            &cfg,
-            &mut HashSet::new(),
-            "channel.prediction.end",
-            &pred,
-        );
+        handle_notification(&engine, &broadcaster, &cfg, "channel.prediction.begin", &pred);
+        handle_notification(&engine, &broadcaster, &cfg, "channel.prediction.end", &pred);
     }
 
     #[test]
@@ -4562,7 +4507,7 @@ pub(crate) mod tests {
             "reason": "spamming",
             "is_permanent": true
         });
-        handle_notification(&engine, &broadcaster, &cfg, &mut HashSet::new(), "channel.ban", &ban);
+        handle_notification(&engine, &broadcaster, &cfg, "channel.ban", &ban);
 
         // Timeout
         let to = json!({
@@ -4573,7 +4518,7 @@ pub(crate) mod tests {
             "is_permanent": false,
             "ends_at": "2026-10-12T22:00:00Z"
         });
-        handle_notification(&engine, &broadcaster, &cfg, &mut HashSet::new(), "channel.ban", &to);
+        handle_notification(&engine, &broadcaster, &cfg, "channel.ban", &to);
 
         // Unban
         let unban = json!({
@@ -4581,14 +4526,7 @@ pub(crate) mod tests {
             "user_login": "spammer",
             "user_name": "Spammer"
         });
-        handle_notification(
-            &engine,
-            &broadcaster,
-            &cfg,
-            &mut HashSet::new(),
-            "channel.unban",
-            &unban,
-        );
+        handle_notification(&engine, &broadcaster, &cfg, "channel.unban", &unban);
 
         // Mod add / remove
         let mod_event = json!({
@@ -4596,58 +4534,16 @@ pub(crate) mod tests {
             "user_login": "moduser",
             "user_name": "ModUser"
         });
-        handle_notification(
-            &engine,
-            &broadcaster,
-            &cfg,
-            &mut HashSet::new(),
-            "channel.moderator.add",
-            &mod_event,
-        );
-        handle_notification(
-            &engine,
-            &broadcaster,
-            &cfg,
-            &mut HashSet::new(),
-            "channel.moderator.remove",
-            &mod_event,
-        );
+        handle_notification(&engine, &broadcaster, &cfg, "channel.moderator.add", &mod_event);
+        handle_notification(&engine, &broadcaster, &cfg, "channel.moderator.remove", &mod_event);
 
         // VIP add / remove
-        handle_notification(
-            &engine,
-            &broadcaster,
-            &cfg,
-            &mut HashSet::new(),
-            "channel.vip.add",
-            &mod_event,
-        );
-        handle_notification(
-            &engine,
-            &broadcaster,
-            &cfg,
-            &mut HashSet::new(),
-            "channel.vip.remove",
-            &mod_event,
-        );
+        handle_notification(&engine, &broadcaster, &cfg, "channel.vip.add", &mod_event);
+        handle_notification(&engine, &broadcaster, &cfg, "channel.vip.remove", &mod_event);
 
         // Shield mode
-        handle_notification(
-            &engine,
-            &broadcaster,
-            &cfg,
-            &mut HashSet::new(),
-            "channel.shield_mode.begin",
-            &json!({}),
-        );
-        handle_notification(
-            &engine,
-            &broadcaster,
-            &cfg,
-            &mut HashSet::new(),
-            "channel.shield_mode.end",
-            &json!({}),
-        );
+        handle_notification(&engine, &broadcaster, &cfg, "channel.shield_mode.begin", &json!({}));
+        handle_notification(&engine, &broadcaster, &cfg, "channel.shield_mode.end", &json!({}));
 
         // Shoutout
         let shoutout = json!({
@@ -4655,14 +4551,7 @@ pub(crate) mod tests {
             "to_broadcaster_user_login": "friend",
             "to_broadcaster_user_name": "Friend"
         });
-        handle_notification(
-            &engine,
-            &broadcaster,
-            &cfg,
-            &mut HashSet::new(),
-            "channel.shoutout.create",
-            &shoutout,
-        );
+        handle_notification(&engine, &broadcaster, &cfg, "channel.shoutout.create", &shoutout);
 
         // Chat settings
         let settings = json!({
@@ -4672,14 +4561,7 @@ pub(crate) mod tests {
             "follower_mode": false,
             "unique_chat_mode": true
         });
-        handle_notification(
-            &engine,
-            &broadcaster,
-            &cfg,
-            &mut HashSet::new(),
-            "channel.chat_settings.update",
-            &settings,
-        );
+        handle_notification(&engine, &broadcaster, &cfg, "channel.chat_settings.update", &settings);
     }
 
     #[test]
@@ -4706,7 +4588,6 @@ pub(crate) mod tests {
             &engine,
             &broadcaster,
             &cfg,
-            &mut HashSet::new(),
             "channel.charity_campaign.donate",
             &donation,
         );
@@ -4716,25 +4597,16 @@ pub(crate) mod tests {
             &engine,
             &broadcaster,
             &cfg,
-            &mut HashSet::new(),
             "channel.charity_campaign.start",
             &charity_start,
         );
-        handle_notification(
-            &engine,
-            &broadcaster,
-            &cfg,
-            &mut HashSet::new(),
-            "channel.charity_campaign.stop",
-            &json!({}),
-        );
+        handle_notification(&engine, &broadcaster, &cfg, "channel.charity_campaign.stop", &json!({}));
 
         // Guest star
         handle_notification(
             &engine,
             &broadcaster,
             &cfg,
-            &mut HashSet::new(),
             "channel.guest_star_session.begin",
             &json!({}),
         );
@@ -4742,28 +4614,13 @@ pub(crate) mod tests {
             &engine,
             &broadcaster,
             &cfg,
-            &mut HashSet::new(),
             "channel.guest_star_session.end",
             &json!({}),
         );
 
         // Shared chat
-        handle_notification(
-            &engine,
-            &broadcaster,
-            &cfg,
-            &mut HashSet::new(),
-            "channel.shared_chat.begin",
-            &json!({}),
-        );
-        handle_notification(
-            &engine,
-            &broadcaster,
-            &cfg,
-            &mut HashSet::new(),
-            "channel.shared_chat.end",
-            &json!({}),
-        );
+        handle_notification(&engine, &broadcaster, &cfg, "channel.shared_chat.begin", &json!({}));
+        handle_notification(&engine, &broadcaster, &cfg, "channel.shared_chat.end", &json!({}));
     }
 
     #[test]
