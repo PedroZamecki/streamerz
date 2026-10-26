@@ -4,3 +4,7 @@ streamerz.json*
 *.tmp
 .claude/
 .serena/
+
+# Test runs
+/run*.log
+/sz.pid

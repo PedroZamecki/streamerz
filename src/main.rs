@@ -141,6 +141,9 @@ pub struct WindowState {
     pub chat_view: String,
     pub w: i32,
     pub h: i32,
+    /// Chat: hide the time, hide the badges.
+    pub chat_no_time: bool,
+    pub chat_no_badges: bool,
 }
 
 impl Config {

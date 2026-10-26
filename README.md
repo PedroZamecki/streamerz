@@ -173,6 +173,7 @@ Charity Donation triggers have Streamer.bot's Range (Min and Max amount).
 
 ## Chat
 
+- Twitch badges as Twitch's own pictures (the ones the chatter wears, as Twitch's chat shows them); other platforms' roles drawn. **Options** hides the time or the badges.
 - One view for every set-up platform's chat (together, side by side, or one platform), drawn with the platforms' logos, role badges and name colours. Click a name for what's known about that user.
 - Emotes as pictures: Twitch (animated ones too), Kick and YouTube's own, the channel's BTTV, FFZ and 7TV emotes (7TV on Kick too), animated ones moving while the chat is on screen; Unicode emoji as Twemoji pictures.
 - An emote picker with the emotes seen in chat, the channel's third-party emotes and every emoji by group. Right click a message to copy it.

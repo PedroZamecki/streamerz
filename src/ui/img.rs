@@ -61,6 +61,10 @@ impl Pic {
     pub fn w(&self) -> i32 {
         self.frames[0].0.w()
     }
+
+    pub fn h(&self) -> i32 {
+        self.frames[0].0.h()
+    }
 }
 
 thread_local! {

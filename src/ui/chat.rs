@@ -64,10 +64,10 @@ fn svg(key: &'static str) -> Option<SvgImage> {
         m.entry(key)
             .or_insert_with(|| match BADGES.iter().find(|b| b.0 == key) {
                 Some(b) => SvgImage::from_data(b.1).ok().map(|mut s| {
-                    s.scale(16, 16, true, true);
+                    s.scale(BADGE, BADGE, true, true);
                     s
                 }),
-                None => img::logo(key, 16),
+                None => img::logo(key, BADGE),
             })
             .clone()
     })
@@ -119,6 +119,8 @@ enum It {
     Svg(SvgImage),
     /// A word's space: where the line may wrap.
     Space,
+    /// A few pixels between pictures (no wrap).
+    Gap(i32),
 }
 
 impl It {
@@ -128,20 +130,35 @@ impl It {
                 draw::set_font(*f, TEXT);
                 (draw::width(t) as i32, TEXT + 4)
             }
-            It::Pic(p) => (p.w(), EMOTE),
+            It::Pic(p) => (p.w(), p.h().max(1)),
             It::Svg(s) => (s.w(), s.h()),
             It::Space => {
                 draw::set_font(Font::Helvetica, TEXT);
                 (draw::width(" ") as i32, 0)
             }
+            It::Gap(w) => (*w, 0),
         }
     }
+}
+
+/// Badge height, and the gap after each badge.
+const BADGE: i32 = 18;
+const GAP: i32 = 3;
+
+thread_local! {
+    /// What lines show: (the time, the badges). Chat's options; all panes follow.
+    static SHOW: Cell<(bool, bool)> = const { Cell::new((true, true)) };
 }
 
 /// A line's things, in order.
 fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
     let gray = Color::from_rgb(0x88, 0x88, 0x88);
-    let mut v = vec![It::Text(l.time.clone(), Font::HelveticaItalic, gray), It::Space];
+    let (time, badges) = SHOW.get();
+    let mut v = Vec::new();
+    if time {
+        v.push(It::Text(l.time.clone(), Font::HelveticaItalic, gray));
+        v.push(It::Space);
+    }
     if tag {
         let p = PLATFORMS.iter().position(|x| *x == l.platform).unwrap_or(0);
         if let Some(s) = svg(NAMES[p]) {
@@ -153,12 +170,37 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
         v.push(It::Text(l.text.clone(), Font::HelveticaItalic, gray));
         return v;
     }
-    for (i, on) in [l.broadcaster, l.moderator, l.vip, l.subscriber]
-        .into_iter()
-        .enumerate()
-    {
-        if let Some(b) = on.then(|| svg(BADGES[i].0)).flatten() {
-            v.push(It::Svg(b));
+    if badges {
+        let before = v.len();
+        if l.badges.is_empty() {
+            // The platform's roles, drawn (the broadcaster isn't also shown as a moderator).
+            let mods = l.moderator && !l.broadcaster;
+            for (i, on) in [l.broadcaster, mods, l.vip, l.subscriber].into_iter().enumerate() {
+                if let Some(b) = on.then(|| svg(BADGES[i].0)).flatten() {
+                    v.push(It::Svg(b));
+                    v.push(It::Gap(GAP));
+                }
+            }
+        } else {
+            // The ones the chatter wears, as the platform's own pictures.
+            for (name, url) in &l.badges {
+                match img::get(cmds, url, BADGE, false) {
+                    Some(p) => v.push(It::Pic(p)),
+                    None => match BADGES
+                        .iter()
+                        .find(|b| b.0.eq_ignore_ascii_case(name))
+                        .and_then(|b| svg(b.0))
+                    {
+                        Some(s) => v.push(It::Svg(s)),
+                        None => continue,
+                    },
+                }
+                v.push(It::Gap(GAP));
+            }
+        }
+        if v.len() > before {
+            v.pop();
+            v.push(It::Space);
         }
     }
     v.push(It::Text(format!("{}:", l.user), Font::HelveticaBold, name_color(l)));
@@ -190,7 +232,7 @@ fn rows(items: Vec<It>, w: i32) -> Rows {
     let mut x = 0;
     for it in items {
         let (iw, ih) = it.size();
-        if matches!(it, It::Space) {
+        if matches!(it, It::Space | It::Gap(_)) {
             x += iw;
             continue;
         }
@@ -352,7 +394,7 @@ impl Pane {
                             let (w, h) = (s.w(), s.h());
                             s.clone().draw(x, y + (rh - h) / 2, w, h);
                         }
-                        It::Space => {}
+                        It::Space | It::Gap(_) => {}
                     }
                 }
                 y += rh;
@@ -657,6 +699,8 @@ pub fn tab(tabs: &Tabs, cfg: &Arc<watch::Sender<Config>>, cmds: &Cmds) -> Rc<Ref
         .with_label("Click a name for that user, right click a message to copy it")
         .with_align(Align::Right | Align::Inside);
     let _ = hint;
+    let mut opts = fltk::menu::MenuButton::default().with_label("Options");
+    top.fixed(&opts, 90);
     let mut clear = button(&mut top, "Clear", 70);
     top.end();
     col.fixed(&top, ROW);
@@ -735,6 +779,35 @@ pub fn tab(tabs: &Tabs, cfg: &Arc<watch::Sender<Config>>, cmds: &Cmds) -> Rc<Ref
             me.borrow_mut().rebuild(true);
         }
     });
+    // What lines show; kept with the window's state.
+    {
+        let w = &cfg.borrow().window;
+        SHOW.set((!w.chat_no_time, !w.chat_no_badges));
+    }
+    let (time, badges) = SHOW.get();
+    for (i, (label, on)) in [("Time", time), ("Badges", badges)].into_iter().enumerate() {
+        let flag = if on {
+            fltk::menu::MenuFlag::Toggle | fltk::menu::MenuFlag::Value
+        } else {
+            fltk::menu::MenuFlag::Toggle
+        };
+        let (me, cfg) = (me.clone(), cfg.clone());
+        opts.add(label, fltk::enums::Shortcut::None, flag, move |m| {
+            let on = m.at(i as i32).is_some_and(|x| x.value());
+            let (mut time, mut badges) = SHOW.get();
+            if i == 0 {
+                time = on;
+            } else {
+                badges = on;
+            }
+            SHOW.set((time, badges));
+            cfg.send_if_modified(|c| {
+                (c.window.chat_no_time, c.window.chat_no_badges) = (!time, !badges);
+                false
+            });
+            me.borrow().images();
+        });
+    }
     clear.set_callback({
         let me = me.clone();
         move |_| {
