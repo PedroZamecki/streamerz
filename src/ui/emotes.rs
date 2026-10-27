@@ -241,7 +241,7 @@ pub fn sections(
             title: "Favorite Emotes".into(),
             note: favorites
                 .is_empty()
-                .then(|| "Right-click any emote or emoji to ★ save it to your Favorites.".into()),
+                .then(|| "Right-click an emote to keep it here.".into()),
             emotes: favorites.to_vec(),
         }],
         Provider::Emoji => groups()
@@ -587,7 +587,7 @@ async fn fetch_twitch_account_emotes(
         return if is_bot {
             vec![EmoteSection {
                 title: "Bot Account Emotes".into(),
-                note: Some("No Twitch bot account logged in — using channel & global emotes.".into()),
+                note: Some("No Twitch bot logged in: channel and global emotes only.".into()),
                 emotes: Vec::new(),
             }]
         } else {

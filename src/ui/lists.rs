@@ -1311,12 +1311,13 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
 
     let users_v = Flex::default().column();
     let mut users_v = users_v;
-    let users = browser(
+    let mut users = browser(
         &mut users_v,
-        &[90, 220, 110, 110, 110],
-        &["Platform", "Name", "Role", "First seen", "Last seen"],
+        &[36, 220, 110, 110, 110],
+        &["", "Name", "Role", "First seen", "Last seen"],
         "Nobody has chatted yet.",
     );
+    users.set_logo_column(0);
     users_v.end();
 
     let mut quotes_v = Flex::default().column();

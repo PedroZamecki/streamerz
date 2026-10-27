@@ -13,6 +13,17 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use tokio::sync::mpsc::UnboundedSender;
 
+/// A platform's name as it writes it ("youtube" is "YouTube").
+pub fn platform_name(slug: &str) -> &str {
+    match slug.to_ascii_lowercase().as_str() {
+        "twitch" => "Twitch",
+        "youtube" => "YouTube",
+        "kick" => "Kick",
+        "tiktok" => "TikTok",
+        _ => slug,
+    }
+}
+
 /// A platform's or app's logo, `size` px square (sharp at any screen scale: it's an SVG).
 pub fn logo(name: &str, size: i32) -> Option<SvgImage> {
     let svg = match name {

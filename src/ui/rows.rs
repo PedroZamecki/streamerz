@@ -22,6 +22,8 @@ struct State {
     lines: Vec<String>,
     widths: &'static [i32],
     empty: &'static str,
+    /// The column holding a platform: drawn as its logo, named on hover.
+    logo: Option<usize>,
     sel: i32,
     hover: i32,
     /// Pixels scrolled.
@@ -79,6 +81,11 @@ impl Rows {
 
     pub fn set_column_widths(&mut self, w: &'static [i32]) {
         self.st.borrow_mut().widths = w;
+    }
+
+    /// Column `c` holds a platform ("twitch"...): its logo shows instead of the text.
+    pub fn set_logo_column(&mut self, c: usize) {
+        self.st.borrow_mut().logo = Some(c);
     }
 
     /// Runs on a click (`app::event_clicks()` tells a double click) and when the keys move the selection.
@@ -218,9 +225,14 @@ impl Rows {
                     (Some(&cw), Some(_)) => cw,
                     _ => x + 4 + rw - cx,
                 };
-                draw::push_clip(cx, ly, cw - 8, LINE);
-                draw::draw_text(col, cx, base);
-                draw::pop_clip();
+                match super::img::logo(super::img::platform_name(col), 16).filter(|_| st.logo == Some(c)) {
+                    Some(mut i) => i.draw(cx, ly + (LINE - 16) / 2, 16, 16),
+                    None => {
+                        draw::push_clip(cx, ly, cw - 8, LINE);
+                        draw::draw_text(col, cx, base);
+                        draw::pop_clip();
+                    }
+                }
                 (cx, c) = (cx + cw, c + 1);
             }
         }
@@ -262,6 +274,14 @@ impl Rows {
                     st.hover = n;
                     f.redraw();
                 }
+                // The logo's platform, by name.
+                let tip = st.logo.and_then(|c| {
+                    let x0: i32 = f.x() + 12 + st.widths.iter().take(c).sum::<i32>();
+                    let on = (x0..x0 + 20).contains(&app::event_x());
+                    let line = st.lines.get(usize::try_from(n - 1).ok()?)?;
+                    on.then(|| super::img::platform_name(line.split('\t').nth(c).unwrap_or("")).to_string())
+                });
+                f.set_tooltip(tip.as_deref().unwrap_or(""));
                 true
             }
             Event::Leave => {

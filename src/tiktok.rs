@@ -394,7 +394,7 @@ impl Runner {
         let (bot, channel) = {
             let c = self.cfg.borrow();
             if crate::secrets::is_locked() {
-                return Err("TikTok: keyring is locked — click Unlock in Accounts".into());
+                return Err("TikTok: keyring is locked, click Unlock in Accounts".into());
             }
             let has = |bot: bool| {
                 if bot {
@@ -467,9 +467,9 @@ impl Runner {
                             said.clear();
                         }
                         let label = if never_live {
-                            format!("@{channel} — standby (no live stream yet)")
+                            format!("@{channel} isn't live yet")
                         } else {
-                            format!("@{channel} — standby (waiting for live)")
+                            format!("@{channel} isn't live, waiting")
                         };
                         shared.set(TikTokStatus::Standby(label));
                         if engine.stream_warming_up() {
@@ -484,7 +484,7 @@ impl Runner {
                         if shared.connected.load(Ordering::Relaxed) {
                             disconnected(&engine, &channel);
                         }
-                        let msg = format!("@{channel} not found — check the channel @handle in Accounts");
+                        let msg = format!("@{channel} not found, check the @handle in Accounts");
                         if msg != said {
                             crate::say(format!("TikTok: {msg}"));
                             said.clone_from(&msg);
@@ -509,7 +509,7 @@ impl Runner {
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_secs(wait)) => {}
                     _ = engine.live_wake.notified() => {
-                        crate::say(format!("TikTok: stream start detected — checking @{channel} now..."));
+                        crate::say(format!("TikTok: stream started, checking @{channel}"));
                     }
                 }
             }

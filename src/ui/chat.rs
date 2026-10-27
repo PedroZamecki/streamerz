@@ -144,26 +144,6 @@ const ICONS: &[(&str, &str)] = &[
     ),
     // UI Icons: User avatar fallback, Smiley/Emotes, Send plane, Broadcast/Message-All, Star, Search, 7TV, BTTV, FFZ
     (
-        "ui:user",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><circle cx="10" cy="10" r="9" fill="#3A3D45"/><circle cx="10" cy="7.5" r="3.2" fill="#D8DCE6"/><path d="M4.5 16.2c1-2.8 3.2-4.2 5.5-4.2s4.5 1.4 5.5 4.2" fill="#D8DCE6"/></svg>"##,
-    ),
-    (
-        "ui:emotes",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="none" stroke="#DCDFE6" stroke-width="1.7"/><circle cx="7.2" cy="8.2" r="1.2" fill="#DCDFE6"/><circle cx="12.8" cy="8.2" r="1.2" fill="#DCDFE6"/><path d="M6.5 11.8c.9 1.9 2.2 2.7 3.5 2.7s2.6-.8 3.5-2.7" fill="none" stroke="#DCDFE6" stroke-width="1.7" stroke-linecap="round"/></svg>"##,
-    ),
-    (
-        "ui:send",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M2.5 3.5 17.8 10 2.5 16.5 5.2 10z" fill="#5CA8FF"/><path d="M5.2 10h6.8" stroke="#1E1E20" stroke-width="1.4" stroke-linecap="round"/></svg>"##,
-    ),
-    (
-        "ui:broadcast",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M3 5.5h11a1.5 1.5 0 0 1 1.5 1.5v5a1.5 1.5 0 0 1-1.5 1.5H7l-3.2 2.5V13.5H3A1.5 1.5 0 0 1 1.5 12V7A1.5 1.5 0 0 1 3 5.5z" fill="none" stroke="#C8CCD4" stroke-width="1.5"/><path d="M17.2 7.2h1.3v5.5h-4.5" fill="none" stroke="#5CA8FF" stroke-width="1.5" stroke-linecap="round"/></svg>"##,
-    ),
-    (
-        "ui:star",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="m10 2.3 2.3 4.7 5.2.8-3.8 3.6.9 5.2L10 14.1l-4.6 2.5.9-5.2-3.8-3.6 5.2-.8z" fill="#F5C542"/></svg>"##,
-    ),
-    (
         "ui:7tv",
         r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 20"><path d="M2 4h9.5L6.5 16H3.2l3.8-9H2z" fill="#29B6F6"/><path d="M12.5 7h3l1.7 5.2L19 7h3l-3.4 9h-2.8z" fill="#E8EAED"/></svg>"##,
     ),
@@ -1035,7 +1015,9 @@ struct ChatColumn {
     acct_btn: Button,
     input: Input,
     target_plat: Rc<Cell<usize>>,
-    allow_switch_plat: Rc<Cell<bool>>,
+    /// The chat box and what it answers (hidden in the all-platforms view).
+    bar: Flex,
+    set_reply: SetReply,
 }
 
 impl ChatColumn {
@@ -1067,20 +1049,20 @@ impl ChatColumn {
 
         let mut acct_btn = Button::default();
         acct_btn.set_frame(FrameType::FlatBox);
-        acct_btn.set_image(icon_sized("ui:user", 20));
+        acct_btn.set_image(icons::icon("circle-user-round", super::muted(), 20));
         bar.fixed(&acct_btn, 32);
 
         let mut input = Input::default();
 
         let mut emote_btn = Button::default();
         emote_btn.set_frame(FrameType::FlatBox);
-        emote_btn.set_image(icon_sized("ui:emotes", 18));
+        emote_btn.set_image(icons::icon("smile", super::muted(), 18));
         emote_btn.set_tooltip("Emotes & emoji for this platform and account");
         bar.fixed(&emote_btn, 32);
 
         let mut send_btn = Button::default();
         send_btn.set_frame(FrameType::FlatBox);
-        send_btn.set_image(icon_sized("ui:send", 18));
+        send_btn.set_image(icons::icon("send-horizontal", Color::Selection, 18));
         send_btn.set_tooltip("Send message (Enter)");
         bar.fixed(&send_btn, 32);
 
@@ -1093,14 +1075,12 @@ impl ChatColumn {
             PLATFORMS.iter().position(|p| *p == saved).unwrap_or(0)
         });
         let target_plat = Rc::new(Cell::new(init_idx));
-        let allow_switch_plat = Rc::new(Cell::new(fixed_plat.is_none()));
         let reply: Rc<RefCell<Option<Line>>> = Rc::default();
         let click = emote_field(&mut input, cmds, target_plat.clone(), "Send a message");
         // Answer `l` (None: stop); in the all-platforms box, to `l`'s platform.
         let set_reply: SetReply = {
             let (reply, col, replying, r_text) = (reply.clone(), col.clone(), replying.clone(), r_text.clone());
-            let (target_plat, allow_switch_plat, input) =
-                (target_plat.clone(), allow_switch_plat.clone(), input.clone());
+            let input = input.clone();
             Rc::new(move |l: Option<&Line>| {
                 let (mut col, mut replying, mut r_text, mut input) =
                     (col.clone(), replying.clone(), r_text.clone(), input.clone());
@@ -1109,11 +1089,6 @@ impl ChatColumn {
                     Some(l) => {
                         let said = l.text.replace('@', "@@");
                         r_text.set_label(&format!("Replying to @@{}: {said}", l.user.replace('@', "@@")));
-                        if allow_switch_plat.get() {
-                            if let Some(i) = PLATFORMS.iter().position(|p| *p == l.platform) {
-                                target_plat.set(i);
-                            }
-                        }
                         replying.show();
                         col.fixed(&replying, 22);
                         let _ = input.take_focus();
@@ -1142,7 +1117,8 @@ impl ChatColumn {
             acct_btn: acct_btn.clone(),
             input: input.clone(),
             target_plat: target_plat.clone(),
-            allow_switch_plat: allow_switch_plat.clone(),
+            bar: bar.clone(),
+            set_reply: set_reply.clone(),
         };
 
         let do_send = {
@@ -1221,15 +1197,15 @@ impl ChatColumn {
         let mut btn = self.acct_btn.clone();
         match pic {
             Some(img) => btn.set_image(Some(img)),
-            None => btn.set_image(icon_sized("ui:user", 20)),
+            None => btn.set_image(icons::icon("circle-user-round", super::muted(), 20)),
         }
         let role_str = if use_bot { "Bot" } else { "Broadcaster" };
         let tip = match &sender_name {
             Some(name) => format!(
-                "{plat_name} — sending as {} ({role_str}). Click to info / switch account",
+                "{plat_name}: sending as {} ({role_str}). Click to switch",
                 name.replace('@', "@@")
             ),
-            None => format!("{plat_name} — no account logged in. Click for account options"),
+            None => format!("{plat_name}: nobody logged in. Click for options"),
         };
         btn.set_tooltip(&tip);
         let mut inp = self.input.clone();
@@ -1313,24 +1289,8 @@ impl Chat {
             for col in &self.side {
                 col.refresh_sender(&self.cfg, &self.cmds);
             }
-        } else {
-            if let Some(shown_slug) = self.shown() {
-                if let Some(idx) = PLATFORMS.iter().position(|p| *p == shown_slug) {
-                    self.main.target_plat.set(idx);
-                    self.main.allow_switch_plat.set(false);
-                }
-            } else {
-                let saved = self.cfg.borrow().window.chat_all_platform.clone();
-                let plats = self.plats.borrow();
-                let idx = PLATFORMS
-                    .iter()
-                    .position(|p| *p == saved)
-                    .filter(|i| plats.is_empty() || plats.contains(i))
-                    .or_else(|| plats.first().copied())
-                    .unwrap_or(0);
-                self.main.target_plat.set(idx);
-                self.main.allow_switch_plat.set(true);
-            }
+        } else if let Some(i) = self.shown().and_then(|s| PLATFORMS.iter().position(|p| *p == s)) {
+            self.main.target_plat.set(i);
             self.main.refresh_sender(&self.cfg, &self.cmds);
         }
     }
@@ -1401,6 +1361,27 @@ impl Chat {
                 p.col.hide();
             }
         }
+        // All together: no chat box (Message all sends); Reply opens it for that line.
+        let together = self.view.value() == 0;
+        let mut bar = self.main.bar.clone();
+        if together {
+            (self.main.set_reply)(None);
+            bar.hide();
+            self.main.col.fixed(&bar, 0);
+            let (cfg, cmds) = (self.cfg.clone(), self.cmds.clone());
+            self.main.pane.on_reply.replace(Some(Rc::new(move |l: &Line| {
+                message_all_popup(&cfg, &cmds, Some(l.clone()))
+            })));
+        } else {
+            bar.show();
+            self.main.col.fixed(&bar, ROW + 4);
+            let set_reply = self.main.set_reply.clone();
+            self.main
+                .pane
+                .on_reply
+                .replace(Some(Rc::new(move |l: &Line| set_reply(Some(l)))));
+        }
+        self.main.col.layout();
         self.client_gen = 0;
         self.seen = 0;
         self.refresh_senders();
@@ -1430,7 +1411,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
     let mut msg_all = Button::default()
         .with_label(" Message all")
         .with_align(Align::Inside | Align::ImageNextToText);
-    msg_all.set_image(icon_sized("ui:broadcast", 15));
+    msg_all.set_image(icons::icon("megaphone", Color::Foreground, 15));
     msg_all.set_tooltip("Open a popup to send a message to multiple platforms at once");
     top.fixed(&msg_all, 114);
 
@@ -1504,7 +1485,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
 
     msg_all.set_callback({
         let (cfg, cmds) = (cfg.clone(), cmds.clone());
-        move |_| message_all_popup(&cfg, &cmds)
+        move |_| message_all_popup(&cfg, &cmds, None)
     });
 
     {
@@ -1553,9 +1534,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
 /// shows account details, connection status, and lets the user switch between Broadcaster and Bot
 /// (and in `"All together"` mode, pick which platform the single input sends to).
 fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accounts: Rc<dyn Fn()>) {
-    let switch_plat = col_ui.allow_switch_plat.get();
-    let cur_p = col_ui.target_plat.get().min(3);
-    let h = 236 + i32::from(switch_plat) * 38 + i32::from(crate::secrets::is_locked()) * 34;
+    let h = 236 + i32::from(crate::secrets::is_locked()) * 34;
     let mut win = Window::default().with_size(430, h).with_label("Sending Account");
     win.set_xclass("streamerz");
     win.make_modal(true);
@@ -1567,7 +1546,7 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
         let mut lrow = Flex::default().row();
         lrow.set_pad(8);
         let mut lbl = Frame::default()
-            .with_label("🔒 Keyring locked — unlock saved logins?")
+            .with_label("Keyring locked. Unlock saved logins?")
             .with_align(Align::Left | Align::Inside);
         lbl.set_label_color(Color::from_rgb(0xe0, 0xa8, 0x30));
         let mut ubtn = button(&mut lrow, "Unlock", 80);
@@ -1579,22 +1558,6 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
             unlock_logins_interactive(&cmds_c);
             win_c.hide();
         });
-    }
-
-    let mut plat_choice_opt = None;
-    if switch_plat {
-        let mut prow = Flex::default().row();
-        prow.set_pad(8);
-        let lbl = Frame::default()
-            .with_label("Send to platform:")
-            .with_align(Align::Left | Align::Inside);
-        prow.fixed(&lbl, 130);
-        let mut ch = Choice::default();
-        ch.add_choice(&NAMES.join("|"));
-        ch.set_value(cur_p as i32);
-        prow.end();
-        root.fixed(&prow, ROW);
-        plat_choice_opt = Some(ch);
     }
 
     let mut head = Flex::default().row();
@@ -1622,13 +1585,13 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
     }
 
     let note = Frame::default()
-        .with_label("Emote picker automatically switches to the selected account's unlocked emotes.")
+        .with_label("The emote picker shows what the chosen account can use.")
         .with_align(Align::Left | Align::Inside | Align::Wrap);
     root.fixed(&note, 28);
 
     let mut bottom = Flex::default().row();
     bottom.set_pad(8);
-    let mut manage = button(&mut bottom, "Manage in Accounts…", 160);
+    let mut manage = button(&mut bottom, "Accounts...", 110);
     Frame::default();
     let mut close = button(&mut bottom, "Close", 80);
     bottom.end();
@@ -1659,14 +1622,15 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
             })
             .unwrap_or((false, false));
             head_logo.set_image(img::logo(pname, 18));
-            let st_txt = if conn {
-                "● Connected"
+            let (h, st_txt) = if conn {
+                (super::Health::Up, "Connected")
             } else if standby {
-                "◐ Standby (offline)"
+                (super::Health::Standby, "Standby")
             } else {
-                "○ Not connected"
+                (super::Health::Off, "Off")
             };
-            head_title.set_label(&format!("{pname}  —  {st_txt}"));
+            h.show(&mut head_title, &format!("{pname}: {st_txt}"));
+            head_title.set_label_font(Font::HelveticaBold);
 
             let want_broadcaster = cfg.borrow().window.chat_as_broadcaster.iter().any(|s| s == slug);
             let slots = platform_accounts(&cmds, &cfg, slug, 32);
@@ -1683,7 +1647,7 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
                     Some(s) => {
                         match &s.pic {
                             Some(im) => pic_f.set_image(Some(im.clone())),
-                            None => pic_f.set_image(icon_sized("ui:user", 28)),
+                            None => pic_f.set_image(icons::icon("circle-user-round", super::muted(), 28)),
                         }
                         let label = match s.note {
                             Some(n) => format!("{role}: {} ({n})", s.name.replace('@', "@@")),
@@ -1692,16 +1656,18 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
                         info_f.set_label(&label);
                         btn.activate();
                         if is_active {
-                            btn.set_label("✓ Active");
+                            btn.set_label("Active");
+                            btn.set_image(icons::before_label("check", Color::White, 14));
                             btn.set_color(Color::from_rgb(0x2e, 0x6b, 0x47));
                         } else {
                             btn.set_label("Use account");
+                            btn.set_image(None::<SvgImage>);
                             btn.set_color(Color::Background);
                         }
                     }
                     None => {
-                        pic_f.set_image(icon_sized("ui:user", 28));
-                        let suffix = if is_pref { " (preferred, falls back)" } else { "" };
+                        pic_f.set_image(icons::icon("circle-user-round", super::muted(), 28));
+                        let suffix = if is_pref { " (preferred, using the other)" } else { "" };
                         info_f.set_label(&format!("{role}: not logged in{suffix}"));
                         btn.set_label("Not logged in");
                         btn.set_color(Color::Background);
@@ -1714,21 +1680,6 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
             }
         }
     };
-
-    if let Some(mut ch) = plat_choice_opt {
-        let cfg = cfg.clone();
-        let target_plat = col_ui.target_plat.clone();
-        let mut populate = populate.clone();
-        ch.set_callback(move |c| {
-            let idx = c.value().clamp(0, 3) as usize;
-            target_plat.set(idx);
-            cfg.send_if_modified(|cfg| {
-                cfg.window.chat_all_platform = PLATFORMS[idx].to_string();
-                false
-            });
-            populate();
-        });
-    }
 
     for (bot_i, (_, _, mut btn)) in slot_uis.into_iter().enumerate() {
         let is_bot = bot_i == 1;
@@ -1776,7 +1727,7 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
 
 /// Popup opened by the discrete `"Message all"` button in the top bar:
 /// lets the user pick target platforms, bot/broadcaster + fallback behavior, emotes, and send.
-fn message_all_popup(cfg: &Cfg, cmds: &Cmds) {
+fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
     let conn_states: [bool; 4] = query(cmds, |e| {
         [
             e.twitch_connected(),
@@ -1804,9 +1755,16 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds) {
     let mut col = Flex::new(12, 12, 496, 186, None).column();
     col.set_pad(8);
 
-    let title = Frame::default()
-        .with_label("Send one message across selected platforms:")
-        .with_align(Align::Left | Align::Inside);
+    let mut title = Frame::default()
+        .with_label("Send to:")
+        .with_align(Align::Left | Align::Inside | Align::Clip);
+    if let Some(l) = &reply {
+        let said = format!("Replying to @{}: {}", l.user, l.text);
+        title.set_label(&said.replace('@', "@@"));
+        title.set_image(icons::before_label("corner-up-left", super::muted(), 14));
+        title.set_align(Align::Left | Align::Inside | Align::Clip | Align::ImageNextToText);
+        title.set_label_color(super::muted());
+    }
     col.fixed(&title, 22);
 
     let mut plat_row = Flex::default().row();
@@ -1816,7 +1774,11 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds) {
         let suffix = if conn_states[i] { "" } else { " (offline)" };
         let mut c = CheckButton::default().with_label(&format!("{}{suffix}", NAMES[i]));
         let any_conn = conn_states.iter().any(|&x| x);
-        c.set_checked(if any_conn { conn_states[i] } else { set_up[i] });
+        c.set_checked(match &reply {
+            Some(l) => l.platform == PLATFORMS[i],
+            None if any_conn => conn_states[i],
+            None => set_up[i],
+        });
         if !set_up[i] && !conn_states[i] {
             c.deactivate();
         }
@@ -1843,15 +1805,15 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds) {
     let mut bar = Flex::default().row();
     bar.set_pad(4);
     let mut input = Input::default();
-    super::placeholder(&mut input, "Send a message to every platform");
+    let click = emote_field(&mut input, cmds, Rc::new(Cell::new(0)), "Send a message");
     let mut emote_btn = Button::default();
     emote_btn.set_frame(FrameType::FlatBox);
-    emote_btn.set_image(icon_sized("ui:emotes", 18));
+    emote_btn.set_image(icons::icon("smile", super::muted(), 18));
     emote_btn.set_tooltip("Pick emotes & emoji");
     bar.fixed(&emote_btn, 32);
     let mut send_btn = Button::default();
     send_btn.set_frame(FrameType::FlatBox);
-    send_btn.set_image(icon_sized("ui:send", 18));
+    send_btn.set_image(icons::icon("send-horizontal", Color::Selection, 18));
     send_btn.set_tooltip("Send to all checked platforms (Enter)");
     bar.fixed(&send_btn, 32);
     bar.end();
@@ -1892,8 +1854,9 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds) {
             }
             let use_bot = who.value() == 0;
             let fb = fallback.is_checked();
+            let reply = reply.clone();
             tell(&cmds, move |e| {
-                let _ = e.send_chat_list(&targets, &text, use_bot, fb, None);
+                let _ = e.send_chat_list(&targets, &text, use_bot, fb, reply.as_ref());
             });
             done.set(true);
         }
@@ -1905,7 +1868,10 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds) {
     });
     input.handle({
         let mut s = do_send;
-        move |_, ev| {
+        move |i, ev| {
+            if click(i, ev) {
+                return true;
+            }
             if ev == Event::KeyDown && app::event_key() == Key::Enter {
                 s();
                 return true;
@@ -1941,7 +1907,7 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds) {
 
 fn provider_icon(prov: Provider, platform: &str, size: i32) -> Option<SvgImage> {
     match prov {
-        Provider::Favorites => icon_sized("ui:star", size),
+        Provider::Favorites => icons::icon("star", Color::from_rgb(0xf5, 0xc5, 0x42), size),
         Provider::Platform => {
             let name = match platform {
                 "twitch" => "Twitch",
@@ -1955,7 +1921,7 @@ fn provider_icon(prov: Provider, platform: &str, size: i32) -> Option<SvgImage> 
         Provider::SevenTv => icon_sized("ui:7tv", size),
         Provider::Bttv => icon_sized("ui:bttv", size),
         Provider::Ffz => icon_sized("ui:ffz", size),
-        Provider::Emoji => icon_sized("ui:emotes", size),
+        Provider::Emoji => icons::icon("smile", super::muted(), size),
     }
 }
 

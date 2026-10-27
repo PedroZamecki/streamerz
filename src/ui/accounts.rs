@@ -1,14 +1,14 @@
 //! The Accounts tab: one row per platform (status, channel, Connect, broadcaster and bot logins),
 //! with the rarely needed settings behind Advanced.
 
-use super::lists::{save, title};
+use super::lists::save;
 use super::{button, dialogs, query, tell, ROW};
 use crate::engine::Engine;
 use crate::model::Obj;
 use crate::Config;
 use fltk::button::{Button, CheckButton};
 use fltk::dialog;
-use fltk::enums::{Align, Color};
+use fltk::enums::Align;
 use fltk::frame::Frame;
 use fltk::group::{Flex, Wizard};
 use fltk::input::{Input, SecretInput};
@@ -85,7 +85,7 @@ impl P {
                 };
                 if a.token.access_token.is_empty() {
                     Some(if locked {
-                        "keyring locked — click Unlock Logins"
+                        "keyring locked, click Unlock Logins"
                     } else {
                         "login expired: log in again"
                     })
@@ -98,16 +98,16 @@ impl P {
             P::YouTube => {
                 let a = if bot { &c.youtube.bot } else { &c.youtube.broadcaster }.as_ref()?;
                 (a.token.access_token.is_empty() && a.token.refresh_token.is_empty() && locked)
-                    .then_some("keyring locked — click Unlock Logins")
+                    .then_some("keyring locked, click Unlock Logins")
             }
             P::Kick => {
                 let a = if bot { &c.kick.bot } else { &c.kick.broadcaster }.as_ref()?;
                 (a.token.access_token.is_empty() && a.token.refresh_token.is_empty() && locked)
-                    .then_some("keyring locked — click Unlock Logins")
+                    .then_some("keyring locked, click Unlock Logins")
             }
             P::TikTok => {
                 let a = if bot { &c.tiktok.bot } else { &c.tiktok.broadcaster }.as_ref()?;
-                (a.session_cookie.is_empty() && locked).then_some("keyring locked — click Unlock Logins")
+                (a.session_cookie.is_empty() && locked).then_some("keyring locked, click Unlock Logins")
             }
         }
     }
@@ -498,11 +498,10 @@ impl Accounts {
         let locked = crate::secrets::is_locked();
         if locked {
             let detail = match crate::secrets::locked_reason() {
-                Some(reason) if !reason.is_empty() => format!("🔒 Saved logins locked ({reason})"),
-                _ => "🔒 Saved logins are locked because the system keyring wasn't ready or is locked.".to_string(),
+                Some(reason) if !reason.is_empty() => format!("Saved logins are locked ({reason})"),
+                _ => "Saved logins are locked: the system keyring is locked or wasn't ready".to_string(),
             };
-            self.lock_msg.set_label(&detail.replace('@', "@@"));
-            self.lock_msg.set_label_color(Color::from_rgb(0xe0, 0xa8, 0x30));
+            super::Health::Locked.show(&mut self.lock_msg, &detail);
             self.lock_bar.show();
         } else {
             self.lock_bar.hide();
@@ -511,19 +510,16 @@ impl Accounts {
         let c = self.cfg.borrow();
         for (i, r) in self.rows.iter_mut().enumerate() {
             let active = on[i] || standby[i];
-            let (text, color) = if on[i] {
-                ("● Connected".to_string(), Color::from_rgb(0x3c, 0xb3, 0x71))
+            use super::Health as H;
+            let (h, text) = if on[i] {
+                (H::Up, "Connected".to_string())
             } else if standby[i] {
-                let s = match r.p {
-                    P::TikTok if !tiktok.is_empty() => format!("◐ {tiktok}"),
-                    _ => "◐ Standby — waiting for live stream (wakes on stream start)".to_string(),
-                };
-                (s, Color::from_rgb(0x64, 0xb5, 0xf6))
+                match r.p {
+                    P::TikTok if !tiktok.is_empty() => (H::Standby, tiktok.clone()),
+                    _ => (H::Standby, "Standby, connects when the stream starts".to_string()),
+                }
             } else if locked && r.p.raw_account_name(&c, false).is_some() {
-                (
-                    "🔒 Keyring locked — click Unlock Logins above".to_string(),
-                    Color::from_rgb(0xe0, 0xa8, 0x30),
-                )
+                (H::Locked, "Keyring locked, unlock above".to_string())
             } else {
                 let why = match r.p {
                     P::Twitch if c.twitch.broadcaster.is_none() => "log in the broadcaster first".into(),
@@ -532,21 +528,18 @@ impl Accounts {
                     p if p.channel(&c).is_empty() => "log in the broadcaster first".into(),
                     _ => String::new(),
                 };
-                let t = if why.is_empty() {
-                    "○ Not connected".to_string()
+                if why.is_empty() {
+                    (H::Off, "Off".to_string())
                 } else {
-                    format!("○ Not connected: {why}")
-                };
-                (t, Color::from_rgb(0x99, 0x99, 0x99))
+                    (H::Off, format!("Off, {why}"))
+                }
             };
-            // "@name" would be read as a symbol and cut the label.
-            r.status.set_label(&text.replace('@', "@@"));
+            h.show(&mut r.status, &text);
             r.status.set_tooltip(&text.replace('@', "@@"));
-            r.status.set_label_color(color);
             r.connect.set_label(if active { "Disconnect" } else { "Connect" });
             super::with_icon(&mut r.connect);
             r.channel.set_label(&if r.p.own(&c) {
-                "Channel: the broadcaster's".to_string()
+                "Channel: yours".to_string()
             } else {
                 format!("Channel: {} (Advanced)", r.p.channel(&c).replace('@', "@@"))
             });
@@ -590,9 +583,14 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
 
     let mut rows = Vec::new();
     for p in ALL {
-        title(&mut col, p.name());
         let mut top = Flex::default().row();
         top.set_pad(8);
+        let mut name = Frame::default()
+            .with_label(&format!("  {}", p.name()))
+            .with_align(Align::Left | Align::Inside | Align::ImageNextToText);
+        name.set_label_font(fltk::enums::Font::HelveticaBold);
+        name.set_image(super::img::logo(p.name(), ROW - 8));
+        top.fixed(&name, 110);
         let status = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
         let auto = CheckButton::default().with_label("Connect on start");
         top.fixed(&auto, 140);
@@ -603,10 +601,11 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
 
         let mut bottom = Flex::default().row();
         bottom.set_pad(8);
-        let channel = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
-        bottom.fixed(&channel, 230);
         let gap = Frame::default();
-        bottom.fixed(&gap, 8);
+        bottom.fixed(&gap, 110);
+        let mut channel = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+        channel.set_label_color(super::muted());
+        bottom.fixed(&channel, 160);
         let mut who = Vec::new();
         for _ in 0..2 {
             let pic = Frame::default();
@@ -618,7 +617,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
         bottom.end();
         col.fixed(&bottom, ROW);
         let sep = Frame::default();
-        col.fixed(&sep, 6);
+        col.fixed(&sep, 10);
         let who: [(Frame, Frame, Button); 2] = [who.remove(0), who.remove(0)];
         rows.push(Row {
             p,
@@ -632,14 +631,14 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
     }
     let guide = Frame::default()
         .with_label(
-            "• Login opens your browser (Twitch shows a code to type at twitch.tv/activate).\n\
-             • In Chat, click the avatar next to any chat box to switch between Bot and Broadcaster.\n\
-             • Kick and YouTube send with your own app: Advanced shows how to make one (once).\n\
-             • YouTube & TikTok stand by quietly while offline and wake up automatically on stream start.\n\
-             • Each platform reads the broadcaster's channel; another one can be set in Advanced.",
+            "Login opens your browser; Twitch shows a code to type at twitch.tv/activate.\n\
+             Kick and YouTube need your own app once: Advanced shows how.\n\
+             YouTube and TikTok wait quietly while you're offline and connect when the stream starts.\n\
+             To read another channel than yours, set it in Advanced.",
         )
         .with_align(Align::Left | Align::Inside | Align::Wrap);
-    col.fixed(&guide, 88);
+    guide.clone().set_label_color(super::muted());
+    col.fixed(&guide, 72);
     Frame::default();
     col.end();
 

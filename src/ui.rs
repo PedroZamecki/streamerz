@@ -277,6 +277,49 @@ fn muted() -> Color {
     Color::color_average(Color::Foreground, Color::Background2, 0.5)
 }
 
+/// How a connection is doing, shown the same way everywhere: an icon and a colour.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Health {
+    Up,
+    /// Waiting for the stream to start.
+    Standby,
+    Busy,
+    Off,
+    Down,
+    Locked,
+}
+
+impl Health {
+    pub(crate) fn color(self) -> Color {
+        match self {
+            Health::Up => Color::from_rgb(0x3c, 0xb3, 0x71),
+            Health::Standby => Color::from_rgb(0x64, 0xb5, 0xf6),
+            Health::Busy | Health::Locked => Color::from_rgb(0xe0, 0xa8, 0x30),
+            Health::Off => Color::from_rgb(0x99, 0x99, 0x99),
+            Health::Down => Color::from_rgb(0xe0, 0x60, 0x50),
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Health::Up => "circle-check",
+            Health::Standby => "moon",
+            Health::Busy => "loader-circle",
+            Health::Off => "circle-off",
+            Health::Down => "circle-alert",
+            Health::Locked => "lock",
+        }
+    }
+
+    /// `f` shows `text` in this state: its icon before it, both in its colour.
+    pub(crate) fn show(self, f: &mut impl WidgetExt, text: &str) {
+        f.set_label(&text.replace('@', "@@"));
+        f.set_label_color(self.color());
+        f.set_image(icons::before_label(self.icon(), self.color(), 14));
+        f.set_align(Align::Left | Align::Inside | Align::Clip | Align::ImageNextToText);
+    }
+}
+
 /// `text` in an empty field that isn't being typed in, saying what goes there.
 fn placeholder(i: &mut fltk::input::Input, text: &'static str) {
     i.draw(move |i| {
@@ -531,13 +574,8 @@ pub fn run(
         move || {
             let mut conns = conns.clone();
             let (label, all) = conns::summary(&cfg, &cmds);
-            conns.set_label(&label);
-            conns.set_tooltip("Click for each connection: its state, Retry and its settings");
-            conns.set_label_color(match all {
-                Some(true) => fltk::enums::Color::from_rgb(0x3c, 0xb3, 0x71),
-                Some(false) => fltk::enums::Color::from_rgb(0x99, 0x99, 0x99),
-                None => fltk::enums::Color::from_rgb(0xe0, 0xa8, 0x30),
-            });
+            conns.set_tooltip("Each connection, how it's doing, and Retry");
+            all.show(&mut conns, &label);
             conns.redraw();
         }
     };
