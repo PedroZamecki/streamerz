@@ -10,21 +10,21 @@
 use super::accounts::{platform_accounts, unlock_logins_interactive};
 use super::emotes::{self, EmoteSection, Provider};
 use super::img::{self, Pic};
+use super::rows::Rows as InfoRows;
 use super::{button, query, tell, ROW};
 use crate::engine::chatlog::{Line, Moderate, PLATFORMS};
 use crate::Config;
 use fltk::app;
-use fltk::browser::HoldBrowser;
 use fltk::button::{Button, CheckButton};
 use fltk::draw;
 use fltk::enums::{Align, CallbackTrigger, Color, Event, Font, FrameType, Key};
 use fltk::frame::Frame;
-use fltk::group::{Flex, Scroll, Tabs};
+use fltk::group::{Flex, Scroll, Wizard};
 use fltk::image::SvgImage;
 use fltk::input::Input;
 use fltk::menu::Choice;
 use fltk::prelude::*;
-use fltk::valuator::Scrollbar;
+use fltk::valuator::Slider;
 use fltk::window::Window;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -538,7 +538,7 @@ fn acts(l: &Line) -> Vec<(Act, &'static str, &'static str)> {
 #[derive(Clone)]
 struct Pane {
     area: Frame,
-    bar: Scrollbar,
+    bar: Slider,
     st: Rc<RefCell<State>>,
     cmds: Cmds,
     /// Where Reply writes the mention.
@@ -552,9 +552,22 @@ impl Pane {
         let mut area = Frame::default();
         area.set_frame(FrameType::DownBox);
         area.set_color(Color::Background2);
-        let mut bar = Scrollbar::default();
-        bar.set_type(fltk::valuator::ScrollbarType::VerticalNice);
-        group.fixed(&bar, 14);
+        // A slider has no arrows: drawn over as a thin rounded bar, like the lists'.
+        let mut bar = Slider::default();
+        bar.draw(|b| {
+            let (x, y, w, h) = (b.x(), b.y(), b.w(), b.h());
+            draw::draw_rect_fill(x, y, w, h, Color::Background);
+            let max = b.maximum() - b.minimum();
+            if max <= 0.0 {
+                return;
+            }
+            let th = ((h as f32 * b.slider_size()) as i32).clamp(24.min(h), h);
+            let ty = y + ((h - th) as f64 * (b.value() - b.minimum()) / max) as i32;
+            let c = Color::color_average(Color::Foreground, Color::Background, 0.3);
+            draw::set_draw_color(c);
+            draw::draw_rounded_rectf(x + (w - 6) / 2, ty, 6, th, 3);
+        });
+        group.fixed(&bar, 12);
         group.end();
         let p = Pane {
             area: area.clone(),
@@ -1257,7 +1270,7 @@ impl Chat {
     }
 }
 
-pub fn tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
+pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
     let mut col = super::tab(tabs, "Chat");
     let mut top = Flex::default().row();
     top.set_pad(6);
@@ -1265,10 +1278,11 @@ pub fn tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
     top.fixed(&l, 46);
     let mut view = Choice::default();
     top.fixed(&view, 136);
-    let hint = Frame::default()
-        .with_label("Click a name for user info · Hover a message for its actions")
+    let mut hint = Frame::default()
+        .with_label("Click a name for its info, hover a line for actions")
         .with_align(Align::Right | Align::Inside | Align::Clip);
-    let _ = hint;
+    hint.set_label_size(12);
+    hint.set_label_color(super::muted());
 
     // Discrete "Message all" button with broadcast icon
     let mut msg_all = Button::default()
@@ -1287,15 +1301,7 @@ pub fn tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
     let go_accounts: Rc<dyn Fn()> = {
         let tabs = tabs.clone();
         Rc::new(move || {
-            let mut t = tabs.clone();
-            if let Some(g) = (0..t.children())
-                .filter_map(|i| t.child(i))
-                .find(|c| c.label() == "Accounts")
-                .and_then(|c| c.as_group())
-            {
-                let _ = t.set_value(&g);
-                t.do_callback();
-            }
+            super::nav::go(&tabs, "Accounts");
         })
     };
 
@@ -2247,10 +2253,8 @@ fn card(cmds: &Cmds, l: &Line) {
     name.set_image(img::logo(platform, 20));
     head.end();
     col.fixed(&head, 64);
-    let mut rows = HoldBrowser::default();
+    let mut rows = InfoRows::new("");
     rows.set_column_widths(&[150]);
-    rows.set_column_char('\t');
-    rows.set_format_char('\u{1}');
     let mut bottom = Flex::default().row();
     Frame::default();
     let mut open = button(&mut bottom, "Open profile", 110);
@@ -2259,9 +2263,9 @@ fn card(cmds: &Cmds, l: &Line) {
     col.fixed(&bottom, ROW);
     col.end();
     win.end();
-    win.resizable(&rows);
+    win.resizable(&*rows);
 
-    let add = |rows: &mut HoldBrowser, k: &str, v: &str| {
+    let add = |rows: &mut InfoRows, k: &str, v: &str| {
         rows.add(&format!("{k}\t{}", v.replace(['\n', '\t'], " ")));
     };
     let roles: Vec<&str> = [
