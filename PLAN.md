@@ -311,7 +311,10 @@ platform handles through channels, never through shared locks held across awaits
   button, field, list and tab, drawn by two box functions; the open tab joins its page; light theme too.
 - [x] 43. More visual work: column titles over the lists, a hint in empty lists and trees, placeholders in
   search and message fields, roomier menus, thinner scrollbars.
-- [ ] 44+. Later extras, one phase each, order chosen then (see Decisions).
+- [x] 44. Sidebar and drawn lists: the 16 tabs become a sidebar with five sections (Live, Automation,
+  Connections, Data, App) and a Lucide icon per page; lists drawn by hand with roomy rows, a hover highlight
+  and a thin scrollbar; the chat scrollbar is flat, without arrows.
+- [ ] 45+. Later extras, one phase each, order chosen then (see Decisions).
 
 ## Open points (decide when the phase starts, ask first)
 

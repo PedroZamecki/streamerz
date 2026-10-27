@@ -3,17 +3,17 @@
 //! there; drag a sub-action to reorder it or into a container (group, branch, loop).
 
 use super::forms::{self, Done, Lists};
+use super::rows::Rows;
 use super::{button, dialogs, ROW};
 use crate::edit::{self, Path};
 use crate::engine::{UiCmd, DEFAULT_QUEUE};
 use crate::model::Obj;
 use crate::types::{name, SUB_ACTION_INFO, TRIGGERS};
 use crate::Config;
-use fltk::browser::HoldBrowser;
 use fltk::button::Button;
 use fltk::enums::{Align, Color, Cursor, Event, Font, Key};
 use fltk::frame::Frame;
-use fltk::group::{Flex, Tabs};
+use fltk::group::{Flex, Wizard};
 use fltk::input::Input;
 use fltk::prelude::*;
 use fltk::tree::{Tree, TreeItem, TreeReason, TreeSelect};
@@ -28,7 +28,7 @@ pub struct Actions {
     cfg: Arc<watch::Sender<Config>>,
     cmds: UnboundedSender<UiCmd>,
     tree: Tree,
-    triggers: HoldBrowser,
+    triggers: Rows,
     subs: Tree,
     title: Frame,
     search_actions: Input,
@@ -455,7 +455,7 @@ impl Actions {
         for t in &a.triggers {
             let lbl = trigger_label(t, &names);
             if sub_filter.is_empty() || lbl.to_lowercase().contains(&sub_filter) {
-                self.triggers.add(&format!("@.{lbl}"));
+                self.triggers.add(&lbl);
             }
         }
         if keep_trigger > 0 && keep_trigger <= self.triggers.size() {
@@ -571,8 +571,8 @@ fn ask_name(title: &str, current: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<UiCmd>) -> Rc<RefCell<Actions>> {
-    let mut row = Flex::new(tabs.x(), tabs.y() + 25, tabs.w(), tabs.h() - 25, None)
+pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<UiCmd>) -> Rc<RefCell<Actions>> {
+    let mut row = Flex::new(tabs.x(), tabs.y(), tabs.w(), tabs.h(), None)
         .row()
         .with_label("Actions");
     row.set_margin(8);
@@ -605,12 +605,8 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
         .with_label("Triggers")
         .with_align(Align::Left | Align::Inside);
     right.fixed(&t, ROW - 4);
-    let mut triggers = HoldBrowser::default();
-    super::hint(
-        &mut triggers,
-        "What runs this action: a command, a follow, a hotkey... Add one below.",
-    );
-    right.fixed(&triggers, 120);
+    let triggers = Rows::new("What runs this action: a command, a follow, a hotkey... Add one below.");
+    right.fixed(&*triggers, 120);
     let tb = bar(&mut right, &["Add", "Edit", "On/Off", "Test...", "Delete"]);
     let mut sub_head = Flex::default().row();
     sub_head.set_pad(4);
@@ -928,66 +924,40 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
     let mut tr = triggers.clone();
     let me_tr = me.clone();
     let me_key_tr = me.clone();
-    tr.handle(move |b, ev| match ev {
-        Event::Push | Event::Released => {
-            if b.value() > 0 {
-                let idx = (b.value() - 1) as usize;
-                if let Ok(mut m) = me_tr.try_borrow_mut() {
-                    m.update_details_trigger(idx);
-                }
+    tr.set_callback(move |b| {
+        if b.value() > 0 {
+            if let Ok(mut m) = me_tr.try_borrow_mut() {
+                m.update_details_trigger((b.value() - 1) as usize);
             }
-            if ev == Event::Push && app::event_clicks() && b.value() > 0 {
+            if app::event_clicks() {
                 edit_trigger(&me_tr);
-                return true;
             }
-            false
         }
-        Event::KeyDown => {
-            let key = app::event_key();
-            if key == Key::Up || key == Key::Down {
-                let me_k = me_key_tr.clone();
-                app::add_timeout3(0.02, move |_| {
-                    if let Ok(mut m) = me_k.try_borrow_mut() {
-                        let v = m.triggers.value();
-                        if v > 0 {
-                            m.update_details_trigger((v - 1) as usize);
-                        }
-                    }
-                });
-            }
-            let key = app::event_key();
-            if key == Key::Enter {
-                if b.value() > 0 {
-                    edit_trigger(&me_key_tr);
-                    return true;
-                }
-            } else if key == Key::Delete || key == Key::BackSpace {
-                let i = b.value() - 1;
-                if i >= 0 {
-                    let mut m = me_key_tr.borrow_mut();
-                    m.edit_action(|a| {
-                        if (i as usize) < a.triggers.len() {
-                            a.triggers.remove(i as usize);
-                        }
-                    });
-                    return true;
-                }
-            } else if key == Key::from_char(' ') {
-                let i = b.value() - 1;
-                if i >= 0 {
-                    let mut m = me_key_tr.borrow_mut();
-                    m.edit_action(|a| {
-                        if let Some(t) = a.triggers.get_mut(i as usize) {
-                            let on = t.get("enabled").and_then(Value::as_bool).unwrap_or(true);
-                            t.insert("enabled".into(), (!on).into());
-                        }
-                    });
-                    return true;
-                }
-            }
-            false
+    });
+    tr.set_keys(move |b, key| {
+        let i = b.value() - 1;
+        if i < 0 {
+            return false;
         }
-        _ => false,
+        if key == Key::Enter {
+            edit_trigger(&me_key_tr);
+        } else if key == Key::Delete || key == Key::BackSpace {
+            me_key_tr.borrow_mut().edit_action(|a| {
+                if (i as usize) < a.triggers.len() {
+                    a.triggers.remove(i as usize);
+                }
+            });
+        } else if key == Key::from_char(' ') {
+            me_key_tr.borrow_mut().edit_action(|a| {
+                if let Some(t) = a.triggers.get_mut(i as usize) {
+                    let on = t.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+                    t.insert("enabled".into(), (!on).into());
+                }
+            });
+        } else {
+            return false;
+        }
+        true
     });
     on(
         &tb[0],
@@ -1467,9 +1437,9 @@ fn pick_template() -> Option<&'static crate::templates::Template> {
     win.make_modal(true);
     let mut col = Flex::new(10, 10, 540, 360, None).column();
     col.set_pad(6);
-    let mut list = HoldBrowser::default();
+    let mut list = Rows::new("");
     for t in TEMPLATES {
-        list.add(&t.name.replace('@', "@@"));
+        list.add(t.name);
     }
     list.select(1);
     let mut about = Frame::default().with_align(Align::Left | Align::Inside | Align::Wrap | Align::Top);

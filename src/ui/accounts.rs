@@ -10,7 +10,7 @@ use fltk::button::{Button, CheckButton};
 use fltk::dialog;
 use fltk::enums::{Align, Color};
 use fltk::frame::Frame;
-use fltk::group::{Flex, Tabs};
+use fltk::group::{Flex, Wizard};
 use fltk::input::{Input, SecretInput};
 use fltk::prelude::*;
 use serde_json::{json, Value};
@@ -574,7 +574,7 @@ impl Accounts {
     }
 }
 
-pub fn tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
+pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
     let mut col = super::tab(tabs, "Accounts");
 
     let mut lock_bar = Flex::default().row();

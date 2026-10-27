@@ -10,14 +10,16 @@ pub(crate) mod emotes;
 mod forms;
 pub(crate) mod img;
 mod lists;
+mod nav;
 pub mod picker;
+mod rows;
 
 use crate::engine::{Engine, UiCmd};
 use crate::{status, Config};
 use fltk::button::{Button, CheckButton};
 use fltk::enums::{Align, Color, ColorDepth, Event, Font, FrameType, Shortcut};
 use fltk::frame::Frame;
-use fltk::group::{Flex, Tabs};
+use fltk::group::{Flex, Wizard};
 use fltk::image::RgbImage;
 use fltk::prelude::*;
 use fltk::text::{TextBuffer, TextDisplay};
@@ -244,17 +246,6 @@ fn muted() -> Color {
     Color::color_average(Color::Foreground, Color::Background2, 0.5)
 }
 
-/// `text` in the middle of `b` while it's empty, saying what goes there.
-fn hint(b: &mut fltk::browser::HoldBrowser, text: &'static str) {
-    b.draw(move |b| {
-        if b.size() == 0 {
-            draw::set_font(Font::Helvetica, 13);
-            draw::set_draw_color(muted());
-            draw::draw_text2(text, b.x(), b.y(), b.w(), b.h(), Align::Center | Align::Wrap);
-        }
-    });
-}
-
 /// `text` in an empty field that isn't being typed in, saying what goes there.
 fn placeholder(i: &mut fltk::input::Input, text: &'static str) {
     i.draw(move |i| {
@@ -272,7 +263,7 @@ fn header(col: &mut Flex, widths: &'static [i32], titles: &'static [&'static str
     f.draw(move |f| {
         draw::set_font(Font::HelveticaBold, 12);
         draw::set_draw_color(muted());
-        let mut x = f.x() + 4;
+        let mut x = f.x() + 12;
         for (i, t) in titles.iter().enumerate() {
             let w = widths.get(i).copied().unwrap_or(f.w());
             draw::draw_text2(t, x, f.y(), w, f.h(), Align::Left | Align::Clip);
@@ -288,8 +279,9 @@ fn button(row: &mut Flex, label: &str, w: i32) -> Button {
     b
 }
 
-fn tab(tabs: &Tabs, label: &str) -> Flex {
-    let mut col = Flex::new(tabs.x(), tabs.y() + 25, tabs.w(), tabs.h() - 25, None)
+/// A page: `label` is its name in the sidebar.
+fn tab(tabs: &Wizard, label: &str) -> Flex {
+    let mut col = Flex::new(tabs.x(), tabs.y(), tabs.w(), tabs.h(), None)
         .column()
         .with_label(label);
     col.set_margin(10);
@@ -359,11 +351,9 @@ pub fn run(
     if let Ok(icon) = RgbImage::new(ICON, SIZE, SIZE, ColorDepth::Rgba8) {
         win.set_icon(Some(icon));
     }
-    let mut tabs = Tabs::new(5, 5, W - 10, H - 50, None);
-    // The open tab like its page, the others darker.
-    tabs.set_selection_color(Color::Background);
-    tabs.set_color(Color::Background2);
-    tabs.clear_visible_focus();
+    // The pages, one at a time, picked in the sidebar on their left.
+    let mut tabs = Wizard::new(nav::W, 0, W - nav::W, H - 46, None);
+    tabs.set_frame(FrameType::FlatBox);
 
     let acts = actions::tab(&tabs, cfg.clone(), cmds.clone());
     let views = lists::tabs(&tabs, &cfg, &cmds);
@@ -403,6 +393,7 @@ pub fn run(
     view.set_buffer(buf.clone());
     col.end();
     tabs.end();
+    let sidebar = nav::sidebar(0, 0, H - 46, &tabs);
     let mut log = Log {
         view,
         buf,
@@ -429,13 +420,8 @@ pub fn run(
         if c.window.w >= 600 && c.window.h >= 400 {
             win.set_size(c.window.w, c.window.h);
         }
-        if let Some(t) = (0..tabs.children())
-            .filter_map(|i| tabs.child(i))
-            .find(|t| t.label() == c.window.tab)
-        {
-            if let Some(g) = t.as_group() {
-                let _ = tabs.set_value(&g);
-            }
+        if let Some(p) = nav::page(&tabs, &c.window.tab) {
+            tabs.set_current_widget(&p);
         }
     }
     // Kept as it changes, written with the next save (and when the window hides or streamerz quits).
@@ -476,17 +462,7 @@ pub fn run(
         let (cfg, cmds, tabs, status_bar) = (cfg.clone(), cmds.clone(), tabs.clone(), status_bar.clone());
         move |_| {
             let tabs = tabs.clone();
-            let go = move |label: &str| {
-                let mut t = tabs.clone();
-                if let Some(g) = (0..t.children())
-                    .filter_map(|i| t.child(i))
-                    .find(|c| c.label() == label)
-                    .and_then(|c| c.as_group())
-                {
-                    let _ = t.set_value(&g);
-                    t.do_callback();
-                }
-            };
+            let go = move |label: &str| nav::go(&tabs, label);
             conns::popup(&cfg, &cmds, go, status_bar.clone());
         }
     });
@@ -494,8 +470,10 @@ pub fn run(
     tabs.clone().set_callback({
         let views = views.clone();
         let cfg = cfg.clone();
+        let mut sidebar = sidebar.clone();
         move |t| {
-            let tab = t.value().map(|w| w.label()).unwrap_or_default();
+            sidebar.redraw();
+            let tab = t.try_current_widget().map(|w| w.label()).unwrap_or_default();
             cfg.send_if_modified(|c| {
                 c.window.tab = tab;
                 false

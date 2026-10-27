@@ -2,16 +2,16 @@
 //! clients/servers are lists of Streamer.bot objects, each edited in a form.
 
 use super::forms::{self, Done, Lists, F, W::*};
+use super::rows::Rows;
 use super::{button, dialogs, query, tell, ROW};
 use crate::engine::{Engine, Record, DEFAULT_QUEUE};
 use crate::model::Obj;
 use crate::Config;
-use fltk::browser::HoldBrowser;
 use fltk::button::Button;
 use fltk::dialog;
-use fltk::enums::{Align, Event, Font};
+use fltk::enums::{Align, Font};
 use fltk::frame::Frame;
-use fltk::group::{Flex, Tabs};
+use fltk::group::{Flex, Wizard};
 use fltk::prelude::*;
 use serde_json::{json, Value};
 use std::cell::RefCell;
@@ -30,10 +30,10 @@ fn on(o: &Obj, k: &str) -> bool {
     o.get(k).and_then(Value::as_bool).unwrap_or(false)
 }
 
-/// A browser line: columns split by tabs, each printed as is ("@." stops FLTK's @ formatting).
+/// A list line: columns split by tabs.
 fn line(cols: &[String]) -> String {
     cols.iter()
-        .map(|c| format!("@.{}", c.replace(['\t', '\r', '\n'], " ")))
+        .map(|c| c.replace(['\t', '\r', '\n'], " "))
         .collect::<Vec<_>>()
         .join("\t")
 }
@@ -74,18 +74,12 @@ pub(super) fn title(col: &mut Flex, t: &str) {
 }
 
 /// A list with column titles over it (when there are), and `empty` in it while it's empty.
-fn browser(
-    col: &mut Flex,
-    widths: &'static [i32],
-    titles: &'static [&'static str],
-    empty: &'static str,
-) -> HoldBrowser {
+fn browser(col: &mut Flex, widths: &'static [i32], titles: &'static [&'static str], empty: &'static str) -> Rows {
     if !titles.is_empty() {
         super::header(col, widths, titles);
     }
-    let mut b = HoldBrowser::default();
+    let mut b = Rows::new(empty);
     b.set_column_widths(widths);
-    super::hint(&mut b, empty);
     b
 }
 
@@ -350,7 +344,7 @@ pub static SERVERS: Kind = Kind {
 pub struct List {
     cfg: Cfg,
     cmds: Cmds,
-    view: HoldBrowser,
+    view: Rows,
     kind: &'static Kind,
     ids: Vec<String>,
 }
@@ -507,21 +501,20 @@ fn list(
         click(&b[2], Box::new(move |m| m.toggle(key)));
     }
     click(&b[b.len() - 1], Box::new(List::delete));
-    view.clone().handle({
+    view.clone().set_callback({
         let me = me.clone();
-        move |_, ev| {
-            if ev == Event::Push && fltk::app::event_clicks() {
+        move |_| {
+            if fltk::app::event_clicks() {
                 if let Ok(mut m) = me.try_borrow_mut() {
                     m.edit();
                 }
             }
-            false
         }
     });
     me
 }
 
-fn tab(tabs: &Tabs, label: &str) -> Flex {
+fn tab(tabs: &Wizard, label: &str) -> Flex {
     super::tab(tabs, label)
 }
 
@@ -541,8 +534,8 @@ pub struct Views {
 
 impl Views {
     /// New chat lines: added to the Chat tab when it's up (it catches up when shown).
-    pub fn chat_refresh(&self, tabs: &Tabs) {
-        let up = tabs.value().map(|g| g.as_widget_ptr());
+    pub fn chat_refresh(&self, tabs: &Wizard) {
+        let up = tabs.try_current_widget().map(|g| g.as_widget_ptr());
         if let Ok(mut c) = self.chat.try_borrow_mut() {
             if up == Some(c.tab.as_widget_ptr()) {
                 c.refresh();
@@ -561,8 +554,8 @@ impl Views {
     }
 
     /// Redraw what the config shows, and the live views on the tab that's up.
-    pub fn refresh(&self, tabs: &Tabs) {
-        let up = tabs.value().map(|g| g.as_widget_ptr());
+    pub fn refresh(&self, tabs: &Wizard) {
+        let up = tabs.try_current_widget().map(|g| g.as_widget_ptr());
         for l in &self.lists {
             l.borrow_mut().refresh();
         }
@@ -605,7 +598,7 @@ impl Views {
     }
 }
 
-pub fn tabs(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Views {
+pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
     let accounts = super::accounts::tab(tabs, cfg, cmds);
     let chat = super::chat::tab(tabs, cfg, cmds);
     let mut col = tab(tabs, "Commands");
@@ -693,8 +686,8 @@ pub struct Queues {
     tab: Flex,
     cfg: Cfg,
     cmds: Cmds,
-    view: HoldBrowser,
-    pending: HoldBrowser,
+    view: Rows,
+    pending: Rows,
     ids: Vec<String>,
 }
 
@@ -773,7 +766,7 @@ impl Queues {
     }
 }
 
-fn queues_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Queues>> {
+fn queues_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Queues>> {
     let mut col = tab(tabs, "Queues");
     let view = browser(
         &mut col,
@@ -801,7 +794,7 @@ fn queues_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Queues>> {
         &["Queue", "Action", ""],
         "Nothing running or waiting.",
     );
-    col.fixed(&pending, 200);
+    col.fixed(&*pending, 200);
     col.end();
     let me = Rc::new(RefCell::new(Queues {
         tab: col,
@@ -898,7 +891,7 @@ fn queues_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Queues>> {
 pub struct History {
     tab: Flex,
     cmds: Cmds,
-    view: HoldBrowser,
+    view: Rows,
     runs: Vec<Record>,
 }
 
@@ -930,7 +923,7 @@ impl History {
     }
 }
 
-fn history_tab(tabs: &Tabs, cmds: &Cmds) -> Rc<RefCell<History>> {
+fn history_tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<History>> {
     let mut col = tab(tabs, "History");
     let view = browser(
         &mut col,
@@ -999,7 +992,7 @@ fn history_tab(tabs: &Tabs, cmds: &Cmds) -> Rc<RefCell<History>> {
 pub struct Globals {
     tab: Flex,
     cmds: Cmds,
-    view: HoldBrowser,
+    view: Rows,
     /// Each row: (name, value, persisted, a user global's user).
     rows: Vec<(String, Value, bool, Option<String>)>,
 }
@@ -1081,7 +1074,7 @@ impl Globals {
     }
 }
 
-fn globals_tab(tabs: &Tabs, cmds: &Cmds) -> Rc<RefCell<Globals>> {
+fn globals_tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<Globals>> {
     let mut col = tab(tabs, "Globals");
     let view = browser(
         &mut col,
@@ -1143,9 +1136,9 @@ pub struct Community {
     show: fltk::menu::Choice,
     search: fltk::input::Input,
     views: [Flex; 3],
-    users: HoldBrowser,
-    quotes: HoldBrowser,
-    credits: HoldBrowser,
+    users: Rows,
+    quotes: Rows,
+    credits: Rows,
 }
 
 impl Community {
@@ -1221,7 +1214,7 @@ impl Community {
                 }
                 put("top rewards", &c["top"]["channelRewards"]);
                 if self.credits.size() == 0 {
-                    self.credits.add("@.Nothing yet this stream.");
+                    self.credits.add("Nothing yet this stream.");
                 }
             }
         }
@@ -1286,7 +1279,7 @@ fn day(iso: &str) -> String {
     }
 }
 
-fn community_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>> {
+fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>> {
     let mut col = tab(tabs, "Community");
     let mut top = Flex::default().row();
     top.set_pad(6);
@@ -1386,16 +1379,15 @@ fn community_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>> 
             }
         });
     }
-    quotes.clone().handle({
+    quotes.clone().set_callback({
         let me = me.clone();
-        move |_, ev| {
-            if ev == Event::Push && fltk::app::event_clicks() {
+        move |_| {
+            if fltk::app::event_clicks() {
                 if let Ok(mut m) = me.try_borrow_mut() {
                     let id = m.quote_id();
                     m.edit_quote(id);
                 }
             }
-            false
         }
     });
     me
@@ -1573,7 +1565,7 @@ impl Donations {
     }
 }
 
-fn donations_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Donations>> {
+fn donations_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Donations>> {
     let mut col = tab(tabs, "Donations");
     let me = Rc::new(RefCell::new(Donations {
         tab: col.clone(),
@@ -1621,7 +1613,7 @@ fn donations_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Donations>> 
 pub struct Groups {
     cfg: Cfg,
     cmds: Cmds,
-    view: HoldBrowser,
+    view: Rows,
     ids: Vec<String>,
 }
 
@@ -1641,7 +1633,7 @@ impl Groups {
     }
 }
 
-fn groups_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Groups>> {
+fn groups_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Groups>> {
     let mut col = tab(tabs, "Groups");
     let view = browser(&mut col, &[300, 120], &["Group", "Users"], "No groups yet.");
     let b = bar(&mut col, &["Add", "Delete"]);
