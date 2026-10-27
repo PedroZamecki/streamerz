@@ -8,6 +8,7 @@
 //!   line is a JSON string to send; each gets one stdout line, {"ok":true} or {"error":"..."}. Exits when
 //!   stdin closes, or after 2 minutes without a message (the page costs ~1 GB and some CPU).
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tao::dpi::LogicalSize;
@@ -142,7 +143,7 @@ pub fn run(args: &[std::ffi::OsString]) -> ! {
             }
             Event::UserEvent(Ev::Result(r)) if send => {
                 last = Instant::now();
-                println!("{r}");
+                let _ = writeln!(std::io::stdout(), "{r}");
             }
             // Login: the home page's answer to WHO.
             Event::UserEvent(Ev::Result(r)) => {
@@ -185,7 +186,8 @@ pub fn run(args: &[std::ffi::OsString]) -> ! {
 }
 
 fn done(cookies: &str, user: &str, avatar: &str) -> ! {
-    println!(
+    let _ = writeln!(
+        std::io::stdout(),
         "{}",
         serde_json::json!({ "username": user, "cookies": cookies, "avatar": avatar })
     );
@@ -193,6 +195,6 @@ fn done(cookies: &str, user: &str, avatar: &str) -> ! {
 }
 
 fn fail(e: &str) -> ! {
-    eprintln!("can't open the TikTok window: {e}");
+    let _ = writeln!(std::io::stderr(), "can't open the TikTok window: {e}");
     std::process::exit(2);
 }

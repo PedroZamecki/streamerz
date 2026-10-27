@@ -580,7 +580,7 @@ impl Accounts {
 }
 
 pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
-    let mut col = super::tab(tabs, "Accounts");
+    let (scroll, mut col) = super::tab_scrolled(tabs, "Accounts", 460);
 
     let mut lock_bar = Flex::default().row();
     lock_bar.set_pad(8);
@@ -645,6 +645,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
     col.fixed(&guide, 72);
     Frame::default();
     col.end();
+    scroll.end();
 
     let me = Rc::new(RefCell::new(Accounts {
         tab: col,

@@ -1,6 +1,8 @@
-# Pull requests: build streamerz-windows-x86_64.exe (Windows) and streamerz-linux-x86_64 (Linux) as checks.
+# Pull requests: build streamerz-windows-x86_64.exe (Windows) and streamerz-linux-x86_64 (Linux) as checks,
+# caching binaries by repo tree hash and version tag.
 # Merges to main: pick the next version from the commits since the last tag
-# (breaking "type!:" -> major, feat -> minor, fix/perf -> patch), build both and publish the release.
+# (breaking "type!: " -> major, feat -> minor, fix/perf -> patch); if binaries match the PR cache,
+# rebuild is skipped and the cached artifacts are published directly.
 # Merges with only chore/ci/docs/... commits don't release.
 name: build
 
@@ -23,33 +25,42 @@ env:
 
 jobs:
   version:
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.next.outputs.tag }}
+      tree: ${{ steps.tree.outputs.hash }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - id: tree
+        shell: bash
+        run: echo "hash=$(git rev-parse HEAD^{tree})" >> "$GITHUB_OUTPUT"
       - id: next
         shell: bash
         run: |
-          # No tag yet: the whole history counts, from v0.0.0.
           last=$(git describe --tags --abbrev=0 2>/dev/null || true)
-          log=$(git log ${last:+"$last.."}HEAD --format=%s)
           last=${last:-v0.0.0}
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            log=$(git log origin/${{ github.base_ref }}..HEAD --format=%s 2>/dev/null || true)
+            if [ -z "$log" ]; then log="${{ github.event.pull_request.title }}"; fi
+          else
+            log=$(git log ${last:+"$last.."}HEAD --format=%s)
+          fi
           IFS=. read -r major minor patch <<< "${last#v}"
-          if grep -qE '^[a-z]+(\([^)]*\))?!:' <<< "$log"; then major=$((major + 1)) minor=0 patch=0
-          elif grep -qE '^feat(\([^)]*\))?:' <<< "$log"; then minor=$((minor + 1)) patch=0
+          if grep -qE '^[a-z]+(\([^)]*\))?!:' <<< "$log"; then major=$((major + 1)); minor=0; patch=0
+          elif grep -qE '^feat(\([^)]*\))?:' <<< "$log"; then minor=$((minor + 1)); patch=0
           elif grep -qE '^(fix|perf)(\([^)]*\))?:' <<< "$log"; then patch=$((patch + 1))
-          else echo "no feat/fix since $last: no release"; exit 0
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            echo "no feat/fix since $last: no release"; exit 0
+          else
+            patch=$((patch + 1))
           fi
           echo "next release: v$major.$minor.$patch"
           echo "tag=v$major.$minor.$patch" >> "$GITHUB_OUTPUT"
 
   windows:
     needs: version
-    # Runs on PRs (version is skipped there) and on main only when there's a release to make.
     if: always() && (github.event_name != 'push' || needs.version.outputs.tag != '')
     runs-on: windows-latest
     defaults:
@@ -57,18 +68,26 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-      - run: |
+      - name: Cache built binary
+        id: bin-cache
+        uses: actions/cache@v4
+        with:
+          path: dist/streamerz-windows-x86_64.exe
+          key: bin-win-${{ needs.version.outputs.tree }}-${{ needs.version.outputs.tag }}
+      - if: steps.bin-cache.outputs.cache-hit != 'true'
+        uses: Swatinem/rust-cache@v2
+      - if: steps.bin-cache.outputs.cache-hit != 'true'
+        run: |
           cargo fetch --locked
-          # FLTK's CMake defaults to the DLL C runtime, overriding fltk-sys's static one
-          # (.cargo/config.toml): without this the link fails.
           f=$(ls "${CARGO_HOME:-$HOME/.cargo}"/registry/src/*/fltk-sys-*/cfltk/fltk/CMake/options.cmake)
           perl -pi -e 's/(option\(FLTK_MSVC_RUNTIME_DLL .*)ON\)/${1}OFF)/' $f
           grep -q 'FLTK_MSVC_RUNTIME_DLL .*OFF)' $f
-      - run: cargo build --release --locked
+      - if: steps.bin-cache.outputs.cache-hit != 'true'
+        run: cargo build --release --locked
         env:
           STREAMERZ_VERSION: ${{ needs.version.outputs.tag || 'dev' }}
-      - name: Stage Windows binary
+      - if: steps.bin-cache.outputs.cache-hit != 'true'
+        name: Stage Windows binary
         run: |
           mkdir -p dist
           cp target/release/streamerz.exe dist/streamerz-windows-x86_64.exe
@@ -83,19 +102,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Cache apt packages
+      - name: Cache built Linux binaries
+        id: bin-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            dist/streamerz-linux-x86_64
+            dist/streamerz-tiktok-linux-x86_64
+            dist/streamerz-linux-x86_64.AppImage*
+          key: bin-linux-${{ needs.version.outputs.tree }}-${{ needs.version.outputs.tag }}
+      - if: steps.bin-cache.outputs.cache-hit != 'true'
+        name: Cache apt packages
         uses: actions/cache@v4
         with:
           path: ~/.apt-cache
           key: apt-deps-${{ runner.os }}-${{ hashFiles('.github/workflows/*.yml') }}
           restore-keys: |
             apt-deps-${{ runner.os }}-
-      - name: Cache linuxdeploy
+      - if: steps.bin-cache.outputs.cache-hit != 'true'
+        name: Cache linuxdeploy
         uses: actions/cache@v4
         with:
           path: /tmp/appimage-tools
           key: linuxdeploy-alpha-20251107-1
-      - name: Install dependencies
+      - if: steps.bin-cache.outputs.cache-hit != 'true'
+        name: Install dependencies
         run: |
           mkdir -p ~/.apt-cache
           sudo cp -n ~/.apt-cache/*.deb /var/cache/apt/archives/ 2>/dev/null || true
@@ -107,14 +138,16 @@ jobs:
             wayland-protocols libdbus-1-dev libxkbcommon-dev libegl-dev libopengl-dev \
             libwebkit2gtk-4.1-dev libgtk-3-dev libfuse2
           cp -n /var/cache/apt/archives/*.deb ~/.apt-cache/ 2>/dev/null || true
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --locked
+      - if: steps.bin-cache.outputs.cache-hit != 'true'
+        uses: Swatinem/rust-cache@v2
+      - if: steps.bin-cache.outputs.cache-hit != 'true'
+        run: cargo build --release --locked
         env:
           STREAMERZ_VERSION: ${{ needs.version.outputs.tag || 'dev' }}
-      # The AppImage only for a release (it bundles the libraries).
-      - if: needs.version.outputs.tag != ''
-        run: dev/appimage.sh "${{ needs.version.outputs.tag }}"
-      - name: Stage Linux release assets
+      - if: steps.bin-cache.outputs.cache-hit != 'true'
+        run: dev/appimage.sh "${{ needs.version.outputs.tag || 'dev' }}"
+      - if: steps.bin-cache.outputs.cache-hit != 'true'
+        name: Stage Linux release assets
         run: |
           mkdir -p dist
           cp target/release/streamerz dist/streamerz-linux-x86_64
@@ -131,7 +164,7 @@ jobs:
 
   release:
     needs: [version, windows, linux]
-    if: needs.version.outputs.tag != ''
+    if: needs.version.outputs.tag != '' && github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
