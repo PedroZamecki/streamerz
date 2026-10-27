@@ -30,9 +30,8 @@ use fltk::image::RgbImage;
 use fltk::prelude::*;
 use fltk::text::{TextBuffer, TextDisplay};
 use fltk::window::Window;
-use fltk::{app, dialog, draw};
+use fltk::{app, draw};
 use std::cell::Cell;
-use std::io::Write;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -111,7 +110,7 @@ fn ask(title: &str, prompt: &str, text: &str) -> Option<String> {
     win.set_xclass("streamerz");
     let mut col = Flex::new(10, 10, 400, 110, None).column();
     col.set_pad(6);
-    let p = Frame::default()
+    Frame::default()
         .with_label(&prompt.replace('@', "@@"))
         .with_align(Align::Left | Align::Inside | Align::Wrap);
     let mut input = fltk::input::Input::default();
@@ -124,7 +123,6 @@ fn ask(title: &str, prompt: &str, text: &str) -> Option<String> {
     let mut cancel = button(&mut bar, "Cancel", 90);
     bar.end();
     col.fixed(&bar, ROW + 4);
-    let _ = p;
     col.end();
     win.end();
     win.make_modal(true);
@@ -194,14 +192,6 @@ pub fn logged() {
 
 pub fn app() -> app::App {
     app::App::default().with_scheme(app::Scheme::Gtk)
-}
-
-/// Show a startup error; there's no console on Windows.
-#[allow(dead_code)] // ponytail: first used by the servers (port taken), phase 4.
-pub fn fatal(msg: &str) -> ! {
-    let _ = writeln!(std::io::stderr(), "{msg}");
-    dialog::alert_default(msg);
-    std::process::exit(1);
 }
 
 /// Flat, rounded and quiet (zinc colours, like shadcn/ui): every button, field, list and tab is drawn

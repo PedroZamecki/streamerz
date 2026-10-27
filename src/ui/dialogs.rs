@@ -73,55 +73,111 @@ pub fn run(win: &mut Window, answer: &Answer, mut check: impl FnMut() -> bool) -
     }
 }
 
-/// A small modal message: an icon in the app's colours, the text, and its buttons (`no` is None for
-/// a plain notice). True when `yes` was pressed. The text is an FLTK label (`@` doubled).
+/// `text` broken into lines no wider than `room` by `width` (words stay whole; a word wider than the room
+/// is cut). Newlines in `text` are kept.
+fn wrap(text: &str, room: i32, width: impl Fn(&str) -> i32) -> Vec<String> {
+    let mut out = Vec::new();
+    for para in text.split('\n') {
+        let mut line = String::new();
+        for word in para.split(' ').filter(|w| !w.is_empty()) {
+            let joined = if line.is_empty() {
+                word.to_string()
+            } else {
+                format!("{line} {word}")
+            };
+            if width(&joined) <= room {
+                line = joined;
+                continue;
+            }
+            if !line.is_empty() {
+                out.push(std::mem::take(&mut line));
+            }
+            // A word too wide for a line alone: cut where it stops fitting.
+            let mut rest = word;
+            while width(rest) > room && rest.chars().count() > 1 {
+                let mut cut = rest
+                    .char_indices()
+                    .map(|(i, _)| i)
+                    .skip(1)
+                    .take_while(|&i| width(&rest[..i]) <= room)
+                    .last();
+                cut = cut.or_else(|| rest.char_indices().nth(1).map(|(i, _)| i));
+                let (head, tail) = rest.split_at(cut.unwrap_or(rest.len()));
+                out.push(head.to_string());
+                rest = tail;
+            }
+            line = rest.to_string();
+        }
+        out.push(line);
+    }
+    out
+}
+
+/// A small modal message: an icon in the app's colours, the text wrapped to fit, and its buttons (`no`
+/// is None for a plain notice). True when `yes` was pressed.
 fn notice(icon: &'static str, tint: Color, text: &str, no: Option<&str>, yes: &str) -> bool {
-    const W: i32 = 400;
-    const TEXT_W: i32 = W - 40 - 56 - 16;
+    const PAD: i32 = 22;
+    const PIC: i32 = 40;
+    const GAP: i32 = 16;
+    const LINE: i32 = 19;
     draw::set_font(Font::Helvetica, 14);
-    // Lines the text takes at that width: each paragraph's width over the room, rounded up.
-    let lines: i32 = text
-        .lines()
-        .map(|l| ((draw::width(l) as i32 + TEXT_W - 1) / TEXT_W).max(1))
-        .sum();
-    let h = (lines * 19).max(40) + 20 + ROW + 26 + 20;
-    let (mut win, answer) = window(W, h, "Streamerz");
-    let mut col = Flex::new(20, 20, W - 40, h - 40, None).column();
-    col.set_pad(14);
+    let buttons: Vec<&str> = no.into_iter().chain([yes]).collect();
+    let button_w = |b: &str| (draw::width(b) as i32 + 56).max(90);
+    let bar_w: i32 = buttons.iter().map(|b| button_w(b) + 8).sum();
+    // The window is as wide as its longest line wants (within reason), and wide enough for its buttons.
+    let one_line = text.split('\n').map(|l| draw::width(l) as i32).max().unwrap_or(0);
+    let room = one_line.clamp(220, 420).max(bar_w - PIC - GAP);
+    let lines = wrap(text, room, |t| draw::width(t) as i32);
+    let w = PAD * 2 + PIC + GAP + room;
+    let body = (lines.len() as i32 * LINE).max(PIC);
+    let h = PAD * 2 + body + 18 + ROW;
+    let (mut win, answer) = window(w, h, "Streamerz");
+    // Centred on the window it was asked from, or the screen.
+    let (cx, cy, cw, ch) = match app::first_window().filter(|f| f.visible()) {
+        Some(f) => (f.x(), f.y(), f.w(), f.h()),
+        None => {
+            let (sx, sy, sw, sh) = app::screen_xywh(0);
+            (sx, sy, sw, sh)
+        }
+    };
+    win.set_pos(cx + (cw - w) / 2, cy + (ch - h) / 2);
+    let mut col = Flex::new(PAD, PAD, w - PAD * 2, h - PAD * 2, None).column();
+    col.set_pad(18);
     let mut top = Flex::default().row();
-    top.set_pad(16);
+    top.set_pad(GAP);
     let mut pic = Frame::default();
     pic.draw(move |f| {
         draw::set_draw_color(Color::color_average(tint, Color::Background, 0.18));
-        draw::draw_pie(f.x(), f.y(), 40, 40, 0.0, 360.0);
+        draw::draw_pie(f.x(), f.y(), PIC, PIC, 0.0, 360.0);
         if let Some(mut i) = super::icons::icon(icon, tint, 22) {
             i.draw(f.x() + 9, f.y() + 9, 22, 22);
         }
     });
-    top.fixed(&pic, 40);
-    let _ = Frame::default()
-        .with_label(text)
-        .with_align(Align::Left | Align::Inside | Align::Wrap | Align::Top);
+    top.fixed(&pic, PIC);
+    // Wrapped here, not by FLTK, so the window is sized for exactly these lines.
+    Frame::default()
+        .with_label(&lines.join("\n").replace('@', "@@"))
+        .with_align(Align::Left | Align::Inside | Align::Top);
     top.end();
     let mut bar = Flex::default().row();
     bar.set_pad(8);
     Frame::default();
     if let Some(no) = no {
-        let mut b = button(&mut bar, no, 90);
+        let mut b = button(&mut bar, no, button_w(no));
         b.set_shortcut(Shortcut::from_key(Key::Escape));
         b.set_callback({
             let a = answer.clone();
             move |_| a.set(Some(false))
         });
     }
-    let mut b = button(&mut bar, yes, 90);
+    let mut b = button(&mut bar, yes, button_w(yes));
     b.set_shortcut(Shortcut::from_key(Key::Enter));
     b.set_callback({
         let a = answer.clone();
         move |_| a.set(Some(true))
     });
     bar.end();
-    col.fixed(&bar, ROW + 4);
+    col.fixed(&bar, ROW);
     col.end();
     win.end();
     run(&mut win, &answer, || true)
@@ -804,4 +860,65 @@ pub fn values(title: &str, hint: &str, o: &Obj, edit: bool) -> Option<Obj> {
     let ok = run(&mut win, &answer, || true);
     let out = vars.borrow().clone();
     (ok && edit).then_some(out)
+}
+
+#[cfg(test)]
+mod wrap_tests {
+    use super::wrap;
+
+    /// Seven pixels a character, like a font.
+    fn w(t: &str) -> i32 {
+        t.chars().count() as i32 * 7
+    }
+
+    #[test]
+    fn lines_fit_and_keep_every_word() {
+        let text = "Streamerz v1.2.3 is out (this is v1.2.2). Update now, or later if you are streaming?";
+        for room in [70, 140, 210, 420] {
+            let lines = wrap(text, room, w);
+            assert!(lines.iter().all(|l| w(l) <= room), "{room}: {lines:?}");
+            assert_eq!(lines.join(" "), text);
+        }
+    }
+
+    #[test]
+    fn newlines_stay_and_blank_lines_hold_their_place() {
+        assert_eq!(wrap("one\n\ntwo", 700, w), ["one", "", "two"]);
+        assert_eq!(wrap("", 700, w), [""]);
+    }
+
+    #[test]
+    fn a_word_too_wide_is_cut_never_overflowing() {
+        let lines = wrap("see /home/user/.config/streamerz/streamerz.json now", 105, w);
+        assert!(lines.iter().all(|l| w(l) <= 105), "{lines:?}");
+        assert_eq!(
+            lines.join("").replace(' ', ""),
+            "see/home/user/.config/streamerz/streamerz.jsonnow"
+        );
+    }
+
+    #[test]
+    fn a_room_narrower_than_a_letter_still_ends() {
+        assert_eq!(wrap("abc", 1, w).concat(), "abc");
+    }
+}
+
+#[cfg(test)]
+mod look {
+    /// By eye, on a display (`DISPLAY=:99 cargo test look -- --ignored`): each dialog waits for Enter.
+    #[test]
+    #[ignore]
+    fn dialogs() {
+        let _app = crate::ui::app();
+        crate::ui::theme(true);
+        let only = std::env::var("DLG").unwrap_or_default();
+        if only == "1" {
+            super::message("Short one.");
+        } else if only == "2" {
+            super::alert("Can't save /home/someone/.config/streamerz/a-very-long-folder-name-that-has-no-spaces/streamerz.json: permission denied (os error 13), so nothing was written. Try another folder.");
+        } else {
+            let long = "Streamerz v1.2.3 is out (this is v1.2.2).\n\nIt was downloaded and goes in place the next time Streamerz starts. Update now, or later if you are streaming?";
+            super::choice(long, "Later", "Update and restart now");
+        }
+    }
 }

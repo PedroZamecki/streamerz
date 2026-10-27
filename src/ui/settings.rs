@@ -65,8 +65,9 @@ fn setting(col: &mut Flex, name: &str, about: &str, w: i32) -> Flex {
         .with_align(Align::Left | Align::Inside | Align::Top | Align::Clip);
     a.set_label_size(12);
     a.set_label_color(super::muted());
+    // Too long for the line: cut, and whole when pointed at.
+    a.set_tooltip(&about.replace('@', "@@"));
     text.end();
-    let _ = (n, a);
     col.fixed(&row, 44);
     // The control, centred in the line's height.
     let mut right = Flex::default().column();

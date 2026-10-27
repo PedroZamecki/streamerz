@@ -53,7 +53,6 @@ pub fn tr(key: &'static str) -> &'static str {
 }
 
 /// The text of `key` with each `{name}` in it replaced by its value in `args`.
-#[allow(dead_code)]
 pub fn trf(key: &'static str, args: &[(&str, &str)]) -> String {
     args.iter().fold(tr(key).to_string(), |s, (name, value)| {
         s.replace(&format!("{{{name}}}"), value)
