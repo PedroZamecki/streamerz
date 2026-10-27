@@ -1,16 +1,52 @@
-# streamerz
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/streamerz-dark.svg">
+    <img src="assets/brand/streamerz.svg" alt="streamerz" width="120">
+  </picture>
+</p>
 
-A small, light Streamer.bot replacement in Rust: Twitch, Kick, YouTube, OBS Studio and Streamlabs Desktop,
-with Streamer.bot's actions, triggers and servers. Not usable yet; see [PLAN.md](PLAN.md).
+<h1 align="center">streamerz</h1>
+
+<p align="center">
+  A light, fast Streamer.bot replacement in Rust.<br>
+  Twitch, Kick, YouTube and TikTok chat, OBS Studio, Streamlabs Desktop, and Streamer.bot's actions,
+  triggers and servers, in one small window that lives in your tray.
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/actions.png" alt="The Actions page" width="49%">
+  <img src="assets/screenshots/settings.png" alt="The Settings page" width="49%">
+</p>
+
+## Why
+
+- **Light.** Hidden in the tray with Twitch and OBS connected it stays under 25 MB of RAM and uses no CPU
+  while idle. Nothing you don't turn on opens a socket, a timer or a task.
+- **Compatible.** The same WebSocket, HTTP and UDP servers, requests, events and import strings as
+  Streamer.bot: overlays, Stream Deck and your existing actions work without changes.
+- **Everything in one place.** Chat from every platform together, commands, timers, queues, globals,
+  donations (StreamElements, Streamlabs, DonorDrive), hotkeys, MIDI, Stream Deck and more.
+- **Extensible.** Plugins are WebAssembly files (see [PLUGINS.md](PLUGINS.md)), and an MCP server lets an
+  AI assistant build and test actions for you.
+- **Private.** Logins live in your system's keyring (DPAPI on Windows), never in plain text. Websites
+  can't reach your local servers.
+- **Native.** Dark and light themes, many languages, native notifications, and updates that keep
+  themselves current.
 
 ## Install
 
-Download `streamerz.exe` (Windows) or `streamerz` (Linux) from the latest
-[release](https://github.com/PedroZamecki/streamerz/releases) and run it; on Linux, make it executable
-first (`chmod +x streamerz`). It starts hidden in the tray: click the icon to open the window. Settings
-are kept in `streamerz.json` next to it (and the previous version in `streamerz.json.bak`).
+Download the latest [release](https://github.com/PedroZamecki/streamerz/releases):
 
-Settings → Window: dark theme, start hidden in the tray, and start with Windows / when you log in.
+| System | File |
+| --- | --- |
+| Windows | `streamerz-windows-x86_64.exe` |
+| Linux (any distribution) | `streamerz-linux-x86_64.AppImage` (`chmod +x`, then run it) |
+| Linux, plain binary | `streamerz-linux-x86_64` |
+
+It starts hidden in the tray: click the icon to open the window. Settings are kept in `streamerz.json`
+(and the previous version in `streamerz.json.bak`). **Settings > Updates** chooses what happens with new
+versions: ask first (the default), download them in the background and use them at the next start, or
+leave them alone. streamerz looks every hour while it's open and tells you with a desktop notification.
 
 ## Streamer.bot's servers
 
