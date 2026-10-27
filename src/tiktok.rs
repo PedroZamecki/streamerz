@@ -136,7 +136,20 @@ fn helper(args: &[&std::ffi::OsStr]) -> Result<std::process::Command, String> {
         c.arg("--tiktok");
         c
     } else {
-        let mut bin = exe.with_file_name("streamerz-tiktok");
+        let mut bin = if let Some(name) = exe.file_name().and_then(|n| n.to_str()) {
+            if let Some(suffix) = name.strip_prefix("streamerz") {
+                let suffixed = exe.with_file_name(format!("streamerz-tiktok{suffix}"));
+                if suffixed.is_file() {
+                    suffixed
+                } else {
+                    exe.with_file_name("streamerz-tiktok")
+                }
+            } else {
+                exe.with_file_name("streamerz-tiktok")
+            }
+        } else {
+            exe.with_file_name("streamerz-tiktok")
+        };
         if !bin.is_file() {
             if let Some(target_dir) = exe.parent().and_then(|p| p.parent()) {
                 for profile in ["release", "debug"] {

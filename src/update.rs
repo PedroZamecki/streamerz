@@ -62,22 +62,40 @@ pub async fn newer() -> Option<(String, Vec<(PathBuf, String)>)> {
     let dir = exe.parent()?.to_path_buf();
     // This program, and on Linux the TikTok window's next to it if it's there.
     let name = if cfg!(windows) {
-        "streamerz.exe"
+        "streamerz-windows-x86_64.exe"
     } else if appimage().is_some() {
-        "streamerz-x86_64.AppImage"
+        "streamerz-linux-x86_64.AppImage"
     } else {
-        "streamerz"
+        "streamerz-linux-x86_64"
     };
     let mut want = vec![(exe.clone(), name)];
-    let helper = dir.join("streamerz-tiktok");
+    let helper = if let Some(n) = exe.file_name().and_then(|n| n.to_str()) {
+        if let Some(s) = n.strip_prefix("streamerz") {
+            dir.join(format!("streamerz-tiktok{s}"))
+        } else {
+            dir.join("streamerz-tiktok")
+        }
+    } else {
+        dir.join("streamerz-tiktok")
+    };
     if cfg!(not(windows)) && appimage().is_none() && helper.exists() {
-        want.push((helper, "streamerz-tiktok"));
+        want.push((helper, "streamerz-tiktok-linux-x86_64"));
     }
     let assets = v["assets"].as_array()?;
     let files = want
         .into_iter()
         .map(|(path, name)| {
-            let url = assets.iter().find(|a| a["name"] == name)?["browser_download_url"].as_str()?;
+            let url = assets.iter().find(|a| a["name"] == name).or_else(|| {
+                let legacy = match name {
+                    "streamerz-windows-x86_64.exe" => "streamerz.exe",
+                    "streamerz-linux-x86_64.AppImage" => "streamerz-x86_64.AppImage",
+                    "streamerz-linux-x86_64" => "streamerz",
+                    "streamerz-tiktok-linux-x86_64" => "streamerz-tiktok",
+                    _ => name,
+                };
+                assets.iter().find(|a| a["name"] == legacy)
+            })?["browser_download_url"]
+                .as_str()?;
             Some((path, url.to_string()))
         })
         .collect::<Option<Vec<_>>>()?;
@@ -121,7 +139,17 @@ pub async fn install(files: &[(PathBuf, String)]) -> Result<(), String> {
 pub fn tidy() {
     let Some(exe) = exe() else { return };
     let dir = exe.parent().map_or_else(PathBuf::new, Path::to_path_buf);
-    for f in [exe.with_extension("old"), dir.join("streamerz-tiktok.old")] {
+    let mut to_clean = vec![
+        exe.with_extension("old"),
+        dir.join("streamerz-tiktok.old"),
+        dir.join("streamerz-tiktok-linux-x86_64.old"),
+    ];
+    if let Some(n) = exe.file_name().and_then(|n| n.to_str()) {
+        if let Some(s) = n.strip_prefix("streamerz") {
+            to_clean.push(dir.join(format!("streamerz-tiktok{s}.old")));
+        }
+    }
+    for f in to_clean {
         let _ = std::fs::remove_file(f);
     }
 }
