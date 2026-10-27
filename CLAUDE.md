@@ -42,3 +42,28 @@
   port 8090 next to the real Streamer.bot; the shipped default is 8080.
 - Never commit secrets or user data: OAuth tokens, Kick client secret, passwords and anything read from
   the real Streamer.bot's `data/` live only in `streamerz.json` (gitignored) or stay outside the repo.
+
+## Writing and UI
+
+- Text (UI, log lines, messages, docs, commits, PRs): short, plain and natural, as a person would write
+  it. Never use the em dash (—) or en dash (–); use a comma, colon, period or parentheses. No decorative
+  Unicode symbols (●, ◐, ✓, ★, →, 🔒...) in UI text: show an icon instead.
+- Icons are Lucide (`src/ui/icons.rs`, ISC), drawn in the text's colour; brand logos (platforms, apps) are
+  SVGs in `assets/icons`. A new icon: add its Lucide body to `ICONS`; never draw symbols with text.
+- One look everywhere: zinc colours from `theme()`, `muted()` for quiet text, `Health` for a connection's
+  state, `grid()` for rows of buttons (they fill the space and fold to icons when narrow), `Rows` for
+  lists, `context_menu()` for right clicks. Reuse these; don't style a widget by hand.
+- Every list and tree with actions gets a right-click menu with the same actions as its buttons.
+- Raw JSON is for power users: show values as forms or tables, with JSON one button away.
+- Dates and times on screen go through `fmt::shown_date`, `shown_time`, `shown_iso` or `shown_clock`
+  (the user's pick in Settings, else the system's). Never format a date by hand for display.
+- Check every UI change on the hidden display (`DISPLAY=:99`) with a screenshot, narrow and wide.
+
+## Code
+
+- Before adding a helper, look for one: `ui.rs` (button, grid, header, hint, placeholder, Health,
+  context_menu), `ui/dialogs.rs` (row, window, ok_cancel, values, json_editor), `fmt.rs`, `edit.rs`.
+- Descriptions and names of trigger and sub-action types come from `types.rs`; check a code against it
+  before writing anything keyed by it.
+- New features that can be driven should be reachable from the MCP server (`mcp.rs`), so an assistant can
+  build and test them: add a tool or a WebSocket request, with a test.
