@@ -139,7 +139,7 @@ platform handles through channels, never through shared locks held across awaits
 ## Phases
 
 - [x] 0. Plan, rules (`CLAUDE.md`/`AGENTS.md`), commit hooks, the `commits` CI check, coverage list.
-  Public repo with the songrequestz settings (squash only, delete branch on merge, "protect main" ruleset).
+  Public repo with the songrequestz settings (merge commits only, never squash; delete branch on merge, "protect main" ruleset).
 - [x] 1. Scaffold:
   - Cargo, single-thread runtime, `streamerz.json` (atomic save + `.bak`), shared status, log.
   - Window and tray skeleton from songrequestz (starts hidden, autostart, dark theme), with the icon.

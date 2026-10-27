@@ -3,9 +3,9 @@
 - Commits: conventional commits, one line, max 72 chars: `type(scope)?: subject`.
   Scope is optional. No body, no footer, no `Co-Authored-By` or other trailers. Enforced by
   commitlint (`.githooks/commit-msg`, `commitlint.config.mjs`) and in CI.
-- `main` is protected: no direct pushes. Work on a branch, open a pull request; it's squash-merged,
-  so the PR title becomes the commit on `main` and must follow the same commit rule.
-  No approvals required.
+- `main` is protected: no direct pushes. Work on a branch, open a pull request; it's merged with a merge
+  commit, NEVER squashed or rebased: the history of every commit is kept, so each commit follows the commit
+  rule. No approvals required.
 - Work goes in versions: one branch and one PR per version, never stacked. A version holds every feature,
   fix and refactor the user asks for while it's open (PLAN.md phases included: tick them as they're done).
   Keep asking the user what else goes in; close it only when they say so, and at the end of every version
@@ -16,6 +16,10 @@
   `fix/obs-reconnect`, using the same types as commits.
 - Before committing, `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` must pass
   (`.githooks/pre-commit`, and the `lint` workflow on every PR).
+- Builds are never repeated: a pull request's CI builds the binaries and keeps them as artifacts named by
+  version and tree hash; the merge to `main` publishes those same files when the merged tree is the same
+  (`.github/workflows/build.yml`). Keep that working: don't add steps that change the tree after the PR
+  is built.
 - Releases are automatic: each merge to `main` bumps the version from the commit types
   (`type!:` major, `feat` minor, `fix`/`perf` patch) and publishes the Windows exe and the Linux binary.
   Don't tag by hand, and don't bump the version in `Cargo.toml` (it's unused).
