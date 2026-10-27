@@ -18,9 +18,16 @@ pub enum Updates {
 }
 
 /// This program's file, as it was at start: once updated, the running one is the renamed .old.
+/// In an AppImage, the AppImage file (the program inside is read-only).
 fn exe() -> Option<PathBuf> {
     static EXE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
-    EXE.get_or_init(|| std::env::current_exe().ok()).clone()
+    EXE.get_or_init(|| appimage().or_else(|| std::env::current_exe().ok()))
+        .clone()
+}
+
+/// The AppImage this runs from, if it does.
+fn appimage() -> Option<PathBuf> {
+    std::env::var_os("APPIMAGE").map(PathBuf::from).filter(|p| p.is_file())
 }
 
 /// "v1.2.3" as numbers; None for "dev" and the like.
@@ -54,9 +61,16 @@ pub async fn newer() -> Option<(String, Vec<(PathBuf, String)>)> {
     let exe = exe()?;
     let dir = exe.parent()?.to_path_buf();
     // This program, and on Linux the TikTok window's next to it if it's there.
-    let mut want = vec![(exe.clone(), if cfg!(windows) { "streamerz.exe" } else { "streamerz" })];
+    let name = if cfg!(windows) {
+        "streamerz.exe"
+    } else if appimage().is_some() {
+        "streamerz-x86_64.AppImage"
+    } else {
+        "streamerz"
+    };
+    let mut want = vec![(exe.clone(), name)];
     let helper = dir.join("streamerz-tiktok");
-    if cfg!(not(windows)) && helper.exists() {
+    if cfg!(not(windows)) && appimage().is_none() && helper.exists() {
         want.push((helper, "streamerz-tiktok"));
     }
     let assets = v["assets"].as_array()?;
