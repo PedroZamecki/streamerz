@@ -544,6 +544,7 @@ impl Accounts {
             r.status.set_tooltip(&text.replace('@', "@@"));
             r.status.set_label_color(color);
             r.connect.set_label(if active { "Disconnect" } else { "Connect" });
+            super::with_icon(&mut r.connect);
             r.channel.set_label(&if r.p.own(&c) {
                 "Channel: the broadcaster's".to_string()
             } else {
@@ -558,10 +559,12 @@ impl Accounts {
                         name.set_label(&format!("{who}: {}", n.replace('@', "@@")));
                         name.set_tooltip(&n.replace('@', "@@"));
                         b.set_label("Logout");
+                        super::with_icon(b);
                     }
                     None => {
                         name.set_label(&format!("{who}: not logged in"));
                         b.set_label("Login");
+                        super::with_icon(b);
                     }
                 }
                 let raw_name = r.p.raw_account_name(&c, bot == 1);
@@ -578,6 +581,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
     let mut col = super::tab(tabs, "Accounts");
 
     let mut lock_bar = Flex::default().row();
+    lock_bar.set_pad(8);
     let lock_msg = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
     let mut unlock_btn = button(&mut lock_bar, "Unlock Logins", 120);
     lock_bar.end();
@@ -588,6 +592,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
     for p in ALL {
         title(&mut col, p.name());
         let mut top = Flex::default().row();
+        top.set_pad(8);
         let status = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
         let auto = CheckButton::default().with_label("Connect on start");
         top.fixed(&auto, 140);
@@ -597,6 +602,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
         col.fixed(&top, ROW);
 
         let mut bottom = Flex::default().row();
+        bottom.set_pad(8);
         let channel = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
         bottom.fixed(&channel, 230);
         let gap = Frame::default();
@@ -786,6 +792,7 @@ fn browser_login<T: Send + 'static>(
         .with_align(Align::Left | Align::Inside | Align::Wrap);
     col.fixed(&msg, 50);
     let mut bar = Flex::default().row();
+    bar.set_pad(8);
     Frame::default();
     let mut cancel = button(&mut bar, "Cancel", 80);
     cancel.set_callback({
@@ -888,6 +895,7 @@ fn advanced(cfg: &Cfg, p: P) {
         col.fixed(&r, ROW);
     }
     let mut bar = Flex::default().row();
+    bar.set_pad(8);
     if p == P::Kick {
         let mut b = button(&mut bar, "Copy redirect URL", 150);
         b.set_callback(|_| fltk::app::copy(crate::kick::KICK_REDIRECT));
@@ -1010,6 +1018,7 @@ fn device_login(cfg: &Cfg, cmds: &Cmds, as_bot: bool) {
     col.fixed(&msg_frame, 140);
 
     let mut bar = Flex::default().row();
+    bar.set_pad(8);
     let mut open_btn = button(&mut bar, "Open Browser", 110);
     open_btn.set_callback({
         let uri = code_resp.verification_uri.clone();

@@ -157,6 +157,9 @@ pub struct WindowState {
     /// Starred favorite emotes and emoji in the picker: (name, image URL).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub favorite_emotes: Vec<(String, String)>,
+    /// The sidebar shows only its icons.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub nav_collapsed: bool,
 }
 
 impl Config {

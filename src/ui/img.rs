@@ -23,6 +23,9 @@ pub fn logo(name: &str, size: i32) -> Option<SvgImage> {
         "OBS Studio" => include_str!("../../assets/icons/obsstudio.svg"),
         "Streamlabs Desktop" | "Streamlabs" => include_str!("../../assets/icons/streamlabs.svg"),
         "Discord" => include_str!("../../assets/icons/discord.svg"),
+        "StreamElements" => include_str!("../../assets/icons/streamelements.svg"),
+        "DonorDrive" => include_str!("../../assets/icons/donordrive.svg"),
+        "Streamer.bot" => include_str!("../../assets/icons/streamerbot.svg"),
         _ => return None,
     };
     let mut i = SvgImage::from_data(svg).ok()?;

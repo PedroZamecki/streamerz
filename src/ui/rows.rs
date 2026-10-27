@@ -145,7 +145,8 @@ impl Rows {
         st.sel = n;
         let h = self.area.h() - 4;
         let y = (n - 1) * LINE;
-        st.top = st.top.clamp((y + LINE - h).max(0), y);
+        // Not laid out yet (h 0): its top only.
+        st.top = st.top.clamp((y + LINE - h).clamp(0, y), y);
         drop(st);
         self.area.redraw();
     }

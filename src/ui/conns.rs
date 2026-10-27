@@ -248,6 +248,7 @@ pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: im
 
     if crate::secrets::is_locked() {
         let mut lrow = Flex::default().row();
+        lrow.set_pad(8);
         let mut msg = Frame::default()
             .with_label("🔒 Saved logins couldn't be decrypted from your system keyring.")
             .with_align(Align::Left | Align::Inside | Align::Clip);
@@ -276,6 +277,7 @@ pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: im
     let mut states = Vec::new();
     for c in &conns {
         let mut row = Flex::default().row();
+        row.set_pad(8);
         let mut logo = Frame::default();
         logo.set_image(img::logo(c.logo, 18));
         row.fixed(&logo, 22);
@@ -316,6 +318,7 @@ pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: im
         states.push((st, r));
     }
     let mut bottom = Flex::default().row();
+    bottom.set_pad(8);
     Frame::default();
     let mut close = button(&mut bottom, "Close", 80);
     bottom.end();
@@ -351,6 +354,7 @@ pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: im
                 r.deactivate();
             } else {
                 r.set_label(if c.standby { "Check" } else { "Retry" });
+                super::with_icon(r);
                 r.activate();
             }
             st.set_label(&text.replace('@', "@@"));

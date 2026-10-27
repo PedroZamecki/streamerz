@@ -408,11 +408,9 @@ impl Actions {
         }
         self.sub_items.clear();
         let Some(a) = a else {
-            self.title
-                .set_label("← Select an action from the list to configure triggers and sub-actions");
-            self.detail_title.set_label("No Action Selected");
-            self.detail_desc
-                .set_label("Select an action from the list on the left to configure triggers and sub-actions.");
+            self.title.set_label("Pick an action to edit it");
+            self.detail_title.set_label("");
+            self.detail_desc.set_label("");
             for b in &mut self.action_btns {
                 b.deactivate();
             }
@@ -538,7 +536,7 @@ impl Config {
 
 fn bar(col: &mut Flex, labels: &[&str]) -> Vec<Button> {
     let mut row = Flex::default().row();
-    row.set_pad(4);
+    row.set_pad(8);
     let out = labels
         .iter()
         .map(|l| button(&mut row, l, (l.len() as i32 * 8 + 24).max(60)))
@@ -1446,6 +1444,7 @@ fn pick_template() -> Option<&'static crate::templates::Template> {
     about.set_label(TEMPLATES[0].about);
     col.fixed(&about, 60);
     let mut row = Flex::default().row();
+    row.set_pad(8);
     Frame::default();
     let mut add = button(&mut row, "Add", 90);
     let mut cancel = button(&mut row, "Cancel", 90);

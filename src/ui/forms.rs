@@ -1323,6 +1323,7 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
     }
     Frame::default();
     let mut bar = Flex::default().row();
+    bar.set_pad(8);
     let json = Rc::new(Cell::new(false));
     let mut j = button(&mut bar, "Edit JSON", 100);
     j.set_callback({

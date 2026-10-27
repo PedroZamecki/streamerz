@@ -1423,6 +1423,7 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
 
     if crate::secrets::is_locked() {
         let mut lrow = Flex::default().row();
+        lrow.set_pad(8);
         let mut lbl = Frame::default()
             .with_label("🔒 Keyring locked — unlock saved logins?")
             .with_align(Align::Left | Align::Inside);
@@ -1441,6 +1442,7 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
     let mut plat_choice_opt = None;
     if switch_plat {
         let mut prow = Flex::default().row();
+        prow.set_pad(8);
         let lbl = Frame::default()
             .with_label("Send to platform:")
             .with_align(Align::Left | Align::Inside);
@@ -1454,6 +1456,7 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
     }
 
     let mut head = Flex::default().row();
+    head.set_pad(8);
     let head_logo = Frame::default();
     head.fixed(&head_logo, 24);
     let mut head_title = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
@@ -1482,6 +1485,7 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
     root.fixed(&note, 28);
 
     let mut bottom = Flex::default().row();
+    bottom.set_pad(8);
     let mut manage = button(&mut bottom, "Manage in Accounts…", 160);
     Frame::default();
     let mut close = button(&mut bottom, "Close", 80);
@@ -1712,6 +1716,7 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds) {
     col.fixed(&bar, ROW + 4);
 
     let mut foot = Flex::default().row();
+    foot.set_pad(8);
     let status = Frame::default().with_align(Align::Left | Align::Inside);
     let mut close = button(&mut foot, "Cancel", 80);
     foot.end();
@@ -2242,6 +2247,7 @@ fn card(cmds: &Cmds, l: &Line) {
     let mut col = Flex::new(10, 10, 440, 460, None).column();
     col.set_pad(8);
     let mut head = Flex::default().row();
+    head.set_pad(8);
     let pic = Frame::default();
     head.fixed(&pic, 64);
     let mut name = Frame::default()
@@ -2256,6 +2262,7 @@ fn card(cmds: &Cmds, l: &Line) {
     let mut rows = InfoRows::new("");
     rows.set_column_widths(&[150]);
     let mut bottom = Flex::default().row();
+    bottom.set_pad(8);
     Frame::default();
     let mut open = button(&mut bottom, "Open profile", 110);
     let mut close = button(&mut bottom, "Close", 80);

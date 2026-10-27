@@ -8,6 +8,7 @@ mod conns;
 mod dialogs;
 pub(crate) mod emotes;
 mod forms;
+pub(crate) mod icons;
 pub(crate) mod img;
 mod lists;
 mod nav;
@@ -85,6 +86,7 @@ fn ask(title: &str, prompt: &str, text: &str) -> Option<String> {
     input.set_value(text);
     col.fixed(&input, ROW);
     let mut bar = Flex::default().row();
+    bar.set_pad(8);
     Frame::default();
     let mut ok = button(&mut bar, "OK", 90);
     let mut cancel = button(&mut bar, "Cancel", 90);
@@ -202,6 +204,8 @@ fn theme(dark: bool) {
         draw::set_draw_color(Color::color_average(c, Color::Foreground, 0.7));
         draw::draw_rounded_rect(x, y, w, h, r(w, h));
     }
+    // No dotted focus boxes: fields show their cursor, lists their selection.
+    app::set_visible_focus(false);
     app::set_menu_linespacing(8);
     app::set_scrollbar_size(12);
     for f in [
@@ -274,9 +278,43 @@ fn header(col: &mut Flex, widths: &'static [i32], titles: &'static [&'static str
 }
 
 fn button(row: &mut Flex, label: &str, w: i32) -> Button {
-    let b = Button::default().with_label(label);
-    row.fixed(&b, w);
+    let mut b = Button::default().with_label(label);
+    let wide = with_icon(&mut b);
+    row.fixed(&b, w + if wide { 20 } else { 0 });
     b
+}
+
+/// The icon of a button's label (call again after relabelling it) (Add, Edit, Delete...) before it, if it has one; true if so.
+pub(crate) fn with_icon(b: &mut Button) -> bool {
+    let name = match b.label().trim_end_matches(['.', '…']) {
+        "Add" => "plus",
+        "Edit" | "Edit JSON" => "pencil",
+        "Delete" => "trash-2",
+        "On/Off" => "power",
+        "Import" | "Load file" => "download",
+        "Export" | "Save to file" => "upload",
+        "Connect" | "Connect All" => "plug",
+        "Disconnect" | "Disconnect All" => "unplug",
+        "Test" => "play",
+        "Templates" => "layout-template",
+        "Save" => "save",
+        "Retry" | "Refresh" | "Reset" | "Check" => "rotate-cw",
+        "Quit" | "Logout" => "log-out",
+        "Login" => "log-in",
+        "Hide" => "eye-off",
+        "Duplicate" | "Copy" | "Copy line" | "Copy Code" | "Copy redirect URL" => "copy",
+        "Clear" => "eraser",
+        "Advanced" => "sliders-horizontal",
+        "Settings" => "settings",
+        _ => {
+            b.set_image(None::<fltk::image::SvgImage>);
+            return false;
+        }
+    };
+    let c = Color::color_average(Color::Foreground, Color::Background, 0.75);
+    b.set_image(icons::before_label(name, c, 14));
+    b.set_align(Align::ImageNextToText);
+    true
 }
 
 /// A page: `label` is its name in the sidebar.
@@ -352,7 +390,8 @@ pub fn run(
         win.set_icon(Some(icon));
     }
     // The pages, one at a time, picked in the sidebar on their left.
-    let mut tabs = Wizard::new(nav::W, 0, W - nav::W, H - 46, None);
+    let nav_w = nav::width(&cfg);
+    let mut tabs = Wizard::new(nav_w, 0, W - nav_w, H - 46, None);
     tabs.set_frame(FrameType::FlatBox);
 
     let acts = actions::tab(&tabs, cfg.clone(), cmds.clone());
@@ -393,7 +432,7 @@ pub fn run(
     view.set_buffer(buf.clone());
     col.end();
     tabs.end();
-    let sidebar = nav::sidebar(0, 0, H - 46, &tabs);
+    let sidebar = nav::sidebar(H - 46, &tabs, &cfg);
     let mut log = Log {
         view,
         buf,
@@ -402,6 +441,7 @@ pub fn run(
     };
 
     let mut bar = Flex::new(10, H - 40, W - 20, 32, None).row();
+    bar.set_pad(8);
     let mut save = button(&mut bar, "Save", 90);
     save.set_shortcut(Shortcut::Ctrl | 's');
     save.set_tooltip("Save and apply (Ctrl+S)");

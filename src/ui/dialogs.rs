@@ -74,6 +74,7 @@ pub fn run(win: &mut Window, answer: &Answer, mut check: impl FnMut() -> bool) -
 
 pub fn row(label: &str) -> Flex {
     let mut r = Flex::default().row();
+    r.set_pad(8);
     let l = Frame::default()
         .with_label(label)
         .with_align(Align::Left | Align::Inside);
@@ -99,6 +100,7 @@ pub fn json_editor(title: &str, hint: &str, v: &Value, valid: impl Fn(&Value) ->
     let mut buf2 = buf.clone();
     buf2.set_text(&serde_json::to_string_pretty(v).unwrap_or_default());
     let mut bar = Flex::default().row();
+    bar.set_pad(8);
     ok_cancel(&mut bar, &answer, false);
     bar.end();
     col.fixed(&bar, ROW + 4);
@@ -197,6 +199,7 @@ pub fn action(a: &Action, groups: &[String], queues: &[(String, String)]) -> Opt
     let pending = check(&mut col, "Exclude from pending", a.exclude_from_pending);
     Frame::default();
     let mut bar = Flex::default().row();
+    bar.set_pad(8);
     ok_cancel(&mut bar, &answer, true);
     bar.end();
     col.fixed(&bar, ROW + 4);
@@ -237,6 +240,7 @@ pub fn import() -> Option<Obj> {
     let mut text = MultilineInput::default();
     text.set_wrap(true);
     let mut bar = Flex::default().row();
+    bar.set_pad(8);
     let mut load = button(&mut bar, "Load file...", 110);
     ok_cancel(&mut bar, &answer, false);
     bar.end();
@@ -333,6 +337,7 @@ pub fn export(
     out.set_wrap(true);
     col.fixed(&out, 90);
     let mut bar = Flex::default().row();
+    bar.set_pad(8);
     let mut make = button(&mut bar, "Export", 90);
     let mut copy = button(&mut bar, "Copy", 90);
     let mut save = button(&mut bar, "Save to file...", 120);
@@ -422,6 +427,7 @@ pub fn capture_keys() -> Option<(i64, i64)> {
         line.hide();
     }
     let mut bar = Flex::default().row();
+    bar.set_pad(8);
     let mut copy = button(&mut bar, "Copy line", 100);
     if !hypr {
         copy.hide();

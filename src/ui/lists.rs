@@ -9,7 +9,7 @@ use crate::model::Obj;
 use crate::Config;
 use fltk::button::Button;
 use fltk::dialog;
-use fltk::enums::{Align, Font};
+use fltk::enums::{Align, Color, Font};
 use fltk::frame::Frame;
 use fltk::group::{Flex, Wizard};
 use fltk::prelude::*;
@@ -60,7 +60,16 @@ pub(super) fn save(cfg: &Cfg, f: impl FnOnce(&mut Config)) {
 pub(super) fn title(col: &mut Flex, t: &str) {
     let mut f = Frame::default().with_align(Align::Left | Align::Inside | Align::ImageNextToText);
     f.set_label_font(Font::HelveticaBold);
-    match super::img::logo(t, ROW - 8) {
+    // The logo of what it's about, or an icon for it.
+    let lucide = match t {
+        "WebSocket clients" => "plug",
+        "WebSocket servers" => "server",
+        "Pending" => "hourglass",
+        _ => "",
+    };
+    let pic = super::img::logo(t.split('\'').next().unwrap_or(t), ROW - 8)
+        .or_else(|| super::icons::icon(lucide, Color::Foreground, ROW - 10));
+    match pic {
         Some(logo) => {
             f.set_label(&format!("  {t}"));
             f.set_image(Some(logo));
@@ -456,7 +465,7 @@ fn json(what: &str, o: &Obj) -> Option<Obj> {
 /// A row of buttons.
 fn bar(col: &mut Flex, labels: &[&str]) -> Vec<Button> {
     let mut row = Flex::default().row();
-    row.set_pad(4);
+    row.set_pad(8);
     let out = labels
         .iter()
         .map(|l| button(&mut row, l, (l.len() as i32 * 8 + 24).max(60)))
@@ -631,6 +640,7 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
     col.fixed(&obs_guide, 36);
     let obs = list(&mut col, cfg, cmds, &OBS_CONNECTIONS, Some("autoConnect"));
     let mut b_row = Flex::default().row();
+    b_row.set_pad(8);
     let mut b_connect = button(&mut b_row, "Connect All", 120);
     let mut b_disconnect = button(&mut b_row, "Disconnect All", 120);
     Frame::default();
@@ -655,6 +665,7 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
     col.fixed(&slobs_guide, 36);
     let slobs = list(&mut col, cfg, cmds, &SLOBS_CONNECTIONS, Some("autoConnect"));
     let mut b_row = Flex::default().row();
+    b_row.set_pad(8);
     let mut b_connect = button(&mut b_row, "Connect All", 120);
     let mut b_disconnect = button(&mut b_row, "Disconnect All", 120);
     Frame::default();
@@ -1487,6 +1498,7 @@ fn servers_box(col: &mut Flex, cfg: &Cfg) -> Rc<RefCell<Servers>> {
     }));
     for i in 0..3 {
         let mut r = Flex::default().row();
+        r.set_pad(8);
         let f = Frame::default().with_align(Align::Left | Align::Inside);
         let mut b = button(&mut r, "Edit", 70);
         r.end();
@@ -1589,6 +1601,7 @@ fn donations_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Donations>
             .with_align(Align::Left | Align::Inside | Align::Wrap);
         col.fixed(&g, ROW);
         let mut r = Flex::default().row();
+        r.set_pad(8);
         let f = Frame::default().with_align(Align::Left | Align::Inside);
         let mut b = button(&mut r, "Edit", 70);
         r.end();
