@@ -44,7 +44,6 @@ async fn show(title: &str, body: &str) -> Result<(), String> {
 /// never in the script. Shown as from PowerShell's app id, which every Windows has registered.
 #[cfg(windows)]
 async fn show(title: &str, body: &str) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
     const SCRIPT: &str = r"
 [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
 $x = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
