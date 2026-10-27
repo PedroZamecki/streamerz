@@ -963,8 +963,8 @@ fn history_tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<History>> {
     let show = |after: bool| {
         move |m: &mut History| {
             if let Some(r) = m.selected() {
-                let v = Value::Object(if after { r.after.clone() } else { r.args.clone() });
-                dialogs::json_editor(&r.name, "", &v, |_| Ok(()));
+                let v = if after { &r.after } else { &r.args };
+                dialogs::values(&r.name, "", v, false);
             }
         }
     };

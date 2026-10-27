@@ -503,3 +503,198 @@ pub fn capture_keys() -> Option<(i64, i64)> {
     });
     run(&mut win, &answer, || true).then(|| got.get()).flatten()
 }
+
+/// A value as one line of text: strings as they are, the rest as JSON.
+fn shown(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        v => v.to_string(),
+    }
+}
+
+/// Text typed as a value: a number, true/false, null, a list or an object when it reads as one,
+/// else text.
+fn typed(t: &str) -> Value {
+    match serde_json::from_str::<Value>(t.trim()) {
+        Ok(v) if !v.is_string() => v,
+        _ => Value::String(t.to_string()),
+    }
+}
+
+/// Asks for a name and a value; both, if OK'd with a name.
+fn name_value(title: &str, name: &str, value: &str) -> Option<(String, String)> {
+    let (mut win, answer) = window(460, 110, title);
+    let mut col = Flex::new(10, 10, 440, 90, None).column();
+    col.set_pad(6);
+    let r = row("Name");
+    let mut n = Input::default();
+    n.set_value(name);
+    r.end();
+    col.fixed(&r, ROW);
+    let r = row("Value");
+    let mut v = Input::default();
+    v.set_value(value);
+    r.end();
+    col.fixed(&r, ROW);
+    let mut bar = Flex::default().row();
+    bar.set_pad(8);
+    ok_cancel(&mut bar, &answer, true);
+    bar.end();
+    col.fixed(&bar, ROW + 4);
+    col.end();
+    win.end();
+    let _ = if name.is_empty() {
+        n.take_focus()
+    } else {
+        v.take_focus()
+    };
+    let ok = run(&mut win, &answer, || !n.value().trim().is_empty());
+    ok.then(|| (n.value().trim().to_string(), v.value()))
+}
+
+/// Variables as a table of names and values. `edit`: they can be added, changed and removed, and
+/// the result comes back if OK'd; else it only shows them. JSON is a button away, for power users.
+pub fn values(title: &str, hint: &str, o: &Obj, edit: bool) -> Option<Obj> {
+    let (mut win, answer) = window(620, 460, title);
+    let mut col = Flex::new(10, 10, 600, 440, None).column();
+    col.set_pad(6);
+    if !hint.is_empty() {
+        let mut h = Frame::default()
+            .with_label(&hint.replace('@', "@@"))
+            .with_align(Align::Left | Align::Inside | Align::Wrap);
+        h.set_label_color(super::muted());
+        col.fixed(&h, 36);
+    }
+    super::header(&mut col, &[200], &["Name", "Value"]);
+    let mut list = super::rows::Rows::new(if edit {
+        "Nothing yet. Add one below."
+    } else {
+        "Nothing."
+    });
+    list.set_column_widths(&[200]);
+    let vars = Rc::new(std::cell::RefCell::new(o.clone()));
+    let fill = {
+        let (vars, list) = (vars.clone(), list.clone());
+        move || {
+            let mut list = list.clone();
+            let keep = list.value();
+            list.clear();
+            for (k, v) in vars.borrow().iter() {
+                list.add(&format!(
+                    "{}\t{}",
+                    k.replace('\t', " "),
+                    shown(v).replace(['\t', '\n'], " ")
+                ));
+            }
+            list.select(keep);
+        }
+    };
+    fill();
+    let labels: &[&str] = if edit { &["Add", "Edit", "Delete"] } else { &[] };
+    let b = if edit {
+        super::grid(&mut col, labels, 1)
+    } else {
+        Vec::new()
+    };
+    list.set_menu(&b);
+    let mut bar = Flex::default().row();
+    bar.set_pad(8);
+    let mut json = button(&mut bar, if edit { "Edit JSON" } else { "View JSON" }, 120);
+    if edit {
+        ok_cancel(&mut bar, &answer, false);
+    } else {
+        Frame::default();
+        let mut close = button(&mut bar, "Close", 90);
+        let a = answer.clone();
+        close.set_callback(move |_| a.set(Some(false)));
+    }
+    bar.end();
+    col.fixed(&bar, ROW + 4);
+    col.end();
+    win.end();
+    win.resizable(&col);
+
+    // The selected variable's name.
+    let picked = {
+        let (vars, list) = (vars.clone(), list.clone());
+        move || {
+            let i = usize::try_from(list.value() - 1).ok()?;
+            vars.borrow().keys().nth(i).cloned()
+        }
+    };
+    let change = {
+        let (vars, fill) = (vars.clone(), fill.clone());
+        move |old: Option<String>| {
+            let v = old
+                .as_ref()
+                .and_then(|k| vars.borrow().get(k).map(shown))
+                .unwrap_or_default();
+            let title = if old.is_some() { "Change" } else { "Add" };
+            let Some((k, v)) = name_value(title, old.as_deref().unwrap_or(""), &v) else {
+                return;
+            };
+            let mut vars = vars.borrow_mut();
+            if let Some(old) = old.filter(|o| *o != k) {
+                vars.remove(&old);
+            }
+            vars.insert(k, typed(&v));
+            drop(vars);
+            fill();
+        }
+    };
+    if edit {
+        let mut b = b.into_iter();
+        let (mut add, mut ed, mut del) = (b.next().unwrap(), b.next().unwrap(), b.next().unwrap());
+        add.set_callback({
+            let change = change.clone();
+            move |_| change(None)
+        });
+        ed.set_callback({
+            let (change, picked) = (change.clone(), picked.clone());
+            move |_| {
+                if let Some(k) = picked() {
+                    change(Some(k));
+                }
+            }
+        });
+        del.set_callback({
+            let (vars, fill, picked) = (vars.clone(), fill.clone(), picked.clone());
+            move |_| {
+                if let Some(k) = picked() {
+                    vars.borrow_mut().remove(&k);
+                    fill();
+                }
+            }
+        });
+        list.set_callback({
+            let (change, picked) = (change.clone(), picked.clone());
+            move |_| {
+                if app::event_clicks() {
+                    if let Some(k) = picked() {
+                        change(Some(k));
+                    }
+                }
+            }
+        });
+    }
+    json.set_callback({
+        let (vars, fill, title) = (vars.clone(), fill.clone(), title.to_string());
+        move |_| {
+            let now = Value::Object(vars.borrow().clone());
+            let got = json_editor(&title, "", &now, |v| {
+                if v.is_object() {
+                    Ok(())
+                } else {
+                    Err("An object, please.".into())
+                }
+            });
+            if let (true, Some(Value::Object(o))) = (edit, got) {
+                *vars.borrow_mut() = o;
+                fill();
+            }
+        }
+    });
+    let ok = run(&mut win, &answer, || true);
+    let out = vars.borrow().clone();
+    (ok && edit).then_some(out)
+}

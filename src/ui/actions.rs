@@ -1016,13 +1016,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
                 return dialog::alert_default("Select a trigger to test.");
             };
             let hint = "Arguments to run the action with, as this trigger would pass them:";
-            let Some(Value::Object(mut args)) = dialogs::json_editor("Test trigger", hint, &json!({}), |v| {
-                if v.is_object() {
-                    Ok(())
-                } else {
-                    Err("The arguments must be a JSON object.".into())
-                }
-            }) else {
+            let Some(mut args) = dialogs::values("Test trigger", hint, &Obj::new(), true) else {
                 return;
             };
             let k = t.get("type").and_then(Value::as_u64).unwrap_or(0) as u32;
