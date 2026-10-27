@@ -1146,8 +1146,26 @@ pub fn parse_kick_message_line(data: &Value, channel: &str) -> Option<crate::eng
         .and_then(crate::engine::rest_parse_iso)
         .map_or_else(String::new, crate::engine::chatlog::local_hhmm);
 
+    // A reply's parent (the metadata is sometimes JSON in a string).
+    let meta = match &data["metadata"] {
+        Value::String(m) => serde_json::from_str(m).unwrap_or(Value::Null),
+        m => m.clone(),
+    };
+    let reply = meta["original_sender"]["username"]
+        .as_str()
+        .map(|u| crate::engine::chatlog::Reply {
+            user: u.to_string(),
+            text: meta["original_message"]["content"]
+                .as_str()
+                .unwrap_or("")
+                .split(' ')
+                .map(crate::engine::chatlog::shown)
+                .collect::<Vec<_>>()
+                .join(" "),
+        });
     Some(crate::engine::chatlog::Line {
         platform: "kick".into(),
+        reply,
         msg_id,
         time,
         user,

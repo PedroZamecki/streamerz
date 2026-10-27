@@ -11,7 +11,7 @@ use super::accounts::{platform_accounts, unlock_logins_interactive};
 use super::emotes::{self, EmoteSection, Provider};
 use super::img::{self, Pic};
 use super::rows::Rows as InfoRows;
-use super::{button, query, tell, ROW};
+use super::{button, icons, query, tell, ROW};
 use crate::engine::chatlog::{Line, Moderate, PLATFORMS};
 use crate::Config;
 use fltk::app;
@@ -338,15 +338,24 @@ fn name_color(l: &Line) -> Color {
     }
 }
 
+/// Pinned, and not run out yet.
+fn pinned(l: &Line) -> bool {
+    l.pinned.is_some_and(|until| until > now_ms())
+}
+
 /// One thing on a line.
 enum It {
     Text(String, Font, Color),
+    /// Text struck through: a deleted message's.
+    Struck(String),
     Pic(Pic),
     Svg(SvgImage),
     /// A word's space: where the line may wrap.
     Space,
     /// A few pixels between pictures (no wrap).
     Gap(i32),
+    /// What follows starts a new row (after a reply's header).
+    Break,
 }
 
 impl It {
@@ -356,6 +365,10 @@ impl It {
                 draw::set_font(*f, TEXT);
                 (draw::width(t) as i32, TEXT + 4)
             }
+            It::Struck(t) => {
+                draw::set_font(Font::Helvetica, TEXT);
+                (draw::width(t) as i32, TEXT + 4)
+            }
             It::Pic(p) => (p.w(), p.h().max(1)),
             It::Svg(s) => (s.w(), s.h()),
             It::Space => {
@@ -363,6 +376,7 @@ impl It {
                 (draw::width(" ") as i32, 0)
             }
             It::Gap(w) => (*w, 0),
+            It::Break => (0, 0),
         }
     }
 }
@@ -389,6 +403,28 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
         }
         v.push(It::Text(l.text.clone(), Font::Helvetica, welcome_col));
         return v;
+    }
+    if let Some(r) = &l.reply {
+        if let Some(s) = icons::icon("corner-up-left", gray, 14) {
+            v.push(It::Svg(s));
+            v.push(It::Gap(4));
+        }
+        let mut said: String = r.text.chars().take(60).collect();
+        if said.len() < r.text.len() {
+            said.push('…');
+        }
+        v.push(It::Text(
+            format!("Replying to @{}: {said}", r.user),
+            Font::Helvetica,
+            gray,
+        ));
+        v.push(It::Break);
+    }
+    if pinned(l) {
+        if let Some(s) = icons::icon("pin", Color::Selection, 14) {
+            v.push(It::Svg(s));
+            v.push(It::Space);
+        }
     }
     if time && !l.time.is_empty() {
         v.push(It::Text(l.time.clone(), Font::HelveticaItalic, gray));
@@ -446,6 +482,13 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
     v.push(It::Text(format!("{}:", l.user), Font::HelveticaBold, name_color(l)));
     let fg = Color::Foreground;
     let pic = |url: &str| img::get(cmds, url, EMOTE, false);
+    if l.deleted {
+        for w in l.text.split(' ') {
+            v.push(It::Space);
+            v.push(It::Struck(w.to_string()));
+        }
+        return v;
+    }
     for w in l.text.split(' ') {
         v.push(It::Space);
         let known = l.emotes.iter().find(|e| e.0 == w).map(|e| e.1.clone());
@@ -472,6 +515,11 @@ fn rows(items: Vec<It>, w: i32) -> Rows {
     let mut x = 0;
     for it in items {
         let (iw, ih) = it.size();
+        if matches!(it, It::Break) {
+            out.push((Vec::new(), LINE));
+            x = 0;
+            continue;
+        }
         if matches!(it, It::Space | It::Gap(_)) {
             x += iw;
             continue;
@@ -500,8 +548,9 @@ struct State {
     follow: bool,
     /// An animation frame is due.
     ticking: bool,
-    /// The line under the pointer, which shows its actions.
+    /// The line under the pointer, which shows its actions, and the action under it.
     hover: Option<usize>,
+    act: Option<usize>,
 }
 
 /// A message's hover actions.
@@ -512,27 +561,38 @@ enum Act {
     Mod(Moderate),
 }
 
-const ACT: i32 = 24;
+/// An action's square in the bar.
+const ACT: i32 = 28;
 
-/// The actions `l` offers: moderation only where the platform has it, and not on the broadcaster.
+/// The actions `l` offers (with their icon and tooltip): moderation only where the platform has it,
+/// and not on the broadcaster.
 fn acts(l: &Line) -> Vec<(Act, &'static str, &'static str)> {
-    if l.note {
+    if l.note || l.deleted {
         return Vec::new();
     }
-    let mut v = vec![(Act::Reply, "ui:reply", "Reply"), (Act::Copy, "ui:copy", "Copy")];
+    let mut v = vec![(Act::Reply, "corner-up-left", "Reply"), (Act::Copy, "copy", "Copy")];
     let p = l.platform.as_str();
     if p == "twitch" && !l.msg_id.is_empty() {
-        v.push((Act::Mod(Moderate::Pin), "ui:pin", "Pin"));
+        v.push(if pinned(l) {
+            (Act::Mod(Moderate::Unpin), "pin-off", "Unpin")
+        } else {
+            (Act::Mod(Moderate::Pin(None)), "pin", "Pin...")
+        });
     }
     if matches!(p, "twitch" | "kick") && !l.msg_id.is_empty() {
-        v.push((Act::Mod(Moderate::Delete), "ui:delete", "Delete message"));
+        v.push((Act::Mod(Moderate::Delete), "trash-2", "Delete message"));
     }
     if matches!(p, "twitch" | "kick" | "youtube") && !l.broadcaster && !l.user_id.is_empty() {
-        v.push((Act::Mod(Moderate::Timeout(0)), "ui:timeout", "Timeout"));
-        v.push((Act::Mod(Moderate::Ban), "ui:ban", "Ban"));
+        v.push((Act::Mod(Moderate::Timeout(0)), "clock", "Timeout..."));
+        v.push((Act::Mod(Moderate::Ban), "ban", "Ban..."));
     }
     v
 }
+
+/// What Reply does: the chat box under the pane answers `l`.
+type OnReply = Rc<RefCell<Option<Rc<dyn Fn(&Line)>>>>;
+/// Answer a line in a chat box (None: stop answering).
+type SetReply = Rc<dyn Fn(Option<&Line>)>;
 
 /// One chat view: the lines, drawn, with a scrollbar.
 #[derive(Clone)]
@@ -541,8 +601,7 @@ struct Pane {
     bar: Slider,
     st: Rc<RefCell<State>>,
     cmds: Cmds,
-    /// Where Reply writes the mention.
-    input: Rc<RefCell<Option<Input>>>,
+    on_reply: OnReply,
 }
 
 impl Pane {
@@ -581,9 +640,10 @@ impl Pane {
                 follow: true,
                 ticking: false,
                 hover: None,
+                act: None,
             })),
             cmds: cmds.clone(),
-            input: Rc::default(),
+            on_reply: Rc::default(),
         };
         area.draw({
             let p = p.clone();
@@ -684,7 +744,16 @@ impl Pane {
                             let (w, h) = (s.w(), s.h());
                             s.clone().draw(x, y + (rh - h) / 2, w, h);
                         }
-                        It::Space | It::Gap(_) => {}
+                        It::Struck(t) => {
+                            draw::set_font(Font::Helvetica, TEXT);
+                            draw::set_draw_color(Color::from_rgb(0x88, 0x88, 0x88));
+                            draw::draw_text2(t, x, y, 0, rh, Align::Left);
+                            let w = draw::width(t) as i32;
+                            // Through the space before it too: one line across the message.
+                            let sp = draw::width(" ") as i32;
+                            draw::draw_line(x - sp, y + rh / 2, x + w, y + rh / 2);
+                        }
+                        It::Space | It::Gap(_) | It::Break => {}
                     }
                 }
                 y += rh;
@@ -692,18 +761,25 @@ impl Pane {
         }
         if let Some((l, bx, by)) = st.hover.and_then(|i| self.bar_at(f, &st, i)) {
             let a = acts(l);
-            let w = a.len() as i32 * ACT + 4;
-            draw::draw_box(
-                FrameType::RFlatBox,
-                bx - 2,
-                by - 2,
-                w,
-                ACT + 4,
-                Color::from_rgb(0x3a, 0x3d, 0x45),
-            );
+            let (fg, bg) = (Color::Foreground, Color::Background);
+            let n = a.len() as i32;
+            draw::set_draw_color(bg);
+            draw::draw_rounded_rectf(bx, by, n * ACT, ACT, 6);
+            draw::set_draw_color(Color::color_average(fg, bg, 0.15));
+            draw::draw_rounded_rect(bx, by, n * ACT, ACT, 6);
             for (k, (_, icon, _)) in a.iter().enumerate() {
-                if let Some(mut s) = icon_sized(icon, 16) {
-                    s.draw(bx + k as i32 * ACT + 4, by + 4, 16, 16);
+                let x = bx + k as i32 * ACT;
+                if st.act == Some(k) {
+                    draw::set_draw_color(Color::color_average(fg, bg, 0.2));
+                    draw::draw_rounded_rectf(x + 2, by + 2, ACT - 4, ACT - 4, 5);
+                }
+                let c = match *icon {
+                    "ban" => Color::from_rgb(0xf0, 0x6a, 0x6a),
+                    _ if st.act == Some(k) => fg,
+                    _ => Color::color_average(fg, bg, 0.75),
+                };
+                if let Some(mut s) = icons::icon(icon, c, 16) {
+                    s.draw(x + (ACT - 16) / 2, by + (ACT - 16) / 2, 16, 16);
                 }
             }
         }
@@ -731,7 +807,7 @@ impl Pane {
         None
     }
 
-    /// Line `i` and where its action bar goes: at its top right, kept inside the view.
+    /// Line `i` and where its action bar goes: at the right of its first row, kept inside the view.
     fn bar_at<'a>(&self, f: &Frame, st: &'a State, i: usize) -> Option<(&'a Line, i32, i32)> {
         let l = st.lines.get(i)?;
         let n = acts(l).len() as i32;
@@ -739,30 +815,51 @@ impl Pane {
             return None;
         }
         let y = f.y() + 4 - st.top + st.laid.iter().take(i).map(|l| l.1).sum::<i32>();
-        let by = (y - ACT / 2).clamp(f.y() + 4, f.y() + f.h() - ACT - 4);
-        Some((l, f.x() + f.w() - n * ACT - 10, by))
+        let first = st.laid.get(i)?.0.first().map_or(LINE, |r| r.1);
+        let by = (y + (first - ACT) / 2).clamp(f.y() + 4, f.y() + f.h() - ACT - 4);
+        Some((l, f.x() + f.w() - n * ACT - 8, by))
+    }
+
+    /// The hovered line's action under the pointer: its index in `acts`.
+    fn act_index(&self, f: &Frame, st: &State) -> Option<usize> {
+        let (l, bx, by) = self.bar_at(f, st, st.hover?)?;
+        let (ex, ey) = (app::event_x(), app::event_y());
+        let k = (ex - bx).div_euclid(ACT);
+        ((by..by + ACT).contains(&ey) && (0..acts(l).len() as i32).contains(&k)).then_some(k as usize)
     }
 
     /// The action under the pointer, on the hovered line: the line and its `acts` entry.
     fn act_at(&self, f: &Frame) -> Option<(Line, (Act, &'static str, &'static str))> {
         let st = self.st.borrow();
-        let (l, bx, by) = self.bar_at(f, &st, st.hover?)?;
-        let (ex, ey) = (app::event_x(), app::event_y());
-        if !(by..by + ACT).contains(&ey) || ex < bx {
-            return None;
-        }
-        let a = *acts(l).get(((ex - bx) / ACT) as usize)?;
-        Some((l.clone(), a))
+        let k = self.act_index(f, &st)?;
+        let l = st.lines.get(st.hover?)?;
+        Some((l.clone(), acts(l)[k]))
     }
 
     fn run(&self, l: &Line, a: Act) {
         match a {
             Act::Reply => {
-                if let Some(i) = self.input.borrow_mut().as_mut() {
-                    let v = format!("@{} {}", l.user, i.value().trim_start());
-                    i.set_value(&v);
-                    let _ = i.take_focus();
-                    let _ = i.set_position(v.len() as i32);
+                let f = self.on_reply.borrow().clone();
+                if let Some(f) = f {
+                    f(l);
+                }
+            }
+            Act::Mod(Moderate::Pin(_)) => {
+                const FOR: [(&str, Option<u64>); 7] = [
+                    ("30 seconds", Some(30)),
+                    ("1 minute", Some(60)),
+                    ("2 minutes", Some(120)),
+                    ("5 minutes", Some(300)),
+                    ("10 minutes", Some(600)),
+                    ("30 minutes", Some(1800)),
+                    ("Until the stream ends", None),
+                ];
+                let menu = fltk::menu::MenuItem::new(&FOR.map(|f| f.0));
+                if let Some(item) = menu.popup(app::event_x(), app::event_y()) {
+                    let label = item.label().unwrap_or_default();
+                    let secs = FOR.iter().find(|f| f.0 == label).and_then(|f| f.1);
+                    let l = l.clone();
+                    tell(&self.cmds, move |e| e.moderate(&l, Moderate::Pin(secs)));
                 }
             }
             Act::Copy => app::copy(&l.text),
@@ -822,13 +919,15 @@ impl Pane {
         match ev {
             Event::Enter => true,
             Event::Move => {
-                let hover = {
-                    let st = self.st.borrow();
-                    self.line_at(f, &st)
-                };
-                if self.st.borrow().hover != hover {
-                    self.st.borrow_mut().hover = hover;
-                    f.redraw();
+                {
+                    let mut st = self.st.borrow_mut();
+                    // On its action bar (which may stick out over the next line), the line stays.
+                    let act = self.act_index(f, &st);
+                    let hover = if act.is_some() { st.hover } else { self.line_at(f, &st) };
+                    if (st.hover, st.act) != (hover, act) {
+                        (st.hover, st.act) = (hover, act);
+                        f.redraw();
+                    }
                 }
                 let act = self.act_at(f);
                 f.set_tooltip(act.as_ref().map_or("", |a| a.1 .2));
@@ -843,9 +942,12 @@ impl Pane {
                 true
             }
             Event::Leave => {
-                if self.st.borrow_mut().hover.take().is_some() {
+                let mut st = self.st.borrow_mut();
+                st.act = None;
+                if st.hover.take().is_some() {
                     f.redraw();
                 }
+                drop(st);
                 if let Some(mut w) = f.window() {
                     w.set_cursor(fltk::enums::Cursor::Default);
                 }
@@ -971,6 +1073,24 @@ impl ChatColumn {
         col.set_pad(4);
         let (_pane_group, pane) = Pane::new(cmds);
 
+        // "Replying to @name: text" with an X, while answering one.
+        let mut replying = Flex::default().row();
+        replying.set_pad(6);
+        let mut r_icon = Frame::default();
+        r_icon.set_image(icons::icon("corner-up-left", super::muted(), 14));
+        replying.fixed(&r_icon, 18);
+        let mut r_text = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+        r_text.set_label_size(12);
+        r_text.set_label_color(super::muted());
+        let mut r_close = Button::default();
+        r_close.set_frame(FrameType::FlatBox);
+        r_close.set_image(icons::icon("x", super::muted(), 14));
+        r_close.set_tooltip("Don't reply (Esc)");
+        replying.fixed(&r_close, 24);
+        replying.end();
+        col.fixed(&replying, 0);
+        replying.hide();
+
         let mut bar = Flex::default().row();
         bar.set_pad(4);
 
@@ -981,7 +1101,6 @@ impl ChatColumn {
 
         let mut input = Input::default();
         super::placeholder(&mut input, "Send a message");
-        pane.input.replace(Some(input.clone()));
 
         let mut emote_btn = Button::default();
         emote_btn.set_frame(FrameType::FlatBox);
@@ -1005,6 +1124,46 @@ impl ChatColumn {
         });
         let target_plat = Rc::new(Cell::new(init_idx));
         let allow_switch_plat = Rc::new(Cell::new(fixed_plat.is_none()));
+        let reply: Rc<RefCell<Option<Line>>> = Rc::default();
+        // Answer `l` (None: stop); in the all-platforms box, to `l`'s platform.
+        let set_reply: SetReply = {
+            let (reply, col, replying, r_text) = (reply.clone(), col.clone(), replying.clone(), r_text.clone());
+            let (target_plat, allow_switch_plat, input) =
+                (target_plat.clone(), allow_switch_plat.clone(), input.clone());
+            Rc::new(move |l: Option<&Line>| {
+                let (mut col, mut replying, mut r_text, mut input) =
+                    (col.clone(), replying.clone(), r_text.clone(), input.clone());
+                *reply.borrow_mut() = l.cloned();
+                match l {
+                    Some(l) => {
+                        let said = l.text.replace('@', "@@");
+                        r_text.set_label(&format!("Replying to @@{}: {said}", l.user.replace('@', "@@")));
+                        if allow_switch_plat.get() {
+                            if let Some(i) = PLATFORMS.iter().position(|p| *p == l.platform) {
+                                target_plat.set(i);
+                            }
+                        }
+                        replying.show();
+                        col.fixed(&replying, 22);
+                        let _ = input.take_focus();
+                    }
+                    None => {
+                        replying.hide();
+                        col.fixed(&replying, 0);
+                    }
+                }
+                col.layout();
+                col.redraw();
+            })
+        };
+        pane.on_reply.replace(Some({
+            let set_reply = set_reply.clone();
+            Rc::new(move |l: &Line| set_reply(Some(l)))
+        }));
+        r_close.set_callback({
+            let set_reply = set_reply.clone();
+            move |_| set_reply(None)
+        });
 
         let me = Self {
             col,
@@ -1017,6 +1176,7 @@ impl ChatColumn {
 
         let do_send = {
             let (cfg, cmds, input, target_plat) = (cfg.clone(), cmds.clone(), input.clone(), target_plat.clone());
+            let (reply, set_reply) = (reply.clone(), set_reply.clone());
             move || {
                 let text = input.value().trim().to_string();
                 if text.is_empty() {
@@ -1026,9 +1186,11 @@ impl ChatColumn {
                 let plat = PLATFORMS[p_idx];
                 let want_broadcaster = cfg.borrow().window.chat_as_broadcaster.iter().any(|s| s == plat);
                 let use_bot = !want_broadcaster;
+                let to = reply.borrow_mut().take();
                 tell(&cmds, move |e| {
-                    let _ = e.send_chat_list(&[plat], &text, use_bot, true);
+                    let _ = e.send_chat_list(&[plat], &text, use_bot, true, to.as_ref());
                 });
+                set_reply(None);
                 input.clone().set_value("");
             }
         };
@@ -1037,11 +1199,17 @@ impl ChatColumn {
             let s = do_send.clone();
             move |_| s()
         });
+        let (me_reply, set_reply_esc) = (reply.clone(), set_reply.clone());
+        let reply_on = |r: &Rc<RefCell<Option<Line>>>| r.borrow().is_some();
         me.input.clone().handle({
             let s = do_send;
             move |_, ev| {
                 if ev == Event::KeyDown && app::event_key() == Key::Enter {
                     s();
+                    return true;
+                }
+                if ev == Event::KeyDown && app::event_key() == Key::Escape && reply_on(&me_reply) {
+                    set_reply_esc(None);
                     return true;
                 }
                 false
@@ -1751,7 +1919,7 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds) {
             let use_bot = who.value() == 0;
             let fb = fallback.is_checked();
             tell(&cmds, move |e| {
-                let _ = e.send_chat_list(&targets, &text, use_bot, fb);
+                let _ = e.send_chat_list(&targets, &text, use_bot, fb, None);
             });
             done.set(true);
         }

@@ -1971,6 +1971,7 @@ pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate
     let mut badges_raw = String::new();
     let mut emotes_raw = String::new();
     let mut sent_ts: Option<i64> = None;
+    let mut reply = crate::engine::chatlog::Reply::default();
 
     for kv in tags_part.split(';') {
         let Some((k, v)) = kv.split_once('=') else { continue };
@@ -1982,6 +1983,8 @@ pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate
             "badges" => badges_raw = v.to_string(),
             "emotes" => emotes_raw = v.to_string(),
             "tmi-sent-ts" => sent_ts = v.parse::<i64>().ok(),
+            "reply-parent-display-name" => reply.user = unescape_irc_tag(v),
+            "reply-parent-msg-body" => reply.text = unescape_irc_tag(v),
             _ => {}
         }
     }
@@ -2042,8 +2045,11 @@ pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate
         }
     }
 
+    let reply = (!reply.user.is_empty()).then_some(reply);
+    let text = reply.as_ref().map_or(text.clone(), |r| r.strip(&text));
     Some(crate::engine::chatlog::Line {
         platform: "twitch".into(),
+        reply,
         msg_id,
         time,
         user,
