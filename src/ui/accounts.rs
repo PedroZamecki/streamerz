@@ -555,7 +555,7 @@ impl Accounts {
                         super::with_icon(b);
                     }
                     None => {
-                        name.set_label(&format!("{who}: not logged in"));
+                        name.set_label(&format!("No {}", who.to_lowercase()));
                         b.set_label("Login");
                         super::with_icon(b);
                     }
@@ -605,7 +605,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
         bottom.fixed(&gap, 110);
         let mut channel = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
         channel.set_label_color(super::muted());
-        bottom.fixed(&channel, 160);
+        bottom.fixed(&channel, 120);
         let mut who = Vec::new();
         for _ in 0..2 {
             let pic = Frame::default();
