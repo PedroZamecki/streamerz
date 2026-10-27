@@ -13,7 +13,13 @@ on:
 permissions:
   contents: write
 
-concurrency: build-${{ github.ref }}
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   version:
@@ -77,18 +83,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.apt-cache
+          key: apt-deps-${{ runner.os }}-${{ hashFiles('.github/workflows/*.yml') }}
+          restore-keys: |
+            apt-deps-${{ runner.os }}-
       - name: Cache linuxdeploy
         uses: actions/cache@v4
         with:
           path: /tmp/appimage-tools
           key: linuxdeploy-alpha-20251107-1
       - name: Install dependencies
-        run: >
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends
-          libx11-dev libxext-dev libxft-dev libxinerama-dev libxcursor-dev libxrender-dev
-          libxfixes-dev libpango1.0-dev libgl1-mesa-dev libglu1-mesa-dev libwayland-dev
-          wayland-protocols libdbus-1-dev libxkbcommon-dev libegl-dev libopengl-dev
-          libwebkit2gtk-4.1-dev libgtk-3-dev libfuse2
+        run: |
+          mkdir -p ~/.apt-cache
+          sudo cp -n ~/.apt-cache/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list /etc/apt/sources.list.d/* /etc/apt/apt-mirrors.txt 2>/dev/null || true
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libx11-dev libxext-dev libxft-dev libxinerama-dev libxcursor-dev libxrender-dev \
+            libxfixes-dev libpango1.0-dev libgl1-mesa-dev libglu1-mesa-dev libwayland-dev \
+            wayland-protocols libdbus-1-dev libxkbcommon-dev libegl-dev libopengl-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libfuse2
+          cp -n /var/cache/apt/archives/*.deb ~/.apt-cache/ 2>/dev/null || true
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked
         env:
