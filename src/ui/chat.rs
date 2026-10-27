@@ -13,6 +13,7 @@ use super::img::{self, Pic};
 use super::rows::Rows as InfoRows;
 use super::{button, icons, query, tell, ROW};
 use crate::engine::chatlog::{Line, Moderate, PLATFORMS};
+use crate::i18n::{tr, trf};
 use crate::Config;
 use fltk::app;
 use fltk::button::{Button, CheckButton};
@@ -521,21 +522,24 @@ fn acts(l: &Line) -> Vec<(Act, &'static str, &'static str)> {
     if l.note || l.deleted {
         return Vec::new();
     }
-    let mut v = vec![(Act::Reply, "corner-up-left", "Reply"), (Act::Copy, "copy", "Copy")];
+    let mut v = vec![
+        (Act::Reply, "corner-up-left", tr("chat.act_reply")),
+        (Act::Copy, "copy", tr("chat.act_copy")),
+    ];
     let p = l.platform.as_str();
     if p == "twitch" && !l.msg_id.is_empty() {
         v.push(if pinned(l) {
-            (Act::Mod(Moderate::Unpin), "pin-off", "Unpin")
+            (Act::Mod(Moderate::Unpin), "pin-off", tr("chat.act_unpin"))
         } else {
-            (Act::Mod(Moderate::Pin(None)), "pin", "Pin...")
+            (Act::Mod(Moderate::Pin(None)), "pin", tr("chat.act_pin"))
         });
     }
     if matches!(p, "twitch" | "kick") && !l.msg_id.is_empty() {
-        v.push((Act::Mod(Moderate::Delete), "trash-2", "Delete message"));
+        v.push((Act::Mod(Moderate::Delete), "trash-2", tr("chat.act_delete_message")));
     }
     if matches!(p, "twitch" | "kick" | "youtube") && !l.broadcaster && !l.user_id.is_empty() {
-        v.push((Act::Mod(Moderate::Timeout(0)), "clock", "Timeout..."));
-        v.push((Act::Mod(Moderate::Ban), "ban", "Ban..."));
+        v.push((Act::Mod(Moderate::Timeout(0)), "clock", tr("chat.act_timeout")));
+        v.push((Act::Mod(Moderate::Ban), "ban", tr("chat.act_ban")));
     }
     v
 }
@@ -796,41 +800,48 @@ impl Pane {
                 }
             }
             Act::Mod(Moderate::Pin(_)) => {
-                const FOR: [(&str, Option<u64>); 7] = [
-                    ("30 seconds", Some(30)),
-                    ("1 minute", Some(60)),
-                    ("2 minutes", Some(120)),
-                    ("5 minutes", Some(300)),
-                    ("10 minutes", Some(600)),
-                    ("30 minutes", Some(1800)),
-                    ("Until the stream ends", None),
+                const SECONDS: [Option<u64>; 7] =
+                    [Some(30), Some(60), Some(120), Some(300), Some(600), Some(1800), None];
+                let labels = [
+                    tr("chat.pin_30s"),
+                    tr("chat.pin_1m"),
+                    tr("chat.pin_2m"),
+                    tr("chat.pin_5m"),
+                    tr("chat.pin_10m"),
+                    tr("chat.pin_30m"),
+                    tr("chat.pin_stream_ends"),
                 ];
-                let menu = fltk::menu::MenuItem::new(&FOR.map(|f| f.0));
+                let menu = fltk::menu::MenuItem::new(&labels);
                 if let Some(item) = menu.popup(app::event_x(), app::event_y()) {
-                    let label = item.label().unwrap_or_default();
-                    let secs = FOR.iter().find(|f| f.0 == label).and_then(|f| f.1);
-                    let l = l.clone();
-                    tell(&self.cmds, move |e| e.moderate(&l, Moderate::Pin(secs)));
+                    let idx = item.value() as usize;
+                    if let Some(&secs) = SECONDS.get(idx) {
+                        let l = l.clone();
+                        tell(&self.cmds, move |e| e.moderate(&l, Moderate::Pin(secs)));
+                    }
                 }
             }
             Act::Copy => app::copy(&l.text),
             Act::Mod(Moderate::Timeout(_)) => {
-                let menu = fltk::menu::MenuItem::new(&["1 minute", "10 minutes", "1 hour", "1 day", "1 week"]);
+                const TIMEOUTS: [u64; 5] = [60, 600, 3600, 86_400, 604_800];
+                let labels = [
+                    tr("chat.timeout_1m"),
+                    tr("chat.timeout_10m"),
+                    tr("chat.timeout_1h"),
+                    tr("chat.timeout_1d"),
+                    tr("chat.timeout_1w"),
+                ];
+                let menu = fltk::menu::MenuItem::new(&labels);
                 if let Some(item) = menu.popup(app::event_x(), app::event_y()) {
-                    let secs = match item.label().unwrap_or_default().as_str() {
-                        "1 minute" => 60,
-                        "10 minutes" => 600,
-                        "1 hour" => 3600,
-                        "1 day" => 86_400,
-                        _ => 604_800,
-                    };
-                    let l = l.clone();
-                    tell(&self.cmds, move |e| e.moderate(&l, Moderate::Timeout(secs)));
+                    let idx = item.value() as usize;
+                    if let Some(&secs) = TIMEOUTS.get(idx) {
+                        let l = l.clone();
+                        tell(&self.cmds, move |e| e.moderate(&l, Moderate::Timeout(secs)));
+                    }
                 }
             }
             Act::Mod(Moderate::Ban) => {
-                let q = format!("Ban {} from {}?", l.user, l.platform).replace('@', "@@");
-                if fltk::dialog::choice2_default(&q, "Ban", "Cancel", "") == Some(0) {
+                let q = trf("chat.ban_confirm", &[("user", &l.user), ("platform", &l.platform)]).replace('@', "@@");
+                if fltk::dialog::choice2_default(&q, tr("btn.ban"), tr("dialogs.cancel"), "") == Some(0) {
                     let l = l.clone();
                     tell(&self.cmds, move |e| e.moderate(&l, Moderate::Ban));
                 }
@@ -924,7 +935,7 @@ impl Pane {
                 if !l.user_id.is_empty() {
                     let (cmds, l) = (self.cmds.clone(), l.clone());
                     m.add(
-                        "User info...",
+                        tr("chat.user_info"),
                         fltk::enums::Shortcut::None,
                         MenuFlag::Normal,
                         move |_| card(&cmds, &l),
@@ -1070,7 +1081,7 @@ impl ChatColumn {
         let mut r_close = Button::default();
         r_close.set_frame(FrameType::FlatBox);
         r_close.set_image(icons::icon("x", super::muted(), 14));
-        r_close.set_tooltip("Don't reply (Esc)");
+        r_close.set_tooltip(tr("chat.dont_reply_tooltip"));
         replying.fixed(&r_close, 24);
         replying.end();
         col.fixed(&replying, 0);
@@ -1089,13 +1100,13 @@ impl ChatColumn {
         let mut emote_btn = Button::default();
         emote_btn.set_frame(FrameType::FlatBox);
         emote_btn.set_image(icons::icon("smile", super::muted(), 18));
-        emote_btn.set_tooltip("Emotes & emoji for this platform and account");
+        emote_btn.set_tooltip(tr("chat.emote_btn_tooltip"));
         bar.fixed(&emote_btn, 32);
 
         let mut send_btn = Button::default();
         send_btn.set_frame(FrameType::FlatBox);
         send_btn.set_image(icons::icon("send-horizontal", Color::Selection, 18));
-        send_btn.set_tooltip("Send message (Enter)");
+        send_btn.set_tooltip(tr("chat.send_btn_tooltip"));
         bar.fixed(&send_btn, 32);
 
         bar.end();
@@ -1120,7 +1131,10 @@ impl ChatColumn {
                 match l {
                     Some(l) => {
                         let said = l.text.replace('@', "@@");
-                        r_text.set_label(&format!("Replying to @@{}: {said}", l.user.replace('@', "@@")));
+                        r_text.set_label(&trf(
+                            "chat.replying_to",
+                            &[("user", &l.user.replace('@', "@@")), ("said", &said)],
+                        ));
                         replying.show();
                         col.fixed(&replying, 22);
                         let _ = input.take_focus();
@@ -1231,19 +1245,34 @@ impl ChatColumn {
             Some(img) => btn.set_image(Some(img)),
             None => btn.set_image(icons::icon("circle-user-round", super::muted(), 20)),
         }
-        let role_str = if use_bot { "Bot" } else { "Broadcaster" };
+        let role_str = if use_bot {
+            tr("chat.role_bot")
+        } else {
+            tr("chat.role_broadcaster")
+        };
         let tip = match &sender_name {
-            Some(name) => format!(
-                "{plat_name}: sending as {} ({role_str}). Click to switch",
-                name.replace('@', "@@")
+            Some(name) => trf(
+                "chat.sending_as_tip",
+                &[
+                    ("platform", plat_name),
+                    ("name", &name.replace('@', "@@")),
+                    ("role", role_str),
+                ],
             ),
-            None => format!("{plat_name}: nobody logged in. Click for options"),
+            None => trf("chat.nobody_logged_in_tip", &[("platform", plat_name)]),
         };
         btn.set_tooltip(&tip);
         let mut inp = self.input.clone();
         let placeholder_tip = match &sender_name {
-            Some(name) => format!("Message {plat_name} as {} ({role_str})", name.replace('@', "@@")),
-            None => format!("Message {plat_name}"),
+            Some(name) => trf(
+                "chat.message_as_tip",
+                &[
+                    ("platform", plat_name),
+                    ("name", &name.replace('@', "@@")),
+                    ("role", role_str),
+                ],
+            ),
+            None => trf("chat.message_plat_tip", &[("platform", plat_name)]),
         };
         inp.set_tooltip(&placeholder_tip);
         btn.redraw();
@@ -1359,7 +1388,7 @@ impl Chat {
         };
         self.view.clear();
         self.view.add_choice(
-            &["All together", "Side by side"]
+            &[tr("chat.view_all"), tr("chat.view_side_by_side")]
                 .iter()
                 .chain(&names)
                 .copied()
@@ -1429,27 +1458,27 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
     let mut col = super::tab(tabs, "Chat");
     let mut top = Flex::default().row();
     top.set_pad(6);
-    let l = Frame::default().with_label("Show:");
+    let l = Frame::default().with_label(tr("chat.show"));
     top.fixed(&l, 46);
     let mut view = Choice::default();
     top.fixed(&view, 136);
     let mut hint = Frame::default()
-        .with_label("Click a name for its info, hover a line for actions")
+        .with_label(tr("chat.hint"))
         .with_align(Align::Right | Align::Inside | Align::Clip);
     hint.set_label_size(12);
     hint.set_label_color(super::muted());
 
     // Discrete "Message all" button with broadcast icon
     let mut msg_all = Button::default()
-        .with_label(" Message all")
+        .with_label(tr("chat.message_all_btn"))
         .with_align(Align::Inside | Align::ImageNextToText);
     msg_all.set_image(icons::icon("megaphone", Color::Foreground, 15));
-    msg_all.set_tooltip("Open a popup to send a message to multiple platforms at once");
+    msg_all.set_tooltip(tr("chat.message_all_tooltip"));
     top.fixed(&msg_all, 114);
 
-    let mut opts = fltk::menu::MenuButton::default().with_label("Options");
+    let mut opts = fltk::menu::MenuButton::default().with_label(tr("chat.options"));
     top.fixed(&opts, 84);
-    let mut clear = button(&mut top, "Clear", 64);
+    let mut clear = button(&mut top, tr("btn.clear"), 64);
     top.end();
     col.fixed(&top, ROW);
 
@@ -1525,7 +1554,10 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
         SHOW.set((!w.chat_no_time, !w.chat_no_badges));
     }
     let (time, badges) = SHOW.get();
-    for (i, (label, on)) in [("Time", time), ("Badges", badges)].into_iter().enumerate() {
+    for (i, (label, on)) in [(tr("chat.opt_time"), time), (tr("chat.opt_badges"), badges)]
+        .into_iter()
+        .enumerate()
+    {
         let flag = if on {
             fltk::menu::MenuFlag::Toggle | fltk::menu::MenuFlag::Value
         } else {
@@ -1567,7 +1599,9 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
 /// (and in `"All together"` mode, pick which platform the single input sends to).
 fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accounts: Rc<dyn Fn()>) {
     let h = 236 + i32::from(crate::secrets::is_locked()) * 34;
-    let mut win = Window::default().with_size(430, h).with_label("Sending Account");
+    let mut win = Window::default()
+        .with_size(430, h)
+        .with_label(tr("chat.acct_win_title"));
     win.set_xclass("streamerz");
     win.make_modal(true);
 
@@ -1578,10 +1612,10 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
         let mut lrow = Flex::default().row();
         lrow.set_pad(8);
         let mut lbl = Frame::default()
-            .with_label("Keyring locked. Unlock saved logins?")
+            .with_label(tr("chat.acct_keyring_locked"))
             .with_align(Align::Left | Align::Inside);
         lbl.set_label_color(Color::from_rgb(0xe0, 0xa8, 0x30));
-        let mut ubtn = button(&mut lrow, "Unlock", 80);
+        let mut ubtn = button(&mut lrow, tr("btn.unlock"), 80);
         lrow.end();
         root.fixed(&lrow, ROW);
         let cmds_c = cmds.clone();
@@ -1609,7 +1643,7 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
         let pic = Frame::default();
         row.fixed(&pic, 36);
         let info = Frame::default().with_align(Align::Left | Align::Inside | Align::Wrap);
-        let mut pick_btn = button(&mut row, "Select", 96);
+        let mut pick_btn = button(&mut row, tr("btn.select"), 96);
         pick_btn.set_frame(FrameType::RFlatBox);
         row.end();
         root.fixed(&row, 48);
@@ -1617,15 +1651,15 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
     }
 
     let note = Frame::default()
-        .with_label("The emote picker shows what the chosen account can use.")
+        .with_label(tr("chat.acct_note"))
         .with_align(Align::Left | Align::Inside | Align::Wrap);
     root.fixed(&note, 28);
 
     let mut bottom = Flex::default().row();
     bottom.set_pad(8);
-    let mut manage = button(&mut bottom, "Accounts...", 110);
+    let mut manage = button(&mut bottom, tr("chat.manage_accounts"), 110);
     Frame::default();
-    let mut close = button(&mut bottom, "Close", 80);
+    let mut close = button(&mut bottom, tr("dialogs.close"), 80);
     bottom.end();
     root.fixed(&bottom, ROW);
     root.end();
@@ -1672,7 +1706,11 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
                 slot_uis.iter().cloned().zip(slots.iter()).enumerate()
             {
                 let is_bot = bot_i == 1;
-                let role = if is_bot { "Bot" } else { "Broadcaster" };
+                let role = if is_bot {
+                    tr("chat.role_bot")
+                } else {
+                    tr("chat.role_broadcaster")
+                };
                 let is_active = eff_bot == is_bot && slot.is_some();
                 let is_pref = want_broadcaster == !is_bot;
                 match slot {
@@ -1688,20 +1726,20 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
                         info_f.set_label(&label);
                         btn.activate();
                         if is_active {
-                            btn.set_label("Active");
+                            btn.set_label(tr("chat.btn_active"));
                             btn.set_image(icons::before_label("check", Color::White, 14));
                             btn.set_color(Color::from_rgb(0x2e, 0x6b, 0x47));
                         } else {
-                            btn.set_label("Use account");
+                            btn.set_label(tr("chat.btn_use_account"));
                             btn.set_image(None::<SvgImage>);
                             btn.set_color(Color::Background);
                         }
                     }
                     None => {
                         pic_f.set_image(icons::icon("circle-user-round", super::muted(), 28));
-                        let suffix = if is_pref { " (preferred, using the other)" } else { "" };
-                        info_f.set_label(&format!("{role}: not logged in{suffix}"));
-                        btn.set_label("Not logged in");
+                        let suffix = if is_pref { tr("chat.preferred_other_suffix") } else { "" };
+                        info_f.set_label(&trf("chat.role_not_logged_in", &[("role", role), ("suffix", suffix)]));
+                        btn.set_label(tr("chat.btn_not_logged_in"));
                         btn.set_color(Color::Background);
                         btn.deactivate();
                     }
@@ -1781,17 +1819,17 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
 
     let mut win = Window::default()
         .with_size(520, 210)
-        .with_label("Message All Platforms");
+        .with_label(tr("chat.msg_all_title"));
     win.set_xclass("streamerz");
     win.make_modal(true);
     let mut col = Flex::new(12, 12, 496, 186, None).column();
     col.set_pad(8);
 
     let mut title = Frame::default()
-        .with_label("Send to:")
+        .with_label(tr("chat.send_to"))
         .with_align(Align::Left | Align::Inside | Align::Clip);
     if let Some(l) = &reply {
-        let said = format!("Replying to @{}: {}", l.user, l.text);
+        let said = trf("chat.replying_to", &[("user", &l.user), ("said", &l.text)]);
         title.set_label(&said.replace('@', "@@"));
         title.set_image(icons::before_label("corner-up-left", super::muted(), 14));
         title.set_align(Align::Left | Align::Inside | Align::Clip | Align::ImageNextToText);
@@ -1803,7 +1841,7 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
     plat_row.set_pad(8);
     let mut checks = Vec::new();
     for i in 0..4 {
-        let suffix = if conn_states[i] { "" } else { " (offline)" };
+        let suffix = if conn_states[i] { "" } else { tr("chat.offline_suffix") };
         let mut c = CheckButton::default().with_label(&format!("{}{suffix}", NAMES[i]));
         let any_conn = conn_states.iter().any(|&x| x);
         c.set_checked(match &reply {
@@ -1822,14 +1860,18 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
     let mut acct_row = Flex::default().row();
     acct_row.set_pad(8);
     let lbl = Frame::default()
-        .with_label("Send as:")
+        .with_label(tr("chat.send_as"))
         .with_align(Align::Left | Align::Inside);
     acct_row.fixed(&lbl, 68);
     let mut who = Choice::default();
-    who.add_choice("Bot accounts|Broadcaster accounts");
+    who.add_choice(&format!(
+        "{}|{}",
+        tr("chat.who_bot_accounts"),
+        tr("chat.who_broadcaster_accounts")
+    ));
     who.set_value(0);
     acct_row.fixed(&who, 175);
-    let fallback = CheckButton::default().with_label("Fall back to other account if missing");
+    let fallback = CheckButton::default().with_label(tr("chat.fallback_account"));
     fallback.set_checked(true);
     acct_row.end();
     col.fixed(&acct_row, ROW);
@@ -1841,12 +1883,12 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
     let mut emote_btn = Button::default();
     emote_btn.set_frame(FrameType::FlatBox);
     emote_btn.set_image(icons::icon("smile", super::muted(), 18));
-    emote_btn.set_tooltip("Pick emotes & emoji");
+    emote_btn.set_tooltip(tr("chat.pick_emotes_tooltip"));
     bar.fixed(&emote_btn, 32);
     let mut send_btn = Button::default();
     send_btn.set_frame(FrameType::FlatBox);
     send_btn.set_image(icons::icon("send-horizontal", Color::Selection, 18));
-    send_btn.set_tooltip("Send to all checked platforms (Enter)");
+    send_btn.set_tooltip(tr("chat.send_all_tooltip"));
     bar.fixed(&send_btn, 32);
     bar.end();
     col.fixed(&bar, ROW + 4);
@@ -1854,7 +1896,7 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
     let mut foot = Flex::default().row();
     foot.set_pad(8);
     let status = Frame::default().with_align(Align::Left | Align::Inside);
-    let mut close = button(&mut foot, "Cancel", 80);
+    let mut close = button(&mut foot, tr("dialogs.cancel"), 80);
     foot.end();
     col.fixed(&foot, ROW);
     col.end();
@@ -1879,7 +1921,7 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
                 .map(|i| PLATFORMS[i])
                 .collect();
             if targets.is_empty() {
-                status.set_label("Check at least one platform above.");
+                status.set_label(tr("chat.check_at_least_one"));
                 status.set_label_color(Color::from_rgb(0xe0, 0x60, 0x50));
                 status.redraw();
                 return;
@@ -2174,11 +2216,11 @@ fn emote_picker_popup(
         "kick" => "Kick",
         "youtube" => "YouTube",
         "tiktok" => "TikTok",
-        _ => "All Platforms",
+        _ => tr("chat.all_platforms"),
     };
     let mut win = Window::default()
         .with_size(380, 480)
-        .with_label(&format!("{title_plat} Emotes"));
+        .with_label(&trf("chat.emotes_window_title", &[("platform", title_plat)]));
     win.set_xclass("streamerz");
     win.make_modal(true);
     let mut col = Flex::new(8, 8, 364, 464, None).column();
@@ -2199,15 +2241,15 @@ fn emote_picker_popup(
 
     let mut search = Input::default();
     search.set_trigger(CallbackTrigger::Changed);
-    super::placeholder(&mut search, "Search emotes");
+    super::placeholder(&mut search, tr("chat.search_emotes"));
     col.fixed(&search, ROW);
 
     let who = match sender_name {
-        Some(n) => format!("As {} · ", n.replace('@', "@@")),
+        Some(n) => trf("chat.as_sender_prefix", &[("name", &n.replace('@', "@@"))]),
         None => String::new(),
     };
     let mut sub = Frame::default()
-        .with_label(&format!("{who}Shift+click picks several, right-click favorites"))
+        .with_label(&format!("{who}{}", tr("chat.emote_picker_help")))
         .with_align(Align::Left | Align::Inside | Align::Clip);
     sub.set_label_size(11);
     sub.set_label_color(super::muted());
@@ -2400,9 +2442,10 @@ fn card(cmds: &Cmds, l: &Line) {
     let (p, id) = (l.platform.clone(), l.user_id.clone());
     let seen = query(cmds, move |e| e.chatter(&p, &id)).flatten().unwrap_or_default();
     let platform = NAMES[PLATFORMS.iter().position(|x| *x == l.platform).unwrap_or(0)];
-    let mut win = Window::default()
-        .with_size(460, 480)
-        .with_label(&format!("{} on {platform}", l.user));
+    let mut win = Window::default().with_size(460, 480).with_label(&trf(
+        "chat.user_on_platform",
+        &[("user", &l.user), ("platform", platform)],
+    ));
     win.set_xclass("streamerz");
     let mut col = Flex::new(10, 10, 440, 460, None).column();
     col.set_pad(8);
@@ -2425,7 +2468,7 @@ fn card(cmds: &Cmds, l: &Line) {
     bottom.set_pad(8);
     Frame::default();
     let mut open = button(&mut bottom, "Open profile", 110);
-    let mut close = button(&mut bottom, "Close", 80);
+    let mut close = button(&mut bottom, tr("dialogs.close"), 80);
     bottom.end();
     col.fixed(&bottom, ROW);
     col.end();
@@ -2436,10 +2479,10 @@ fn card(cmds: &Cmds, l: &Line) {
         rows.add(&format!("{k}\t{}", v.replace(['\n', '\t'], " ")));
     };
     let roles: Vec<&str> = [
-        (l.broadcaster, "broadcaster"),
-        (l.moderator, "moderator"),
-        (l.vip, "VIP"),
-        (l.subscriber, "subscriber"),
+        (l.broadcaster, tr("chat.card_broadcaster")),
+        (l.moderator, tr("chat.card_moderator")),
+        (l.vip, tr("chat.card_vip")),
+        (l.subscriber, tr("chat.card_subscriber")),
     ]
     .iter()
     .filter(|r| r.0)
@@ -2447,15 +2490,15 @@ fn card(cmds: &Cmds, l: &Line) {
     .collect();
     add(
         &mut rows,
-        "Roles",
+        tr("chat.card_roles"),
         &if roles.is_empty() {
-            "viewer".into()
+            tr("chat.card_viewer").into()
         } else {
             roles.join(", ")
         },
     );
-    add(&mut rows, "Messages this session", &seen.messages.to_string());
-    add(&mut rows, "First message at", &seen.first);
+    add(&mut rows, tr("chat.card_messages_session"), &seen.messages.to_string());
+    add(&mut rows, tr("chat.card_first_message"), &seen.first);
     if !seen.args.contains_key("userId") {
         add(&mut rows, "userId", &l.user_id);
     }
@@ -2466,13 +2509,17 @@ fn card(cmds: &Cmds, l: &Line) {
     }
     let asks = matches!(l.platform.as_str(), "twitch" | "kick");
     if asks {
-        add(&mut rows, &format!("{platform} says"), "looking up...");
+        add(
+            &mut rows,
+            &trf("chat.card_platform_says", &[("platform", platform)]),
+            tr("chat.card_looking_up"),
+        );
     }
     rows.set_callback(|b| {
         if app::event_clicks() {
             if let Some(t) = b.selected_text() {
                 app::copy(t.split_once('\t').map_or(t.as_str(), |x| x.1));
-                crate::say("Copied".into());
+                crate::say(tr("chat.copied").into());
             }
         }
     });
