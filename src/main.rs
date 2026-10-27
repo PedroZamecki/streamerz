@@ -1,6 +1,7 @@
 //! Streamer.bot rebuilt small: actions, triggers and Streamer.bot's servers for Twitch, Kick, YouTube,
 //! OBS and Streamlabs Desktop, running on ~nothing.
 
+mod brand;
 mod commands;
 pub mod decks;
 pub mod donations;

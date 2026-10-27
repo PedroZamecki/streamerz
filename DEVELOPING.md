@@ -757,13 +757,22 @@ t1=$(awk '{print $14+$15}' /proc/$pid/stat); sleep 30; t2=$(awk '{print $14+$15}
 The second number is CPU ticks (1/100 s) used in 30 s idle. The tray can be toggled without clicking:
 `busctl --user call org.kde.StatusNotifierItem-$pid-1 /StatusNotifierItem org.kde.StatusNotifierItem Activate ii 0 0`.
 
-## Icon
+## Icons
 
-`icon_streamerz.png` is the source. After changing it:
+- `assets/brand/`: the app's logo. The four SVGs are the sources: `streamerz.svg` (colour, light
+  background), `streamerz-dark.svg` (colour, dark background), `streamerz-simple.svg` and
+  `streamerz-simple-dark.svg` (black and white). The window's icon is the colour one, for the theme in
+  Settings (`brand.rs`; it changes at once). The tray's is the simple one and follows the desktop, not the
+  app: the settings portal's `color-scheme` on Linux (changes live), the taskbar's `SystemUsesLightTheme`
+  on Windows (read at start). It isn't a setting.
+- `assets/icons/`: the platforms' and apps' logos (`ui/img.rs`). Twitch's and YouTube's have a white
+  inside, drawn under the glyph.
+
+After changing a logo in `assets/brand/`, redraw the rest (`streamerz.png` for the desktop file and the
+AppImage, `streamerz.ico` for the Windows exe, `rgba/*.rgba` built into the binary):
 
 ```
-magick icon_streamerz.png -define icon:auto-resize=64,48,32,16 icon_streamerz.ico
-magick icon_streamerz.png -resize 64x64 -depth 8 rgba:src/icon.rgba
+dev/icons.sh
 ```
 
 ## Twitch events without a Twitch login (Twitch CLI mock)

@@ -18,6 +18,7 @@ mod plugins;
 mod rows;
 mod settings;
 
+use crate::brand;
 use crate::engine::{Engine, UiCmd};
 use crate::{status, Config};
 use fltk::button::Button;
@@ -252,6 +253,15 @@ fn theme(dark: bool) {
         FrameType::GtkThinDownBox,
     ] {
         app::set_frame_type_cb(f, down, 2, 2, 4, 4);
+    }
+}
+
+/// Every window's icon, drawn for the theme.
+fn window_icons(dark: bool) {
+    for mut w in app::windows().unwrap_or_default() {
+        if let Ok(icon) = RgbImage::new(brand::app(dark), brand::SIZE, brand::SIZE, ColorDepth::Rgba8) {
+            w.set_icon(Some(icon));
+        }
     }
 }
 
@@ -538,8 +548,7 @@ pub fn run(
     fltk::image::Image::set_scaling_algorithm(fltk::image::RgbScaling::Bilinear);
     let mut win = Window::default().with_size(W, H).with_label(&crate::version());
     win.set_xclass("streamerz");
-    use crate::tray::{ICON, SIZE};
-    if let Ok(icon) = RgbImage::new(ICON, SIZE, SIZE, ColorDepth::Rgba8) {
+    if let Ok(icon) = RgbImage::new(brand::app(c_dark), brand::SIZE, brand::SIZE, ColorDepth::Rgba8) {
         win.set_icon(Some(icon));
     }
     // The pages, one at a time, picked in the sidebar on their left.

@@ -21,4 +21,4 @@ fi
 export LDAI_UPDATE_INFORMATION="gh-releases-zsync|PedroZamecki|streamerz|latest|streamerz-x86_64.AppImage.zsync"
 export LDAI_OUTPUT=streamerz-x86_64.AppImage LINUXDEPLOY_OUTPUT_VERSION="$ver"
 APPIMAGE_EXTRACT_AND_RUN=1 "$ld" --appdir "$app" --executable target/release/streamerz \
-    --desktop-file assets/streamerz.desktop --icon-file assets/streamerz.png --output appimage
+    --desktop-file assets/streamerz.desktop --icon-file assets/brand/streamerz.png --output appimage

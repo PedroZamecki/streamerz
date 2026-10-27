@@ -139,6 +139,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
             let dark = t.value() == 0;
             put(&cfg, |c| c.dark = dark);
             super::theme(dark);
+            super::window_icons(dark);
             if let Some(mut w) = app::first_window() {
                 w.redraw();
             }
