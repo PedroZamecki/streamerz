@@ -299,8 +299,7 @@ fn say(line: String) {
 }
 
 fn version() -> String {
-    // Set by the release build from the git tag; local builds say "dev".
-    format!("streamerz {}", option_env!("STREAMERZ_VERSION").unwrap_or("dev"))
+    format!("streamerz {}", brand::VERSION)
 }
 
 fn default_config_path() -> PathBuf {

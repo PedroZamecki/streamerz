@@ -4,6 +4,15 @@
 
 pub const SIZE: i32 = 64;
 
+/// The project's home on GitHub (owner/name): the updater and the About page use it.
+pub const REPO: &str = "PedroZamecki/streamerz";
+
+/// This build's version, set by the release build from the git tag; local builds say "dev".
+pub const VERSION: &str = match option_env!("STREAMERZ_VERSION") {
+    Some(v) => v,
+    None => "dev",
+};
+
 const APP: [&[u8]; 2] = [
     include_bytes!("../assets/brand/rgba/streamerz-dark.rgba"),
     include_bytes!("../assets/brand/rgba/streamerz.rgba"),

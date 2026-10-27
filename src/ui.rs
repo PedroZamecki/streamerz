@@ -394,6 +394,7 @@ fn icon_for(label: &str) -> Option<&'static str> {
         "settings" => "settings",
         "fill_with_test_names" => "users",
         "open_folder" => "folder-open",
+        "open_github" => "external-link",
         "open" | "open_file" | "open_profile" | "open_browser" => "external-link",
         _ => return None,
     })

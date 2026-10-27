@@ -1,7 +1,7 @@
 //! The sidebar: the pages under a few sections, each with an icon; a click shows its page. It folds to
 //! its icons (the button on top), sliding.
 
-use super::icons::icon;
+use super::icons::{self, icon};
 use crate::i18n::tr;
 use fltk::enums::{Align, Color, Event, Font};
 use fltk::frame::Frame;
@@ -21,6 +21,8 @@ const ITEM: i32 = 27;
 const SECTION: i32 = 24;
 /// The fold button's line.
 const TOP: i32 = 36;
+/// The footer's: the logo and the version.
+const FOOT: i32 = 44;
 
 /// Sections and their pages: (page label, icon).
 type Page = (&'static str, &'static str, &'static str);
@@ -170,13 +172,13 @@ pub fn sidebar(h: i32, pages: &Wizard, cfg: &Cfg) -> Frame {
             }
 
             let tot = total_height();
-            let max_s = (tot - f.h()).max(0);
+            let max_s = (tot - f.h() + FOOT).max(0);
             let sy = scroll_y.get().min(max_s);
             if sy != scroll_y.get() {
                 scroll_y.set(sy);
             }
 
-            draw::push_clip(f.x(), f.y() + TOP, f.w() - 1, f.h() - TOP);
+            draw::push_clip(f.x(), f.y() + TOP, f.w() - 1, f.h() - TOP - FOOT);
             let up = pages.try_current_widget().map(|w| w.label()).unwrap_or_default();
             for (ly, (id, tr_key), icon_name) in lines(f.y() - sy) {
                 let Some(icon_name) = icon_name else {
@@ -210,8 +212,26 @@ pub fn sidebar(h: i32, pages: &Wizard, cfg: &Cfg) -> Frame {
             }
             draw::pop_clip();
 
+            // The footer: the logo, and with room the name and version.
+            let top = f.y() + f.h() - FOOT;
+            draw::set_draw_color(lit(true));
+            draw::draw_line(f.x() + 12, top, f.x() + f.w() - 13, top);
+            if let Some(mut logo) = icons::logo(icons::is_dark(), 24) {
+                logo.draw(f.x() + 14, top + (FOOT - 24) / 2, 24, 24);
+            }
+            if wide(f) {
+                draw::push_clip(f.x() + 44, top, f.w() - 52, FOOT);
+                draw::set_font(Font::HelveticaBold, 13);
+                draw::set_draw_color(fg);
+                draw::draw_text2("streamerz", f.x() + 46, top + 5, WIDE - 56, 18, Align::Left);
+                draw::set_font(Font::Helvetica, 11);
+                draw::set_draw_color(super::muted());
+                draw::draw_text2(crate::brand::VERSION, f.x() + 46, top + 22, WIDE - 56, 16, Align::Left);
+                draw::pop_clip();
+            }
+
             if max_s > 0 {
-                let avail = f.h() - TOP;
+                let avail = f.h() - TOP - FOOT;
                 let bar_h = (avail * avail / tot).max(18);
                 let bar_y = f.y() + TOP + (sy * (avail - bar_h) / max_s);
                 draw::set_draw_color(Color::color_average(fg, bg, 0.25));
@@ -223,7 +243,7 @@ pub fn sidebar(h: i32, pages: &Wizard, cfg: &Cfg) -> Frame {
         let (pages, cfg, scroll_y) = (pages.clone(), cfg.clone(), scroll_y.clone());
         move |f, ev| {
             let tot = total_height();
-            let max_s = (tot - f.h()).max(0);
+            let max_s = (tot - f.h() + FOOT).max(0);
             // The page under the pointer; "" for the fold button.
             let under = |f: &Frame| {
                 let (x, y) = (app::event_x(), app::event_y());

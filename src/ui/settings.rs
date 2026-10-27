@@ -129,6 +129,39 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     let (date_f, time_f, instance) = (c.date_format.clone(), c.time_format.clone(), c.instance_name.clone());
     drop(c);
 
+    section(&mut col, tr("settings.about"), "info");
+    let mut row = Flex::default().row();
+    row.set_pad(14);
+    let mut logo = Frame::default();
+    logo.draw(|f| {
+        if let Some(mut l) = icons::logo(icons::is_dark(), 56) {
+            l.draw(f.x(), f.y() + (f.h() - 56) / 2, 56, 56);
+        }
+    });
+    row.fixed(&logo, 56);
+    let mut text = Flex::default().column();
+    text.set_pad(0);
+    let mut name = Frame::default()
+        .with_label(&trf("settings.about.version", &[("version", crate::brand::VERSION)]))
+        .with_align(Align::Left | Align::Inside | Align::Bottom);
+    name.set_label_font(Font::HelveticaBold);
+    name.set_label_size(16);
+    let mut tag = Frame::default()
+        .with_label(tr("settings.about.tagline"))
+        .with_align(Align::Left | Align::Inside | Align::Top);
+    tag.set_label_color(super::muted());
+    text.end();
+    let mut right = Flex::default().column();
+    Frame::default();
+    let mut github = button(&mut right, tr("btn.open_github"), 130);
+    right.fixed(&github, ROW);
+    Frame::default();
+    right.end();
+    row.fixed(&right, 150);
+    github.set_callback(|_| crate::oauth::open_browser(&format!("https://github.com/{}", crate::brand::REPO)));
+    row.end();
+    col.fixed(&row, 64);
+
     section(&mut col, tr("settings.appearance"), "sun");
     let r = setting(&mut col, tr("settings.theme"), tr("settings.theme.about"), 200);
     let mut theme = Choice::default();

@@ -1,7 +1,7 @@
 //! Lucide icons (ISC license, lucide.dev): drawn in any colour and size, made the first time they're used.
 
-use fltk::enums::Color;
-use fltk::image::SvgImage;
+use fltk::enums::{Color, ColorDepth};
+use fltk::image::{RgbImage, SvgImage};
 use fltk::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -63,6 +63,14 @@ const ICONS: &[(&str, &str)] = &[
     (
         "ellipsis",
         r#"<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>"#,
+    ),
+    (
+        "circle-help",
+        r#"<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>"#,
+    ),
+    (
+        "triangle-alert",
+        r#"<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>"#,
     ),
     (
         "eraser",
@@ -279,6 +287,30 @@ const ICONS: &[(&str, &str)] = &[
 /// Icon `name`, `size` px square, stroked in `c`.
 pub fn icon(name: &str, c: Color, size: i32) -> Option<SvgImage> {
     make(name, c, size, 0)
+}
+
+/// The colour logo for the theme, `size` px square (scaled once, then kept).
+pub fn logo(dark: bool, size: i32) -> Option<RgbImage> {
+    thread_local!(static CACHE: RefCell<HashMap<(bool, i32), Option<RgbImage>>> = RefCell::default());
+    CACHE.with_borrow_mut(|m| {
+        m.entry((dark, size))
+            .or_insert_with(|| {
+                let img = RgbImage::new(
+                    crate::brand::app(dark),
+                    crate::brand::SIZE,
+                    crate::brand::SIZE,
+                    ColorDepth::Rgba8,
+                )
+                .ok()?;
+                Some(img.copy_sized(size, size))
+            })
+            .clone()
+    })
+}
+
+/// Whether the theme is dark (the window's background is).
+pub fn is_dark() -> bool {
+    Color::Background.to_rgb().0 < 128
 }
 
 /// `icon` with a gap after it, to sit before a label.
