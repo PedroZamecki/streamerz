@@ -200,6 +200,8 @@ fn theme(dark: bool) {
         draw::set_draw_color(Color::color_average(c, Color::Foreground, 0.7));
         draw::draw_rounded_rect(x, y, w, h, r(w, h));
     }
+    app::set_menu_linespacing(8);
+    app::set_scrollbar_size(12);
     for f in [
         FrameType::UpBox,
         FrameType::ThinUpBox,
@@ -235,6 +237,49 @@ fn check(col: &mut Flex, label: &str, on: bool) -> CheckButton {
     c.set_checked(on);
     col.fixed(&c, ROW);
     c
+}
+
+/// Quiet text: hints, empty lists and column titles.
+fn muted() -> Color {
+    Color::color_average(Color::Foreground, Color::Background2, 0.5)
+}
+
+/// `text` in the middle of `b` while it's empty, saying what goes there.
+fn hint(b: &mut fltk::browser::HoldBrowser, text: &'static str) {
+    b.draw(move |b| {
+        if b.size() == 0 {
+            draw::set_font(Font::Helvetica, 13);
+            draw::set_draw_color(muted());
+            draw::draw_text2(text, b.x(), b.y(), b.w(), b.h(), Align::Center | Align::Wrap);
+        }
+    });
+}
+
+/// `text` in an empty field that isn't being typed in, saying what goes there.
+fn placeholder(i: &mut fltk::input::Input, text: &'static str) {
+    i.draw(move |i| {
+        if i.value().is_empty() && !i.has_focus() {
+            draw::set_font(Font::Helvetica, i.text_size());
+            draw::set_draw_color(muted());
+            draw::draw_text2(text, i.x() + 6, i.y(), i.w() - 12, i.h(), Align::Left | Align::Clip);
+        }
+    });
+}
+
+/// Column titles over a list with these column `widths`.
+fn header(col: &mut Flex, widths: &'static [i32], titles: &'static [&'static str]) {
+    let mut f = Frame::default();
+    f.draw(move |f| {
+        draw::set_font(Font::HelveticaBold, 12);
+        draw::set_draw_color(muted());
+        let mut x = f.x() + 4;
+        for (i, t) in titles.iter().enumerate() {
+            let w = widths.get(i).copied().unwrap_or(f.w());
+            draw::draw_text2(t, x, f.y(), w, f.h(), Align::Left | Align::Clip);
+            x += w;
+        }
+    });
+    col.fixed(&f, 16);
 }
 
 fn button(row: &mut Flex, label: &str, w: i32) -> Button {

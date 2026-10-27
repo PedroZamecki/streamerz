@@ -549,10 +549,18 @@ fn bar(col: &mut Flex, labels: &[&str]) -> Vec<Button> {
     out
 }
 
-fn tree() -> Tree {
+/// A tree saying `empty` while it has nothing in it.
+fn tree(empty: &'static str) -> Tree {
     let mut t = Tree::default();
     t.set_show_root(false);
     t.set_select_mode(TreeSelect::Single);
+    t.draw(move |t| {
+        if t.root().is_none_or(|r| r.children() == 0) {
+            fltk::draw::set_font(Font::Helvetica, 13);
+            fltk::draw::set_draw_color(super::muted());
+            fltk::draw::draw_text2(empty, t.x() + 10, t.y(), t.w() - 20, t.h(), Align::Center | Align::Wrap);
+        }
+    });
     t
 }
 
@@ -579,9 +587,10 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
     act_head.fixed(&t, 60);
     let mut search_actions = Input::default();
     search_actions.set_tooltip("Filter actions...");
+    super::placeholder(&mut search_actions, "Search actions…");
     act_head.end();
     left.fixed(&act_head, ROW);
-    let actions_tree = tree();
+    let actions_tree = tree("No actions yet. Add one, import one, or start from a template.");
     let lb = bar(&mut left, &["Add", "Edit", "Duplicate"]);
     let lb2 = bar(&mut left, &["Delete", "Test"]);
     let lb3 = bar(&mut left, &["Import", "Export", "Templates"]);
@@ -596,7 +605,11 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
         .with_label("Triggers")
         .with_align(Align::Left | Align::Inside);
     right.fixed(&t, ROW - 4);
-    let triggers = HoldBrowser::default();
+    let mut triggers = HoldBrowser::default();
+    super::hint(
+        &mut triggers,
+        "What runs this action: a command, a follow, a hotkey... Add one below.",
+    );
     right.fixed(&triggers, 120);
     let tb = bar(&mut right, &["Add", "Edit", "On/Off", "Test...", "Delete"]);
     let mut sub_head = Flex::default().row();
@@ -607,9 +620,10 @@ pub fn tab(tabs: &Tabs, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<U
     sub_head.fixed(&t, 90);
     let mut search_subs = Input::default();
     search_subs.set_tooltip("Filter sub-actions...");
+    super::placeholder(&mut search_subs, "Search sub-actions…");
     sub_head.end();
     right.fixed(&sub_head, ROW);
-    let subs = tree();
+    let subs = tree("What the action does, in order. Add a sub-action below.");
     let sb = bar(&mut right, &["Add", "Edit", "On/Off", "Delete"]);
 
     let mut detail_title = Frame::default().with_align(Align::Left | Align::Inside);

@@ -966,7 +966,8 @@ impl ChatColumn {
         acct_btn.set_image(icon_sized("ui:user", 20));
         bar.fixed(&acct_btn, 32);
 
-        let input = Input::default();
+        let mut input = Input::default();
+        super::placeholder(&mut input, "Send a message");
         pane.input.replace(Some(input.clone()));
 
         let mut emote_btn = Button::default();
@@ -1690,6 +1691,7 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds) {
     let mut bar = Flex::default().row();
     bar.set_pad(4);
     let mut input = Input::default();
+    super::placeholder(&mut input, "Send a message to every platform");
     let mut emote_btn = Button::default();
     emote_btn.set_frame(FrameType::FlatBox);
     emote_btn.set_image(icon_sized("ui:emotes", 18));
@@ -1885,6 +1887,7 @@ fn emote_picker_popup(
     let mut search = Input::default();
     search.set_trigger(CallbackTrigger::Changed);
     search.set_tooltip("Search emotes & emoji across tabs");
+    super::placeholder(&mut search, "Search emotes…");
     search_row.end();
     col.fixed(&search_row, ROW);
 
