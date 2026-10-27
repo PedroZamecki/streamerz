@@ -19,7 +19,7 @@ use fltk::button::{Button, CheckButton};
 use fltk::draw;
 use fltk::enums::{Align, CallbackTrigger, Color, Event, Font, FrameType, Key};
 use fltk::frame::Frame;
-use fltk::group::{Flex, Scroll, Wizard};
+use fltk::group::{Flex, Wizard};
 use fltk::image::SvgImage;
 use fltk::input::Input;
 use fltk::menu::Choice;
@@ -162,35 +162,6 @@ const ICONS: &[(&str, &str)] = &[
     (
         "ui:star",
         r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="m10 2.3 2.3 4.7 5.2.8-3.8 3.6.9 5.2L10 14.1l-4.6 2.5.9-5.2-3.8-3.6 5.2-.8z" fill="#F5C542"/></svg>"##,
-    ),
-    // Message actions, shown on hover.
-    (
-        "ui:reply",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M8 5 3 10l5 5M3.5 10H12a5 5 0 0 1 5 5v1" fill="none" stroke="#C8CCD4" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>"##,
-    ),
-    (
-        "ui:copy",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><rect x="7" y="7" width="10" height="10" rx="2" fill="none" stroke="#C8CCD4" stroke-width="1.7"/><path d="M13 4.5V4a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 4v7.5A1.5 1.5 0 0 0 4 13h.5" fill="none" stroke="#C8CCD4" stroke-width="1.7"/></svg>"##,
-    ),
-    (
-        "ui:pin",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M7 2.5h6M8 2.5v5L5.5 11h9L12 7.5v-5M10 11v6.5" fill="none" stroke="#C8CCD4" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>"##,
-    ),
-    (
-        "ui:delete",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M3 5.5h14M8 5.5V3.5h4v2M5 5.5l.8 11h8.4l.8-11M8.3 9v5M11.7 9v5" fill="none" stroke="#C8CCD4" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>"##,
-    ),
-    (
-        "ui:timeout",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.2" fill="none" stroke="#C8CCD4" stroke-width="1.7"/><path d="M10 5.8V10l3 2" fill="none" stroke="#C8CCD4" stroke-width="1.7" stroke-linecap="round"/></svg>"##,
-    ),
-    (
-        "ui:ban",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.2" fill="none" stroke="#F06A6A" stroke-width="1.8"/><path d="m5 15 10-10" stroke="#F06A6A" stroke-width="1.8"/></svg>"##,
-    ),
-    (
-        "ui:search",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><circle cx="8.8" cy="8.8" r="5.5" fill="none" stroke="#9AA0AA" stroke-width="1.8"/><path d="m13 13 4.2 4.2" stroke="#9AA0AA" stroke-width="1.8" stroke-linecap="round"/></svg>"##,
     ),
     (
         "ui:7tv",
@@ -1100,7 +1071,6 @@ impl ChatColumn {
         bar.fixed(&acct_btn, 32);
 
         let mut input = Input::default();
-        super::placeholder(&mut input, "Send a message");
 
         let mut emote_btn = Button::default();
         emote_btn.set_frame(FrameType::FlatBox);
@@ -1125,6 +1095,7 @@ impl ChatColumn {
         let target_plat = Rc::new(Cell::new(init_idx));
         let allow_switch_plat = Rc::new(Cell::new(fixed_plat.is_none()));
         let reply: Rc<RefCell<Option<Line>>> = Rc::default();
+        let click = emote_field(&mut input, cmds, target_plat.clone(), "Send a message");
         // Answer `l` (None: stop); in the all-platforms box, to `l`'s platform.
         let set_reply: SetReply = {
             let (reply, col, replying, r_text) = (reply.clone(), col.clone(), replying.clone(), r_text.clone());
@@ -1203,7 +1174,10 @@ impl ChatColumn {
         let reply_on = |r: &Rc<RefCell<Option<Line>>>| r.borrow().is_some();
         me.input.clone().handle({
             let s = do_send;
-            move |_, ev| {
+            move |i, ev| {
+                if click(i, ev) {
+                    return true;
+                }
                 if ev == Event::KeyDown && app::event_key() == Key::Enter {
                     s();
                     return true;
@@ -1985,7 +1959,181 @@ fn provider_icon(prov: Provider, platform: &str, size: i32) -> Option<SvgImage> 
     }
 }
 
-fn insert_emote_word(input: &mut Input, word: &str) {
+thread_local! {
+    /// Emotes picked in the picker this run, by name: the chat box shows them even when no catalog has them.
+    static PICKED: RefCell<HashMap<String, String>> = RefCell::default();
+}
+
+/// A piece of the chat box's text: its bytes, and its picture when it's an emote or emoji.
+type Piece = (std::ops::Range<usize>, Option<Pic>);
+
+/// `v` cut into text and emotes, the emotes as `h` px pictures (those not loaded yet stay text).
+fn pieces(cmds: &Cmds, platform: &str, v: &str, h: i32) -> Vec<Piece> {
+    let mut out: Vec<Piece> = Vec::new();
+    let mut text_from = 0;
+    let mut at = 0;
+    for w in v.split(' ') {
+        let start = at;
+        at += w.len() + 1;
+        let url = PICKED
+            .with_borrow(|p| p.get(w).cloned())
+            .or_else(|| emotes::third(platform, w));
+        let found: Vec<(std::ops::Range<usize>, String)> = match url {
+            Some(u) if !w.is_empty() => vec![(start..start + w.len(), u)],
+            _ => {
+                let mut o = start;
+                emotes::split(w)
+                    .into_iter()
+                    .filter_map(|(part, url)| {
+                        let r = o..o + part.len();
+                        o += part.len();
+                        url.map(|u| (r, u))
+                    })
+                    .collect()
+            }
+        };
+        for (r, u) in found {
+            if let Some(p) = img::get(cmds, &u, h, false) {
+                if text_from < r.start {
+                    out.push((text_from..r.start, None));
+                }
+                text_from = r.end;
+                out.push((r, Some(p)));
+            }
+        }
+    }
+    if text_from < v.len() {
+        out.push((text_from..v.len(), None));
+    }
+    out
+}
+
+/// The chat box shows emotes and emoji as pictures. Drawn by hand only when it has some (plain text
+/// keeps FLTK's own drawing), clicking and selecting follow the pictures.
+fn emote_field(
+    input: &mut Input,
+    cmds: &Cmds,
+    platform: Rc<Cell<usize>>,
+    empty: &'static str,
+) -> impl Fn(&mut Input, Event) -> bool {
+    // Each piece's x from the text's start, and the whole width.
+    fn layout(i: &Input, ps: &[Piece]) -> (Vec<i32>, i32) {
+        draw::set_font(i.text_font(), i.text_size());
+        let mut x = 0;
+        let xs = ps
+            .iter()
+            .map(|(r, p)| {
+                let at = x;
+                x += p
+                    .as_ref()
+                    .map_or_else(|| draw::width(&i.value()[r.clone()]) as i32, |p| p.w() + 2);
+                at
+            })
+            .collect();
+        (xs, x)
+    }
+    // Where byte `pos` is, from the text's start.
+    fn x_of(i: &Input, ps: &[Piece], xs: &[i32], pos: usize) -> i32 {
+        let v = i.value();
+        for ((r, p), x) in ps.iter().zip(xs) {
+            if pos <= r.end && pos >= r.start {
+                return match p {
+                    Some(p) if pos > r.start => x + p.w() + 2,
+                    Some(_) => *x,
+                    None => x + draw::width(&v[r.start..pos]) as i32,
+                };
+            }
+        }
+        xs.last().copied().unwrap_or(0)
+    }
+    let state = {
+        let (cmds, platform) = (cmds.clone(), platform.clone());
+        move |i: &Input| {
+            let v = i.value();
+            let ps = pieces(&cmds, PLATFORMS[platform.get().min(3)], &v, i.h() - 10);
+            ps.iter().any(|p| p.1.is_some()).then_some(ps)
+        }
+    };
+    // Scrolled so the cursor shows: the text's start, left of the box.
+    let shift = |i: &Input, cur: i32, total: i32| (cur - (i.w() - 14)).max(0).min(total.max(0));
+    input.draw({
+        let state = state.clone();
+        move |i| {
+            let Some(ps) = state(i) else {
+                if i.value().is_empty() && !i.has_focus() {
+                    draw::set_font(Font::Helvetica, i.text_size());
+                    draw::set_draw_color(super::muted());
+                    draw::draw_text2(empty, i.x() + 6, i.y(), i.w() - 12, i.h(), Align::Left | Align::Clip);
+                }
+                return;
+            };
+            let (xs, total) = layout(i, &ps);
+            let (pos, mark) = (i.position() as usize, i.mark() as usize);
+            let cur = x_of(i, &ps, &xs, pos);
+            let x0 = i.x() + 6 - shift(i, cur, total);
+            draw::push_clip(i.x() + 3, i.y() + 3, i.w() - 6, i.h() - 6);
+            draw::draw_rect_fill(i.x() + 3, i.y() + 3, i.w() - 6, i.h() - 6, i.color());
+            if pos != mark {
+                let (a, b) = (x_of(i, &ps, &xs, pos.min(mark)), x_of(i, &ps, &xs, pos.max(mark)));
+                draw::draw_rect_fill(x0 + a, i.y() + 4, b - a, i.h() - 8, Color::Selection);
+            }
+            draw::set_font(i.text_font(), i.text_size());
+            draw::set_draw_color(i.text_color());
+            let v = i.value();
+            let base = i.y() + (i.h() + draw::height()) / 2 - draw::descent();
+            for ((r, p), x) in ps.iter().zip(&xs) {
+                match p {
+                    Some(p) => {
+                        let mut f = p.first();
+                        f.draw(x0 + x + 1, i.y() + (i.h() - f.h()) / 2, f.w(), f.h());
+                    }
+                    None => draw::draw_text(&v[r.clone()], x0 + x, base),
+                }
+            }
+            if i.has_focus() {
+                draw::set_draw_color(i.cursor_color());
+                draw::draw_line(x0 + cur, i.y() + 5, x0 + cur, i.y() + i.h() - 6);
+            }
+            draw::pop_clip();
+        }
+    });
+    // Clicks land between the pieces as drawn.
+    move |i: &mut Input, ev: Event| {
+        if !matches!(ev, Event::Push | Event::Drag) || app::event_mouse_button() != app::MouseButton::Left {
+            return false;
+        }
+        let Some(ps) = state(i) else { return false };
+        let (xs, total) = layout(i, &ps);
+        let cur = x_of(i, &ps, &xs, i.position() as usize);
+        let ex = app::event_x() - (i.x() + 6 - shift(i, cur, total));
+        // The piece edge or character nearest the click.
+        let v = i.value();
+        let at = ps
+            .iter()
+            .flat_map(|(r, p)| match p {
+                Some(_) => vec![r.start, r.end],
+                None => v[r.clone()]
+                    .char_indices()
+                    .map(|(k, _)| r.start + k)
+                    .chain([r.end])
+                    .collect(),
+            })
+            .min_by_key(|&at| (x_of(i, &ps, &xs, at) - ex).abs())
+            .unwrap_or(0) as i32;
+        if ev == Event::Push {
+            let _ = i.take_focus();
+        }
+        let shifted = app::event_state().contains(fltk::enums::Shortcut::Shift);
+        let mark = if ev == Event::Push && !shifted { at } else { i.mark() };
+        let _ = i.set_position(at);
+        let _ = i.set_mark(mark);
+        i.redraw();
+        true
+    }
+}
+
+fn insert_emote_word(input: &mut Input, word: &str, url: &str) {
+    PICKED.with_borrow_mut(|p| p.insert(word.to_string(), url.to_string()));
     let mut v = input.value();
     if !v.is_empty() && !v.ends_with(' ') {
         v.push(' ');
@@ -1996,11 +2144,9 @@ fn insert_emote_word(input: &mut Input, word: &str) {
     let _ = input.set_position(v.len() as i32);
 }
 
-/// 7TV-inspired individual Emote & Emoji picker popup:
-/// - Top provider icon tabs (`★ Favorites`, platform native, `7TV`, `BTTV`, `FFZ`, `Emoji`)
-/// - Instant search across all providers on this platform & account
-/// - Collapsible section headers + empty-state guidance notes
-/// - Left-click inserts (Shift+click inserts multiple without closing); right-click toggles `★` favorite
+/// The emote and emoji picker: a tab per source (favorites, the platform's, 7TV, BTTV, FFZ, emoji), a
+/// search across them, and the grid. A click puts one in the chat box and closes; Shift+click keeps it
+/// open to pick several; a right click (un)favorites.
 fn emote_picker_popup(
     cfg: &Cfg,
     cmds: &Cmds,
@@ -2024,9 +2170,7 @@ fn emote_picker_popup(
     .unwrap_or_default();
 
     let providers = emotes::providers_for(platform);
-    // Start on Platform native tab (or 7TV on "all", or Favorites if non-empty and preferred)
     let default_tab = providers.iter().position(|&p| p == Provider::Platform).unwrap_or(0);
-
     let title_plat = match platform {
         "twitch" => "Twitch",
         "kick" => "Kick",
@@ -2035,310 +2179,144 @@ fn emote_picker_popup(
         _ => "All Platforms",
     };
     let mut win = Window::default()
-        .with_size(400, 490)
+        .with_size(380, 480)
         .with_label(&format!("{title_plat} Emotes"));
     win.set_xclass("streamerz");
     win.make_modal(true);
+    let mut col = Flex::new(8, 8, 364, 464, None).column();
+    col.set_pad(8);
 
-    let mut col = Flex::new(8, 8, 384, 474, None).column();
-    col.set_pad(6);
-
-    // 1. Top Provider Icon Tab Bar
     let mut tab_bar = Flex::default().row();
     tab_bar.set_pad(4);
-    let mut tab_btns: Vec<(Provider, Button)> = Vec::new();
+    let mut tab_btns: Vec<Button> = Vec::new();
     for &prov in providers {
         let mut b = Button::default();
         b.set_frame(FrameType::RFlatBox);
         b.set_image(provider_icon(prov, platform, 16));
         b.set_tooltip(prov.label(platform));
-        tab_btns.push((prov, b));
+        tab_btns.push(b);
     }
     tab_bar.end();
-    col.fixed(&tab_bar, 34);
+    col.fixed(&tab_bar, 32);
 
-    // 2. Search Bar
-    let mut search_row = Flex::default().row();
-    search_row.set_pad(4);
-    let mut s_icon = Frame::default();
-    s_icon.set_image(icon_sized("ui:search", 15));
-    search_row.fixed(&s_icon, 24);
     let mut search = Input::default();
     search.set_trigger(CallbackTrigger::Changed);
-    search.set_tooltip("Search emotes & emoji across tabs");
-    super::placeholder(&mut search, "Search emotes…");
-    search_row.end();
-    col.fixed(&search_row, ROW);
+    super::placeholder(&mut search, "Search emotes");
+    col.fixed(&search, ROW);
 
-    // 3. Account & Favorites hint strip
-    let role_txt = if as_broadcaster { "Broadcaster" } else { "Bot" };
-    let acct_txt = match sender_name {
-        Some(n) => format!(
-            "{} ({role_txt}) · Right-click to ★ favorite · Shift+click for multiple",
-            n.replace('@', "@@")
-        ),
-        None => "Right-click any emote to ★ favorite · Shift+click for multiple".to_string(),
+    let who = match sender_name {
+        Some(n) => format!("As {} · ", n.replace('@', "@@")),
+        None => String::new(),
     };
     let mut sub = Frame::default()
-        .with_label(&acct_txt)
+        .with_label(&format!("{who}Shift+click picks several, right-click favorites"))
         .with_align(Align::Left | Align::Inside | Align::Clip);
     sub.set_label_size(11);
-    sub.set_label_color(Color::from_rgb(0x98, 0x9c, 0xa6));
-    col.fixed(&sub, 18);
+    sub.set_label_color(super::muted());
+    col.fixed(&sub, 14);
 
-    // 4. Scrollable Collapsible Sections + Grid
-    let mut scroll = Scroll::default();
-    scroll.set_type(fltk::group::ScrollType::Vertical);
-    scroll.end();
+    let grid = super::grid::Grid::new(cmds);
     col.end();
     win.end();
+    win.resizable(&grid.area);
 
     let cur_tab = Rc::new(Cell::new(default_tab));
     let collapsed: Rc<RefCell<HashSet<String>>> = Rc::default();
-    let done = Rc::new(Cell::new(false));
-    let picked_words: Rc<RefCell<Vec<String>>> = Rc::default();
     let seen = Rc::new(seen);
 
-    // Same size icons, the active one lit: relabeling and resizing them left pieces of old labels.
-    let mut style_tabs = {
-        let mut tab_bar = tab_bar.clone();
+    // The open tab lit, the others quiet.
+    let style_tabs = {
         let tab_btns = tab_btns.clone();
-        move |active_idx: usize| {
-            for (i, (_, mut b)) in tab_btns.iter().cloned().enumerate() {
-                b.set_color(if i == active_idx {
-                    Color::from_rgb(0x4a, 0x4f, 0x5a)
+        move |active: usize| {
+            for (i, mut b) in tab_btns.iter().cloned().enumerate() {
+                b.set_color(if i == active {
+                    Color::color_average(Color::Foreground, Color::Background, 0.2)
                 } else {
-                    Color::from_rgb(0x26, 0x28, 0x2d)
+                    Color::Background
                 });
+                b.redraw();
             }
-            tab_bar.redraw();
         }
     };
-
-    // Set by the buttons inside the scroll; the loop below refills. Refilling from their own
-    // callback would delete the button running it (that crashed).
-    let rebuild_slot: Rc<Cell<bool>> = Rc::default();
 
     let fill = {
-        let (cfg, cmds) = (cfg.clone(), cmds.clone());
-        let scroll = scroll.clone();
-        let search = search.clone();
-        let cur_tab = cur_tab.clone();
-        let collapsed = collapsed.clone();
-        let seen = seen.clone();
-        let done = done.clone();
-        let picked_words = picked_words.clone();
-        let rebuild_slot = rebuild_slot.clone();
-        move || {
+        let (cfg, grid, search) = (cfg.clone(), grid.clone(), search.clone());
+        let (cur_tab, collapsed, seen) = (cur_tab.clone(), collapsed.clone(), seen.clone());
+        move |keep: bool| {
             let q = search.value().trim().to_lowercase();
             let favs = cfg.borrow().window.favorite_emotes.clone();
-            let active_prov = providers[cur_tab.get().min(providers.len() - 1)];
-
-            // When searching, search across all providers on this platform; otherwise show active provider.
-            let secs: Vec<(Provider, EmoteSection)> = if !q.is_empty() {
-                let mut all_secs = Vec::new();
-                let mut seen_names = HashSet::new();
-                for &pv in providers {
-                    if pv == Provider::Favorites {
-                        continue;
-                    }
-                    for s in emotes::sections(platform, pv, as_broadcaster, &seen, &favs) {
-                        let filtered: Vec<(String, String)> = s
+            let active = providers[cur_tab.get().min(providers.len() - 1)];
+            // Searching looks in every tab of this platform.
+            let secs: Vec<EmoteSection> = if q.is_empty() {
+                emotes::sections(platform, active, as_broadcaster, &seen, &favs)
+            } else {
+                let mut names = HashSet::new();
+                let mut out: Vec<EmoteSection> = providers
+                    .iter()
+                    .filter(|&&pv| pv != Provider::Favorites)
+                    .flat_map(|&pv| {
+                        emotes::sections(platform, pv, as_broadcaster, &seen, &favs)
+                            .into_iter()
+                            .map(move |s| (pv, s))
+                    })
+                    .filter_map(|(pv, s)| {
+                        let emotes: Vec<(String, String)> = s
                             .emotes
                             .into_iter()
-                            .filter(|(n, _)| n.to_lowercase().contains(&q) && seen_names.insert(n.clone()))
+                            .filter(|(n, _)| n.to_lowercase().contains(&q) && names.insert(n.clone()))
                             .take(200)
                             .collect();
-                        if !filtered.is_empty() {
-                            all_secs.push((
-                                pv,
-                                EmoteSection {
-                                    title: format!("{} · {}", pv.label(platform), s.title),
-                                    note: None,
-                                    emotes: filtered,
-                                },
-                            ));
-                        }
+                        (!emotes.is_empty()).then(|| EmoteSection {
+                            title: format!("{} · {}", pv.label(platform), s.title),
+                            note: None,
+                            emotes,
+                        })
+                    })
+                    .collect();
+                if out.is_empty() {
+                    out.push(EmoteSection {
+                        title: "Search".into(),
+                        note: Some(format!("Nothing called \"{q}\".")),
+                        emotes: Vec::new(),
+                    });
+                }
+                out
+            };
+            let mut items = Vec::new();
+            for sec in secs {
+                let open = !collapsed.borrow().contains(&sec.title);
+                items.push(super::grid::Item::Head {
+                    title: sec.title,
+                    open,
+                    count: sec.emotes.len(),
+                    note: sec.note,
+                });
+                if open {
+                    for (name, url) in sec.emotes.into_iter().take(500) {
+                        let fav = favs.iter().any(|(n, _)| *n == name);
+                        items.push(super::grid::Item::Emote { name, url, fav });
                     }
                 }
-                if all_secs.is_empty() {
-                    all_secs.push((
-                        active_prov,
-                        EmoteSection {
-                            title: "Search Results".into(),
-                            note: Some(format!("No emotes matching \"{q}\".")),
-                            emotes: Vec::new(),
-                        },
-                    ));
-                }
-                all_secs
-            } else {
-                emotes::sections(platform, active_prov, as_broadcaster, &seen, &favs)
-                    .into_iter()
-                    .map(|s| (active_prov, s))
-                    .collect()
-            };
-
-            let mut scroll = scroll.clone();
-            scroll.clear();
-            scroll.begin();
-            let avail_w = (scroll.w() - 18).max(180);
-            let cell = 46;
-            let per = (avail_w / cell).max(1);
-            let mut y = scroll.y() + 2;
-            let x0 = scroll.x() + 2;
-
-            for (pv, sec) in secs {
-                let is_closed = collapsed.borrow().contains(&sec.title);
-                let arrow = if is_closed { "▸" } else { "▾" };
-                let hdr_txt = if sec.emotes.is_empty() {
-                    format!(" {arrow}  {}", sec.title.replace('@', "@@").replace('&', "&&"))
-                } else {
-                    format!(
-                        " {arrow}  {} ({})",
-                        sec.title.replace('@', "@@").replace('&', "&&"),
-                        sec.emotes.len()
-                    )
-                };
-                let mut hdr = Button::new(x0, y, avail_w, 26, None).with_label(&hdr_txt);
-                hdr.set_align(Align::Left | Align::Inside);
-                hdr.set_frame(FrameType::FlatBox);
-                hdr.set_color(Color::from_rgb(0x28, 0x2a, 0x30));
-                hdr.set_label_font(Font::HelveticaBold);
-                hdr.set_label_size(13);
-                {
-                    let collapsed = collapsed.clone();
-                    let title = sec.title.clone();
-                    let rebuild_slot = rebuild_slot.clone();
-                    hdr.set_callback(move |_| {
-                        let mut c = collapsed.borrow_mut();
-                        if !c.remove(&title) {
-                            c.insert(title.clone());
-                        }
-                        drop(c);
-                        rebuild_slot.set(true);
-                    });
-                }
-                y += 30;
-
-                if is_closed {
-                    continue;
-                }
-
-                if let Some(note_txt) = &sec.note {
-                    let mut nf = Frame::new(x0 + 6, y, avail_w - 12, 42, None)
-                        .with_label(&note_txt.replace('@', "@@"))
-                        .with_align(Align::Center | Align::Inside | Align::Wrap);
-                    nf.set_label_size(12);
-                    nf.set_label_color(Color::from_rgb(0xa4, 0xa8, 0xb3));
-                    y += 46;
-                }
-
-                // Cap huge single-section rendering when unfiltered only if extreme (> 500)
-                let slice = &sec.emotes[..sec.emotes.len().min(500)];
-                for (i, (name, url)) in slice.iter().enumerate() {
-                    let cx = x0 + (i as i32 % per) * cell;
-                    let cy = y + (i as i32 / per) * cell;
-                    let mut b = Button::new(cx, cy, cell - 4, cell - 4, None);
-                    let is_fav = favs.iter().any(|(n, _)| n == name);
-                    b.set_frame(if is_fav {
-                        FrameType::BorderBox
-                    } else {
-                        FrameType::FlatBox
-                    });
-                    b.set_color(if is_fav {
-                        Color::from_rgb(0x3a, 0x35, 0x22)
-                    } else {
-                        Color::from_rgb(0x23, 0x24, 0x28)
-                    });
-                    let tip = if is_fav {
-                        format!("★ {} (right-click to unfavorite)", name.replace('@', "@@"))
-                    } else {
-                        format!("{} (right-click to ★ favorite)", name.replace('@', "@@"))
-                    };
-                    b.set_tooltip(&tip);
-                    // Looked up when drawn: only the visible ones load, and an arrival only redraws.
-                    b.draw({
-                        let (cmds, url, name) = (cmds.clone(), url.clone(), name.clone());
-                        move |b| match img::get(&cmds, &url, EMOTE, false) {
-                            Some(p) => {
-                                let mut i = p.first();
-                                i.draw(b.x() + (b.w() - i.w()) / 2, b.y() + (b.h() - i.h()) / 2, i.w(), i.h());
-                            }
-                            None => {
-                                draw::set_font(Font::Helvetica, 10);
-                                draw::set_draw_color(Color::from_rgb(0xa4, 0xa8, 0xb3));
-                                draw::draw_text2(&name, b.x(), b.y(), b.w(), b.h(), Align::Center | Align::Clip);
-                            }
-                        }
-                    });
-
-                    let _ = pv;
-                    let (cfg_c, name_c, url_c) = (cfg.clone(), name.clone(), url.clone());
-                    let (picked_words, done, rebuild_slot) = (picked_words.clone(), done.clone(), rebuild_slot.clone());
-                    b.handle(move |_, ev| {
-                        if ev == Event::Push {
-                            if app::event_mouse_button() == app::MouseButton::Right {
-                                cfg_c.send_modify(|c| {
-                                    let list = &mut c.window.favorite_emotes;
-                                    if let Some(pos) = list.iter().position(|(n, _)| *n == name_c) {
-                                        list.remove(pos);
-                                    } else {
-                                        list.push((name_c.clone(), url_c.clone()));
-                                    }
-                                });
-                                let _ = crate::save(&cfg_c.borrow());
-                                rebuild_slot.set(true);
-                                return true;
-                            }
-                            if app::event_mouse_button() == app::MouseButton::Left {
-                                picked_words.borrow_mut().push(name_c.clone());
-                                if !app::event_state().contains(fltk::enums::Shortcut::Shift) {
-                                    done.set(true);
-                                }
-                                return true;
-                            }
-                        }
-                        false
-                    });
-                }
-                if !slice.is_empty() {
-                    let rows_n = (slice.len() as i32 + per - 1) / per;
-                    y += rows_n * cell + 6;
-                }
             }
-
-            scroll.end();
-            scroll.redraw();
+            grid.set(items, keep);
         }
     };
 
-    for (idx, (_, mut b)) in tab_btns.into_iter().enumerate() {
-        let cur_tab = cur_tab.clone();
-        let mut style_tabs = style_tabs.clone();
-        let fill = fill.clone();
-        let mut scroll = scroll.clone();
-        let mut search = search.clone();
+    for (idx, mut b) in tab_btns.into_iter().enumerate() {
+        let (cur_tab, style_tabs, fill, mut search) =
+            (cur_tab.clone(), style_tabs.clone(), fill.clone(), search.clone());
         b.set_callback(move |_| {
             cur_tab.set(idx);
-            if !search.value().is_empty() {
-                search.set_value("");
-            }
+            search.set_value("");
             style_tabs(idx);
-            fill();
-            scroll.scroll_to(0, 0);
+            fill(false);
         });
     }
-
     search.set_callback({
         let fill = fill.clone();
-        let mut scroll = scroll.clone();
-        move |_| {
-            fill();
-            scroll.scroll_to(0, 0);
-        }
+        move |_| fill(false)
     });
-
+    let done = Rc::new(Cell::new(false));
     win.set_callback({
         let done = done.clone();
         move |_| done.set(true)
@@ -2347,43 +2325,59 @@ fn emote_picker_popup(
     style_tabs(default_tab);
     win.show();
     col.layout();
-    fill();
+    fill(false);
     let _ = search.take_focus();
 
     let mut pics = img::ARRIVED.load(std::sync::atomic::Ordering::Relaxed);
     let mut seen_rev = emotes::REV.load(std::sync::atomic::Ordering::Relaxed);
-    let mut flushed = 0usize;
+    let mut picked = false;
     while win.shown() && !done.get() {
         let _ = app::wait_for(0.25);
-        // Flush any Shift+clicked emotes live into the input box!
-        {
-            let words = picked_words.borrow();
-            while flushed < words.len() {
-                insert_emote_word(target_input, &words[flushed]);
-                flushed += 1;
+        let asked: Vec<super::grid::Asked> = grid.asked.borrow_mut().drain(..).collect();
+        let mut refill = false;
+        for a in asked {
+            match a {
+                super::grid::Asked::Pick(name, url, several) => {
+                    insert_emote_word(target_input, &name, &url);
+                    target_input.redraw();
+                    picked = true;
+                    if !several {
+                        done.set(true);
+                    }
+                }
+                super::grid::Asked::Favorite(name, url) => {
+                    cfg.send_modify(|c| {
+                        let list = &mut c.window.favorite_emotes;
+                        match list.iter().position(|(n, _)| *n == name) {
+                            Some(pos) => drop(list.remove(pos)),
+                            None => list.push((name, url)),
+                        }
+                    });
+                    let _ = crate::save(&cfg.borrow());
+                    refill = true;
+                }
+                super::grid::Asked::Fold(title) => {
+                    let mut c = collapsed.borrow_mut();
+                    if !c.remove(&title) {
+                        c.insert(title);
+                    }
+                    refill = true;
+                }
             }
         }
         if img::ARRIVED.load(std::sync::atomic::Ordering::Relaxed) != pics {
             pics = img::ARRIVED.load(std::sync::atomic::Ordering::Relaxed);
-            scroll.redraw();
+            grid.area.clone().redraw();
         }
         let rev = emotes::REV.load(std::sync::atomic::Ordering::Relaxed);
-        if rev != seen_rev || rebuild_slot.replace(false) {
+        if rev != seen_rev || refill {
             seen_rev = rev;
-            let y = scroll.yposition();
-            fill();
-            scroll.scroll_to(0, y);
+            fill(true);
         }
     }
     win.hide();
     app::delete_widget(win);
-
-    let words = picked_words.take();
-    while flushed < words.len() {
-        insert_emote_word(target_input, &words[flushed]);
-        flushed += 1;
-    }
-    if !words.is_empty() {
+    if picked {
         let _ = target_input.take_focus();
     }
 }
