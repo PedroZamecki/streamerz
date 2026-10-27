@@ -101,6 +101,9 @@ pub struct Config {
     pub window: WindowState,
     /// What a new release does: ask first, install in the background, or nothing.
     pub updates: update::Updates,
+    /// Plugins by id (their file's name): on or off, and their settings.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub plugins: std::collections::BTreeMap<String, engine::plugins::PluginConfig>,
     /// How the window shows dates and times (.NET patterns); empty follows the system.
     #[serde(skip_serializing_if = "String::is_empty")]
     date_format: String,
@@ -141,6 +144,7 @@ impl Default for Config {
             builtins: false,
             window: WindowState::default(),
             updates: update::Updates::default(),
+            plugins: Default::default(),
             date_format: String::new(),
             time_format: String::new(),
             rest: Map::new(),
@@ -502,6 +506,7 @@ fn main() {
             e.load_chat_history();
             e.load_community();
             e.add_builtins();
+            e.plugins_start();
             e.auto_connect();
             if secrets::is_locked() {
                 engine::spawn_secret_recovery(e.clone());

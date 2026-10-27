@@ -6,6 +6,7 @@ use super::forms::{self, Done, Lists};
 use super::rows::Rows;
 use super::{button, dialogs, ROW};
 use crate::edit::{self, Path};
+use crate::engine::plugins::{SUB_PLUGIN, T_PLUGIN};
 use crate::engine::{UiCmd, DEFAULT_QUEUE};
 use crate::model::Obj;
 use crate::types::{name, SUB_ACTION_INFO, TRIGGERS};
@@ -97,6 +98,9 @@ pub fn names(c: &Config) -> Names {
 /// How a sub-action reads in the list.
 pub fn sub_label(o: &Obj, names: &Names) -> String {
     let k = edit::kind(o);
+    if k == SUB_PLUGIN {
+        return format!("{}: {}", s(o, "plugin"), s(o, "name"));
+    }
     let what = SUB_ACTION_INFO.binary_search_by_key(&(k as u32), |x| x.0).map_or_else(
         |_| {
             name(crate::types::SUB_ACTIONS, k as u32)
@@ -165,6 +169,9 @@ pub fn sub_label(o: &Obj, names: &Names) -> String {
 
 pub fn trigger_label(t: &Obj, names: &Names) -> String {
     let k = t.get("type").and_then(Value::as_u64).unwrap_or(0) as u32;
+    if k == T_PLUGIN {
+        return format!("{}: {}", s(t, "plugin"), s(t, "event"));
+    }
     let what = if let Some(raw) = name(TRIGGERS, k) {
         let cat = super::picker::trigger_categorize(raw);
         let platform = cat.split("/").next().unwrap_or(&cat);
@@ -971,11 +978,22 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
                 dialog::alert_default("Please select an action from the list on the left first.");
                 return;
             }
-            let items = super::picker::trigger_pick_items();
+            let mut items = super::picker::trigger_pick_items();
+            let (more, what) = plugin_items(m, true);
+            items.extend(more);
             let Some(code) = super::picker::pick_tree("Add a Trigger", &items) else {
                 return;
             };
-            let Some(t) = fill_new(m, edit::new_trigger(code as u32), true) else {
+            let new = match what.get(code.wrapping_sub(PLUGIN_PICK)) {
+                Some((plugin, event)) => {
+                    let mut t = edit::new_trigger(T_PLUGIN);
+                    t.insert("plugin".into(), plugin.as_str().into());
+                    t.insert("event".into(), event.as_str().into());
+                    t
+                }
+                None => edit::new_trigger(code as u32),
+            };
+            let Some(t) = fill_new(m, new, true) else {
                 return;
             };
             m.edit_action(|a| a.triggers.push(t));
@@ -1048,12 +1066,19 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
                 dialog::alert_default("Please select an action from the list on the left first.");
                 return;
             }
-            let items = super::picker::sub_action_pick_items();
+            let mut items = super::picker::sub_action_pick_items();
+            let (more, what) = plugin_items(m, false);
+            items.extend(more);
             let Some(kind) = super::picker::pick_tree("Add a Sub-action", &items) else {
                 return;
             };
-            let kind = kind as u64;
+            let plugin = what.get(kind.wrapping_sub(PLUGIN_PICK)).cloned();
+            let kind = if plugin.is_some() { SUB_PLUGIN } else { kind as u64 };
             let mut o = edit::new_sub(kind);
+            if let Some((p, n)) = plugin {
+                o.insert("plugin".into(), p.into());
+                o.insert("name".into(), n.into());
+            }
             if kind == 99903 {
                 o.insert("values".into(), json!([]));
             }
@@ -1353,16 +1378,65 @@ fn sub_title(k: u64) -> &'static str {
 /// A new trigger or sub-action with fields opens its form first; cancelling it adds nothing.
 fn fill_new(m: &Actions, o: Obj, trigger: bool) -> Option<Obj> {
     let k = edit::kind(&o);
-    let (title, fields) = if trigger {
-        (trigger_title(k), forms::trigger_fields(k))
-    } else {
-        (sub_title(k), forms::sub_fields(k))
-    };
-    match fields {
+    let title = if trigger { trigger_title(k) } else { sub_title(k) };
+    match fields_of(m, &o, trigger) {
         Some(f) if !f.is_empty() => edit_obj(m, title, Some(f), &o, ""),
         _ => Some(o),
     }
 }
+
+/// The form fields for `o`: its type's, or its plugin's.
+fn fields_of(m: &Actions, o: &Obj, trigger: bool) -> Option<&'static [forms::F]> {
+    let k = edit::kind(o);
+    if !trigger && k == SUB_PLUGIN {
+        let (id, n) = (s(o, "plugin").to_string(), s(o, "name").to_string());
+        let on = super::query(&m.cmds, |e| e.plugins_on()).unwrap_or_default();
+        let sub = on
+            .iter()
+            .find(|p| p.0 == id)?
+            .1
+            .subactions
+            .iter()
+            .find(|x| x.name == n)?
+            .clone();
+        return Some(forms::plugin_fields(&format!("{id}/{n}"), &sub.fields));
+    }
+    if trigger {
+        forms::trigger_fields(k)
+    } else {
+        forms::sub_fields(k)
+    }
+}
+
+/// The plugins' sub-actions or triggers as picker items (ids from `PLUGIN_PICK`), and what each is.
+fn plugin_items(m: &Actions, trigger: bool) -> (Vec<super::picker::PickItem>, Vec<(String, String)>) {
+    let on = super::query(&m.cmds, |e| e.plugins_on()).unwrap_or_default();
+    let mut items = Vec::new();
+    let mut what = Vec::new();
+    for (id, man) in &on {
+        let list: Vec<(String, String)> = if trigger {
+            man.triggers.iter().map(|t| (t.name.clone(), t.about.clone())).collect()
+        } else {
+            man.subactions
+                .iter()
+                .map(|t| (t.name.clone(), t.about.clone()))
+                .collect()
+        };
+        for (n, about) in list {
+            items.push(super::picker::PickItem {
+                id: PLUGIN_PICK + what.len(),
+                title: n.clone(),
+                category: format!("Plugins/{}", man.name),
+                description: about,
+            });
+            what.push((id.clone(), n));
+        }
+    }
+    (items, what)
+}
+
+/// Picker ids from here on are the plugins'.
+const PLUGIN_PICK: usize = 1_000_000;
 
 fn edit_trigger(me: &Rc<RefCell<Actions>>) {
     let mut m = me.borrow_mut();
@@ -1384,7 +1458,7 @@ fn edit_trigger(me: &Rc<RefCell<Actions>>) {
     let k = edit::kind(&t);
     let title = trigger_title(k);
     let hint = format!("{title} trigger. Its fields are in Streamer.bot's docs.");
-    if let Some(mut new) = edit_obj(&m, title, forms::trigger_fields(k), &t, &hint) {
+    if let Some(mut new) = edit_obj(&m, title, fields_of(&m, &t, true), &t, &hint) {
         if let Some(keep) = t.get("id") {
             new.insert("id".into(), keep.clone());
         }
@@ -1418,7 +1492,7 @@ fn edit_sub(me: &Rc<RefCell<Actions>>) {
         Ok(i) => format!("{title}. Its fields: {}", SUB_ACTION_INFO[i].3.join(", ")),
         Err(_) => title.into(),
     };
-    if let Some(mut new) = edit_obj(&m, title, forms::sub_fields(k), &o, &hint) {
+    if let Some(mut new) = edit_obj(&m, title, fields_of(&m, &o, false), &o, &hint) {
         for f in ["id", "parentId", "index"] {
             if let Some(v) = o.get(f) {
                 new.insert(f.into(), v.clone());

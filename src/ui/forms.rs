@@ -125,6 +125,35 @@ const PERSISTED: &[&str] = &["Any", "Persisted", "Temporary"];
 // Serilog's levels.
 const LEVELS: &[&str] = &["Verbose", "Debug", "Information", "Warning"];
 
+/// A plugin's fields (a sub-action's, or its settings) as a form's; made once for each `key`.
+pub fn plugin_fields(key: &str, fields: &[crate::engine::plugins::Field]) -> &'static [F] {
+    use std::collections::HashMap;
+    thread_local!(static MADE: std::cell::RefCell<HashMap<String, &'static [F]>> = Default::default());
+    MADE.with_borrow_mut(|m| {
+        *m.entry(key.to_string()).or_insert_with(|| {
+            let leak = |s: &str| -> &'static str { Box::leak(s.to_string().into_boxed_str()) };
+            let out: Vec<F> = fields
+                .iter()
+                .map(|f| {
+                    let w = match f.kind.as_str() {
+                        "lines" => Multi,
+                        "number" => Num,
+                        "bool" => Bool,
+                        "choice" => {
+                            let c: Vec<&'static str> = f.choices.iter().map(|c| leak(c)).collect();
+                            Pick(Box::leak(c.into_boxed_slice()))
+                        }
+                        _ => Text,
+                    };
+                    let label = if f.label.is_empty() { &f.key } else { &f.label };
+                    (leak(&f.key), leak(label), w)
+                })
+                .collect();
+            Box::leak(out.into_boxed_slice())
+        })
+    })
+}
+
 /// A core sub-action's fields; None when it has no form (it opens as JSON).
 pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
     Some(match kind {

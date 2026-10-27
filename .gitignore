@@ -9,3 +9,4 @@ community.json*
 # Test runs
 /run*.log
 /sz.pid
+plugins/dice/target

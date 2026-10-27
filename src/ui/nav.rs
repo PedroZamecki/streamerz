@@ -16,10 +16,10 @@ type Cfg = Arc<tokio::sync::watch::Sender<crate::Config>>;
 /// Wide, and folded to its icons.
 const WIDE: i32 = 176;
 const MINI: i32 = 52;
-const ITEM: i32 = 30;
-const SECTION: i32 = 28;
+const ITEM: i32 = 27;
+const SECTION: i32 = 24;
 /// The fold button's line.
-const TOP: i32 = 40;
+const TOP: i32 = 36;
 
 /// Sections and their pages: (page label, icon).
 const NAV: &[(&str, &[(&str, &str)])] = &[
@@ -39,6 +39,7 @@ const NAV: &[(&str, &[(&str, &str)])] = &[
             ("Timers", "timer"),
             ("Queues", "list-ordered"),
             ("Groups", "folder"),
+            ("Plugins", "puzzle"),
         ],
     ),
     (

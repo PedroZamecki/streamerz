@@ -528,6 +528,7 @@ pub struct Views {
     pub community: Rc<RefCell<Community>>,
     pub servers: Rc<RefCell<Servers>>,
     pub groups: Rc<RefCell<Groups>>,
+    pub plugins: Rc<RefCell<super::plugins::Plugins>>,
     pub donations: Rc<RefCell<Donations>>,
     pub accounts: Rc<RefCell<super::accounts::Accounts>>,
     pub chat: Rc<RefCell<super::chat::Chat>>,
@@ -596,6 +597,11 @@ impl Views {
                 c.refresh();
             }
         }
+        if let Ok(mut p) = self.plugins.try_borrow_mut() {
+            if is(&p.tab) {
+                p.refresh();
+            }
+        }
     }
 }
 
@@ -615,6 +621,7 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
     let globals = globals_tab(tabs, cmds);
     let community = community_tab(tabs, cfg, cmds);
     let groups = groups_tab(tabs, cfg, cmds);
+    let plugins = super::plugins::tab(tabs, cfg, cmds);
 
     let mut col = tab(tabs, "Servers");
     let servers = servers_box(&mut col, cfg);
@@ -678,6 +685,7 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
         community,
         servers,
         groups,
+        plugins,
         donations,
         accounts,
         chat,

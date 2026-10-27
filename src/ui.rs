@@ -14,6 +14,7 @@ pub(crate) mod img;
 mod lists;
 mod nav;
 pub mod picker;
+mod plugins;
 mod rows;
 mod settings;
 

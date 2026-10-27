@@ -46,6 +46,8 @@ const TOOLS: &[(&str, &str, &str, &[&str])] = &[
     ("save", "Add or replace an action, command, timer, user group or queue (same id replaces; no id adds one). For an action: {name, group, enabled, triggers: [...], subActions: [...]}, items from describe. Applies at once.", r#"{"what": {"type": "string", "enum": ["action", "command", "timer", "group", "queue"]}, "item": {"type": "object"}}"#, &["what", "item"]),
     ("delete", "Delete an action, command, timer, user group or queue by id.", r#"{"what": {"type": "string", "enum": ["action", "command", "timer", "group", "queue"]}, "id": {"type": "string"}}"#, &["what", "id"]),
     ("new_action", "A new, empty action (name, group) ready to fill with triggers and sub-actions from describe, then save.", r#"{"name": {"type": "string"}, "group": {"type": "string"}}"#, &["name"]),
+    ("list_plugins", "The WebAssembly plugins in the plugins folder: on or off, and for those on their manifest (sub-actions, triggers, settings). Plugin sub-actions are type 99800 with plugin and name; plugin triggers type 99801 with plugin and event. See PLUGINS.md.", "{}", &[]),
+    ("plugin_enable", "Turn a plugin on or off.", r#"{"plugin": {"type": "string", "description": "Its id (the .wasm file's name)"}, "on": {"type": "boolean"}}"#, &["plugin"]),
     ("request", "Any Streamer.bot WebSocket request, as JSON (e.g. {\"request\": \"GetGlobals\"}).", r#"{"json": {"type": "object"}}"#, &["json"]),
 ];
 
@@ -224,6 +226,11 @@ impl Client {
             }
             "delete" => {
                 self.ask(json!({"request": "StreamerzDelete", "what": s("what"), "id": s("id")}))
+                    .await
+            }
+            "list_plugins" => self.ask(json!({"request": "StreamerzPlugins"})).await,
+            "plugin_enable" => {
+                self.ask(json!({"request": "StreamerzPluginEnable", "plugin": s("plugin"), "on": a["on"].as_bool().unwrap_or(true)}))
                     .await
             }
             "new_action" => Ok(

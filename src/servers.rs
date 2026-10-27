@@ -596,6 +596,25 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
         "StreamerzGet" | "StreamerzSave" | "StreamerzDelete" if !authed && e.config().websockets.enable_auth => {
             error(&id, "Authentication required to use this method")
         }
+        "StreamerzPlugins" => {
+            let on = e.plugins_on();
+            let list: Vec<Value> = crate::engine::plugins::installed()
+                .into_iter()
+                .map(|(id, _)| {
+                    let m = on.iter().find(|p| p.0 == id).map(|p| &p.1);
+                    json!({"id": id, "on": m.is_some(), "manifest": m})
+                })
+                .collect();
+            ok(&id, json!({"plugins": list, "folder": crate::engine::plugins::dir()}))
+        }
+        "StreamerzPluginEnable" if !authed && e.config().websockets.enable_auth => {
+            error(&id, "Authentication required to use this method")
+        }
+        "StreamerzPluginEnable" => {
+            let on = req.get("on").and_then(Value::as_bool).unwrap_or(true);
+            e.plugin_enable(get("plugin"), on);
+            ok(&id, json!({"on": e.plugins_on().iter().any(|p| p.0 == get("plugin"))}))
+        }
         "StreamerzGet" | "StreamerzSave" | "StreamerzDelete" => match authoring(e, req) {
             Ok(v) => ok(&id, v),
             Err(m) => error(&id, &m),
