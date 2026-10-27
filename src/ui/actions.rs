@@ -8,6 +8,7 @@ use super::{button, dialogs, ROW};
 use crate::edit::{self, Path};
 use crate::engine::plugins::{SUB_PLUGIN, T_PLUGIN};
 use crate::engine::{UiCmd, DEFAULT_QUEUE};
+use crate::i18n::{tr, trf};
 use crate::model::Obj;
 use crate::types::{name, SUB_ACTION_INFO, TRIGGERS};
 use crate::Config;
@@ -104,7 +105,7 @@ pub fn sub_label(o: &Obj, names: &Names) -> String {
     let what = SUB_ACTION_INFO.binary_search_by_key(&(k as u32), |x| x.0).map_or_else(
         |_| {
             name(crate::types::SUB_ACTIONS, k as u32)
-                .unwrap_or("Unknown")
+                .unwrap_or(tr("actions.unknown"))
                 .to_string()
         },
         |i| SUB_ACTION_INFO[i].1.to_string(),
@@ -162,7 +163,7 @@ pub fn sub_label(o: &Obj, names: &Names) -> String {
         format!("{what}: {}", short(&detail))
     };
     if !crate::engine::supported(k as u32) {
-        out += " (not supported)";
+        out += tr("actions.not_supported");
     }
     out
 }
@@ -178,7 +179,7 @@ pub fn trigger_label(t: &Obj, names: &Names) -> String {
         let clean = super::picker::trigger_clean_title(raw);
         format!("{platform}: {clean}")
     } else {
-        "Unknown".to_string()
+        tr("actions.unknown").to_string()
     };
     let n = |f: &str| t.get(f).and_then(Value::as_i64).unwrap_or(0);
     let detail = if k == crate::hotkeys::T_KEY_PRESS {
@@ -201,7 +202,7 @@ pub fn trigger_label(t: &Obj, names: &Names) -> String {
         format!("{what} ({})", short(&detail))
     };
     if !on {
-        out += " [disabled]";
+        out += tr("actions.disabled_tag");
     }
     out
 }
@@ -244,12 +245,14 @@ impl Actions {
         };
         let Some(t) = a.triggers.get(trigger_idx) else { return };
         let k = t.get("type").and_then(Value::as_u64).unwrap_or(0) as u32;
-        let raw = name(TRIGGERS, k).unwrap_or("Unknown");
+        let raw = name(TRIGGERS, k).unwrap_or(tr("actions.unknown"));
         let cat = super::picker::trigger_categorize(raw);
         let title = super::picker::trigger_clean_title(raw);
         let desc = super::picker::trigger_description(k, raw, &title, &cat);
-        self.detail_title
-            .set_label(&format!("Trigger: {title}  [{}]", cat.replace("/", " > ")));
+        self.detail_title.set_label(&trf(
+            "actions.trigger_details",
+            &[("title", &title), ("category", &cat.replace('/', " > "))],
+        ));
         self.detail_desc.set_label(&desc);
         self.detail_title.redraw();
         self.detail_desc.redraw();
@@ -269,11 +272,13 @@ impl Actions {
             .iter()
             .find(|x| x.0 == k)
             .map(|x| (x.1, x.2))
-            .unwrap_or(("Sub-action", "Core"));
+            .unwrap_or((tr("actions.subaction_word"), "Core"));
         let cat_str = if cat.is_empty() { "Core" } else { cat };
         let desc = super::picker::sub_action_description(k, name, cat_str);
-        self.detail_title
-            .set_label(&format!("Sub-action: {name}  [{}]", cat_str.replace("/", " > ")));
+        self.detail_title.set_label(&trf(
+            "actions.subaction_details",
+            &[("name", name), ("category", &cat_str.replace('/', " > "))],
+        ));
         self.detail_desc.set_label(&desc);
         self.detail_title.redraw();
         self.detail_desc.redraw();
@@ -283,22 +288,29 @@ impl Actions {
         if let Some(ref id) = self.selected {
             let cfg = self.cfg.borrow();
             if let Some(a) = cfg.actions.actions.iter().find(|a| &a.id == id) {
-                let grp = if a.group.is_empty() { "None" } else { &a.group };
-                self.detail_title
-                    .set_label(&format!("Action: {}  [Group: {grp}]", a.name));
-                self.detail_desc.set_label(&format!(
-                    "Triggers: {} | Sub-actions: {}. Select a trigger or sub-action to view its details.",
-                    a.triggers.len(),
-                    a.sub_actions.len()
+                let grp = if a.group.is_empty() {
+                    tr("actions.none_group")
+                } else {
+                    &a.group
+                };
+                self.detail_title.set_label(&trf(
+                    "actions.action_details_title",
+                    &[("name", &a.name), ("group", grp)],
+                ));
+                self.detail_desc.set_label(&trf(
+                    "actions.action_details_desc",
+                    &[
+                        ("triggers", &a.triggers.len().to_string()),
+                        ("subactions", &a.sub_actions.len().to_string()),
+                    ],
                 ));
                 self.detail_title.redraw();
                 self.detail_desc.redraw();
                 return;
             }
         }
-        self.detail_title.set_label("Details");
-        self.detail_desc
-            .set_label("Select an action, trigger, or sub-action to view its description and parameters.");
+        self.detail_title.set_label(tr("actions.details"));
+        self.detail_desc.set_label(tr("actions.details_empty"));
         self.detail_title.redraw();
         self.detail_desc.redraw();
     }
@@ -415,7 +427,7 @@ impl Actions {
         }
         self.sub_items.clear();
         let Some(a) = a else {
-            self.title.set_label("Pick an action to edit it");
+            self.title.set_label(tr("actions.pick_to_edit"));
             self.detail_title.set_label("");
             self.detail_desc.set_label("");
             for b in &mut self.action_btns {
@@ -441,9 +453,9 @@ impl Actions {
         }
         let mut flags = Vec::new();
         for (on, what) in [
-            (!a.enabled, "disabled"),
-            (a.random_action, "random"),
-            (a.concurrent, "concurrent"),
+            (!a.enabled, tr("actions.flag_disabled")),
+            (a.random_action, tr("actions.flag_random")),
+            (a.concurrent, tr("actions.flag_concurrent")),
         ] {
             if on {
                 flags.push(what);
@@ -562,7 +574,7 @@ fn tree(empty: &'static str) -> Tree {
 
 /// Ask for an action name.
 fn ask_name(title: &str, current: &str) -> Option<String> {
-    super::ask(title, "Name:", current)
+    super::ask(title, tr("actions.ask_name"), current)
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }
@@ -582,22 +594,22 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
         .with_align(Align::Left | Align::Inside);
     act_head.fixed(&t, 60);
     let mut search_actions = Input::default();
-    search_actions.set_tooltip("Filter actions...");
-    super::placeholder(&mut search_actions, "Search actions…");
+    search_actions.set_tooltip(tr("actions.filter_actions"));
+    super::placeholder(&mut search_actions, tr("actions.search_actions"));
     act_head.end();
     left.fixed(&act_head, ROW);
-    let actions_tree = tree("No actions yet. Add one, import one, or start from a template.");
+    let actions_tree = tree(tr("actions.empty_actions"));
     let all = super::grid(
         &mut left,
         &[
-            "Add",
-            "Edit",
-            "Duplicate",
-            "Delete",
-            "Test",
-            "Import",
-            "Export",
-            "Templates",
+            tr("btn.add"),
+            tr("btn.edit"),
+            tr("btn.duplicate"),
+            tr("btn.delete"),
+            tr("btn.test"),
+            tr("btn.import"),
+            tr("btn.export"),
+            tr("btn.templates"),
         ],
         3,
     );
@@ -613,9 +625,18 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
         .with_label("Triggers")
         .with_align(Align::Left | Align::Inside);
     right.fixed(&t, ROW - 4);
-    let triggers = Rows::new("What runs this action: a command, a follow, a hotkey... Add one below.");
+    let triggers = Rows::new(tr("actions.empty_triggers"));
     right.fixed(&*triggers, 120);
-    let tb = bar(&mut right, &["Add", "Edit", "On/Off", "Test...", "Delete"]);
+    let tb = bar(
+        &mut right,
+        &[
+            tr("btn.add"),
+            tr("btn.edit"),
+            tr("btn.on_off"),
+            tr("btn.test"),
+            tr("btn.delete"),
+        ],
+    );
     let mut sub_head = Flex::default().row();
     sub_head.set_pad(4);
     let t = Frame::default()
@@ -623,12 +644,15 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
         .with_align(Align::Left | Align::Inside);
     sub_head.fixed(&t, 90);
     let mut search_subs = Input::default();
-    search_subs.set_tooltip("Filter sub-actions...");
-    super::placeholder(&mut search_subs, "Search sub-actions…");
+    search_subs.set_tooltip(tr("actions.filter_subactions"));
+    super::placeholder(&mut search_subs, tr("actions.search_subactions"));
     sub_head.end();
     right.fixed(&sub_head, ROW);
-    let subs = tree("What the action does, in order. Add a sub-action below.");
-    let sb = bar(&mut right, &["Add", "Edit", "On/Off", "Delete"]);
+    let subs = tree(tr("actions.empty_subactions"));
+    let sb = bar(
+        &mut right,
+        &[tr("btn.add"), tr("btn.edit"), tr("btn.on_off"), tr("btn.delete")],
+    );
 
     let mut detail_title = Frame::default().with_align(Align::Left | Align::Inside);
     detail_title.set_label_font(Font::HelveticaBold);
@@ -715,7 +739,9 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
     on(
         &lb[0],
         Box::new(|m| {
-            let Some(name) = ask_name("New action", "") else { return };
+            let Some(name) = ask_name(tr("actions.new_action"), "") else {
+                return;
+            };
             let a = edit::new_action(&name, &m.current_group());
             m.selected = Some(a.id.clone());
             m.edit(|c| c.actions.actions.push(a));
@@ -732,8 +758,8 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
             let Some(id) = m.selected.clone() else { return };
             let src = m.cfg.borrow().actions.actions.iter().find(|a| a.id == id).cloned();
             let Some(src) = src else { return };
-            let default_name = format!("{} (Copy)", src.name);
-            let Some(name) = ask_name("Duplicate action", &default_name) else {
+            let default_name = trf("actions.copy_suffix", &[("name", &src.name)]);
+            let Some(name) = ask_name(tr("actions.duplicate_action"), &default_name) else {
                 return;
             };
             let dup = edit::duplicate_action(&src, &name);
@@ -755,8 +781,12 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
                 .find(|a| a.id == id)
                 .map(|a| a.name.clone())
                 .unwrap_or_default();
-            if dialog::choice2_default(&format!("Delete the action {}?", plain(&name)), "Cancel", "Delete", "")
-                == Some(1)
+            if dialog::choice2_default(
+                &trf("actions.delete_confirm", &[("name", &plain(&name))]).replace('@', "@@"),
+                tr("dialogs.cancel"),
+                tr("btn.delete"),
+                "",
+            ) == Some(1)
             {
                 m.selected = None;
                 m.edit(|c| c.actions.actions.retain(|a| a.id != id));
@@ -781,29 +811,23 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
             } else {
                 let mut list: Vec<String> = progs.iter().take(8).cloned().collect();
                 if progs.len() > 8 {
-                    list.push(format!("... and {} more", progs.len() - 8));
+                    list.push(trf("actions.import_more", &[("count", &(progs.len() - 8).to_string())]));
                 }
-                format!(
-                    "\n\nWARNING: this runs programs on your computer. Only import it if you trust where it came from:\n{}",
-                    list.join("\n")
-                )
+                trf("actions.import_warn", &[("programs", &list.join("\n"))])
             };
-            let q = format!(
-                "Import this?\n\n{}\n\nItems with the same name are replaced.{warn}",
-                edit::summary(&x)
+            let q = trf(
+                "actions.import_confirm",
+                &[("summary", &edit::summary(&x)), ("warn", &warn)],
             );
-            if dialog::choice2_default(&plain(&q), "Cancel", "Import", "") != Some(1) {
+            if dialog::choice2_default(&plain(&q), tr("dialogs.cancel"), tr("btn.import"), "") != Some(1) {
                 return;
             }
             let mut result = Ok(Vec::new());
             m.edit(|c| result = edit::import(c, &x));
             match result {
-                Ok(u) if u.is_empty() => crate::say("imported".into()),
+                Ok(u) if u.is_empty() => crate::say(tr("actions.imported_toast").into()),
                 Ok(u) => {
-                    let msg = format!(
-                        "Imported. These sub-actions are kept but won't run here: {}",
-                        u.join(", ")
-                    );
+                    let msg = trf("actions.imported_unsupported", &[("items", &u.join(", "))]);
                     crate::say(msg.clone());
                     dialog::message_default(&plain(&msg));
                 }
@@ -814,7 +838,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
     {
         let me2 = me.clone();
         let mut b = lb3[2].clone();
-        b.set_tooltip("Add ready-made actions, commands and timers");
+        b.set_tooltip(tr("actions.templates_tooltip"));
         b.set_callback(move |_| {
             let Some(t) = pick_template() else { return };
             let made = (t.make)();
@@ -845,7 +869,10 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
                 super::tell(&m.cmds, |e| e.timers());
             }
             super::changed();
-            crate::say(format!("Added from the template \"{}\": {}", t.name, names.join(", ")));
+            crate::say(trf(
+                "actions.added_from_template",
+                &[("name", t.name), ("items", &names.join(", "))],
+            ));
         });
     }
     on(
@@ -918,8 +945,12 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
                     .find(|a| a.id == id)
                     .map(|a| a.name.clone())
                     .unwrap_or_default();
-                if dialog::choice2_default(&format!("Delete the action {}?", plain(&name)), "Cancel", "Delete", "")
-                    == Some(1)
+                if dialog::choice2_default(
+                    &trf("actions.delete_confirm", &[("name", &plain(&name))]).replace('@', "@@"),
+                    tr("dialogs.cancel"),
+                    tr("btn.delete"),
+                    "",
+                ) == Some(1)
                 {
                     m.selected = None;
                     m.edit(|c| c.actions.actions.retain(|a| a.id != id));
@@ -933,10 +964,10 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
     );
 
     // Triggers.
-    let mut tr = triggers.clone();
+    let mut tr_rows = triggers.clone();
     let me_tr = me.clone();
     let me_key_tr = me.clone();
-    tr.set_callback(move |b| {
+    tr_rows.set_callback(move |b| {
         if b.value() > 0 {
             if let Ok(mut m) = me_tr.try_borrow_mut() {
                 m.update_details_trigger((b.value() - 1) as usize);
@@ -946,7 +977,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
             }
         }
     });
-    tr.set_keys(move |b, key| {
+    tr_rows.set_keys(move |b, key| {
         let i = b.value() - 1;
         if i < 0 {
             return false;
@@ -975,13 +1006,13 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
         &tb[0],
         Box::new(|m| {
             if m.selected.is_none() {
-                dialog::alert_default("Please select an action from the list on the left first.");
+                dialog::alert_default(tr("actions.select_action_first"));
                 return;
             }
             let mut items = super::picker::trigger_pick_items();
             let (more, what) = plugin_items(m, true);
             items.extend(more);
-            let Some(code) = super::picker::pick_tree("Add a Trigger", &items) else {
+            let Some(code) = super::picker::pick_tree(tr("actions.add_trigger"), &items) else {
                 return;
             };
             let new = match what.get(code.wrapping_sub(PLUGIN_PICK)) {
@@ -1031,10 +1062,10 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
                 .find(|a| a.id == id)
                 .and_then(|a| a.triggers.get(i.max(0) as usize).filter(|_| i >= 0).cloned());
             let Some(t) = t else {
-                return dialog::alert_default("Select a trigger to test.");
+                return dialog::alert_default(tr("actions.select_trigger_first"));
             };
-            let hint = "Arguments to run the action with, as this trigger would pass them:";
-            let Some(mut args) = dialogs::values("Test trigger", hint, &Obj::new(), true) else {
+            let hint = tr("actions.test_trigger_hint");
+            let Some(mut args) = dialogs::values(tr("actions.test_trigger_title"), hint, &Obj::new(), true) else {
                 return;
             };
             let k = t.get("type").and_then(Value::as_u64).unwrap_or(0) as u32;
@@ -1063,13 +1094,13 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
         &sb[0],
         Box::new(|m| {
             if m.selected.is_none() {
-                dialog::alert_default("Please select an action from the list on the left first.");
+                dialog::alert_default(tr("actions.select_action_first"));
                 return;
             }
             let mut items = super::picker::sub_action_pick_items();
             let (more, what) = plugin_items(m, false);
             items.extend(more);
-            let Some(kind) = super::picker::pick_tree("Add a Sub-action", &items) else {
+            let Some(kind) = super::picker::pick_tree(tr("actions.add_subaction"), &items) else {
                 return;
             };
             let plugin = what.get(kind.wrapping_sub(PLUGIN_PICK)).cloned();
@@ -1146,7 +1177,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
                 })
                 .unwrap_or(true);
             if fixed {
-                return dialog::alert_default("This branch is part of its If/Else or Switch; delete that instead.");
+                return dialog::alert_default(tr("actions.branch_delete_warning"));
             }
             m.edit_action(|a| {
                 edit::remove(&mut a.sub_actions, &p);
@@ -1211,7 +1242,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
                     })
                     .unwrap_or(true);
                 if fixed {
-                    dialog::alert_default("This branch is part of its If/Else or Switch; delete that instead.");
+                    dialog::alert_default(tr("actions.branch_delete_warning"));
                     return true;
                 }
                 m.edit_action(|a| {
@@ -1356,7 +1387,7 @@ fn edit_obj(m: &Actions, title: &str, fields: Option<&[forms::F]>, o: &Obj, hint
     let new = dialogs::json_editor(title, hint, &Value::Object(o.clone()), |v| {
         match v.get("type").and_then(Value::as_u64) {
             Some(x) if x == k => Ok(()),
-            _ => Err(format!("Keep \"type\": {k}.")),
+            _ => Err(trf("actions.json_editor_hint", &[("type", &k.to_string())])),
         }
     });
     match new {
@@ -1457,7 +1488,7 @@ fn edit_trigger(me: &Rc<RefCell<Actions>>) {
     let Some(t) = t else { return };
     let k = edit::kind(&t);
     let title = trigger_title(k);
-    let hint = format!("{title} trigger. Its fields are in Streamer.bot's docs.");
+    let hint = trf("actions.trigger_hint", &[("title", title)]);
     if let Some(mut new) = edit_obj(&m, title, fields_of(&m, &t, true), &t, &hint) {
         if let Some(keep) = t.get("id") {
             new.insert("id".into(), keep.clone());
@@ -1489,7 +1520,10 @@ fn edit_sub(me: &Rc<RefCell<Actions>>) {
     let k = edit::kind(&o);
     let title = sub_title(k);
     let hint = match SUB_ACTION_INFO.binary_search_by_key(&(k as u32), |x| x.0) {
-        Ok(i) => format!("{title}. Its fields: {}", SUB_ACTION_INFO[i].3.join(", ")),
+        Ok(i) => trf(
+            "actions.subaction_fields_hint",
+            &[("title", title), ("fields", &SUB_ACTION_INFO[i].3.join(", "))],
+        ),
         Err(_) => title.into(),
     };
     if let Some(mut new) = edit_obj(&m, title, fields_of(&m, &o, false), &o, &hint) {
@@ -1514,7 +1548,7 @@ fn pick_template() -> Option<&'static crate::templates::Template> {
     use crate::templates::TEMPLATES;
     let mut win = fltk::window::Window::default()
         .with_size(560, 380)
-        .with_label("New from template");
+        .with_label(tr("actions.template_title"));
     win.set_xclass("streamerz");
     win.make_modal(true);
     let mut col = Flex::new(10, 10, 540, 360, None).column();
@@ -1530,8 +1564,8 @@ fn pick_template() -> Option<&'static crate::templates::Template> {
     let mut row = Flex::default().row();
     row.set_pad(8);
     Frame::default();
-    let mut add = button(&mut row, "Add", 90);
-    let mut cancel = button(&mut row, "Cancel", 90);
+    let mut add = button(&mut row, tr("btn.add"), 90);
+    let mut cancel = button(&mut row, tr("dialogs.cancel"), 90);
     row.end();
     col.fixed(&row, ROW + 4);
     col.end();
