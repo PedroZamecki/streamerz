@@ -1,0 +1,298 @@
+//! The Settings page: sections of settings, each a name, a line on what it does, and its control.
+//! A change applies and saves at once.
+
+use super::{button, icons, tell, ROW};
+use crate::update::Updates;
+use crate::Config;
+use fltk::button::ToggleButton;
+use fltk::enums::{Align, Color, Font};
+use fltk::frame::Frame;
+use fltk::group::{Flex, Wizard};
+use fltk::menu::Choice;
+use fltk::prelude::*;
+use fltk::{app, draw};
+use std::sync::Arc;
+use tokio::sync::watch;
+
+type Cfg = Arc<watch::Sender<Config>>;
+type Cmds = tokio::sync::mpsc::UnboundedSender<crate::engine::UiCmd>;
+
+/// The date patterns offered ("" is the system's).
+const DATES: [&str; 8] = [
+    "",
+    "dd/MM/yyyy",
+    "MM/dd/yyyy",
+    "yyyy-MM-dd",
+    "dd.MM.yyyy",
+    "dd/MM/yy",
+    "MM/dd/yy",
+    "d MMM yyyy",
+];
+const TIMES: [&str; 3] = ["", "HH:mm", "h:mm tt"];
+const UPDATES: [Updates; 3] = [Updates::Ask, Updates::Background, Updates::Ignore];
+
+/// Changes the config and saves it.
+fn put(cfg: &Cfg, f: impl FnOnce(&mut Config)) {
+    cfg.send_modify(f);
+    let _ = crate::save(&cfg.borrow());
+}
+
+/// A section's title, with its icon.
+fn section(col: &mut Flex, title: &str, icon: &str) {
+    let mut f = Frame::default()
+        .with_label(title)
+        .with_align(Align::Left | Align::Inside | Align::ImageNextToText);
+    f.set_label_font(Font::HelveticaBold);
+    f.set_label_size(15);
+    f.set_image(icons::before_label(icon, Color::Foreground, 16));
+    col.fixed(&f, 34);
+}
+
+/// A setting's line: its name and what it does on the left; returns the row, open for its control
+/// (`w` wide) on the right.
+fn setting(col: &mut Flex, name: &str, about: &str, w: i32) -> Flex {
+    let mut row = Flex::default().row();
+    row.set_pad(16);
+    let mut text = Flex::default().column();
+    text.set_pad(0);
+    let mut n = Frame::default()
+        .with_label(name)
+        .with_align(Align::Left | Align::Inside | Align::Bottom);
+    n.set_label_size(14);
+    let mut a = Frame::default()
+        .with_label(&about.replace('@', "@@"))
+        .with_align(Align::Left | Align::Inside | Align::Top | Align::Clip);
+    a.set_label_size(12);
+    a.set_label_color(super::muted());
+    text.end();
+    let _ = (n, a);
+    col.fixed(&row, 44);
+    // The control, centred in the line's height.
+    let mut right = Flex::default().column();
+    Frame::default();
+    row.fixed(&right, w);
+    right.set_pad(0);
+    right
+}
+
+/// Ends a setting's control column.
+fn done(mut right: Flex, control: &impl WidgetExt) {
+    right.fixed(control, ROW);
+    Frame::default();
+    right.end();
+    if let Some(row) = right.parent() {
+        row.end();
+    }
+}
+
+/// An on/off switch: a pill with a knob, lit when on.
+fn switch(on: bool) -> ToggleButton {
+    let mut b = ToggleButton::default();
+    b.set_value(on);
+    b.draw(|b| {
+        let (w, h) = (36, 20);
+        let (x, y) = (b.x() + b.w() - w, b.y() + (b.h() - h) / 2);
+        let bg = Color::Background;
+        let track = if b.value() {
+            Color::Selection
+        } else {
+            Color::color_average(Color::Foreground, bg, 0.25)
+        };
+        draw::draw_rect_fill(b.x(), b.y(), b.w(), b.h(), bg);
+        draw::set_draw_color(track);
+        draw::draw_rounded_rectf(x, y, w, h, h / 2);
+        draw::set_draw_color(Color::White);
+        let k = h - 6;
+        let kx = if b.value() { x + w - k - 3 } else { x + 3 };
+        draw::draw_pie(kx, y + 3, k, k, 0.0, 360.0);
+    });
+    b.clear_visible_focus();
+    b
+}
+
+/// A choice's items: "/" would make a submenu.
+fn items(names: &[String]) -> String {
+    names
+        .iter()
+        .map(|n| n.replace('/', "\\/"))
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
+    let mut col = super::tab(tabs, "Settings");
+    col.set_pad(2);
+    let c = cfg.borrow();
+    let (dark, hidden, autostart, updates) = (c.dark, c.start_hidden, c.autostart, c.updates);
+    let (date_f, time_f, instance) = (c.date_format.clone(), c.time_format.clone(), c.instance_name.clone());
+    drop(c);
+
+    section(&mut col, "Appearance", "sun");
+    let r = setting(&mut col, "Theme", "Dark or light, for every window.", 200);
+    let mut theme = Choice::default();
+    theme.add_choice("Dark|Light");
+    theme.set_value(i32::from(!dark));
+    done(r, &theme);
+    theme.set_callback({
+        let cfg = cfg.clone();
+        move |t| {
+            let dark = t.value() == 0;
+            put(&cfg, |c| c.dark = dark);
+            super::theme(dark);
+            if let Some(mut w) = app::first_window() {
+                w.redraw();
+            }
+        }
+    });
+
+    section(&mut col, "Startup", "power");
+    let r = setting(
+        &mut col,
+        "Start hidden",
+        "Open in the tray; click its icon for this window.",
+        44,
+    );
+    let hide = switch(hidden);
+    done(r, &hide);
+    hide.clone().set_callback({
+        let cfg = cfg.clone();
+        move |b| {
+            let on = b.value();
+            put(&cfg, |c| c.start_hidden = on);
+        }
+    });
+    let when = if cfg!(windows) { "Windows starts" } else { "you log in" };
+    let r = setting(
+        &mut col,
+        "Start automatically",
+        &format!("Run streamerz when {when}."),
+        44,
+    );
+    let auto = switch(autostart);
+    done(r, &auto);
+    auto.clone().set_callback({
+        let cfg = cfg.clone();
+        move |b| {
+            let on = b.value();
+            put(&cfg, |c| c.autostart = on);
+            if let Err(e) = crate::autostart(on) {
+                crate::say(format!("Start automatically: {e}"));
+            }
+        }
+    });
+
+    section(&mut col, "Dates and times", "calendar");
+    let now = crate::fmt::now();
+    let system = crate::fmt::locale_patterns();
+    let example = |d: &str, fallback: &str| crate::fmt::date(&now, if d.is_empty() { fallback } else { d });
+    let r = setting(&mut col, "Dates", "How lists, history and the chat show a day.", 200);
+    let mut dates = Choice::default();
+    let names: Vec<String> = DATES
+        .iter()
+        .map(|d| match *d {
+            "" => format!("System ({})", example("", &system.0)),
+            d => example(&d.replace('/', "'/'"), ""),
+        })
+        .collect();
+    dates.add_choice(&items(&names));
+    dates.set_value(DATES.iter().position(|d| *d == date_f).unwrap_or(0) as i32);
+    done(r, &dates);
+    let r = setting(&mut col, "Times", "12 or 24 hours, for chat lines and history.", 200);
+    let mut times = Choice::default();
+    let names: Vec<String> = TIMES
+        .iter()
+        .map(|t| match *t {
+            "" => format!("System ({})", example("", &system.1)),
+            t => example(t, ""),
+        })
+        .collect();
+    times.add_choice(&items(&names));
+    times.set_value(TIMES.iter().position(|t| *t == time_f).unwrap_or(0) as i32);
+    done(r, &times);
+    let both = (dates.clone(), times.clone());
+    for mut ch in [dates, times] {
+        ch.set_callback({
+            let (cfg, (dates, times)) = (cfg.clone(), both.clone());
+            move |_| {
+                let d = DATES[dates.value().clamp(0, DATES.len() as i32 - 1) as usize];
+                let t = TIMES[times.value().clamp(0, TIMES.len() as i32 - 1) as usize];
+                put(&cfg, |c| (c.date_format, c.time_format) = (d.into(), t.into()));
+                crate::fmt::set_shown_as(d, t);
+                // Lists show them as they fill again.
+                super::changed();
+            }
+        });
+    }
+
+    section(&mut col, "Updates", "download");
+    let version = crate::version();
+    let r = setting(&mut col, "New versions", &format!("This is {version}."), 320);
+    let mut row = Flex::default().row();
+    row.set_pad(8);
+    let mut upd = Choice::default();
+    upd.add_choice("Ask before updating|Update in the background|Don't check");
+    upd.set_value(UPDATES.iter().position(|u| *u == updates).unwrap_or(0) as i32);
+    let mut check = button(&mut row, "Check now", 110);
+    check.set_image(icons::before_label("refresh-cw", super::button_ink(), 14));
+    check.set_align(Align::ImageNextToText);
+    row.end();
+    done(r, &row);
+    upd.set_callback({
+        let cfg = cfg.clone();
+        move |u| {
+            let u = UPDATES[u.value().clamp(0, 2) as usize];
+            put(&cfg, |c| c.updates = u);
+        }
+    });
+    check.set_callback({
+        let (cfg, cmds) = (cfg.clone(), cmds.clone());
+        move |_| {
+            let cfg = cfg.clone();
+            tell(&cmds, move |_| {
+                tokio::task::spawn_local(crate::update::check(cfg, true));
+            });
+        }
+    });
+
+    section(&mut col, "Files", "folder");
+    let path = crate::config_path();
+    let r = setting(&mut col, "Settings file", &path.display().to_string(), 290);
+    let mut row = Flex::default().row();
+    row.set_pad(8);
+    let mut copy = button(&mut row, "Copy path", 110);
+    let mut open = button(&mut row, "Open folder", 120);
+    row.end();
+    done(r, &row);
+    copy.set_callback({
+        let p = path.display().to_string();
+        move |_| {
+            app::copy(&p);
+            crate::say("Copied the settings file's path".into());
+        }
+    });
+    open.set_callback({
+        let dir = path.parent().map(|d| d.display().to_string()).unwrap_or_default();
+        move |_| crate::oauth::open_browser(&dir)
+    });
+
+    section(&mut col, "Streamer.bot tools", "plug");
+    let r = setting(
+        &mut col,
+        "Instance name",
+        "What tools connected to the WebSocket server see this as.",
+        200,
+    );
+    let mut name = fltk::input::Input::default();
+    name.set_value(&instance);
+    done(r, &name);
+    name.set_trigger(fltk::enums::CallbackTrigger::Changed);
+    name.set_callback({
+        let cfg = cfg.clone();
+        move |i| {
+            let v = i.value().trim().to_string();
+            put(&cfg, |c| c.instance_name = v);
+        }
+    });
+    Frame::default();
+    col.end();
+}

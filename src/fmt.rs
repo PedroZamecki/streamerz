@@ -90,6 +90,64 @@ impl Locale {
     }
 }
 
+/// How the window shows dates and times (.NET patterns); empty follows the system.
+static SHOWN_AS: std::sync::RwLock<(String, String)> = std::sync::RwLock::new((String::new(), String::new()));
+
+/// The date and time patterns the user picked in Settings ("" for the system's).
+pub fn set_shown_as(date: &str, time: &str) {
+    if let Ok(mut f) = SHOWN_AS.write() {
+        *f = (date.to_string(), time.to_string());
+    }
+}
+
+/// The patterns the window uses now: the picked ones, else the system's.
+pub fn shown_patterns() -> (String, String) {
+    let (d, t) = SHOWN_AS.read().map(|f| f.clone()).unwrap_or_default();
+    let l = locale();
+    // A picked "/" is a slash, not the system's separator.
+    let d = if d.is_empty() {
+        l.short_date.clone()
+    } else {
+        d.replace('/', "'/'")
+    };
+    (d, if t.is_empty() { l.short_time.clone() } else { t })
+}
+
+/// The system's short date and time patterns.
+pub fn locale_patterns() -> (String, String) {
+    let l = locale();
+    (l.short_date.clone(), l.short_time.clone())
+}
+
+/// `t`'s date as the user reads dates.
+pub fn shown_date(t: &Time) -> String {
+    date(t, &shown_patterns().0)
+}
+
+/// `t`'s time of day as the user reads times.
+pub fn shown_time(t: &Time) -> String {
+    date(t, &shown_patterns().1)
+}
+
+/// An ISO 8601 time ("2024-08-17T12:34:56-03:00") as the user reads it, in local time: the date, and
+/// the time after it with `time`. Empty when it isn't one.
+pub fn shown_iso(iso: &str, time: bool) -> String {
+    let Some(secs) = crate::engine::rest_parse_iso(iso).filter(|_| !iso.starts_with("0001-01-01")) else {
+        return String::new();
+    };
+    let t = crate::engine::civil_time(secs + i64::from(now().offset));
+    if time {
+        format!("{} {}", shown_date(&t), shown_time(&t))
+    } else {
+        shown_date(&t)
+    }
+}
+
+/// Unix seconds as the user reads a time of day (chat lines).
+pub fn shown_clock(secs: i64) -> String {
+    shown_time(&crate::engine::civil_time(secs + i64::from(now().offset)))
+}
+
 pub fn locale() -> &'static Locale {
     static L: OnceLock<Locale> = OnceLock::new();
     L.get_or_init(os_locale)

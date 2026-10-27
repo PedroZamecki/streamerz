@@ -905,8 +905,7 @@ impl History {
         let sel = self.view.value();
         self.view.clear();
         for r in &runs {
-            // "2026-10-12T14:03:05.123-03:00": the date and time, to the second.
-            let at = r.queued_at.get(..19).unwrap_or(&r.queued_at).replace('T', " ");
+            let at = crate::fmt::shown_iso(&r.queued_at, true);
             self.view.add(&line(&[
                 at,
                 r.name.clone(),
@@ -1274,11 +1273,9 @@ impl Community {
 }
 
 /// The date part of an ISO time ("" for Streamer.bot's never).
+/// An ISO 8601 time's date, as the user reads dates.
 fn day(iso: &str) -> String {
-    match iso.get(..10) {
-        Some("0001-01-01") | None => String::new(),
-        Some(d) => d.into(),
-    }
+    crate::fmt::shown_iso(iso, false)
 }
 
 fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>> {

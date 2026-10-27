@@ -754,7 +754,7 @@ fn tiktok_chat_line(channel: &str, d: &Value) -> Option<Line> {
     let time = if ts > 0 {
         local_hhmm(ts as i64)
     } else {
-        crate::fmt::date(&crate::fmt::now(), "HH:mm")
+        crate::fmt::shown_time(&crate::fmt::now())
     };
     Some(Line {
         platform: "tiktok".into(),

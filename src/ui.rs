@@ -15,10 +15,11 @@ mod lists;
 mod nav;
 pub mod picker;
 mod rows;
+mod settings;
 
 use crate::engine::{Engine, UiCmd};
 use crate::{status, Config};
-use fltk::button::{Button, CheckButton};
+use fltk::button::Button;
 use fltk::enums::{Align, Color, ColorDepth, Event, Font, FrameType, Shortcut};
 use fltk::frame::Frame;
 use fltk::group::{Flex, Wizard};
@@ -251,25 +252,6 @@ fn theme(dark: bool) {
     ] {
         app::set_frame_type_cb(f, down, 2, 2, 4, 4);
     }
-}
-
-/// A line of text; `bold` for section titles.
-fn text(col: &mut Flex, label: &str, bold: bool) -> Frame {
-    let mut f = Frame::default()
-        .with_label(&label.replace('@', "@@"))
-        .with_align(Align::Left | Align::Inside);
-    if bold {
-        f.set_label_font(Font::HelveticaBold);
-    }
-    col.fixed(&f, ROW - 4);
-    f
-}
-
-fn check(col: &mut Flex, label: &str, on: bool) -> CheckButton {
-    let c = CheckButton::default().with_label(label);
-    c.set_checked(on);
-    col.fixed(&c, ROW);
-    c
 }
 
 /// Quiet text: hints, empty lists and column titles.
@@ -511,9 +493,9 @@ pub fn run(
     tx: app::Sender<Msg>,
     rx: app::Receiver<Msg>,
 ) {
-    let (c_dark, c_hidden, c_autostart, c_instance, c_updates) = {
+    let (c_dark, c_hidden) = {
         let c = cfg.borrow();
-        (c.dark, c.start_hidden, c.autostart, c.instance_name.clone(), c.updates)
+        (c.dark, c.start_hidden)
     };
     let _ = UI.set(tx);
     if CONFIRMS.lock().is_ok_and(|q| !q.is_empty()) {
@@ -537,46 +519,7 @@ pub fn run(
     let acts = actions::tab(&tabs, cfg.clone(), cmds.clone());
     let views = lists::tabs(&tabs, &cfg, &cmds);
 
-    // Settings
-    let mut col = tab(&tabs, "Settings");
-    text(&mut col, "Window", true);
-    let dark = check(&mut col, "Dark theme", c_dark);
-    let hidden = check(&mut col, "Start hidden in the tray", c_hidden);
-    let autostart = check(
-        &mut col,
-        if cfg!(windows) {
-            "Start with Windows"
-        } else {
-            "Start when I log in"
-        },
-        c_autostart,
-    );
-    text(&mut col, "Updates", true);
-    let r = dialogs::row("New versions");
-    let mut updates = fltk::menu::Choice::default();
-    // In the order of `UPDATES`.
-    updates.add_choice("Ask before updating|Update in the background|Don't check");
-    const UPDATES: [crate::update::Updates; 3] = [
-        crate::update::Updates::Ask,
-        crate::update::Updates::Background,
-        crate::update::Updates::Ignore,
-    ];
-    updates.set_value(UPDATES.iter().position(|u| *u == c_updates).unwrap_or(0) as i32);
-    r.end();
-    col.fixed(&r, ROW);
-    text(&mut col, "This instance", true);
-    let r = dialogs::row("Name (GetInfo)");
-    let mut instance = fltk::input::Input::default();
-    instance.set_value(&c_instance);
-    r.end();
-    col.fixed(&r, ROW);
-    Frame::default();
-    text(
-        &mut col,
-        &format!("Settings file: {}", crate::config_path().display()),
-        false,
-    );
-    col.end();
+    settings::tab(&tabs, &cfg, &cmds);
 
     // Log
     let col = tab(&tabs, "Log");
@@ -670,28 +613,12 @@ pub fn run(
         }
     });
 
-    dark.clone().set_callback({
-        let win = win.clone();
-        move |b| {
-            theme(b.is_checked());
-            win.clone().redraw();
-        }
-    });
     let show = !c_hidden;
     save.set_callback({
         let cfg = cfg.clone();
         move |_| {
-            cfg.send_modify(|c| {
-                c.dark = dark.is_checked();
-                c.start_hidden = hidden.is_checked();
-                c.autostart = autostart.is_checked();
-                c.instance_name = instance.value().trim().to_string();
-                c.updates = UPDATES[updates.value().clamp(0, 2) as usize];
-            });
-            let c = cfg.borrow();
-            let done = crate::save(&c).and_then(|()| crate::autostart(c.autostart));
-            saved.set_label(&match done {
-                Ok(()) => "Saved, applied.".to_string(),
+            saved.set_label(&match crate::save(&cfg.borrow()) {
+                Ok(()) => "Saved".to_string(),
                 Err(e) => format!("Can't save: {e}"),
             });
         }

@@ -112,15 +112,25 @@ pub fn tidy() {
     }
 }
 
-/// At start: the newer release, installed as the settings say.
-pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>>) {
+/// The newer release, installed as the settings say (at start); `asked` is Settings' Check now, which
+/// asks whatever the settings say and tells when there's nothing new.
+pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>>, asked: bool) {
     let mode = cfg.borrow().updates;
-    if mode == Updates::Ignore {
+    if mode == Updates::Ignore && !asked {
         return;
     }
-    let Some((tag, files)) = newer().await else { return };
+    let Some((tag, files)) = newer().await else {
+        if asked {
+            let what = match running() {
+                Some(v) => format!("streamerz {v} is the newest."),
+                None => "This is a development build: it doesn't update.".to_string(),
+            };
+            let _ = crate::ui::confirm(what, "OK", "").await;
+        }
+        return;
+    };
     crate::say(format!("streamerz {tag} is out"));
-    let ask = mode == Updates::Ask;
+    let ask = mode != Updates::Background || asked;
     let now = running().unwrap_or("");
     if ask
         && !crate::ui::confirm(

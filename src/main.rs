@@ -101,6 +101,11 @@ pub struct Config {
     pub window: WindowState,
     /// What a new release does: ask first, install in the background, or nothing.
     pub updates: update::Updates,
+    /// How the window shows dates and times (.NET patterns); empty follows the system.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    date_format: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    time_format: String,
     /// Fields this build doesn't know (e.g. written by a newer one): kept, so a save loses nothing.
     #[serde(flatten)]
     rest: Map<String, Value>,
@@ -136,6 +141,8 @@ impl Default for Config {
             builtins: false,
             window: WindowState::default(),
             updates: update::Updates::default(),
+            date_format: String::new(),
+            time_format: String::new(),
             rest: Map::new(),
         }
     }
@@ -473,6 +480,7 @@ fn main() {
     update::tidy();
     secrets::init(&config_path());
     let cfg = load_from(&config_path());
+    fmt::set_shown_as(&cfg.date_format, &cfg.time_format);
     say(format!("config: {}", config_path().display()));
     let app = ui::app();
     let (ui_tx, ui_rx) = fltk::app::channel();
@@ -500,7 +508,7 @@ fn main() {
             }
             tokio::task::spawn_local(servers::run(e.clone()));
             e.started();
-            tokio::task::spawn_local(update::check(engine_cfg.clone()));
+            tokio::task::spawn_local(update::check(engine_cfg.clone(), false));
             e.timers();
             while let Some(f) = cmd_rx.recv().await {
                 f(&e);

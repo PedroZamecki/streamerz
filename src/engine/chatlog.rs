@@ -154,16 +154,14 @@ pub struct Seen {
     /// Their latest message's arguments about them (userName, isSubscribed, pronouns...).
     pub args: Obj,
     pub messages: u32,
-    /// When they first chatted ("HH:mm"), and the log's seq of their latest message.
+    /// When they first chatted (a time of day), and the log's seq of their latest message.
     pub first: String,
     last: u64,
 }
 
-/// Format Unix seconds into local `"HH:mm"`.
+/// Unix seconds as a chat line's time, as the user reads times.
 pub fn local_hhmm(unix_secs: i64) -> String {
-    let off = i64::from(crate::fmt::now().offset);
-    let t = super::civil_time(unix_secs.saturating_add(off));
-    format!("{:02}:{:02}", t.hour, t.min)
+    crate::fmt::shown_clock(unix_secs)
 }
 
 /// Whether an argument is about the user rather than the message.
@@ -421,7 +419,7 @@ impl Engine {
                 log.remember_emote(i, e.0.clone(), e.1.clone());
             }
             let (text, emotes) = normalize_line_emotes(&c.platform, c.text.clone(), &c.emotes);
-            let time = crate::fmt::date(&crate::fmt::now(), "HH:mm");
+            let time = crate::fmt::shown_time(&crate::fmt::now());
             let key = (c.platform.clone(), c.user_id.clone());
             if !log.users.contains_key(&key) && log.users.len() == KEEP {
                 if let Some(old) = log.users.iter().min_by_key(|u| u.1.last).map(|u| u.0.clone()) {
@@ -490,7 +488,7 @@ impl Engine {
     fn chat_note(&self, platform: &str, text: String) {
         self.st.borrow_mut().chat_log.push(Line {
             platform: platform.into(),
-            time: crate::fmt::date(&crate::fmt::now(), "HH:mm"),
+            time: crate::fmt::shown_time(&crate::fmt::now()),
             user: "streamerz".into(),
             text,
             note: true,
