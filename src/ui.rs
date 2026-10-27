@@ -356,7 +356,27 @@ fn button(row: &mut Flex, label: &str, w: i32) -> Button {
 
 /// The icon of a button's label (call again after relabelling it) (Add, Edit, Delete...) before it, if it has one; true if so.
 pub(crate) fn with_icon(b: &mut Button) -> bool {
-    let name = match b.label().trim_end_matches(['.', '…']) {
+    match icon_for(&b.label()) {
+        Some(name) => {
+            b.set_image(icons::before_label(name, button_ink(), 14));
+            b.set_align(Align::ImageNextToText);
+            true
+        }
+        None => {
+            b.set_image(None::<fltk::image::SvgImage>);
+            false
+        }
+    }
+}
+
+/// A button icon's colour.
+fn button_ink() -> Color {
+    Color::color_average(Color::Foreground, Color::Background, 0.75)
+}
+
+/// The icon for a button labelled `label`, if it has one.
+fn icon_for(label: &str) -> Option<&'static str> {
+    Some(match label.trim_end_matches(['.', '…']) {
         "Add" => "plus",
         "Edit" | "Edit JSON" => "pencil",
         "Delete" => "trash-2",
@@ -372,19 +392,66 @@ pub(crate) fn with_icon(b: &mut Button) -> bool {
         "Quit" | "Logout" => "log-out",
         "Login" => "log-in",
         "Hide" => "eye-off",
-        "Duplicate" | "Copy" | "Copy line" | "Copy Code" | "Copy redirect URL" => "copy",
+        "Duplicate" | "Copy" | "Copy line" | "Copy Code" | "Copy redirect URL" | "Copy path" => "copy",
         "Clear" => "eraser",
         "Advanced" => "sliders-horizontal",
         "Settings" => "settings",
-        _ => {
-            b.set_image(None::<fltk::image::SvgImage>);
-            return false;
+        "Fill with test names" => "users",
+        "Open folder" => "folder-open",
+        "Open" | "Open file" | "Open profile" | "Open Browser" => "external-link",
+        _ => return None,
+    })
+}
+
+/// Buttons in a grid `rows` high that fills `col`'s width, all the same width; where their labels don't
+/// fit, they show only their icons (the label in the tooltip).
+fn grid(col: &mut Flex, labels: &[&str], rows: i32) -> Vec<Button> {
+    let mut g = fltk::group::Group::default();
+    let out: Vec<Button> = labels.iter().map(|l| Button::default().with_label(l)).collect();
+    g.end();
+    col.fixed(&g, rows * (ROW + 2) + (rows - 1) * 6);
+    let labels: Vec<String> = labels.iter().map(|l| (*l).to_string()).collect();
+    let place = {
+        let out = out.clone();
+        move |x: i32, y: i32, w: i32, h: i32| {
+            let n = out.len() as i32;
+            let cols = (n + rows - 1) / rows;
+            let cw = (w - (cols - 1) * 8) / cols.max(1);
+            let rh = (h - (rows - 1) * 6) / rows;
+            // Measured once the window shows (measuring loads the fonts); a guess before.
+            let shown = SHOWN.load(Ordering::Relaxed);
+            if shown {
+                draw::set_font(Font::Helvetica, app::font_size());
+            }
+            let fits = labels.iter().all(|l| {
+                let text = if shown {
+                    draw::width(l) as i32
+                } else {
+                    l.len() as i32 * 7
+                };
+                text + 14 + 7 + 20 <= cw
+            });
+            for (i, (mut b, l)) in out.iter().cloned().zip(&labels).enumerate() {
+                let (r, c) = (i as i32 / cols, i as i32 % cols);
+                b.resize(x + c * (cw + 8), y + r * (rh + 6), cw, rh);
+                match icon_for(l).filter(|_| !fits) {
+                    Some(name) => {
+                        b.set_label("");
+                        b.set_image(icons::icon(name, button_ink(), 16));
+                        b.set_align(Align::Center | Align::ImageNextToText);
+                        b.set_tooltip(l);
+                    }
+                    None => {
+                        b.set_label(l);
+                        with_icon(&mut b);
+                    }
+                }
+            }
         }
     };
-    let c = Color::color_average(Color::Foreground, Color::Background, 0.75);
-    b.set_image(icons::before_label(name, c, 14));
-    b.set_align(Align::ImageNextToText);
-    true
+    place(g.x(), g.y(), g.w(), g.h());
+    g.resize_callback(move |_, x, y, w, h| place(x, y, w, h));
+    out
 }
 
 /// A page: `label` is its name in the sidebar.

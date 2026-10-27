@@ -535,16 +535,7 @@ impl Config {
 }
 
 fn bar(col: &mut Flex, labels: &[&str]) -> Vec<Button> {
-    let mut row = Flex::default().row();
-    row.set_pad(8);
-    let out = labels
-        .iter()
-        .map(|l| button(&mut row, l, (l.len() as i32 * 8 + 24).max(60)))
-        .collect();
-    Frame::default();
-    row.end();
-    col.fixed(&row, ROW + 2);
-    out
+    super::grid(col, labels, 1)
 }
 
 /// A tree saying `empty` while it has nothing in it.
@@ -589,11 +580,23 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
     act_head.end();
     left.fixed(&act_head, ROW);
     let actions_tree = tree("No actions yet. Add one, import one, or start from a template.");
-    let lb = bar(&mut left, &["Add", "Edit", "Duplicate"]);
-    let lb2 = bar(&mut left, &["Delete", "Test"]);
-    let lb3 = bar(&mut left, &["Import", "Export", "Templates"]);
+    let all = super::grid(
+        &mut left,
+        &[
+            "Add",
+            "Edit",
+            "Duplicate",
+            "Delete",
+            "Test",
+            "Import",
+            "Export",
+            "Templates",
+        ],
+        3,
+    );
+    let (lb, lb2, lb3) = (all[0..3].to_vec(), all[3..5].to_vec(), all[5..].to_vec());
     left.end();
-    row.fixed(&left, 300);
+    row.fixed(&left, 340);
     let mut right = Flex::default().column();
     right.set_pad(4);
     let mut title = Frame::default().with_align(Align::Left | Align::Inside);

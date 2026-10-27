@@ -464,16 +464,7 @@ fn json(what: &str, o: &Obj) -> Option<Obj> {
 
 /// A row of buttons.
 fn bar(col: &mut Flex, labels: &[&str]) -> Vec<Button> {
-    let mut row = Flex::default().row();
-    row.set_pad(8);
-    let out = labels
-        .iter()
-        .map(|l| button(&mut row, l, (l.len() as i32 * 8 + 24).max(60)))
-        .collect();
-    Frame::default();
-    row.end();
-    col.fixed(&row, ROW + 2);
-    out
+    super::grid(col, labels, 1)
 }
 
 /// A list of `kind`, with Add, Edit, On/Off (when `toggle` names the flag) and Delete.
