@@ -21,10 +21,7 @@ fi
 
 desktop="target/streamerz.desktop"
 sed -e "s/^Exec=.*/Exec=streamerz/" assets/streamerz.desktop > "$desktop"
-cat <<EOF >> "$desktop"
-X-AppImage-Version=$clean_ver
-X-AppImage-Name=streamerz
-EOF
+echo "X-AppImage-Version=$clean_ver" >> "$desktop"
 
 # Update information: AppImage updaters (AppImageUpdate, Gear Lever...) find new releases too.
 export LDAI_UPDATE_INFORMATION="gh-releases-zsync|PedroZamecki|streamerz|latest|streamerz-linux-x86_64.AppImage.zsync"
