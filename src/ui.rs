@@ -49,6 +49,8 @@ pub enum Msg {
     Chat,
     /// A picture from the web is on disk now (see `img`).
     Image,
+    /// An update is in place: restart into it.
+    Restart,
 }
 
 const ROW: i32 = 26;
@@ -71,6 +73,30 @@ pub fn input(title: String, prompt: String, text: String) -> oneshot::Receiver<O
         ui.send(Msg::Input);
     }
     rx
+}
+
+/// Yes/no questions from the engine: the text, the two buttons (no, yes), and where the answer goes.
+type Confirm = (String, &'static str, &'static str, oneshot::Sender<bool>);
+static CONFIRMS: Mutex<Vec<Confirm>> = Mutex::new(Vec::new());
+
+/// Asks `text` with buttons `no` and `yes` (shown even while the window hides); true for `yes`.
+pub fn confirm(text: String, no: &'static str, yes: &'static str) -> oneshot::Receiver<bool> {
+    let (tx, rx) = oneshot::channel();
+    if let Ok(mut q) = CONFIRMS.lock() {
+        q.push((text, no, yes, tx));
+    }
+    // Before the window is made, it asks when it is.
+    if let Some(ui) = UI.get() {
+        ui.send(Msg::Input);
+    }
+    rx
+}
+
+/// Saves what the window keeps, starts the new build and quits (after an update).
+pub fn restart() {
+    if let Some(ui) = UI.get() {
+        ui.send(Msg::Restart);
+    }
 }
 
 /// A modal text question. Not dialog::input: on Wayland it focuses its input before the window
@@ -375,11 +401,14 @@ pub fn run(
     tx: app::Sender<Msg>,
     rx: app::Receiver<Msg>,
 ) {
-    let (c_dark, c_hidden, c_autostart, c_instance) = {
+    let (c_dark, c_hidden, c_autostart, c_instance, c_updates) = {
         let c = cfg.borrow();
-        (c.dark, c.start_hidden, c.autostart, c.instance_name.clone())
+        (c.dark, c.start_hidden, c.autostart, c.instance_name.clone(), c.updates)
     };
     let _ = UI.set(tx);
+    if CONFIRMS.lock().is_ok_and(|q| !q.is_empty()) {
+        tx.send(Msg::Input);
+    }
     theme(c_dark);
     // Pictures drawn bigger than they are come out smooth, not blocky.
     RgbImage::set_scaling_algorithm(fltk::image::RgbScaling::Bilinear);
@@ -412,6 +441,19 @@ pub fn run(
         },
         c_autostart,
     );
+    text(&mut col, "Updates", true);
+    let r = dialogs::row("New versions");
+    let mut updates = fltk::menu::Choice::default();
+    // In the order of `UPDATES`.
+    updates.add_choice("Ask before updating|Update in the background|Don't check");
+    const UPDATES: [crate::update::Updates; 3] = [
+        crate::update::Updates::Ask,
+        crate::update::Updates::Background,
+        crate::update::Updates::Ignore,
+    ];
+    updates.set_value(UPDATES.iter().position(|u| *u == c_updates).unwrap_or(0) as i32);
+    r.end();
+    col.fixed(&r, ROW);
     text(&mut col, "This instance", true);
     let r = dialogs::row("Name (GetInfo)");
     let mut instance = fltk::input::Input::default();
@@ -539,6 +581,7 @@ pub fn run(
                 c.start_hidden = hidden.is_checked();
                 c.autostart = autostart.is_checked();
                 c.instance_name = instance.value().trim().to_string();
+                c.updates = UPDATES[updates.value().clamp(0, 2) as usize];
             });
             let c = cfg.borrow();
             let done = crate::save(&c).and_then(|()| crate::autostart(c.autostart));
@@ -555,6 +598,7 @@ pub fn run(
             std::process::exit(0)
         }
     });
+    let restart = remember.clone();
     let close = move |w: &mut Window| {
         remember(w);
         SHOWN.store(false, Ordering::Relaxed);
@@ -645,6 +689,14 @@ pub fn run(
                     for (title, prompt, text, answer) in asked {
                         let _ = answer.send(ask(&title, &prompt, &text));
                     }
+                    let confirms = CONFIRMS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+                    for (text, no, yes, answer) in confirms {
+                        let _ = answer.send(dialog::choice2_default(&text.replace('@', "@@"), no, yes, "") == Some(1));
+                    }
+                }
+                Msg::Restart => {
+                    restart(&win);
+                    crate::update::restart();
                 }
             }
         }

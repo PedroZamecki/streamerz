@@ -30,6 +30,7 @@ mod tray;
 pub mod twitch;
 pub mod types;
 mod ui;
+mod update;
 mod vars;
 mod webcast;
 pub mod youtube;
@@ -98,6 +99,8 @@ pub struct Config {
     /// The window as it was left.
     #[serde(default)]
     pub window: WindowState,
+    /// What a new release does: ask first, install in the background, or nothing.
+    pub updates: update::Updates,
     /// Fields this build doesn't know (e.g. written by a newer one): kept, so a save loses nothing.
     #[serde(flatten)]
     rest: Map<String, Value>,
@@ -132,6 +135,7 @@ impl Default for Config {
             donations: donations::DonationsConfig::default(),
             builtins: false,
             window: WindowState::default(),
+            updates: update::Updates::default(),
             rest: Map::new(),
         }
     }
@@ -466,6 +470,7 @@ fn main() {
         return;
     }
     say(version());
+    update::tidy();
     secrets::init(&config_path());
     let cfg = load_from(&config_path());
     say(format!("config: {}", config_path().display()));
@@ -495,6 +500,7 @@ fn main() {
             }
             tokio::task::spawn_local(servers::run(e.clone()));
             e.started();
+            tokio::task::spawn_local(update::check(engine_cfg.clone()));
             e.timers();
             while let Some(f) = cmd_rx.recv().await {
                 f(&e);
