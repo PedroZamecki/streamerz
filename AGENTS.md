@@ -48,6 +48,8 @@
 - Text (UI, log lines, messages, docs, commits, PRs): short, plain and natural, as a person would write
   it. Never use the em dash (—) or en dash (–); use a comma, colon, period or parentheses. No decorative
   Unicode symbols (●, ◐, ✓, ★, →, 🔒...) in UI text: show an icon instead.
+- UI text goes through `i18n::tr("key")`, with the English text in `assets/locales/en_US.json` (see
+  DEVELOPING.md, Languages): don't add a new literal text to the UI, and move the ones you touch.
 - Icons are Lucide (`src/ui/icons.rs`, ISC), drawn in the text's colour; brand logos (platforms, apps) are
   SVGs in `assets/icons`. A new icon: add its Lucide body to `ICONS`; never draw symbols with text.
 - One look everywhere: zinc colours from `theme()`, `muted()` for quiet text, `Health` for a connection's

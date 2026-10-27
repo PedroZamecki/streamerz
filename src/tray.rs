@@ -3,6 +3,7 @@
 //! scheme (not the app's theme): the light-panel logo or the dark-panel one, changing as the desktop does.
 
 use crate::brand::{tray as icon, SIZE};
+use crate::i18n::tr;
 use crate::ui::Msg;
 use crate::version;
 use fltk::app::Sender;
@@ -46,13 +47,13 @@ impl ksni::Tray for Tray {
         use ksni::menu::StandardItem;
         vec![
             StandardItem {
-                label: "Show/Hide".into(),
+                label: tr("tray.show_hide").into(),
                 activate: Box::new(|t: &mut Self| t.0.send(Msg::Toggle)),
                 ..Default::default()
             }
             .into(),
             StandardItem {
-                label: "Quit".into(),
+                label: tr("tray.quit").into(),
                 activate: Box::new(|_| std::process::exit(0)),
                 ..Default::default()
             }
@@ -171,8 +172,8 @@ pub async fn run(ui: Sender<Msg>) {
     // Win32 delivers tray clicks to the thread that created the icon, so it gets its own
     // thread with a message loop.
     std::thread::spawn(move || {
-        let open = MenuItem::new("Show/Hide", true, None);
-        let close = MenuItem::new("Quit", true, None);
+        let open = MenuItem::new(tr("tray.show_hide"), true, None);
+        let close = MenuItem::new(tr("tray.quit"), true, None);
         let menu = Menu::new();
         let fail = |e: String| {
             crate::say(format!("no tray icon ({e})"));

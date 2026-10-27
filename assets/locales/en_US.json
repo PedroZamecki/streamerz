@@ -1,0 +1,11 @@
+{
+  "settings.appearance": "Appearance",
+  "settings.theme": "Theme",
+  "settings.theme.about": "Dark or light, for every window.",
+  "settings.theme.dark": "Dark",
+  "settings.theme.light": "Light",
+  "settings.language": "Language",
+  "settings.language.about": "The language of the app. Applies the next time streamerz starts.",
+  "tray.show_hide": "Show/Hide",
+  "tray.quit": "Quit"
+}

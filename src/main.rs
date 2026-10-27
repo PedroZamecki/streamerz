@@ -12,6 +12,7 @@ pub mod fileio;
 mod fmt;
 pub mod hotkeys;
 pub mod http;
+mod i18n;
 pub mod inputs;
 pub mod kick;
 mod math;
@@ -48,6 +49,8 @@ use tokio::sync::watch;
 #[serde(default)]
 pub struct Config {
     dark: bool,
+    /// The language of the app (a code from `i18n`).
+    locale: String,
     start_hidden: bool,
     autostart: bool,
     /// Actions, groups and queues, in Streamer.bot's actions.json shape.
@@ -119,6 +122,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             dark: true,
+            locale: i18n::DEFAULT.into(),
             start_hidden: true,
             autostart: false,
             actions: model::ActionsFile::default(),
@@ -485,6 +489,7 @@ fn main() {
     update::tidy();
     secrets::init(&config_path());
     let cfg = load_from(&config_path());
+    i18n::set(&cfg.locale);
     fmt::set_shown_as(&cfg.date_format, &cfg.time_format);
     say(format!("config: {}", config_path().display()));
     let app = ui::app();

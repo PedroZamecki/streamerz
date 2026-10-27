@@ -2,6 +2,7 @@
 //! A change applies and saves at once.
 
 use super::{button, icons, tell, ROW};
+use crate::i18n::{self, tr};
 use crate::update::Updates;
 use crate::Config;
 use fltk::button::ToggleButton;
@@ -124,13 +125,14 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     col.set_pad(2);
     let c = cfg.borrow();
     let (dark, hidden, autostart, updates) = (c.dark, c.start_hidden, c.autostart, c.updates);
+    let locale = c.locale.clone();
     let (date_f, time_f, instance) = (c.date_format.clone(), c.time_format.clone(), c.instance_name.clone());
     drop(c);
 
-    section(&mut col, "Appearance", "sun");
-    let r = setting(&mut col, "Theme", "Dark or light, for every window.", 200);
+    section(&mut col, tr("settings.appearance"), "sun");
+    let r = setting(&mut col, tr("settings.theme"), tr("settings.theme.about"), 200);
     let mut theme = Choice::default();
-    theme.add_choice("Dark|Light");
+    theme.add_choice(&format!("{}|{}", tr("settings.theme.dark"), tr("settings.theme.light")));
     theme.set_value(i32::from(!dark));
     done(r, &theme);
     theme.set_callback({
@@ -142,6 +144,22 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
             super::window_icons(dark);
             if let Some(mut w) = app::first_window() {
                 w.redraw();
+            }
+        }
+    });
+
+    let r = setting(&mut col, tr("settings.language"), tr("settings.language.about"), 200);
+    let mut language = Choice::default();
+    let languages: Vec<(&str, String)> = i18n::all().map(|(code, name)| (code, name.to_string())).collect();
+    language.add_choice(&items(&languages.iter().map(|l| l.1.clone()).collect::<Vec<_>>()));
+    language.set_value(languages.iter().position(|l| l.0 == locale).unwrap_or(0) as i32);
+    done(r, &language);
+    language.set_callback({
+        let cfg = cfg.clone();
+        move |l| {
+            if let Some((code, _)) = i18n::all().nth(l.value().max(0) as usize) {
+                put(&cfg, |c| c.locale = code.into());
+                i18n::set(code);
             }
         }
     });
