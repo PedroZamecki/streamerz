@@ -7,7 +7,7 @@ mod chat;
 mod conns;
 mod dialogs;
 pub(crate) mod emotes;
-mod forms;
+pub(crate) mod forms;
 mod grid;
 pub(crate) mod icons;
 pub(crate) mod img;

@@ -55,6 +55,37 @@ pub enum W {
 
 use W::*;
 
+impl W {
+    /// What it holds, for the MCP server's descriptions.
+    pub fn about(&self) -> String {
+        match self {
+            Text => "text".into(),
+            Multi => "text (several lines)".into(),
+            Bool => "true/false".into(),
+            Bit(b) => format!("bit {b} of a number of flags"),
+            Int => "whole number".into(),
+            Num => "number".into(),
+            Pick(o) => format!("index into {o:?}"),
+            Action => "action id".into(),
+            Queue => "queue id".into(),
+            Timer => "timer id".into(),
+            Command => "command id".into(),
+            UserGroup => "user group name".into(),
+            Client => "WebSocket client id".into(),
+            Server => "WebSocket server id".into(),
+            ObsConnection => "OBS connection id".into(),
+            SlobsConnection => "Streamlabs Desktop connection id".into(),
+            Sub => "sub-action id of the action in actionId".into(),
+            Trigger => "trigger id of the action in actionId".into(),
+            ActionGroup => "action group name".into(),
+            CommandGroup => "command group name".into(),
+            Map => "object of texts".into(),
+            Lines => "list of texts".into(),
+            Keys => "key code (modifiers in modifierMask)".into(),
+        }
+    }
+}
+
 /// (JSON field, label, kind).
 pub type F = (&'static str, &'static str, W);
 

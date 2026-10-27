@@ -592,6 +592,14 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
             e.deliver_remote_signal(instance_id, signal_name, args);
             ok(&id, json!({}))
         }
+        // streamerz's own: read and write what's set up (actions, commands...), for the MCP server.
+        "StreamerzGet" | "StreamerzSave" | "StreamerzDelete" if !authed && e.config().websockets.enable_auth => {
+            error(&id, "Authentication required to use this method")
+        }
+        "StreamerzGet" | "StreamerzSave" | "StreamerzDelete" => match authoring(e, req) {
+            Ok(v) => ok(&id, v),
+            Err(m) => error(&id, &m),
+        },
         // Dev mode only (STREAMERZ_DEV=1): fake chat in, and the chat that would have gone out.
         "InjectChat" if e.dev() => match e.inject_chat(
             get("platform"),
@@ -640,6 +648,113 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
         }
         _ => return None,
     })
+}
+
+/// The config's lists that can be read and written, by name.
+const KINDS: [&str; 5] = ["action", "command", "timer", "group", "queue"];
+
+/// StreamerzGet {what, id?|name?}: one item, or all of them; StreamerzSave {what, item}: adds it (a new
+/// id when it has none) or replaces the one with its id; StreamerzDelete {what, id}.
+fn authoring(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
+    let what = req.get("what").and_then(Value::as_str).unwrap_or("");
+    if !KINDS.contains(&what) {
+        return Err(format!("what: one of {}", KINDS.join(", ")));
+    }
+    let list = |c: &crate::Config| -> Vec<Value> {
+        match what {
+            "action" => c
+                .actions
+                .actions
+                .iter()
+                .filter_map(|a| serde_json::to_value(a).ok())
+                .collect(),
+            "command" => c.commands.iter().cloned().map(Value::Object).collect(),
+            "timer" => c.timers.iter().cloned().map(Value::Object).collect(),
+            "group" => c.groups.iter().cloned().map(Value::Object).collect(),
+            _ => c.actions.queues.iter().cloned().map(Value::Object).collect(),
+        }
+    };
+    let key = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let (want_id, want_name) = (key(req, "id"), key(req, "name"));
+    match req.get("request").and_then(Value::as_str).unwrap_or("") {
+        "StreamerzGet" => {
+            let all = list(&e.config());
+            if want_id.is_empty() && want_name.is_empty() {
+                return Ok(json!({ "items": all }));
+            }
+            all.into_iter()
+                .find(|v| {
+                    (!want_id.is_empty() && key(v, "id") == want_id)
+                        || (!want_name.is_empty() && key(v, "name") == want_name)
+                })
+                .map(|v| json!({ "item": v }))
+                .ok_or_else(|| format!("no {what} {want_id}{want_name}"))
+        }
+        "StreamerzSave" => {
+            let Some(Value::Object(mut item)) = req.get("item").cloned() else {
+                return Err("item: an object".into());
+            };
+            if key(&Value::Object(item.clone()), "id").is_empty() {
+                item.insert("id".into(), crate::engine::uuid().into());
+            }
+            let new_id = key(&Value::Object(item.clone()), "id");
+            if what == "action" {
+                let a: crate::model::Action =
+                    serde_json::from_value(Value::Object(item)).map_err(|err| format!("not an action: {err}"))?;
+                e.change(|c| match c.actions.actions.iter_mut().find(|x| x.id == a.id) {
+                    Some(x) => *x = a,
+                    None => c.actions.actions.push(a),
+                });
+            } else {
+                e.change(|c| {
+                    let l = match what {
+                        "command" => &mut c.commands,
+                        "timer" => &mut c.timers,
+                        "group" => &mut c.groups,
+                        _ => &mut c.actions.queues,
+                    };
+                    let same = |x: &crate::model::Obj| x.get("id").and_then(Value::as_str) == Some(new_id.as_str());
+                    match l.iter_mut().find(|x| same(x)) {
+                        Some(x) => *x = item,
+                        None => l.push(item),
+                    }
+                });
+                if what == "timer" {
+                    e.timers();
+                }
+            }
+            Ok(json!({ "saved": new_id }))
+        }
+        _ => {
+            if want_id.is_empty() {
+                return Err("id: the one to delete".into());
+            }
+            let mut gone = false;
+            e.change(|c| {
+                let (before, after) = if what == "action" {
+                    let before = c.actions.actions.len();
+                    c.actions.actions.retain(|x| x.id != want_id);
+                    (before, c.actions.actions.len())
+                } else {
+                    let l = match what {
+                        "command" => &mut c.commands,
+                        "timer" => &mut c.timers,
+                        "group" => &mut c.groups,
+                        _ => &mut c.actions.queues,
+                    };
+                    let before = l.len();
+                    l.retain(|x| x.get("id").and_then(Value::as_str) != Some(want_id.as_str()));
+                    (before, l.len())
+                };
+                gone = after < before;
+            });
+            if gone {
+                Ok(json!({}))
+            } else {
+                Err(format!("no {what} {want_id}"))
+            }
+        }
+    }
 }
 
 async fn websocket(e: Rc<Engine>, s: WsSettings) {
