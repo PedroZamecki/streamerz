@@ -480,6 +480,7 @@ fn list(
     labels.extend(toggle.map(|_| "On/Off"));
     labels.push("Delete");
     let b = bar(col, &labels);
+    view.clone().set_menu(&b);
     let me = Rc::new(RefCell::new(List {
         cfg: cfg.clone(),
         cmds: cmds.clone(),
@@ -789,6 +790,7 @@ fn queues_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Queues>> {
             "Resume all",
         ],
     );
+    view.clone().set_menu(&b);
     title(&mut col, "Pending");
     let pending = browser(
         &mut col,
@@ -942,6 +944,7 @@ fn history_tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<History>> {
             "Refresh",
         ],
     );
+    view.clone().set_menu(&b);
     col.end();
     let me = Rc::new(RefCell::new(History {
         tab: col,
@@ -1084,6 +1087,7 @@ fn globals_tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<Globals>> {
         "No globals yet. Set Global sub-actions make them, or Add one.",
     );
     let b = bar(&mut col, &["Add", "Edit", "Delete", "Refresh"]);
+    view.clone().set_menu(&b);
     col.end();
     let me = Rc::new(RefCell::new(Globals {
         tab: col,
@@ -1316,6 +1320,7 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
         &["#", "Quote", "Said by", "Game", "Date"],
         "No quotes yet. Add one, or use Add Quote in an action.",
     );
+    quotes.clone().set_menu(&qb);
     quotes_v.end();
 
     let mut credits_v = Flex::default().column();
@@ -1639,6 +1644,7 @@ fn groups_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Groups>> {
     let mut col = tab(tabs, "Groups");
     let view = browser(&mut col, &[300, 120], &["Group", "Users"], "No groups yet.");
     let b = bar(&mut col, &["Add", "Delete"]);
+    view.clone().set_menu(&b);
     col.end();
     let me = Rc::new(RefCell::new(Groups {
         cfg: cfg.clone(),

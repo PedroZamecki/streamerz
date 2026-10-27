@@ -385,6 +385,36 @@ fn icon_for(label: &str) -> Option<&'static str> {
     })
 }
 
+/// The menu a right click opens: `buttons`' actions, the inactive ones greyed. Runs the one picked.
+pub(crate) fn context_menu(buttons: &[Button]) {
+    use fltk::menu::{MenuButton, MenuFlag};
+    let mut m = MenuButton::new(app::event_x(), app::event_y(), 0, 0, None);
+    for b in buttons {
+        let l = b.label();
+        let l = if l.is_empty() {
+            b.tooltip().unwrap_or_default()
+        } else {
+            l
+        };
+        let flag = if b.active() {
+            MenuFlag::Normal
+        } else {
+            MenuFlag::Inactive
+        };
+        let i = m.add(&l.replace('/', "\\/").replace('&', "&&"), Shortcut::None, flag, {
+            let mut b = b.clone();
+            move |_| b.do_callback()
+        });
+        if let (Some(mut item), Some(name)) = (m.at(i), icon_for(&l)) {
+            item.add_image(icons::before_label(name, button_ink(), 14), true);
+        }
+    }
+    if m.size() > 0 {
+        m.popup();
+    }
+    MenuButton::delete(m);
+}
+
 /// Buttons in a grid `rows` high that fills `col`'s width, all the same width; where their labels don't
 /// fit, they show only their icons (the label in the tooltip).
 fn grid(col: &mut Flex, labels: &[&str], rows: i32) -> Vec<Button> {

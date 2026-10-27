@@ -680,6 +680,9 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
         b.set_callback(move |_| f(&mut me.borrow_mut()));
     };
 
+    // Right clicks: what's under the mouse, then its buttons.
+    triggers.clone().set_menu(&tb);
+
     // Left: the actions.
     let mut t = actions_tree.clone();
     t.set_callback({
@@ -919,6 +922,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
                 false
             }
         })),
+        all.clone(),
     );
 
     // Triggers.
@@ -1209,6 +1213,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
                 false
             }
         })),
+        sb.clone(),
     );
     me
 }
@@ -1221,11 +1226,19 @@ fn drag(
     done: impl Fn(TreeItem, Option<TreeItem>) + 'static,
     double: impl Fn() + 'static,
     key_action: Option<Box<dyn Fn(Key) -> bool + 'static>>,
+    menu: Vec<Button>,
 ) {
     let mut t = t.clone();
     let mut start: Option<(TreeItem, i32)> = None;
     let mut dragging = false;
     t.handle(move |t, ev| match ev {
+        Event::Push if app::event_mouse_button() == app::MouseButton::Right => {
+            if let Some(item) = t.find_clicked(true) {
+                let _ = t.select_only(&item, true);
+            }
+            super::context_menu(&menu);
+            true
+        }
         Event::Push => {
             start = t.first_selected_item().map(|i| (i, app::event_y()));
             dragging = false;

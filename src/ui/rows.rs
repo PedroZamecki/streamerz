@@ -38,6 +38,8 @@ pub struct Rows {
     st: Rc<RefCell<State>>,
     cb: Rc<RefCell<Option<Cb>>>,
     keys: Rc<RefCell<Option<Keys>>>,
+    /// What a right click offers.
+    menu: Rc<RefCell<Vec<fltk::button::Button>>>,
 }
 
 impl Deref for Rows {
@@ -67,6 +69,7 @@ impl Rows {
             })),
             cb: Rc::default(),
             keys: Rc::default(),
+            menu: Rc::default(),
         };
         area.draw({
             let r = r.clone();
@@ -96,6 +99,11 @@ impl Rows {
     /// The keys it doesn't use itself (all but the arrows, Page Up/Down, Home and End); true if used.
     pub fn set_keys(&mut self, f: impl FnMut(&mut Rows, Key) -> bool + 'static) {
         *self.keys.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// A right click selects the line under it and offers these buttons' actions.
+    pub fn set_menu(&mut self, buttons: &[fltk::button::Button]) {
+        *self.menu.borrow_mut() = buttons.to_vec();
     }
 
     pub fn add(&mut self, line: &str) {
@@ -310,6 +318,10 @@ impl Rows {
                     drop(st);
                     f.redraw();
                     self.fire();
+                }
+                if app::event_mouse_button() == app::MouseButton::Right {
+                    let menu = self.menu.borrow().clone();
+                    super::context_menu(&menu);
                 }
                 true
             }

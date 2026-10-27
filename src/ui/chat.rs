@@ -904,6 +904,38 @@ impl Pane {
                 }
                 true
             }
+            Event::Push if app::event_mouse_button() == app::MouseButton::Right => {
+                let l = {
+                    let st = self.st.borrow();
+                    self.line_at(f, &st).and_then(|i| st.lines.get(i).cloned())
+                };
+                let Some(l) = l.filter(|l| !l.note) else { return true };
+                use fltk::menu::{MenuButton, MenuFlag};
+                let mut m = MenuButton::new(app::event_x(), app::event_y(), 0, 0, None);
+                for (act, icon, name) in acts(&l) {
+                    let (p, l) = (self.clone(), l.clone());
+                    let i = m.add(name, fltk::enums::Shortcut::None, MenuFlag::Normal, move |_| {
+                        p.run(&l, act)
+                    });
+                    if let Some(mut item) = m.at(i) {
+                        item.add_image(icons::before_label(icon, super::muted(), 14), true);
+                    }
+                }
+                if !l.user_id.is_empty() {
+                    let (cmds, l) = (self.cmds.clone(), l.clone());
+                    m.add(
+                        "User info...",
+                        fltk::enums::Shortcut::None,
+                        MenuFlag::Normal,
+                        move |_| card(&cmds, &l),
+                    );
+                }
+                if m.size() > 0 {
+                    m.popup();
+                }
+                MenuButton::delete(m);
+                true
+            }
             Event::Push if app::event_mouse_button() == app::MouseButton::Left => {
                 if let Some((l, a)) = self.act_at(f) {
                     self.run(&l, a.0);
