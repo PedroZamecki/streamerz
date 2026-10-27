@@ -4,6 +4,7 @@ use super::forms::{self, Done, Lists};
 use super::rows::Rows;
 use super::{query, tell};
 use crate::engine::plugins::{self, Manifest};
+use crate::i18n::{tr, trf};
 use fltk::enums::Align;
 use fltk::frame::Frame;
 use fltk::group::{Flex, Wizard};
@@ -50,9 +51,9 @@ impl Plugins {
                 .as_ref()
                 .map_or((id.clone(), String::new()), |m| (m.name.clone(), m.version.clone()));
             let state = match (on, err.is_empty()) {
-                (_, false) => "Can't load",
-                (true, _) => "On",
-                _ => "Off",
+                (_, false) => tr("plugins.state.cant_load"),
+                (true, _) => tr("plugins.state.on"),
+                _ => tr("plugins.state.off"),
             };
             self.view.add(&format!("{name}\t{version}\t{state}"));
         }
@@ -73,10 +74,10 @@ impl Plugins {
                 let subs: Vec<&str> = m.subactions.iter().map(|x| x.name.as_str()).collect();
                 let trig: Vec<&str> = m.triggers.iter().map(|x| x.name.as_str()).collect();
                 if !subs.is_empty() {
-                    t += &format!("\nSub-actions: {}", subs.join(", "));
+                    t += &trf("plugins.subactions", &[("list", &subs.join(", "))]);
                 }
                 if !trig.is_empty() {
-                    t += &format!("\nTriggers: {}", trig.join(", "));
+                    t += &trf("plugins.triggers", &[("list", &trig.join(", "))]);
                 }
                 t
             }
@@ -88,13 +89,30 @@ impl Plugins {
 
 pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Plugins>> {
     let mut col = super::tab(tabs, "Plugins");
-    super::header(&mut col, &[300, 120], &["Plugin", "Version", "State"]);
-    let mut view = Rows::new("No plugins yet. Put .wasm plugins in the plugins folder, then Refresh.");
+    super::header(
+        &mut col,
+        &[300, 120],
+        &[
+            tr("plugins.header.plugin"),
+            tr("plugins.header.version"),
+            tr("plugins.header.state"),
+        ],
+    );
+    let mut view = Rows::new(tr("plugins.empty"));
     view.set_column_widths(&[300, 120]);
     let mut about = Frame::default().with_align(Align::Left | Align::Inside | Align::Wrap | Align::Top);
     about.set_label_color(super::muted());
     col.fixed(&about, 64);
-    let b = super::grid(&mut col, &["On/Off", "Settings", "Open folder", "Refresh"], 1);
+    let b = super::grid(
+        &mut col,
+        &[
+            tr("btn.on_off"),
+            tr("btn.settings"),
+            tr("btn.open_folder"),
+            tr("btn.refresh"),
+        ],
+        1,
+    );
     view.set_menu(&b);
     col.end();
     let me = Rc::new(RefCell::new(Plugins {
@@ -140,7 +158,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Plugins>> {
                 return;
             };
             if man.settings.is_empty() {
-                return fltk::dialog::message_default(&format!("{} has no settings.", man.name));
+                return fltk::dialog::message_default(&trf("plugins.no_settings", &[("name", &man.name)]));
             }
             let fields = forms::plugin_fields(&format!("{id}/settings"), &man.settings);
             let mut now = m
@@ -156,7 +174,12 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Plugins>> {
                 }
             }
             let lists = Lists::new(&m.cfg.borrow());
-            if let Done::Ok(new) = forms::form(&format!("{} settings", man.name), fields, &now, &lists) {
+            if let Done::Ok(new) = forms::form(
+                &trf("plugins.settings_title", &[("name", &man.name)]),
+                fields,
+                &now,
+                &lists,
+            ) {
                 tell(&m.cmds, move |e| e.plugin_set(&id, new));
             }
         }),

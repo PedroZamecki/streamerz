@@ -1,6 +1,7 @@
 //! Modal dialogs: JSON editor, type picker, the action form, import and export.
 
 use super::{button, ROW};
+use crate::i18n::{tr, trf};
 use crate::model::{Action, Obj};
 use fltk::browser::CheckBrowser;
 use fltk::button::CheckButton;
@@ -37,8 +38,8 @@ pub fn window(w: i32, h: i32, title: &str) -> (Window, Answer) {
 /// OK and Cancel at the right of a row; Enter is OK when `enter`.
 pub fn ok_cancel(bar: &mut Flex, answer: &Answer, enter: bool) {
     Frame::default();
-    let mut ok = button(bar, "OK", 90);
-    let mut cancel = button(bar, "Cancel", 90);
+    let mut ok = button(bar, tr("dialogs.ok"), 90);
+    let mut cancel = button(bar, tr("dialogs.cancel"), 90);
     if enter {
         ok.set_shortcut(Shortcut::from_key(Key::Enter));
     }
@@ -120,7 +121,7 @@ pub fn json_editor(title: &str, hint: &str, v: &Value, valid: impl Fn(&Value) ->
             }
         },
         Err(e) => {
-            dialog::alert_default(&format!("Not valid JSON: {e}"));
+            dialog::alert_default(&trf("dialogs.not_valid_json", &[("error", &e.to_string())]));
             false
         }
     });
@@ -141,7 +142,7 @@ pub fn pick(title: &str, items: &[String]) -> Option<usize> {
             let (cat, item_title) = if let Some((c, n)) = name.split_once(": ") {
                 (c.to_string(), n.to_string())
             } else {
-                ("General".to_string(), name.clone())
+                (tr("dialogs.action.general").to_string(), name.clone())
             };
             super::picker::PickItem {
                 id: i,
@@ -156,15 +157,15 @@ pub fn pick(title: &str, items: &[String]) -> Option<usize> {
 
 /// An action's settings: name, group, queue and flags. `queues`: (id, name), the default first.
 pub fn action(a: &Action, groups: &[String], queues: &[(String, String)]) -> Option<Action> {
-    let (mut win, answer) = window(460, 330, "Action");
+    let (mut win, answer) = window(460, 330, tr("dialogs.action.title"));
     let mut col = Flex::new(10, 10, 440, 310, None).column();
     col.set_pad(4);
-    let r = row("Name");
+    let r = row(tr("dialogs.name"));
     let mut name = Input::default();
     name.set_value(&a.name);
     r.end();
     col.fixed(&r, ROW);
-    let r = row("Group");
+    let r = row(tr("dialogs.action.group"));
     let mut group = InputChoice::default();
     for g in groups {
         group.add(&g.replace('/', "\\/").replace('&', "&&"));
@@ -172,7 +173,7 @@ pub fn action(a: &Action, groups: &[String], queues: &[(String, String)]) -> Opt
     group.set_value(&a.group);
     r.end();
     col.fixed(&r, ROW);
-    let r = row("Queue");
+    let r = row(tr("dialogs.action.queue"));
     let mut queue = Choice::default();
     for (_, n) in queues {
         queue.add_choice(&n.replace('/', "\\/").replace('&', "&&").replace('|', "\\|"));
@@ -187,16 +188,20 @@ pub fn action(a: &Action, groups: &[String], queues: &[(String, String)]) -> Opt
         col.fixed(&c, ROW);
         c
     };
-    let enabled = check(&mut col, "Enabled", a.enabled);
-    let random = check(
+    let enabled = check(&mut col, tr("dialogs.action.enabled"), a.enabled);
+    let random = check(&mut col, tr("dialogs.action.random"), a.random_action);
+    let concurrent = check(&mut col, tr("dialogs.action.concurrent"), a.concurrent);
+    let always = check(&mut col, tr("dialogs.action.always_run"), a.always_run);
+    let history = check(
         &mut col,
-        "Random: run one sub-action, picked by weight",
-        a.random_action,
+        tr("dialogs.action.exclude_from_history"),
+        a.exclude_from_history,
     );
-    let concurrent = check(&mut col, "Concurrent: run outside the queue", a.concurrent);
-    let always = check(&mut col, "Always run", a.always_run);
-    let history = check(&mut col, "Exclude from history", a.exclude_from_history);
-    let pending = check(&mut col, "Exclude from pending", a.exclude_from_pending);
+    let pending = check(
+        &mut col,
+        tr("dialogs.action.exclude_from_pending"),
+        a.exclude_from_pending,
+    );
     Frame::default();
     let mut bar = Flex::default().row();
     bar.set_pad(8);
@@ -208,7 +213,7 @@ pub fn action(a: &Action, groups: &[String], queues: &[(String, String)]) -> Opt
     let ok = run(&mut win, &answer, || {
         let empty = name.value().trim().is_empty();
         if empty {
-            dialog::alert_default("The action needs a name.");
+            dialog::alert_default(tr("dialogs.action.needs_name"));
         }
         !empty
     });
@@ -230,18 +235,18 @@ pub fn action(a: &Action, groups: &[String], queues: &[(String, String)]) -> Opt
 
 /// Ask for an import string (pasted, or from a file); its contents.
 pub fn import() -> Option<Obj> {
-    let (mut win, answer) = window(640, 360, "Import");
+    let (mut win, answer) = window(640, 360, tr("dialogs.import.title"));
     let mut col = Flex::new(10, 10, 620, 340, None).column();
     col.set_pad(6);
     let l = Frame::default()
-        .with_label("Paste a Streamer.bot import string, or load a file that has one:")
+        .with_label(tr("dialogs.import.hint"))
         .with_align(Align::Left | Align::Inside);
     col.fixed(&l, ROW);
     let mut text = MultilineInput::default();
     text.set_wrap(true);
     let mut bar = Flex::default().row();
     bar.set_pad(8);
-    let mut load = button(&mut bar, "Load file...", 110);
+    let mut load = button(&mut bar, &format!("{}...", tr("btn.load_file")), 110);
     ok_cancel(&mut bar, &answer, false);
     bar.end();
     col.fixed(&bar, ROW + 4);
@@ -259,7 +264,10 @@ pub fn import() -> Option<Obj> {
             }
             match std::fs::read_to_string(&f) {
                 Ok(s) => text.set_value(s.trim()),
-                Err(e) => dialog::alert_default(&format!("Can't read {}: {e}", f.display())),
+                Err(e) => dialog::alert_default(&trf(
+                    "dialogs.import.cant_read",
+                    &[("file", &f.display().to_string()), ("error", &e.to_string())],
+                )),
             }
         }
     });
@@ -270,7 +278,7 @@ pub fn import() -> Option<Obj> {
             true
         }
         Err(e) => {
-            dialog::alert_default(&format!("Can't import this: {e}"));
+            dialog::alert_default(&trf("dialogs.import.cant_import", &[("error", &e.to_string())]));
             false
         }
     });
@@ -287,17 +295,17 @@ pub fn export(
     selected: Option<&str>,
     build: impl Fn(&[String], [&str; 4]) -> String + 'static,
 ) {
-    let (mut win, answer) = window(640, 580, "Export");
+    let (mut win, answer) = window(640, 580, tr("dialogs.export.title"));
     let mut col = Flex::new(10, 10, 620, 560, None).column();
     col.set_pad(4);
     let l = Frame::default()
-        .with_label("Actions to export (the commands, timers, queues and WebSocket clients/servers their triggers use go with them):")
+        .with_label(tr("dialogs.export.hint"))
         .with_align(Align::Left | Align::Inside | Align::Wrap);
     col.fixed(&l, 2 * ROW);
     let mut sel_bar = Flex::default().row();
     sel_bar.set_pad(4);
-    let mut btn_all = button(&mut sel_bar, "Select All", 90);
-    let mut btn_none = button(&mut sel_bar, "Select None", 90);
+    let mut btn_all = button(&mut sel_bar, tr("dialogs.export.select_all"), 90);
+    let mut btn_none = button(&mut sel_bar, tr("dialogs.export.select_none"), 90);
     Frame::default();
     sel_bar.end();
     col.fixed(&sel_bar, ROW);
@@ -325,24 +333,24 @@ pub fn export(
         col.fixed(&r, ROW);
         i
     };
-    let mut name = field(&mut col, "Name");
+    let mut name = field(&mut col, tr("dialogs.name"));
     if let Some((_, n, _)) = actions.iter().find(|(id, _, _)| Some(id.as_str()) == selected) {
         name.set_value(n);
     }
-    let author = field(&mut col, "Author");
-    let mut version = field(&mut col, "Version");
+    let author = field(&mut col, tr("dialogs.export.author"));
+    let mut version = field(&mut col, tr("dialogs.export.version"));
     version.set_value("1.0.0");
-    let description = field(&mut col, "Description");
+    let description = field(&mut col, tr("dialogs.export.description"));
     let mut out = MultilineInput::default();
     out.set_wrap(true);
     col.fixed(&out, 90);
     let mut bar = Flex::default().row();
     bar.set_pad(8);
-    let mut make = button(&mut bar, "Export", 90);
-    let mut copy = button(&mut bar, "Copy", 90);
-    let mut save = button(&mut bar, "Save to file...", 120);
+    let mut make = button(&mut bar, tr("btn.export"), 90);
+    let mut copy = button(&mut bar, tr("btn.copy"), 90);
+    let mut save = button(&mut bar, &format!("{}...", tr("btn.save_to_file")), 120);
     Frame::default();
-    let mut close = button(&mut bar, "Close", 90);
+    let mut close = button(&mut bar, tr("dialogs.close"), 90);
     bar.end();
     col.fixed(&bar, ROW + 4);
     col.end();
@@ -357,7 +365,7 @@ pub fn export(
                 .filter_map(|i| ids.get(i as usize - 1).cloned())
                 .collect();
             if chosen.is_empty() {
-                return dialog::alert_default("Tick at least one action.");
+                return dialog::alert_default(tr("dialogs.export.tick_at_least_one"));
             }
             let s = build(
                 &chosen,
@@ -374,7 +382,7 @@ pub fn export(
         let (out, name) = (out.clone(), name.clone());
         move |_| {
             if out.value().is_empty() {
-                return dialog::alert_default("Export first.");
+                return dialog::alert_default(tr("dialogs.export.export_first"));
             }
             let mut fc = dialog::NativeFileChooser::new(dialog::NativeFileChooserType::BrowseSaveFile);
             fc.set_preset_file(&format!("{}.sb", name.value().trim()));
@@ -382,7 +390,10 @@ pub fn export(
             let f = fc.filename();
             if !f.as_os_str().is_empty() {
                 if let Err(e) = std::fs::write(&f, out.value()) {
-                    dialog::alert_default(&format!("Can't save {}: {e}", f.display()));
+                    dialog::alert_default(&trf(
+                        "dialogs.export.cant_save",
+                        &[("file", &f.display().to_string()), ("error", &e.to_string())],
+                    ));
                 }
             }
         }
@@ -399,19 +410,19 @@ pub fn export(
 pub fn capture_keys() -> Option<(i64, i64)> {
     use crate::hotkeys::{self, ALT, CTRL, META, SHIFT};
     let hypr = std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.contains("Hyprland"));
-    let (mut win, answer) = window(560, if hypr { 230 } else { 170 }, "Press the keys");
+    let (mut win, answer) = window(560, if hypr { 230 } else { 170 }, tr("dialogs.keys.title"));
     let mut col = Flex::new(10, 10, 540, if hypr { 210 } else { 150 }, None).column();
     col.set_pad(6);
-    let mut shown = Frame::default().with_label("Press the key combination (e.g. Ctrl+Shift+F9)");
+    let mut shown = Frame::default().with_label(tr("dialogs.keys.prompt"));
     shown.set_label_size(18);
     shown.set_label_font(Font::HelveticaBold);
     col.fixed(&shown, 50);
     let how = if cfg!(windows) {
-        "It works whichever program has focus; one another program already uses can't be taken."
+        tr("dialogs.keys.windows")
     } else if hypr {
-        "Hyprland binds shortcuts in its config: add the line below to it (Copy; hyprland.lua or hyprland.conf), then save the action."
+        tr("dialogs.keys.hyprland")
     } else {
-        "When the action is saved, the desktop asks you to allow the shortcut (no root needed)."
+        tr("dialogs.keys.desktop")
     };
     let mut note = Frame::default()
         .with_label(how)
@@ -428,13 +439,13 @@ pub fn capture_keys() -> Option<(i64, i64)> {
     }
     let mut bar = Flex::default().row();
     bar.set_pad(8);
-    let mut copy = button(&mut bar, "Copy line", 100);
+    let mut copy = button(&mut bar, tr("btn.copy_line"), 100);
     if !hypr {
         copy.hide();
     }
     Frame::default();
-    let mut ok = button(&mut bar, "OK", 90);
-    let mut cancel = button(&mut bar, "Cancel", 90);
+    let mut ok = button(&mut bar, tr("dialogs.ok"), 90);
+    let mut cancel = button(&mut bar, tr("dialogs.cancel"), 90);
     bar.end();
     col.fixed(&bar, ROW);
     col.end();
@@ -496,7 +507,7 @@ pub fn capture_keys() -> Option<(i64, i64)> {
                     }
                     ok.activate();
                 }
-                None => shown.set_label("That key can't be used; try another"),
+                None => shown.set_label(tr("dialogs.keys.unusable")),
             }
             true
         }
@@ -526,12 +537,12 @@ fn name_value(title: &str, name: &str, value: &str) -> Option<(String, String)> 
     let (mut win, answer) = window(460, 110, title);
     let mut col = Flex::new(10, 10, 440, 90, None).column();
     col.set_pad(6);
-    let r = row("Name");
+    let r = row(tr("dialogs.name"));
     let mut n = Input::default();
     n.set_value(name);
     r.end();
     col.fixed(&r, ROW);
-    let r = row("Value");
+    let r = row(tr("dialogs.value"));
     let mut v = Input::default();
     v.set_value(value);
     r.end();
@@ -565,11 +576,11 @@ pub fn values(title: &str, hint: &str, o: &Obj, edit: bool) -> Option<Obj> {
         h.set_label_color(super::muted());
         col.fixed(&h, 36);
     }
-    super::header(&mut col, &[200], &["Name", "Value"]);
+    super::header(&mut col, &[200], &[tr("dialogs.name"), tr("dialogs.value")]);
     let mut list = super::rows::Rows::new(if edit {
-        "Nothing yet. Add one below."
+        tr("dialogs.values.empty_edit")
     } else {
-        "Nothing."
+        tr("dialogs.values.empty")
     });
     list.set_column_widths(&[200]);
     let vars = Rc::new(std::cell::RefCell::new(o.clone()));
@@ -590,7 +601,11 @@ pub fn values(title: &str, hint: &str, o: &Obj, edit: bool) -> Option<Obj> {
         }
     };
     fill();
-    let labels: &[&str] = if edit { &["Add", "Edit", "Delete"] } else { &[] };
+    let labels: &[&str] = if edit {
+        &[tr("btn.add"), tr("btn.edit"), tr("btn.delete")]
+    } else {
+        &[]
+    };
     let b = if edit {
         super::grid(&mut col, labels, 1)
     } else {
@@ -599,12 +614,20 @@ pub fn values(title: &str, hint: &str, o: &Obj, edit: bool) -> Option<Obj> {
     list.set_menu(&b);
     let mut bar = Flex::default().row();
     bar.set_pad(8);
-    let mut json = button(&mut bar, if edit { "Edit JSON" } else { "View JSON" }, 120);
+    let mut json = button(
+        &mut bar,
+        if edit {
+            tr("btn.edit_json")
+        } else {
+            tr("dialogs.values.view_json")
+        },
+        120,
+    );
     if edit {
         ok_cancel(&mut bar, &answer, false);
     } else {
         Frame::default();
-        let mut close = button(&mut bar, "Close", 90);
+        let mut close = button(&mut bar, tr("dialogs.close"), 90);
         let a = answer.clone();
         close.set_callback(move |_| a.set(Some(false)));
     }
@@ -629,7 +652,11 @@ pub fn values(title: &str, hint: &str, o: &Obj, edit: bool) -> Option<Obj> {
                 .as_ref()
                 .and_then(|k| vars.borrow().get(k).map(shown))
                 .unwrap_or_default();
-            let title = if old.is_some() { "Change" } else { "Add" };
+            let title = if old.is_some() {
+                tr("dialogs.change")
+            } else {
+                tr("btn.add")
+            };
             let Some((k, v)) = name_value(title, old.as_deref().unwrap_or(""), &v) else {
                 return;
             };
@@ -685,7 +712,7 @@ pub fn values(title: &str, hint: &str, o: &Obj, edit: bool) -> Option<Obj> {
                 if v.is_object() {
                     Ok(())
                 } else {
-                    Err("An object, please.".into())
+                    Err(tr("dialogs.values.need_object").into())
                 }
             });
             if let (true, Some(Value::Object(o))) = (edit, got) {

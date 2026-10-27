@@ -2,7 +2,7 @@
 //! A change applies and saves at once.
 
 use super::{button, icons, tell, ROW};
-use crate::i18n::{self, tr};
+use crate::i18n::{self, tr, trf};
 use crate::update::Updates;
 use crate::Config;
 use fltk::button::ToggleButton;
@@ -164,11 +164,11 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
         }
     });
 
-    section(&mut col, "Startup", "power");
+    section(&mut col, tr("settings.startup"), "power");
     let r = setting(
         &mut col,
-        "Start hidden",
-        "Open in the tray; click its icon for this window.",
+        tr("settings.start_hidden"),
+        tr("settings.start_hidden.about"),
         44,
     );
     let hide = switch(hidden);
@@ -180,13 +180,12 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
             put(&cfg, |c| c.start_hidden = on);
         }
     });
-    let when = if cfg!(windows) { "Windows starts" } else { "you log in" };
-    let r = setting(
-        &mut col,
-        "Start automatically",
-        &format!("Run streamerz when {when}."),
-        44,
-    );
+    let about = if cfg!(windows) {
+        tr("settings.autostart.about_windows")
+    } else {
+        tr("settings.autostart.about_linux")
+    };
+    let r = setting(&mut col, tr("settings.autostart"), about, 44);
     let auto = switch(autostart);
     done(r, &auto);
     auto.clone().set_callback({
@@ -200,28 +199,28 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
         }
     });
 
-    section(&mut col, "Dates and times", "calendar");
+    section(&mut col, tr("settings.datetime"), "calendar");
     let now = crate::fmt::now();
     let system = crate::fmt::locale_patterns();
     let example = |d: &str, fallback: &str| crate::fmt::date(&now, if d.is_empty() { fallback } else { d });
-    let r = setting(&mut col, "Dates", "How lists, history and the chat show a day.", 200);
+    let r = setting(&mut col, tr("settings.dates"), tr("settings.dates.about"), 200);
     let mut dates = Choice::default();
     let names: Vec<String> = DATES
         .iter()
         .map(|d| match *d {
-            "" => format!("System ({})", example("", &system.0)),
+            "" => trf("settings.system_format", &[("example", &example("", &system.0))]),
             d => example(&d.replace('/', "'/'"), ""),
         })
         .collect();
     dates.add_choice(&items(&names));
     dates.set_value(DATES.iter().position(|d| *d == date_f).unwrap_or(0) as i32);
     done(r, &dates);
-    let r = setting(&mut col, "Times", "12 or 24 hours, for chat lines and history.", 200);
+    let r = setting(&mut col, tr("settings.times"), tr("settings.times.about"), 200);
     let mut times = Choice::default();
     let names: Vec<String> = TIMES
         .iter()
         .map(|t| match *t {
-            "" => format!("System ({})", example("", &system.1)),
+            "" => trf("settings.system_format", &[("example", &example("", &system.1))]),
             t => example(t, ""),
         })
         .collect();
@@ -243,15 +242,25 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
         });
     }
 
-    section(&mut col, "Updates", "download");
+    section(&mut col, tr("settings.updates"), "download");
     let version = crate::version();
-    let r = setting(&mut col, "New versions", &format!("This is {version}."), 320);
+    let r = setting(
+        &mut col,
+        tr("settings.new_versions"),
+        &trf("settings.new_versions.about", &[("version", &version)]),
+        320,
+    );
     let mut row = Flex::default().row();
     row.set_pad(8);
     let mut upd = Choice::default();
-    upd.add_choice("Ask before updating|Update in the background|Don't check");
+    upd.add_choice(&format!(
+        "{}|{}|{}",
+        tr("settings.updates.ask"),
+        tr("settings.updates.background"),
+        tr("settings.updates.ignore")
+    ));
     upd.set_value(UPDATES.iter().position(|u| *u == updates).unwrap_or(0) as i32);
-    let mut check = button(&mut row, "Check now", 110);
+    let mut check = button(&mut row, tr("settings.check_now"), 110);
     check.set_image(icons::before_label("refresh-cw", super::button_ink(), 14));
     check.set_align(Align::ImageNextToText);
     row.end();
@@ -273,13 +282,13 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
         }
     });
 
-    section(&mut col, "Files", "folder");
+    section(&mut col, tr("settings.files"), "folder");
     let path = crate::config_path();
-    let r = setting(&mut col, "Settings file", &path.display().to_string(), 290);
+    let r = setting(&mut col, tr("settings.settings_file"), &path.display().to_string(), 290);
     let mut row = Flex::default().row();
     row.set_pad(8);
-    let mut copy = button(&mut row, "Copy path", 110);
-    let mut open = button(&mut row, "Open folder", 120);
+    let mut copy = button(&mut row, tr("btn.copy_path"), 110);
+    let mut open = button(&mut row, tr("btn.open_folder"), 120);
     row.end();
     done(r, &row);
     copy.set_callback({
@@ -294,11 +303,11 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
         move |_| crate::oauth::open_browser(&dir)
     });
 
-    section(&mut col, "Streamer.bot tools", "plug");
+    section(&mut col, tr("settings.tools"), "plug");
     let r = setting(
         &mut col,
-        "Instance name",
-        "What tools connected to the WebSocket server see this as.",
+        tr("settings.instance_name"),
+        tr("settings.instance_name.about"),
         200,
     );
     let mut name = fltk::input::Input::default();

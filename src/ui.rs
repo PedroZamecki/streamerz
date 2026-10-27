@@ -20,6 +20,7 @@ mod settings;
 
 use crate::brand;
 use crate::engine::{Engine, UiCmd};
+use crate::i18n::{tr, trf};
 use crate::{status, Config};
 use fltk::button::Button;
 use fltk::enums::{Align, Color, ColorDepth, Event, Font, FrameType, Shortcut};
@@ -325,7 +326,8 @@ fn placeholder(i: &mut fltk::input::Input, text: &'static str) {
 }
 
 /// Column titles over a list with these column `widths`.
-fn header(col: &mut Flex, widths: &'static [i32], titles: &'static [&'static str]) {
+pub(crate) fn header(col: &mut Flex, widths: &'static [i32], titles: &[&'static str]) {
+    let titles = titles.to_vec();
     let mut f = Frame::default();
     f.draw(move |f| {
         draw::set_font(Font::HelveticaBold, 12);
@@ -578,15 +580,15 @@ pub fn run(
 
     let mut bar = Flex::new(10, H - 40, W - 20, 32, None).row();
     bar.set_pad(8);
-    let mut save = button(&mut bar, "Save", 90);
+    let mut save = button(&mut bar, tr("btn.save"), 90);
     save.set_shortcut(Shortcut::Ctrl | 's');
-    save.set_tooltip("Save and apply (Ctrl+S)");
+    save.set_tooltip(tr("ui.save_tooltip"));
     let mut conns = Button::default().with_align(Align::Left | Align::Inside);
     conns.set_frame(fltk::enums::FrameType::NoBox);
     bar.fixed(&conns, 240);
     let mut saved = Frame::default().with_align(Align::Left | Align::Inside);
-    let mut hide = button(&mut bar, "Hide", 90);
-    let mut quit = button(&mut bar, "Quit", 90);
+    let mut hide = button(&mut bar, tr("btn.hide"), 90);
+    let mut quit = button(&mut bar, tr("btn.quit"), 90);
     bar.end();
     win.end();
     win.resizable(&tabs);
@@ -624,7 +626,7 @@ pub fn run(
         move || {
             let mut conns = conns.clone();
             let (label, all) = conns::summary(&cfg, &cmds);
-            conns.set_tooltip("Each connection, how it's doing, and Retry");
+            conns.set_tooltip(tr("ui.conns_tooltip"));
             all.show(&mut conns, &label);
             conns.redraw();
         }
@@ -658,8 +660,8 @@ pub fn run(
         let cfg = cfg.clone();
         move |_| {
             saved.set_label(&match crate::save(&cfg.borrow()) {
-                Ok(()) => "Saved".to_string(),
-                Err(e) => format!("Can't save: {e}"),
+                Ok(()) => tr("ui.saved").to_string(),
+                Err(e) => trf("ui.cant_save", &[("error", &e.to_string())]),
             });
         }
     });
@@ -713,9 +715,9 @@ pub fn run(
                 app::add_timeout3(0.25, move |_| {
                     if crate::secrets::is_locked()
                         && dialog::choice2_default(
-                            "streamerz couldn't read your saved logins because the system keyring was locked or still starting up.\n\nUnlock your saved logins and reconnect now?",
-                            "Later",
-                            "Unlock Now",
+                            tr("ui.unlock_prompt"),
+                            tr("ui.unlock_later"),
+                            tr("ui.unlock_now"),
                             "",
                         ) == Some(1)
                     {

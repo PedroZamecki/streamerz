@@ -2,6 +2,7 @@
 //! its icons (the button on top), sliding.
 
 use super::icons::icon;
+use crate::i18n::tr;
 use fltk::enums::{Align, Color, Event, Font};
 use fltk::frame::Frame;
 use fltk::group::Wizard;
@@ -22,36 +23,56 @@ const SECTION: i32 = 24;
 const TOP: i32 = 36;
 
 /// Sections and their pages: (page label, icon).
-const NAV: &[(&str, &[(&str, &str)])] = &[
+type Page = (&'static str, &'static str, &'static str);
+type Section = (&'static str, &'static str, &'static [Page]);
+
+const NAV: &[Section] = &[
     (
         "Live",
+        "nav.section.live",
         &[
-            ("Chat", "message-square"),
-            ("Accounts", "user-round"),
-            ("Community", "users"),
+            ("Chat", "nav.page.chat", "message-square"),
+            ("Accounts", "nav.page.accounts", "user-round"),
+            ("Community", "nav.page.community", "users"),
         ],
     ),
     (
         "Automation",
+        "nav.section.automation",
         &[
-            ("Actions", "zap"),
-            ("Commands", "terminal"),
-            ("Timers", "timer"),
-            ("Queues", "list-ordered"),
-            ("Groups", "folder"),
-            ("Plugins", "puzzle"),
+            ("Actions", "nav.page.actions", "zap"),
+            ("Commands", "nav.page.commands", "terminal"),
+            ("Timers", "nav.page.timers", "timer"),
+            ("Queues", "nav.page.queues", "list-ordered"),
+            ("Groups", "nav.page.groups", "folder"),
+            ("Plugins", "nav.page.plugins", "puzzle"),
         ],
     ),
     (
         "Connections",
+        "nav.section.connections",
         &[
-            ("Servers", "server"),
-            ("Stream Apps", "monitor-play"),
-            ("Donations", "heart"),
+            ("Servers", "nav.page.servers", "server"),
+            ("Stream Apps", "nav.page.stream_apps", "monitor-play"),
+            ("Donations", "nav.page.donations", "heart"),
         ],
     ),
-    ("Data", &[("Globals", "braces"), ("History", "history")]),
-    ("App", &[("Settings", "settings"), ("Log", "scroll-text")]),
+    (
+        "Data",
+        "nav.section.data",
+        &[
+            ("Globals", "nav.page.globals", "braces"),
+            ("History", "nav.page.history", "history"),
+        ],
+    ),
+    (
+        "App",
+        "nav.section.app",
+        &[
+            ("Settings", "nav.page.settings", "settings"),
+            ("Log", "nav.page.log", "scroll-text"),
+        ],
+    ),
 ];
 
 /// The sidebar's width as saved.
@@ -64,13 +85,13 @@ pub fn width(cfg: &Cfg) -> i32 {
 }
 
 /// Each line of the sidebar from `y`: its top, and the page (none for a section title).
-fn lines(y: i32) -> impl Iterator<Item = (i32, &'static str, Option<&'static str>)> {
+fn lines(y: i32) -> impl Iterator<Item = (i32, (&'static str, &'static str), Option<&'static str>)> {
     let mut y = y + TOP;
-    NAV.iter().flat_map(move |(section, pages)| {
-        let mut out = vec![(y, *section, None)];
+    NAV.iter().flat_map(move |(sec_id, sec_tr, pages)| {
+        let mut out = vec![(y, (*sec_id, *sec_tr), None)];
         y += SECTION;
-        for (label, icon) in pages.iter() {
-            out.push((y, *label, Some(*icon)));
+        for (page_id, page_tr, icon) in pages.iter() {
+            out.push((y, (*page_id, *page_tr), Some(*icon)));
             y += ITEM;
         }
         out
@@ -142,12 +163,12 @@ pub fn sidebar(h: i32, pages: &Wizard, cfg: &Cfg) -> Frame {
                 i.draw(f.x() + 18, f.y() + 6 + (ITEM - 16) / 2, 16, 16);
             }
             let up = pages.try_current_widget().map(|w| w.label()).unwrap_or_default();
-            for (ly, label, icon_name) in lines(f.y()) {
+            for (ly, (id, tr_key), icon_name) in lines(f.y()) {
                 let Some(icon_name) = icon_name else {
                     if wide(f) {
                         draw::set_font(Font::HelveticaBold, 11);
                         draw::set_draw_color(super::muted());
-                        let t = label.to_uppercase();
+                        let t = tr(tr_key).to_uppercase();
                         draw::draw_text2(&t, f.x() + 16, ly + 8, WIDE - 24, SECTION - 8, Align::Left);
                     } else {
                         draw::set_draw_color(lit(true));
@@ -156,8 +177,8 @@ pub fn sidebar(h: i32, pages: &Wizard, cfg: &Cfg) -> Frame {
                     }
                     continue;
                 };
-                let on = label == up;
-                if on || hover.get() == Some(label) {
+                let on = id == up;
+                if on || hover.get() == Some(id) {
                     draw::set_draw_color(lit(on));
                     draw::draw_rounded_rectf(f.x() + 8, ly + 1, f.w() - 16, ITEM - 2, 6);
                 }
@@ -169,7 +190,7 @@ pub fn sidebar(h: i32, pages: &Wizard, cfg: &Cfg) -> Frame {
                 draw::set_font(if on { Font::HelveticaBold } else { Font::Helvetica }, 14);
                 draw::set_draw_color(c);
                 draw::push_clip(f.x() + 8, ly, f.w() - 16, ITEM);
-                draw::draw_text2(label, f.x() + 44, ly, WIDE - 52, ITEM, Align::Left);
+                draw::draw_text2(tr(tr_key), f.x() + 44, ly, WIDE - 52, ITEM, Align::Left);
                 draw::pop_clip();
             }
             draw::pop_clip();
@@ -186,7 +207,7 @@ pub fn sidebar(h: i32, pages: &Wizard, cfg: &Cfg) -> Frame {
                 }
                 lines(f.y())
                     .find(|(ly, _, icon)| icon.is_some() && (*ly..ly + ITEM).contains(&y))
-                    .map(|l| l.1)
+                    .map(|l| l.1 .0)
             };
             match ev {
                 Event::Enter => true,
@@ -195,9 +216,14 @@ pub fn sidebar(h: i32, pages: &Wizard, cfg: &Cfg) -> Frame {
                     if h != hover.get() {
                         hover.set(h);
                         f.set_tooltip(match h {
-                            Some("") if wide(f) => "Show only the icons",
-                            Some("") => "Show the names",
-                            Some(label) if !wide(f) => label,
+                            Some("") if wide(f) => tr("nav.fold"),
+                            Some("") => tr("nav.unfold"),
+                            Some(id) if !wide(f) => NAV
+                                .iter()
+                                .flat_map(|(_, _, pages)| pages.iter())
+                                .find(|(p_id, _, _)| *p_id == id)
+                                .map(|(_, tr_key, _)| tr(tr_key))
+                                .unwrap_or(id),
                             _ => "",
                         });
                         f.redraw();
