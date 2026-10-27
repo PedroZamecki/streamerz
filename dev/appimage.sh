@@ -19,6 +19,10 @@ if [ -f target/release/streamerz-tiktok ]; then
     install -Dm755 target/release/streamerz-tiktok "$app/usr/bin/streamerz-tiktok"
 fi
 
+install -Dm644 assets/brand/streamerz.png "$app/usr/share/icons/hicolor/256x256/apps/streamerz.png"
+install -Dm644 assets/brand/streamerz.svg "$app/usr/share/icons/hicolor/scalable/apps/streamerz.svg"
+install -Dm644 assets/brand/streamerz-simple.svg "$app/usr/share/icons/hicolor/scalable/apps/streamerz-symbolic.svg"
+
 desktop="target/streamerz.desktop"
 sed -e "s/^Exec=.*/Exec=streamerz/" assets/streamerz.desktop > "$desktop"
 echo "X-AppImage-Version=$clean_ver" >> "$desktop"

@@ -287,7 +287,7 @@ fn redact(line: &str) -> String {
 
 fn say(line: String) {
     let line = redact(&line);
-    println!("{line}");
+    let _ = writeln!(std::io::stdout(), "{line}");
     status(|s| {
         if s.log.len() == LOG_LINES {
             s.log.pop_front();
@@ -301,6 +301,45 @@ fn say(line: String) {
 fn version() -> String {
     // Set by the release build from the git tag; local builds say "dev".
     format!("streamerz {}", option_env!("STREAMERZ_VERSION").unwrap_or("dev"))
+}
+
+fn default_config_path() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            return PathBuf::from(appdata).join("streamerz").join("streamerz.json");
+        }
+        if let Some(userprofile) = std::env::var_os("USERPROFILE") {
+            return PathBuf::from(userprofile)
+                .join("AppData")
+                .join("Roaming")
+                .join("streamerz")
+                .join("streamerz.json");
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("streamerz")
+                .join("streamerz.json");
+        }
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|s| !s.is_empty()) {
+            return PathBuf::from(xdg).join("streamerz").join("streamerz.json");
+        }
+        if let Some(home) = std::env::var_os("HOME").filter(|s| !s.is_empty()) {
+            return PathBuf::from(home)
+                .join(".config")
+                .join("streamerz")
+                .join("streamerz.json");
+        }
+    }
+    PathBuf::from("streamerz.json")
 }
 
 fn resolve_config_path(raw: PathBuf) -> PathBuf {
@@ -337,9 +376,18 @@ pub(crate) fn config_path() -> PathBuf {
             if let Some(p) = std::env::var_os("STREAMERZ_CONFIG").filter(|p| !p.is_empty()) {
                 return resolve_config_path(PathBuf::from(p));
             }
+            let is_appimage = std::env::var_os("APPIMAGE").is_some();
             let exe = std::env::current_exe().unwrap_or_default();
-            exe.parent()
-                .map_or_else(|| "streamerz.json".into(), |d| d.join("streamerz.json"))
+            let in_tmp_or_usr = exe.starts_with("/tmp") || exe.starts_with("/usr");
+            if !is_appimage && !in_tmp_or_usr {
+                if let Some(parent) = exe.parent() {
+                    let local = parent.join("streamerz.json");
+                    if local.is_file() {
+                        return resolve_config_path(local);
+                    }
+                }
+            }
+            resolve_config_path(default_config_path())
         })
         .clone()
 }
@@ -357,6 +405,9 @@ fn save_to(path: &Path, c: &Config) -> std::io::Result<()> {
     // The window and the engine both save: one at a time.
     static SAVING: Mutex<()> = Mutex::new(());
     let _one = SAVING.lock();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     let tmp = with(path, ".tmp");
     let mut v = serde_json::to_value(c).unwrap_or_default();
     secrets::seal(&mut v);

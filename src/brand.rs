@@ -9,8 +9,8 @@ const APP: [&[u8]; 2] = [
     include_bytes!("../assets/brand/rgba/streamerz.rgba"),
 ];
 const TRAY: [&[u8]; 2] = [
-    include_bytes!("../assets/brand/rgba/streamerz-simple-dark.rgba"),
     include_bytes!("../assets/brand/rgba/streamerz-simple.rgba"),
+    include_bytes!("../assets/brand/rgba/streamerz-simple-dark.rgba"),
 ];
 
 /// The window's icon, for the dark or the light theme.
@@ -35,6 +35,7 @@ mod tests {
         }
         assert_ne!(app(true), tray(true));
         assert_eq!(app(true), APP[0]);
+        assert_eq!(tray(true), TRAY[0]);
         assert_eq!(tray(false), TRAY[1]);
     }
 }

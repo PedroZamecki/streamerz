@@ -1673,7 +1673,7 @@ impl Donations {
 }
 
 fn donations_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Donations>> {
-    let mut col = tab(tabs, "Donations");
+    let (scroll, mut col) = super::tab_scrolled(tabs, "Donations", 400);
     let me = Rc::new(RefCell::new(Donations {
         tab: col.clone(),
         cfg: cfg.clone(),
@@ -1713,6 +1713,7 @@ fn donations_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Donations>
     }
     Frame::default();
     col.end();
+    scroll.end();
     me
 }
 

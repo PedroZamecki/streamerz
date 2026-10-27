@@ -98,6 +98,10 @@ fn lines(y: i32) -> impl Iterator<Item = (i32, (&'static str, &'static str), Opt
     })
 }
 
+fn total_height() -> i32 {
+    lines(0).last().map(|(ly, _, _)| ly + ITEM + 10).unwrap_or(TOP + 500)
+}
+
 /// The page called `label`.
 pub fn page(pages: &Wizard, label: &str) -> Option<fltk::widget::Widget> {
     (0..pages.children())
@@ -143,8 +147,9 @@ fn wide(f: &Frame) -> bool {
 pub fn sidebar(h: i32, pages: &Wizard, cfg: &Cfg) -> Frame {
     let mut f = Frame::new(0, 0, width(cfg), h, None);
     let hover: Rc<Cell<Option<&'static str>>> = Rc::default();
+    let scroll_y: Rc<Cell<i32>> = Rc::new(Cell::new(0));
     f.draw({
-        let (pages, hover) = (pages.clone(), hover.clone());
+        let (pages, hover, scroll_y) = (pages.clone(), hover.clone(), scroll_y.clone());
         move |f| {
             let bg = Color::color_average(Color::Background, Color::Background2, 0.5);
             let fg = Color::Foreground;
@@ -153,7 +158,8 @@ pub fn sidebar(h: i32, pages: &Wizard, cfg: &Cfg) -> Frame {
             draw::draw_rect_fill(f.x(), f.y(), f.w(), f.h(), bg);
             draw::set_draw_color(lit(true));
             draw::draw_line(f.x() + f.w() - 1, f.y(), f.x() + f.w() - 1, f.y() + f.h());
-            draw::push_clip(f.x(), f.y(), f.w() - 1, f.h());
+
+            // Pinned fold button at the top
             if hover.get() == Some("") {
                 draw::set_draw_color(lit(false));
                 draw::draw_rounded_rectf(f.x() + 8, f.y() + 6, MINI - 16, ITEM, 6);
@@ -162,8 +168,17 @@ pub fn sidebar(h: i32, pages: &Wizard, cfg: &Cfg) -> Frame {
             if let Some(mut i) = icon(fold, quiet, 16) {
                 i.draw(f.x() + 18, f.y() + 6 + (ITEM - 16) / 2, 16, 16);
             }
+
+            let tot = total_height();
+            let max_s = (tot - f.h()).max(0);
+            let sy = scroll_y.get().min(max_s);
+            if sy != scroll_y.get() {
+                scroll_y.set(sy);
+            }
+
+            draw::push_clip(f.x(), f.y() + TOP, f.w() - 1, f.h() - TOP);
             let up = pages.try_current_widget().map(|w| w.label()).unwrap_or_default();
-            for (ly, (id, tr_key), icon_name) in lines(f.y()) {
+            for (ly, (id, tr_key), icon_name) in lines(f.y() - sy) {
                 let Some(icon_name) = icon_name else {
                     if wide(f) {
                         draw::set_font(Font::HelveticaBold, 11);
@@ -194,22 +209,50 @@ pub fn sidebar(h: i32, pages: &Wizard, cfg: &Cfg) -> Frame {
                 draw::pop_clip();
             }
             draw::pop_clip();
+
+            if max_s > 0 {
+                let avail = f.h() - TOP;
+                let bar_h = (avail * avail / tot).max(18);
+                let bar_y = f.y() + TOP + (sy * (avail - bar_h) / max_s);
+                draw::set_draw_color(Color::color_average(fg, bg, 0.25));
+                draw::draw_rounded_rectf(f.x() + f.w() - 5, bar_y, 3, bar_h, 1);
+            }
         }
     });
     f.handle({
-        let (pages, cfg) = (pages.clone(), cfg.clone());
+        let (pages, cfg, scroll_y) = (pages.clone(), cfg.clone(), scroll_y.clone());
         move |f, ev| {
+            let tot = total_height();
+            let max_s = (tot - f.h()).max(0);
             // The page under the pointer; "" for the fold button.
             let under = |f: &Frame| {
                 let (x, y) = (app::event_x(), app::event_y());
-                if (f.y() + 6..f.y() + 6 + ITEM).contains(&y) && x < f.x() + MINI - 8 {
+                if (f.y()..f.y() + TOP).contains(&y) && x < f.x() + MINI - 8 {
                     return Some("");
                 }
-                lines(f.y())
+                let sy = scroll_y.get().min(max_s);
+                lines(f.y() - sy)
                     .find(|(ly, _, icon)| icon.is_some() && (*ly..ly + ITEM).contains(&y))
                     .map(|l| l.1 .0)
             };
             match ev {
+                Event::MouseWheel => {
+                    if max_s > 0 {
+                        let dy = match app::event_dy() {
+                            fltk::app::MouseWheel::Down => 28,
+                            fltk::app::MouseWheel::Up => -28,
+                            _ => 0,
+                        };
+                        let cur = scroll_y.get();
+                        let next = (cur + dy).clamp(0, max_s);
+                        if next != cur {
+                            scroll_y.set(next);
+                            f.redraw();
+                        }
+                        return true;
+                    }
+                    false
+                }
                 Event::Enter => true,
                 Event::Move | Event::Leave => {
                     let h = if ev == Event::Move { under(f) } else { None };

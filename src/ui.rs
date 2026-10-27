@@ -32,6 +32,7 @@ use fltk::text::{TextBuffer, TextDisplay};
 use fltk::window::Window;
 use fltk::{app, dialog, draw};
 use std::cell::Cell;
+use std::io::Write;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -198,7 +199,7 @@ pub fn app() -> app::App {
 /// Show a startup error; there's no console on Windows.
 #[allow(dead_code)] // ponytail: first used by the servers (port taken), phase 4.
 pub fn fatal(msg: &str) -> ! {
-    eprintln!("{msg}");
+    let _ = writeln!(std::io::stderr(), "{msg}");
     dialog::alert_default(msg);
     std::process::exit(1);
 }
@@ -487,6 +488,23 @@ fn tab(tabs: &Wizard, label: &str) -> Flex {
     col.set_margin(10);
     col.set_pad(4);
     col
+}
+
+/// A scrollable page: wraps a vertical Flex inside a fltk::group::Scroll.
+pub(crate) fn tab_scrolled(tabs: &Wizard, label: &str, content_h: i32) -> (fltk::group::Scroll, Flex) {
+    let mut s = fltk::group::Scroll::new(tabs.x(), tabs.y(), tabs.w(), tabs.h(), None).with_label(label);
+    s.set_type(fltk::group::ScrollType::Vertical);
+    s.set_scrollbar_size(8);
+    let mut col = Flex::new(s.x(), s.y(), s.w() - 14, content_h.max(s.h()), None).column();
+    col.set_margin(10);
+    col.set_pad(4);
+    s.resizable(&col);
+    let mut col_c = col.clone();
+    s.resize_callback(move |_s, x, y, w, h| {
+        let ch = content_h.max(h);
+        col_c.resize(x, y, (w - 14).max(50), ch);
+    });
+    (s, col)
 }
 
 /// The Log tab: appends only the new lines; rebuilds after a gap or when far behind.

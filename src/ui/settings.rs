@@ -121,7 +121,7 @@ fn items(names: &[String]) -> String {
 }
 
 pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
-    let mut col = super::tab(tabs, "Settings");
+    let (scroll, mut col) = super::tab_scrolled(tabs, "Settings", 620);
     col.set_pad(2);
     let c = cfg.borrow();
     let (dark, hidden, autostart, updates) = (c.dark, c.start_hidden, c.autostart, c.updates);
@@ -323,4 +323,5 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     });
     Frame::default();
     col.end();
+    scroll.end();
 }
