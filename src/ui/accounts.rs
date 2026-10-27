@@ -8,7 +8,6 @@ use crate::i18n::{button_id, tr, trf};
 use crate::model::Obj;
 use crate::Config;
 use fltk::button::{Button, CheckButton};
-use fltk::dialog;
 use fltk::enums::Align;
 use fltk::frame::Frame;
 use fltk::group::{Flex, Wizard};
@@ -315,7 +314,7 @@ pub(super) fn unlock_logins_interactive(cmds: &Cmds) {
                 }
                 Ok(false) => {}
                 Err(err) => {
-                    dialog::alert_default(&trf("accounts.keyring_unlock_failed", &[("error", &err.to_string())]));
+                    super::dialogs::alert(&trf("accounts.keyring_unlock_failed", &[("error", &err.to_string())]));
                 }
             }
             break;
@@ -819,7 +818,7 @@ fn browser_login<T: Send + 'static>(
         if let Ok(res) = rx.try_recv() {
             match res {
                 Ok(a) => out = Some(a),
-                Err(e) => dialog::alert_default(&trf(
+                Err(e) => super::dialogs::alert(&trf(
                     "accounts.browser_login_failed",
                     &[("what", what), ("error", &e.to_string())],
                 )),
@@ -975,7 +974,7 @@ fn tiktok_login(cfg: &Cfg, bot: bool) {
                         &mut c.tiktok.broadcaster
                     } = a;
                 }),
-                Err(e) => dialog::alert_default(&trf("accounts.tiktok_login_failed", &[("error", &e.to_string())])),
+                Err(e) => super::dialogs::alert(&trf("accounts.tiktok_login_failed", &[("error", &e.to_string())])),
             }
             break;
         }
@@ -1003,7 +1002,7 @@ fn device_login(cfg: &Cfg, cmds: &Cmds, as_bot: bool) {
     let code_resp = match rx.recv() {
         Ok(Ok(resp)) => resp,
         Ok(Err(e)) => {
-            dialog::alert_default(&trf(
+            super::dialogs::alert(&trf(
                 "accounts.twitch_device.start_failed",
                 &[("error", &e.to_string())],
             ));
@@ -1130,12 +1129,12 @@ fn device_login(cfg: &Cfg, cmds: &Cmds, as_bot: bool) {
             match res {
                 Ok(name) => {
                     win.hide();
-                    dialog::message_default(&trf("accounts.twitch_device.success", &[("who", who), ("name", &name)]));
+                    super::dialogs::message(&trf("accounts.twitch_device.success", &[("who", who), ("name", &name)]));
                     break;
                 }
                 Err(e) => {
                     win.hide();
-                    dialog::alert_default(&trf("accounts.twitch_device.failed", &[("error", &e.to_string())]));
+                    super::dialogs::alert(&trf("accounts.twitch_device.failed", &[("error", &e.to_string())]));
                     break;
                 }
             }

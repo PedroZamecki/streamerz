@@ -3,6 +3,7 @@
 
 use super::{button, ROW};
 use crate::types::{SUB_ACTION_INFO, TRIGGERS};
+use fltk::app;
 use fltk::enums::{Align, Color, Event, Font, Key, Shortcut};
 use fltk::frame::Frame;
 use fltk::group::Flex;
@@ -11,7 +12,6 @@ use fltk::prelude::*;
 use fltk::text::{TextBuffer, TextDisplay, WrapMode};
 use fltk::tree::{Tree, TreeItem, TreeReason, TreeSelect};
 use fltk::window::Window;
-use fltk::{app, dialog};
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -865,7 +865,7 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
             if selected_id.get().is_some() {
                 answer.set(Some(true));
             } else {
-                dialog::alert_default("Please select an item from the tree.");
+                super::dialogs::alert("Please select an item from the tree.");
             }
         }
     });

@@ -19,7 +19,7 @@ use fltk::group::{Flex, Wizard};
 use fltk::input::Input;
 use fltk::prelude::*;
 use fltk::tree::{Tree, TreeItem, TreeReason, TreeSelect};
-use fltk::{app, dialog, draw};
+use fltk::{app, draw};
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -781,13 +781,11 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
                 .find(|a| a.id == id)
                 .map(|a| a.name.clone())
                 .unwrap_or_default();
-            if dialog::choice2_default(
-                &trf("actions.delete_confirm", &[("name", &plain(&name))]).replace('@', "@@"),
+            if super::dialogs::choice(
+                &trf("actions.delete_confirm", &[("name", &plain(&name))]),
                 tr("dialogs.cancel"),
                 tr("btn.delete"),
-                "",
-            ) == Some(1)
-            {
+            ) {
                 m.selected = None;
                 m.edit(|c| c.actions.actions.retain(|a| a.id != id));
             }
@@ -819,7 +817,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
                 "actions.import_confirm",
                 &[("summary", &edit::summary(&x)), ("warn", &warn)],
             );
-            if dialog::choice2_default(&plain(&q), tr("dialogs.cancel"), tr("btn.import"), "") != Some(1) {
+            if !super::dialogs::choice(&plain(&q), tr("dialogs.cancel"), tr("btn.import")) {
                 return;
             }
             let mut result = Ok(Vec::new());
@@ -829,9 +827,9 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
                 Ok(u) => {
                     let msg = trf("actions.imported_unsupported", &[("items", &u.join(", "))]);
                     crate::say(msg.clone());
-                    dialog::message_default(&plain(&msg));
+                    super::dialogs::message(&plain(&msg));
                 }
-                Err(e) => dialog::alert_default(&plain(&e)),
+                Err(e) => super::dialogs::alert(&plain(&e)),
             }
         }),
     );
@@ -945,13 +943,11 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
                     .find(|a| a.id == id)
                     .map(|a| a.name.clone())
                     .unwrap_or_default();
-                if dialog::choice2_default(
-                    &trf("actions.delete_confirm", &[("name", &plain(&name))]).replace('@', "@@"),
+                if super::dialogs::choice(
+                    &trf("actions.delete_confirm", &[("name", &plain(&name))]),
                     tr("dialogs.cancel"),
                     tr("btn.delete"),
-                    "",
-                ) == Some(1)
-                {
+                ) {
                     m.selected = None;
                     m.edit(|c| c.actions.actions.retain(|a| a.id != id));
                 }
@@ -1006,7 +1002,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
         &tb[0],
         Box::new(|m| {
             if m.selected.is_none() {
-                dialog::alert_default(tr("actions.select_action_first"));
+                super::dialogs::alert(tr("actions.select_action_first"));
                 return;
             }
             let mut items = super::picker::trigger_pick_items();
@@ -1062,7 +1058,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
                 .find(|a| a.id == id)
                 .and_then(|a| a.triggers.get(i.max(0) as usize).filter(|_| i >= 0).cloned());
             let Some(t) = t else {
-                return dialog::alert_default(tr("actions.select_trigger_first"));
+                return super::dialogs::alert(tr("actions.select_trigger_first"));
             };
             let hint = tr("actions.test_trigger_hint");
             let Some(mut args) = dialogs::values(tr("actions.test_trigger_title"), hint, &Obj::new(), true) else {
@@ -1094,7 +1090,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
         &sb[0],
         Box::new(|m| {
             if m.selected.is_none() {
-                dialog::alert_default(tr("actions.select_action_first"));
+                super::dialogs::alert(tr("actions.select_action_first"));
                 return;
             }
             let mut items = super::picker::sub_action_pick_items();
@@ -1177,7 +1173,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
                 })
                 .unwrap_or(true);
             if fixed {
-                return dialog::alert_default(tr("actions.branch_delete_warning"));
+                return super::dialogs::alert(tr("actions.branch_delete_warning"));
             }
             m.edit_action(|a| {
                 edit::remove(&mut a.sub_actions, &p);
@@ -1242,7 +1238,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
                     })
                     .unwrap_or(true);
                 if fixed {
-                    dialog::alert_default(tr("actions.branch_delete_warning"));
+                    super::dialogs::alert(tr("actions.branch_delete_warning"));
                     return true;
                 }
                 m.edit_action(|a| {

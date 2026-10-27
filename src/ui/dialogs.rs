@@ -5,7 +5,7 @@ use crate::i18n::{tr, trf};
 use crate::model::{Action, Obj};
 use fltk::browser::CheckBrowser;
 use fltk::button::CheckButton;
-use fltk::enums::{Align, Font, Key, Shortcut};
+use fltk::enums::{Align, Color, Font, Key, Shortcut};
 use fltk::frame::Frame;
 use fltk::group::Flex;
 use fltk::input::{Input, MultilineInput};
@@ -14,7 +14,7 @@ use fltk::misc::InputChoice;
 use fltk::prelude::*;
 use fltk::text::{TextBuffer, TextEditor};
 use fltk::window::Window;
-use fltk::{app, dialog};
+use fltk::{app, dialog, draw};
 use serde_json::Value;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -71,6 +71,86 @@ pub fn run(win: &mut Window, answer: &Answer, mut check: impl FnMut() -> bool) -
             }
         }
     }
+}
+
+/// A small modal message: an icon in the app's colours, the text, and its buttons (`no` is None for
+/// a plain notice). True when `yes` was pressed. The text is an FLTK label (`@` doubled).
+fn notice(icon: &'static str, tint: Color, text: &str, no: Option<&str>, yes: &str) -> bool {
+    const W: i32 = 400;
+    const TEXT_W: i32 = W - 40 - 56 - 16;
+    draw::set_font(Font::Helvetica, 14);
+    // Lines the text takes at that width: each paragraph's width over the room, rounded up.
+    let lines: i32 = text
+        .lines()
+        .map(|l| ((draw::width(l) as i32 + TEXT_W - 1) / TEXT_W).max(1))
+        .sum();
+    let h = (lines * 19).max(40) + 20 + ROW + 26 + 20;
+    let (mut win, answer) = window(W, h, "streamerz");
+    let mut col = Flex::new(20, 20, W - 40, h - 40, None).column();
+    col.set_pad(14);
+    let mut top = Flex::default().row();
+    top.set_pad(16);
+    let mut pic = Frame::default();
+    pic.draw(move |f| {
+        draw::set_draw_color(Color::color_average(tint, Color::Background, 0.18));
+        draw::draw_pie(f.x(), f.y(), 40, 40, 0.0, 360.0);
+        if let Some(mut i) = super::icons::icon(icon, tint, 22) {
+            i.draw(f.x() + 9, f.y() + 9, 22, 22);
+        }
+    });
+    top.fixed(&pic, 40);
+    let _ = Frame::default()
+        .with_label(text)
+        .with_align(Align::Left | Align::Inside | Align::Wrap | Align::Top);
+    top.end();
+    let mut bar = Flex::default().row();
+    bar.set_pad(8);
+    Frame::default();
+    if let Some(no) = no {
+        let mut b = button(&mut bar, no, 90);
+        b.set_shortcut(Shortcut::from_key(Key::Escape));
+        b.set_callback({
+            let a = answer.clone();
+            move |_| a.set(Some(false))
+        });
+    }
+    let mut b = button(&mut bar, yes, 90);
+    b.set_shortcut(Shortcut::from_key(Key::Enter));
+    b.set_callback({
+        let a = answer.clone();
+        move |_| a.set(Some(true))
+    });
+    bar.end();
+    col.fixed(&bar, ROW + 4);
+    col.end();
+    win.end();
+    run(&mut win, &answer, || true)
+}
+
+/// A problem, with an OK.
+pub fn alert(text: &str) {
+    notice(
+        "triangle-alert",
+        Color::from_rgb(0xe0, 0xa8, 0x30),
+        text,
+        None,
+        tr("dialogs.ok"),
+    );
+}
+
+/// News, with an OK.
+pub fn message(text: &str) {
+    notice("info", Color::Selection, text, None, tr("dialogs.ok"));
+}
+
+/// A question: true for `yes`, false for `no` (or closing it).
+pub fn choice(text: &str, no: &str, yes: &str) -> bool {
+    // No second button asked for: a notice, closed by its one button.
+    if yes.is_empty() {
+        notice("info", Color::Selection, text, None, no);
+        return false;
+    }
+    notice("circle-help", Color::Selection, text, Some(no), yes)
 }
 
 pub fn row(label: &str) -> Flex {

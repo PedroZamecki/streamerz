@@ -733,12 +733,7 @@ pub fn run(
                 let cmds = cmds.clone();
                 app::add_timeout3(0.25, move |_| {
                     if crate::secrets::is_locked()
-                        && dialog::choice2_default(
-                            tr("ui.unlock_prompt"),
-                            tr("ui.unlock_later"),
-                            tr("ui.unlock_now"),
-                            "",
-                        ) == Some(1)
+                        && dialogs::choice(tr("ui.unlock_prompt"), tr("ui.unlock_later"), tr("ui.unlock_now"))
                     {
                         accounts::unlock_logins_interactive(&cmds);
                     }
@@ -784,7 +779,7 @@ pub fn run(
                     }
                     let confirms = CONFIRMS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
                     for (text, no, yes, answer) in confirms {
-                        let _ = answer.send(dialog::choice2_default(&text.replace('@', "@@"), no, yes, "") == Some(1));
+                        let _ = answer.send(dialogs::choice(&text.replace('@', "@@"), no, yes));
                     }
                 }
                 Msg::Restart => {

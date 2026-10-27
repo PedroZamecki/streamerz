@@ -841,7 +841,7 @@ impl Pane {
             }
             Act::Mod(Moderate::Ban) => {
                 let q = trf("chat.ban_confirm", &[("user", &l.user), ("platform", &l.platform)]).replace('@', "@@");
-                if fltk::dialog::choice2_default(&q, tr("btn.ban"), tr("dialogs.cancel"), "") == Some(0) {
+                if super::dialogs::choice(&q, tr("dialogs.cancel"), tr("btn.ban")) {
                     let l = l.clone();
                     tell(&self.cmds, move |e| e.moderate(&l, Moderate::Ban));
                 }

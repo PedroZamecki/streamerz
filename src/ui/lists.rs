@@ -9,7 +9,6 @@ use crate::i18n::{tr, trf};
 use crate::model::Obj;
 use crate::Config;
 use fltk::button::Button;
-use fltk::dialog;
 use fltk::enums::{Align, Color, Font};
 use fltk::frame::Frame;
 use fltk::group::{Flex, Wizard};
@@ -452,7 +451,7 @@ impl List {
     fn delete(&mut self) {
         let Some(id) = self.selected() else { return };
         let q = trf("lists.delete_confirm", &[("what", &tr(self.kind.what).to_lowercase())]);
-        if dialog::choice2_default(&q.replace('@', "@@"), tr("dialogs.cancel"), tr("btn.delete"), "") == Some(1) {
+        if super::dialogs::choice(&q.replace('@', "@@"), tr("dialogs.cancel"), tr("btn.delete")) {
             self.change(|l| l.retain(|o| s(o, "id") != id));
         }
     }
@@ -872,7 +871,7 @@ fn queues_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Queues>> {
                 return;
             };
             let q = tr("lists.queues.delete_confirm");
-            if dialog::choice2_default(q, tr("dialogs.cancel"), tr("btn.delete"), "") == Some(1) {
+            if super::dialogs::choice(q, tr("dialogs.cancel"), tr("btn.delete")) {
                 save(&m.cfg, |c| {
                     c.actions.queues.retain(|q| s(q, "id") != id);
                     for a in c.actions.actions.iter_mut().filter(|a| a.queue.as_deref() == Some(&id)) {
@@ -1174,7 +1173,7 @@ fn globals_tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<Globals>> {
         Box::new(move |m| {
             let Some((name, _, persisted)) = global(m) else { return };
             let q = format!("Delete the global {}?", name.replace('@', "@@"));
-            if dialog::choice2_default(&q, "Cancel", "Delete", "") == Some(1) {
+            if super::dialogs::choice(&q, "Cancel", "Delete") {
                 let _ = query(&m.cmds, move |e| e.delete_global(&name, persisted));
                 m.refresh();
             }
@@ -1429,13 +1428,11 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
             qb[2].as_base_widget(),
             Box::new(|m: &mut Community| {
                 let Some(id) = m.quote_id() else { return };
-                if dialog::choice2_default(
+                if super::dialogs::choice(
                     &trf("lists.community.delete_quote_confirm", &[("id", &id.to_string())]),
                     tr("dialogs.cancel"),
                     tr("btn.delete"),
-                    "",
-                ) == Some(1)
-                {
+                ) {
                     save(&m.cfg, |c| c.quotes.retain(|q| q["id"] != id));
                     m.refresh();
                 }
@@ -1562,7 +1559,7 @@ impl Servers {
         };
         let port = o.get("port").and_then(Value::as_u64).unwrap_or(0);
         if !(1..=65535).contains(&port) {
-            dialog::alert_default(tr("lists.servers.port_range_warning"));
+            super::dialogs::alert(tr("lists.servers.port_range_warning"));
             return;
         }
         let v = Value::Object(o);
@@ -1576,7 +1573,7 @@ impl Servers {
             bad = r.err();
         });
         if let Some(e) = bad {
-            dialog::alert_default(&e.to_string());
+            super::dialogs::alert(&e.to_string());
         }
         self.refresh();
     }
@@ -1782,13 +1779,11 @@ fn groups_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Groups>> {
             let Some(id) = m.ids.get((m.view.value() - 1).max(-1) as usize).cloned() else {
                 return;
             };
-            if dialog::choice2_default(
+            if super::dialogs::choice(
                 tr("lists.groups.delete_confirm"),
                 tr("dialogs.cancel"),
                 tr("btn.delete"),
-                "",
-            ) == Some(1)
-            {
+            ) {
                 let _ = query(&m.cmds, move |e| e.remove_group(&id));
                 m.refresh();
             }

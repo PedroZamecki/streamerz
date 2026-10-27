@@ -6,7 +6,6 @@ use super::{button, ROW};
 use crate::model::Obj;
 use crate::Config;
 use fltk::button::CheckButton;
-use fltk::dialog;
 use fltk::frame::Frame;
 use fltk::group::Flex;
 use fltk::input::{FloatInput, Input, IntInput, MultilineInput};
@@ -1416,7 +1415,7 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
                     t => match t.parse::<i64>() {
                         Ok(n) => n.into(),
                         Err(_) => {
-                            dialog::alert_default(&format!("{label}: a whole number, please."));
+                            super::dialogs::alert(&format!("{label}: a whole number, please."));
                             return false;
                         }
                     },
@@ -1426,7 +1425,7 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
                     t => match t.parse::<f64>() {
                         Ok(n) => json!(n),
                         Err(_) => {
-                            dialog::alert_default(&format!("{label}: a number, please."));
+                            super::dialogs::alert(&format!("{label}: a number, please."));
                             return false;
                         }
                     },
@@ -1454,7 +1453,7 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
                 Widget::Keys(c) => {
                     let (k, m) = c.get();
                     if k == 0 {
-                        dialog::alert_default("Keys: click it and press the key combination.");
+                        super::dialogs::alert("Keys: click it and press the key combination.");
                         return false;
                     }
                     out.insert("modifierMask".into(), m.into());
