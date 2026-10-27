@@ -5,11 +5,12 @@ use super::forms::{self, Done, Lists, F, W::*};
 use super::rows::Rows;
 use super::{button, dialogs, query, tell, ROW};
 use crate::engine::{Engine, Record, DEFAULT_QUEUE};
+use crate::i18n::{tr, trf};
 use crate::model::Obj;
 use crate::Config;
 use fltk::button::Button;
 use fltk::dialog;
-use fltk::enums::{Align, Font};
+use fltk::enums::{Align, Color, Font};
 use fltk::frame::Frame;
 use fltk::group::{Flex, Wizard};
 use fltk::prelude::*;
@@ -60,7 +61,16 @@ pub(super) fn save(cfg: &Cfg, f: impl FnOnce(&mut Config)) {
 pub(super) fn title(col: &mut Flex, t: &str) {
     let mut f = Frame::default().with_align(Align::Left | Align::Inside | Align::ImageNextToText);
     f.set_label_font(Font::HelveticaBold);
-    match super::img::logo(t, ROW - 8) {
+    // The logo of what it's about, or an icon for it.
+    let lucide = match t {
+        "WebSocket clients" => "plug",
+        "WebSocket servers" => "server",
+        "Pending" => "hourglass",
+        _ => "",
+    };
+    let pic = super::img::logo(t.split('\'').next().unwrap_or(t), ROW - 8)
+        .or_else(|| super::icons::icon(lucide, Color::Foreground, ROW - 10));
+    match pic {
         Some(logo) => {
             f.set_label(&format!("  {t}"));
             f.set_image(Some(logo));
@@ -74,11 +84,12 @@ pub(super) fn title(col: &mut Flex, t: &str) {
 }
 
 /// A list with column titles over it (when there are), and `empty` in it while it's empty.
-fn browser(col: &mut Flex, widths: &'static [i32], titles: &'static [&'static str], empty: &'static str) -> Rows {
+fn browser(col: &mut Flex, widths: &'static [i32], titles: &[&'static str], empty: &'static str) -> Rows {
     if !titles.is_empty() {
-        super::header(col, widths, titles);
+        let tr_titles: Vec<&'static str> = titles.iter().map(|t| if t.is_empty() { "" } else { tr(t) }).collect();
+        super::header(col, widths, &tr_titles);
     }
-    let mut b = Rows::new(empty);
+    let mut b = Rows::new(if empty.is_empty() { "" } else { tr(empty) });
     b.set_column_widths(widths);
     b
 }
@@ -110,7 +121,7 @@ const SOURCES: &[(&str, u64)] = &[
 ];
 
 pub static COMMANDS: Kind = Kind {
-    what: "Command",
+    what: "lists.commands.what",
     get: |c| &c.commands,
     get_mut: |c| &mut c.commands,
     fields: &[
@@ -148,8 +159,13 @@ pub static COMMANDS: Kind = Kind {
             "group": "", "grantType": 0, "response": "", "replyAll": false})
     },
     columns: &[180, 280, 120, 260],
-    titles: &["Name", "Commands", "Group", "Sources"],
-    empty: "No commands yet. Add one below.",
+    titles: &[
+        "lists.commands.name",
+        "lists.commands.commands",
+        "lists.commands.group",
+        "lists.commands.sources",
+    ],
+    empty: "lists.commands.empty",
     label: |o| {
         let aliases = crate::commands::aliases(o).join(", ");
         vec![
@@ -159,7 +175,7 @@ pub static COMMANDS: Kind = Kind {
             if on(o, "enabled") {
                 crate::engine::builtins::sources_text(o.get("sources").and_then(Value::as_u64).unwrap_or(1))
             } else {
-                "disabled".into()
+                tr("lists.disabled").into()
             },
         ]
     },
@@ -167,7 +183,7 @@ pub static COMMANDS: Kind = Kind {
 };
 
 pub static TIMERS: Kind = Kind {
-    what: "Timer",
+    what: "lists.timers.what",
     get: |c| &c.timers,
     get_mut: |c| &mut c.timers,
     fields: &[
@@ -184,32 +200,44 @@ pub static TIMERS: Kind = Kind {
             "randomInterval": false, "upperInterval": 0, "lines": 0, "counter": 0})
     },
     columns: &[220, 180, 120, 120, 80],
-    titles: &["Name", "Every", "Lines", "Runs", ""],
-    empty: "No timers yet. Add one to run actions every few minutes.",
+    titles: &[
+        "lists.timers.name",
+        "lists.timers.every",
+        "lists.timers.lines",
+        "lists.timers.runs",
+        "",
+    ],
+    empty: "lists.timers.empty",
     label: |o| {
         let n = |k: &str| o.get(k).and_then(Value::as_i64).unwrap_or(0);
         let every = if on(o, "randomInterval") {
-            format!("every {}-{} s", n("interval"), n("upperInterval"))
+            trf(
+                "lists.timers.every_random",
+                &[
+                    ("min", &n("interval").to_string()),
+                    ("max", &n("upperInterval").to_string()),
+                ],
+            )
         } else {
-            format!("every {} s", n("interval"))
+            trf("lists.timers.every", &[("seconds", &n("interval").to_string())])
         };
         vec![
             s(o, "name").into(),
             every,
             if n("lines") > 0 {
-                format!("{} lines", n("lines"))
+                trf("lists.timers.lines_count", &[("count", &n("lines").to_string())])
             } else {
                 String::new()
             },
-            format!("ran {}", n("counter")),
-            yes(!on(o, "enabled"), "disabled"),
+            trf("lists.timers.ran_count", &[("count", &n("counter").to_string())]),
+            yes(!on(o, "enabled"), tr("lists.disabled")),
         ]
     },
     after: Some(|e| e.timers()),
 };
 
 pub static CLIENTS: Kind = Kind {
-    what: "WebSocket client",
+    what: "lists.clients.what",
     get: |c| &c.websockets.connections,
     get_mut: |c| &mut c.websockets.connections,
     fields: &[
@@ -224,20 +252,20 @@ pub static CLIENTS: Kind = Kind {
             "reconnectOnDisconnect": true, "retryInterval": 5})
     },
     columns: &[200, 400, 120],
-    titles: &["Name", "Endpoint", ""],
-    empty: "No WebSocket clients.",
+    titles: &["lists.clients.name", "lists.clients.endpoint", ""],
+    empty: "lists.clients.empty",
     label: |o| {
         vec![
             s(o, "name").into(),
             s(o, "endpoint").into(),
-            yes(!on(o, "autoConnect"), "manual"),
+            yes(!on(o, "autoConnect"), tr("lists.manual")),
         ]
     },
     after: None,
 };
 
 pub static OBS_CONNECTIONS: Kind = Kind {
-    what: "OBS connection",
+    what: "lists.obs.what",
     get: |c| &c.obs.connections,
     get_mut: |c| &mut c.obs.connections,
     fields: &[
@@ -263,22 +291,22 @@ pub static OBS_CONNECTIONS: Kind = Kind {
         })
     },
     columns: &[150, 150, 80, 100],
-    titles: &["Name", "Address", "", ""],
-    empty: "No OBS connection yet. Add one below.",
+    titles: &["lists.obs.name", "lists.obs.address", "", ""],
+    empty: "lists.obs.empty",
     label: |o| {
         let port = o.get("port").and_then(Value::as_u64).unwrap_or(4455);
         vec![
             s(o, "name").into(),
             format!("{}:{}", s(o, "host"), port),
-            yes(!on(o, "autoConnect"), "manual"),
-            yes(!on(o, "reconnect"), "no retry"),
+            yes(!on(o, "autoConnect"), tr("lists.manual")),
+            yes(!on(o, "reconnect"), tr("lists.no_retry")),
         ]
     },
     after: Some(|e| e.obs_start().reload()),
 };
 
 pub static SLOBS_CONNECTIONS: Kind = Kind {
-    what: "Streamlabs Desktop connection",
+    what: "lists.slobs.what",
     get: |c| &c.slobs.connections,
     get_mut: |c| &mut c.slobs.connections,
     fields: &[
@@ -297,22 +325,22 @@ pub static SLOBS_CONNECTIONS: Kind = Kind {
             "reconnectOnDisconnect": true, "token": "", "retryInterval": 30, "default": false})
     },
     columns: &[200, 200, 100, 100],
-    titles: &["Name", "Address", "", ""],
-    empty: "No Streamlabs Desktop connection yet. Add one below.",
+    titles: &["lists.slobs.name", "lists.slobs.address", "", ""],
+    empty: "lists.slobs.empty",
     label: |o| {
         let port = o.get("port").and_then(Value::as_u64).unwrap_or(59650);
         vec![
             s(o, "name").into(),
             format!("{}:{port}", s(o, "host")),
-            yes(!on(o, "autoConnect"), "manual"),
-            yes(on(o, "default"), "default"),
+            yes(!on(o, "autoConnect"), tr("lists.manual")),
+            yes(on(o, "default"), tr("lists.default_badge")),
         ]
     },
     after: Some(|e| e.slobs_sync(false)),
 };
 
 pub static SERVERS: Kind = Kind {
-    what: "WebSocket server",
+    what: "lists.custom_servers.what",
     get: |c| &c.websockets.servers,
     get_mut: |c| &mut c.websockets.servers,
     fields: &[
@@ -327,14 +355,14 @@ pub static SERVERS: Kind = Kind {
             "autoStart": false})
     },
     columns: &[200, 400, 120],
-    titles: &["Name", "Address", ""],
-    empty: "No WebSocket servers of your own.",
+    titles: &["lists.custom_servers.name", "lists.custom_servers.address", ""],
+    empty: "lists.custom_servers.empty",
     label: |o| {
         let port = o.get("port").and_then(Value::as_u64).unwrap_or(0);
         vec![
             s(o, "name").into(),
             format!("ws://{}:{port}{}", s(o, "address"), s(o, "endpoint")),
-            yes(!on(o, "autoStart"), "off"),
+            yes(!on(o, "autoStart"), tr("lists.off_badge")),
         ]
     },
     after: None,
@@ -377,7 +405,7 @@ impl List {
     }
 
     fn form(&self, o: &Obj) -> Option<Obj> {
-        ask(self.kind.what, self.kind.fields, o, &Lists::new(&self.cfg.borrow()))
+        ask(tr(self.kind.what), self.kind.fields, o, &Lists::new(&self.cfg.borrow()))
     }
 
     fn add(&mut self) {
@@ -423,8 +451,8 @@ impl List {
 
     fn delete(&mut self) {
         let Some(id) = self.selected() else { return };
-        let q = format!("Delete this {}?", self.kind.what.to_lowercase());
-        if dialog::choice2_default(&q, "Cancel", "Delete", "") == Some(1) {
+        let q = trf("lists.delete_confirm", &[("what", &tr(self.kind.what).to_lowercase())]);
+        if dialog::choice2_default(&q.replace('@', "@@"), tr("dialogs.cancel"), tr("btn.delete"), "") == Some(1) {
             self.change(|l| l.retain(|o| s(o, "id") != id));
         }
     }
@@ -455,16 +483,7 @@ fn json(what: &str, o: &Obj) -> Option<Obj> {
 
 /// A row of buttons.
 fn bar(col: &mut Flex, labels: &[&str]) -> Vec<Button> {
-    let mut row = Flex::default().row();
-    row.set_pad(4);
-    let out = labels
-        .iter()
-        .map(|l| button(&mut row, l, (l.len() as i32 * 8 + 24).max(60)))
-        .collect();
-    Frame::default();
-    row.end();
-    col.fixed(&row, ROW + 2);
-    out
+    super::grid(col, labels, 1)
 }
 
 /// A list of `kind`, with Add, Edit, On/Off (when `toggle` names the flag) and Delete.
@@ -476,10 +495,11 @@ fn list(
     toggle: Option<&'static str>,
 ) -> Rc<RefCell<List>> {
     let view = browser(col, kind.columns, kind.titles, kind.empty);
-    let mut labels = vec!["Add", "Edit"];
-    labels.extend(toggle.map(|_| "On/Off"));
-    labels.push("Delete");
+    let mut labels = vec![tr("btn.add"), tr("btn.edit")];
+    labels.extend(toggle.map(|_| tr("btn.on_off")));
+    labels.push(tr("btn.delete"));
     let b = bar(col, &labels);
+    view.clone().set_menu(&b);
     let me = Rc::new(RefCell::new(List {
         cfg: cfg.clone(),
         cmds: cmds.clone(),
@@ -527,6 +547,7 @@ pub struct Views {
     pub community: Rc<RefCell<Community>>,
     pub servers: Rc<RefCell<Servers>>,
     pub groups: Rc<RefCell<Groups>>,
+    pub plugins: Rc<RefCell<super::plugins::Plugins>>,
     pub donations: Rc<RefCell<Donations>>,
     pub accounts: Rc<RefCell<super::accounts::Accounts>>,
     pub chat: Rc<RefCell<super::chat::Chat>>,
@@ -595,6 +616,11 @@ impl Views {
                 c.refresh();
             }
         }
+        if let Ok(mut p) = self.plugins.try_borrow_mut() {
+            if is(&p.tab) {
+                p.refresh();
+            }
+        }
     }
 }
 
@@ -614,25 +640,27 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
     let globals = globals_tab(tabs, cmds);
     let community = community_tab(tabs, cfg, cmds);
     let groups = groups_tab(tabs, cfg, cmds);
+    let plugins = super::plugins::tab(tabs, cfg, cmds);
 
     let mut col = tab(tabs, "Servers");
     let servers = servers_box(&mut col, cfg);
-    title(&mut col, "WebSocket clients");
+    title(&mut col, tr("lists.servers.ws_clients_title"));
     let clients = list(&mut col, cfg, cmds, &CLIENTS, None);
-    title(&mut col, "WebSocket servers");
+    title(&mut col, tr("lists.servers.ws_servers_title"));
     let custom = list(&mut col, cfg, cmds, &SERVERS, Some("autoStart"));
     col.end();
 
     let mut col = tab(tabs, "Stream Apps");
     title(&mut col, "OBS Studio");
     let obs_guide = Frame::default()
-        .with_label("• In OBS Studio: Tools > WebSocket Server Settings > check 'Enable WebSocket server' (port 4455).\n• Add a connection below matching your port & password, then click Connect All.")
+        .with_label(tr("lists.stream_apps.obs_guide"))
         .with_align(Align::Left | Align::Inside | Align::Wrap);
     col.fixed(&obs_guide, 36);
     let obs = list(&mut col, cfg, cmds, &OBS_CONNECTIONS, Some("autoConnect"));
     let mut b_row = Flex::default().row();
-    let mut b_connect = button(&mut b_row, "Connect All", 120);
-    let mut b_disconnect = button(&mut b_row, "Disconnect All", 120);
+    b_row.set_pad(8);
+    let mut b_connect = button(&mut b_row, tr("btn.connect_all"), 120);
+    let mut b_disconnect = button(&mut b_row, tr("btn.disconnect_all"), 120);
     Frame::default();
     b_row.end();
     col.fixed(&b_row, ROW);
@@ -650,13 +678,14 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
     });
     title(&mut col, "Streamlabs Desktop");
     let slobs_guide = Frame::default()
-        .with_label("• In Streamlabs Desktop: Settings > API / Remote Control > generate and copy your API Token.\n• Add a connection below (port 59650) with your API Token, then click Connect All.")
+        .with_label(tr("lists.stream_apps.slobs_guide"))
         .with_align(Align::Left | Align::Inside | Align::Wrap);
     col.fixed(&slobs_guide, 36);
     let slobs = list(&mut col, cfg, cmds, &SLOBS_CONNECTIONS, Some("autoConnect"));
     let mut b_row = Flex::default().row();
-    let mut b_connect = button(&mut b_row, "Connect All", 120);
-    let mut b_disconnect = button(&mut b_row, "Disconnect All", 120);
+    b_row.set_pad(8);
+    let mut b_connect = button(&mut b_row, tr("btn.connect_all"), 120);
+    let mut b_disconnect = button(&mut b_row, tr("btn.disconnect_all"), 120);
     Frame::default();
     b_row.end();
     col.fixed(&b_row, ROW);
@@ -675,6 +704,7 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
         community,
         servers,
         groups,
+        plugins,
         donations,
         accounts,
         chat,
@@ -750,7 +780,12 @@ impl Queues {
                 .unwrap_or_default(),
         };
         let fields: &[F] = &[("name", "Name", Text), ("blocking", "Blocking", Bool)];
-        let Some(o) = ask("Queue", fields, &o, &Lists::new(&self.cfg.borrow())) else {
+        let Some(o) = ask(
+            tr("lists.queues.queue_title"),
+            fields,
+            &o,
+            &Lists::new(&self.cfg.borrow()),
+        ) else {
             return;
         };
         let (qid, blocking) = (s(&o, "id").to_string(), on(&o, "blocking"));
@@ -771,28 +806,35 @@ fn queues_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Queues>> {
     let view = browser(
         &mut col,
         &[220, 100, 80, 100, 100],
-        &["Queue", "", "", "Running", "Waiting"],
+        &[
+            "lists.queues.queue",
+            "",
+            "",
+            "lists.queues.running",
+            "lists.queues.waiting",
+        ],
         "",
     );
     let b = bar(
         &mut col,
         &[
-            "Add",
-            "Edit",
-            "Delete",
-            "Blocking",
-            "Pause/Resume",
-            "Clear",
-            "Pause all",
-            "Resume all",
+            tr("btn.add"),
+            tr("btn.edit"),
+            tr("btn.delete"),
+            tr("btn.blocking"),
+            tr("btn.pause_resume"),
+            tr("btn.clear"),
+            tr("btn.pause_all"),
+            tr("btn.resume_all"),
         ],
     );
-    title(&mut col, "Pending");
+    view.clone().set_menu(&b);
+    title(&mut col, tr("lists.queues.pending_title"));
     let pending = browser(
         &mut col,
         &[220, 420, 100],
-        &["Queue", "Action", ""],
-        "Nothing running or waiting.",
+        &["lists.queues.queue", "lists.queues.action", ""],
+        "lists.queues.pending_empty",
     );
     col.fixed(&*pending, 200);
     col.end();
@@ -829,8 +871,8 @@ fn queues_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Queues>> {
             let Some(id) = m.selected().filter(|id| id != DEFAULT_QUEUE) else {
                 return;
             };
-            let q = "Delete this queue? Its actions move to the Default queue.";
-            if dialog::choice2_default(q, "Cancel", "Delete", "") == Some(1) {
+            let q = tr("lists.queues.delete_confirm");
+            if dialog::choice2_default(q, tr("dialogs.cancel"), tr("btn.delete"), "") == Some(1) {
                 save(&m.cfg, |c| {
                     c.actions.queues.retain(|q| s(q, "id") != id);
                     for a in c.actions.actions.iter_mut().filter(|a| a.queue.as_deref() == Some(&id)) {
@@ -903,8 +945,7 @@ impl History {
         let sel = self.view.value();
         self.view.clear();
         for r in &runs {
-            // "2026-10-12T14:03:05.123-03:00": the date and time, to the second.
-            let at = r.queued_at.get(..19).unwrap_or(&r.queued_at).replace('T', " ");
+            let at = crate::fmt::shown_iso(&r.queued_at, true);
             self.view.add(&line(&[
                 at,
                 r.name.clone(),
@@ -928,19 +969,25 @@ fn history_tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<History>> {
     let view = browser(
         &mut col,
         &[180, 420, 100, 120],
-        &["When", "Action", "Took", "Variables"],
-        "No actions have run yet.",
+        &[
+            "lists.history.when",
+            "lists.history.action",
+            "lists.history.took",
+            "lists.history.variables",
+        ],
+        "lists.history.empty",
     );
     let b = bar(
         &mut col,
         &[
-            "Variables when queued",
-            "Variables after run",
-            "Run again",
-            "Clear",
-            "Refresh",
+            tr("btn.variables_when_queued"),
+            tr("btn.variables_after_run"),
+            tr("btn.run_again"),
+            tr("btn.clear"),
+            tr("btn.refresh"),
         ],
     );
+    view.clone().set_menu(&b);
     col.end();
     let me = Rc::new(RefCell::new(History {
         tab: col,
@@ -959,8 +1006,8 @@ fn history_tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<History>> {
     let show = |after: bool| {
         move |m: &mut History| {
             if let Some(r) = m.selected() {
-                let v = Value::Object(if after { r.after.clone() } else { r.args.clone() });
-                dialogs::json_editor(&r.name, "", &v, |_| Ok(()));
+                let v = if after { &r.after } else { &r.args };
+                dialogs::values(&r.name, "", v, false);
             }
         }
     };
@@ -1025,7 +1072,12 @@ impl Globals {
             self.view.add(&line(&[
                 name.clone(),
                 crate::vars::text(v),
-                if *persisted { "persisted" } else { "temporary" }.into(),
+                if *persisted {
+                    tr("lists.globals.persisted")
+                } else {
+                    tr("lists.globals.temporary")
+                }
+                .into(),
                 user.clone().unwrap_or_default(),
             ]));
         }
@@ -1051,7 +1103,7 @@ impl Globals {
             ("persisted", "Persisted", Bool),
         ];
         let Some(o) = o.as_object() else { return };
-        let Some(o) = ask("Global", fields, o, &Lists::default()) else {
+        let Some(o) = ask(tr("lists.globals.global_title"), fields, o, &Lists::default()) else {
             return;
         };
         let name = s(&o, "variableName").trim().to_string();
@@ -1079,10 +1131,14 @@ fn globals_tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<Globals>> {
     let view = browser(
         &mut col,
         &[220, 420, 100, 200],
-        &["Name", "Value", "", "User"],
-        "No globals yet. Set Global sub-actions make them, or Add one.",
+        &["lists.globals.name", "lists.globals.value", "", "lists.globals.user"],
+        "lists.globals.empty",
     );
-    let b = bar(&mut col, &["Add", "Edit", "Delete", "Refresh"]);
+    let b = bar(
+        &mut col,
+        &[tr("btn.add"), tr("btn.edit"), tr("btn.delete"), tr("btn.refresh")],
+    );
+    view.clone().set_menu(&b);
     col.end();
     let me = Rc::new(RefCell::new(Globals {
         tab: col,
@@ -1169,7 +1225,13 @@ impl Community {
                     .iter()
                     .filter(|u| q.is_empty() || s(u, "display").to_lowercase().contains(&q))
                 {
-                    let role = ["", "Viewer", "VIP", "Moderator", "Broadcaster"];
+                    let role = [
+                        "",
+                        tr("lists.community.role_viewer"),
+                        tr("lists.community.role_vip"),
+                        tr("lists.community.role_moderator"),
+                        tr("lists.community.role_broadcaster"),
+                    ];
                     self.users.add(&line(&[
                         s(u, "type").into(),
                         s(u, "display").into(),
@@ -1272,26 +1334,29 @@ impl Community {
 }
 
 /// The date part of an ISO time ("" for Streamer.bot's never).
+/// An ISO 8601 time's date, as the user reads dates.
 fn day(iso: &str) -> String {
-    match iso.get(..10) {
-        Some("0001-01-01") | None => String::new(),
-        Some(d) => d.into(),
-    }
+    crate::fmt::shown_iso(iso, false)
 }
 
 fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>> {
     let mut col = tab(tabs, "Community");
     let mut top = Flex::default().row();
     top.set_pad(6);
-    let l = Frame::default().with_label("Show:");
+    let l = Frame::default().with_label(tr("lists.community.show"));
     top.fixed(&l, 44);
     let mut show = fltk::menu::Choice::default();
-    show.add_choice("Users|Quotes|Credits");
+    show.add_choice(&format!(
+        "{}|{}|{}",
+        tr("lists.community.users"),
+        tr("lists.community.quotes"),
+        tr("lists.community.credits")
+    ));
     show.set_value(0);
     top.fixed(&show, 120);
     let mut search = fltk::input::Input::default();
-    search.set_tooltip("Search users");
-    super::placeholder(&mut search, "Search users…");
+    search.set_tooltip(tr("lists.community.search_tooltip"));
+    super::placeholder(&mut search, tr("lists.community.search_users"));
     search.set_trigger(fltk::enums::CallbackTrigger::Changed);
     top.fixed(&search, 220);
     Frame::default();
@@ -1300,26 +1365,40 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
 
     let users_v = Flex::default().column();
     let mut users_v = users_v;
-    let users = browser(
+    let mut users = browser(
         &mut users_v,
-        &[90, 220, 110, 110, 110],
-        &["Platform", "Name", "Role", "First seen", "Last seen"],
-        "Nobody has chatted yet.",
+        &[36, 220, 110, 110, 110],
+        &[
+            "",
+            "lists.community.name",
+            "lists.community.role",
+            "lists.community.first_seen",
+            "lists.community.last_seen",
+        ],
+        "lists.community.users_empty",
     );
+    users.set_logo_column(0);
     users_v.end();
 
     let mut quotes_v = Flex::default().column();
-    let qb = bar(&mut quotes_v, &["Add", "Edit", "Delete"]);
+    let qb = bar(&mut quotes_v, &[tr("btn.add"), tr("btn.edit"), tr("btn.delete")]);
     let quotes = browser(
         &mut quotes_v,
         &[60, 460, 140, 140, 100],
-        &["#", "Quote", "Said by", "Game", "Date"],
-        "No quotes yet. Add one, or use Add Quote in an action.",
+        &[
+            "lists.community.number",
+            "lists.community.quote",
+            "lists.community.said_by",
+            "lists.community.game",
+            "lists.community.date",
+        ],
+        "lists.community.quotes_empty",
     );
+    quotes.clone().set_menu(&qb);
     quotes_v.end();
 
     let mut credits_v = Flex::default().column();
-    let cb = bar(&mut credits_v, &["Reset", "Fill with test names"]);
+    let cb = bar(&mut credits_v, &[tr("btn.reset"), tr("btn.fill_with_test_names")]);
     let credits = browser(&mut credits_v, &[180, 600], &[], "");
     credits_v.end();
     col.end();
@@ -1350,7 +1429,13 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
             qb[2].as_base_widget(),
             Box::new(|m: &mut Community| {
                 let Some(id) = m.quote_id() else { return };
-                if dialog::choice2_default(&format!("Delete quote #{id}?"), "Cancel", "Delete", "") == Some(1) {
+                if dialog::choice2_default(
+                    &trf("lists.community.delete_quote_confirm", &[("id", &id.to_string())]),
+                    tr("dialogs.cancel"),
+                    tr("btn.delete"),
+                    "",
+                ) == Some(1)
+                {
                     save(&m.cfg, |c| c.quotes.retain(|q| q["id"] != id));
                     m.refresh();
                 }
@@ -1411,18 +1496,36 @@ impl Servers {
     pub fn refresh(&mut self) {
         let c = self.cfg.borrow();
         let (w, h, u) = (&c.websockets, &c.http, &c.udp);
-        let state = |on: bool| if on { "on" } else { "off" };
+        let state = |on: bool| {
+            if on {
+                tr("lists.servers.on")
+            } else {
+                tr("lists.servers.off")
+            }
+        };
         let texts = [
             format!(
-                "WebSocket server: {}, ws://{}:{}{}{}",
+                "{}: {}, ws://{}:{}{}{}",
+                tr("lists.servers.websocket_server"),
                 state(w.auto_start),
                 w.address,
                 w.port,
                 w.endpoint,
-                yes(w.enable_auth, ", password")
+                yes(w.enable_auth, tr("lists.servers.password_tag"))
             ),
-            format!("HTTP server: {}, http://{}:{}/", state(h.auto_start), h.address, h.port),
-            format!("UDP server: {}, port {}", state(u.auto_start), u.port),
+            format!(
+                "{}: {}, http://{}:{}/",
+                tr("lists.servers.http_server"),
+                state(h.auto_start),
+                h.address,
+                h.port
+            ),
+            format!(
+                "{}: {}, port {}",
+                tr("lists.servers.udp_server"),
+                state(u.auto_start),
+                u.port
+            ),
         ];
         for (f, t) in self.lines.iter_mut().zip(texts) {
             f.set_label(&t.replace('@', "@@"));
@@ -1449,9 +1552,9 @@ impl Servers {
         let (title, fields, o) = {
             let c = self.cfg.borrow();
             match which {
-                0 => ("WebSocket server", ws, to_obj(&c.websockets)),
-                1 => ("HTTP server", http, to_obj(&c.http)),
-                _ => ("UDP server", udp, to_obj(&c.udp)),
+                0 => (tr("lists.servers.websocket_server"), ws, to_obj(&c.websockets)),
+                1 => (tr("lists.servers.http_server"), http, to_obj(&c.http)),
+                _ => (tr("lists.servers.udp_server"), udp, to_obj(&c.udp)),
             }
         };
         let Some(o) = ask(title, fields, &o, &Lists::default()) else {
@@ -1459,7 +1562,7 @@ impl Servers {
         };
         let port = o.get("port").and_then(Value::as_u64).unwrap_or(0);
         if !(1..=65535).contains(&port) {
-            dialog::alert_default("Port: 1 to 65535, please.");
+            dialog::alert_default(tr("lists.servers.port_range_warning"));
             return;
         }
         let v = Value::Object(o);
@@ -1480,15 +1583,16 @@ impl Servers {
 }
 
 fn servers_box(col: &mut Flex, cfg: &Cfg) -> Rc<RefCell<Servers>> {
-    title(col, "Streamer.bot's servers (changes apply at once)");
+    title(col, tr("lists.servers.title"));
     let me = Rc::new(RefCell::new(Servers {
         cfg: cfg.clone(),
         lines: Vec::new(),
     }));
     for i in 0..3 {
         let mut r = Flex::default().row();
+        r.set_pad(8);
         let f = Frame::default().with_align(Align::Left | Align::Inside);
-        let mut b = button(&mut r, "Edit", 70);
+        let mut b = button(&mut r, tr("btn.edit"), 70);
         r.end();
         col.fixed(&r, ROW);
         b.set_callback({
@@ -1522,16 +1626,19 @@ impl Donations {
         let c = self.cfg.borrow();
         let d = &c.donations;
         let state = |token: &str, up: bool| match (token.trim().is_empty(), up) {
-            (true, _) => "off (no token)",
-            (_, true) => "connected",
-            _ => "not connected",
+            (true, _) => tr("lists.donations.off_no_token"),
+            (_, true) => tr("lists.donations.connected"),
+            _ => tr("lists.donations.not_connected"),
         };
         let texts = [
-            format!("Status: {}", state(&d.streamelements_token, se)),
-            format!("Status: {}", state(&d.streamlabs_token, sl)),
+            trf(
+                "lists.donations.status",
+                &[("status", state(&d.streamelements_token, se))],
+            ),
+            trf("lists.donations.status", &[("status", state(&d.streamlabs_token, sl))]),
             match (d.donordrive_instance.trim(), d.donordrive_participant_id.trim()) {
-                ("", _) | (_, "") => "Status: off".into(),
-                (site, id) => format!("Status: participant {id} on {site}, checked every 15 s"),
+                ("", _) | (_, "") => tr("lists.donations.status_off").to_string(),
+                (site, id) => trf("lists.donations.donordrive_status", &[("id", id), ("site", site)]),
             },
         ];
         for (f, t) in self.lines.iter_mut().zip(texts) {
@@ -1574,9 +1681,9 @@ fn donations_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Donations>
         lines: Vec::new(),
     }));
     let guides = [
-        "Dashboard > your account > Channels > Show secrets, copy the JWT token.",
-        "Dashboard > Settings > API Settings > API Tokens, copy Your Socket API Token.",
-        "Extra Life and other DonorDrive charities: the site (www.extra-life.org) and the number ending your page's address.",
+        tr("lists.donations.streamelements_guide"),
+        tr("lists.donations.streamlabs_guide"),
+        tr("lists.donations.donordrive_guide"),
     ];
     for (i, (name, guide)) in ["StreamElements", "Streamlabs", "DonorDrive"]
         .iter()
@@ -1589,8 +1696,9 @@ fn donations_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Donations>
             .with_align(Align::Left | Align::Inside | Align::Wrap);
         col.fixed(&g, ROW);
         let mut r = Flex::default().row();
+        r.set_pad(8);
         let f = Frame::default().with_align(Align::Left | Align::Inside);
-        let mut b = button(&mut r, "Edit", 70);
+        let mut b = button(&mut r, tr("btn.edit"), 70);
         r.end();
         col.fixed(&r, ROW);
         b.set_callback({
@@ -1624,7 +1732,10 @@ impl Groups {
         self.ids.clear();
         for g in &self.cfg.borrow().groups {
             let users = g.get("userIds").and_then(Value::as_array).map_or(0, Vec::len);
-            self.view.add(&line(&[s(g, "name").into(), format!("{users} users")]));
+            self.view.add(&line(&[
+                s(g, "name").into(),
+                trf("lists.groups.user_count", &[("count", &users.to_string())]),
+            ]));
             self.ids.push(s(g, "id").into());
         }
         if sel > 0 {
@@ -1635,8 +1746,14 @@ impl Groups {
 
 fn groups_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Groups>> {
     let mut col = tab(tabs, "Groups");
-    let view = browser(&mut col, &[300, 120], &["Group", "Users"], "No groups yet.");
-    let b = bar(&mut col, &["Add", "Delete"]);
+    let view = browser(
+        &mut col,
+        &[300, 120],
+        &["lists.groups.group", "lists.groups.users"],
+        "lists.groups.empty",
+    );
+    let b = bar(&mut col, &[tr("btn.add"), tr("btn.delete")]);
+    view.clone().set_menu(&b);
     col.end();
     let me = Rc::new(RefCell::new(Groups {
         cfg: cfg.clone(),
@@ -1647,7 +1764,7 @@ fn groups_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Groups>> {
     b[0].clone().set_callback({
         let me = me.clone();
         move |_| {
-            let Some(name) = super::ask("New group", "Name:", "") else {
+            let Some(name) = super::ask(tr("lists.groups.new_group"), tr("lists.ask_name"), "") else {
                 return;
             };
             let name = name.trim().to_string();
@@ -1664,7 +1781,13 @@ fn groups_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Groups>> {
             let Some(id) = m.ids.get((m.view.value() - 1).max(-1) as usize).cloned() else {
                 return;
             };
-            if dialog::choice2_default("Delete this group?", "Cancel", "Delete", "") == Some(1) {
+            if dialog::choice2_default(
+                tr("lists.groups.delete_confirm"),
+                tr("dialogs.cancel"),
+                tr("btn.delete"),
+                "",
+            ) == Some(1)
+            {
                 let _ = query(&m.cmds, move |e| e.remove_group(&id));
                 m.refresh();
             }

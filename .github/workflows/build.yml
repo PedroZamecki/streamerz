@@ -91,12 +91,16 @@ jobs:
       - run: cargo build --release --locked
         env:
           STREAMERZ_VERSION: ${{ needs.version.outputs.tag || 'dev' }}
+      # The AppImage only for a release (it downloads linuxdeploy and bundles the libraries).
+      - if: needs.version.outputs.tag != ''
+        run: sudo apt-get install -y --no-install-recommends libfuse2 && dev/appimage.sh "${{ needs.version.outputs.tag }}"
       - uses: actions/upload-artifact@v4
         with:
           name: streamerz-linux
           path: |
             target/release/streamerz
             target/release/streamerz-tiktok
+            streamerz-x86_64.AppImage*
 
   release:
     needs: [version, windows, linux]
@@ -106,6 +110,7 @@ jobs:
       - uses: actions/download-artifact@v4
       - run: >
           gh release create "${{ needs.version.outputs.tag }}" streamerz-windows/streamerz.exe
-          streamerz-linux/streamerz streamerz-linux/streamerz-tiktok --repo "${{ github.repository }}" --target "${{ github.sha }}" --generate-notes
+          streamerz-linux/streamerz streamerz-linux/streamerz-tiktok streamerz-linux/streamerz-x86_64.AppImage*
+          --repo "${{ github.repository }}" --target "${{ github.sha }}" --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}

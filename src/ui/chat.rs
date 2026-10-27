@@ -11,15 +11,16 @@ use super::accounts::{platform_accounts, unlock_logins_interactive};
 use super::emotes::{self, EmoteSection, Provider};
 use super::img::{self, Pic};
 use super::rows::Rows as InfoRows;
-use super::{button, query, tell, ROW};
+use super::{button, icons, query, tell, ROW};
 use crate::engine::chatlog::{Line, Moderate, PLATFORMS};
+use crate::i18n::{tr, trf};
 use crate::Config;
 use fltk::app;
 use fltk::button::{Button, CheckButton};
 use fltk::draw;
 use fltk::enums::{Align, CallbackTrigger, Color, Event, Font, FrameType, Key};
 use fltk::frame::Frame;
-use fltk::group::{Flex, Scroll, Wizard};
+use fltk::group::{Flex, Wizard};
 use fltk::image::SvgImage;
 use fltk::input::Input;
 use fltk::menu::Choice;
@@ -143,55 +144,6 @@ const ICONS: &[(&str, &str)] = &[
         r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 18"><rect width="18" height="18" rx="4" fill="#2E1C2B"/><path d="M9 14.2 4.4 9.7a2.7 2.7 0 0 1 3.8-3.8L9 6.7l.8-.8a2.7 2.7 0 0 1 3.8 3.8z" fill="#FE2C55"/></svg>"##,
     ),
     // UI Icons: User avatar fallback, Smiley/Emotes, Send plane, Broadcast/Message-All, Star, Search, 7TV, BTTV, FFZ
-    (
-        "ui:user",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><circle cx="10" cy="10" r="9" fill="#3A3D45"/><circle cx="10" cy="7.5" r="3.2" fill="#D8DCE6"/><path d="M4.5 16.2c1-2.8 3.2-4.2 5.5-4.2s4.5 1.4 5.5 4.2" fill="#D8DCE6"/></svg>"##,
-    ),
-    (
-        "ui:emotes",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="none" stroke="#DCDFE6" stroke-width="1.7"/><circle cx="7.2" cy="8.2" r="1.2" fill="#DCDFE6"/><circle cx="12.8" cy="8.2" r="1.2" fill="#DCDFE6"/><path d="M6.5 11.8c.9 1.9 2.2 2.7 3.5 2.7s2.6-.8 3.5-2.7" fill="none" stroke="#DCDFE6" stroke-width="1.7" stroke-linecap="round"/></svg>"##,
-    ),
-    (
-        "ui:send",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M2.5 3.5 17.8 10 2.5 16.5 5.2 10z" fill="#5CA8FF"/><path d="M5.2 10h6.8" stroke="#1E1E20" stroke-width="1.4" stroke-linecap="round"/></svg>"##,
-    ),
-    (
-        "ui:broadcast",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M3 5.5h11a1.5 1.5 0 0 1 1.5 1.5v5a1.5 1.5 0 0 1-1.5 1.5H7l-3.2 2.5V13.5H3A1.5 1.5 0 0 1 1.5 12V7A1.5 1.5 0 0 1 3 5.5z" fill="none" stroke="#C8CCD4" stroke-width="1.5"/><path d="M17.2 7.2h1.3v5.5h-4.5" fill="none" stroke="#5CA8FF" stroke-width="1.5" stroke-linecap="round"/></svg>"##,
-    ),
-    (
-        "ui:star",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="m10 2.3 2.3 4.7 5.2.8-3.8 3.6.9 5.2L10 14.1l-4.6 2.5.9-5.2-3.8-3.6 5.2-.8z" fill="#F5C542"/></svg>"##,
-    ),
-    // Message actions, shown on hover.
-    (
-        "ui:reply",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M8 5 3 10l5 5M3.5 10H12a5 5 0 0 1 5 5v1" fill="none" stroke="#C8CCD4" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>"##,
-    ),
-    (
-        "ui:copy",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><rect x="7" y="7" width="10" height="10" rx="2" fill="none" stroke="#C8CCD4" stroke-width="1.7"/><path d="M13 4.5V4a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 4v7.5A1.5 1.5 0 0 0 4 13h.5" fill="none" stroke="#C8CCD4" stroke-width="1.7"/></svg>"##,
-    ),
-    (
-        "ui:pin",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M7 2.5h6M8 2.5v5L5.5 11h9L12 7.5v-5M10 11v6.5" fill="none" stroke="#C8CCD4" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>"##,
-    ),
-    (
-        "ui:delete",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M3 5.5h14M8 5.5V3.5h4v2M5 5.5l.8 11h8.4l.8-11M8.3 9v5M11.7 9v5" fill="none" stroke="#C8CCD4" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>"##,
-    ),
-    (
-        "ui:timeout",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.2" fill="none" stroke="#C8CCD4" stroke-width="1.7"/><path d="M10 5.8V10l3 2" fill="none" stroke="#C8CCD4" stroke-width="1.7" stroke-linecap="round"/></svg>"##,
-    ),
-    (
-        "ui:ban",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.2" fill="none" stroke="#F06A6A" stroke-width="1.8"/><path d="m5 15 10-10" stroke="#F06A6A" stroke-width="1.8"/></svg>"##,
-    ),
-    (
-        "ui:search",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><circle cx="8.8" cy="8.8" r="5.5" fill="none" stroke="#9AA0AA" stroke-width="1.8"/><path d="m13 13 4.2 4.2" stroke="#9AA0AA" stroke-width="1.8" stroke-linecap="round"/></svg>"##,
-    ),
     (
         "ui:7tv",
         r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 20"><path d="M2 4h9.5L6.5 16H3.2l3.8-9H2z" fill="#29B6F6"/><path d="M12.5 7h3l1.7 5.2L19 7h3l-3.4 9h-2.8z" fill="#E8EAED"/></svg>"##,
@@ -338,15 +290,24 @@ fn name_color(l: &Line) -> Color {
     }
 }
 
+/// Pinned, and not run out yet.
+fn pinned(l: &Line) -> bool {
+    l.pinned.is_some_and(|until| until > now_ms())
+}
+
 /// One thing on a line.
 enum It {
     Text(String, Font, Color),
+    /// Text struck through: a deleted message's.
+    Struck(String),
     Pic(Pic),
     Svg(SvgImage),
     /// A word's space: where the line may wrap.
     Space,
     /// A few pixels between pictures (no wrap).
     Gap(i32),
+    /// What follows starts a new row (after a reply's header).
+    Break,
 }
 
 impl It {
@@ -356,6 +317,10 @@ impl It {
                 draw::set_font(*f, TEXT);
                 (draw::width(t) as i32, TEXT + 4)
             }
+            It::Struck(t) => {
+                draw::set_font(Font::Helvetica, TEXT);
+                (draw::width(t) as i32, TEXT + 4)
+            }
             It::Pic(p) => (p.w(), p.h().max(1)),
             It::Svg(s) => (s.w(), s.h()),
             It::Space => {
@@ -363,6 +328,7 @@ impl It {
                 (draw::width(" ") as i32, 0)
             }
             It::Gap(w) => (*w, 0),
+            It::Break => (0, 0),
         }
     }
 }
@@ -389,6 +355,28 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
         }
         v.push(It::Text(l.text.clone(), Font::Helvetica, welcome_col));
         return v;
+    }
+    if let Some(r) = &l.reply {
+        if let Some(s) = icons::icon("corner-up-left", gray, 14) {
+            v.push(It::Svg(s));
+            v.push(It::Gap(4));
+        }
+        let mut said: String = r.text.chars().take(60).collect();
+        if said.len() < r.text.len() {
+            said.push('…');
+        }
+        v.push(It::Text(
+            format!("Replying to @{}: {said}", r.user),
+            Font::Helvetica,
+            gray,
+        ));
+        v.push(It::Break);
+    }
+    if pinned(l) {
+        if let Some(s) = icons::icon("pin", Color::Selection, 14) {
+            v.push(It::Svg(s));
+            v.push(It::Space);
+        }
     }
     if time && !l.time.is_empty() {
         v.push(It::Text(l.time.clone(), Font::HelveticaItalic, gray));
@@ -446,6 +434,13 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
     v.push(It::Text(format!("{}:", l.user), Font::HelveticaBold, name_color(l)));
     let fg = Color::Foreground;
     let pic = |url: &str| img::get(cmds, url, EMOTE, false);
+    if l.deleted {
+        for w in l.text.split(' ') {
+            v.push(It::Space);
+            v.push(It::Struck(w.to_string()));
+        }
+        return v;
+    }
     for w in l.text.split(' ') {
         v.push(It::Space);
         let known = l.emotes.iter().find(|e| e.0 == w).map(|e| e.1.clone());
@@ -472,6 +467,11 @@ fn rows(items: Vec<It>, w: i32) -> Rows {
     let mut x = 0;
     for it in items {
         let (iw, ih) = it.size();
+        if matches!(it, It::Break) {
+            out.push((Vec::new(), LINE));
+            x = 0;
+            continue;
+        }
         if matches!(it, It::Space | It::Gap(_)) {
             x += iw;
             continue;
@@ -500,8 +500,9 @@ struct State {
     follow: bool,
     /// An animation frame is due.
     ticking: bool,
-    /// The line under the pointer, which shows its actions.
+    /// The line under the pointer, which shows its actions, and the action under it.
     hover: Option<usize>,
+    act: Option<usize>,
 }
 
 /// A message's hover actions.
@@ -512,27 +513,41 @@ enum Act {
     Mod(Moderate),
 }
 
-const ACT: i32 = 24;
+/// An action's square in the bar.
+const ACT: i32 = 28;
 
-/// The actions `l` offers: moderation only where the platform has it, and not on the broadcaster.
+/// The actions `l` offers (with their icon and tooltip): moderation only where the platform has it,
+/// and not on the broadcaster.
 fn acts(l: &Line) -> Vec<(Act, &'static str, &'static str)> {
-    if l.note {
+    if l.note || l.deleted {
         return Vec::new();
     }
-    let mut v = vec![(Act::Reply, "ui:reply", "Reply"), (Act::Copy, "ui:copy", "Copy")];
+    let mut v = vec![
+        (Act::Reply, "corner-up-left", tr("chat.act_reply")),
+        (Act::Copy, "copy", tr("chat.act_copy")),
+    ];
     let p = l.platform.as_str();
     if p == "twitch" && !l.msg_id.is_empty() {
-        v.push((Act::Mod(Moderate::Pin), "ui:pin", "Pin"));
+        v.push(if pinned(l) {
+            (Act::Mod(Moderate::Unpin), "pin-off", tr("chat.act_unpin"))
+        } else {
+            (Act::Mod(Moderate::Pin(None)), "pin", tr("chat.act_pin"))
+        });
     }
     if matches!(p, "twitch" | "kick") && !l.msg_id.is_empty() {
-        v.push((Act::Mod(Moderate::Delete), "ui:delete", "Delete message"));
+        v.push((Act::Mod(Moderate::Delete), "trash-2", tr("chat.act_delete_message")));
     }
     if matches!(p, "twitch" | "kick" | "youtube") && !l.broadcaster && !l.user_id.is_empty() {
-        v.push((Act::Mod(Moderate::Timeout(0)), "ui:timeout", "Timeout"));
-        v.push((Act::Mod(Moderate::Ban), "ui:ban", "Ban"));
+        v.push((Act::Mod(Moderate::Timeout(0)), "clock", tr("chat.act_timeout")));
+        v.push((Act::Mod(Moderate::Ban), "ban", tr("chat.act_ban")));
     }
     v
 }
+
+/// What Reply does: the chat box under the pane answers `l`.
+type OnReply = Rc<RefCell<Option<Rc<dyn Fn(&Line)>>>>;
+/// Answer a line in a chat box (None: stop answering).
+type SetReply = Rc<dyn Fn(Option<&Line>)>;
 
 /// One chat view: the lines, drawn, with a scrollbar.
 #[derive(Clone)]
@@ -541,8 +556,7 @@ struct Pane {
     bar: Slider,
     st: Rc<RefCell<State>>,
     cmds: Cmds,
-    /// Where Reply writes the mention.
-    input: Rc<RefCell<Option<Input>>>,
+    on_reply: OnReply,
 }
 
 impl Pane {
@@ -581,9 +595,10 @@ impl Pane {
                 follow: true,
                 ticking: false,
                 hover: None,
+                act: None,
             })),
             cmds: cmds.clone(),
-            input: Rc::default(),
+            on_reply: Rc::default(),
         };
         area.draw({
             let p = p.clone();
@@ -684,7 +699,16 @@ impl Pane {
                             let (w, h) = (s.w(), s.h());
                             s.clone().draw(x, y + (rh - h) / 2, w, h);
                         }
-                        It::Space | It::Gap(_) => {}
+                        It::Struck(t) => {
+                            draw::set_font(Font::Helvetica, TEXT);
+                            draw::set_draw_color(Color::from_rgb(0x88, 0x88, 0x88));
+                            draw::draw_text2(t, x, y, 0, rh, Align::Left);
+                            let w = draw::width(t) as i32;
+                            // Through the space before it too: one line across the message.
+                            let sp = draw::width(" ") as i32;
+                            draw::draw_line(x - sp, y + rh / 2, x + w, y + rh / 2);
+                        }
+                        It::Space | It::Gap(_) | It::Break => {}
                     }
                 }
                 y += rh;
@@ -692,18 +716,25 @@ impl Pane {
         }
         if let Some((l, bx, by)) = st.hover.and_then(|i| self.bar_at(f, &st, i)) {
             let a = acts(l);
-            let w = a.len() as i32 * ACT + 4;
-            draw::draw_box(
-                FrameType::RFlatBox,
-                bx - 2,
-                by - 2,
-                w,
-                ACT + 4,
-                Color::from_rgb(0x3a, 0x3d, 0x45),
-            );
+            let (fg, bg) = (Color::Foreground, Color::Background);
+            let n = a.len() as i32;
+            draw::set_draw_color(bg);
+            draw::draw_rounded_rectf(bx, by, n * ACT, ACT, 6);
+            draw::set_draw_color(Color::color_average(fg, bg, 0.15));
+            draw::draw_rounded_rect(bx, by, n * ACT, ACT, 6);
             for (k, (_, icon, _)) in a.iter().enumerate() {
-                if let Some(mut s) = icon_sized(icon, 16) {
-                    s.draw(bx + k as i32 * ACT + 4, by + 4, 16, 16);
+                let x = bx + k as i32 * ACT;
+                if st.act == Some(k) {
+                    draw::set_draw_color(Color::color_average(fg, bg, 0.2));
+                    draw::draw_rounded_rectf(x + 2, by + 2, ACT - 4, ACT - 4, 5);
+                }
+                let c = match *icon {
+                    "ban" => Color::from_rgb(0xf0, 0x6a, 0x6a),
+                    _ if st.act == Some(k) => fg,
+                    _ => Color::color_average(fg, bg, 0.75),
+                };
+                if let Some(mut s) = icons::icon(icon, c, 16) {
+                    s.draw(x + (ACT - 16) / 2, by + (ACT - 16) / 2, 16, 16);
                 }
             }
         }
@@ -731,7 +762,7 @@ impl Pane {
         None
     }
 
-    /// Line `i` and where its action bar goes: at its top right, kept inside the view.
+    /// Line `i` and where its action bar goes: at the right of its first row, kept inside the view.
     fn bar_at<'a>(&self, f: &Frame, st: &'a State, i: usize) -> Option<(&'a Line, i32, i32)> {
         let l = st.lines.get(i)?;
         let n = acts(l).len() as i32;
@@ -739,50 +770,78 @@ impl Pane {
             return None;
         }
         let y = f.y() + 4 - st.top + st.laid.iter().take(i).map(|l| l.1).sum::<i32>();
-        let by = (y - ACT / 2).clamp(f.y() + 4, f.y() + f.h() - ACT - 4);
-        Some((l, f.x() + f.w() - n * ACT - 10, by))
+        let first = st.laid.get(i)?.0.first().map_or(LINE, |r| r.1);
+        let by = (y + (first - ACT) / 2).clamp(f.y() + 4, f.y() + f.h() - ACT - 4);
+        Some((l, f.x() + f.w() - n * ACT - 8, by))
+    }
+
+    /// The hovered line's action under the pointer: its index in `acts`.
+    fn act_index(&self, f: &Frame, st: &State) -> Option<usize> {
+        let (l, bx, by) = self.bar_at(f, st, st.hover?)?;
+        let (ex, ey) = (app::event_x(), app::event_y());
+        let k = (ex - bx).div_euclid(ACT);
+        ((by..by + ACT).contains(&ey) && (0..acts(l).len() as i32).contains(&k)).then_some(k as usize)
     }
 
     /// The action under the pointer, on the hovered line: the line and its `acts` entry.
     fn act_at(&self, f: &Frame) -> Option<(Line, (Act, &'static str, &'static str))> {
         let st = self.st.borrow();
-        let (l, bx, by) = self.bar_at(f, &st, st.hover?)?;
-        let (ex, ey) = (app::event_x(), app::event_y());
-        if !(by..by + ACT).contains(&ey) || ex < bx {
-            return None;
-        }
-        let a = *acts(l).get(((ex - bx) / ACT) as usize)?;
-        Some((l.clone(), a))
+        let k = self.act_index(f, &st)?;
+        let l = st.lines.get(st.hover?)?;
+        Some((l.clone(), acts(l)[k]))
     }
 
     fn run(&self, l: &Line, a: Act) {
         match a {
             Act::Reply => {
-                if let Some(i) = self.input.borrow_mut().as_mut() {
-                    let v = format!("@{} {}", l.user, i.value().trim_start());
-                    i.set_value(&v);
-                    let _ = i.take_focus();
-                    let _ = i.set_position(v.len() as i32);
+                let f = self.on_reply.borrow().clone();
+                if let Some(f) = f {
+                    f(l);
+                }
+            }
+            Act::Mod(Moderate::Pin(_)) => {
+                const SECONDS: [Option<u64>; 7] =
+                    [Some(30), Some(60), Some(120), Some(300), Some(600), Some(1800), None];
+                let labels = [
+                    tr("chat.pin_30s"),
+                    tr("chat.pin_1m"),
+                    tr("chat.pin_2m"),
+                    tr("chat.pin_5m"),
+                    tr("chat.pin_10m"),
+                    tr("chat.pin_30m"),
+                    tr("chat.pin_stream_ends"),
+                ];
+                let menu = fltk::menu::MenuItem::new(&labels);
+                if let Some(item) = menu.popup(app::event_x(), app::event_y()) {
+                    let idx = item.value() as usize;
+                    if let Some(&secs) = SECONDS.get(idx) {
+                        let l = l.clone();
+                        tell(&self.cmds, move |e| e.moderate(&l, Moderate::Pin(secs)));
+                    }
                 }
             }
             Act::Copy => app::copy(&l.text),
             Act::Mod(Moderate::Timeout(_)) => {
-                let menu = fltk::menu::MenuItem::new(&["1 minute", "10 minutes", "1 hour", "1 day", "1 week"]);
+                const TIMEOUTS: [u64; 5] = [60, 600, 3600, 86_400, 604_800];
+                let labels = [
+                    tr("chat.timeout_1m"),
+                    tr("chat.timeout_10m"),
+                    tr("chat.timeout_1h"),
+                    tr("chat.timeout_1d"),
+                    tr("chat.timeout_1w"),
+                ];
+                let menu = fltk::menu::MenuItem::new(&labels);
                 if let Some(item) = menu.popup(app::event_x(), app::event_y()) {
-                    let secs = match item.label().unwrap_or_default().as_str() {
-                        "1 minute" => 60,
-                        "10 minutes" => 600,
-                        "1 hour" => 3600,
-                        "1 day" => 86_400,
-                        _ => 604_800,
-                    };
-                    let l = l.clone();
-                    tell(&self.cmds, move |e| e.moderate(&l, Moderate::Timeout(secs)));
+                    let idx = item.value() as usize;
+                    if let Some(&secs) = TIMEOUTS.get(idx) {
+                        let l = l.clone();
+                        tell(&self.cmds, move |e| e.moderate(&l, Moderate::Timeout(secs)));
+                    }
                 }
             }
             Act::Mod(Moderate::Ban) => {
-                let q = format!("Ban {} from {}?", l.user, l.platform).replace('@', "@@");
-                if fltk::dialog::choice2_default(&q, "Ban", "Cancel", "") == Some(0) {
+                let q = trf("chat.ban_confirm", &[("user", &l.user), ("platform", &l.platform)]).replace('@', "@@");
+                if fltk::dialog::choice2_default(&q, tr("btn.ban"), tr("dialogs.cancel"), "") == Some(0) {
                     let l = l.clone();
                     tell(&self.cmds, move |e| e.moderate(&l, Moderate::Ban));
                 }
@@ -822,13 +881,15 @@ impl Pane {
         match ev {
             Event::Enter => true,
             Event::Move => {
-                let hover = {
-                    let st = self.st.borrow();
-                    self.line_at(f, &st)
-                };
-                if self.st.borrow().hover != hover {
-                    self.st.borrow_mut().hover = hover;
-                    f.redraw();
+                {
+                    let mut st = self.st.borrow_mut();
+                    // On its action bar (which may stick out over the next line), the line stays.
+                    let act = self.act_index(f, &st);
+                    let hover = if act.is_some() { st.hover } else { self.line_at(f, &st) };
+                    if (st.hover, st.act) != (hover, act) {
+                        (st.hover, st.act) = (hover, act);
+                        f.redraw();
+                    }
                 }
                 let act = self.act_at(f);
                 f.set_tooltip(act.as_ref().map_or("", |a| a.1 .2));
@@ -843,12 +904,47 @@ impl Pane {
                 true
             }
             Event::Leave => {
-                if self.st.borrow_mut().hover.take().is_some() {
+                let mut st = self.st.borrow_mut();
+                st.act = None;
+                if st.hover.take().is_some() {
                     f.redraw();
                 }
+                drop(st);
                 if let Some(mut w) = f.window() {
                     w.set_cursor(fltk::enums::Cursor::Default);
                 }
+                true
+            }
+            Event::Push if app::event_mouse_button() == app::MouseButton::Right => {
+                let l = {
+                    let st = self.st.borrow();
+                    self.line_at(f, &st).and_then(|i| st.lines.get(i).cloned())
+                };
+                let Some(l) = l.filter(|l| !l.note) else { return true };
+                use fltk::menu::{MenuButton, MenuFlag};
+                let mut m = MenuButton::new(app::event_x(), app::event_y(), 0, 0, None);
+                for (act, icon, name) in acts(&l) {
+                    let (p, l) = (self.clone(), l.clone());
+                    let i = m.add(name, fltk::enums::Shortcut::None, MenuFlag::Normal, move |_| {
+                        p.run(&l, act)
+                    });
+                    if let Some(mut item) = m.at(i) {
+                        item.add_image(icons::before_label(icon, super::muted(), 14), true);
+                    }
+                }
+                if !l.user_id.is_empty() {
+                    let (cmds, l) = (self.cmds.clone(), l.clone());
+                    m.add(
+                        tr("chat.user_info"),
+                        fltk::enums::Shortcut::None,
+                        MenuFlag::Normal,
+                        move |_| card(&cmds, &l),
+                    );
+                }
+                if m.size() > 0 {
+                    m.popup();
+                }
+                MenuButton::delete(m);
                 true
             }
             Event::Push if app::event_mouse_button() == app::MouseButton::Left => {
@@ -962,7 +1058,9 @@ struct ChatColumn {
     acct_btn: Button,
     input: Input,
     target_plat: Rc<Cell<usize>>,
-    allow_switch_plat: Rc<Cell<bool>>,
+    /// The chat box and what it answers (hidden in the all-platforms view).
+    bar: Flex,
+    set_reply: SetReply,
 }
 
 impl ChatColumn {
@@ -971,28 +1069,44 @@ impl ChatColumn {
         col.set_pad(4);
         let (_pane_group, pane) = Pane::new(cmds);
 
+        // "Replying to @name: text" with an X, while answering one.
+        let mut replying = Flex::default().row();
+        replying.set_pad(6);
+        let mut r_icon = Frame::default();
+        r_icon.set_image(icons::icon("corner-up-left", super::muted(), 14));
+        replying.fixed(&r_icon, 18);
+        let mut r_text = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+        r_text.set_label_size(12);
+        r_text.set_label_color(super::muted());
+        let mut r_close = Button::default();
+        r_close.set_frame(FrameType::FlatBox);
+        r_close.set_image(icons::icon("x", super::muted(), 14));
+        r_close.set_tooltip(tr("chat.dont_reply_tooltip"));
+        replying.fixed(&r_close, 24);
+        replying.end();
+        col.fixed(&replying, 0);
+        replying.hide();
+
         let mut bar = Flex::default().row();
         bar.set_pad(4);
 
         let mut acct_btn = Button::default();
         acct_btn.set_frame(FrameType::FlatBox);
-        acct_btn.set_image(icon_sized("ui:user", 20));
+        acct_btn.set_image(icons::icon("circle-user-round", super::muted(), 20));
         bar.fixed(&acct_btn, 32);
 
         let mut input = Input::default();
-        super::placeholder(&mut input, "Send a message");
-        pane.input.replace(Some(input.clone()));
 
         let mut emote_btn = Button::default();
         emote_btn.set_frame(FrameType::FlatBox);
-        emote_btn.set_image(icon_sized("ui:emotes", 18));
-        emote_btn.set_tooltip("Emotes & emoji for this platform and account");
+        emote_btn.set_image(icons::icon("smile", super::muted(), 18));
+        emote_btn.set_tooltip(tr("chat.emote_btn_tooltip"));
         bar.fixed(&emote_btn, 32);
 
         let mut send_btn = Button::default();
         send_btn.set_frame(FrameType::FlatBox);
-        send_btn.set_image(icon_sized("ui:send", 18));
-        send_btn.set_tooltip("Send message (Enter)");
+        send_btn.set_image(icons::icon("send-horizontal", Color::Selection, 18));
+        send_btn.set_tooltip(tr("chat.send_btn_tooltip"));
         bar.fixed(&send_btn, 32);
 
         bar.end();
@@ -1004,7 +1118,44 @@ impl ChatColumn {
             PLATFORMS.iter().position(|p| *p == saved).unwrap_or(0)
         });
         let target_plat = Rc::new(Cell::new(init_idx));
-        let allow_switch_plat = Rc::new(Cell::new(fixed_plat.is_none()));
+        let reply: Rc<RefCell<Option<Line>>> = Rc::default();
+        let click = emote_field(&mut input, cmds, target_plat.clone(), "Send a message");
+        // Answer `l` (None: stop); in the all-platforms box, to `l`'s platform.
+        let set_reply: SetReply = {
+            let (reply, col, replying, r_text) = (reply.clone(), col.clone(), replying.clone(), r_text.clone());
+            let input = input.clone();
+            Rc::new(move |l: Option<&Line>| {
+                let (mut col, mut replying, mut r_text, mut input) =
+                    (col.clone(), replying.clone(), r_text.clone(), input.clone());
+                *reply.borrow_mut() = l.cloned();
+                match l {
+                    Some(l) => {
+                        let said = l.text.replace('@', "@@");
+                        r_text.set_label(&trf(
+                            "chat.replying_to",
+                            &[("user", &l.user.replace('@', "@@")), ("said", &said)],
+                        ));
+                        replying.show();
+                        col.fixed(&replying, 22);
+                        let _ = input.take_focus();
+                    }
+                    None => {
+                        replying.hide();
+                        col.fixed(&replying, 0);
+                    }
+                }
+                col.layout();
+                col.redraw();
+            })
+        };
+        pane.on_reply.replace(Some({
+            let set_reply = set_reply.clone();
+            Rc::new(move |l: &Line| set_reply(Some(l)))
+        }));
+        r_close.set_callback({
+            let set_reply = set_reply.clone();
+            move |_| set_reply(None)
+        });
 
         let me = Self {
             col,
@@ -1012,11 +1163,13 @@ impl ChatColumn {
             acct_btn: acct_btn.clone(),
             input: input.clone(),
             target_plat: target_plat.clone(),
-            allow_switch_plat: allow_switch_plat.clone(),
+            bar: bar.clone(),
+            set_reply: set_reply.clone(),
         };
 
         let do_send = {
             let (cfg, cmds, input, target_plat) = (cfg.clone(), cmds.clone(), input.clone(), target_plat.clone());
+            let (reply, set_reply) = (reply.clone(), set_reply.clone());
             move || {
                 let text = input.value().trim().to_string();
                 if text.is_empty() {
@@ -1026,9 +1179,11 @@ impl ChatColumn {
                 let plat = PLATFORMS[p_idx];
                 let want_broadcaster = cfg.borrow().window.chat_as_broadcaster.iter().any(|s| s == plat);
                 let use_bot = !want_broadcaster;
+                let to = reply.borrow_mut().take();
                 tell(&cmds, move |e| {
-                    let _ = e.send_chat_list(&[plat], &text, use_bot, true);
+                    let _ = e.send_chat_list(&[plat], &text, use_bot, true, to.as_ref());
                 });
+                set_reply(None);
                 input.clone().set_value("");
             }
         };
@@ -1037,11 +1192,20 @@ impl ChatColumn {
             let s = do_send.clone();
             move |_| s()
         });
+        let (me_reply, set_reply_esc) = (reply.clone(), set_reply.clone());
+        let reply_on = |r: &Rc<RefCell<Option<Line>>>| r.borrow().is_some();
         me.input.clone().handle({
             let s = do_send;
-            move |_, ev| {
+            move |i, ev| {
+                if click(i, ev) {
+                    return true;
+                }
                 if ev == Event::KeyDown && app::event_key() == Key::Enter {
                     s();
+                    return true;
+                }
+                if ev == Event::KeyDown && app::event_key() == Key::Escape && reply_on(&me_reply) {
+                    set_reply_esc(None);
                     return true;
                 }
                 false
@@ -1079,21 +1243,36 @@ impl ChatColumn {
         let mut btn = self.acct_btn.clone();
         match pic {
             Some(img) => btn.set_image(Some(img)),
-            None => btn.set_image(icon_sized("ui:user", 20)),
+            None => btn.set_image(icons::icon("circle-user-round", super::muted(), 20)),
         }
-        let role_str = if use_bot { "Bot" } else { "Broadcaster" };
+        let role_str = if use_bot {
+            tr("chat.role_bot")
+        } else {
+            tr("chat.role_broadcaster")
+        };
         let tip = match &sender_name {
-            Some(name) => format!(
-                "{plat_name} — sending as {} ({role_str}). Click to info / switch account",
-                name.replace('@', "@@")
+            Some(name) => trf(
+                "chat.sending_as_tip",
+                &[
+                    ("platform", plat_name),
+                    ("name", &name.replace('@', "@@")),
+                    ("role", role_str),
+                ],
             ),
-            None => format!("{plat_name} — no account logged in. Click for account options"),
+            None => trf("chat.nobody_logged_in_tip", &[("platform", plat_name)]),
         };
         btn.set_tooltip(&tip);
         let mut inp = self.input.clone();
         let placeholder_tip = match &sender_name {
-            Some(name) => format!("Message {plat_name} as {} ({role_str})", name.replace('@', "@@")),
-            None => format!("Message {plat_name}"),
+            Some(name) => trf(
+                "chat.message_as_tip",
+                &[
+                    ("platform", plat_name),
+                    ("name", &name.replace('@', "@@")),
+                    ("role", role_str),
+                ],
+            ),
+            None => trf("chat.message_plat_tip", &[("platform", plat_name)]),
         };
         inp.set_tooltip(&placeholder_tip);
         btn.redraw();
@@ -1171,24 +1350,8 @@ impl Chat {
             for col in &self.side {
                 col.refresh_sender(&self.cfg, &self.cmds);
             }
-        } else {
-            if let Some(shown_slug) = self.shown() {
-                if let Some(idx) = PLATFORMS.iter().position(|p| *p == shown_slug) {
-                    self.main.target_plat.set(idx);
-                    self.main.allow_switch_plat.set(false);
-                }
-            } else {
-                let saved = self.cfg.borrow().window.chat_all_platform.clone();
-                let plats = self.plats.borrow();
-                let idx = PLATFORMS
-                    .iter()
-                    .position(|p| *p == saved)
-                    .filter(|i| plats.is_empty() || plats.contains(i))
-                    .or_else(|| plats.first().copied())
-                    .unwrap_or(0);
-                self.main.target_plat.set(idx);
-                self.main.allow_switch_plat.set(true);
-            }
+        } else if let Some(i) = self.shown().and_then(|s| PLATFORMS.iter().position(|p| *p == s)) {
+            self.main.target_plat.set(i);
             self.main.refresh_sender(&self.cfg, &self.cmds);
         }
     }
@@ -1225,7 +1388,7 @@ impl Chat {
         };
         self.view.clear();
         self.view.add_choice(
-            &["All together", "Side by side"]
+            &[tr("chat.view_all"), tr("chat.view_side_by_side")]
                 .iter()
                 .chain(&names)
                 .copied()
@@ -1259,6 +1422,27 @@ impl Chat {
                 p.col.hide();
             }
         }
+        // All together: no chat box (Message all sends); Reply opens it for that line.
+        let together = self.view.value() == 0;
+        let mut bar = self.main.bar.clone();
+        if together {
+            (self.main.set_reply)(None);
+            bar.hide();
+            self.main.col.fixed(&bar, 0);
+            let (cfg, cmds) = (self.cfg.clone(), self.cmds.clone());
+            self.main.pane.on_reply.replace(Some(Rc::new(move |l: &Line| {
+                message_all_popup(&cfg, &cmds, Some(l.clone()))
+            })));
+        } else {
+            bar.show();
+            self.main.col.fixed(&bar, ROW + 4);
+            let set_reply = self.main.set_reply.clone();
+            self.main
+                .pane
+                .on_reply
+                .replace(Some(Rc::new(move |l: &Line| set_reply(Some(l)))));
+        }
+        self.main.col.layout();
         self.client_gen = 0;
         self.seen = 0;
         self.refresh_senders();
@@ -1274,27 +1458,27 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
     let mut col = super::tab(tabs, "Chat");
     let mut top = Flex::default().row();
     top.set_pad(6);
-    let l = Frame::default().with_label("Show:");
+    let l = Frame::default().with_label(tr("chat.show"));
     top.fixed(&l, 46);
     let mut view = Choice::default();
     top.fixed(&view, 136);
     let mut hint = Frame::default()
-        .with_label("Click a name for its info, hover a line for actions")
+        .with_label(tr("chat.hint"))
         .with_align(Align::Right | Align::Inside | Align::Clip);
     hint.set_label_size(12);
     hint.set_label_color(super::muted());
 
     // Discrete "Message all" button with broadcast icon
     let mut msg_all = Button::default()
-        .with_label(" Message all")
+        .with_label(tr("chat.message_all_btn"))
         .with_align(Align::Inside | Align::ImageNextToText);
-    msg_all.set_image(icon_sized("ui:broadcast", 15));
-    msg_all.set_tooltip("Open a popup to send a message to multiple platforms at once");
+    msg_all.set_image(icons::icon("megaphone", Color::Foreground, 15));
+    msg_all.set_tooltip(tr("chat.message_all_tooltip"));
     top.fixed(&msg_all, 114);
 
-    let mut opts = fltk::menu::MenuButton::default().with_label("Options");
+    let mut opts = fltk::menu::MenuButton::default().with_label(tr("chat.options"));
     top.fixed(&opts, 84);
-    let mut clear = button(&mut top, "Clear", 64);
+    let mut clear = button(&mut top, tr("btn.clear"), 64);
     top.end();
     col.fixed(&top, ROW);
 
@@ -1362,7 +1546,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
 
     msg_all.set_callback({
         let (cfg, cmds) = (cfg.clone(), cmds.clone());
-        move |_| message_all_popup(&cfg, &cmds)
+        move |_| message_all_popup(&cfg, &cmds, None)
     });
 
     {
@@ -1370,7 +1554,10 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
         SHOW.set((!w.chat_no_time, !w.chat_no_badges));
     }
     let (time, badges) = SHOW.get();
-    for (i, (label, on)) in [("Time", time), ("Badges", badges)].into_iter().enumerate() {
+    for (i, (label, on)) in [(tr("chat.opt_time"), time), (tr("chat.opt_badges"), badges)]
+        .into_iter()
+        .enumerate()
+    {
         let flag = if on {
             fltk::menu::MenuFlag::Toggle | fltk::menu::MenuFlag::Value
         } else {
@@ -1411,10 +1598,10 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
 /// shows account details, connection status, and lets the user switch between Broadcaster and Bot
 /// (and in `"All together"` mode, pick which platform the single input sends to).
 fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accounts: Rc<dyn Fn()>) {
-    let switch_plat = col_ui.allow_switch_plat.get();
-    let cur_p = col_ui.target_plat.get().min(3);
-    let h = 236 + i32::from(switch_plat) * 38 + i32::from(crate::secrets::is_locked()) * 34;
-    let mut win = Window::default().with_size(430, h).with_label("Sending Account");
+    let h = 236 + i32::from(crate::secrets::is_locked()) * 34;
+    let mut win = Window::default()
+        .with_size(430, h)
+        .with_label(tr("chat.acct_win_title"));
     win.set_xclass("streamerz");
     win.make_modal(true);
 
@@ -1423,11 +1610,12 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
 
     if crate::secrets::is_locked() {
         let mut lrow = Flex::default().row();
+        lrow.set_pad(8);
         let mut lbl = Frame::default()
-            .with_label("🔒 Keyring locked — unlock saved logins?")
+            .with_label(tr("chat.acct_keyring_locked"))
             .with_align(Align::Left | Align::Inside);
         lbl.set_label_color(Color::from_rgb(0xe0, 0xa8, 0x30));
-        let mut ubtn = button(&mut lrow, "Unlock", 80);
+        let mut ubtn = button(&mut lrow, tr("btn.unlock"), 80);
         lrow.end();
         root.fixed(&lrow, ROW);
         let cmds_c = cmds.clone();
@@ -1438,22 +1626,8 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
         });
     }
 
-    let mut plat_choice_opt = None;
-    if switch_plat {
-        let mut prow = Flex::default().row();
-        let lbl = Frame::default()
-            .with_label("Send to platform:")
-            .with_align(Align::Left | Align::Inside);
-        prow.fixed(&lbl, 130);
-        let mut ch = Choice::default();
-        ch.add_choice(&NAMES.join("|"));
-        ch.set_value(cur_p as i32);
-        prow.end();
-        root.fixed(&prow, ROW);
-        plat_choice_opt = Some(ch);
-    }
-
     let mut head = Flex::default().row();
+    head.set_pad(8);
     let head_logo = Frame::default();
     head.fixed(&head_logo, 24);
     let mut head_title = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
@@ -1469,7 +1643,7 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
         let pic = Frame::default();
         row.fixed(&pic, 36);
         let info = Frame::default().with_align(Align::Left | Align::Inside | Align::Wrap);
-        let mut pick_btn = button(&mut row, "Select", 96);
+        let mut pick_btn = button(&mut row, tr("btn.select"), 96);
         pick_btn.set_frame(FrameType::RFlatBox);
         row.end();
         root.fixed(&row, 48);
@@ -1477,14 +1651,15 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
     }
 
     let note = Frame::default()
-        .with_label("Emote picker automatically switches to the selected account's unlocked emotes.")
+        .with_label(tr("chat.acct_note"))
         .with_align(Align::Left | Align::Inside | Align::Wrap);
     root.fixed(&note, 28);
 
     let mut bottom = Flex::default().row();
-    let mut manage = button(&mut bottom, "Manage in Accounts…", 160);
+    bottom.set_pad(8);
+    let mut manage = button(&mut bottom, tr("chat.manage_accounts"), 110);
     Frame::default();
-    let mut close = button(&mut bottom, "Close", 80);
+    let mut close = button(&mut bottom, tr("dialogs.close"), 80);
     bottom.end();
     root.fixed(&bottom, ROW);
     root.end();
@@ -1513,14 +1688,15 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
             })
             .unwrap_or((false, false));
             head_logo.set_image(img::logo(pname, 18));
-            let st_txt = if conn {
-                "● Connected"
+            let (h, st_txt) = if conn {
+                (super::Health::Up, "Connected")
             } else if standby {
-                "◐ Standby (offline)"
+                (super::Health::Standby, "Standby")
             } else {
-                "○ Not connected"
+                (super::Health::Off, "Off")
             };
-            head_title.set_label(&format!("{pname}  —  {st_txt}"));
+            h.show(&mut head_title, &format!("{pname}: {st_txt}"));
+            head_title.set_label_font(Font::HelveticaBold);
 
             let want_broadcaster = cfg.borrow().window.chat_as_broadcaster.iter().any(|s| s == slug);
             let slots = platform_accounts(&cmds, &cfg, slug, 32);
@@ -1530,14 +1706,18 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
                 slot_uis.iter().cloned().zip(slots.iter()).enumerate()
             {
                 let is_bot = bot_i == 1;
-                let role = if is_bot { "Bot" } else { "Broadcaster" };
+                let role = if is_bot {
+                    tr("chat.role_bot")
+                } else {
+                    tr("chat.role_broadcaster")
+                };
                 let is_active = eff_bot == is_bot && slot.is_some();
                 let is_pref = want_broadcaster == !is_bot;
                 match slot {
                     Some(s) => {
                         match &s.pic {
                             Some(im) => pic_f.set_image(Some(im.clone())),
-                            None => pic_f.set_image(icon_sized("ui:user", 28)),
+                            None => pic_f.set_image(icons::icon("circle-user-round", super::muted(), 28)),
                         }
                         let label = match s.note {
                             Some(n) => format!("{role}: {} ({n})", s.name.replace('@', "@@")),
@@ -1546,18 +1726,20 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
                         info_f.set_label(&label);
                         btn.activate();
                         if is_active {
-                            btn.set_label("✓ Active");
+                            btn.set_label(tr("chat.btn_active"));
+                            btn.set_image(icons::before_label("check", Color::White, 14));
                             btn.set_color(Color::from_rgb(0x2e, 0x6b, 0x47));
                         } else {
-                            btn.set_label("Use account");
+                            btn.set_label(tr("chat.btn_use_account"));
+                            btn.set_image(None::<SvgImage>);
                             btn.set_color(Color::Background);
                         }
                     }
                     None => {
-                        pic_f.set_image(icon_sized("ui:user", 28));
-                        let suffix = if is_pref { " (preferred, falls back)" } else { "" };
-                        info_f.set_label(&format!("{role}: not logged in{suffix}"));
-                        btn.set_label("Not logged in");
+                        pic_f.set_image(icons::icon("circle-user-round", super::muted(), 28));
+                        let suffix = if is_pref { tr("chat.preferred_other_suffix") } else { "" };
+                        info_f.set_label(&trf("chat.role_not_logged_in", &[("role", role), ("suffix", suffix)]));
+                        btn.set_label(tr("chat.btn_not_logged_in"));
                         btn.set_color(Color::Background);
                         btn.deactivate();
                     }
@@ -1568,21 +1750,6 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
             }
         }
     };
-
-    if let Some(mut ch) = plat_choice_opt {
-        let cfg = cfg.clone();
-        let target_plat = col_ui.target_plat.clone();
-        let mut populate = populate.clone();
-        ch.set_callback(move |c| {
-            let idx = c.value().clamp(0, 3) as usize;
-            target_plat.set(idx);
-            cfg.send_if_modified(|cfg| {
-                cfg.window.chat_all_platform = PLATFORMS[idx].to_string();
-                false
-            });
-            populate();
-        });
-    }
 
     for (bot_i, (_, _, mut btn)) in slot_uis.into_iter().enumerate() {
         let is_bot = bot_i == 1;
@@ -1630,7 +1797,7 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
 
 /// Popup opened by the discrete `"Message all"` button in the top bar:
 /// lets the user pick target platforms, bot/broadcaster + fallback behavior, emotes, and send.
-fn message_all_popup(cfg: &Cfg, cmds: &Cmds) {
+fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
     let conn_states: [bool; 4] = query(cmds, |e| {
         [
             e.twitch_connected(),
@@ -1652,25 +1819,36 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds) {
 
     let mut win = Window::default()
         .with_size(520, 210)
-        .with_label("Message All Platforms");
+        .with_label(tr("chat.msg_all_title"));
     win.set_xclass("streamerz");
     win.make_modal(true);
     let mut col = Flex::new(12, 12, 496, 186, None).column();
     col.set_pad(8);
 
-    let title = Frame::default()
-        .with_label("Send one message across selected platforms:")
-        .with_align(Align::Left | Align::Inside);
+    let mut title = Frame::default()
+        .with_label(tr("chat.send_to"))
+        .with_align(Align::Left | Align::Inside | Align::Clip);
+    if let Some(l) = &reply {
+        let said = trf("chat.replying_to", &[("user", &l.user), ("said", &l.text)]);
+        title.set_label(&said.replace('@', "@@"));
+        title.set_image(icons::before_label("corner-up-left", super::muted(), 14));
+        title.set_align(Align::Left | Align::Inside | Align::Clip | Align::ImageNextToText);
+        title.set_label_color(super::muted());
+    }
     col.fixed(&title, 22);
 
     let mut plat_row = Flex::default().row();
     plat_row.set_pad(8);
     let mut checks = Vec::new();
     for i in 0..4 {
-        let suffix = if conn_states[i] { "" } else { " (offline)" };
+        let suffix = if conn_states[i] { "" } else { tr("chat.offline_suffix") };
         let mut c = CheckButton::default().with_label(&format!("{}{suffix}", NAMES[i]));
         let any_conn = conn_states.iter().any(|&x| x);
-        c.set_checked(if any_conn { conn_states[i] } else { set_up[i] });
+        c.set_checked(match &reply {
+            Some(l) => l.platform == PLATFORMS[i],
+            None if any_conn => conn_states[i],
+            None => set_up[i],
+        });
         if !set_up[i] && !conn_states[i] {
             c.deactivate();
         }
@@ -1682,14 +1860,18 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds) {
     let mut acct_row = Flex::default().row();
     acct_row.set_pad(8);
     let lbl = Frame::default()
-        .with_label("Send as:")
+        .with_label(tr("chat.send_as"))
         .with_align(Align::Left | Align::Inside);
     acct_row.fixed(&lbl, 68);
     let mut who = Choice::default();
-    who.add_choice("Bot accounts|Broadcaster accounts");
+    who.add_choice(&format!(
+        "{}|{}",
+        tr("chat.who_bot_accounts"),
+        tr("chat.who_broadcaster_accounts")
+    ));
     who.set_value(0);
     acct_row.fixed(&who, 175);
-    let fallback = CheckButton::default().with_label("Fall back to other account if missing");
+    let fallback = CheckButton::default().with_label(tr("chat.fallback_account"));
     fallback.set_checked(true);
     acct_row.end();
     col.fixed(&acct_row, ROW);
@@ -1697,23 +1879,24 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds) {
     let mut bar = Flex::default().row();
     bar.set_pad(4);
     let mut input = Input::default();
-    super::placeholder(&mut input, "Send a message to every platform");
+    let click = emote_field(&mut input, cmds, Rc::new(Cell::new(0)), "Send a message");
     let mut emote_btn = Button::default();
     emote_btn.set_frame(FrameType::FlatBox);
-    emote_btn.set_image(icon_sized("ui:emotes", 18));
-    emote_btn.set_tooltip("Pick emotes & emoji");
+    emote_btn.set_image(icons::icon("smile", super::muted(), 18));
+    emote_btn.set_tooltip(tr("chat.pick_emotes_tooltip"));
     bar.fixed(&emote_btn, 32);
     let mut send_btn = Button::default();
     send_btn.set_frame(FrameType::FlatBox);
-    send_btn.set_image(icon_sized("ui:send", 18));
-    send_btn.set_tooltip("Send to all checked platforms (Enter)");
+    send_btn.set_image(icons::icon("send-horizontal", Color::Selection, 18));
+    send_btn.set_tooltip(tr("chat.send_all_tooltip"));
     bar.fixed(&send_btn, 32);
     bar.end();
     col.fixed(&bar, ROW + 4);
 
     let mut foot = Flex::default().row();
+    foot.set_pad(8);
     let status = Frame::default().with_align(Align::Left | Align::Inside);
-    let mut close = button(&mut foot, "Cancel", 80);
+    let mut close = button(&mut foot, tr("dialogs.cancel"), 80);
     foot.end();
     col.fixed(&foot, ROW);
     col.end();
@@ -1738,15 +1921,16 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds) {
                 .map(|i| PLATFORMS[i])
                 .collect();
             if targets.is_empty() {
-                status.set_label("Check at least one platform above.");
+                status.set_label(tr("chat.check_at_least_one"));
                 status.set_label_color(Color::from_rgb(0xe0, 0x60, 0x50));
                 status.redraw();
                 return;
             }
             let use_bot = who.value() == 0;
             let fb = fallback.is_checked();
+            let reply = reply.clone();
             tell(&cmds, move |e| {
-                let _ = e.send_chat_list(&targets, &text, use_bot, fb);
+                let _ = e.send_chat_list(&targets, &text, use_bot, fb, reply.as_ref());
             });
             done.set(true);
         }
@@ -1758,7 +1942,10 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds) {
     });
     input.handle({
         let mut s = do_send;
-        move |_, ev| {
+        move |i, ev| {
+            if click(i, ev) {
+                return true;
+            }
             if ev == Event::KeyDown && app::event_key() == Key::Enter {
                 s();
                 return true;
@@ -1794,7 +1981,7 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds) {
 
 fn provider_icon(prov: Provider, platform: &str, size: i32) -> Option<SvgImage> {
     match prov {
-        Provider::Favorites => icon_sized("ui:star", size),
+        Provider::Favorites => icons::icon("star", Color::from_rgb(0xf5, 0xc5, 0x42), size),
         Provider::Platform => {
             let name = match platform {
                 "twitch" => "Twitch",
@@ -1808,11 +1995,185 @@ fn provider_icon(prov: Provider, platform: &str, size: i32) -> Option<SvgImage> 
         Provider::SevenTv => icon_sized("ui:7tv", size),
         Provider::Bttv => icon_sized("ui:bttv", size),
         Provider::Ffz => icon_sized("ui:ffz", size),
-        Provider::Emoji => icon_sized("ui:emotes", size),
+        Provider::Emoji => icons::icon("smile", super::muted(), size),
     }
 }
 
-fn insert_emote_word(input: &mut Input, word: &str) {
+thread_local! {
+    /// Emotes picked in the picker this run, by name: the chat box shows them even when no catalog has them.
+    static PICKED: RefCell<HashMap<String, String>> = RefCell::default();
+}
+
+/// A piece of the chat box's text: its bytes, and its picture when it's an emote or emoji.
+type Piece = (std::ops::Range<usize>, Option<Pic>);
+
+/// `v` cut into text and emotes, the emotes as `h` px pictures (those not loaded yet stay text).
+fn pieces(cmds: &Cmds, platform: &str, v: &str, h: i32) -> Vec<Piece> {
+    let mut out: Vec<Piece> = Vec::new();
+    let mut text_from = 0;
+    let mut at = 0;
+    for w in v.split(' ') {
+        let start = at;
+        at += w.len() + 1;
+        let url = PICKED
+            .with_borrow(|p| p.get(w).cloned())
+            .or_else(|| emotes::third(platform, w));
+        let found: Vec<(std::ops::Range<usize>, String)> = match url {
+            Some(u) if !w.is_empty() => vec![(start..start + w.len(), u)],
+            _ => {
+                let mut o = start;
+                emotes::split(w)
+                    .into_iter()
+                    .filter_map(|(part, url)| {
+                        let r = o..o + part.len();
+                        o += part.len();
+                        url.map(|u| (r, u))
+                    })
+                    .collect()
+            }
+        };
+        for (r, u) in found {
+            if let Some(p) = img::get(cmds, &u, h, false) {
+                if text_from < r.start {
+                    out.push((text_from..r.start, None));
+                }
+                text_from = r.end;
+                out.push((r, Some(p)));
+            }
+        }
+    }
+    if text_from < v.len() {
+        out.push((text_from..v.len(), None));
+    }
+    out
+}
+
+/// The chat box shows emotes and emoji as pictures. Drawn by hand only when it has some (plain text
+/// keeps FLTK's own drawing), clicking and selecting follow the pictures.
+fn emote_field(
+    input: &mut Input,
+    cmds: &Cmds,
+    platform: Rc<Cell<usize>>,
+    empty: &'static str,
+) -> impl Fn(&mut Input, Event) -> bool {
+    // Each piece's x from the text's start, and the whole width.
+    fn layout(i: &Input, ps: &[Piece]) -> (Vec<i32>, i32) {
+        draw::set_font(i.text_font(), i.text_size());
+        let mut x = 0;
+        let xs = ps
+            .iter()
+            .map(|(r, p)| {
+                let at = x;
+                x += p
+                    .as_ref()
+                    .map_or_else(|| draw::width(&i.value()[r.clone()]) as i32, |p| p.w() + 2);
+                at
+            })
+            .collect();
+        (xs, x)
+    }
+    // Where byte `pos` is, from the text's start.
+    fn x_of(i: &Input, ps: &[Piece], xs: &[i32], pos: usize) -> i32 {
+        let v = i.value();
+        for ((r, p), x) in ps.iter().zip(xs) {
+            if pos <= r.end && pos >= r.start {
+                return match p {
+                    Some(p) if pos > r.start => x + p.w() + 2,
+                    Some(_) => *x,
+                    None => x + draw::width(&v[r.start..pos]) as i32,
+                };
+            }
+        }
+        xs.last().copied().unwrap_or(0)
+    }
+    let state = {
+        let (cmds, platform) = (cmds.clone(), platform.clone());
+        move |i: &Input| {
+            let v = i.value();
+            let ps = pieces(&cmds, PLATFORMS[platform.get().min(3)], &v, i.h() - 10);
+            ps.iter().any(|p| p.1.is_some()).then_some(ps)
+        }
+    };
+    // Scrolled so the cursor shows: the text's start, left of the box.
+    let shift = |i: &Input, cur: i32, total: i32| (cur - (i.w() - 14)).max(0).min(total.max(0));
+    input.draw({
+        let state = state.clone();
+        move |i| {
+            let Some(ps) = state(i) else {
+                if i.value().is_empty() && !i.has_focus() {
+                    draw::set_font(Font::Helvetica, i.text_size());
+                    draw::set_draw_color(super::muted());
+                    draw::draw_text2(empty, i.x() + 6, i.y(), i.w() - 12, i.h(), Align::Left | Align::Clip);
+                }
+                return;
+            };
+            let (xs, total) = layout(i, &ps);
+            let (pos, mark) = (i.position() as usize, i.mark() as usize);
+            let cur = x_of(i, &ps, &xs, pos);
+            let x0 = i.x() + 6 - shift(i, cur, total);
+            draw::push_clip(i.x() + 3, i.y() + 3, i.w() - 6, i.h() - 6);
+            draw::draw_rect_fill(i.x() + 3, i.y() + 3, i.w() - 6, i.h() - 6, i.color());
+            if pos != mark {
+                let (a, b) = (x_of(i, &ps, &xs, pos.min(mark)), x_of(i, &ps, &xs, pos.max(mark)));
+                draw::draw_rect_fill(x0 + a, i.y() + 4, b - a, i.h() - 8, Color::Selection);
+            }
+            draw::set_font(i.text_font(), i.text_size());
+            draw::set_draw_color(i.text_color());
+            let v = i.value();
+            let base = i.y() + (i.h() + draw::height()) / 2 - draw::descent();
+            for ((r, p), x) in ps.iter().zip(&xs) {
+                match p {
+                    Some(p) => {
+                        let mut f = p.first();
+                        f.draw(x0 + x + 1, i.y() + (i.h() - f.h()) / 2, f.w(), f.h());
+                    }
+                    None => draw::draw_text(&v[r.clone()], x0 + x, base),
+                }
+            }
+            if i.has_focus() {
+                draw::set_draw_color(i.cursor_color());
+                draw::draw_line(x0 + cur, i.y() + 5, x0 + cur, i.y() + i.h() - 6);
+            }
+            draw::pop_clip();
+        }
+    });
+    // Clicks land between the pieces as drawn.
+    move |i: &mut Input, ev: Event| {
+        if !matches!(ev, Event::Push | Event::Drag) || app::event_mouse_button() != app::MouseButton::Left {
+            return false;
+        }
+        let Some(ps) = state(i) else { return false };
+        let (xs, total) = layout(i, &ps);
+        let cur = x_of(i, &ps, &xs, i.position() as usize);
+        let ex = app::event_x() - (i.x() + 6 - shift(i, cur, total));
+        // The piece edge or character nearest the click.
+        let v = i.value();
+        let at = ps
+            .iter()
+            .flat_map(|(r, p)| match p {
+                Some(_) => vec![r.start, r.end],
+                None => v[r.clone()]
+                    .char_indices()
+                    .map(|(k, _)| r.start + k)
+                    .chain([r.end])
+                    .collect(),
+            })
+            .min_by_key(|&at| (x_of(i, &ps, &xs, at) - ex).abs())
+            .unwrap_or(0) as i32;
+        if ev == Event::Push {
+            let _ = i.take_focus();
+        }
+        let shifted = app::event_state().contains(fltk::enums::Shortcut::Shift);
+        let mark = if ev == Event::Push && !shifted { at } else { i.mark() };
+        let _ = i.set_position(at);
+        let _ = i.set_mark(mark);
+        i.redraw();
+        true
+    }
+}
+
+fn insert_emote_word(input: &mut Input, word: &str, url: &str) {
+    PICKED.with_borrow_mut(|p| p.insert(word.to_string(), url.to_string()));
     let mut v = input.value();
     if !v.is_empty() && !v.ends_with(' ') {
         v.push(' ');
@@ -1823,11 +2184,9 @@ fn insert_emote_word(input: &mut Input, word: &str) {
     let _ = input.set_position(v.len() as i32);
 }
 
-/// 7TV-inspired individual Emote & Emoji picker popup:
-/// - Top provider icon tabs (`★ Favorites`, platform native, `7TV`, `BTTV`, `FFZ`, `Emoji`)
-/// - Instant search across all providers on this platform & account
-/// - Collapsible section headers + empty-state guidance notes
-/// - Left-click inserts (Shift+click inserts multiple without closing); right-click toggles `★` favorite
+/// The emote and emoji picker: a tab per source (favorites, the platform's, 7TV, BTTV, FFZ, emoji), a
+/// search across them, and the grid. A click puts one in the chat box and closes; Shift+click keeps it
+/// open to pick several; a right click (un)favorites.
 fn emote_picker_popup(
     cfg: &Cfg,
     cmds: &Cmds,
@@ -1851,321 +2210,153 @@ fn emote_picker_popup(
     .unwrap_or_default();
 
     let providers = emotes::providers_for(platform);
-    // Start on Platform native tab (or 7TV on "all", or Favorites if non-empty and preferred)
     let default_tab = providers.iter().position(|&p| p == Provider::Platform).unwrap_or(0);
-
     let title_plat = match platform {
         "twitch" => "Twitch",
         "kick" => "Kick",
         "youtube" => "YouTube",
         "tiktok" => "TikTok",
-        _ => "All Platforms",
+        _ => tr("chat.all_platforms"),
     };
     let mut win = Window::default()
-        .with_size(400, 490)
-        .with_label(&format!("{title_plat} Emotes"));
+        .with_size(380, 480)
+        .with_label(&trf("chat.emotes_window_title", &[("platform", title_plat)]));
     win.set_xclass("streamerz");
     win.make_modal(true);
+    let mut col = Flex::new(8, 8, 364, 464, None).column();
+    col.set_pad(8);
 
-    let mut col = Flex::new(8, 8, 384, 474, None).column();
-    col.set_pad(6);
-
-    // 1. Top Provider Icon Tab Bar
     let mut tab_bar = Flex::default().row();
     tab_bar.set_pad(4);
-    let mut tab_btns: Vec<(Provider, Button)> = Vec::new();
+    let mut tab_btns: Vec<Button> = Vec::new();
     for &prov in providers {
         let mut b = Button::default();
         b.set_frame(FrameType::RFlatBox);
         b.set_image(provider_icon(prov, platform, 16));
         b.set_tooltip(prov.label(platform));
-        tab_btns.push((prov, b));
+        tab_btns.push(b);
     }
     tab_bar.end();
-    col.fixed(&tab_bar, 34);
+    col.fixed(&tab_bar, 32);
 
-    // 2. Search Bar
-    let mut search_row = Flex::default().row();
-    search_row.set_pad(4);
-    let mut s_icon = Frame::default();
-    s_icon.set_image(icon_sized("ui:search", 15));
-    search_row.fixed(&s_icon, 24);
     let mut search = Input::default();
     search.set_trigger(CallbackTrigger::Changed);
-    search.set_tooltip("Search emotes & emoji across tabs");
-    super::placeholder(&mut search, "Search emotes…");
-    search_row.end();
-    col.fixed(&search_row, ROW);
+    super::placeholder(&mut search, tr("chat.search_emotes"));
+    col.fixed(&search, ROW);
 
-    // 3. Account & Favorites hint strip
-    let role_txt = if as_broadcaster { "Broadcaster" } else { "Bot" };
-    let acct_txt = match sender_name {
-        Some(n) => format!(
-            "{} ({role_txt}) · Right-click to ★ favorite · Shift+click for multiple",
-            n.replace('@', "@@")
-        ),
-        None => "Right-click any emote to ★ favorite · Shift+click for multiple".to_string(),
+    let who = match sender_name {
+        Some(n) => trf("chat.as_sender_prefix", &[("name", &n.replace('@', "@@"))]),
+        None => String::new(),
     };
     let mut sub = Frame::default()
-        .with_label(&acct_txt)
+        .with_label(&format!("{who}{}", tr("chat.emote_picker_help")))
         .with_align(Align::Left | Align::Inside | Align::Clip);
     sub.set_label_size(11);
-    sub.set_label_color(Color::from_rgb(0x98, 0x9c, 0xa6));
-    col.fixed(&sub, 18);
+    sub.set_label_color(super::muted());
+    col.fixed(&sub, 14);
 
-    // 4. Scrollable Collapsible Sections + Grid
-    let mut scroll = Scroll::default();
-    scroll.set_type(fltk::group::ScrollType::Vertical);
-    scroll.end();
+    let grid = super::grid::Grid::new(cmds);
     col.end();
     win.end();
+    win.resizable(&grid.area);
 
     let cur_tab = Rc::new(Cell::new(default_tab));
     let collapsed: Rc<RefCell<HashSet<String>>> = Rc::default();
-    let done = Rc::new(Cell::new(false));
-    let picked_words: Rc<RefCell<Vec<String>>> = Rc::default();
     let seen = Rc::new(seen);
 
-    // Same size icons, the active one lit: relabeling and resizing them left pieces of old labels.
-    let mut style_tabs = {
-        let mut tab_bar = tab_bar.clone();
+    // The open tab lit, the others quiet.
+    let style_tabs = {
         let tab_btns = tab_btns.clone();
-        move |active_idx: usize| {
-            for (i, (_, mut b)) in tab_btns.iter().cloned().enumerate() {
-                b.set_color(if i == active_idx {
-                    Color::from_rgb(0x4a, 0x4f, 0x5a)
+        move |active: usize| {
+            for (i, mut b) in tab_btns.iter().cloned().enumerate() {
+                b.set_color(if i == active {
+                    Color::color_average(Color::Foreground, Color::Background, 0.2)
                 } else {
-                    Color::from_rgb(0x26, 0x28, 0x2d)
+                    Color::Background
                 });
+                b.redraw();
             }
-            tab_bar.redraw();
         }
     };
-
-    // Set by the buttons inside the scroll; the loop below refills. Refilling from their own
-    // callback would delete the button running it (that crashed).
-    let rebuild_slot: Rc<Cell<bool>> = Rc::default();
 
     let fill = {
-        let (cfg, cmds) = (cfg.clone(), cmds.clone());
-        let scroll = scroll.clone();
-        let search = search.clone();
-        let cur_tab = cur_tab.clone();
-        let collapsed = collapsed.clone();
-        let seen = seen.clone();
-        let done = done.clone();
-        let picked_words = picked_words.clone();
-        let rebuild_slot = rebuild_slot.clone();
-        move || {
+        let (cfg, grid, search) = (cfg.clone(), grid.clone(), search.clone());
+        let (cur_tab, collapsed, seen) = (cur_tab.clone(), collapsed.clone(), seen.clone());
+        move |keep: bool| {
             let q = search.value().trim().to_lowercase();
             let favs = cfg.borrow().window.favorite_emotes.clone();
-            let active_prov = providers[cur_tab.get().min(providers.len() - 1)];
-
-            // When searching, search across all providers on this platform; otherwise show active provider.
-            let secs: Vec<(Provider, EmoteSection)> = if !q.is_empty() {
-                let mut all_secs = Vec::new();
-                let mut seen_names = HashSet::new();
-                for &pv in providers {
-                    if pv == Provider::Favorites {
-                        continue;
-                    }
-                    for s in emotes::sections(platform, pv, as_broadcaster, &seen, &favs) {
-                        let filtered: Vec<(String, String)> = s
+            let active = providers[cur_tab.get().min(providers.len() - 1)];
+            // Searching looks in every tab of this platform.
+            let secs: Vec<EmoteSection> = if q.is_empty() {
+                emotes::sections(platform, active, as_broadcaster, &seen, &favs)
+            } else {
+                let mut names = HashSet::new();
+                let mut out: Vec<EmoteSection> = providers
+                    .iter()
+                    .filter(|&&pv| pv != Provider::Favorites)
+                    .flat_map(|&pv| {
+                        emotes::sections(platform, pv, as_broadcaster, &seen, &favs)
+                            .into_iter()
+                            .map(move |s| (pv, s))
+                    })
+                    .filter_map(|(pv, s)| {
+                        let emotes: Vec<(String, String)> = s
                             .emotes
                             .into_iter()
-                            .filter(|(n, _)| n.to_lowercase().contains(&q) && seen_names.insert(n.clone()))
+                            .filter(|(n, _)| n.to_lowercase().contains(&q) && names.insert(n.clone()))
                             .take(200)
                             .collect();
-                        if !filtered.is_empty() {
-                            all_secs.push((
-                                pv,
-                                EmoteSection {
-                                    title: format!("{} · {}", pv.label(platform), s.title),
-                                    note: None,
-                                    emotes: filtered,
-                                },
-                            ));
-                        }
+                        (!emotes.is_empty()).then(|| EmoteSection {
+                            title: format!("{} · {}", pv.label(platform), s.title),
+                            note: None,
+                            emotes,
+                        })
+                    })
+                    .collect();
+                if out.is_empty() {
+                    out.push(EmoteSection {
+                        title: "Search".into(),
+                        note: Some(format!("Nothing called \"{q}\".")),
+                        emotes: Vec::new(),
+                    });
+                }
+                out
+            };
+            let mut items = Vec::new();
+            for sec in secs {
+                let open = !collapsed.borrow().contains(&sec.title);
+                items.push(super::grid::Item::Head {
+                    title: sec.title,
+                    open,
+                    count: sec.emotes.len(),
+                    note: sec.note,
+                });
+                if open {
+                    for (name, url) in sec.emotes.into_iter().take(500) {
+                        let fav = favs.iter().any(|(n, _)| *n == name);
+                        items.push(super::grid::Item::Emote { name, url, fav });
                     }
                 }
-                if all_secs.is_empty() {
-                    all_secs.push((
-                        active_prov,
-                        EmoteSection {
-                            title: "Search Results".into(),
-                            note: Some(format!("No emotes matching \"{q}\".")),
-                            emotes: Vec::new(),
-                        },
-                    ));
-                }
-                all_secs
-            } else {
-                emotes::sections(platform, active_prov, as_broadcaster, &seen, &favs)
-                    .into_iter()
-                    .map(|s| (active_prov, s))
-                    .collect()
-            };
-
-            let mut scroll = scroll.clone();
-            scroll.clear();
-            scroll.begin();
-            let avail_w = (scroll.w() - 18).max(180);
-            let cell = 46;
-            let per = (avail_w / cell).max(1);
-            let mut y = scroll.y() + 2;
-            let x0 = scroll.x() + 2;
-
-            for (pv, sec) in secs {
-                let is_closed = collapsed.borrow().contains(&sec.title);
-                let arrow = if is_closed { "▸" } else { "▾" };
-                let hdr_txt = if sec.emotes.is_empty() {
-                    format!(" {arrow}  {}", sec.title.replace('@', "@@").replace('&', "&&"))
-                } else {
-                    format!(
-                        " {arrow}  {} ({})",
-                        sec.title.replace('@', "@@").replace('&', "&&"),
-                        sec.emotes.len()
-                    )
-                };
-                let mut hdr = Button::new(x0, y, avail_w, 26, None).with_label(&hdr_txt);
-                hdr.set_align(Align::Left | Align::Inside);
-                hdr.set_frame(FrameType::FlatBox);
-                hdr.set_color(Color::from_rgb(0x28, 0x2a, 0x30));
-                hdr.set_label_font(Font::HelveticaBold);
-                hdr.set_label_size(13);
-                {
-                    let collapsed = collapsed.clone();
-                    let title = sec.title.clone();
-                    let rebuild_slot = rebuild_slot.clone();
-                    hdr.set_callback(move |_| {
-                        let mut c = collapsed.borrow_mut();
-                        if !c.remove(&title) {
-                            c.insert(title.clone());
-                        }
-                        drop(c);
-                        rebuild_slot.set(true);
-                    });
-                }
-                y += 30;
-
-                if is_closed {
-                    continue;
-                }
-
-                if let Some(note_txt) = &sec.note {
-                    let mut nf = Frame::new(x0 + 6, y, avail_w - 12, 42, None)
-                        .with_label(&note_txt.replace('@', "@@"))
-                        .with_align(Align::Center | Align::Inside | Align::Wrap);
-                    nf.set_label_size(12);
-                    nf.set_label_color(Color::from_rgb(0xa4, 0xa8, 0xb3));
-                    y += 46;
-                }
-
-                // Cap huge single-section rendering when unfiltered only if extreme (> 500)
-                let slice = &sec.emotes[..sec.emotes.len().min(500)];
-                for (i, (name, url)) in slice.iter().enumerate() {
-                    let cx = x0 + (i as i32 % per) * cell;
-                    let cy = y + (i as i32 / per) * cell;
-                    let mut b = Button::new(cx, cy, cell - 4, cell - 4, None);
-                    let is_fav = favs.iter().any(|(n, _)| n == name);
-                    b.set_frame(if is_fav {
-                        FrameType::BorderBox
-                    } else {
-                        FrameType::FlatBox
-                    });
-                    b.set_color(if is_fav {
-                        Color::from_rgb(0x3a, 0x35, 0x22)
-                    } else {
-                        Color::from_rgb(0x23, 0x24, 0x28)
-                    });
-                    let tip = if is_fav {
-                        format!("★ {} (right-click to unfavorite)", name.replace('@', "@@"))
-                    } else {
-                        format!("{} (right-click to ★ favorite)", name.replace('@', "@@"))
-                    };
-                    b.set_tooltip(&tip);
-                    // Looked up when drawn: only the visible ones load, and an arrival only redraws.
-                    b.draw({
-                        let (cmds, url, name) = (cmds.clone(), url.clone(), name.clone());
-                        move |b| match img::get(&cmds, &url, EMOTE, false) {
-                            Some(p) => {
-                                let mut i = p.first();
-                                i.draw(b.x() + (b.w() - i.w()) / 2, b.y() + (b.h() - i.h()) / 2, i.w(), i.h());
-                            }
-                            None => {
-                                draw::set_font(Font::Helvetica, 10);
-                                draw::set_draw_color(Color::from_rgb(0xa4, 0xa8, 0xb3));
-                                draw::draw_text2(&name, b.x(), b.y(), b.w(), b.h(), Align::Center | Align::Clip);
-                            }
-                        }
-                    });
-
-                    let _ = pv;
-                    let (cfg_c, name_c, url_c) = (cfg.clone(), name.clone(), url.clone());
-                    let (picked_words, done, rebuild_slot) = (picked_words.clone(), done.clone(), rebuild_slot.clone());
-                    b.handle(move |_, ev| {
-                        if ev == Event::Push {
-                            if app::event_mouse_button() == app::MouseButton::Right {
-                                cfg_c.send_modify(|c| {
-                                    let list = &mut c.window.favorite_emotes;
-                                    if let Some(pos) = list.iter().position(|(n, _)| *n == name_c) {
-                                        list.remove(pos);
-                                    } else {
-                                        list.push((name_c.clone(), url_c.clone()));
-                                    }
-                                });
-                                let _ = crate::save(&cfg_c.borrow());
-                                rebuild_slot.set(true);
-                                return true;
-                            }
-                            if app::event_mouse_button() == app::MouseButton::Left {
-                                picked_words.borrow_mut().push(name_c.clone());
-                                if !app::event_state().contains(fltk::enums::Shortcut::Shift) {
-                                    done.set(true);
-                                }
-                                return true;
-                            }
-                        }
-                        false
-                    });
-                }
-                if !slice.is_empty() {
-                    let rows_n = (slice.len() as i32 + per - 1) / per;
-                    y += rows_n * cell + 6;
-                }
             }
-
-            scroll.end();
-            scroll.redraw();
+            grid.set(items, keep);
         }
     };
 
-    for (idx, (_, mut b)) in tab_btns.into_iter().enumerate() {
-        let cur_tab = cur_tab.clone();
-        let mut style_tabs = style_tabs.clone();
-        let fill = fill.clone();
-        let mut scroll = scroll.clone();
-        let mut search = search.clone();
+    for (idx, mut b) in tab_btns.into_iter().enumerate() {
+        let (cur_tab, style_tabs, fill, mut search) =
+            (cur_tab.clone(), style_tabs.clone(), fill.clone(), search.clone());
         b.set_callback(move |_| {
             cur_tab.set(idx);
-            if !search.value().is_empty() {
-                search.set_value("");
-            }
+            search.set_value("");
             style_tabs(idx);
-            fill();
-            scroll.scroll_to(0, 0);
+            fill(false);
         });
     }
-
     search.set_callback({
         let fill = fill.clone();
-        let mut scroll = scroll.clone();
-        move |_| {
-            fill();
-            scroll.scroll_to(0, 0);
-        }
+        move |_| fill(false)
     });
-
+    let done = Rc::new(Cell::new(false));
     win.set_callback({
         let done = done.clone();
         move |_| done.set(true)
@@ -2174,43 +2365,59 @@ fn emote_picker_popup(
     style_tabs(default_tab);
     win.show();
     col.layout();
-    fill();
+    fill(false);
     let _ = search.take_focus();
 
     let mut pics = img::ARRIVED.load(std::sync::atomic::Ordering::Relaxed);
     let mut seen_rev = emotes::REV.load(std::sync::atomic::Ordering::Relaxed);
-    let mut flushed = 0usize;
+    let mut picked = false;
     while win.shown() && !done.get() {
         let _ = app::wait_for(0.25);
-        // Flush any Shift+clicked emotes live into the input box!
-        {
-            let words = picked_words.borrow();
-            while flushed < words.len() {
-                insert_emote_word(target_input, &words[flushed]);
-                flushed += 1;
+        let asked: Vec<super::grid::Asked> = grid.asked.borrow_mut().drain(..).collect();
+        let mut refill = false;
+        for a in asked {
+            match a {
+                super::grid::Asked::Pick(name, url, several) => {
+                    insert_emote_word(target_input, &name, &url);
+                    target_input.redraw();
+                    picked = true;
+                    if !several {
+                        done.set(true);
+                    }
+                }
+                super::grid::Asked::Favorite(name, url) => {
+                    cfg.send_modify(|c| {
+                        let list = &mut c.window.favorite_emotes;
+                        match list.iter().position(|(n, _)| *n == name) {
+                            Some(pos) => drop(list.remove(pos)),
+                            None => list.push((name, url)),
+                        }
+                    });
+                    let _ = crate::save(&cfg.borrow());
+                    refill = true;
+                }
+                super::grid::Asked::Fold(title) => {
+                    let mut c = collapsed.borrow_mut();
+                    if !c.remove(&title) {
+                        c.insert(title);
+                    }
+                    refill = true;
+                }
             }
         }
         if img::ARRIVED.load(std::sync::atomic::Ordering::Relaxed) != pics {
             pics = img::ARRIVED.load(std::sync::atomic::Ordering::Relaxed);
-            scroll.redraw();
+            grid.area.clone().redraw();
         }
         let rev = emotes::REV.load(std::sync::atomic::Ordering::Relaxed);
-        if rev != seen_rev || rebuild_slot.replace(false) {
+        if rev != seen_rev || refill {
             seen_rev = rev;
-            let y = scroll.yposition();
-            fill();
-            scroll.scroll_to(0, y);
+            fill(true);
         }
     }
     win.hide();
     app::delete_widget(win);
-
-    let words = picked_words.take();
-    while flushed < words.len() {
-        insert_emote_word(target_input, &words[flushed]);
-        flushed += 1;
-    }
-    if !words.is_empty() {
+    if picked {
         let _ = target_input.take_focus();
     }
 }
@@ -2235,13 +2442,15 @@ fn card(cmds: &Cmds, l: &Line) {
     let (p, id) = (l.platform.clone(), l.user_id.clone());
     let seen = query(cmds, move |e| e.chatter(&p, &id)).flatten().unwrap_or_default();
     let platform = NAMES[PLATFORMS.iter().position(|x| *x == l.platform).unwrap_or(0)];
-    let mut win = Window::default()
-        .with_size(460, 480)
-        .with_label(&format!("{} on {platform}", l.user));
+    let mut win = Window::default().with_size(460, 480).with_label(&trf(
+        "chat.user_on_platform",
+        &[("user", &l.user), ("platform", platform)],
+    ));
     win.set_xclass("streamerz");
     let mut col = Flex::new(10, 10, 440, 460, None).column();
     col.set_pad(8);
     let mut head = Flex::default().row();
+    head.set_pad(8);
     let pic = Frame::default();
     head.fixed(&pic, 64);
     let mut name = Frame::default()
@@ -2256,9 +2465,10 @@ fn card(cmds: &Cmds, l: &Line) {
     let mut rows = InfoRows::new("");
     rows.set_column_widths(&[150]);
     let mut bottom = Flex::default().row();
+    bottom.set_pad(8);
     Frame::default();
     let mut open = button(&mut bottom, "Open profile", 110);
-    let mut close = button(&mut bottom, "Close", 80);
+    let mut close = button(&mut bottom, tr("dialogs.close"), 80);
     bottom.end();
     col.fixed(&bottom, ROW);
     col.end();
@@ -2269,10 +2479,10 @@ fn card(cmds: &Cmds, l: &Line) {
         rows.add(&format!("{k}\t{}", v.replace(['\n', '\t'], " ")));
     };
     let roles: Vec<&str> = [
-        (l.broadcaster, "broadcaster"),
-        (l.moderator, "moderator"),
-        (l.vip, "VIP"),
-        (l.subscriber, "subscriber"),
+        (l.broadcaster, tr("chat.card_broadcaster")),
+        (l.moderator, tr("chat.card_moderator")),
+        (l.vip, tr("chat.card_vip")),
+        (l.subscriber, tr("chat.card_subscriber")),
     ]
     .iter()
     .filter(|r| r.0)
@@ -2280,15 +2490,15 @@ fn card(cmds: &Cmds, l: &Line) {
     .collect();
     add(
         &mut rows,
-        "Roles",
+        tr("chat.card_roles"),
         &if roles.is_empty() {
-            "viewer".into()
+            tr("chat.card_viewer").into()
         } else {
             roles.join(", ")
         },
     );
-    add(&mut rows, "Messages this session", &seen.messages.to_string());
-    add(&mut rows, "First message at", &seen.first);
+    add(&mut rows, tr("chat.card_messages_session"), &seen.messages.to_string());
+    add(&mut rows, tr("chat.card_first_message"), &seen.first);
     if !seen.args.contains_key("userId") {
         add(&mut rows, "userId", &l.user_id);
     }
@@ -2299,13 +2509,17 @@ fn card(cmds: &Cmds, l: &Line) {
     }
     let asks = matches!(l.platform.as_str(), "twitch" | "kick");
     if asks {
-        add(&mut rows, &format!("{platform} says"), "looking up...");
+        add(
+            &mut rows,
+            &trf("chat.card_platform_says", &[("platform", platform)]),
+            tr("chat.card_looking_up"),
+        );
     }
     rows.set_callback(|b| {
         if app::event_clicks() {
             if let Some(t) = b.selected_text() {
                 app::copy(t.split_once('\t').map_or(t.as_str(), |x| x.1));
-                crate::say("Copied".into());
+                crate::say(tr("chat.copied").into());
             }
         }
     });

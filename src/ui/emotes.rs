@@ -7,6 +7,7 @@
 
 use super::{tell, Msg};
 use crate::engine::UiCmd;
+use crate::i18n::tr;
 use crate::Config;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -36,18 +37,18 @@ pub enum Provider {
 impl Provider {
     pub fn label(self, platform: &str) -> &'static str {
         match self {
-            Provider::Favorites => "Favorites",
+            Provider::Favorites => tr("emotes.favorites"),
             Provider::Platform => match platform {
                 "twitch" => "Twitch",
                 "kick" => "Kick",
                 "youtube" => "YouTube",
                 "tiktok" => "TikTok",
-                _ => "Platform",
+                _ => tr("emotes.platform"),
             },
             Provider::SevenTv => "7TV",
             Provider::Bttv => "BTTV",
             Provider::Ffz => "FFZ",
-            Provider::Emoji => "Emoji",
+            Provider::Emoji => tr("emotes.emoji"),
         }
     }
 }
@@ -119,11 +120,12 @@ struct Catalog {
 impl Catalog {
     /// Twitch refused the token for the account's emotes: not worth keeping, the next login fixes it.
     fn wants_login(&self) -> bool {
-        self.twitch_native.iter().flatten().any(|s| s.title == MISSING_SCOPE)
+        self.twitch_native
+            .iter()
+            .flatten()
+            .any(|s| s.title == tr("emotes.missing_scope"))
     }
 }
-
-const MISSING_SCOPE: &str = "Personal & Subscriber Emotes";
 
 struct Store {
     last_key: String,
@@ -238,10 +240,8 @@ pub fn sections(
     let slot = usize::from(!as_broadcaster);
     match provider {
         Provider::Favorites => vec![EmoteSection {
-            title: "Favorite Emotes".into(),
-            note: favorites
-                .is_empty()
-                .then(|| "Right-click any emote or emoji to ★ save it to your Favorites.".into()),
+            title: tr("emotes.favorite_emotes").into(),
+            note: favorites.is_empty().then(|| tr("emotes.favorites_hint").into()),
             emotes: favorites.to_vec(),
         }],
         Provider::Emoji => groups()
@@ -267,7 +267,7 @@ pub fn sections(
                     };
                     if !seen.is_empty() {
                         out.push(EmoteSection {
-                            title: "Recently Seen in Chat".into(),
+                            title: tr("emotes.seen_in_chat").into(),
                             note: None,
                             emotes: seen.to_vec(),
                         });
@@ -275,8 +275,8 @@ pub fn sections(
                     out.extend(base.iter().cloned());
                     if out.is_empty() {
                         out.push(EmoteSection {
-                            title: "Twitch Emotes".into(),
-                            note: Some("Loading Twitch emotes… (make sure an account is logged in)".into()),
+                            title: tr("emotes.twitch_emotes").into(),
+                            note: Some(tr("emotes.twitch_loading").into()),
                             emotes: Vec::new(),
                         });
                     }
@@ -284,50 +284,43 @@ pub fn sections(
                 "kick" => {
                     if !seen.is_empty() {
                         out.push(EmoteSection {
-                            title: "Recently Seen in Chat".into(),
+                            title: tr("emotes.seen_in_chat").into(),
                             note: None,
                             emotes: seen.to_vec(),
                         });
                     }
                     for mut sec in st.cat.kick_native.iter().cloned() {
-                        if !as_broadcaster && sec.title == "Kick Subscriber Emotes" && sec.note.is_none() {
-                            sec.note =
-                                Some("Sending as Bot: subscriber-only emotes require the bot to be subscribed.".into());
+                        if !as_broadcaster && sec.title == tr("emotes.kick_subscriber_emotes") && sec.note.is_none() {
+                            sec.note = Some(tr("emotes.kick_bot_sub_warning").into());
                         }
                         out.push(sec);
                     }
                     if out.is_empty() {
                         out.push(EmoteSection {
-                            title: "Kick Emotes".into(),
-                            note: Some("No Kick emotes loaded yet for this channel.".into()),
+                            title: tr("emotes.kick_emotes").into(),
+                            note: Some(tr("emotes.kick_none_loaded").into()),
                             emotes: Vec::new(),
                         });
                     }
                 }
                 "youtube" => {
                     out.push(EmoteSection {
-                        title: "Channel & Seen Custom Emoji".into(),
-                        note: seen.is_empty().then(|| {
-                            "Custom YouTube channel emoji appear here automatically as they are used in live chat."
-                                .into()
-                        }),
+                        title: tr("emotes.channel_and_seen").into(),
+                        note: seen.is_empty().then(|| tr("emotes.youtube_seen_hint").into()),
                         emotes: seen.to_vec(),
                     });
                 }
                 "tiktok" => {
                     out.push(EmoteSection {
-                        title: "Seen TikTok Live Emotes".into(),
-                        note: seen.is_empty().then(|| {
-                            "Custom TikTok subscriber stickers/emotes appear here as they are used in the live room."
-                                .into()
-                        }),
+                        title: tr("emotes.tiktok_seen").into(),
+                        note: seen.is_empty().then(|| tr("emotes.tiktok_seen_hint").into()),
                         emotes: seen.to_vec(),
                     });
                 }
                 _ => {
                     if !seen.is_empty() {
                         out.push(EmoteSection {
-                            title: "Seen Across Connected Chats".into(),
+                            title: tr("emotes.seen_across_chats").into(),
                             note: None,
                             emotes: seen.to_vec(),
                         });
@@ -586,8 +579,8 @@ async fn fetch_twitch_account_emotes(
     let Some((uid, token)) = acct.filter(|(_, t)| !t.is_empty()) else {
         return if is_bot {
             vec![EmoteSection {
-                title: "Bot Account Emotes".into(),
-                note: Some("No Twitch bot account logged in — using channel & global emotes.".into()),
+                title: tr("emotes.bot_emotes").into(),
+                note: Some(tr("emotes.no_twitch_bot").into()),
                 emotes: Vec::new(),
             }]
         } else {
@@ -655,25 +648,25 @@ async fn fetch_twitch_account_emotes(
         let mut secs = Vec::new();
         if !channel_emotes.is_empty() {
             secs.push(EmoteSection {
-                title: "Channel Emotes".into(),
+                title: tr("emotes.channel_emotes").into(),
                 note: None,
                 emotes: channel_emotes,
             });
         }
         secs.push(EmoteSection {
             title: if is_bot {
-                "Bot Unlocked & Subscriber Emotes".into()
+                tr("emotes.bot_unlocked_emotes").into()
             } else {
-                "Your Unlocked & Subscriber Emotes".into()
+                tr("emotes.user_unlocked_emotes").into()
             },
             note: unlocked_emotes
                 .is_empty()
-                .then(|| "No additional subscriber or Prime/Turbo emotes unlocked on this account.".into()),
+                .then(|| tr("emotes.no_unlocked_emotes").into()),
             emotes: unlocked_emotes,
         });
         if !global_emotes.is_empty() {
             secs.push(EmoteSection {
-                title: "Twitch Global Emotes".into(),
+                title: tr("emotes.twitch_global_emotes").into(),
                 note: None,
                 emotes: global_emotes,
             });
@@ -704,24 +697,21 @@ async fn fetch_twitch_account_emotes(
     let mut secs = Vec::new();
     if missing_scope {
         secs.push(EmoteSection {
-            title: MISSING_SCOPE.into(),
-            note: Some(
-                "Log in again on the Accounts tab to grant `user:read:emotes` and load all your personal & sub emotes."
-                    .into(),
-            ),
+            title: tr("emotes.missing_scope").into(),
+            note: Some(tr("emotes.missing_scope_note").into()),
             emotes: Vec::new(),
         });
     }
     if !channel_emotes.is_empty() {
         secs.push(EmoteSection {
-            title: "Channel Emotes".into(),
+            title: tr("emotes.channel_emotes").into(),
             note: None,
             emotes: channel_emotes,
         });
     }
     if !global_emotes.is_empty() {
         secs.push(EmoteSection {
-            title: "Twitch Global Emotes".into(),
+            title: tr("emotes.twitch_global_emotes").into(),
             note: None,
             emotes: global_emotes,
         });
@@ -773,21 +763,21 @@ pub fn parse_kick_emotes_payload(v: &Value) -> (Vec<EmoteSection>, HashMap<Strin
     let mut secs = Vec::new();
     if !chan_free.is_empty() {
         secs.push(EmoteSection {
-            title: "Kick Channel Emotes".into(),
+            title: tr("emotes.kick_channel_emotes").into(),
             note: None,
             emotes: chan_free,
         });
     }
     if !chan_sub.is_empty() {
         secs.push(EmoteSection {
-            title: "Kick Subscriber Emotes".into(),
+            title: tr("emotes.kick_subscriber_emotes").into(),
             note: None,
             emotes: chan_sub,
         });
     }
     if !globals.is_empty() {
         secs.push(EmoteSection {
-            title: "Kick Global Emotes".into(),
+            title: tr("emotes.kick_global_emotes").into(),
             note: None,
             emotes: globals,
         });
@@ -875,7 +865,7 @@ async fn fetch_all(p: &LoadParams) -> Catalog {
         let ffz_ch = parse_ffz_vec(&ffz_room["sets"], x);
         if !ffz_ch.is_empty() {
             twitch_ffz.push(EmoteSection {
-                title: "Channel FFZ Emotes".into(),
+                title: tr("emotes.channel_ffz").into(),
                 note: None,
                 emotes: ffz_ch,
             });
@@ -884,7 +874,7 @@ async fn fetch_all(p: &LoadParams) -> Catalog {
         bttv_ch.extend(parse_bttv_vec(&bttv_room["sharedEmotes"], x));
         if !bttv_ch.is_empty() {
             twitch_bttv.push(EmoteSection {
-                title: "Channel & Shared BTTV Emotes".into(),
+                title: tr("emotes.channel_shared_bttv").into(),
                 note: None,
                 emotes: bttv_ch,
             });
@@ -892,14 +882,14 @@ async fn fetch_all(p: &LoadParams) -> Catalog {
     }
     if !bttv_global.is_empty() {
         twitch_bttv.push(EmoteSection {
-            title: "Global BTTV Emotes".into(),
+            title: tr("emotes.global_bttv").into(),
             note: None,
             emotes: bttv_global.clone(),
         });
     }
     if !ffz_global.is_empty() {
         twitch_ffz.push(EmoteSection {
-            title: "Global FFZ Emotes".into(),
+            title: tr("emotes.global_ffz").into(),
             note: None,
             emotes: ffz_global,
         });
@@ -910,17 +900,15 @@ async fn fetch_all(p: &LoadParams) -> Catalog {
         if let Some(p_emotes) = personal {
             if !p_emotes.is_empty() {
                 secs.push(EmoteSection {
-                    title: "Account 7TV Emotes".into(),
+                    title: tr("emotes.account_7tv").into(),
                     note: None,
                     emotes: p_emotes,
                 });
             }
         }
         secs.push(EmoteSection {
-            title: "Channel 7TV Emotes".into(),
-            note: tw_chan_7tv
-                .is_empty()
-                .then(|| "No 7TV channel emote set configured for this channel.".into()),
+            title: tr("emotes.channel_7tv").into(),
+            note: tw_chan_7tv.is_empty().then(|| tr("emotes.no_7tv_channel_set").into()),
             emotes: tw_chan_7tv.clone(),
         });
         if !seven_global.is_empty() {
@@ -946,10 +934,8 @@ async fn fetch_all(p: &LoadParams) -> Catalog {
     if !p.kick_uid.is_empty() {
         let (_, k7) = fetch_7tv_user_set("kick", &p.kick_uid, x).await;
         kick_7tv.push(EmoteSection {
-            title: "Channel 7TV Emotes".into(),
-            note: k7
-                .is_empty()
-                .then(|| "No 7TV emote set linked to this Kick channel.".into()),
+            title: tr("emotes.channel_7tv").into(),
+            note: k7.is_empty().then(|| tr("emotes.no_7tv_kick_set").into()),
             emotes: k7,
         });
     }
@@ -969,7 +955,7 @@ async fn fetch_all(p: &LoadParams) -> Catalog {
         let ((_, y7), (_, yb)) = tokio::join!(fetch_7tv_user_set("youtube", &p.yt_chan_id, x), get_json(&yb_url, &[]),);
         if !y7.is_empty() {
             youtube_7tv.push(EmoteSection {
-                title: "Channel 7TV Emotes".into(),
+                title: tr("emotes.channel_7tv").into(),
                 note: None,
                 emotes: y7,
             });
@@ -978,7 +964,7 @@ async fn fetch_all(p: &LoadParams) -> Catalog {
         yb_ch.extend(parse_bttv_vec(&yb["sharedEmotes"], x));
         if !yb_ch.is_empty() {
             youtube_bttv.push(EmoteSection {
-                title: "Channel & Shared BTTV Emotes".into(),
+                title: tr("emotes.channel_shared_bttv").into(),
                 note: None,
                 emotes: yb_ch,
             });
@@ -993,7 +979,7 @@ async fn fetch_all(p: &LoadParams) -> Catalog {
     }
     if !bttv_global.is_empty() {
         youtube_bttv.push(EmoteSection {
-            title: "Global BTTV Emotes".into(),
+            title: tr("emotes.global_bttv").into(),
             note: None,
             emotes: bttv_global,
         });

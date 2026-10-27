@@ -1,6 +1,7 @@
 //! Streamer.bot rebuilt small: actions, triggers and Streamer.bot's servers for Twitch, Kick, YouTube,
 //! OBS and Streamlabs Desktop, running on ~nothing.
 
+mod brand;
 mod commands;
 pub mod decks;
 pub mod donations;
@@ -11,6 +12,7 @@ pub mod fileio;
 mod fmt;
 pub mod hotkeys;
 pub mod http;
+mod i18n;
 pub mod inputs;
 pub mod kick;
 mod math;
@@ -30,6 +32,7 @@ mod tray;
 pub mod twitch;
 pub mod types;
 mod ui;
+mod update;
 mod vars;
 mod webcast;
 pub mod youtube;
@@ -46,6 +49,8 @@ use tokio::sync::watch;
 #[serde(default)]
 pub struct Config {
     dark: bool,
+    /// The language of the app (a code from `i18n`).
+    locale: String,
     start_hidden: bool,
     autostart: bool,
     /// Actions, groups and queues, in Streamer.bot's actions.json shape.
@@ -98,6 +103,16 @@ pub struct Config {
     /// The window as it was left.
     #[serde(default)]
     pub window: WindowState,
+    /// What a new release does: ask first, install in the background, or nothing.
+    pub updates: update::Updates,
+    /// Plugins by id (their file's name): on or off, and their settings.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub plugins: std::collections::BTreeMap<String, engine::plugins::PluginConfig>,
+    /// How the window shows dates and times (.NET patterns); empty follows the system.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    date_format: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    time_format: String,
     /// Fields this build doesn't know (e.g. written by a newer one): kept, so a save loses nothing.
     #[serde(flatten)]
     rest: Map<String, Value>,
@@ -107,6 +122,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             dark: true,
+            locale: i18n::DEFAULT.into(),
             start_hidden: true,
             autostart: false,
             actions: model::ActionsFile::default(),
@@ -132,6 +148,10 @@ impl Default for Config {
             donations: donations::DonationsConfig::default(),
             builtins: false,
             window: WindowState::default(),
+            updates: update::Updates::default(),
+            plugins: Default::default(),
+            date_format: String::new(),
+            time_format: String::new(),
             rest: Map::new(),
         }
     }
@@ -157,6 +177,9 @@ pub struct WindowState {
     /// Starred favorite emotes and emoji in the picker: (name, image URL).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub favorite_emotes: Vec<(String, String)>,
+    /// The sidebar shows only its icons.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub nav_collapsed: bool,
 }
 
 impl Config {
@@ -463,8 +486,11 @@ fn main() {
         return;
     }
     say(version());
+    update::tidy();
     secrets::init(&config_path());
     let cfg = load_from(&config_path());
+    i18n::set(&cfg.locale);
+    fmt::set_shown_as(&cfg.date_format, &cfg.time_format);
     say(format!("config: {}", config_path().display()));
     let app = ui::app();
     let (ui_tx, ui_rx) = fltk::app::channel();
@@ -486,12 +512,14 @@ fn main() {
             e.load_chat_history();
             e.load_community();
             e.add_builtins();
+            e.plugins_start();
             e.auto_connect();
             if secrets::is_locked() {
                 engine::spawn_secret_recovery(e.clone());
             }
             tokio::task::spawn_local(servers::run(e.clone()));
             e.started();
+            tokio::task::spawn_local(update::check(engine_cfg.clone(), false));
             e.timers();
             while let Some(f) = cmd_rx.recv().await {
                 f(&e);

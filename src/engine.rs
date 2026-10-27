@@ -22,6 +22,7 @@ pub mod chatlog;
 pub mod community;
 pub mod events;
 pub mod globals;
+pub mod plugins;
 mod rest;
 
 pub const DEFAULT_QUEUE: &str = "00000000-0000-0000-0000-000000000000";
@@ -123,6 +124,8 @@ pub struct Engine {
     pub(crate) hotkeys: RefCell<crate::hotkeys::Live>,
     pub(crate) live_wake: tokio::sync::Notify,
     streaming_since: std::cell::Cell<Option<std::time::Instant>>,
+    /// The plugins that are on.
+    plugins: RefCell<Vec<plugins::Loaded>>,
 }
 
 /// A running action's context.
@@ -163,7 +166,7 @@ pub fn supported(kind: u32) -> bool {
             | 3 | 5 | 1001..=1007 | 1009..=1023 | 1025 | 1028 | 1030..=1034 | 1038..=1040 | 4001..=4012 | 7001 | 8001 | 8002 | 9001..=9003 | 10001 | 11001 | 11002 | 11004..=11008 | 15001 | 20001..=20003 | 21001..=21010
             | 35001 | 35002 | 35010..=35012 | 35020..=35022 | 35030 | 35031
             | 35040..=35043 | 35101..=35103 | 35105..=35108 | 35113 | 43001..=43003 | 99900..=99904
-            | 1000 | 1026 | 1027 | 1035..=1037
+            | 1000 | 1026 | 1027 | 1035..=1037 | 99800
     )
 }
 
@@ -277,6 +280,7 @@ impl Engine {
             hotkeys: RefCell::default(),
             live_wake: tokio::sync::Notify::new(),
             streaming_since: std::cell::Cell::new(None),
+            plugins: RefCell::default(),
         })
     }
 
@@ -1343,6 +1347,9 @@ impl Engine {
         matches: impl Fn(&Obj) -> bool,
     ) -> usize {
         self.record(kind, args);
+        if !self.plugins.borrow().is_empty() {
+            self.plugins_hear(name(TRIGGERS, kind).unwrap_or(trigger_name), args);
+        }
         let hits: Vec<(String, String)> = {
             let c = self.cfg.borrow();
             c.actions
@@ -1992,6 +1999,7 @@ impl Engine {
                 }
                 // Group
                 99900 => return self.branch(ctx, o).await,
+                plugins::SUB_PLUGIN => return self.plugin_sub(ctx, o),
                 _ => self.unsupported(kind),
             }
             Flow::Continue

@@ -1,14 +1,15 @@
 //! The Accounts tab: one row per platform (status, channel, Connect, broadcaster and bot logins),
 //! with the rarely needed settings behind Advanced.
 
-use super::lists::{save, title};
+use super::lists::save;
 use super::{button, dialogs, query, tell, ROW};
 use crate::engine::Engine;
+use crate::i18n::{button_id, tr, trf};
 use crate::model::Obj;
 use crate::Config;
 use fltk::button::{Button, CheckButton};
 use fltk::dialog;
-use fltk::enums::{Align, Color};
+use fltk::enums::Align;
 use fltk::frame::Frame;
 use fltk::group::{Flex, Wizard};
 use fltk::input::{Input, SecretInput};
@@ -85,12 +86,12 @@ impl P {
                 };
                 if a.token.access_token.is_empty() {
                     Some(if locked {
-                        "keyring locked — click Unlock Logins"
+                        tr("accounts.note.keyring_locked")
                     } else {
-                        "login expired: log in again"
+                        tr("accounts.note.login_expired")
                     })
                 } else if want.iter().any(|w| !a.token.scope.iter().any(|g| g == w)) {
-                    Some("log in again: new permissions")
+                    Some(tr("accounts.note.new_permissions"))
                 } else {
                     None
                 }
@@ -98,16 +99,16 @@ impl P {
             P::YouTube => {
                 let a = if bot { &c.youtube.bot } else { &c.youtube.broadcaster }.as_ref()?;
                 (a.token.access_token.is_empty() && a.token.refresh_token.is_empty() && locked)
-                    .then_some("keyring locked — click Unlock Logins")
+                    .then_some(tr("accounts.note.keyring_locked"))
             }
             P::Kick => {
                 let a = if bot { &c.kick.bot } else { &c.kick.broadcaster }.as_ref()?;
                 (a.token.access_token.is_empty() && a.token.refresh_token.is_empty() && locked)
-                    .then_some("keyring locked — click Unlock Logins")
+                    .then_some(tr("accounts.note.keyring_locked"))
             }
             P::TikTok => {
                 let a = if bot { &c.tiktok.bot } else { &c.tiktok.broadcaster }.as_ref()?;
-                (a.session_cookie.is_empty() && locked).then_some("keyring locked — click Unlock Logins")
+                (a.session_cookie.is_empty() && locked).then_some(tr("accounts.note.keyring_locked"))
             }
         }
     }
@@ -314,10 +315,7 @@ pub(super) fn unlock_logins_interactive(cmds: &Cmds) {
                 }
                 Ok(false) => {}
                 Err(err) => {
-                    dialog::alert_default(&format!(
-                        "Still couldn't unlock your saved logins from the system keyring:\n{err}\n\n\
-                         Make sure your desktop keyring (e.g. GNOME Keyring / KDE Wallet) is running and unlocked."
-                    ));
+                    dialog::alert_default(&trf("accounts.keyring_unlock_failed", &[("error", &err.to_string())]));
                 }
             }
             break;
@@ -498,11 +496,10 @@ impl Accounts {
         let locked = crate::secrets::is_locked();
         if locked {
             let detail = match crate::secrets::locked_reason() {
-                Some(reason) if !reason.is_empty() => format!("🔒 Saved logins locked ({reason})"),
-                _ => "🔒 Saved logins are locked because the system keyring wasn't ready or is locked.".to_string(),
+                Some(reason) if !reason.is_empty() => trf("accounts.locked_reason", &[("reason", &reason)]),
+                _ => tr("accounts.locked_default").to_string(),
             };
-            self.lock_msg.set_label(&detail.replace('@', "@@"));
-            self.lock_msg.set_label_color(Color::from_rgb(0xe0, 0xa8, 0x30));
+            super::Health::Locked.show(&mut self.lock_msg, &detail);
             self.lock_bar.show();
         } else {
             self.lock_bar.hide();
@@ -511,57 +508,65 @@ impl Accounts {
         let c = self.cfg.borrow();
         for (i, r) in self.rows.iter_mut().enumerate() {
             let active = on[i] || standby[i];
-            let (text, color) = if on[i] {
-                ("● Connected".to_string(), Color::from_rgb(0x3c, 0xb3, 0x71))
+            use super::Health as H;
+            let (h, text) = if on[i] {
+                (H::Up, tr("conns.connected").to_string())
             } else if standby[i] {
-                let s = match r.p {
-                    P::TikTok if !tiktok.is_empty() => format!("◐ {tiktok}"),
-                    _ => "◐ Standby — waiting for live stream (wakes on stream start)".to_string(),
-                };
-                (s, Color::from_rgb(0x64, 0xb5, 0xf6))
+                match r.p {
+                    P::TikTok if !tiktok.is_empty() => (H::Standby, tiktok.clone()),
+                    _ => (H::Standby, tr("accounts.standby_default").to_string()),
+                }
             } else if locked && r.p.raw_account_name(&c, false).is_some() {
-                (
-                    "🔒 Keyring locked — click Unlock Logins above".to_string(),
-                    Color::from_rgb(0xe0, 0xa8, 0x30),
-                )
+                (H::Locked, tr("accounts.keyring_locked_above").to_string())
             } else {
                 let why = match r.p {
-                    P::Twitch if c.twitch.broadcaster.is_none() => "log in the broadcaster first".into(),
+                    P::Twitch if c.twitch.broadcaster.is_none() => tr("accounts.login_broadcaster_first").into(),
                     P::Twitch => String::new(),
                     P::TikTok if !tiktok.is_empty() => tiktok.clone(),
-                    p if p.channel(&c).is_empty() => "log in the broadcaster first".into(),
+                    p if p.channel(&c).is_empty() => tr("accounts.login_broadcaster_first").into(),
                     _ => String::new(),
                 };
-                let t = if why.is_empty() {
-                    "○ Not connected".to_string()
+                if why.is_empty() {
+                    (H::Off, tr("conns.off").to_string())
                 } else {
-                    format!("○ Not connected: {why}")
-                };
-                (t, Color::from_rgb(0x99, 0x99, 0x99))
+                    (H::Off, trf("accounts.off_why", &[("why", &why)]))
+                }
             };
-            // "@name" would be read as a symbol and cut the label.
-            r.status.set_label(&text.replace('@', "@@"));
+            h.show(&mut r.status, &text);
             r.status.set_tooltip(&text.replace('@', "@@"));
-            r.status.set_label_color(color);
-            r.connect.set_label(if active { "Disconnect" } else { "Connect" });
-            r.channel.set_label(&if r.p.own(&c) {
-                "Channel: the broadcaster's".to_string()
+            r.connect.set_label(if active {
+                tr("btn.disconnect")
             } else {
-                format!("Channel: {} (Advanced)", r.p.channel(&c).replace('@', "@@"))
+                tr("btn.connect")
+            });
+            super::with_icon(&mut r.connect);
+            r.channel.set_label(&if r.p.own(&c) {
+                tr("accounts.channel_yours").to_string()
+            } else {
+                trf(
+                    "accounts.channel_advanced",
+                    &[("channel", &r.p.channel(&c).replace('@', "@@"))],
+                )
             });
             r.auto.set_checked(r.p.auto(&c));
             for (bot, (pic, name, b)) in r.who.iter_mut().enumerate() {
-                let who = if bot == 1 { "Bot" } else { "Broadcaster" };
+                let who = if bot == 1 {
+                    tr("accounts.who_bot")
+                } else {
+                    tr("accounts.who_broadcaster")
+                };
                 let account = r.p.account(&c, bot == 1);
                 match &account {
                     Some(n) => {
                         name.set_label(&format!("{who}: {}", n.replace('@', "@@")));
                         name.set_tooltip(&n.replace('@', "@@"));
-                        b.set_label("Logout");
+                        b.set_label(tr("btn.logout"));
+                        super::with_icon(b);
                     }
                     None => {
-                        name.set_label(&format!("{who}: not logged in"));
-                        b.set_label("Login");
+                        name.set_label(&trf("accounts.no_who", &[("who", &who.to_lowercase())]));
+                        b.set_label(tr("btn.login"));
+                        super::with_icon(b);
                     }
                 }
                 let raw_name = r.p.raw_account_name(&c, bot == 1);
@@ -578,41 +583,50 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
     let mut col = super::tab(tabs, "Accounts");
 
     let mut lock_bar = Flex::default().row();
+    lock_bar.set_pad(8);
     let lock_msg = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
-    let mut unlock_btn = button(&mut lock_bar, "Unlock Logins", 120);
+    let mut unlock_btn = button(&mut lock_bar, tr("accounts.unlock_logins"), 120);
     lock_bar.end();
     col.fixed(&lock_bar, ROW);
     lock_bar.hide();
 
     let mut rows = Vec::new();
     for p in ALL {
-        title(&mut col, p.name());
         let mut top = Flex::default().row();
+        top.set_pad(8);
+        let mut name = Frame::default()
+            .with_label(&format!("  {}", p.name()))
+            .with_align(Align::Left | Align::Inside | Align::ImageNextToText);
+        name.set_label_font(fltk::enums::Font::HelveticaBold);
+        name.set_image(super::img::logo(p.name(), ROW - 8));
+        top.fixed(&name, 110);
         let status = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
-        let auto = CheckButton::default().with_label("Connect on start");
+        let auto = CheckButton::default().with_label(tr("accounts.connect_on_start"));
         top.fixed(&auto, 140);
-        let connect = button(&mut top, "Connect", 100);
-        let adv = button(&mut top, "Advanced…", 100);
+        let connect = button(&mut top, tr("btn.connect"), 100);
+        let adv = button(&mut top, &format!("{}…", tr("btn.advanced")), 100);
         top.end();
         col.fixed(&top, ROW);
 
         let mut bottom = Flex::default().row();
-        let channel = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
-        bottom.fixed(&channel, 230);
+        bottom.set_pad(8);
         let gap = Frame::default();
-        bottom.fixed(&gap, 8);
+        bottom.fixed(&gap, 110);
+        let mut channel = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+        channel.set_label_color(super::muted());
+        bottom.fixed(&channel, 120);
         let mut who = Vec::new();
         for _ in 0..2 {
             let pic = Frame::default();
             bottom.fixed(&pic, ROW);
             let f = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
-            let b = button(&mut bottom, "Login", 80);
+            let b = button(&mut bottom, tr("btn.login"), 80);
             who.push((pic, f, b));
         }
         bottom.end();
         col.fixed(&bottom, ROW);
         let sep = Frame::default();
-        col.fixed(&sep, 6);
+        col.fixed(&sep, 10);
         let who: [(Frame, Frame, Button); 2] = [who.remove(0), who.remove(0)];
         rows.push(Row {
             p,
@@ -625,15 +639,10 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
         });
     }
     let guide = Frame::default()
-        .with_label(
-            "• Login opens your browser (Twitch shows a code to type at twitch.tv/activate).\n\
-             • In Chat, click the avatar next to any chat box to switch between Bot and Broadcaster.\n\
-             • Kick and YouTube send with your own app: Advanced shows how to make one (once).\n\
-             • YouTube & TikTok stand by quietly while offline and wake up automatically on stream start.\n\
-             • Each platform reads the broadcaster's channel; another one can be set in Advanced.",
-        )
+        .with_label(tr("accounts.guide"))
         .with_align(Align::Left | Align::Inside | Align::Wrap);
-    col.fixed(&guide, 88);
+    guide.clone().set_label_color(super::muted());
+    col.fixed(&guide, 72);
     Frame::default();
     col.end();
 
@@ -684,7 +693,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
             let cmds = cmds.clone();
             let refresh = refresh.clone();
             move |b| {
-                p.connect(&cmds, b.label() == "Connect");
+                p.connect(&cmds, button_id(&b.label()) == Some("connect"));
                 refresh();
             }
         });
@@ -694,7 +703,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
             let cmds = cmds.clone();
             let refresh = refresh.clone();
             b.set_callback(move |b| {
-                if b.label() == "Logout" {
+                if button_id(&b.label()) == Some("logout") {
                     let mut revoke = None;
                     save(&cfg, |c| revoke = p.logout(c, bot));
                     if let Some(url) = revoke {
@@ -768,7 +777,6 @@ fn browser_login<T: Send + 'static>(
     bot: bool,
     f: impl std::future::Future<Output = Result<T, String>> + 'static + Send,
 ) -> Option<T> {
-    let who = if bot { "bot" } else { "broadcaster" };
     let (tx, rx) = std::sync::mpsc::channel();
     let (htx, hrx) = std::sync::mpsc::channel();
     tell(cmds, move |_| {
@@ -777,15 +785,23 @@ fn browser_login<T: Send + 'static>(
         });
         let _ = htx.send(h.abort_handle());
     });
-    let (mut win, answer) = dialogs::window(420, 110, &format!("{what} login ({who})"));
+    let who_s = if bot {
+        tr("accounts.who_bot").to_lowercase()
+    } else {
+        tr("accounts.who_broadcaster").to_lowercase()
+    };
+    let (mut win, answer) = dialogs::window(
+        420,
+        110,
+        &trf("accounts.browser_login_title", &[("what", what), ("who", &who_s)]),
+    );
     let mut col = Flex::new(10, 10, 400, 90, None).column();
     let msg = Frame::default()
-        .with_label(&format!(
-            "Log in with your {what} {who} account in the browser window that opened.\nThis closes by itself when you're done."
-        ))
+        .with_label(&trf("accounts.browser_login_msg", &[("what", what), ("who", &who_s)]))
         .with_align(Align::Left | Align::Inside | Align::Wrap);
     col.fixed(&msg, 50);
     let mut bar = Flex::default().row();
+    bar.set_pad(8);
     Frame::default();
     let mut cancel = button(&mut bar, "Cancel", 80);
     cancel.set_callback({
@@ -802,7 +818,10 @@ fn browser_login<T: Send + 'static>(
         if let Ok(res) = rx.try_recv() {
             match res {
                 Ok(a) => out = Some(a),
-                Err(e) => dialog::alert_default(&format!("{what} login failed: {e}")),
+                Err(e) => dialog::alert_default(&trf(
+                    "accounts.browser_login_failed",
+                    &[("what", what), ("error", &e.to_string())],
+                )),
             }
             break;
         }
@@ -825,32 +844,28 @@ fn advanced(cfg: &Cfg, p: P) {
     let mut fields: Vec<(&str, String, bool)> = match p {
         P::TikTok => Vec::new(),
         P::Twitch => vec![(
-            "Sub counter rollover (0: never)",
+            tr("accounts.twitch.sub_counter_rollover"),
             c.twitch.sub_counter_rollover.to_string(),
             false,
         )],
         P::Kick => vec![
-            ("Client ID", c.kick.client_id.clone(), false),
-            ("Client secret", c.kick.client_secret.clone(), true),
+            (tr("accounts.kick.client_id"), c.kick.client_id.clone(), false),
+            (tr("accounts.kick.client_secret"), c.kick.client_secret.clone(), true),
         ],
         P::YouTube => vec![
-            ("Video ID (optional)", c.youtube.video_id.clone(), false),
-            ("Google client ID", c.youtube.client_id.clone(), false),
-            ("Google client secret", c.youtube.client_secret.clone(), true),
+            (tr("accounts.youtube.video_id"), c.youtube.video_id.clone(), false),
+            (tr("accounts.youtube.client_id"), c.youtube.client_id.clone(), false),
+            (
+                tr("accounts.youtube.client_secret"),
+                c.youtube.client_secret.clone(),
+                true,
+            ),
         ],
     };
     let help = match p {
-        P::Kick => format!(
-            "Sending on Kick needs your own Kick app: kick.com > Settings > Developer > Create app, \
-             redirect URL {}, every scope ticked. Paste its client ID and secret here.",
-            crate::kick::KICK_REDIRECT
-        ),
-        P::YouTube => "Sending on YouTube needs your own Google client: console.cloud.google.com > new project > \
-             enable YouTube Data API v3 > OAuth consent screen (External, Publish) > Credentials > OAuth client, Desktop app. \
-             Leave Video ID empty to follow the channel's current live.".into(),
-        P::Twitch => "The sub counter counts every sub, resub and gifted sub (Get/Set Twitch Sub Counter \
-            Count). Every time it reaches the rollover it starts again and Sub Counter Rollover fires."
-            .into(),
+        P::Kick => trf("accounts.kick.help", &[("url", crate::kick::KICK_REDIRECT)]),
+        P::YouTube => tr("accounts.youtube.help").into(),
+        P::Twitch => tr("accounts.twitch.sub_counter_help").into(),
         P::TikTok => String::new(),
     };
     // Twitch reads only the broadcaster's own channel.
@@ -858,14 +873,14 @@ fn advanced(cfg: &Cfg, p: P) {
         help
     } else {
         let other = if p.own(&c) { "" } else { p.channel(&c) };
-        fields.insert(0, ("Other channel", other.to_string(), false));
-        format!("{help}\nOther channel: read this channel instead of the broadcaster's (empty: theirs).")
+        fields.insert(0, (tr("accounts.other_channel"), other.to_string(), false));
+        format!("{help}{}", tr("accounts.other_channel_help"))
             .trim_start()
             .to_string()
     };
     drop(c);
     let h = 132 + fields.len() as i32 * (ROW + 6);
-    let (mut win, answer) = dialogs::window(620, h, &format!("{} - Advanced", p.name()));
+    let (mut win, answer) = dialogs::window(620, h, &trf("accounts.advanced_title", &[("platform", p.name())]));
     let mut col = Flex::new(10, 10, 600, h - 20, None).column();
     col.set_pad(6);
     let f = Frame::default()
@@ -888,8 +903,9 @@ fn advanced(cfg: &Cfg, p: P) {
         col.fixed(&r, ROW);
     }
     let mut bar = Flex::default().row();
+    bar.set_pad(8);
     if p == P::Kick {
-        let mut b = button(&mut bar, "Copy redirect URL", 150);
+        let mut b = button(&mut bar, tr("btn.copy_redirect_url"), 150);
         b.set_callback(|_| fltk::app::copy(crate::kick::KICK_REDIRECT));
     }
     dialogs::ok_cancel(&mut bar, &answer, true);
@@ -931,15 +947,17 @@ fn advanced(cfg: &Cfg, p: P) {
 
 /// TikTok: the TikTok window (its own browser profile per account) returns the cookies.
 fn tiktok_login(cfg: &Cfg, bot: bool) {
-    let who = if bot { "bot" } else { "broadcaster" };
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || drop(tx.send(crate::tiktok::login(bot))));
-    let (mut win, answer) = dialogs::window(420, 110, &format!("TikTok login ({who})"));
+    let who_s = if bot {
+        tr("accounts.who_bot").to_lowercase()
+    } else {
+        tr("accounts.who_broadcaster").to_lowercase()
+    };
+    let (mut win, answer) = dialogs::window(420, 110, &trf("accounts.tiktok_login_title", &[("who", &who_s)]));
     let mut col = Flex::new(10, 10, 400, 90, None).column();
     let msg = Frame::default()
-        .with_label(&format!(
-            "Log in with your TikTok {who} account in the window that opened.\nThis closes by itself when you're done."
-        ))
+        .with_label(&trf("accounts.tiktok_login_msg", &[("who", &who_s)]))
         .with_align(Align::Left | Align::Inside | Align::Wrap);
     col.fixed(&msg, 50);
     col.end();
@@ -956,7 +974,7 @@ fn tiktok_login(cfg: &Cfg, bot: bool) {
                         &mut c.tiktok.broadcaster
                     } = a;
                 }),
-                Err(e) => dialog::alert_default(&format!("TikTok login failed: {e}")),
+                Err(e) => dialog::alert_default(&trf("accounts.tiktok_login_failed", &[("error", &e.to_string())])),
             }
             break;
         }
@@ -984,7 +1002,10 @@ fn device_login(cfg: &Cfg, cmds: &Cmds, as_bot: bool) {
     let code_resp = match rx.recv() {
         Ok(Ok(resp)) => resp,
         Ok(Err(e)) => {
-            dialog::alert_default(&format!("Failed to start login: {e}"));
+            dialog::alert_default(&trf(
+                "accounts.twitch_device.start_failed",
+                &[("error", &e.to_string())],
+            ));
             return;
         }
         Err(_) => return,
@@ -996,13 +1017,13 @@ fn device_login(cfg: &Cfg, cmds: &Cmds, as_bot: bool) {
 
     crate::oauth::open_browser(&code_resp.verification_uri);
 
-    let (mut win, answer) = dialogs::window(460, 220, &format!("Twitch Login - {who}"));
+    let (mut win, answer) = dialogs::window(460, 220, &trf("accounts.twitch_device.title", &[("who", who)]));
     let mut col = Flex::new(10, 10, 440, 200, None).column();
     col.set_pad(8);
 
-    let msg = format!(
-        "Please authorize streamerz on Twitch.\n\nActivation code:\n  {}\n\nBrowser opened to:\n  {}\n\nWaiting for authorization...",
-        user_code, code_resp.verification_uri
+    let msg = trf(
+        "accounts.twitch_device.msg",
+        &[("code", &user_code), ("url", &code_resp.verification_uri)],
     );
     let msg_frame = Frame::default()
         .with_label(&msg)
@@ -1010,18 +1031,19 @@ fn device_login(cfg: &Cfg, cmds: &Cmds, as_bot: bool) {
     col.fixed(&msg_frame, 140);
 
     let mut bar = Flex::default().row();
-    let mut open_btn = button(&mut bar, "Open Browser", 110);
+    bar.set_pad(8);
+    let mut open_btn = button(&mut bar, tr("btn.open_browser"), 110);
     open_btn.set_callback({
         let uri = code_resp.verification_uri.clone();
         move |_| crate::oauth::open_browser(&uri)
     });
-    let mut copy_btn = button(&mut bar, "Copy Code", 90);
+    let mut copy_btn = button(&mut bar, tr("btn.copy_code"), 90);
     copy_btn.set_callback({
         let code = user_code.clone();
         move |_| fltk::app::copy(&code)
     });
     Frame::default();
-    let mut cancel_btn = button(&mut bar, "Cancel", 80);
+    let mut cancel_btn = button(&mut bar, tr("dialogs.cancel"), 80);
     cancel_btn.set_callback({
         let a = answer.clone();
         move |_| a.set(Some(false))
@@ -1107,12 +1129,12 @@ fn device_login(cfg: &Cfg, cmds: &Cmds, as_bot: bool) {
             match res {
                 Ok(name) => {
                     win.hide();
-                    dialog::message_default(&format!("Successfully logged in {who} as {name}!"));
+                    dialog::message_default(&trf("accounts.twitch_device.success", &[("who", who), ("name", &name)]));
                     break;
                 }
                 Err(e) => {
                     win.hide();
-                    dialog::alert_default(&format!("Login failed: {e}"));
+                    dialog::alert_default(&trf("accounts.twitch_device.failed", &[("error", &e.to_string())]));
                     break;
                 }
             }

@@ -55,6 +55,37 @@ pub enum W {
 
 use W::*;
 
+impl W {
+    /// What it holds, for the MCP server's descriptions.
+    pub fn about(&self) -> String {
+        match self {
+            Text => "text".into(),
+            Multi => "text (several lines)".into(),
+            Bool => "true/false".into(),
+            Bit(b) => format!("bit {b} of a number of flags"),
+            Int => "whole number".into(),
+            Num => "number".into(),
+            Pick(o) => format!("index into {o:?}"),
+            Action => "action id".into(),
+            Queue => "queue id".into(),
+            Timer => "timer id".into(),
+            Command => "command id".into(),
+            UserGroup => "user group name".into(),
+            Client => "WebSocket client id".into(),
+            Server => "WebSocket server id".into(),
+            ObsConnection => "OBS connection id".into(),
+            SlobsConnection => "Streamlabs Desktop connection id".into(),
+            Sub => "sub-action id of the action in actionId".into(),
+            Trigger => "trigger id of the action in actionId".into(),
+            ActionGroup => "action group name".into(),
+            CommandGroup => "command group name".into(),
+            Map => "object of texts".into(),
+            Lines => "list of texts".into(),
+            Keys => "key code (modifiers in modifierMask)".into(),
+        }
+    }
+}
+
 /// (JSON field, label, kind).
 pub type F = (&'static str, &'static str, W);
 
@@ -93,6 +124,35 @@ const WHO: &[&str] = &["Global", "User", "Target user"];
 const PERSISTED: &[&str] = &["Any", "Persisted", "Temporary"];
 // Serilog's levels.
 const LEVELS: &[&str] = &["Verbose", "Debug", "Information", "Warning"];
+
+/// A plugin's fields (a sub-action's, or its settings) as a form's; made once for each `key`.
+pub fn plugin_fields(key: &str, fields: &[crate::engine::plugins::Field]) -> &'static [F] {
+    use std::collections::HashMap;
+    thread_local!(static MADE: std::cell::RefCell<HashMap<String, &'static [F]>> = Default::default());
+    MADE.with_borrow_mut(|m| {
+        *m.entry(key.to_string()).or_insert_with(|| {
+            let leak = |s: &str| -> &'static str { Box::leak(s.to_string().into_boxed_str()) };
+            let out: Vec<F> = fields
+                .iter()
+                .map(|f| {
+                    let w = match f.kind.as_str() {
+                        "lines" => Multi,
+                        "number" => Num,
+                        "bool" => Bool,
+                        "choice" => {
+                            let c: Vec<&'static str> = f.choices.iter().map(|c| leak(c)).collect();
+                            Pick(Box::leak(c.into_boxed_slice()))
+                        }
+                        _ => Text,
+                    };
+                    let label = if f.label.is_empty() { &f.key } else { &f.label };
+                    (leak(&f.key), leak(label), w)
+                })
+                .collect();
+            Box::leak(out.into_boxed_slice())
+        })
+    })
+}
 
 /// A core sub-action's fields; None when it has no form (it opens as JSON).
 pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
@@ -1323,6 +1383,7 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
     }
     Frame::default();
     let mut bar = Flex::default().row();
+    bar.set_pad(8);
     let json = Rc::new(Cell::new(false));
     let mut j = button(&mut bar, "Edit JSON", 100);
     j.set_callback({

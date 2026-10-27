@@ -52,6 +52,9 @@ tao = { version = "0.37", optional = true }
 image-webp = "0.2"
 # Twitch serves animated emotes only as GIF; FLTK reads only their first frame (and not into RGB).
 gif = { version = "0.14.2", default-features = false, features = ["std"] }
+# Plugins (WebAssembly), interpreted: nothing is loaded until a plugin is turned on. Portable dispatch:
+# the tail-call one overflowed the stack at opt-level 0 (dev builds and tests).
+wasmi = { version = "2", default-features = false, features = ["std", "validate", "portable-dispatch"] }
 
 [profile.dev]
 opt-level = 0
@@ -97,3 +100,7 @@ windows-sys = { version = "0.61.2", features = [
 
 [build-dependencies]
 embed-resource = "3.0.11"
+
+[dev-dependencies]
+wasmi = { version = "2", default-features = false, features = ["std", "validate", "portable-dispatch", "wat"] }
+wat = "1"

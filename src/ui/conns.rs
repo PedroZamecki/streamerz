@@ -3,6 +3,7 @@
 //! last log line), with Retry and a way to its settings.
 
 use super::{button, img, query, tell, ROW};
+use crate::i18n::{tr, trf};
 use crate::Config;
 use fltk::app;
 use fltk::enums::{Align, Color, Font};
@@ -165,25 +166,36 @@ fn last_line<'a>(log: &'a [String], prefixes: &[String]) -> Option<&'a String> {
 }
 
 /// "3/5 connected" (plus standby count or keyring warning) for the status bar.
-pub fn summary(cfg: &Cfg, cmds: &Cmds) -> (String, Option<bool>) {
+pub fn summary(cfg: &Cfg, cmds: &Cmds) -> (String, super::Health) {
+    use super::Health as H;
     if crate::secrets::is_locked() {
-        return ("🔒 Keyring locked (click to unlock)".into(), None);
+        return (tr("conns.keyring_locked").into(), H::Locked);
     }
     let l = list(cfg, cmds);
     let up = l.iter().filter(|c| c.up).count();
     let sb = l.iter().filter(|c| !c.up && c.standby).count();
     if l.is_empty() {
-        return ("○ nothing set up".into(), Some(false));
+        return (tr("conns.nothing_set_up").into(), H::Off);
     }
     let all = match (up, sb) {
-        (0, 0) => Some(false),
-        (n, s) if n + s == l.len() && n > 0 => Some(true),
-        _ => None,
+        (0, 0) => H::Off,
+        (n, s) if n + s == l.len() && n > 0 => H::Up,
+        _ => H::Busy,
     };
     let text = if sb > 0 {
-        format!("● {up}/{} connected · {sb} standby", l.len())
+        trf(
+            "conns.summary_standby",
+            &[
+                ("up", &up.to_string()),
+                ("total", &l.len().to_string()),
+                ("standby", &sb.to_string()),
+            ],
+        )
     } else {
-        format!("● {up}/{} connected", l.len())
+        trf(
+            "conns.summary",
+            &[("up", &up.to_string()), ("total", &l.len().to_string())],
+        )
     };
     (text, all)
 }
@@ -213,7 +225,7 @@ fn state(c: &Conn, log: &[String], count: u64, retried: Option<&(Instant, u64)>)
     if c.standby {
         let detail = last_line(log, &c.log)
             .and_then(|l| l.split_once(": ").map(|x| x.1))
-            .unwrap_or("offline — standing by for stream start");
+            .unwrap_or("standby, connects when the stream starts");
         return State::Standby(detail.to_string());
     }
     match last_line(log, &c.log) {
@@ -241,18 +253,21 @@ pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: im
     let conns = list(cfg, cmds);
     let extra_lock = i32::from(crate::secrets::is_locked()) * (ROW + 8);
     let rows_h = conns.len().max(1) as i32 * (ROW + 8) + extra_lock;
-    let mut win = Window::default().with_size(780, rows_h + 60).with_label("Connections");
+    let mut win = Window::default()
+        .with_size(780, rows_h + 60)
+        .with_label(tr("conns.title"));
     win.set_xclass("streamerz");
     let mut col = Flex::new(10, 10, 760, rows_h + 40, None).column();
     col.set_pad(8);
 
     if crate::secrets::is_locked() {
         let mut lrow = Flex::default().row();
+        lrow.set_pad(8);
         let mut msg = Frame::default()
-            .with_label("🔒 Saved logins couldn't be decrypted from your system keyring.")
+            .with_label(tr("conns.keyring_hint"))
             .with_align(Align::Left | Align::Inside | Align::Clip);
         msg.set_label_color(Color::from_rgb(0xe0, 0xa8, 0x30));
-        let mut ubtn = button(&mut lrow, "Unlock Now", 110);
+        let mut ubtn = button(&mut lrow, tr("ui.unlock_now"), 110);
         lrow.end();
         col.fixed(&lrow, ROW);
         let cmds = cmds.clone();
@@ -267,7 +282,7 @@ pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: im
 
     if conns.is_empty() {
         let f = Frame::default()
-            .with_label("Nothing is set up yet: log in on Accounts, add OBS on Stream Apps.")
+            .with_label(tr("conns.empty_hint"))
             .with_align(Align::Left | Align::Inside);
         col.fixed(&f, ROW);
     }
@@ -276,6 +291,7 @@ pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: im
     let mut states = Vec::new();
     for c in &conns {
         let mut row = Flex::default().row();
+        row.set_pad(8);
         let mut logo = Frame::default();
         logo.set_image(img::logo(c.logo, 18));
         row.fixed(&logo, 22);
@@ -285,9 +301,9 @@ pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: im
         name.set_label_font(Font::HelveticaBold);
         row.fixed(&name, 190);
         let st = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
-        let mut r = button(&mut row, if c.standby { "Check" } else { "Retry" }, 70);
-        r.set_tooltip("Connect or check live status right now");
-        let mut s = button(&mut row, "Settings", 80);
+        let mut r = button(&mut row, if c.standby { tr("btn.check") } else { tr("btn.retry") }, 70);
+        r.set_tooltip(tr("conns.retry_tooltip"));
+        let mut s = button(&mut row, tr("btn.settings"), 80);
         row.end();
         col.fixed(&row, ROW);
         r.set_callback({
@@ -299,8 +315,7 @@ pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: im
                     .insert(name.clone(), (Instant::now(), crate::log_count()));
                 retry(&cmds, &why);
                 // Shown at once; the next second says how it went.
-                st.set_label("◌ Checking…");
-                st.set_label_color(Color::from_rgb(0xe0, 0xa8, 0x30));
+                super::Health::Busy.show(&mut st, tr("conns.checking"));
                 st.redraw();
             }
         });
@@ -316,8 +331,9 @@ pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: im
         states.push((st, r));
     }
     let mut bottom = Flex::default().row();
+    bottom.set_pad(8);
     Frame::default();
-    let mut close = button(&mut bottom, "Close", 80);
+    let mut close = button(&mut bottom, tr("dialogs.close"), 80);
     bottom.end();
     col.fixed(&bottom, ROW);
     col.end();
@@ -333,28 +349,27 @@ pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: im
         let now = list(&cfg, &cmds);
         let (count, log) = (crate::log_count(), crate::log_tail(200));
         for (c, (st, r)) in now.iter().zip(states.iter_mut()) {
-            let (text, color) = match state(c, &log, count, retried.borrow().get(&c.name)) {
-                State::Up => ("● Connected".to_string(), Color::from_rgb(0x3c, 0xb3, 0x71)),
-                State::Standby(why) => (format!("◐ {why}"), Color::from_rgb(0x64, 0xb5, 0xf6)),
-                State::Connecting => ("◌ Connecting…".to_string(), Color::from_rgb(0xe0, 0xa8, 0x30)),
-                State::Down(why) if why.is_empty() => {
-                    ("○ Not connected".to_string(), Color::from_rgb(0x99, 0x99, 0x99))
-                }
+            use super::Health as H;
+            let (h, text) = match state(c, &log, count, retried.borrow().get(&c.name)) {
+                State::Up => (H::Up, tr("conns.connected").to_string()),
+                State::Standby(why) => (H::Standby, why),
+                State::Connecting => (H::Busy, tr("conns.connecting").to_string()),
+                State::Down(why) if why.is_empty() => (H::Off, tr("conns.off").to_string()),
                 // Retried and failed again: says so, so the click shows it did something.
                 State::Down(why) if retried.borrow().contains_key(&c.name) => {
-                    (format!("○ again: {why}"), Color::from_rgb(0xe0, 0x60, 0x50))
+                    (H::Down, trf("conns.again", &[("reason", &why)]))
                 }
-                State::Down(why) => (format!("○ {why}"), Color::from_rgb(0xe0, 0x60, 0x50)),
+                State::Down(why) => (H::Down, why),
             };
             if c.up {
                 retried.borrow_mut().remove(&c.name);
                 r.deactivate();
             } else {
-                r.set_label(if c.standby { "Check" } else { "Retry" });
+                r.set_label(if c.standby { tr("btn.check") } else { tr("btn.retry") });
+                super::with_icon(r);
                 r.activate();
             }
-            st.set_label(&text.replace('@', "@@"));
-            st.set_label_color(color);
+            h.show(st, &text);
             st.set_tooltip(&text.replace('@', "@@"));
         }
         status_bar();

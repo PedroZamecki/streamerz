@@ -757,14 +757,35 @@ t1=$(awk '{print $14+$15}' /proc/$pid/stat); sleep 30; t2=$(awk '{print $14+$15}
 The second number is CPU ticks (1/100 s) used in 30 s idle. The tray can be toggled without clicking:
 `busctl --user call org.kde.StatusNotifierItem-$pid-1 /StatusNotifierItem org.kde.StatusNotifierItem Activate ii 0 0`.
 
-## Icon
+## Icons
 
-`icon_streamerz.png` is the source. After changing it:
+- `assets/brand/`: the app's logo. The four SVGs are the sources: `streamerz.svg` (colour, light
+  background), `streamerz-dark.svg` (colour, dark background), `streamerz-simple.svg` and
+  `streamerz-simple-dark.svg` (black and white). The window's icon is the colour one, for the theme in
+  Settings (`brand.rs`; it changes at once). The tray's is the simple one and follows the desktop, not the
+  app: the settings portal's `color-scheme` on Linux (changes live), the taskbar's `SystemUsesLightTheme`
+  on Windows (read at start). It isn't a setting.
+- `assets/icons/`: the platforms' and apps' logos (`ui/img.rs`). Twitch's and YouTube's have a white
+  inside, drawn under the glyph.
+
+After changing a logo in `assets/brand/`, redraw the rest (`streamerz.png` for the desktop file and the
+AppImage, `streamerz.ico` for the Windows exe, `rgba/*.rgba` built into the binary):
 
 ```
-magick icon_streamerz.png -define icon:auto-resize=64,48,32,16 icon_streamerz.ico
-magick icon_streamerz.png -resize 64x64 -depth 8 rgba:src/icon.rgba
+dev/icons.sh
 ```
+
+## Languages
+
+Every text the user reads goes through `i18n::tr("some.key")` (`src/i18n.rs`), never a literal. The texts
+live in `assets/locales/<code>.json` (flat, key to text, e.g. `en_US.json`), built into the binary. Only
+`en_US` exists for now; it is the fallback of every other language, and a key nobody has shows as itself.
+The language is a setting (`locale` in the config, Settings > Appearance) and applies at the next start.
+
+To add a language: copy `en_US.json` to `<code>.json`, translate the values, and add a line to `LOCALES` in
+`i18n.rs`. The tests check that every file is valid and has exactly the keys of `en_US.json`, that every
+`tr("...")` names an existing key and that no key is unused. Texts built from pieces (names, numbers) and
+the long tail of older literal texts are still to be moved: do it as each is touched.
 
 ## Twitch events without a Twitch login (Twitch CLI mock)
 

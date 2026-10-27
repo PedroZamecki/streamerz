@@ -40,6 +40,14 @@ const TOOLS: &[(&str, &str, &str, &[&str])] = &[
     ("fire_trigger", "Fire a trigger (code or name) with arguments as its platform would: every action using it runs. Returns how many ran. Needs STREAMERZ_DEV=1.", r#"{"trigger": {"type": ["integer", "string"]}, "args": {"type": "object", "description": "e.g. {\"user\": \"ana\", \"viewers\": 10}"}}"#, &["trigger"]),
     ("inject_chat", "A fake chat message from a platform, run through the commands; returns how many ran and what streamerz would have sent back (nothing is sent). Needs STREAMERZ_DEV=1.", r#"{"platform": {"type": "string", "enum": ["twitch", "youtube", "kick", "tiktok"]}, "user": {"type": "string"}, "role": {"type": "string", "enum": ["viewer", "subscriber", "vip", "moderator", "broadcaster"]}, "text": {"type": "string"}, "badges": {"type": "array", "description": "As Streamer.bot's badges: [{\"name\": \"broadcaster\", \"version\": 1, \"imageUrl\": \"https://...\"}]"}}"#, &["platform", "text"]),
     ("chat_out", "The chat messages streamerz would have sent since the last call (dev mode keeps them instead of sending). Needs STREAMERZ_DEV=1.", "{}", &[]),
+    ("list_subactions", "Sub-action type codes and names (e.g. 10 TwitchSendMessage), filtered by a word.", r#"{"filter": {"type": "string"}}"#, &[]),
+    ("describe", "What a sub-action or trigger type does and its fields (JSON key, label, what it holds), plus a new one ready to fill in. Use before writing one.", r#"{"kind": {"type": "string", "enum": ["subaction", "trigger"]}, "code": {"type": "integer"}}"#, &["kind", "code"]),
+    ("get", "What's set up: all actions, commands, timers, user groups or queues, or one by id or name, as stored (Streamer.bot's shapes).", r#"{"what": {"type": "string", "enum": ["action", "command", "timer", "group", "queue"]}, "id": {"type": "string"}, "name": {"type": "string"}}"#, &["what"]),
+    ("save", "Add or replace an action, command, timer, user group or queue (same id replaces; no id adds one). For an action: {name, group, enabled, triggers: [...], subActions: [...]}, items from describe. Applies at once.", r#"{"what": {"type": "string", "enum": ["action", "command", "timer", "group", "queue"]}, "item": {"type": "object"}}"#, &["what", "item"]),
+    ("delete", "Delete an action, command, timer, user group or queue by id.", r#"{"what": {"type": "string", "enum": ["action", "command", "timer", "group", "queue"]}, "id": {"type": "string"}}"#, &["what", "id"]),
+    ("new_action", "A new, empty action (name, group) ready to fill with triggers and sub-actions from describe, then save.", r#"{"name": {"type": "string"}, "group": {"type": "string"}}"#, &["name"]),
+    ("list_plugins", "The WebAssembly plugins in the plugins folder: on or off, and for those on their manifest (sub-actions, triggers, settings). Plugin sub-actions are type 99800 with plugin and name; plugin triggers type 99801 with plugin and event. See PLUGINS.md.", "{}", &[]),
+    ("plugin_enable", "Turn a plugin on or off.", r#"{"plugin": {"type": "string", "description": "Its id (the .wasm file's name)"}, "on": {"type": "boolean"}}"#, &["plugin"]),
     ("request", "Any Streamer.bot WebSocket request, as JSON (e.g. {\"request\": \"GetGlobals\"}).", r#"{"json": {"type": "object"}}"#, &["json"]),
 ];
 
@@ -160,6 +168,74 @@ impl Client {
                 Ok(json!({"ran": r["ran"], "chatOut": out["messages"]}))
             }
             "chat_out" => self.ask(json!({"request": "GetChatOut"})).await,
+            "list_subactions" => {
+                let f = s("filter").to_lowercase();
+                let list: Vec<Value> = crate::types::SUB_ACTIONS
+                    .iter()
+                    .filter(|(_, n)| n.to_lowercase().contains(&f))
+                    .map(|(c, n)| json!([c, n]))
+                    .collect();
+                Ok(json!({ "subActions": list }))
+            }
+            "describe" => {
+                let code = a["code"].as_u64().ok_or("code: a number")?;
+                let sub = s("kind") == "subaction";
+                let table = if sub {
+                    crate::types::SUB_ACTIONS
+                } else {
+                    crate::types::TRIGGERS
+                };
+                let name = crate::types::name(table, code as u32).ok_or(format!("no {} {code}", s("kind")))?;
+                use crate::ui::{forms, picker};
+                let cat = if sub {
+                    String::new()
+                } else {
+                    picker::trigger_categorize(name)
+                };
+                let (about, fields, new) = if sub {
+                    (
+                        picker::sub_action_description(code as u32, name, &cat),
+                        forms::sub_fields(code),
+                        Value::Object(crate::edit::new_sub(code)),
+                    )
+                } else {
+                    let title = picker::trigger_clean_title(name);
+                    (
+                        picker::trigger_description(code as u32, name, &title, &cat),
+                        forms::trigger_fields(code),
+                        Value::Object(crate::edit::new_trigger(code as u32)),
+                    )
+                };
+                let fields: Vec<Value> = fields
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|(k, l, w)| json!({"key": k, "label": l, "holds": w.about()}))
+                    .collect();
+                Ok(
+                    json!({"code": code, "name": name, "about": about, "fields": fields, "new": new,
+                    "note": if fields.is_empty() { "No form: fields as Streamer.bot stores them." } else { "" }}),
+                )
+            }
+            "get" => {
+                self.ask(json!({"request": "StreamerzGet", "what": s("what"), "id": s("id"), "name": s("name")}))
+                    .await
+            }
+            "save" => {
+                self.ask(json!({"request": "StreamerzSave", "what": s("what"), "item": a["item"]}))
+                    .await
+            }
+            "delete" => {
+                self.ask(json!({"request": "StreamerzDelete", "what": s("what"), "id": s("id")}))
+                    .await
+            }
+            "list_plugins" => self.ask(json!({"request": "StreamerzPlugins"})).await,
+            "plugin_enable" => {
+                self.ask(json!({"request": "StreamerzPluginEnable", "plugin": s("plugin"), "on": a["on"].as_bool().unwrap_or(true)}))
+                    .await
+            }
+            "new_action" => Ok(
+                serde_json::to_value(crate::edit::new_action(&s("name"), &s("group"))).map_err(|e| e.to_string())?
+            ),
             "request" => self.ask(a["json"].clone()).await,
             _ => Err(format!("no tool {name}")),
         }
@@ -174,8 +250,10 @@ async fn handle(c: &mut Client, m: &Value) -> Option<Value> {
             "protocolVersion": m["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"),
             "capabilities": {"tools": {}},
             "serverInfo": {"name": "streamerz", "version": option_env!("STREAMERZ_VERSION").unwrap_or("dev")},
-            "instructions": "Drives a running streamerz (Streamer.bot clone). Start it with STREAMERZ_DEV=1 so \
-                fire_trigger, inject_chat and chat_out work and nothing is sent to real chats."
+            "instructions": "Drives and builds a running streamerz (a Streamer.bot clone). To make something: \
+                list_triggers / list_subactions to find types, describe each to get its fields and a ready item, \
+                new_action, fill triggers and subActions, save; then test with fire_trigger or inject_chat and read \
+                chat_out and log. Start streamerz with STREAMERZ_DEV=1 so testing sends nothing to real chats."
         }),
         "ping" => json!({}),
         "tools/list" => tools(),

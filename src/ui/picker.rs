@@ -475,12 +475,12 @@ pub fn trigger_description(code: u32, _raw_name: &str, title: &str, category: &s
         29001..=29004 => format!("Fires on Streamer.bot remote instance event: {title}."),
         30001..=30004 => format!("Fires on VoiceMod voice changer event: {title}."),
         33001..=33012 => format!("Fires on Meld Studio streaming and broadcast event: {title}."),
-        35001 => "Fires on every standard chat message received from Kick.".into(),
-        35003 => "Fires when a user follows the channel on Kick.".into(),
-        35010 => "Fires when a subscription is purchased on Kick.".into(),
-        4001 => "Fires when a chat message is received from YouTube Live chat.".into(),
-        4003 => "Fires when a Super Chat is received in YouTube Live chat.".into(),
-        4004 => "Fires when a Super Sticker is received in YouTube Live chat.".into(),
+        35010 => "Fires on every chat message in the Kick chat.".into(),
+        35011 => "Fires when someone follows the channel on Kick.".into(),
+        35014 => "Fires when someone subscribes on Kick.".into(),
+        4003 => "Fires on every message in the YouTube live chat.".into(),
+        4006 => "Fires when a Super Chat comes in on YouTube.".into(),
+        4007 => "Fires when a Super Sticker comes in on YouTube.".into(),
         41001 => "Fires on every standard chat message posted in TikTok Live chat.".into(),
         41002 => "Fires when a gift (or gift combo streak) is received on TikTok Live.".into(),
         41003 => "Fires when likes / screen taps are received on TikTok Live.".into(),
@@ -500,64 +500,49 @@ pub fn trigger_description(code: u32, _raw_name: &str, title: &str, category: &s
 
 /// Description of what a sub-action does.
 pub fn sub_action_description(code: u32, name: &str, category: &str) -> String {
-    match code {
-        1 => "Plays a sound file through the selected audio playback device.".into(),
-        3 => "Writes or appends specified text to a local file path on disk, auto-creating parent folders.".into(),
-        5 => "Selects a random line from a text file using a cryptographic PRNG and sets a variable.".into(),
-        6 => "Launches an external application or executable script with arguments.".into(),
-        7 => "Plays a randomly selected audio file from a specified folder directory.".into(),
-        8 => "Broadcasts a raw string payload over UDP to a target IP address and port.".into(),
-        10 => "Pauses action execution for a configured duration in milliseconds.".into(),
-        12 => "Requests user input in a modal prompt dialog and stores the response in a variable.".into(),
-        13 => "Outputs a formatted message to the application log window.".into(),
-        14 => "Executes custom C# script code via Roslyn or external script runners.".into(),
-        15 => "Evaluates an if/else conditional expression and branches action execution accordingly.".into(),
-        18 => "Performs basic arithmetic operations (+, -, *, /) and math functions on variables.".into(),
-        20 => "Toggles, enables, or disables an existing timer configuration.".into(),
-        21 => "Fetches remote data via HTTP/HTTPS GET request and captures response body/headers.".into(),
-        22 => "Sends remote data via HTTP/HTTPS POST request with custom payload and headers.".into(),
-        24 => "Parses a JSON string from a variable into structured variables.".into(),
-        25 => "Extracts matching substrings using regular expression capture groups.".into(),
-        26 => "Formats current local or UTC date and time into a variable using standard format patterns.".into(),
-        30 => "Changes visibility of a source in the specified OBS Studio scene (show, hide, or toggle).".into(),
-        33 => "Starts, stops, or toggles live streaming in OBS Studio.".into(),
-        34 => "Switches active program scene in OBS Studio.".into(),
-        40 => "Mutes, unmutes, or toggles audio mute for a specified source in OBS Studio.".into(),
-        41 => "Sets audio volume level for a specified source in OBS Studio in dB or percentage.".into(),
-        101 => "Sends a chat message to Twitch chat from the configured broadcaster or bot account.".into(),
-        102 => "Sends a private whisper message to a Twitch user.".into(),
-        103 => "Creates a Twitch chat announcement with customizable color banner.".into(),
-        105 => "Times out a user in Twitch chat for a specified duration in seconds.".into(),
-        106 => "Permanently bans a user from Twitch chat.".into(),
-        107 => "Removes an active timeout or ban from a Twitch user.".into(),
-        108 => "Deletes all recent chat messages posted by a specific user.".into(),
-        109 => "Clears the entire Twitch chat history.".into(),
-        110 => "Updates channel game category, title, tags, or content classification on Twitch.".into(),
-        111 => "Triggers a commercial ad break on Twitch for a configured number of seconds.".into(),
-        114 => "Sends a chat shoutout to another channel on Twitch.".into(),
-        115 => "Initiates a Twitch raid targeting another live stream channel.".into(),
-        120 => "Creates and launches a new Twitch community poll.".into(),
-        122 => "Creates and launches a new Twitch channel prediction.".into(),
-        127 => "Branches action execution into multiple cases matching an evaluated variable value.".into(),
-        401 => "Enables, disables, or toggles an existing chat command.".into(),
-        402 => "Resets the global or user cooldown timer for a specified chat command.".into(),
-        1001 => "Sets or updates a global or user-scoped variable value in memory or disk storage.".into(),
-        1002 => "Retrieves an existing global or user variable into action context.".into(),
-        1004 => "Enables, disables, or toggles an entire Action configuration.".into(),
-        1011 => "Enables, disables, or toggles all actions belonging to a specified action group.".into(),
-        1016 => "Stops running the current action or aborts parent action execution.".into(),
-        1018 => "Suspends, resumes, or clears all pending tasks in a named queue.".into(),
-        35001 => "Sends a chat message to Kick chat from the configured broadcaster or bot account.".into(),
-        43001 => "Sends a chat message to TikTok live chat from the configured broadcaster or bot account.".into(),
-        43002 => {
-            "Sets topGifterCount and topGifter0.. (name, UserId, Coins) for who sent the most coins this TikTok live."
-                .into()
-        }
-        43003 => "Sets isLive, roomId, viewerCount, totalLikes and totalCoins for the TikTok live being read.".into(),
-        99900 => "Executes child sub-actions concurrently on separate thread worker pools.".into(),
-        99903 => "Matches a variable against defined case branches to execute corresponding sub-actions.".into(),
-        _ => format!("Executes the {name} operation in {}.", category.replace('/', " > ")),
+    let said = match code {
+        1 => "Plays a sound file.",
+        3 => "Writes or appends text to a file.",
+        5 => "Puts a random line of a text file in a variable.",
+        6 => "Runs a program with arguments.",
+        7 => "Plays a random sound from a folder.",
+        8 => "Turns a timer on, off, or toggles it.",
+        10 | 35001 => "Sends a message to the chat, as the bot or the broadcaster.",
+        43001 => "Sends a message to the TikTok live chat.",
+        15 => "Changes the stream title.",
+        18 => "Makes a clip of the stream.",
+        20 => "Times a user out for some seconds.",
+        120 => "Runs one branch or the other depending on a comparison.",
+        122 => "Sets a global variable.",
+        127 => "Runs the case that matches a value.",
+        99903 => "One case of a Switch.",
+        1002 => "Waits some milliseconds before the next sub-action.",
+        1004 => "Turns an action on, off, or toggles it.",
+        43002 => "Sets topGifterCount and topGifter0.. (name, UserId, Coins): who sent the most coins this live.",
+        43003 => "Sets isLive, roomId, viewerCount, totalLikes and totalCoins for the TikTok live.",
+        _ => "",
+    };
+    let at = category.replace('/', " > ");
+    let fields = SUB_ACTION_INFO
+        .iter()
+        .find(|x| x.0 == code)
+        .map(|x| {
+            x.3.iter()
+                .filter(|f| **f != "?")
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    let mut out = if said.is_empty() {
+        format!("{name}, in {at}.")
+    } else {
+        said.to_string()
+    };
+    if !fields.is_empty() {
+        out += &format!(" Settings: {fields}.");
     }
+    out
 }
 
 /// Generate structured PickItem list for all triggers.

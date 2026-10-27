@@ -7,16 +7,22 @@ mod chat;
 mod conns;
 mod dialogs;
 pub(crate) mod emotes;
-mod forms;
+pub(crate) mod forms;
+mod grid;
+pub(crate) mod icons;
 pub(crate) mod img;
 mod lists;
 mod nav;
 pub mod picker;
+mod plugins;
 mod rows;
+mod settings;
 
+use crate::brand;
 use crate::engine::{Engine, UiCmd};
+use crate::i18n::{tr, trf};
 use crate::{status, Config};
-use fltk::button::{Button, CheckButton};
+use fltk::button::Button;
 use fltk::enums::{Align, Color, ColorDepth, Event, Font, FrameType, Shortcut};
 use fltk::frame::Frame;
 use fltk::group::{Flex, Wizard};
@@ -47,6 +53,8 @@ pub enum Msg {
     Chat,
     /// A picture from the web is on disk now (see `img`).
     Image,
+    /// An update is in place: restart into it.
+    Restart,
 }
 
 const ROW: i32 = 26;
@@ -71,6 +79,30 @@ pub fn input(title: String, prompt: String, text: String) -> oneshot::Receiver<O
     rx
 }
 
+/// Yes/no questions from the engine: the text, the two buttons (no, yes), and where the answer goes.
+type Confirm = (String, &'static str, &'static str, oneshot::Sender<bool>);
+static CONFIRMS: Mutex<Vec<Confirm>> = Mutex::new(Vec::new());
+
+/// Asks `text` with buttons `no` and `yes` (shown even while the window hides); true for `yes`.
+pub fn confirm(text: String, no: &'static str, yes: &'static str) -> oneshot::Receiver<bool> {
+    let (tx, rx) = oneshot::channel();
+    if let Ok(mut q) = CONFIRMS.lock() {
+        q.push((text, no, yes, tx));
+    }
+    // Before the window is made, it asks when it is.
+    if let Some(ui) = UI.get() {
+        ui.send(Msg::Input);
+    }
+    rx
+}
+
+/// Saves what the window keeps, starts the new build and quits (after an update).
+pub fn restart() {
+    if let Some(ui) = UI.get() {
+        ui.send(Msg::Restart);
+    }
+}
+
 /// A modal text question. Not dialog::input: on Wayland it focuses its input before the window
 /// exists and crashes FLTK.
 fn ask(title: &str, prompt: &str, text: &str) -> Option<String> {
@@ -85,6 +117,7 @@ fn ask(title: &str, prompt: &str, text: &str) -> Option<String> {
     input.set_value(text);
     col.fixed(&input, ROW);
     let mut bar = Flex::default().row();
+    bar.set_pad(8);
     Frame::default();
     let mut ok = button(&mut bar, "OK", 90);
     let mut cancel = button(&mut bar, "Cancel", 90);
@@ -202,6 +235,8 @@ fn theme(dark: bool) {
         draw::set_draw_color(Color::color_average(c, Color::Foreground, 0.7));
         draw::draw_rounded_rect(x, y, w, h, r(w, h));
     }
+    // No dotted focus boxes: fields show their cursor, lists their selection.
+    app::set_visible_focus(false);
     app::set_menu_linespacing(8);
     app::set_scrollbar_size(12);
     for f in [
@@ -222,28 +257,61 @@ fn theme(dark: bool) {
     }
 }
 
-/// A line of text; `bold` for section titles.
-fn text(col: &mut Flex, label: &str, bold: bool) -> Frame {
-    let mut f = Frame::default()
-        .with_label(&label.replace('@', "@@"))
-        .with_align(Align::Left | Align::Inside);
-    if bold {
-        f.set_label_font(Font::HelveticaBold);
+/// Every window's icon, drawn for the theme.
+fn window_icons(dark: bool) {
+    for mut w in app::windows().unwrap_or_default() {
+        if let Ok(icon) = RgbImage::new(brand::app(dark), brand::SIZE, brand::SIZE, ColorDepth::Rgba8) {
+            w.set_icon(Some(icon));
+        }
     }
-    col.fixed(&f, ROW - 4);
-    f
-}
-
-fn check(col: &mut Flex, label: &str, on: bool) -> CheckButton {
-    let c = CheckButton::default().with_label(label);
-    c.set_checked(on);
-    col.fixed(&c, ROW);
-    c
 }
 
 /// Quiet text: hints, empty lists and column titles.
 fn muted() -> Color {
     Color::color_average(Color::Foreground, Color::Background2, 0.5)
+}
+
+/// How a connection is doing, shown the same way everywhere: an icon and a colour.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Health {
+    Up,
+    /// Waiting for the stream to start.
+    Standby,
+    Busy,
+    Off,
+    Down,
+    Locked,
+}
+
+impl Health {
+    pub(crate) fn color(self) -> Color {
+        match self {
+            Health::Up => Color::from_rgb(0x3c, 0xb3, 0x71),
+            Health::Standby => Color::from_rgb(0x64, 0xb5, 0xf6),
+            Health::Busy | Health::Locked => Color::from_rgb(0xe0, 0xa8, 0x30),
+            Health::Off => Color::from_rgb(0x99, 0x99, 0x99),
+            Health::Down => Color::from_rgb(0xe0, 0x60, 0x50),
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Health::Up => "circle-check",
+            Health::Standby => "moon",
+            Health::Busy => "loader-circle",
+            Health::Off => "circle-off",
+            Health::Down => "circle-alert",
+            Health::Locked => "lock",
+        }
+    }
+
+    /// `f` shows `text` in this state: its icon before it, both in its colour.
+    pub(crate) fn show(self, f: &mut impl WidgetExt, text: &str) {
+        f.set_label(&text.replace('@', "@@"));
+        f.set_label_color(self.color());
+        f.set_image(icons::before_label(self.icon(), self.color(), 14));
+        f.set_align(Align::Left | Align::Inside | Align::Clip | Align::ImageNextToText);
+    }
 }
 
 /// `text` in an empty field that isn't being typed in, saying what goes there.
@@ -258,7 +326,8 @@ fn placeholder(i: &mut fltk::input::Input, text: &'static str) {
 }
 
 /// Column titles over a list with these column `widths`.
-fn header(col: &mut Flex, widths: &'static [i32], titles: &'static [&'static str]) {
+pub(crate) fn header(col: &mut Flex, widths: &'static [i32], titles: &[&'static str]) {
+    let titles = titles.to_vec();
     let mut f = Frame::default();
     f.draw(move |f| {
         draw::set_font(Font::HelveticaBold, 12);
@@ -274,9 +343,140 @@ fn header(col: &mut Flex, widths: &'static [i32], titles: &'static [&'static str
 }
 
 fn button(row: &mut Flex, label: &str, w: i32) -> Button {
-    let b = Button::default().with_label(label);
-    row.fixed(&b, w);
+    let mut b = Button::default().with_label(label);
+    let wide = with_icon(&mut b);
+    row.fixed(&b, w + if wide { 20 } else { 0 });
     b
+}
+
+/// The icon of a button's label (call again after relabelling it) (Add, Edit, Delete...) before it, if it has one; true if so.
+pub(crate) fn with_icon(b: &mut Button) -> bool {
+    match icon_for(&b.label()) {
+        Some(name) => {
+            b.set_image(icons::before_label(name, button_ink(), 14));
+            b.set_align(Align::ImageNextToText);
+            true
+        }
+        None => {
+            b.set_image(None::<fltk::image::SvgImage>);
+            false
+        }
+    }
+}
+
+/// A button icon's colour.
+fn button_ink() -> Color {
+    Color::color_average(Color::Foreground, Color::Background, 0.75)
+}
+
+/// The icon for a button labelled `label`, if it has one (by which button it is, not by its words).
+fn icon_for(label: &str) -> Option<&'static str> {
+    Some(match crate::i18n::button_id(label)? {
+        "add" => "plus",
+        "edit" | "edit_json" => "pencil",
+        "delete" => "trash-2",
+        "on_off" => "power",
+        "import" | "load_file" => "download",
+        "export" | "save_to_file" => "upload",
+        "connect" | "connect_all" => "plug",
+        "disconnect" | "disconnect_all" => "unplug",
+        "test" => "play",
+        "templates" => "layout-template",
+        "save" => "save",
+        "retry" | "refresh" | "reset" | "check" => "rotate-cw",
+        "quit" | "logout" => "log-out",
+        "login" => "log-in",
+        "hide" => "eye-off",
+        "duplicate" | "copy" | "copy_line" | "copy_code" | "copy_redirect_url" | "copy_path" => "copy",
+        "clear" => "eraser",
+        "advanced" => "sliders-horizontal",
+        "settings" => "settings",
+        "fill_with_test_names" => "users",
+        "open_folder" => "folder-open",
+        "open" | "open_file" | "open_profile" | "open_browser" => "external-link",
+        _ => return None,
+    })
+}
+
+/// The menu a right click opens: `buttons`' actions, the inactive ones greyed. Runs the one picked.
+pub(crate) fn context_menu(buttons: &[Button]) {
+    use fltk::menu::{MenuButton, MenuFlag};
+    let mut m = MenuButton::new(app::event_x(), app::event_y(), 0, 0, None);
+    for b in buttons {
+        let l = b.label();
+        let l = if l.is_empty() {
+            b.tooltip().unwrap_or_default()
+        } else {
+            l
+        };
+        let flag = if b.active() {
+            MenuFlag::Normal
+        } else {
+            MenuFlag::Inactive
+        };
+        let i = m.add(&l.replace('/', "\\/").replace('&', "&&"), Shortcut::None, flag, {
+            let mut b = b.clone();
+            move |_| b.do_callback()
+        });
+        if let (Some(mut item), Some(name)) = (m.at(i), icon_for(&l)) {
+            item.add_image(icons::before_label(name, button_ink(), 14), true);
+        }
+    }
+    if m.size() > 0 {
+        m.popup();
+    }
+    MenuButton::delete(m);
+}
+
+/// Buttons in a grid `rows` high that fills `col`'s width, all the same width; where their labels don't
+/// fit, they show only their icons (the label in the tooltip).
+fn grid(col: &mut Flex, labels: &[&str], rows: i32) -> Vec<Button> {
+    let mut g = fltk::group::Group::default();
+    let out: Vec<Button> = labels.iter().map(|l| Button::default().with_label(l)).collect();
+    g.end();
+    col.fixed(&g, rows * (ROW + 2) + (rows - 1) * 6);
+    let labels: Vec<String> = labels.iter().map(|l| (*l).to_string()).collect();
+    let place = {
+        let out = out.clone();
+        move |x: i32, y: i32, w: i32, h: i32| {
+            let n = out.len() as i32;
+            let cols = (n + rows - 1) / rows;
+            let cw = (w - (cols - 1) * 8) / cols.max(1);
+            let rh = (h - (rows - 1) * 6) / rows;
+            // Measured once the window shows (measuring loads the fonts); a guess before.
+            let shown = SHOWN.load(Ordering::Relaxed);
+            if shown {
+                draw::set_font(Font::Helvetica, app::font_size());
+            }
+            let fits = labels.iter().all(|l| {
+                let text = if shown {
+                    draw::width(l) as i32
+                } else {
+                    l.len() as i32 * 7
+                };
+                text + 14 + 7 + 20 <= cw
+            });
+            for (i, (mut b, l)) in out.iter().cloned().zip(&labels).enumerate() {
+                let (r, c) = (i as i32 / cols, i as i32 % cols);
+                b.resize(x + c * (cw + 8), y + r * (rh + 6), cw, rh);
+                match icon_for(l).filter(|_| !fits) {
+                    Some(name) => {
+                        b.set_label("");
+                        b.set_image(icons::icon(name, button_ink(), 16));
+                        b.set_align(Align::Center | Align::ImageNextToText);
+                        b.set_tooltip(l);
+                    }
+                    None => {
+                        b.set_label(l);
+                        with_icon(&mut b);
+                    }
+                }
+            }
+        }
+    };
+    place(g.x(), g.y(), g.w(), g.h());
+    g.resize_callback(move |_, x, y, w, h| place(x, y, w, h));
+    out
 }
 
 /// A page: `label` is its name in the sidebar.
@@ -336,55 +536,32 @@ pub fn run(
     tx: app::Sender<Msg>,
     rx: app::Receiver<Msg>,
 ) {
-    let (c_dark, c_hidden, c_autostart, c_instance) = {
+    let (c_dark, c_hidden) = {
         let c = cfg.borrow();
-        (c.dark, c.start_hidden, c.autostart, c.instance_name.clone())
+        (c.dark, c.start_hidden)
     };
     let _ = UI.set(tx);
+    if CONFIRMS.lock().is_ok_and(|q| !q.is_empty()) {
+        tx.send(Msg::Input);
+    }
     theme(c_dark);
     // Pictures drawn bigger than they are come out smooth, not blocky.
     RgbImage::set_scaling_algorithm(fltk::image::RgbScaling::Bilinear);
     fltk::image::Image::set_scaling_algorithm(fltk::image::RgbScaling::Bilinear);
     let mut win = Window::default().with_size(W, H).with_label(&crate::version());
     win.set_xclass("streamerz");
-    use crate::tray::{ICON, SIZE};
-    if let Ok(icon) = RgbImage::new(ICON, SIZE, SIZE, ColorDepth::Rgba8) {
+    if let Ok(icon) = RgbImage::new(brand::app(c_dark), brand::SIZE, brand::SIZE, ColorDepth::Rgba8) {
         win.set_icon(Some(icon));
     }
     // The pages, one at a time, picked in the sidebar on their left.
-    let mut tabs = Wizard::new(nav::W, 0, W - nav::W, H - 46, None);
+    let nav_w = nav::width(&cfg);
+    let mut tabs = Wizard::new(nav_w, 0, W - nav_w, H - 46, None);
     tabs.set_frame(FrameType::FlatBox);
 
     let acts = actions::tab(&tabs, cfg.clone(), cmds.clone());
     let views = lists::tabs(&tabs, &cfg, &cmds);
 
-    // Settings
-    let mut col = tab(&tabs, "Settings");
-    text(&mut col, "Window", true);
-    let dark = check(&mut col, "Dark theme", c_dark);
-    let hidden = check(&mut col, "Start hidden in the tray", c_hidden);
-    let autostart = check(
-        &mut col,
-        if cfg!(windows) {
-            "Start with Windows"
-        } else {
-            "Start when I log in"
-        },
-        c_autostart,
-    );
-    text(&mut col, "This instance", true);
-    let r = dialogs::row("Name (GetInfo)");
-    let mut instance = fltk::input::Input::default();
-    instance.set_value(&c_instance);
-    r.end();
-    col.fixed(&r, ROW);
-    Frame::default();
-    text(
-        &mut col,
-        &format!("Settings file: {}", crate::config_path().display()),
-        false,
-    );
-    col.end();
+    settings::tab(&tabs, &cfg, &cmds);
 
     // Log
     let col = tab(&tabs, "Log");
@@ -393,7 +570,7 @@ pub fn run(
     view.set_buffer(buf.clone());
     col.end();
     tabs.end();
-    let sidebar = nav::sidebar(0, 0, H - 46, &tabs);
+    let sidebar = nav::sidebar(H - 46, &tabs, &cfg);
     let mut log = Log {
         view,
         buf,
@@ -402,15 +579,16 @@ pub fn run(
     };
 
     let mut bar = Flex::new(10, H - 40, W - 20, 32, None).row();
-    let mut save = button(&mut bar, "Save", 90);
+    bar.set_pad(8);
+    let mut save = button(&mut bar, tr("btn.save"), 90);
     save.set_shortcut(Shortcut::Ctrl | 's');
-    save.set_tooltip("Save and apply (Ctrl+S)");
+    save.set_tooltip(tr("ui.save_tooltip"));
     let mut conns = Button::default().with_align(Align::Left | Align::Inside);
     conns.set_frame(fltk::enums::FrameType::NoBox);
     bar.fixed(&conns, 240);
     let mut saved = Frame::default().with_align(Align::Left | Align::Inside);
-    let mut hide = button(&mut bar, "Hide", 90);
-    let mut quit = button(&mut bar, "Quit", 90);
+    let mut hide = button(&mut bar, tr("btn.hide"), 90);
+    let mut quit = button(&mut bar, tr("btn.quit"), 90);
     bar.end();
     win.end();
     win.resizable(&tabs);
@@ -448,13 +626,8 @@ pub fn run(
         move || {
             let mut conns = conns.clone();
             let (label, all) = conns::summary(&cfg, &cmds);
-            conns.set_label(&label);
-            conns.set_tooltip("Click for each connection: its state, Retry and its settings");
-            conns.set_label_color(match all {
-                Some(true) => fltk::enums::Color::from_rgb(0x3c, 0xb3, 0x71),
-                Some(false) => fltk::enums::Color::from_rgb(0x99, 0x99, 0x99),
-                None => fltk::enums::Color::from_rgb(0xe0, 0xa8, 0x30),
-            });
+            conns.set_tooltip(tr("ui.conns_tooltip"));
+            all.show(&mut conns, &label);
             conns.redraw();
         }
     };
@@ -482,28 +655,13 @@ pub fn run(
         }
     });
 
-    dark.clone().set_callback({
-        let win = win.clone();
-        move |b| {
-            theme(b.is_checked());
-            win.clone().redraw();
-        }
-    });
     let show = !c_hidden;
     save.set_callback({
         let cfg = cfg.clone();
         move |_| {
-            cfg.send_modify(|c| {
-                c.dark = dark.is_checked();
-                c.start_hidden = hidden.is_checked();
-                c.autostart = autostart.is_checked();
-                c.instance_name = instance.value().trim().to_string();
-            });
-            let c = cfg.borrow();
-            let done = crate::save(&c).and_then(|()| crate::autostart(c.autostart));
-            saved.set_label(&match done {
-                Ok(()) => "Saved, applied.".to_string(),
-                Err(e) => format!("Can't save: {e}"),
+            saved.set_label(&match crate::save(&cfg.borrow()) {
+                Ok(()) => tr("ui.saved").to_string(),
+                Err(e) => trf("ui.cant_save", &[("error", &e.to_string())]),
             });
         }
     });
@@ -514,6 +672,7 @@ pub fn run(
             std::process::exit(0)
         }
     });
+    let restart = remember.clone();
     let close = move |w: &mut Window| {
         remember(w);
         SHOWN.store(false, Ordering::Relaxed);
@@ -556,9 +715,9 @@ pub fn run(
                 app::add_timeout3(0.25, move |_| {
                     if crate::secrets::is_locked()
                         && dialog::choice2_default(
-                            "streamerz couldn't read your saved logins because the system keyring was locked or still starting up.\n\nUnlock your saved logins and reconnect now?",
-                            "Later",
-                            "Unlock Now",
+                            tr("ui.unlock_prompt"),
+                            tr("ui.unlock_later"),
+                            tr("ui.unlock_now"),
                             "",
                         ) == Some(1)
                     {
@@ -604,6 +763,14 @@ pub fn run(
                     for (title, prompt, text, answer) in asked {
                         let _ = answer.send(ask(&title, &prompt, &text));
                     }
+                    let confirms = CONFIRMS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+                    for (text, no, yes, answer) in confirms {
+                        let _ = answer.send(dialog::choice2_default(&text.replace('@', "@@"), no, yes, "") == Some(1));
+                    }
+                }
+                Msg::Restart => {
+                    restart(&win);
+                    crate::update::restart();
                 }
             }
         }

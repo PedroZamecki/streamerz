@@ -30,8 +30,18 @@ pub enum Moderate {
     /// Seconds.
     Timeout(u64),
     Ban,
-    /// Until the stream ends.
-    Pin,
+    /// For that many seconds (30 to 1800 on Twitch), or until the stream ends.
+    Pin(Option<u64>),
+    Unpin,
+}
+
+/// A platform's error as the chat shows it: what it says, without the HTTP and JSON around it.
+fn plain_error(err: &str) -> String {
+    let said = err
+        .find('{')
+        .and_then(|i| serde_json::from_str::<Value>(&err[i..]).ok())
+        .and_then(|v| v["message"].as_str().map(str::to_string));
+    said.unwrap_or_else(|| err.to_string())
 }
 
 /// One chat line, as the window shows it: emotes by their display name.
@@ -74,6 +84,47 @@ pub struct Line {
     /// Pre-join message (loaded from cache or platform history; never triggers commands/actions).
     #[serde(skip_serializing_if = "is_false")]
     pub historical: bool,
+    /// The message this one answers: who wrote it and what it said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply: Option<Reply>,
+    /// Deleted by a moderator (or its sender timed out or banned): shown struck through.
+    #[serde(skip_serializing_if = "is_false")]
+    pub deleted: bool,
+    /// Pinned from here, until when (ms since the epoch; u64::MAX: until the stream ends).
+    #[serde(skip)]
+    pub pinned: Option<u64>,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct Reply {
+    pub user: String,
+    pub text: String,
+}
+
+impl Reply {
+    /// From a chat's args: Twitch's `reply.*` or Kick's `replyTo`/`replyToMessage`.
+    pub fn from_args(args: &crate::model::Obj) -> Option<Reply> {
+        let s = |k: &str| args.get(k).and_then(Value::as_str).filter(|v| !v.is_empty());
+        let (user, text) = match (s("reply.userName"), s("reply.msgBody")) {
+            (Some(u), Some(t)) => (u, t.replace(r"\s", " ")),
+            _ => (s("replyTo")?, s("replyToMessage").unwrap_or("").to_string()),
+        };
+        // Kick's emotes as their names.
+        let text = text.split(' ').map(shown).collect::<Vec<_>>().join(" ");
+        Some(Reply {
+            user: user.to_string(),
+            text,
+        })
+    }
+
+    /// Twitch starts a reply with "@parent ": shown above it instead.
+    pub fn strip(&self, text: &str) -> String {
+        let t = text.trim_start();
+        match t.strip_prefix('@').and_then(|r| r.split_once(' ')) {
+            Some((who, rest)) if who.eq_ignore_ascii_case(&self.user) => rest.to_string(),
+            _ => text.to_string(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -103,16 +154,14 @@ pub struct Seen {
     /// Their latest message's arguments about them (userName, isSubscribed, pronouns...).
     pub args: Obj,
     pub messages: u32,
-    /// When they first chatted ("HH:mm"), and the log's seq of their latest message.
+    /// When they first chatted (a time of day), and the log's seq of their latest message.
     pub first: String,
     last: u64,
 }
 
-/// Format Unix seconds into local `"HH:mm"`.
+/// Unix seconds as a chat line's time, as the user reads times.
 pub fn local_hhmm(unix_secs: i64) -> String {
-    let off = i64::from(crate::fmt::now().offset);
-    let t = super::civil_time(unix_secs.saturating_add(off));
-    format!("{:02}:{:02}", t.hour, t.min)
+    crate::fmt::shown_clock(unix_secs)
 }
 
 /// Whether an argument is about the user rather than the message.
@@ -370,7 +419,7 @@ impl Engine {
                 log.remember_emote(i, e.0.clone(), e.1.clone());
             }
             let (text, emotes) = normalize_line_emotes(&c.platform, c.text.clone(), &c.emotes);
-            let time = crate::fmt::date(&crate::fmt::now(), "HH:mm");
+            let time = crate::fmt::shown_time(&crate::fmt::now());
             let key = (c.platform.clone(), c.user_id.clone());
             if !log.users.contains_key(&key) && log.users.len() == KEEP {
                 if let Some(old) = log.users.iter().min_by_key(|u| u.1.last).map(|u| u.0.clone()) {
@@ -389,12 +438,15 @@ impl Engine {
                 .filter(|(k, v)| about_user(k) && !v.is_array() && !v.is_object())
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
+            let reply = Reply::from_args(&c.args);
+            let text = reply.as_ref().map_or(text.clone(), |r| r.strip(&text));
             let mut line = Line {
                 platform: c.platform.clone(),
                 msg_id: c.msg_id.clone(),
                 time,
                 user: c.user.clone(),
                 user_id: c.user_id.clone(),
+                reply,
                 text,
                 emotes,
                 broadcaster: c.broadcaster,
@@ -436,7 +488,7 @@ impl Engine {
     fn chat_note(&self, platform: &str, text: String) {
         self.st.borrow_mut().chat_log.push(Line {
             platform: platform.into(),
-            time: crate::fmt::date(&crate::fmt::now(), "HH:mm"),
+            time: crate::fmt::shown_time(&crate::fmt::now()),
             user: "streamerz".into(),
             text,
             note: true,
@@ -664,25 +716,73 @@ impl Engine {
                 }
             })
             .collect();
-        self.send_chat_list(&to, text, bot, true)
+        self.send_chat_list(&to, text, bot, true, None)
     }
 
     /// Drops `platform`'s line `msg_id`, or all of `user_id`'s lines: deleted, banned or timed out.
     pub fn chat_remove(&self, platform: &str, msg_id: &str, user_id: &str) {
+        // Struck through where the broadcaster moderates (their own channel); elsewhere, like the
+        // platforms show it to viewers, the text goes.
+        let own = self.own_channel(platform);
         let mut st = self.st.borrow_mut();
         let log = &mut st.chat_log;
-        let n = log.lines.len();
-        log.lines.retain(|l| {
-            l.platform != platform
-                || l.note
-                || !((!msg_id.is_empty() && l.msg_id == msg_id) || (!user_id.is_empty() && l.user_id == user_id))
-        });
-        if log.lines.len() != n {
+        let mut changed = false;
+        for l in log.lines.iter_mut().filter(|l| {
+            l.platform == platform
+                && !l.note
+                && !l.deleted
+                && ((!msg_id.is_empty() && l.msg_id == msg_id) || (!user_id.is_empty() && l.user_id == user_id))
+        }) {
+            l.deleted = true;
+            if !own {
+                l.text = "message deleted".into();
+                l.emotes.clear();
+            }
+            changed = true;
+        }
+        if changed {
             log.reset_gen += 1;
             drop(st);
-            // Gone for good: not back from the saved history on the next start.
             self.save_chat_history();
             crate::ui::chat();
+        }
+    }
+
+    /// `msg_id` pinned for `secs` (none: until the stream ends); "" unpins. One pinned at a time.
+    fn chat_pin(&self, platform: &str, msg_id: &str, secs: Option<u64>) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64);
+        let until = secs.map_or(u64::MAX, |s| now + s * 1000);
+        let mut st = self.st.borrow_mut();
+        for l in st.chat_log.lines.iter_mut().filter(|l| l.platform == platform) {
+            l.pinned = (!msg_id.is_empty() && l.msg_id == msg_id).then_some(until);
+        }
+        st.chat_log.reset_gen += 1;
+        drop(st);
+        crate::ui::chat();
+    }
+
+    /// Whether `platform`'s chat is the broadcaster's own channel (not another one set in Advanced).
+    fn own_channel(&self, platform: &str) -> bool {
+        let c = self.cfg.borrow();
+        match platform {
+            "kick" => c
+                .kick
+                .broadcaster
+                .as_ref()
+                .is_none_or(|b| b.username.eq_ignore_ascii_case(&c.kick.channel)),
+            "youtube" => c
+                .youtube
+                .broadcaster
+                .as_ref()
+                .is_none_or(|b| b.channel_id == c.youtube.channel_id),
+            "tiktok" => c.tiktok.broadcaster.as_ref().is_none_or(|b| {
+                b.username
+                    .trim_start_matches('@')
+                    .eq_ignore_ascii_case(&c.tiktok.channel)
+            }),
+            _ => true,
         }
     }
 
@@ -692,12 +792,16 @@ impl Engine {
             Moderate::Delete => format!("/delete {}", l.msg_id),
             Moderate::Timeout(s) => format!("/timeout {} {s}", l.user),
             Moderate::Ban => format!("/ban {}", l.user),
-            Moderate::Pin => format!("/pin {}", l.msg_id),
+            Moderate::Pin(_) => format!("/pin {}", l.msg_id),
+            Moderate::Unpin => format!("/unpin {}", l.msg_id),
         };
         if self.dev_out(&l.platform, &what, false) {
             self.chat_note(&l.platform, format!("(dev, not sent) {what}"));
-            if act == Moderate::Delete {
-                self.chat_remove(&l.platform, &l.msg_id, "");
+            match act {
+                Moderate::Delete => self.chat_remove(&l.platform, &l.msg_id, ""),
+                Moderate::Pin(s) => self.chat_pin(&l.platform, &l.msg_id, s),
+                Moderate::Unpin => self.chat_pin(&l.platform, "", None),
+                _ => {}
             }
             return;
         }
@@ -710,7 +814,7 @@ impl Engine {
                 }
                 serde_json::json!({ "data": b })
             };
-            let twitch = |method, path, q: Option<(&'static str, String)>, body| {
+            let twitch = |method, path, q: Vec<(&'static str, String)>, body| {
                 let t = e.twitch();
                 async move {
                     let Some(t) = t else {
@@ -720,27 +824,26 @@ impl Engine {
                         ("broadcaster_id", "{broadcaster_id}"),
                         ("moderator_id", "{broadcaster_id}"),
                     ];
-                    if let Some((k, v)) = &q {
-                        query.push((k, v.as_str()));
-                    }
+                    query.extend(q.iter().map(|(k, v)| (*k, v.as_str())));
                     t.helix(method, path, query, body, false, true).await.map(drop)
                 }
             };
+            let id = || vec![("message_id", l.msg_id.clone())];
+            let pin = |secs: Option<u64>| {
+                let mut q = id();
+                q.extend(secs.map(|s| ("duration_seconds", s.to_string())));
+                q
+            };
             let r = match (l.platform.as_str(), act) {
-                ("twitch", Moderate::Delete) => {
-                    twitch(
-                        "DELETE",
-                        "moderation/chat",
-                        Some(("message_id", l.msg_id.clone())),
-                        None,
-                    )
-                    .await
-                }
-                ("twitch", Moderate::Timeout(s)) => twitch("POST", "moderation/bans", None, Some(ban(Some(s)))).await,
-                ("twitch", Moderate::Ban) => twitch("POST", "moderation/bans", None, Some(ban(None))).await,
-                ("twitch", Moderate::Pin) => {
-                    twitch("PUT", "chat/pins", Some(("message_id", l.msg_id.clone())), None).await
-                }
+                ("twitch", Moderate::Delete) => twitch("DELETE", "moderation/chat", id(), None).await,
+                ("twitch", Moderate::Timeout(s)) => twitch("POST", "moderation/bans", vec![], Some(ban(Some(s)))).await,
+                ("twitch", Moderate::Ban) => twitch("POST", "moderation/bans", vec![], Some(ban(None))).await,
+                ("twitch", Moderate::Pin(secs)) => match twitch("PUT", "chat/pins", pin(secs), None).await {
+                    // Already pinned: its time changes instead.
+                    Err(err) if err.contains("409") => twitch("PATCH", "chat/pins", pin(secs), None).await,
+                    r => r,
+                },
+                ("twitch", Moderate::Unpin) => twitch("DELETE", "chat/pins", id(), None).await,
                 ("kick", Moderate::Delete) => crate::kick::delete_message(&e, &e.cfg, &l.msg_id).await,
                 ("kick", Moderate::Timeout(s)) => e.kick_start().timeout_user(&l.user, s, "").await,
                 ("kick", Moderate::Ban) => e.kick_start().ban_user(&l.user, "").await,
@@ -749,10 +852,13 @@ impl Engine {
                 _ => Err("not possible on this platform".into()),
             };
             match r {
-                Ok(()) if act == Moderate::Delete => e.chat_remove(&l.platform, &l.msg_id, ""),
-                Ok(()) if act == Moderate::Pin => {}
-                Ok(()) => e.chat_remove(&l.platform, "", &l.user_id),
-                Err(err) => e.chat_note(&l.platform, format!("{what}: {err}")),
+                Ok(()) => match act {
+                    Moderate::Delete => e.chat_remove(&l.platform, &l.msg_id, ""),
+                    Moderate::Pin(s) => e.chat_pin(&l.platform, &l.msg_id, s),
+                    Moderate::Unpin => e.chat_pin(&l.platform, "", None),
+                    _ => e.chat_remove(&l.platform, "", &l.user_id),
+                },
+                Err(err) => e.chat_note(&l.platform, format!("{what}: {}", plain_error(&err))),
             }
         });
     }
@@ -764,6 +870,7 @@ impl Engine {
         text: &str,
         bot: bool,
         fallback: bool,
+        reply: Option<&Line>,
     ) -> Vec<&'static str> {
         if to.is_empty() {
             self.chat_note("twitch", "nothing connected to send to".into());
@@ -774,20 +881,31 @@ impl Engine {
             .map(|e| e.0.clone())
             .collect();
         for &p in to {
-            let text = for_platform(text, p, &kick_known);
+            let mut text = for_platform(text, p, &kick_known);
+            // A reply where the platform has them; a mention elsewhere.
+            let reply = reply.filter(|l| l.platform == p);
+            let reply_id = reply.filter(|l| !l.msg_id.is_empty() && matches!(p, "twitch" | "kick"));
+            if let (Some(l), None) = (reply, reply_id) {
+                text = format!("@{} {text}", l.user);
+            }
+            let to = reply_id.map(|l| format!(", reply to @{}", l.user)).unwrap_or_default();
+            let reply_id = reply_id.map(|l| l.msg_id.clone());
             if self.dev_out(p, &text, bot) {
-                self.chat_note(p, format!("(dev, not sent) {text}"));
+                self.chat_note(p, format!("(dev, not sent{to}) {text}"));
                 continue;
             }
             let e = self.clone();
             tokio::task::spawn_local(async move {
                 let r = match p {
                     "twitch" => match e.twitch() {
-                        Some(t) => t.send_message(text, None, bot, fallback).await,
+                        Some(t) => t.send_message(text, reply_id.clone(), bot, fallback).await,
                         None => Err("Twitch isn't connected".into()),
                     },
                     "youtube" => e.youtube_start().send_message("", &text, bot, fallback).await,
-                    "kick" => e.kick_start().send_message(&text, bot, fallback).await,
+                    "kick" => match &reply_id {
+                        Some(r) => e.kick_start().reply_message(&text, r, bot, fallback).await,
+                        None => e.kick_start().send_message(&text, bot, fallback).await,
+                    },
                     _ => e.tiktok_start().send_message(&text, bot, fallback).await,
                 };
                 if let Err(err) = r {
@@ -813,7 +931,7 @@ mod tests {
     }
 
     #[test]
-    fn removes_deleted_and_banned_lines() {
+    fn strikes_deleted_and_banned_lines() {
         let cfg = std::sync::Arc::new(tokio::sync::watch::channel(crate::Config::default()).0);
         let e = Engine::new(cfg, |_| {});
         let line = |p: &str, id: &str, user: &str| Line {
@@ -836,8 +954,28 @@ mod tests {
         e.chat_remove("twitch", "", "2");
         let (g2, _, left) = e.chat_sync(g, 0);
         assert_ne!(g, g2);
-        let texts: Vec<&str> = left.iter().filter(|l| !l.note).map(|l| l.text.as_str()).collect();
-        assert_eq!(texts, ["d"]);
+        let deleted: Vec<(&str, bool)> = left
+            .iter()
+            .filter(|l| !l.note)
+            .map(|l| (l.text.as_str(), l.deleted))
+            .collect();
+        assert_eq!(deleted, [("a", true), ("b", true), ("c", true), ("d", false)]);
+    }
+
+    #[test]
+    fn replies_from_args() {
+        let mut a = Obj::new();
+        a.insert("reply.userName".into(), "Ana".into());
+        a.insert("reply.msgBody".into(), r"hi\sthere".into());
+        let r = Reply::from_args(&a).expect("a reply");
+        assert_eq!((r.user.as_str(), r.text.as_str()), ("Ana", "hi there"));
+        assert_eq!(r.strip("@ana yes"), "yes");
+        assert_eq!(r.strip("@bob yes"), "@bob yes");
+        let mut k = Obj::new();
+        k.insert("replyTo".into(), "bob".into());
+        k.insert("replyToMessage".into(), "[emote:1:KEKW] lol".into());
+        assert_eq!(Reply::from_args(&k).expect("a reply").text, "KEKW lol");
+        assert!(Reply::from_args(&Obj::new()).is_none());
     }
 
     #[test]

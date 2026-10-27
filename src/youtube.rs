@@ -1104,7 +1104,7 @@ pub async fn read_chat_with_standby(
                 let msg = if is_offline {
                     String::new()
                 } else {
-                    format!("YouTube: {label} — {e}")
+                    format!("YouTube: {label}: {e}")
                 };
                 if last_offline_note != msg && !msg.is_empty() {
                     crate::say(msg.clone());

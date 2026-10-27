@@ -22,6 +22,8 @@ struct State {
     lines: Vec<String>,
     widths: &'static [i32],
     empty: &'static str,
+    /// The column holding a platform: drawn as its logo, named on hover.
+    logo: Option<usize>,
     sel: i32,
     hover: i32,
     /// Pixels scrolled.
@@ -36,6 +38,8 @@ pub struct Rows {
     st: Rc<RefCell<State>>,
     cb: Rc<RefCell<Option<Cb>>>,
     keys: Rc<RefCell<Option<Keys>>>,
+    /// What a right click offers.
+    menu: Rc<RefCell<Vec<fltk::button::Button>>>,
 }
 
 impl Deref for Rows {
@@ -65,6 +69,7 @@ impl Rows {
             })),
             cb: Rc::default(),
             keys: Rc::default(),
+            menu: Rc::default(),
         };
         area.draw({
             let r = r.clone();
@@ -81,6 +86,11 @@ impl Rows {
         self.st.borrow_mut().widths = w;
     }
 
+    /// Column `c` holds a platform ("twitch"...): its logo shows instead of the text.
+    pub fn set_logo_column(&mut self, c: usize) {
+        self.st.borrow_mut().logo = Some(c);
+    }
+
     /// Runs on a click (`app::event_clicks()` tells a double click) and when the keys move the selection.
     pub fn set_callback(&mut self, cb: impl FnMut(&mut Rows) + 'static) {
         *self.cb.borrow_mut() = Some(Box::new(cb));
@@ -89,6 +99,11 @@ impl Rows {
     /// The keys it doesn't use itself (all but the arrows, Page Up/Down, Home and End); true if used.
     pub fn set_keys(&mut self, f: impl FnMut(&mut Rows, Key) -> bool + 'static) {
         *self.keys.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// A right click selects the line under it and offers these buttons' actions.
+    pub fn set_menu(&mut self, buttons: &[fltk::button::Button]) {
+        *self.menu.borrow_mut() = buttons.to_vec();
     }
 
     pub fn add(&mut self, line: &str) {
@@ -145,7 +160,8 @@ impl Rows {
         st.sel = n;
         let h = self.area.h() - 4;
         let y = (n - 1) * LINE;
-        st.top = st.top.clamp((y + LINE - h).max(0), y);
+        // Not laid out yet (h 0): its top only.
+        st.top = st.top.clamp((y + LINE - h).clamp(0, y), y);
         drop(st);
         self.area.redraw();
     }
@@ -217,9 +233,14 @@ impl Rows {
                     (Some(&cw), Some(_)) => cw,
                     _ => x + 4 + rw - cx,
                 };
-                draw::push_clip(cx, ly, cw - 8, LINE);
-                draw::draw_text(col, cx, base);
-                draw::pop_clip();
+                match super::img::logo(super::img::platform_name(col), 16).filter(|_| st.logo == Some(c)) {
+                    Some(mut i) => i.draw(cx, ly + (LINE - 16) / 2, 16, 16),
+                    None => {
+                        draw::push_clip(cx, ly, cw - 8, LINE);
+                        draw::draw_text(col, cx, base);
+                        draw::pop_clip();
+                    }
+                }
                 (cx, c) = (cx + cw, c + 1);
             }
         }
@@ -261,6 +282,14 @@ impl Rows {
                     st.hover = n;
                     f.redraw();
                 }
+                // The logo's platform, by name.
+                let tip = st.logo.and_then(|c| {
+                    let x0: i32 = f.x() + 12 + st.widths.iter().take(c).sum::<i32>();
+                    let on = (x0..x0 + 20).contains(&app::event_x());
+                    let line = st.lines.get(usize::try_from(n - 1).ok()?)?;
+                    on.then(|| super::img::platform_name(line.split('\t').nth(c).unwrap_or("")).to_string())
+                });
+                f.set_tooltip(tip.as_deref().unwrap_or(""));
                 true
             }
             Event::Leave => {
@@ -289,6 +318,10 @@ impl Rows {
                     drop(st);
                     f.redraw();
                     self.fire();
+                }
+                if app::event_mouse_button() == app::MouseButton::Right {
+                    let menu = self.menu.borrow().clone();
+                    super::context_menu(&menu);
                 }
                 true
             }
