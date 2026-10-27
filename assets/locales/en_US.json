@@ -485,5 +485,17 @@
   "ui.saved": "Saved",
   "ui.unlock_later": "Later",
   "ui.unlock_now": "Unlock Now",
-  "ui.unlock_prompt": "streamerz couldn't read your saved logins because the system keyring was locked or still starting up.\n\nUnlock your saved logins and reconnect now?"
+  "ui.unlock_prompt": "streamerz couldn't read your saved logins because the system keyring was locked or still starting up.\n\nUnlock your saved logins and reconnect now?",
+  "update.ask": "streamerz {version} is out (this is {now}).\n\nUpdate now?",
+  "update.dev": "This is a development build: it doesn't update.",
+  "update.done": "Updated to {version}. Restart now to use it?",
+  "update.failed": "The update didn't work:\n{error}\n\nIf streamerz came from a package or an app manager (Gear Lever, for one), update it there.",
+  "update.later": "Later",
+  "update.newest": "streamerz {version} is the newest.",
+  "update.now": "Update",
+  "update.out.body": "Open streamerz to update it.",
+  "update.out.title": "streamerz {version} is out",
+  "update.ready.body": "It was downloaded and goes in place the next time streamerz starts.",
+  "update.ready.title": "streamerz {version} is ready",
+  "update.restart": "Restart now"
 }

@@ -18,6 +18,7 @@ pub mod kick;
 mod math;
 mod mcp;
 pub mod model;
+mod notify;
 mod oauth;
 pub mod obs;
 pub mod remote;
@@ -569,7 +570,7 @@ fn main() {
             }
             tokio::task::spawn_local(servers::run(e.clone()));
             e.started();
-            tokio::task::spawn_local(update::check(engine_cfg.clone(), false));
+            tokio::task::spawn_local(update::watch(engine_cfg.clone()));
             e.timers();
             while let Some(f) = cmd_rx.recv().await {
                 f(&e);
