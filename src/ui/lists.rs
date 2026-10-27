@@ -73,9 +73,19 @@ pub(super) fn title(col: &mut Flex, t: &str) {
     }
 }
 
-fn browser(widths: &'static [i32]) -> HoldBrowser {
+/// A list with column titles over it (when there are), and `empty` in it while it's empty.
+fn browser(
+    col: &mut Flex,
+    widths: &'static [i32],
+    titles: &'static [&'static str],
+    empty: &'static str,
+) -> HoldBrowser {
+    if !titles.is_empty() {
+        super::header(col, widths, titles);
+    }
     let mut b = HoldBrowser::default();
     b.set_column_widths(widths);
+    super::hint(&mut b, empty);
     b
 }
 
@@ -88,6 +98,9 @@ pub struct Kind {
     /// A new one, with an empty id where Streamer.bot puts it.
     new: fn() -> Value,
     columns: &'static [i32],
+    /// The columns' titles, and what an empty list says.
+    titles: &'static [&'static str],
+    empty: &'static str,
     label: fn(&Obj) -> Vec<String>,
     /// What the engine does after a change (restart the timers...).
     after: Option<fn(&Rc<Engine>)>,
@@ -141,6 +154,8 @@ pub static COMMANDS: Kind = Kind {
             "group": "", "grantType": 0, "response": "", "replyAll": false})
     },
     columns: &[180, 280, 120, 260],
+    titles: &["Name", "Commands", "Group", "Sources"],
+    empty: "No commands yet. Add one below.",
     label: |o| {
         let aliases = crate::commands::aliases(o).join(", ");
         vec![
@@ -175,6 +190,8 @@ pub static TIMERS: Kind = Kind {
             "randomInterval": false, "upperInterval": 0, "lines": 0, "counter": 0})
     },
     columns: &[220, 180, 120, 120, 80],
+    titles: &["Name", "Every", "Lines", "Runs", ""],
+    empty: "No timers yet. Add one to run actions every few minutes.",
     label: |o| {
         let n = |k: &str| o.get(k).and_then(Value::as_i64).unwrap_or(0);
         let every = if on(o, "randomInterval") {
@@ -213,6 +230,8 @@ pub static CLIENTS: Kind = Kind {
             "reconnectOnDisconnect": true, "retryInterval": 5})
     },
     columns: &[200, 400, 120],
+    titles: &["Name", "Endpoint", ""],
+    empty: "No WebSocket clients.",
     label: |o| {
         vec![
             s(o, "name").into(),
@@ -250,6 +269,8 @@ pub static OBS_CONNECTIONS: Kind = Kind {
         })
     },
     columns: &[150, 150, 80, 100],
+    titles: &["Name", "Address", "", ""],
+    empty: "No OBS connection yet. Add one below.",
     label: |o| {
         let port = o.get("port").and_then(Value::as_u64).unwrap_or(4455);
         vec![
@@ -282,6 +303,8 @@ pub static SLOBS_CONNECTIONS: Kind = Kind {
             "reconnectOnDisconnect": true, "token": "", "retryInterval": 30, "default": false})
     },
     columns: &[200, 200, 100, 100],
+    titles: &["Name", "Address", "", ""],
+    empty: "No Streamlabs Desktop connection yet. Add one below.",
     label: |o| {
         let port = o.get("port").and_then(Value::as_u64).unwrap_or(59650);
         vec![
@@ -310,6 +333,8 @@ pub static SERVERS: Kind = Kind {
             "autoStart": false})
     },
     columns: &[200, 400, 120],
+    titles: &["Name", "Address", ""],
+    empty: "No WebSocket servers of your own.",
     label: |o| {
         let port = o.get("port").and_then(Value::as_u64).unwrap_or(0);
         vec![
@@ -456,7 +481,7 @@ fn list(
     kind: &'static Kind,
     toggle: Option<&'static str>,
 ) -> Rc<RefCell<List>> {
-    let view = browser(kind.columns);
+    let view = browser(col, kind.columns, kind.titles, kind.empty);
     let mut labels = vec!["Add", "Edit"];
     labels.extend(toggle.map(|_| "On/Off"));
     labels.push("Delete");
@@ -750,7 +775,12 @@ impl Queues {
 
 fn queues_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Queues>> {
     let mut col = tab(tabs, "Queues");
-    let view = browser(&[220, 100, 80, 100, 100]);
+    let view = browser(
+        &mut col,
+        &[220, 100, 80, 100, 100],
+        &["Queue", "", "", "Running", "Waiting"],
+        "",
+    );
     let b = bar(
         &mut col,
         &[
@@ -765,7 +795,12 @@ fn queues_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Queues>> {
         ],
     );
     title(&mut col, "Pending");
-    let pending = browser(&[220, 420, 100]);
+    let pending = browser(
+        &mut col,
+        &[220, 420, 100],
+        &["Queue", "Action", ""],
+        "Nothing running or waiting.",
+    );
     col.fixed(&pending, 200);
     col.end();
     let me = Rc::new(RefCell::new(Queues {
@@ -897,7 +932,12 @@ impl History {
 
 fn history_tab(tabs: &Tabs, cmds: &Cmds) -> Rc<RefCell<History>> {
     let mut col = tab(tabs, "History");
-    let view = browser(&[180, 420, 100, 120]);
+    let view = browser(
+        &mut col,
+        &[180, 420, 100, 120],
+        &["When", "Action", "Took", "Variables"],
+        "No actions have run yet.",
+    );
     let b = bar(
         &mut col,
         &[
@@ -1043,7 +1083,12 @@ impl Globals {
 
 fn globals_tab(tabs: &Tabs, cmds: &Cmds) -> Rc<RefCell<Globals>> {
     let mut col = tab(tabs, "Globals");
-    let view = browser(&[220, 420, 100, 200]);
+    let view = browser(
+        &mut col,
+        &[220, 420, 100, 200],
+        &["Name", "Value", "", "User"],
+        "No globals yet. Set Global sub-actions make them, or Add one.",
+    );
     let b = bar(&mut col, &["Add", "Edit", "Delete", "Refresh"]);
     col.end();
     let me = Rc::new(RefCell::new(Globals {
@@ -1253,6 +1298,7 @@ fn community_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>> 
     top.fixed(&show, 120);
     let mut search = fltk::input::Input::default();
     search.set_tooltip("Search users");
+    super::placeholder(&mut search, "Search users…");
     search.set_trigger(fltk::enums::CallbackTrigger::Changed);
     top.fixed(&search, 220);
     Frame::default();
@@ -1260,17 +1306,28 @@ fn community_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>> 
     col.fixed(&top, ROW);
 
     let users_v = Flex::default().column();
-    let users = browser(&[90, 220, 110, 110, 110]);
+    let mut users_v = users_v;
+    let users = browser(
+        &mut users_v,
+        &[90, 220, 110, 110, 110],
+        &["Platform", "Name", "Role", "First seen", "Last seen"],
+        "Nobody has chatted yet.",
+    );
     users_v.end();
 
     let mut quotes_v = Flex::default().column();
     let qb = bar(&mut quotes_v, &["Add", "Edit", "Delete"]);
-    let quotes = browser(&[60, 460, 140, 140, 100]);
+    let quotes = browser(
+        &mut quotes_v,
+        &[60, 460, 140, 140, 100],
+        &["#", "Quote", "Said by", "Game", "Date"],
+        "No quotes yet. Add one, or use Add Quote in an action.",
+    );
     quotes_v.end();
 
     let mut credits_v = Flex::default().column();
     let cb = bar(&mut credits_v, &["Reset", "Fill with test names"]);
-    let credits = browser(&[180, 600]);
+    let credits = browser(&mut credits_v, &[180, 600], &[], "");
     credits_v.end();
     col.end();
 
@@ -1586,7 +1643,7 @@ impl Groups {
 
 fn groups_tab(tabs: &Tabs, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Groups>> {
     let mut col = tab(tabs, "Groups");
-    let view = browser(&[300, 120]);
+    let view = browser(&mut col, &[300, 120], &["Group", "Users"], "No groups yet.");
     let b = bar(&mut col, &["Add", "Delete"]);
     col.end();
     let me = Rc::new(RefCell::new(Groups {

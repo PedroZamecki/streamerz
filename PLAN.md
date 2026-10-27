@@ -309,7 +309,9 @@ platform handles through channels, never through shared locks held across awaits
   gifts counted once, when they end); TikTok in GetEvents.
 - [x] 42. Visual polish across every tab: flat rounded look in zinc colours (like shadcn/ui) for every
   button, field, list and tab, drawn by two box functions; the open tab joins its page; light theme too.
-- [ ] 43+. Later extras, one phase each, order chosen then (see Decisions).
+- [x] 43. More visual work: column titles over the lists, a hint in empty lists and trees, placeholders in
+  search and message fields, roomier menus, thinner scrollbars.
+- [ ] 44+. Later extras, one phase each, order chosen then (see Decisions).
 
 ## Open points (decide when the phase starts, ask first)
 

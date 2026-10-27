@@ -653,6 +653,7 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
     filter_row.fixed(&f_label, 50);
     let mut filter = Input::default();
     filter.set_tooltip("Filter triggers by title, category, or description...");
+    super::placeholder(&mut filter, "Search…");
     let mut btn_collapse = button(&mut filter_row, "Collapse All", 95);
     let mut btn_expand = button(&mut filter_row, "Expand All", 85);
     filter_row.fixed(&btn_collapse, 95);
