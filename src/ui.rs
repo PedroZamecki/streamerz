@@ -367,31 +367,31 @@ fn button_ink() -> Color {
     Color::color_average(Color::Foreground, Color::Background, 0.75)
 }
 
-/// The icon for a button labelled `label`, if it has one.
+/// The icon for a button labelled `label`, if it has one (by which button it is, not by its words).
 fn icon_for(label: &str) -> Option<&'static str> {
-    Some(match label.trim_end_matches(['.', '…']) {
-        "Add" => "plus",
-        "Edit" | "Edit JSON" => "pencil",
-        "Delete" => "trash-2",
-        "On/Off" => "power",
-        "Import" | "Load file" => "download",
-        "Export" | "Save to file" => "upload",
-        "Connect" | "Connect All" => "plug",
-        "Disconnect" | "Disconnect All" => "unplug",
-        "Test" => "play",
-        "Templates" => "layout-template",
-        "Save" => "save",
-        "Retry" | "Refresh" | "Reset" | "Check" => "rotate-cw",
-        "Quit" | "Logout" => "log-out",
-        "Login" => "log-in",
-        "Hide" => "eye-off",
-        "Duplicate" | "Copy" | "Copy line" | "Copy Code" | "Copy redirect URL" | "Copy path" => "copy",
-        "Clear" => "eraser",
-        "Advanced" => "sliders-horizontal",
-        "Settings" => "settings",
-        "Fill with test names" => "users",
-        "Open folder" => "folder-open",
-        "Open" | "Open file" | "Open profile" | "Open Browser" => "external-link",
+    Some(match crate::i18n::button_id(label)? {
+        "add" => "plus",
+        "edit" | "edit_json" => "pencil",
+        "delete" => "trash-2",
+        "on_off" => "power",
+        "import" | "load_file" => "download",
+        "export" | "save_to_file" => "upload",
+        "connect" | "connect_all" => "plug",
+        "disconnect" | "disconnect_all" => "unplug",
+        "test" => "play",
+        "templates" => "layout-template",
+        "save" => "save",
+        "retry" | "refresh" | "reset" | "check" => "rotate-cw",
+        "quit" | "logout" => "log-out",
+        "login" => "log-in",
+        "hide" => "eye-off",
+        "duplicate" | "copy" | "copy_line" | "copy_code" | "copy_redirect_url" | "copy_path" => "copy",
+        "clear" => "eraser",
+        "advanced" => "sliders-horizontal",
+        "settings" => "settings",
+        "fill_with_test_names" => "users",
+        "open_folder" => "folder-open",
+        "open" | "open_file" | "open_profile" | "open_browser" => "external-link",
         _ => return None,
     })
 }
