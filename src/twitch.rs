@@ -1406,8 +1406,8 @@ async fn run_eventsub_loop(
                 let sid = sid.to_string();
                 let e = engine.clone();
                 let refused = auth_refused.clone();
+                // The welcome waits only for the history: the ~40 subscriptions take seconds.
                 tokio::task::spawn_local(async move {
-                    create_all_subscriptions(&sid, &token, &bid, &refused).await;
                     let hist_fut = async {
                         if custom_eventsub || login.is_empty() {
                             Vec::new()
@@ -1415,19 +1415,23 @@ async fn run_eventsub_loop(
                             fetch_recent_messages(&login, &bid).await
                         }
                     };
-                    let (_, mut hist) = tokio::join!(seed(&e), hist_fut);
-                    SEEN.with_borrow(|s| {
-                        for l in &mut hist {
-                            for (k, u) in &mut l.badges {
-                                if u.is_empty() {
-                                    if let Some(found) = s.badges.get(k) {
-                                        *u = found.clone();
+                    let subs = create_all_subscriptions(&sid, &token, &bid, &refused);
+                    let welcome = async {
+                        let mut hist = hist_fut.await;
+                        SEEN.with_borrow(|s| {
+                            for l in &mut hist {
+                                for (k, u) in &mut l.badges {
+                                    if u.is_empty() {
+                                        if let Some(found) = s.badges.get(k) {
+                                            *u = found.clone();
+                                        }
                                     }
                                 }
                             }
-                        }
-                    });
-                    e.chat_welcome("twitch", hist);
+                        });
+                        e.chat_welcome("twitch", hist);
+                    };
+                    tokio::join!(subs, seed(&e), welcome);
                     e.refresh_chat_badges("twitch", |k| SEEN.with_borrow(|s| s.badges.get(k).cloned()));
                 });
                 if let Some(t) = poll_task.replace(tokio::task::spawn_local(poll(engine.clone(), broadcaster.clone())))
