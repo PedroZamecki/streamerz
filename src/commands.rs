@@ -20,7 +20,7 @@ pub struct Chat {
     pub moderator: bool,
     pub vip: bool,
     pub subscriber: bool,
-    /// Sent by the bot account / by streamerz itself.
+    /// Sent by the bot account / by Streamerz itself.
     pub bot: bool,
     pub internal: bool,
     pub msg_id: String,

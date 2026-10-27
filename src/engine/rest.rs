@@ -1574,7 +1574,7 @@ impl Engine {
 
             // Add Random Users (22)
             22 => {
-                // The users in chat now (Present Only, or not: streamerz only knows who is present).
+                // The users in chat now (Present Only, or not: Streamerz only knows who is present).
                 let count = (n(o, "count") as usize).max(1);
                 let Some(tw) = self.twitch() else { return };
                 let who = vec![

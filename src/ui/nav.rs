@@ -223,7 +223,7 @@ pub fn sidebar(h: i32, pages: &Wizard, cfg: &Cfg) -> Frame {
                 draw::push_clip(f.x() + 44, top, f.w() - 52, FOOT);
                 draw::set_font(Font::HelveticaBold, 13);
                 draw::set_draw_color(fg);
-                draw::draw_text2("streamerz", f.x() + 46, top + 5, WIDE - 56, 18, Align::Left);
+                draw::draw_text2("Streamerz", f.x() + 46, top + 5, WIDE - 56, 18, Align::Left);
                 draw::set_font(Font::Helvetica, 11);
                 draw::set_draw_color(super::muted());
                 draw::draw_text2(crate::brand::VERSION, f.x() + 46, top + 22, WIDE - 56, 16, Align::Left);

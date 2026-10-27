@@ -21,9 +21,9 @@ pub enum Updates {
     Ignore,
 }
 
-/// This program's file, as it was at start: once updated, the running one is the renamed .old.
+/// This program's file, as it was at start (also what autostart and the shortcuts' desktop file run): once updated, the running one is the renamed .old.
 /// In an AppImage, the AppImage file (the program inside is read-only).
-fn exe() -> Option<PathBuf> {
+pub fn exe() -> Option<PathBuf> {
     static EXE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     EXE.get_or_init(|| appimage().or_else(|| std::env::current_exe().ok()))
         .clone()
@@ -49,13 +49,9 @@ fn running() -> Option<&'static str> {
     option_env!("STREAMERZ_VERSION").filter(|v| semver(v).is_some())
 }
 
-/// A release newer than this build: its tag and the files this platform runs.
+/// A release newer than this build: its tag and the file this install is made from.
 pub struct Release {
     pub tag: String,
-    files: Vec<File>,
-}
-
-struct File {
     /// Where it lives now (and where the new one goes).
     path: PathBuf,
     url: String,
@@ -63,36 +59,28 @@ struct File {
     sha256: Option<String>,
 }
 
-/// The files this platform runs: this program and, on Linux outside an AppImage, the TikTok window
-/// next to it if it's there; each with its release asset's name.
-fn installed() -> Option<Vec<(PathBuf, &'static str)>> {
-    let exe = exe()?;
-    let dir = exe.parent()?.to_path_buf();
-    let name = if cfg!(windows) {
-        "streamerz-windows-x86_64.exe"
-    } else if appimage().is_some() {
-        "streamerz-linux-x86_64.AppImage"
+/// What updates: the Windows exe, or the AppImage. Any other way of running (a dev build, a copied
+/// binary) has no update, as it isn't what a release ships.
+fn installed() -> Option<(PathBuf, &'static str)> {
+    if cfg!(windows) {
+        Some((exe()?, "Streamerz-windows-x86_64.exe"))
     } else {
-        "streamerz-linux-x86_64"
-    };
-    let mut files = vec![(exe.clone(), name)];
-    let suffix = exe
-        .file_name()
-        .and_then(|n| n.to_str())
-        .and_then(|n| n.strip_prefix("streamerz"))
-        .unwrap_or("");
-    let helper = dir.join(format!("streamerz-tiktok{suffix}"));
-    if cfg!(not(windows)) && appimage().is_none() && helper.exists() {
-        files.push((helper, "streamerz-tiktok-linux-x86_64"));
+        Some((appimage()?, "Streamerz-linux-x86_64.AppImage"))
     }
-    Some(files)
+}
+
+/// The newest release found, for Settings to show.
+static FOUND: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub fn found() -> Option<String> {
+    FOUND.lock().ok()?.clone()
 }
 
 /// The release newer than this build, if there is one.
 pub async fn newer() -> Option<Release> {
     let now = semver(running()?)?;
     let headers = [
-        ("User-Agent".to_string(), "streamerz".to_string()),
+        ("User-Agent".to_string(), "Streamerz".to_string()),
         ("Accept".to_string(), "application/vnd.github+json".to_string()),
     ];
     let r = crate::http::request("GET", &latest(), &headers, b"").await.ok()?;
@@ -101,35 +89,25 @@ pub async fn newer() -> Option<Release> {
     if semver(&tag)? <= now {
         return None;
     }
-    let assets = v["assets"].as_array()?;
-    let files = installed()?
-        .into_iter()
-        .map(|(path, name)| {
-            let a = assets.iter().find(|a| a["name"] == name)?;
-            Some(File {
-                path,
-                url: a["browser_download_url"].as_str()?.to_string(),
-                sha256: a["digest"]
-                    .as_str()
-                    .and_then(|d| d.strip_prefix("sha256:"))
-                    .map(str::to_string),
-            })
-        })
-        .collect::<Option<Vec<_>>>()?;
-    Some(Release { tag, files })
+    let (path, name) = installed()?;
+    let a = v["assets"].as_array()?.iter().find(|a| a["name"] == name)?;
+    Some(Release {
+        url: a["browser_download_url"].as_str()?.to_string(),
+        sha256: a["digest"]
+            .as_str()
+            .and_then(|d| d.strip_prefix("sha256:"))
+            .map(str::to_string),
+        tag,
+        path,
+    })
 }
 
-/// `path` with `ext` added to its whole name (streamerz.AppImage.new).
+/// `path` with `ext` added to its whole name (Streamerz.AppImage.new).
 fn beside(path: &Path, ext: &str) -> PathBuf {
     let mut n = path.as_os_str().to_owned();
     n.push(".");
     n.push(ext);
     PathBuf::from(n)
-}
-
-/// Which release the `.new` files are, so a start knows to put them in place.
-fn marker() -> Option<PathBuf> {
-    Some(beside(&exe()?, "version"))
 }
 
 /// A program, not an error page (an ELF or an exe, not tiny), with the SHA-256 GitHub lists when it
@@ -145,86 +123,66 @@ fn sound(body: &[u8], sha256: Option<&str>) -> bool {
         })
 }
 
-/// Downloads the release's files next to the ones they replace, as `.new`; nothing changes until
-/// `apply`. A half download never gets the `.new` name.
+/// Downloads the release next to the file it replaces, as `.new` (a half download never has that name),
+/// with the tag in `.version`; nothing else changes until `apply`.
 pub async fn stage(r: &Release) -> Result<(), String> {
-    let headers = [("User-Agent".to_string(), "streamerz".to_string())];
-    if marker().and_then(|m| std::fs::read_to_string(m).ok()).as_deref() == Some(&r.tag)
-        && r.files.iter().all(|f| beside(&f.path, "new").is_file())
-    {
+    let (new, tag) = (beside(&r.path, "new"), beside(&r.path, "version"));
+    if new.is_file() && std::fs::read_to_string(&tag).is_ok_and(|t| t == r.tag) {
         return Ok(());
     }
-    for f in &r.files {
-        let got = crate::http::request("GET", &f.url, &headers, b"").await?;
-        if got.status != 200 || !sound(&got.body, f.sha256.as_deref()) {
-            return Err(format!("{}: not the program it should be (HTTP {})", f.url, got.status));
-        }
-        let (part, new) = (beside(&f.path, "part"), beside(&f.path, "new"));
-        std::fs::write(&part, &got.body).map_err(|e| format!("{}: {e}", part.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o755));
-        }
-        std::fs::rename(&part, &new).map_err(|e| format!("{}: {e}", new.display()))?;
+    let headers = [("User-Agent".to_string(), "Streamerz".to_string())];
+    let got = crate::http::request("GET", &r.url, &headers, b"").await?;
+    if got.status != 200 || !sound(&got.body, r.sha256.as_deref()) {
+        return Err(format!("{}: not the program it should be (HTTP {})", r.url, got.status));
     }
-    if let Some(m) = marker() {
-        let _ = std::fs::write(m, &r.tag);
+    let part = beside(&r.path, "part");
+    std::fs::write(&part, &got.body).map_err(|e| format!("{}: {e}", part.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o755));
     }
+    std::fs::rename(&part, &new).map_err(|e| format!("{}: {e}", new.display()))?;
+    std::fs::write(&tag, &r.tag).map_err(|e| format!("{}: {e}", tag.display()))
+}
+
+/// Puts the staged file in place. On Linux that's one atomic rename (the running program keeps its old
+/// copy open, so nothing breaks); Windows can't replace a running program, only rename it, so the old
+/// one waits as `.old` until the next start.
+fn apply(path: &Path) -> Result<(), String> {
+    let new = beside(path, "new");
+    if cfg!(windows) {
+        let old = beside(path, "old");
+        let _ = std::fs::remove_file(&old);
+        std::fs::rename(path, &old).map_err(|e| format!("{}: {e}", path.display()))?;
+        if let Err(e) = std::fs::rename(&new, path) {
+            let _ = std::fs::rename(&old, path);
+            return Err(format!("{}: {e}", path.display()));
+        }
+    } else {
+        std::fs::rename(&new, path).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    let _ = std::fs::remove_file(beside(path, "version"));
     Ok(())
 }
 
-/// Puts the staged files in place. On Linux that's one atomic rename over each file (the running
-/// program keeps its old copy open, so nothing breaks); Windows can't replace a running program, only
-/// rename it, so the old one waits as `.old` until the next start.
-fn apply() -> Result<(), String> {
-    for (path, _) in installed().ok_or("can't tell where streamerz is")? {
-        let new = beside(&path, "new");
-        if !new.is_file() {
-            continue;
-        }
-        if cfg!(windows) {
-            let old = beside(&path, "old");
-            let _ = std::fs::remove_file(&old);
-            std::fs::rename(&path, &old).map_err(|e| format!("{}: {e}", path.display()))?;
-            if let Err(e) = std::fs::rename(&new, &path) {
-                let _ = std::fs::rename(&old, &path);
-                return Err(format!("{}: {e}", path.display()));
-            }
-        } else {
-            std::fs::rename(&new, &path).map_err(|e| format!("{}: {e}", path.display()))?;
-        }
-    }
-    if let Some(m) = marker() {
-        let _ = std::fs::remove_file(m);
-    }
-    Ok(())
-}
-
-/// At start: leftovers of the last update are cleaned, and an update the background mode staged is put
+/// At start: leftovers of the last update are cleaned, and a release the background mode staged is put
 /// in place and started (this process quits).
 pub fn tidy() {
-    let Some(files) = installed() else { return };
-    for (path, _) in &files {
-        let _ = std::fs::remove_file(beside(path, "old"));
-        let _ = std::fs::remove_file(beside(path, "part"));
+    let Some((path, _)) = installed() else { return };
+    for ext in ["old", "part"] {
+        let _ = std::fs::remove_file(beside(&path, ext));
     }
-    let Some(marker) = marker() else { return };
-    let Ok(tag) = std::fs::read_to_string(&marker) else {
+    let Ok(tag) = std::fs::read_to_string(beside(&path, "version")) else {
         return;
     };
-    let newer = match (semver(&tag), running().and_then(semver)) {
-        (Some(t), Some(r)) => t > r,
-        _ => false,
-    };
-    if newer && apply().is_ok() {
+    let newer = matches!((semver(&tag), running().and_then(semver)), (Some(t), Some(r)) if t > r);
+    if newer && apply(&path).is_ok() {
         restart();
     }
     // Stale: this build is that release already, or newer.
-    for (path, _) in &files {
-        let _ = std::fs::remove_file(beside(path, "new"));
-    }
-    let _ = std::fs::remove_file(marker);
+    let _ = std::fs::remove_file(beside(&path, "new"));
+    let _ = std::fs::remove_file(beside(&path, "version"));
 }
 
 /// The release tag last announced, so each is told about once.
@@ -251,6 +209,7 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
         return;
     };
     let tag = release.tag.clone();
+    *FOUND.lock().unwrap() = Some(tag.clone());
     // Told once per release, however many times it's looked for.
     let fresh = std::mem::replace(&mut *ANNOUNCED.lock().unwrap(), tag.clone()) != tag;
     if fresh {
@@ -283,7 +242,7 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
         return;
     }
     crate::say(format!("Updating to {tag}..."));
-    if let Err(e) = stage(&release).await.and_then(|()| apply()) {
+    if let Err(e) = stage(&release).await.and_then(|()| apply(&release.path)) {
         crate::say(format!("Update to {tag} failed: {e}"));
         let _ = crate::ui::confirm(trf("update.failed", &[("error", &e)]), tr("dialogs.ok"), "").await;
         return;
@@ -299,7 +258,7 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
     }
 }
 
-/// Checks now and then once an hour while streamerz is open.
+/// Checks now and then once an hour while Streamerz is open.
 pub async fn watch(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>>) {
     loop {
         check(cfg.clone(), false).await;

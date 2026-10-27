@@ -1,4 +1,4 @@
-# Developing streamerz
+# Developing Streamerz
 
 Rules for commits, branches and releases are in `CLAUDE.md` (also `AGENTS.md`); the plan is `PLAN.md`,
 and what's covered is `COVERAGE.md`.
@@ -18,30 +18,30 @@ development packages listed in `.github/workflows/lint.yml`.
 
 ```
 cargo build --release
-./target/release/streamerz
+./target/release/Streamerz
 ```
 
 ### Fast builds and testing
 
 Full release builds compile `wry`/`tao`/WebKitGTK (`242` crates, LTO, single codegen unit). For rapid
 day-to-day iteration, `.cargo/config.toml` and `Cargo.toml` provide a `[profile.fast]` (`opt-level = 1`,
-incremental, line-table debug info) and make `tiktok-web` (`streamerz-tiktok`) optional (`141` crates):
+incremental, line-table debug info) and make `tiktok-web` (`Streamerz-tiktok`) optional (`141` crates):
 
 ```
 cargo fcheck                  # fast type-check (--no-default-features)
-cargo fbuild                  # fast optimized dev binary -> target/fast/streamerz
-cargo frun                    # build & run target/fast/streamerz
+cargo fbuild                  # fast optimized dev binary -> target/fast/Streamerz
+cargo frun                    # build & run target/fast/Streamerz
 cargo ftest                   # run all tests without building wry/tao
 cargo ftest twitch::tests     # run only matching unit tests
 ```
 
-`target/fast/streamerz` automatically reuses `target/release/streamerz-tiktok` (or `target/debug/`) if
+`target/fast/Streamerz` automatically reuses `target/release/Streamerz-tiktok` (or `target/debug/`) if
 already built once. To share your existing release `streamerz.json` and `cache/` without copying files:
 
 ```
 STREAMERZ_CONFIG=target/release/streamerz.json cargo frun
 # or:
-./target/fast/streamerz --config target/release/streamerz.json
+./target/fast/Streamerz --config target/release/streamerz.json
 ```
 
 Optional host tools for even faster linking and clean rebuilds on Linux:
@@ -287,7 +287,7 @@ uv run --with websockets python -I oracle.py cases.json
 
 `cases.json` is a list of `{"name", "subActions", "args", "triggers", "queue": "Q", "run": false, "wait"}`;
 `"@name"` in a sub-action is the id of the case called `name` (and `"@Q"` a test queue). Found this way:
-`%x:format%` uses the invariant culture in Streamer.bot (streamerz uses the OS locale, by choice);
+`%x:format%` uses the invariant culture in Streamer.bot (Streamerz uses the OS locale, by choice);
 `$math()$` prints 15 significant digits and NaN on errors; Contains ignores case; While's operators are
 its own (0 equals, 1 not, 2 less, 3 greater); Set Global's source is 0 value, 1 add, 2 subtract,
 3 remove; queue pause state 0 pauses, blocking state 0 blocks; an inline Run Action shares the caller's
@@ -443,7 +443,7 @@ fi
 
 ## Servers side by side
 
-streamerz's servers are compared with the real Streamer.bot's: streamerz on 8090 (HTTP 7475, UDP 4243) with
+Streamerz's servers are compared with the real Streamer.bot's: Streamerz on 8090 (HTTP 7475, UDP 4243) with
 the same password and a copy of the real `actions.json` in its own `streamerz.json` (both local, never
 committed), the real one on 8080 (turn its HTTP and UDP servers on for the HTTP comparison, and put its
 settings back after). `cmp.py` sends the same WebSocket requests to both, with and without
@@ -454,7 +454,7 @@ until the platforms are in, TestCredits (credits are a later phase), and the JSO
 `cmp.py`:
 
 ```python
-# Same requests to the real Streamer.bot (8080) and streamerz (8090); report shape differences
+# Same requests to the real Streamer.bot (8080) and Streamerz (8090); report shape differences
 # (keys, key order, value types) and value differences for stable fields.
 import asyncio, json, base64, hashlib, websockets
 PW = json.load(open('/home/zamecki/Games/streamerbot/data/settings.json', encoding='utf-8-sig'))['websockets']['authPassword']
@@ -504,7 +504,7 @@ asyncio.run(main())
 
 ## Chat without live channels (dev mode)
 
-Started with `STREAMERZ_DEV=1`, streamerz sends no chat: every message an action would send (Twitch, YouTube,
+Started with `STREAMERZ_DEV=1`, Streamerz sends no chat: every message an action would send (Twitch, YouTube,
 Kick, TikTok send/reply) is kept instead, and the WebSocket server answers two extra requests (unknown
 otherwise, so a release never has them unless the variable is set):
 
@@ -528,7 +528,7 @@ ws.onmessage = (m) => { const v = JSON.parse(m.data); if (v.request !== "Hello")
 Reading needs a channel that is live right now. `api-live/user/room?...&uniqueId=NAME` (the URL in
 `webcast::room_id`) says so: `statusCode` 19881007 is no such user, `data.liveRoom.status` 2 is live, 4
 offline. It answers 429 to a few quick lookups in a row (less with a `ttwid` cookie), so check names one
-every few seconds. Then run streamerz with `"tiktok": {"channel": NAME, "autoConnect": true}` and subscribe
+every few seconds. Then run Streamerz with `"tiktok": {"channel": NAME, "autoConnect": true}` and subscribe
 to the TikTok events on its WebSocket. Chat on a quiet live can take minutes; joins and likes come at once.
 An emote-only comment has no text (its emotes are in field 13).
 
@@ -537,7 +537,7 @@ the window at a local copy of that page: `STREAMERZ_TIKTOK_URL=http://127.0.0.1:
 `{url}/@{channel}/live`, so serve files `@NAME/live` holding a `contenteditable` element with
 `data-e2e="room-chat-input-field"` (add `disabled` and a `placeholder` for a room that refuses comments)
 and a `data-e2e="room-chat-send-btn"`, whose Enter or click handler records the text (e.g. fetches
-`/sent?text`). Run `streamerz-tiktok send <profile dir> NAME` and write JSON strings to its stdin; each
+`/sent?text`). Run `Streamerz-tiktok send <profile dir> NAME` and write JSON strings to its stdin; each
 gets `{"ok":true}` or `{"error":...}`. `STREAMERZ_TIKTOK_SHOW=1` shows the window.
 
 ## OBS sub-actions against a real OBS
@@ -546,7 +546,7 @@ A throwaway OBS on the hidden display, so the user's own profile and devices are
 (`XDG_CONFIG_HOME=/tmp/obscfg`), obs-websocket on 4456 with a password, the scene collection's
 `DesktopAudioDevice1`/`AuxAudioDevice1` removed (no microphone or desktop capture) and recordings in
 `/tmp/szo/rec` (`[SimpleOutput] FilePath=`, `RecRB=true` for the replay buffer). Then `run.py` builds one
-streamerz action per case, runs each with `DoAction` and checks OBS's own state with `obs.mjs`, an
+Streamerz action per case, runs each with `DoAction` and checks OBS's own state with `obs.mjs`, an
 independent obs-websocket client. The scenes it expects (SZT A/B, SZT Text, Color, Image, Browser, Audio,
 Media, the filters) are created with `obs.mjs` `CreateScene`/`CreateInput`/`CreateSourceFilter` first.
 
@@ -644,7 +644,7 @@ cfg={"start_hidden":True,"websockets":{"autoStart":True,"address":"127.0.0.1","p
 json.dump(cfg, open(f'{D}/streamerz.json','w'))
 if os.path.exists(f"{D}/shot.png"): os.remove(f"{D}/shot.png")
 logf=open(f'{D}/log.txt','w')
-p=subprocess.Popen([f'{D}/streamerz'], cwd=D, stdout=logf, stderr=subprocess.STDOUT, env=dict(os.environ, DISPLAY=':99', WAYLAND_DISPLAY='', STREAMERZ_DEV='1'))
+p=subprocess.Popen([f'{D}/Streamerz'], cwd=D, stdout=logf, stderr=subprocess.STDOUT, env=dict(os.environ, DISPLAY=':99', WAYLAND_DISPLAY='', STREAMERZ_DEV='1'))
 time.sleep(3)
 FLIP0=oracle([["GetSceneItemTransform",{"sceneName":A,"sceneItemId":item(A,"SZT Image")}]])[0]['data']['sceneItemTransform']['scaleX']
 fails=0
@@ -673,7 +673,7 @@ in its own X server on a hidden Hyprland workspace instead; it has its own point
 hyprctl eval 'hl.window_rule({ match = { class = "org.freedesktop.Xwayland" }, workspace = "special:szt silent" })'
 (setsid Xwayland :99 -geometry 1200x800 -noreset >/dev/null 2>&1 &)
 cd /tmp/szform  # a copy of the binary and a throwaway streamerz.json
-(DISPLAY=:99 FLTK_BACKEND=x11 WAYLAND_DISPLAY= setsid dbus-run-session ./streamerz >/dev/null 2>&1 &)
+(DISPLAY=:99 FLTK_BACKEND=x11 WAYLAND_DISPLAY= setsid dbus-run-session ./Streamerz >/dev/null 2>&1 &)
 DISPLAY=:99 xdotool mousemove 130 108 click 1     # a click at window coordinates 130,108
 DISPLAY=:99 import -window root shot.png          # a screenshot
 ```
@@ -705,7 +705,7 @@ Streamer.bot showed the calls and enum values:
 - Triggers: Streaming Started on status `starting`, Stopped on `ending`; Recording Started on
   `recording`, Stopped on `stopping`. Arguments `sd.id`, `sd.name`, `sd.host` (and `sd.sceneName`); the
   trigger's connection field is `sdId` (all zeros: any).
-- Set Browser Source URL and Set GDI Text make no call at all in Streamer.bot 1.0.7; streamerz uses
+- Set Browser Source URL and Set GDI Text make no call at all in Streamer.bot 1.0.7; Streamerz uses
   `Source.updateSettings`.
 
 ## The window and the engine
@@ -732,8 +732,8 @@ Every config key ending in `token`, `secret`, `password` or `cookie` (outside th
 actions, globals, commands, ...) is moved on save into one `secrets` value (`dpapi:` or `keyring:` +
 base64) and put back on load. A new secret field only needs a name ending like that. On Linux the key is
 read lazily from the Secret Service on its own thread, so nobody who never logs in touches the keyring.
-Check it by hand: `secret-tool search application streamerz` shows the item; `secret-tool clear
-application streamerz config <path>` removes it (the saved logins then can't be decrypted and are kept
+Check it by hand: `secret-tool search application Streamerz` shows the item; `secret-tool clear
+application Streamerz config <path>` removes it (the saved logins then can't be decrypted and are kept
 as they are until the key is back). `main.rs`'s `redact` hides token-shaped values in every log line.
 
 The Windows check needs the official rustc and both rust-std components; /tmp is cleared on reboot, so
@@ -750,7 +750,7 @@ mkdir -p /tmp/rtdl && cd /tmp/rtdl && V=$(rustc -V | cut -d' ' -f2) && for c in 
 Every PR measures the hidden window (start hidden, wait a few seconds):
 
 ```
-pid=$(pgrep -x streamerz); grep VmRSS /proc/$pid/status
+pid=$(pgrep -x Streamerz); grep VmRSS /proc/$pid/status
 t1=$(awk '{print $14+$15}' /proc/$pid/stat); sleep 30; t2=$(awk '{print $14+$15}' /proc/$pid/stat); echo $((t2-t1))
 ```
 
@@ -789,7 +789,7 @@ the long tail of older literal texts are still to be moved: do it as each is tou
 
 ## Twitch events without a Twitch login (Twitch CLI mock)
 
-The [Twitch CLI](https://dev.twitch.tv/docs/cli/) runs a mock EventSub WebSocket; streamerz sends its
+The [Twitch CLI](https://dev.twitch.tv/docs/cli/) runs a mock EventSub WebSocket; Streamerz sends its
 subscriptions there too when `twitch.eventsubUrl` points at it.
 
 1. A throwaway folder with a copy of the binary and a `streamerz.json` holding a fake broadcaster
@@ -798,7 +798,7 @@ subscriptions there too when `twitch.eventsubUrl` points at it.
    sub-action with the variables to check.
 2. `twitch event websocket start-server -p 8099` (not `-S`: CLI 1.1.24 refuses the newer subscription
    types, e.g. `channel.chat.message`, that real Twitch takes).
-3. Start streamerz there, then `twitch event trigger channel.ban --transport=websocket --to-user 5555` for
+3. Start Streamerz there, then `twitch event trigger channel.ban --transport=websocket --to-user 5555` for
    each event (`--from-user 5555` for a raid sent). The log shows what fired, with its variables.
 
 The CLI can't send chat messages or chat notifications (subs, gifts, incoming raids, cheers come that

@@ -280,7 +280,10 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     let r = setting(
         &mut col,
         tr("settings.new_versions"),
-        &trf("settings.new_versions.about", &[("version", &version)]),
+        &match crate::update::found() {
+            Some(tag) => trf("settings.new_versions.found", &[("version", &tag)]),
+            None => trf("settings.new_versions.about", &[("version", &version)]),
+        },
         320,
     );
     let mut row = Flex::default().row();

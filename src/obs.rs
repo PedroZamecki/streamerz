@@ -652,7 +652,7 @@ thread_local! {
     static SEEN: std::cell::RefCell<HashMap<String, Seen>> = Default::default();
 }
 
-/// Streamer.bot's obs.* variables for a connection (and the old names streamerz used).
+/// Streamer.bot's obs.* variables for a connection (and the old names Streamerz used).
 fn obs_args(info: &ObsConnInfo) -> Obj {
     let ((studio, ws), _) = SEEN.with_borrow(|m| m.get(&info.id).cloned().unwrap_or_default());
     let mut a = Obj::new();

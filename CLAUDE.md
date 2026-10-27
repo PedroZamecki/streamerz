@@ -1,4 +1,4 @@
-# streamerz project rules
+# Streamerz project rules
 
 - Commits: conventional commits, one line, max 72 chars: `type(scope)?: subject`.
   Scope is optional. No body, no footer, no `Co-Authored-By` or other trailers. Enforced by
@@ -21,8 +21,11 @@
   (`.github/workflows/build.yml`). Keep that working: don't add steps that change the tree after the PR
   is built.
 - Releases are automatic: each merge to `main` bumps the version from the commit types
-  (`type!:` major, `feat` minor, `fix`/`perf` patch) and publishes the Windows exe and the Linux binary.
+  (`type!:` major, `feat` minor, `fix`/`perf` patch) and publishes the Windows exe and the Linux AppImage (the only Linux file: the TikTok helper lives inside it).
   Don't tag by hand, and don't bump the version in `Cargo.toml` (it's unused).
+- The name is **Streamerz**, capitalized, everywhere a person or the system sees it: UI, docs, window and
+  notification titles, desktop entries, the executable (`Streamerz`, `Streamerz.exe`) and the release files.
+  Only identifiers keep lowercase (crate and repo `streamerz`, `streamerz.json`, the config folder, wire ids).
 - Language: English everywhere (code, comments, commits, PRs, docs, UI).
 - Push as rarely as possible: every push runs CI. Commit locally, test locally, and push once when the
   version is closed (not after every commit or fix).
@@ -42,7 +45,7 @@
   formats; songrequestz (`../songrequestz`) and tikstream (`../tikstream`) are the reference for code style,
   structure and CI.
 - Test against the real services where possible: the real Streamer.bot (ws://127.0.0.1:8080/, under Wine in
-  `~/Games/streamerbot`), OBS, and live Twitch/Kick/YouTube channels. During development streamerz runs on
+  `~/Games/streamerbot`), OBS, and live Twitch/Kick/YouTube channels. During development Streamerz runs on
   port 8090 next to the real Streamer.bot; the shipped default is 8080.
 - Never commit secrets or user data: OAuth tokens, Kick client secret, passwords and anything read from
   the real Streamer.bot's `data/` live only in `streamerz.json` (gitignored) or stay outside the repo.

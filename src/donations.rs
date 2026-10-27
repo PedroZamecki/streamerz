@@ -1,4 +1,4 @@
-//! Donations and Shops integration for streamerz (Phase 13):
+//! Donations and Shops integration for Streamerz (Phase 13):
 //! - Unified webhook and event dispatch for 12 donation/shop platforms:
 //!   Ko-fi, StreamElements, Streamlabs, Patreon, Fourthwall, Throne,
 //!   TipeeeStream, TreatStream, DonorDrive, Pally.gg, Shopify, Streamloots.

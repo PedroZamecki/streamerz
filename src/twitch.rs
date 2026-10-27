@@ -1,4 +1,4 @@
-//! Twitch integration for streamerz (Phase 6):
+//! Twitch integration for Streamerz (Phase 6):
 //! - Login via Device Code OAuth (broadcaster + optional bot account).
 //! - EventSub WebSocket session (`wss://eventsub.wss.twitch.tv/ws`).
 //! - Chat messages in and out, whispers, announcements, raids.

@@ -1,4 +1,4 @@
-# Pull requests: build streamerz-windows-x86_64.exe (Windows) and streamerz-linux-x86_64 (+ AppImage) as checks,
+# Pull requests: build Streamerz-windows-x86_64.exe (Windows) and Streamerz-linux-x86_64.AppImage as checks,
 # and keep them as artifacts named after the version and the repo's tree hash.
 # Merges to main: pick the next version from the commits since the last tag
 # (breaking "type!: " -> major, feat -> minor, fix/perf -> patch). If the merged tree is the one a pull
@@ -107,18 +107,18 @@ jobs:
           perl -pi -e 's/(option\(FLTK_MSVC_RUNTIME_DLL .*)ON\)/${1}OFF)/' $f
           grep -q 'FLTK_MSVC_RUNTIME_DLL .*OFF)' $f
       - if: needs.version.outputs.reuse == ''
-        run: cargo build --release --locked --bin streamerz
+        run: cargo build --release --locked --bin Streamerz
         env:
           STREAMERZ_VERSION: ${{ needs.version.outputs.tag || 'dev' }}
       - if: needs.version.outputs.reuse == ''
         name: Stage Windows binary
         run: |
           mkdir -p dist
-          cp target/release/streamerz.exe dist/streamerz-windows-x86_64.exe
+          cp target/release/Streamerz.exe dist/Streamerz-windows-x86_64.exe
       - uses: actions/upload-artifact@v4
         with:
           name: streamerz-windows-${{ needs.version.outputs.tag || 'dev' }}-${{ needs.version.outputs.tree }}
-          path: dist/streamerz-windows-x86_64.exe
+          path: dist/Streamerz-windows-x86_64.exe
 
   linux:
     needs: version
@@ -174,13 +174,7 @@ jobs:
         name: Stage Linux release assets
         run: |
           mkdir -p dist
-          cp target/release/streamerz dist/streamerz-linux-x86_64
-          if [ -f target/release/streamerz-tiktok ]; then
-            cp target/release/streamerz-tiktok dist/streamerz-tiktok-linux-x86_64
-          fi
-          if [ -f streamerz-linux-x86_64.AppImage ]; then
-            cp streamerz-linux-x86_64.AppImage* dist/
-          fi
+          cp Streamerz-linux-x86_64.AppImage* dist/
       - uses: actions/upload-artifact@v4
         with:
           name: streamerz-linux-${{ needs.version.outputs.tag || 'dev' }}-${{ needs.version.outputs.tree }}
@@ -253,4 +247,4 @@ jobs:
           cargo fetch --locked
           f=$(ls "${CARGO_HOME:-$HOME/.cargo}"/registry/src/*/fltk-sys-*/cfltk/fltk/CMake/options.cmake)
           perl -pi -e 's/(option\(FLTK_MSVC_RUNTIME_DLL .*)ON\)/${1}OFF)/' $f
-      - run: cargo build --release --locked --bin streamerz
+      - run: cargo build --release --locked --bin Streamerz

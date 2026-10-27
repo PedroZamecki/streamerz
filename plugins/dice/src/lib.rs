@@ -1,7 +1,7 @@
-//! An example streamerz plugin: a "Roll dice" sub-action, a `!roll` answer in chat, a "Rolled a six"
+//! An example Streamerz plugin: a "Roll dice" sub-action, a `!roll` answer in chat, a "Rolled a six"
 //! trigger, and a setting for the number of sides. Build it with
 //! `cargo build --release --target wasm32-unknown-unknown` and copy
-//! `target/wasm32-unknown-unknown/release/dice.wasm` into streamerz's `plugins` folder.
+//! `target/wasm32-unknown-unknown/release/dice.wasm` into Streamerz's `plugins` folder.
 
 use serde_json::{json, Value};
 
@@ -15,7 +15,7 @@ thread_local! {
     static LAST: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Hands streamerz JSON it reads from our memory: ptr << 32 | len.
+/// Hands Streamerz JSON it reads from our memory: ptr << 32 | len.
 fn out(v: &Value) -> u64 {
     LAST.with_borrow_mut(|b| {
         *b = v.to_string().into_bytes();
@@ -23,18 +23,18 @@ fn out(v: &Value) -> u64 {
     })
 }
 
-/// JSON streamerz wrote at `packed`.
+/// JSON Streamerz wrote at `packed`.
 fn read(packed: u64) -> Value {
     if packed == 0 {
         return Value::Null;
     }
     let (ptr, len) = ((packed >> 32) as usize, (packed & 0xffff_ffff) as usize);
-    // SAFETY: streamerz wrote `len` bytes there, into memory it got from `alloc`.
+    // SAFETY: Streamerz wrote `len` bytes there, into memory it got from `alloc`.
     let b = unsafe { Vec::from_raw_parts(ptr as *mut u8, len, len) };
     serde_json::from_slice(&b).unwrap_or(Value::Null)
 }
 
-/// A request to streamerz, and its answer (only the ones read at once have one).
+/// A request to Streamerz, and its answer (only the ones read at once have one).
 fn ask(v: Value) -> Value {
     let s = v.to_string();
     // SAFETY: s lives through the call.
@@ -79,7 +79,7 @@ fn sides() -> u64 {
 
 #[no_mangle]
 pub extern "C" fn on_event(ptr: *mut u8, len: usize) -> u64 {
-    // SAFETY: streamerz wrote `len` bytes at `ptr`, which it got from `alloc`.
+    // SAFETY: Streamerz wrote `len` bytes at `ptr`, which it got from `alloc`.
     let ev: Value = serde_json::from_slice(&unsafe { Vec::from_raw_parts(ptr, len, len) }).unwrap_or(Value::Null);
     let sides = sides();
     match ev["kind"].as_str().unwrap_or("") {

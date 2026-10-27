@@ -394,7 +394,7 @@ impl Engine {
             }
             log.push(Line {
                 platform: platform.to_string(),
-                user: "streamerz".into(),
+                user: "Streamerz".into(),
                 text: "Welcome to the chat room!".into(),
                 note: true,
                 welcome: true,
@@ -484,12 +484,12 @@ impl Engine {
         crate::ui::chat();
     }
 
-    /// A line from streamerz itself (a failed send, a dev-mode send).
+    /// A line from Streamerz itself (a failed send, a dev-mode send).
     fn chat_note(&self, platform: &str, text: String) {
         self.st.borrow_mut().chat_log.push(Line {
             platform: platform.into(),
             time: crate::fmt::shown_time(&crate::fmt::now()),
-            user: "streamerz".into(),
+            user: "Streamerz".into(),
             text,
             note: true,
             ..Default::default()

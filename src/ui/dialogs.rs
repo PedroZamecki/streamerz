@@ -85,7 +85,7 @@ fn notice(icon: &'static str, tint: Color, text: &str, no: Option<&str>, yes: &s
         .map(|l| ((draw::width(l) as i32 + TEXT_W - 1) / TEXT_W).max(1))
         .sum();
     let h = (lines * 19).max(40) + 20 + ROW + 26 + 20;
-    let (mut win, answer) = window(W, h, "streamerz");
+    let (mut win, answer) = window(W, h, "Streamerz");
     let mut col = Flex::new(20, 20, W - 40, h - 40, None).column();
     col.set_pad(14);
     let mut top = Flex::default().row();

@@ -18,7 +18,7 @@ impl ksni::Tray for Tray {
         "streamerz".into()
     }
     fn title(&self) -> String {
-        "streamerz".into()
+        "Streamerz".into()
     }
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
         // RGBA to ARGB, as StatusNotifierItem wants.

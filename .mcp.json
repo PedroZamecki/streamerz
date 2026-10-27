@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "streamerz": {
-      "command": "target/release/streamerz",
+      "command": "target/release/Streamerz",
       "args": ["--mcp"],
       "env": { "STREAMERZ_URL": "ws://127.0.0.1:8090/" }
     }

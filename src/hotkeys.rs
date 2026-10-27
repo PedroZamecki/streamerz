@@ -183,7 +183,7 @@ fn portal_trigger(code: i64, mask: i64) -> Option<String> {
     Some(parts.join("+"))
 }
 
-/// The Hyprland config line that binds a combination to streamerz's shortcut (Hyprland's portal
+/// The Hyprland config line that binds a combination to Streamerz's shortcut (Hyprland's portal
 /// doesn't bind them itself): Lua for a hyprland.lua config (Hyprland 0.55+), else hyprland.conf's.
 pub fn hyprland_bind(code: i64, mask: i64, lua: bool) -> Option<String> {
     let k = by_code(code)?;
@@ -378,7 +378,7 @@ async fn portal_run(e: &Rc<Engine>, combos: &[(i64, i64)]) -> Result<(), String>
     let shortcuts: Vec<(String, HashMap<&str, Value>)> = combos
         .iter()
         .map(|&(k, m)| {
-            let mut o = HashMap::from([("description", Value::from(format!("streamerz: {}", label(k, m))))]);
+            let mut o = HashMap::from([("description", Value::from(format!("Streamerz: {}", label(k, m))))]);
             if let Some(t) = portal_trigger(k, m) {
                 o.insert("preferred_trigger", Value::from(t));
             }
@@ -426,8 +426,8 @@ fn desktop_file() -> std::io::Result<std::path::PathBuf> {
         .ok_or(std::io::ErrorKind::NotFound)?;
     let file = data.join("applications/streamerz.desktop");
     let body = format!(
-        "[Desktop Entry]\nType=Application\nName=streamerz\nExec=\"{}\"\nNoDisplay=true\n",
-        std::env::current_exe()?.display()
+        "[Desktop Entry]\nType=Application\nName=Streamerz\nExec=\"{}\"\nNoDisplay=true\n",
+        crate::update::exe().ok_or(std::io::ErrorKind::NotFound)?.display()
     );
     if std::fs::read_to_string(&file).ok().as_deref() != Some(body.as_str()) {
         std::fs::create_dir_all(data.join("applications"))?;

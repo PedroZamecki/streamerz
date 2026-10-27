@@ -1,4 +1,4 @@
-//! Kick integration for streamerz (Phase 10):
+//! Kick integration for Streamerz (Phase 10):
 //! - Zero-login public read via Pusher WebSocket (`wss://ws-us2.pusher.com`).
 //! - Chat messages in and out, follows, subscriptions, gifts, kicks/tips, moderation, stream state.
 //! - Third-party 7TV emotes integration for Kick.

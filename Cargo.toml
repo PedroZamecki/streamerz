@@ -2,17 +2,21 @@
 name = "streamerz"
 version = "0.0.0"         # unused: releases are versioned by git tags (see build workflow)
 edition = "2021"
-default-run = "streamerz"
+default-run = "Streamerz"
+
+[[bin]]
+name = "Streamerz"
+path = "src/main.rs"
 
 [features]
 default = ["tiktok-web"]
 # Optional so local dev builds (`--no-default-features`) skip compiling 141 WebKitGTK/GTK3/wry/tao crates.
 tiktok-web = ["dep:wry", "dep:tao"]
 
-# Linux only: TikTok's pages (login, sending chat) in their own binary, so streamerz itself doesn't load
-# WebKitGTK. On Windows it's built into streamerz.exe (`--tiktok`), and this one is just never shipped.
+# Linux only: TikTok's pages (login, sending chat) in their own binary (inside the AppImage), so Streamerz
+# itself doesn't load WebKitGTK. On Windows it's built into Streamerz.exe (`--tiktok`), and this one is never shipped.
 [[bin]]
-name = "streamerz-tiktok"
+name = "Streamerz-tiktok"
 path = "src/tiktok_web.rs"
 required-features = ["tiktok-web"]
 

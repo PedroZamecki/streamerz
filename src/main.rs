@@ -134,7 +134,7 @@ impl Default for Config {
             http: servers::HttpSettings::default(),
             udp: servers::UdpSettings::default(),
             instance_id: String::new(),
-            instance_name: "streamerz".into(),
+            instance_name: "Streamerz".into(),
             commands: Vec::new(),
             timers: Vec::new(),
             groups: Vec::new(),
@@ -300,7 +300,7 @@ fn say(line: String) {
 }
 
 fn version() -> String {
-    format!("streamerz {}", brand::VERSION)
+    format!("Streamerz {}", brand::VERSION)
 }
 
 fn default_config_path() -> PathBuf {
@@ -475,7 +475,10 @@ fn autostart(on: bool) -> std::io::Result<()> {
     use windows_sys::Win32::System::Registry::{RegDeleteKeyValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
     let w = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
     let (key, name) = (w(r"Software\Microsoft\Windows\CurrentVersion\Run"), w("streamerz"));
-    let exe = w(&format!("\"{}\"", std::env::current_exe()?.display()));
+    let exe = w(&format!(
+        "\"{}\"",
+        update::exe().ok_or(std::io::ErrorKind::NotFound)?.display()
+    ));
     // SAFETY: NUL-terminated UTF-16 strings that outlive the calls; size is in bytes.
     let err = unsafe {
         if on {
@@ -515,11 +518,11 @@ fn autostart(on: bool) -> std::io::Result<()> {
         };
     }
     std::fs::create_dir_all(config.join("autostart"))?;
-    let exe = std::env::current_exe()?;
+    let exe = update::exe().ok_or(NotFound)?;
     std::fs::write(
         file,
         format!(
-            "[Desktop Entry]\nType=Application\nName=streamerz\nExec=\"{}\"\n",
+            "[Desktop Entry]\nType=Application\nName=Streamerz\nExec=\"{}\"\n",
             exe.display()
         ),
     )

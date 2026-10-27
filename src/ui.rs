@@ -621,7 +621,7 @@ pub fn run(
             tabs.set_current_widget(&p);
         }
     }
-    // Kept as it changes, written with the next save (and when the window hides or streamerz quits).
+    // Kept as it changes, written with the next save (and when the window hides or Streamerz quits).
     let remember = {
         let cfg = cfg.clone();
         let cmds = cmds.clone();

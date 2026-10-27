@@ -25,7 +25,7 @@ async fn show(title: &str, body: &str) -> Result<(), String> {
         "Notify",
         // App, replaces nothing, icon (by name, from the icon theme), summary, body, no actions, hints, ms.
         &(
-            "streamerz",
+            "Streamerz",
             0u32,
             "streamerz",
             title,
