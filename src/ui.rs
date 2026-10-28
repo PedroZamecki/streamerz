@@ -491,10 +491,29 @@ fn icon_for(label: &str) -> Option<&'static str> {
     })
 }
 
+/// A menu button at the pointer, in the window the pointer is in. Wayland places a popup relative to the
+/// window of the widget that opens it (a button with no window opens it in the corner), and refuses an
+/// empty box, so it is 1x1.
+pub(crate) fn menu_at_pointer() -> fltk::menu::MenuButton {
+    let host: Option<Box<dyn WindowExt>> = app::belowmouse::<fltk::widget::Widget>()
+        .and_then(|w| w.window())
+        .or_else(|| app::first_window().map(|w| Box::new(w) as Box<dyn WindowExt>));
+    if let Some(h) = &host {
+        h.begin();
+    }
+    let m = fltk::menu::MenuButton::new(app::event_x(), app::event_y(), 1, 1, None);
+    if let Some(h) = host {
+        h.end();
+        // Not dropped: a window got this way owns its widget, and dropping it would delete the window.
+        std::mem::forget(h);
+    }
+    m
+}
+
 /// The menu a right click opens: `buttons`' actions, the inactive ones greyed. Runs the one picked.
 pub(crate) fn context_menu(buttons: &[Button]) {
     use fltk::menu::{MenuButton, MenuFlag};
-    let mut m = MenuButton::new(app::event_x(), app::event_y(), 1, 1, None);
+    let mut m = menu_at_pointer();
     for b in buttons {
         let l = b.label();
         let l = if l.is_empty() {
