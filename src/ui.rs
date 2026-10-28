@@ -181,12 +181,34 @@ thread_local! {
     static CHAT_PUMP: std::cell::RefCell<Option<Rc<dyn Fn()>>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Shows the chat lines that arrived, from inside a popover holding the window's loop (the main loop
-/// drains `Msg::Chat` only between its own waits, so without this the chat would freeze under a card).
+/// Shows the chat lines that arrived, from inside a dialog or popover holding the window's loop (the
+/// main loop drains `Msg::Chat` only between its own waits, so without this the chat would freeze under
+/// it). At most 5 times a second: a dialog's loop turns on every mouse move.
 pub(crate) fn pump_chat() {
+    thread_local!(static LAST: Cell<Option<std::time::Instant>> = const { Cell::new(None) });
+    if LAST
+        .get()
+        .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(200))
+    {
+        return;
+    }
+    LAST.set(Some(std::time::Instant::now()));
     if let Some(f) = CHAT_PUMP.with(|p| p.borrow().clone()) {
         f();
     }
+}
+
+/// One turn of a dialog's or popover's own loop (they hold the window's): waits for an event, or `secs`
+/// at most when given, then does what the main loop would meanwhile (the chat keeps moving, dev
+/// commands are answered). False when the app is closing.
+pub(crate) fn nested_wait(secs: Option<f64>) -> bool {
+    let go = match secs {
+        Some(s) => app::wait_for(s).is_ok(),
+        None => app::wait(),
+    };
+    pump_dev();
+    pump_chat();
+    go
 }
 
 /// Yes/no questions from the engine: the text, the two buttons (no, yes), and where the answer goes.
@@ -252,7 +274,7 @@ fn ask(title: &str, prompt: &str, text: &str) -> Option<String> {
     });
     win.show();
     while win.shown() && answer.get().is_none() {
-        if !app::wait() {
+        if !nested_wait(None) {
             break;
         }
     }

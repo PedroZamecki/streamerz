@@ -2045,7 +2045,7 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
     populate();
     win.show();
     while win.shown() && !done.get() {
-        let _ = app::wait_for(0.1);
+        super::nested_wait(Some(0.1));
     }
     win.hide();
     app::delete_widget(win);
@@ -2231,7 +2231,7 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
     win.show();
     let _ = input.take_focus();
     while win.shown() && !done.get() {
-        let _ = app::wait_for(0.1);
+        super::nested_wait(Some(0.1));
     }
     win.hide();
     app::delete_widget(win);
@@ -2647,7 +2647,7 @@ fn emote_picker_popup(
     let mut seen_rev = emotes::REV.load(std::sync::atomic::Ordering::Relaxed);
     let mut picked = false;
     while !done.get() && own_win.as_ref().is_none_or(|w| w.shown()) {
-        let _ = app::wait_for(0.25);
+        super::nested_wait(Some(0.25));
         let asked: Vec<super::grid::Asked> = grid.asked.borrow_mut().drain(..).collect();
         let mut refill = false;
         for a in asked {

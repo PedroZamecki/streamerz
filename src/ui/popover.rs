@@ -86,9 +86,7 @@ impl Popover {
     /// Waits until it's closed, calling `tick` a few times a second (and on every event).
     pub fn run(&self, mut tick: impl FnMut()) {
         while !self.done.get() {
-            let _ = app::wait_for(0.2);
-            super::pump_dev();
-            super::pump_chat();
+            super::nested_wait(Some(0.2));
             tick();
         }
     }

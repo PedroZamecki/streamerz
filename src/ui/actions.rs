@@ -1598,7 +1598,7 @@ fn pick_template() -> Option<&'static crate::templates::Template> {
     });
     win.show();
     while win.shown() && answer.get().is_none() {
-        if !fltk::app::wait() {
+        if !super::nested_wait(None) {
             break;
         }
     }

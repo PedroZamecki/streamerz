@@ -324,7 +324,7 @@ pub(super) fn unlock_logins_interactive(cmds: &Cmds) {
         if waited > 300 {
             break;
         }
-        let _ = fltk::app::wait_for(0.05);
+        super::nested_wait(Some(0.05));
     }
 }
 
@@ -840,7 +840,7 @@ fn browser_login<T: Send + 'static>(
             }
             break;
         }
-        fltk::app::wait_for(0.1).ok();
+        super::nested_wait(Some(0.1));
     }
     win.hide();
     if out.is_none() {
@@ -930,7 +930,7 @@ fn advanced(cfg: &Cfg, p: P) {
     win.end();
     win.show();
     while win.shown() && answer.get().is_none() {
-        if !fltk::app::wait() {
+        if !super::nested_wait(None) {
             break;
         }
     }
@@ -993,7 +993,7 @@ fn tiktok_login(cfg: &Cfg, bot: bool) {
             }
             break;
         }
-        fltk::app::wait_for(0.1).ok();
+        super::nested_wait(Some(0.1));
     }
     win.hide();
 }
@@ -1154,7 +1154,7 @@ fn device_login(cfg: &Cfg, cmds: &Cmds, as_bot: bool) {
                 }
             }
         }
-        fltk::app::wait();
+        super::nested_wait(None);
     }
     cancelled.store(true, Ordering::Relaxed);
     win.hide();

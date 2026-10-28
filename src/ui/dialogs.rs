@@ -59,10 +59,9 @@ pub fn run(win: &mut Window, answer: &Answer, mut check: impl FnMut() -> bool) -
     win.show();
     loop {
         while win.shown() && answer.get().is_none() {
-            if !app::wait() {
+            if !super::nested_wait(None) {
                 break;
             }
-            super::pump_dev();
         }
         match answer.get() {
             Some(true) if !check() => answer.set(None),
