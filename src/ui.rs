@@ -494,12 +494,12 @@ fn icon_for(label: &str) -> Option<&'static str> {
         "advanced" => "sliders-horizontal",
         "settings" => "settings",
         "fill_with_test_names" => "users",
-        "open_folder" => "folder-open",
+        "open" | "open_folder" => "folder-open",
         "open_github" => "external-link",
         "browse" => "folder-open",
         "user_info" => "user-round",
-        "change" => "folder-open",
-        "open" | "open_file" | "open_profile" | "open_browser" => "external-link",
+        "change" => "folder-pen",
+        "open_file" | "open_profile" | "open_browser" => "external-link",
         _ => return None,
     })
 }
