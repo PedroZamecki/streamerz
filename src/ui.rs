@@ -671,7 +671,6 @@ pub fn run(
             let _ = crate::save(&cfg.borrow());
             // Waited for: Quit exits right after.
             let _ = query(&cmds, |e| {
-                e.save_chat_history();
                 e.save_community();
             });
         }

@@ -1,5 +1,5 @@
 //! The chat window's side of the engine: every platform's chat (through `Engine::chat`) kept in one
-//! bounded log, persisted recent history + platform history merged before "Welcome to the chat room!",
+//! bounded log, recent history from the platform (memory only) merged before a divider,
 //! the emotes seen per platform, and sending to one platform or several with each platform's emote format.
 
 use super::Engine;
@@ -75,10 +75,10 @@ pub struct Line {
     /// The name's colour ("#RRGGBB") from the platform.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub color: String,
-    /// Not a chat message: a send that failed, dev-mode output, or "Welcome to the chat room!".
+    /// Not a chat message: a send that failed, dev-mode output, or the history divider.
     #[serde(skip_serializing_if = "is_false")]
     pub note: bool,
-    /// Room join marker ("Welcome to the chat room!"): rendered without timestamp.
+    /// The divider between history and live messages: rendered without timestamp.
     #[serde(skip_serializing_if = "is_false")]
     pub welcome: bool,
     /// Pre-join message (loaded from cache or platform history; never triggers commands/actions).
@@ -276,56 +276,14 @@ pub fn normalize_line_emotes(
 }
 
 impl Engine {
-    /// Load persisted chat history from `cache/chat-history.json` at startup (marked historical).
-    pub fn load_chat_history(&self) {
-        let Some((_, v)) = crate::ui::img::saved("chat-history") else {
-            return;
-        };
-        let Ok(saved) = serde_json::from_value::<Vec<Line>>(v) else {
-            return;
-        };
-        let mut st = self.st.borrow_mut();
-        let log = &mut st.chat_log;
-        for mut l in saved {
-            if l.note || l.welcome || index(&l.platform).is_none() {
-                continue;
-            }
-            l.historical = true;
-            if let Some(i) = index(&l.platform) {
-                for (name, url) in &l.emotes {
-                    let tok = if l.platform == "kick" {
-                        crate::ui::emotes::kick_tag(name).unwrap_or_else(|| name.clone())
-                    } else {
-                        name.clone()
-                    };
-                    log.remember_emote(i, tok, url.clone());
-                }
-            }
-            log.push(l);
-        }
-    }
-
-    /// Persist real chat lines (excluding notes/welcome markers) to `cache/chat-history.json`.
-    pub fn save_chat_history(&self) {
-        let st = self.st.borrow();
-        let mut out: Vec<&Line> = Vec::new();
-        for p in PLATFORMS {
-            let plat_lines: Vec<&Line> = st
-                .chat_log
-                .lines
-                .iter()
-                .filter(|l| l.platform == p && !l.note && !l.welcome)
-                .collect();
-            let start = plat_lines.len().saturating_sub(KEEP_HISTORY);
-            out.extend(&plat_lines[start..]);
-        }
-        if let Ok(v) = serde_json::to_value(&out) {
-            crate::ui::img::save("chat-history", &v);
-        }
+    /// Chat history is never kept on disk: the platforms give it back when we join. This removes the file
+    /// older versions wrote.
+    pub fn forget_saved_chat_history() {
+        crate::ui::img::forget_saved("chat-history");
     }
 
     /// Merge `fetched` recent messages for `platform` (oldest-to-newest) with any cached historical
-    /// lines, then place `"Welcome to the chat room!"` right before live session messages.
+    /// lines, then a divider right before live session messages (kept in memory only).
     pub fn chat_welcome(&self, platform: &str, fetched: Vec<Line>) {
         let Some(p_idx) = index(platform) else { return };
         {
@@ -385,6 +343,7 @@ impl Engine {
                 merged.drain(..drop_n);
             }
 
+            let has_history = !merged.is_empty();
             for l in other_or_live_before {
                 log.push(l);
             }
@@ -392,20 +351,21 @@ impl Engine {
                 l.historical = true;
                 log.push(l);
             }
-            log.push(Line {
-                platform: platform.to_string(),
-                user: "Streamerz".into(),
-                text: "Welcome to the chat room!".into(),
-                note: true,
-                welcome: true,
-                ..Default::default()
-            });
+            // Where the platform's recent messages end and live ones begin; nothing if there were none.
+            if has_history {
+                log.push(Line {
+                    platform: platform.to_string(),
+                    text: crate::i18n::tr("chat.live_below").into(),
+                    note: true,
+                    welcome: true,
+                    ..Default::default()
+                });
+            }
             for l in live_current {
                 log.push(l);
             }
             log.reset_gen += 1;
         }
-        self.save_chat_history();
         crate::ui::chat();
     }
 
@@ -480,7 +440,6 @@ impl Engine {
             line.historical = false;
             log.push(line);
         }
-        self.save_chat_history();
         crate::ui::chat();
     }
 
@@ -547,7 +506,6 @@ impl Engine {
             }
         }
         if changed {
-            self.save_chat_history();
             crate::ui::chat();
         }
     }
@@ -743,7 +701,6 @@ impl Engine {
         if changed {
             log.reset_gen += 1;
             drop(st);
-            self.save_chat_history();
             crate::ui::chat();
         }
     }
@@ -1003,7 +960,7 @@ mod tests {
         e.chat_welcome("twitch", vec![h1, h2]);
         let (_, _, lines) = e.chat_sync(999, 0);
         let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
-        assert_eq!(texts, ["hey", "yo", "Welcome to the chat room!"]);
+        assert_eq!(texts, ["hey", "yo", "Live messages below"]);
         assert!(lines[2].welcome && lines[2].note);
     }
 }

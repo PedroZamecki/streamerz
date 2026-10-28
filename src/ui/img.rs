@@ -117,6 +117,11 @@ pub fn saved(name: &str) -> Option<(u64, serde_json::Value)> {
     Some((age, serde_json::from_slice(&std::fs::read(file).ok()?).ok()?))
 }
 
+/// Remove what was saved as `name`.
+pub fn forget_saved(name: &str) {
+    let _ = std::fs::remove_file(dir().join(format!("{name}.json")));
+}
+
 /// Save `v` as `name` in the cache (whole or nothing).
 pub fn save(name: &str, v: &serde_json::Value) {
     let file = dir().join(format!("{name}.json"));

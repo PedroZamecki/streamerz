@@ -169,6 +169,7 @@
   "chat.emotes_window_title": "Emotes de {platform}",
   "chat.fallback_account": "Usar outra conta como alternativa se faltar",
   "chat.hint": "Clique em um nome para ver informações, passe o mouse em uma mensagem para ações",
+  "chat.live_below": "Mensagens ao vivo abaixo",
   "chat.manage_accounts": "Contas...",
   "chat.message_all_btn": " Enviar para todos",
   "chat.message_all_tooltip": "Abrir janela para enviar mensagem para várias plataformas de uma vez",

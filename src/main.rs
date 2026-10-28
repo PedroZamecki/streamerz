@@ -568,7 +568,7 @@ fn main() {
             let e = engine::Engine::new(engine_cfg.clone(), |c| {
                 let _ = save(c);
             });
-            e.load_chat_history();
+            engine::Engine::forget_saved_chat_history();
             e.load_community();
             e.add_builtins();
             e.plugins_start();

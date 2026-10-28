@@ -5,7 +5,7 @@
 //! - Discrete `"Message all"` button & popup in the top bar
 //! - Individual 7TV-style emote & emoji picker per platform and account, with search, provider tabs,
 //!   collapsible sections, and right-click `★` favorites
-//! - Platform-authentic badges & username colors, plus pre-join history before `"Welcome to the chat room!"`
+//! - Platform-authentic badges & username colors, plus the platform's recent history (memory only) before a divider
 
 use super::accounts::{platform_accounts, unlock_logins_interactive};
 use super::emotes::{self, EmoteSection, Provider};
@@ -345,7 +345,7 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
     let welcome_col = Color::from_rgb(0x9e, 0xa3, 0xb0);
     let (time, badges) = SHOW.get();
     let mut v = Vec::new();
-    // "Welcome to the chat room!" is rendered cleanly without a timestamp, matching official chats.
+    // The history divider has no timestamp.
     if l.welcome {
         if tag {
             let p = PLATFORMS.iter().position(|x| *x == l.platform).unwrap_or(0);
