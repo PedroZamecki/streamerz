@@ -479,7 +479,7 @@
   "settings.startup": "Startup",
   "settings.system_format": "System ({example})",
   "settings.theme": "Theme",
-  "settings.theme.about": "Follow the system, or always dark or light.",
+  "settings.theme.about": "Follow the system (dark or light, and its accent colour), or pick one.",
   "settings.theme.dark": "Dark",
   "settings.theme.light": "Light",
   "settings.theme.system": "System ({theme})",

@@ -479,7 +479,7 @@
   "settings.startup": "Inicialização",
   "settings.system_format": "Sistema ({example})",
   "settings.theme": "Tema",
-  "settings.theme.about": "Seguir o sistema, ou sempre escuro ou claro.",
+  "settings.theme.about": "Seguir o sistema (claro ou escuro, e a cor de destaque), ou escolher um.",
   "settings.theme.dark": "Escuro",
   "settings.theme.light": "Claro",
   "settings.theme.system": "Sistema ({theme})",

@@ -187,7 +187,7 @@ fn notice(icon: &'static str, tint: Color, text: &str, no: Option<&str>, yes: &s
 /// First run: where to keep the settings. Starts at the usual folder (the suggestion); the answer is the
 /// settings file in the folder picked. Closing it takes the suggestion.
 pub fn choose_location(usual: &std::path::Path) -> std::path::PathBuf {
-    super::theme(true);
+    super::theme(true, None);
     let file = usual.file_name().map_or("streamerz.json".into(), |f| f.to_os_string());
     let start = usual.parent().map(|p| p.display().to_string()).unwrap_or_default();
     let (mut win, answer) = window(560, 250, "Streamerz");
@@ -991,7 +991,7 @@ mod look {
     #[ignore]
     fn dialogs() {
         let _app = crate::ui::app();
-        crate::ui::theme(true);
+        crate::ui::theme(true, None);
         let only = std::env::var("DLG").unwrap_or_default();
         if only == "1" {
             super::message("Short one.");

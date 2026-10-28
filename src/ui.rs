@@ -89,6 +89,27 @@ pub fn system_dark(dark: bool) {
     }
 }
 
+/// The desktop's accent colour (0x01RRGGBB; 0 when it has none).
+static SYSTEM_ACCENT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The desktop's accent colour changed (or it has none): a window following the system changes too.
+pub fn system_accent(rgb: Option<(u8, u8, u8)>) {
+    let v = rgb.map_or(0, |(r, g, b)| {
+        0x0100_0000 | (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)
+    });
+    if SYSTEM_ACCENT.swap(v, Ordering::Relaxed) != v {
+        if let Some(ui) = UI.get() {
+            ui.send(Msg::Theme);
+        }
+    }
+}
+
+/// The accent the window uses: the desktop's when following the system, else the app's own blue.
+fn accent_of(c: &crate::Config) -> Option<(u8, u8, u8)> {
+    let v = SYSTEM_ACCENT.load(Ordering::Relaxed);
+    (c.theme == Some(Theme::System) && v != 0).then_some(((v >> 16) as u8, (v >> 8) as u8, v as u8))
+}
+
 /// The desktop's scheme is dark.
 fn system_is_dark() -> bool {
     SYSTEM_DARK.load(Ordering::Relaxed)
@@ -258,17 +279,19 @@ pub fn app() -> app::App {
 
 /// Flat, rounded and quiet (zinc colours, like shadcn/ui): every button, field, list and tab is drawn
 /// by the two box functions below, so the whole window follows.
-fn theme(dark: bool) {
+fn theme(dark: bool, accent: Option<(u8, u8, u8)>) {
     if dark {
         app::background(24, 24, 27);
         app::background2(9, 9, 11);
         app::foreground(244, 244, 245);
-        app::set_selection_color(59, 130, 246);
+        let (r, g, b) = accent.unwrap_or((59, 130, 246));
+        app::set_selection_color(r, g, b);
     } else {
         app::background(244, 244, 245);
         app::background2(255, 255, 255);
         app::foreground(9, 9, 11);
-        app::set_selection_color(37, 99, 235);
+        let (r, g, b) = accent.unwrap_or((37, 99, 235));
+        app::set_selection_color(r, g, b);
     }
     // Raised: a button, a tab, a menu button. Sunken: a field, a list, a check box.
     // Small boxes (check boxes) get small corners.
@@ -612,7 +635,10 @@ pub fn run(
     rx: app::Receiver<Msg>,
 ) {
     #[cfg(windows)]
-    SYSTEM_DARK.store(crate::tray::apps_dark(), Ordering::Relaxed);
+    {
+        SYSTEM_DARK.store(crate::tray::apps_dark(), Ordering::Relaxed);
+        system_accent(crate::tray::accent());
+    }
     let (c_dark, c_hidden) = {
         let c = cfg.borrow();
         (is_dark(&c), c.start_hidden)
@@ -621,7 +647,8 @@ pub fn run(
     if CONFIRMS.lock().is_ok_and(|q| !q.is_empty()) {
         tx.send(Msg::Input);
     }
-    theme(c_dark);
+    let c_accent = accent_of(&cfg.borrow());
+    theme(c_dark, c_accent);
     // Pictures drawn bigger than they are come out smooth, not blocky.
     RgbImage::set_scaling_algorithm(fltk::image::RgbScaling::Bilinear);
     fltk::image::Image::set_scaling_algorithm(fltk::image::RgbScaling::Bilinear);
@@ -781,7 +808,10 @@ pub fn run(
         if !win.visible() {
             // Windows tells no one when its colours change: ask as the window opens.
             #[cfg(windows)]
-            system_dark(crate::tray::apps_dark());
+            {
+                system_dark(crate::tray::apps_dark());
+                system_accent(crate::tray::accent());
+            }
             SHOWN.store(true, Ordering::Relaxed);
             acts.borrow_mut().refresh();
             views.refresh(&tabs);
@@ -853,7 +883,8 @@ pub fn run(
                     if cfg.borrow().dark != dark {
                         cfg.send_modify(|c| c.dark = dark);
                     }
-                    theme(dark);
+                    let accent = accent_of(&cfg.borrow());
+                    theme(dark, accent);
                     window_icons(dark);
                     for mut w in app::windows().unwrap_or_default() {
                         w.redraw();
