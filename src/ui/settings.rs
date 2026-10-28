@@ -209,16 +209,24 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     let r = setting(&mut col, tr("settings.language"), tr("settings.language.about"), 200);
     let mut language = super::fit::choice();
     let languages: Vec<(&str, String)> = i18n::all().map(|(code, name)| (code, name.to_string())).collect();
-    language.add_choice(&items(&languages.iter().map(|l| l.1.clone()).collect::<Vec<_>>()));
-    language.set_value(languages.iter().position(|l| l.0 == locale).unwrap_or(0) as i32);
+    let detected = languages
+        .iter()
+        .find(|l| l.0 == i18n::detect())
+        .map_or("", |l| l.1.as_str());
+    let mut names = vec![trf("settings.language.auto", &[("language", detected)])];
+    names.extend(languages.iter().map(|l| l.1.clone()));
+    language.add_choice(&items(&names));
+    language.set_value(languages.iter().position(|l| l.0 == locale).map_or(0, |i| i as i32 + 1));
     done(r, &language);
     language.set_callback({
         let cfg = cfg.clone();
         move |l| {
-            if let Some((code, _)) = i18n::all().nth(l.value().max(0) as usize) {
-                put(&cfg, |c| c.locale = code.into());
-                i18n::set(code);
-            }
+            // The first is "automatic": no language saved, the system's followed.
+            let code = i18n::all()
+                .nth((l.value().max(0) as usize).wrapping_sub(1))
+                .map_or("", |l| l.0);
+            put(&cfg, |c| c.locale = code.into());
+            i18n::set(code);
         }
     });
 

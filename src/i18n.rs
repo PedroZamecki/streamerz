@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
 /// The language the keys are written in, and the fallback of all others (the first of `LOCALES`).
+#[cfg_attr(not(test), allow(dead_code))]
 pub const DEFAULT: &str = "en_US";
 
 // `LOCALES`: every `assets/locales/<code>.json` as (code, its text), en_US first (made by build.rs).
@@ -28,9 +29,64 @@ fn catalog(i: usize) -> &'static HashMap<String, String> {
 }
 
 /// Picks the language by its code; one this build doesn't have means `en_US`.
+/// An empty `code` means the system's language (`detect`).
 pub fn set(code: &str) {
-    let i = LOCALES.iter().position(|l| l.0 == code).unwrap_or(0);
+    let i = if code.is_empty() {
+        pick(&system_languages())
+    } else {
+        LOCALES.iter().position(|l| l.0 == code).unwrap_or(0)
+    };
     ACTIVE.store(i, Ordering::Relaxed);
+}
+
+/// The language the system asks for, as the one of this build (en_US when it has none).
+pub fn detect() -> &'static str {
+    LOCALES[pick(&system_languages())].0
+}
+
+/// The system's languages, best first, as "pt_BR" or "pt".
+fn system_languages() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Globalization::GetUserDefaultLocaleName;
+        let mut buf = [0u16; 85];
+        // SAFETY: the buffer is 85 wide, the length LOCALE_NAME_MAX_LENGTH.
+        let n = unsafe { GetUserDefaultLocaleName(buf.as_mut_ptr(), 85) };
+        if n > 1 {
+            return vec![String::from_utf16_lossy(&buf[..n as usize - 1]).replace('-', "_")];
+        }
+        Vec::new()
+    }
+    #[cfg(not(windows))]
+    {
+        // The order glibc looks in: LANGUAGE (a list), then LC_ALL, LC_MESSAGES, LANG.
+        let mut out = Vec::new();
+        for var in ["LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"] {
+            for l in std::env::var(var).unwrap_or_default().split(':') {
+                // "pt_BR.UTF-8@euro" is pt_BR; "C" and "POSIX" say nothing.
+                let l = l.split(['.', '@']).next().unwrap_or("");
+                if !l.is_empty() && l != "C" && l != "POSIX" {
+                    out.push(l.to_string());
+                }
+            }
+        }
+        out
+    }
+}
+
+/// The index of the locale that best answers `wanted` ("pt_BR", "pt", "es_AR"...): the exact one, else one
+/// of the same language, for each in turn; English when none.
+fn pick(wanted: &[String]) -> usize {
+    for w in wanted {
+        if let Some(i) = LOCALES.iter().position(|l| l.0 == w) {
+            return i;
+        }
+        let lang = w.split('_').next().unwrap_or("");
+        if let Some(i) = LOCALES.iter().position(|l| l.0.split('_').next() == Some(lang)) {
+            return i;
+        }
+    }
+    0
 }
 
 /// The languages to choose from: code and name.
@@ -153,6 +209,21 @@ mod tests {
         assert_eq!(button_id("Edit…"), Some("edit"));
         assert_eq!(button_id("Connect All"), Some("connect_all"));
         assert_eq!(button_id("Nothing like it"), None);
+    }
+
+    #[test]
+    fn the_system_language_picks_a_locale_or_english() {
+        let w = |l: &[&str]| pick(&l.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let code = |i: usize| LOCALES[i].0;
+        assert_eq!(code(w(&["pt_BR"])), "pt_BR");
+        // Another country of a language we have: that language.
+        assert_eq!(code(w(&["pt_PT"])), "pt_BR");
+        assert_eq!(code(w(&["pt"])), "pt_BR");
+        // The first the system asks for that we have.
+        assert_eq!(code(w(&["xx_XX", "pt_BR", "en_US"])), "pt_BR");
+        // Nothing we have, or nothing asked: English.
+        assert_eq!(code(w(&["xx_XX"])), DEFAULT);
+        assert_eq!(code(w(&[])), DEFAULT);
     }
 
     #[test]

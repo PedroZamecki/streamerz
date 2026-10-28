@@ -924,7 +924,7 @@ impl Pane {
                 };
                 let Some(l) = l.filter(|l| !l.note) else { return true };
                 use fltk::menu::{MenuButton, MenuFlag};
-                let mut m = MenuButton::new(app::event_x(), app::event_y(), 0, 0, None);
+                let mut m = MenuButton::new(app::event_x(), app::event_y(), 1, 1, None);
                 for (act, icon, name) in acts(&l) {
                     let (p, l) = (self.clone(), l.clone());
                     let i = m.add(name, fltk::enums::Shortcut::None, MenuFlag::Normal, move |_| {

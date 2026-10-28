@@ -64,6 +64,11 @@ impl Popover {
         }
     }
 
+    /// The popover's window, to repaint it all after its widgets moved (no widget clears the old pixels).
+    pub fn window(&self) -> Window {
+        self.pop.clone()
+    }
+
     /// The popover's size.
     pub fn size(&self) -> (i32, i32) {
         (self.pop.w(), self.pop.h())

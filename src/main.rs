@@ -55,7 +55,7 @@ pub struct Config {
     /// Follow the system, or always dark or light. None: an older file, which only has `dark`.
     #[serde(default)]
     theme: Option<ui::Theme>,
-    /// The language of the app (a code from `i18n`).
+    /// The language of the app (a code from `i18n`); empty follows the system's.
     locale: String,
     start_hidden: bool,
     autostart: bool,
@@ -129,7 +129,7 @@ impl Default for Config {
         Config {
             dark: true,
             theme: Some(ui::Theme::System),
-            locale: i18n::DEFAULT.into(),
+            locale: String::new(),
             start_hidden: true,
             autostart: false,
             actions: model::ActionsFile::default(),

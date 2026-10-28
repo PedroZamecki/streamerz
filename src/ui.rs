@@ -494,7 +494,7 @@ fn icon_for(label: &str) -> Option<&'static str> {
 /// The menu a right click opens: `buttons`' actions, the inactive ones greyed. Runs the one picked.
 pub(crate) fn context_menu(buttons: &[Button]) {
     use fltk::menu::{MenuButton, MenuFlag};
-    let mut m = MenuButton::new(app::event_x(), app::event_y(), 0, 0, None);
+    let mut m = MenuButton::new(app::event_x(), app::event_y(), 1, 1, None);
     for b in buttons {
         let l = b.label();
         let l = if l.is_empty() {

@@ -355,10 +355,11 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
         row(tr("chat.card_messages_session"), &seen.messages.to_string());
     };
     // The table is as tall as its lines.
-    let fit = |col: &mut Flex, facts: &Rows| {
+    let mut win = pop.window();
+    let mut fit = |col: &mut Flex, facts: &Rows| {
         col.fixed(&**facts, facts.size().max(1) * 28 + 8);
         col.layout();
-        col.redraw();
+        win.redraw();
     };
     fill(&mut facts, &Vec::new());
     if asks {
