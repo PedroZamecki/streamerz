@@ -398,6 +398,29 @@ fn error(line: String) {
     log(Level::Error, line);
 }
 
+/// Asked to end (logout, shutdown, `kill`, Ctrl+C): saves and quits like Quit does, so the next start
+/// doesn't take it for a crash.
+#[cfg(unix)]
+async fn ended(e: std::rc::Rc<engine::Engine>, cfg: Arc<watch::Sender<Config>>) {
+    use tokio::signal::unix::{signal, SignalKind};
+    let (Ok(mut term), Ok(mut hup), Ok(mut int)) = (
+        signal(SignalKind::terminate()),
+        signal(SignalKind::hangup()),
+        signal(SignalKind::interrupt()),
+    ) else {
+        return;
+    };
+    tokio::select! {
+        _ = term.recv() => {}
+        _ = hup.recv() => {}
+        _ = int.recv() => {}
+    }
+    say("Asked to close: saving and quitting".into());
+    let _ = save(&cfg.borrow());
+    e.save_community();
+    crash::quit(0)
+}
+
 fn version() -> String {
     format!("Streamerz {}", brand::VERSION)
 }
@@ -728,6 +751,8 @@ fn main() {
             tokio::task::spawn_local(crash::offer());
             tokio::task::spawn_local(update::watch(engine_cfg.clone()));
             e.timers();
+            #[cfg(unix)]
+            tokio::task::spawn_local(ended(e.clone(), engine_cfg.clone()));
             while let Some(f) = cmd_rx.recv().await {
                 f(&e);
             }

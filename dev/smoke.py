@@ -130,6 +130,13 @@ def main():
         check("user card")
     finally:
         app.terminate()
+    # Asked to end (as a logout does), it saves and quits: the next start mustn't see a crash.
+    try:
+        app.wait(10)
+    except subprocess.TimeoutExpired:
+        failures.append("it didn't quit when asked (SIGTERM)")
+    if os.path.exists(os.path.join(tmp, "logs", "running")):
+        failures.append("SIGTERM left the 'running' marker: the next start would report a crash")
     print("\n".join(failures) or f"ok: every page and the card, screenshots in {OUT}")
     if failures:
         print(f"the app's files (logs/crash-*.txt) are in {tmp}")
