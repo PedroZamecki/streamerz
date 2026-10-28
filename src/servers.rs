@@ -623,6 +623,7 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
         "InjectChat" if e.dev() => match e.inject_chat(
             get("platform"),
             get("user"),
+            get("userId"),
             get("role"),
             get("text"),
             req.get("badges").cloned(),

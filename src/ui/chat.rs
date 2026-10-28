@@ -178,8 +178,33 @@ fn svg(key: &str) -> Option<SvgImage> {
     icon_sized(key, BADGE)
 }
 
+/// Draws a badge `size` px tall at `(x, y)`: its picture, else its platform's drawing. Its width (0
+/// when there's nothing to draw yet).
+pub(super) fn draw_badge(cmds: &Cmds, platform: &str, key: &str, url: &str, x: i32, y: i32, size: i32) -> i32 {
+    if !url.is_empty() {
+        if let Some(p) = img::get(cmds, url, size, false) {
+            let mut i = p.first();
+            i.draw(x, y + (size - i.h()) / 2, i.w(), i.h());
+            return i.w();
+        }
+    }
+    match badge_fallback(platform, key, size) {
+        Some(mut s) => {
+            let (w, h) = (s.w(), s.h());
+            s.draw(x, y + (size - h) / 2, w, h);
+            w
+        }
+        None => 0,
+    }
+}
+
 /// Map a badge key on `platform` to its platform-specific vector SVG fallback when no image URL is set.
 fn badge_fallback_svg(platform: &str, raw_key: &str) -> Option<SvgImage> {
+    badge_fallback(platform, raw_key, BADGE)
+}
+
+fn badge_fallback(platform: &str, raw_key: &str, size: i32) -> Option<SvgImage> {
+    let svg = |k: &str| icon_sized(k, size);
     if raw_key.contains(':') {
         if let Some(s) = svg(raw_key) {
             return Some(s);
@@ -337,14 +362,14 @@ impl It {
 }
 
 thread_local! {
-    /// What lines show: (the time, the badges). Chat's options; all panes follow.
-    static SHOW: Cell<(bool, bool)> = const { Cell::new((true, true)) };
+    /// What lines show: (the time, the badges, emotes moving). Chat's options; all panes follow.
+    static SHOW: Cell<(bool, bool, bool)> = const { Cell::new((true, true, true)) };
 }
 
 /// A line's things, in order.
 fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
     let gray = Color::from_rgb(0x88, 0x88, 0x88);
-    let (time, badges) = SHOW.get();
+    let (time, badges, _) = SHOW.get();
     let mut v = Vec::new();
     // The history divider: a line across, no name, no time.
     if l.welcome {
@@ -497,6 +522,8 @@ struct State {
     /// The line under the pointer, which shows its actions, and the action under it.
     hover: Option<usize>,
     act: Option<usize>,
+    /// A name opens its user card (not inside a card: it's that user already).
+    cards: bool,
 }
 
 /// A message's hover actions.
@@ -541,20 +568,20 @@ fn acts(l: &Line) -> Vec<(Act, &'static str, &'static str)> {
 /// What Reply does: the chat box under the pane answers `l`.
 type OnReply = Rc<RefCell<Option<Rc<dyn Fn(&Line)>>>>;
 /// Answer a line in a chat box (None: stop answering).
-type SetReply = Rc<dyn Fn(Option<&Line>)>;
+pub(super) type SetReply = Rc<dyn Fn(Option<&Line>)>;
 
-/// One chat view: the lines, drawn, with a scrollbar.
+/// One chat view: the lines, drawn, with a scrollbar. The chat's columns have one, and so has a user card.
 #[derive(Clone)]
-struct Pane {
+pub(super) struct Pane {
     area: Frame,
     bar: Slider,
     st: Rc<RefCell<State>>,
     cmds: Cmds,
-    on_reply: OnReply,
+    pub(super) on_reply: OnReply,
 }
 
 impl Pane {
-    fn new(cmds: &Cmds) -> (Flex, Pane) {
+    pub(super) fn new(cmds: &Cmds) -> (Flex, Pane) {
         let mut group = Flex::default().row();
         group.set_pad(0);
         let mut area = Frame::default();
@@ -590,6 +617,7 @@ impl Pane {
                 ticking: false,
                 hover: None,
                 act: None,
+                cards: true,
             })),
             cmds: cmds.clone(),
             on_reply: Rc::default(),
@@ -661,7 +689,7 @@ impl Pane {
         self.settle(&mut st);
         draw::draw_box(f.frame(), f.x(), f.y(), f.w(), f.h(), f.color());
         draw::push_clip(f.x() + 2, f.y() + 2, f.w() - 4, f.h() - 4);
-        let (ms, mut moving) = (now_ms(), false);
+        let (ms, mut moving, animate) = (now_ms(), false, SHOW.get().2);
         let mut y = f.y() + 4 - st.top;
         for (i, (laid, h)) in st.laid.iter().enumerate() {
             if y + h < f.y() {
@@ -685,8 +713,8 @@ impl Pane {
                             draw::draw_text2(t, x, y, 0, rh, Align::Left);
                         }
                         It::Pic(p) => {
-                            moving |= p.animated();
-                            let mut i = p.at(ms).clone();
+                            moving |= animate && p.animated();
+                            let mut i = if animate { p.at(ms).clone() } else { p.first() };
                             i.draw(x, y + (rh - i.h()) / 2, i.w(), i.h());
                         }
                         It::Svg(s) => {
@@ -865,6 +893,9 @@ impl Pane {
     fn name_at(&self, f: &Frame) -> Option<Line> {
         let (ex, ey) = (app::event_x() - f.x() - 6, app::event_y());
         let st = self.st.borrow();
+        if !st.cards {
+            return None;
+        }
         let mut y = f.y() + 4 - st.top;
         for (l, (laid, h)) in st.lines.iter().zip(&st.laid) {
             if !(y..y + h).contains(&ey) {
@@ -940,7 +971,7 @@ impl Pane {
                         item.add_image(icons::before_label(icon, super::muted(), 14), true);
                     }
                 }
-                if !l.user_id.is_empty() {
+                if !l.user_id.is_empty() && self.st.borrow().cards {
                     let (cmds, l) = (self.cmds.clone(), l.clone());
                     m.add(
                         tr("chat.user_info"),
@@ -992,7 +1023,12 @@ impl Pane {
         }
     }
 
-    fn add(&self, l: &Line) {
+    /// Names don't open user cards (the pane is in one).
+    pub(super) fn no_cards(&self) {
+        self.st.borrow_mut().cards = false;
+    }
+
+    pub(super) fn add(&self, l: &Line) {
         let mut st = self.st.borrow_mut();
         if st.lines.len() == KEEP {
             st.lines.pop_front();
@@ -1008,7 +1044,7 @@ impl Pane {
         self.area.clone().redraw();
     }
 
-    fn replace_all(&self, lines: impl Iterator<Item = Line>) {
+    pub(super) fn replace_all(&self, lines: impl Iterator<Item = Line>) {
         let mut st = self.st.borrow_mut();
         st.lines.clear();
         st.hover = None;
@@ -1581,12 +1617,16 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
 
     {
         let w = &cfg.borrow().window;
-        SHOW.set((!w.chat_no_time, !w.chat_no_badges));
+        SHOW.set((!w.chat_no_time, !w.chat_no_badges, !w.chat_still_emotes));
     }
-    let (time, badges) = SHOW.get();
-    for (i, (label, on)) in [(tr("chat.opt_time"), time), (tr("chat.opt_badges"), badges)]
-        .into_iter()
-        .enumerate()
+    let (time, badges, moving) = SHOW.get();
+    for (i, (label, on)) in [
+        (tr("chat.opt_time"), time),
+        (tr("chat.opt_badges"), badges),
+        (tr("chat.opt_animated"), moving),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let flag = if on {
             fltk::menu::MenuFlag::Toggle | fltk::menu::MenuFlag::Value
@@ -1596,15 +1636,16 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
         let (me, cfg) = (me.clone(), cfg.clone());
         opts.add(label, fltk::enums::Shortcut::None, flag, move |m| {
             let on = m.at(i as i32).is_some_and(|x| x.value());
-            let (mut time, mut badges) = SHOW.get();
-            if i == 0 {
-                time = on;
-            } else {
-                badges = on;
+            let (mut time, mut badges, mut moving) = SHOW.get();
+            match i {
+                0 => time = on,
+                1 => badges = on,
+                _ => moving = on,
             }
-            SHOW.set((time, badges));
+            SHOW.set((time, badges, moving));
             cfg.send_if_modified(|c| {
-                (c.window.chat_no_time, c.window.chat_no_badges) = (!time, !badges);
+                let w = &mut c.window;
+                (w.chat_no_time, w.chat_no_badges, w.chat_still_emotes) = (!time, !badges, !moving);
                 false
             });
             me.borrow().images();

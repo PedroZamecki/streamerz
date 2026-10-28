@@ -287,6 +287,20 @@ pub fn normalize_line_emotes(
     (text, emotes)
 }
 
+/// A Kick username as its page's address has it: "Some_Name" is "some-name".
+fn kick_slug(name: &str) -> String {
+    name.trim().to_lowercase().replace('_', "-")
+}
+
+/// A badge's name from its key, when the platform didn't give one: "kick:sub_gifter" is "Sub gifter",
+/// "subscriber/12" is "Subscriber".
+fn badge_name(key: &str) -> String {
+    let k = key.rsplit(':').next().unwrap_or(key);
+    let k = k.split('/').next().unwrap_or(k).replace('_', " ");
+    let mut c = k.chars();
+    c.next().map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
+}
+
 impl Engine {
     /// Chat history is never kept on disk: the platforms give it back when we join. This removes the file
     /// older versions wrote.
@@ -540,6 +554,58 @@ impl Engine {
         v
     }
 
+    /// Like `chat_sync`, for one chatter's messages (a user card's).
+    pub fn chatter_sync(&self, platform: &str, user_id: &str, client_gen: u64, seq: u64) -> (u64, bool, Vec<Line>) {
+        let st = self.st.borrow();
+        let g = st.chat_log.reset_gen;
+        let full = g != client_gen;
+        let lines = st
+            .chat_log
+            .lines
+            .iter()
+            .filter(|l| (full || l.seq > seq) && l.platform == platform && l.user_id == user_id && !l.note)
+            .cloned()
+            .collect();
+        (g, full, lines)
+    }
+
+    /// The badges a chatter wore in their last message here, and their names.
+    pub fn chatter_badges(&self, platform: &str, user_id: &str) -> Vec<(String, String, String)> {
+        let st = self.st.borrow();
+        let Some(l) = st
+            .chat_log
+            .lines
+            .iter()
+            .rev()
+            .find(|l| l.platform == platform && l.user_id == user_id && !l.note)
+        else {
+            return Vec::new();
+        };
+        // No badge list from the platform: their roles, drawn as the chat draws them.
+        let roles: Vec<(String, String)> = [
+            ("broadcaster", l.broadcaster),
+            ("moderator", l.moderator && !l.broadcaster),
+            ("vip", l.vip),
+            ("subscriber", l.subscriber),
+        ]
+        .into_iter()
+        .filter(|r| r.1)
+        .map(|r| (r.0.to_string(), String::new()))
+        .collect();
+        let badges = if l.badges.is_empty() { &roles } else { &l.badges };
+        badges
+            .iter()
+            .map(|(k, url)| {
+                let title = match platform {
+                    "twitch" => crate::twitch::badge_title(k),
+                    _ => None,
+                }
+                .unwrap_or_else(|| badge_name(k));
+                (k.clone(), url.clone(), title)
+            })
+            .collect()
+    }
+
     pub fn chatter(&self, platform: &str, user_id: &str) -> Option<Seen> {
         let st = self.st.borrow();
         st.chat_log
@@ -576,12 +642,18 @@ impl Engine {
                 Value::Null => return,
                 v => v.to_string(),
             };
-            if !v.is_empty() {
+            // The first answer for a fact stands (kick.com's, then the API's).
+            if !v.is_empty() && !out.iter().any(|f: &(String, String)| f.0 == k) {
                 out.push((k.to_string(), v));
             }
         };
         match platform {
             "twitch" => {
+                if let Some(u) = crate::twitch::public_profile(user_id).await {
+                    add("Picture", &u["profileImageURL"]);
+                    add("Banner", &u["bannerImageURL"]);
+                    add("Account created", &u["createdAt"]);
+                }
                 let Some(tw) = self.twitch() else {
                     return out;
                 };
@@ -607,6 +679,7 @@ impl Engine {
                     get("channels", vec![("broadcaster_id", id.into())]),
                 );
                 add("Picture", &u["profile_image_url"]);
+                // Without a profile banner, the offline picture.
                 add("Banner", &u["offline_image_url"]);
                 add("Account created", &u["created_at"]);
                 add("Type", &u["broadcaster_type"]);
@@ -628,6 +701,44 @@ impl Engine {
                 add("Their stream title", &c["title"]);
             }
             "kick" => {
+                // What kick.com's own chat shows when a name is clicked: no login needed.
+                let channel = self.cfg.borrow().kick.channel.trim().to_lowercase();
+                let name = {
+                    let st = self.st.borrow();
+                    st.chat_log
+                        .lines
+                        .iter()
+                        .rev()
+                        .find(|l| l.platform == "kick" && l.user_id == user_id)
+                        .map(|l| kick_slug(&l.user))
+                };
+                if let Some(name) = name.filter(|n| !n.is_empty() && !channel.is_empty()) {
+                    let url = format!("https://kick.com/api/v2/channels/{channel}/users/{name}");
+                    let h = [("Accept".to_string(), "application/json".to_string())];
+                    let card = crate::http::request("GET", &url, &h, b"")
+                        .await
+                        .ok()
+                        .filter(|r| r.status == 200)
+                        .and_then(|r| serde_json::from_slice::<Value>(&r.body).ok())
+                        .unwrap_or_default();
+                    add("Picture", &card["profile_pic"]);
+                    add("Channel", &card["slug"]);
+                    add("Account created", &card["created_at"]);
+                    if card.is_object() {
+                        let since = if card["following_since"].is_string() {
+                            card["following_since"].clone()
+                        } else {
+                            "not following".into()
+                        };
+                        add("Following since", &since);
+                    }
+                    if let Some(m) = card["subscribed_for"].as_u64().filter(|m| *m > 0) {
+                        add("Subscribed", &format!("{m} months").into());
+                    }
+                    if !card["banned"].is_null() && card.is_object() {
+                        add("Banned", &"yes".into());
+                    }
+                }
                 let Some(k) = self.kick() else { return out };
                 let (users, channels) = (
                     format!("/users?id={user_id}"),
@@ -851,6 +962,16 @@ impl Engine {
         });
     }
 
+    /// Whether the chat sends on `platform` as the broadcaster (else as the bot), as picked in the chat.
+    pub fn sends_as_broadcaster(&self, platform: &str) -> bool {
+        self.cfg
+            .borrow()
+            .window
+            .chat_as_broadcaster
+            .iter()
+            .any(|p| p == platform)
+    }
+
     /// Send `text` to an explicit list of platforms with configurable account fallback.
     pub fn send_chat_list(
         self: &Rc<Self>,
@@ -908,6 +1029,19 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kick_names_as_their_page_has_them() {
+        assert_eq!(kick_slug("AlphaWujuu"), "alphawujuu");
+        assert_eq!(kick_slug("Some_Name"), "some-name");
+    }
+
+    #[test]
+    fn badges_without_a_title_get_a_name() {
+        assert_eq!(badge_name("kick:sub_gifter"), "Sub gifter");
+        assert_eq!(badge_name("subscriber/12"), "Subscriber");
+        assert_eq!(badge_name("tiktok:moderator"), "Moderator");
+    }
 
     #[test]
     fn emotes_per_platform() {

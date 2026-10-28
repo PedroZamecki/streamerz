@@ -3908,6 +3908,8 @@ struct Seen {
     pending: HashMap<String, Bomb>,
     /// Badge pictures by "set/version" (the channel's over Twitch's global ones).
     badges: HashMap<String, String>,
+    /// Their names ("Moderator", "1-Year Subscriber"), by "set/version".
+    badge_titles: HashMap<String, String>,
 }
 
 /// A gift bomb waiting for its gifts: trigger, arguments, how many, recipients so far.
@@ -4008,6 +4010,32 @@ fn pyramid(user: (&str, &str, &str), text: &str) -> Option<(bool, Who, String, u
     })
 }
 
+/// A badge's name ("1-Year Subscriber") by its "set/version", once the badge sets are read.
+pub fn badge_title(key: &str) -> Option<String> {
+    SEEN.with_borrow(|s| s.badge_titles.get(key).cloned())
+}
+
+/// What twitch.tv's viewer card shows of a user, read without a login: their profile banner (the
+/// picture behind the card, which the Helix API doesn't have), picture and account age. From Twitch's
+/// public web API, asked anonymously with its web client id, as twitch.tv does.
+pub async fn public_profile(user_id: &str) -> Option<Value> {
+    if !user_id.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let headers = [
+        ("Client-Id".to_string(), "kimne78kx3ncx6brgo4mv6wki5h1ko".to_string()),
+        ("Content-Type".to_string(), "application/json".to_string()),
+    ];
+    let q = json!({
+        "query": format!("{{ user(id: \"{user_id}\") {{ bannerImageURL createdAt profileImageURL(width: 150) }} }}")
+    });
+    let r = crate::http::request("POST", "https://gql.twitch.tv/gql", &headers, q.to_string().as_bytes())
+        .await
+        .ok()?;
+    let v: Value = serde_json::from_slice(&r.body).ok()?;
+    Some(v["data"]["user"].clone()).filter(Value::is_object)
+}
+
 /// Remember what later events compare against (chat settings, title and game, the custom rewards).
 async fn seed(engine: &Rc<Engine>) {
     let Some(tw) = engine.twitch() else { return };
@@ -4025,14 +4053,15 @@ async fn seed(engine: &Rc<Engine>) {
                 for v in set["versions"].as_array().into_iter().flatten() {
                     // 72 px: sharp once shrunk, on any screen scale.
                     let url = v["image_url_4x"].as_str().or(v["image_url_1x"].as_str()).unwrap_or("");
-                    s.badges.insert(
-                        format!(
-                            "{}/{}",
-                            set["set_id"].as_str().unwrap_or(""),
-                            v["id"].as_str().unwrap_or("")
-                        ),
-                        url.into(),
+                    let key = format!(
+                        "{}/{}",
+                        set["set_id"].as_str().unwrap_or(""),
+                        v["id"].as_str().unwrap_or("")
                     );
+                    if let Some(t) = v["title"].as_str().filter(|t| !t.is_empty()) {
+                        s.badge_titles.insert(key.clone(), t.into());
+                    }
+                    s.badges.insert(key, url.into());
                 }
             }
         }

@@ -1,17 +1,23 @@
-//! A chatter's card, a popover: who they are (picture, name, roles), what their platform says (account
-//! age, following, subscription), what Streamerz has seen (messages, first and last time, time chatting)
-//! and what they said. The technical values (as the actions get them) are one button away.
+//! A chatter's card, a popover: their banner, picture, name and account age on top, as the platforms'
+//! own cards show them; the badges they wear (named when pointed at); what their platform says
+//! (following, subscription) and what Streamerz has seen; and their messages, live, in the chat's own
+//! view, so they can be answered, deleted, timed out or banned from here. The technical values (as
+//! the actions get them) are one button away.
 
+use super::chat::{draw_badge, Pane, SetReply};
 use super::popover::Popover;
 use super::rows::Rows;
-use super::{button, img, query, tell, Ellipsis};
-use crate::engine::chatlog::{Line, Said};
+use super::{icons, img, query, tell, Ellipsis};
+use crate::engine::chatlog::Line;
 use crate::engine::UiCmd;
 use crate::i18n::{tr, trf};
 use crate::model::Obj;
-use fltk::enums::{Align, Color, Font};
+use fltk::button::Button;
+use fltk::enums::{Align, Color, Event, Font, FrameType, Key};
 use fltk::frame::Frame;
-use fltk::group::Flex;
+use fltk::group::{Flex, Group};
+use fltk::image::RgbImage;
+use fltk::input::Input;
 use fltk::prelude::*;
 use fltk::{app, draw};
 use std::cell::{Cell, RefCell};
@@ -23,16 +29,19 @@ use tokio::sync::mpsc::UnboundedSender;
 type Cmds = UnboundedSender<UiCmd>;
 type Facts = Vec<(String, String)>;
 
+/// The card's header: banner, picture and name.
+const HEAD: i32 = 104;
+/// Badges' height in their row.
+const BADGE: i32 = 22;
+
 /// Who a card is about.
 pub struct Who {
     pub platform: String,
     pub user_id: String,
     pub name: String,
     pub color: Color,
-    /// Already in the user's words (broadcaster, moderator...).
+    /// Already in the user's words (broadcaster, moderator...): shown when there are no badges.
     pub roles: Vec<&'static str>,
-    /// The badges they wear: key and picture.
-    pub badges: Vec<(String, String)>,
 }
 
 impl Who {
@@ -49,7 +58,6 @@ impl Who {
             name: l.user.clone(),
             color,
             roles: roles.iter().filter(|r| r.0).map(|r| r.1).collect(),
-            badges: l.badges.iter().filter(|b| !b.1.is_empty()).cloned().collect(),
         }
     }
 
@@ -76,7 +84,6 @@ impl Who {
             name: s("display"),
             color,
             roles,
-            badges: Vec::new(),
         }
     }
 }
@@ -134,75 +141,131 @@ fn profile_url(platform: &str, login: &str, id: &str) -> String {
     }
 }
 
-/// What they said: a line each, time then words with the emotes as pictures; scrolls, starting at the end.
-fn said_list(cmds: &Cmds, said: Vec<Said>) -> Frame {
-    const LINE: i32 = 28;
+/// `pic` darkened to `k` (0 to 1), so white text reads over it.
+fn darker(pic: &RgbImage, k: f32) -> Option<RgbImage> {
+    let d = pic.depth() as usize;
+    let mut px = pic.to_rgb_data();
+    for p in px.chunks_mut(d.max(1)) {
+        for c in p.iter_mut().take(3) {
+            *c = (f32::from(*c) * k) as u8;
+        }
+    }
+    RgbImage::new(&px, pic.w(), pic.h(), pic.depth()).ok()
+}
+
+/// What the header shows, filled in as answers come.
+#[derive(Default)]
+struct Head {
+    banner: Option<RgbImage>,
+    picture: Option<RgbImage>,
+    /// "Account created on ...", once known.
+    created: String,
+}
+
+/// The header: the banner across (cut to fit, darkened), the picture and the name over it.
+fn header(who: &Who, platform_name: &'static str, head: &Rc<RefCell<Head>>) -> Frame {
     let mut f = Frame::default();
-    let top = Rc::new(Cell::new(i32::MAX));
-    let (said, cmds) = (Rc::new(said), cmds.clone());
+    let initial: String = who
+        .name
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().collect())
+        .unwrap_or_default();
+    let (name, tint) = (who.name.clone(), who.color);
+    let head = head.clone();
+    f.draw(move |f| {
+        let (x, y, w, h) = (f.x(), f.y(), f.w(), f.h());
+        let st = head.borrow();
+        draw::push_clip(x, y, w, h);
+        match &st.banner {
+            Some(b) => {
+                let mut b = b.clone();
+                b.draw(x + (w - b.w()) / 2, y + (h - b.h()) / 2, b.w(), b.h());
+            }
+            None => draw::draw_rect_fill(x, y, w, h, Color::color_average(tint, Color::Background2, 0.18)),
+        }
+        // Picture (or their initial in a circle) and name, along the bottom.
+        let (px, py) = (x + 14, y + h - 56 - 12);
+        match &st.picture {
+            Some(p) => p.clone().draw(px, py, 56, 56),
+            None => {
+                draw::set_draw_color(Color::color_average(tint, Color::Background, 0.35));
+                draw::draw_pie(px, py, 56, 56, 0.0, 360.0);
+                draw::set_font(Font::HelveticaBold, 24);
+                draw::set_draw_color(tint);
+                draw::draw_text2(&initial, px, py, 56, 56, Align::Center);
+            }
+        }
+        let text = if st.banner.is_some() {
+            Color::White
+        } else {
+            Color::Foreground
+        };
+        let tx = px + 56 + 12;
+        if let Some(mut logo) = img::logo(platform_name, 16) {
+            logo.draw(tx, py + 8, 16, 16);
+        }
+        draw::set_font(Font::HelveticaBold, 18);
+        draw::set_draw_color(if st.banner.is_some() { Color::White } else { tint });
+        draw::draw_text2(&name, tx + 22, py + 4, w - (tx - x) - 60, 24, Align::Left | Align::Clip);
+        if !st.created.is_empty() {
+            if let Some(mut i) = icons::icon("calendar", text, 14) {
+                i.draw(tx, py + 34, 14, 14);
+            }
+            draw::set_font(Font::Helvetica, 13);
+            draw::set_draw_color(text);
+            draw::draw_text2(
+                &st.created,
+                tx + 20,
+                py + 31,
+                w - (tx - x) - 30,
+                20,
+                Align::Left | Align::Clip,
+            );
+        }
+        draw::pop_clip();
+    });
+    f
+}
+
+/// A small icon button over the header, at its top right.
+fn corner(icon: &str, tip: &str) -> Button {
+    let mut b = Button::default().with_size(28, 28);
+    b.set_frame(FrameType::NoBox);
+    b.set_image(icons::icon(icon, Color::White, 18));
+    b.set_tooltip(tip);
+    b.clear_visible_focus();
+    b
+}
+
+/// The badges they wear, as pictures; pointing at one says its name.
+fn badge_row(cmds: &Cmds, platform: &str, badges: Rc<Vec<(String, String, String)>>) -> Frame {
+    let mut f = Frame::default();
+    let at: Rc<RefCell<Vec<(i32, i32)>>> = Rc::default();
     f.draw({
-        let (said, top) = (said.clone(), top.clone());
+        let (cmds, platform, badges, at) = (cmds.clone(), platform.to_string(), badges.clone(), at.clone());
         move |f| {
-            let (x, y, w, h) = (f.x(), f.y(), f.w(), f.h());
-            draw::set_draw_color(Color::Background2);
-            draw::draw_rounded_rectf(x, y, w, h, 6);
-            draw::set_draw_color(Color::color_average(Color::Foreground, Color::Background, 0.2));
-            draw::draw_rounded_rect(x, y, w, h, 6);
-            if said.is_empty() {
-                draw::set_font(Font::Helvetica, 14);
-                draw::set_draw_color(super::muted());
-                draw::draw_text2(tr("card.no_messages"), x, y, w, h, Align::Center);
-                return;
-            }
-            let max = (said.len() as i32 * LINE + 8 - h).max(0);
-            top.set(top.get().clamp(0, max));
-            draw::push_clip(x + 2, y + 2, w - 4, h - 4);
-            draw::set_font(Font::Helvetica, 14);
-            for (i, m) in said.iter().enumerate() {
-                let ly = y + 4 + i as i32 * LINE - top.get();
-                if ly + LINE < y || ly > y + h {
-                    continue;
-                }
-                let base = ly + (LINE + draw::height()) / 2 - draw::descent();
-                draw::set_draw_color(super::muted());
-                draw::draw_text(&m.time, x + 12, base);
-                let mut cx = x + 12 + 80;
-                for word in m.text.split(' ') {
-                    let picture = m
-                        .emotes
-                        .iter()
-                        .find(|e| e.0 == word)
-                        .and_then(|e| img::get(&cmds, &e.1, 20, false));
-                    match picture {
-                        Some(p) => {
-                            let mut i = p.first();
-                            i.draw(cx, ly + (LINE - i.h()) / 2, i.w(), i.h());
-                            cx += i.w() + 4;
-                        }
-                        None => {
-                            draw::set_draw_color(Color::Foreground);
-                            draw::draw_text(word, cx, base);
-                            cx += draw::width(word) as i32 + draw::width(" ") as i32;
-                        }
-                    }
-                    if cx > x + w {
-                        break;
-                    }
+            let mut x = f.x();
+            let mut spans = Vec::new();
+            for (key, url, _) in badges.iter() {
+                let w = draw_badge(&cmds, &platform, key, url, x, f.y() + (f.h() - BADGE) / 2, BADGE);
+                spans.push((x, w));
+                if w > 0 {
+                    x += w + 6;
                 }
             }
-            draw::pop_clip();
+            *at.borrow_mut() = spans;
         }
     });
-    f.handle({
-        let (said, top) = (said, top);
-        move |f, ev| {
-            if ev == fltk::enums::Event::MouseWheel {
-                top.set((top.get().min(said.len() as i32 * LINE) + app::event_dy_value() * LINE).max(0));
-                f.redraw();
-                return true;
-            }
-            ev == fltk::enums::Event::Enter
+    f.handle(move |f, ev| match ev {
+        Event::Enter => true,
+        Event::Move => {
+            let ex = app::event_x();
+            let i = at.borrow().iter().position(|(x, w)| (*x..x + w).contains(&ex));
+            f.set_tooltip(i.and_then(|i| badges.get(i)).map_or("", |b| b.2.as_str()));
+            true
         }
+        _ => false,
     });
     f
 }
@@ -223,126 +286,98 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
     })
     .flatten()
     .unwrap_or_default();
-    let said = query(cmds, {
-        let (p, id) = (p.clone(), id.clone());
-        move |e| e.chatter_lines(&p, &id)
-    })
-    .unwrap_or_default();
     let member = query(cmds, {
         let (p, id) = (p.clone(), id.clone());
         move |e| e.community_user(&p, &id)
     })
     .flatten();
+    let badges = Rc::new(
+        query(cmds, {
+            let (p, id) = (p.clone(), id.clone());
+            move |e| e.chatter_badges(&p, &id)
+        })
+        .unwrap_or_default(),
+    );
 
-    let mut pop = Popover::start(Box::new(host), at.0 + 12, at.1 - 24, 400, 560);
+    let mut pop = Popover::start(Box::new(host), at.0 + 12, at.1 - 24, 420, 640);
     let (pw, ph) = pop.size();
     let mut col = Flex::new(0, 0, pw, ph, None).column();
-    col.set_margin(14);
-    col.set_pad(8);
+    col.set_margin(1);
+    col.set_pad(0);
 
-    // The channel's banner, when its platform has one (it arrives with the platform's answer).
-    let mut banner = Frame::default();
-    let banner_pic: Rc<RefCell<Option<fltk::image::RgbImage>>> = Rc::default();
-    banner.draw({
-        let pic = banner_pic.clone();
-        move |f| {
-            if let Some(i) = pic.borrow_mut().as_mut() {
-                draw::push_clip(f.x(), f.y(), f.w(), f.h());
-                i.draw(f.x() + (f.w() - i.w()) / 2, f.y() + (f.h() - i.h()) / 2, i.w(), i.h());
-                draw::pop_clip();
-            }
-        }
-    });
-    // 1, not 0: a size of 0 means "share what is left".
-    col.fixed(&banner, 1);
+    // Header, with its buttons in the corner.
+    let head = Rc::new(RefCell::new(Head::default()));
+    let top = Group::default().with_size(pw - 2, HEAD);
+    let banner = header(&who, platform_name, &head);
+    let mut banner = banner;
+    banner.resize(top.x(), top.y(), top.w(), top.h());
+    let mut open_profile = corner("external-link", tr("btn.open_profile"));
+    let mut close = corner("x", tr("dialogs.close"));
+    open_profile.set_pos(top.x() + top.w() - 64, top.y() + 6);
+    close.set_pos(top.x() + top.w() - 34, top.y() + 6);
+    top.resizable(&banner);
+    top.end();
+    col.fixed(&top, HEAD);
 
-    let mut head = Flex::default().row();
-    head.set_pad(12);
-    let mut pic = Frame::default();
-    // Until the picture is there (or when there is none): a circle with their initial.
-    let initial: String = who
-        .name
-        .chars()
-        .next()
-        .map(|c| c.to_uppercase().collect())
-        .unwrap_or_default();
-    let tint = who.color;
-    pic.draw(move |f| {
-        if f.image().is_none() {
-            draw::set_draw_color(Color::color_average(tint, Color::Background, 0.25));
-            draw::draw_pie(f.x(), f.y(), 56, 56, 0.0, 360.0);
-            draw::set_font(Font::HelveticaBold, 24);
-            draw::set_draw_color(tint);
-            draw::draw_text2(&initial, f.x(), f.y(), 56, 56, Align::Center);
-        }
-    });
-    head.fixed(&pic, 60);
-    let mut who_col = Flex::default().column();
-    who_col.set_pad(0);
-    let mut name = Frame::default()
-        .with_label(&format!("  {}", who.name.replace('@', "@@")))
-        .with_align(Align::Left | Align::Inside | Align::ImageNextToText)
-        .ellipsis();
-    name.set_label_font(Font::HelveticaBold);
-    name.set_label_size(18);
-    name.set_label_color(who.color);
-    name.set_image(img::logo(platform_name, 18));
+    let mut body = Flex::default().column();
+    body.set_margin(12);
+    body.set_pad(8);
+    // Badges; without any, their roles in words.
+    let mut badges_f = badge_row(cmds, &who.platform, badges.clone());
     let roles = if who.roles.is_empty() {
         tr("chat.card_viewer").to_string()
     } else {
         who.roles.join(", ")
     };
-    let mut role_line = Frame::default()
-        .with_label(&roles)
-        .with_align(Align::Left | Align::Inside)
-        .ellipsis();
-    role_line.set_label_color(super::muted());
-    who_col.fixed(&name, 26);
-    who_col.fixed(&role_line, 18);
-    // Their badges, as pictures.
-    let mut badge_row = Frame::default();
-    badge_row.draw({
-        let (badges, cmds) = (who.badges.clone(), cmds.clone());
-        move |f| {
-            let mut x = f.x();
-            for (_, url) in &badges {
-                if let Some(p) = img::get(&cmds, url, 18, false) {
-                    let mut i = p.first();
-                    i.draw(x, f.y() + (f.h() - i.h()) / 2, i.w(), i.h());
-                    x += i.w() + 4;
-                }
-            }
-        }
-    });
-    who_col.end();
-    head.end();
-    col.fixed(&head, 60);
+    if badges.is_empty() {
+        badges_f.set_label(&roles);
+        badges_f.set_align(Align::Left | Align::Inside);
+        badges_f.set_label_color(super::muted());
+    }
+    body.fixed(&badges_f, BADGE + 4);
 
     // What's known about them: label, value.
     let mut facts = Rows::new("");
     facts.set_column_widths(&[160]);
-    col.fixed(&*facts, 8 * 28);
+    body.fixed(&*facts, 6 * 28);
 
+    let mut title_row = Flex::default().row();
     let mut title = Frame::default()
         .with_label(tr("card.recent"))
         .with_align(Align::Left | Align::Inside)
         .ellipsis();
     title.set_label_font(Font::HelveticaBold);
     title.set_label_size(13);
-    col.fixed(&title, 20);
-    let messages = said_list(cmds, said);
+    let mut more = Button::default().with_label(tr("card.details"));
+    super::with_icon(&mut more);
+    title_row.fixed(&more, 90);
+    title_row.end();
+    body.fixed(&title_row, 24);
+
+    // Their messages, in the chat's view: hover one to answer, delete, time out or ban.
+    let (pane_group, pane) = Pane::new(cmds);
+    pane.no_cards();
     let mut details = Rows::new("");
     details.set_column_widths(&[170]);
     details.hide();
 
-    let mut bottom = Flex::default().row();
-    bottom.set_pad(8);
-    Frame::default();
-    let mut open_profile = button(&mut bottom, tr("btn.open_profile"), 120);
-    let mut more = button(&mut bottom, tr("card.details"), 90);
-    let mut close = button(&mut bottom, tr("dialogs.close"), 80);
-    bottom.end();
-    col.fixed(&bottom, 28);
+    // Answering here: what's being answered, then the box.
+    let mut replying = Frame::default().with_align(Align::Left | Align::Inside).ellipsis();
+    replying.set_label_size(12);
+    replying.set_label_color(super::muted());
+    replying.hide();
+    body.fixed(&replying, 0);
+    let mut send_row = Flex::default().row();
+    send_row.set_pad(6);
+    let mut input = Input::default();
+    super::placeholder(&mut input, tr("card.send_placeholder"));
+    let mut send = Button::default();
+    send.set_image(icons::icon("send-horizontal", super::button_ink(), 16));
+    send.set_tooltip(tr("chat.send_btn_tooltip"));
+    send_row.fixed(&send, 32);
+    send_row.end();
+    body.fixed(&send_row, 28);
+    body.end();
     col.end();
     pop.finish();
 
@@ -373,37 +408,122 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
         let url = url.clone();
         move |_| crate::oauth::open_browser(&url.borrow())
     });
+    let mut win = pop.window();
     let showing_details = Rc::new(Cell::new(false));
     more.set_callback({
-        let (mut messages, mut details, mut title, col, mut more) = (
-            messages.clone(),
+        let (mut pane_group, mut details, mut title, body, mut more) = (
+            pane_group.clone(),
             details.clone(),
             title.clone(),
-            col.clone(),
+            body.clone(),
             more.clone(),
         );
         let on = showing_details.clone();
-        let mut pw = pop.window();
+        let mut win = win.clone();
         move |_| {
             on.set(!on.get());
             if on.get() {
-                messages.hide();
+                pane_group.hide();
                 details.show();
                 title.set_label(tr("card.details"));
                 more.set_label(tr("card.recent_short"));
             } else {
                 details.hide();
-                messages.show();
+                pane_group.show();
                 title.set_label(tr("card.recent"));
                 more.set_label(tr("card.details"));
             }
-            col.layout();
-            pw.redraw();
+            body.clone().layout();
+            win.redraw();
         }
     });
     close.set_callback({
         let done = pop.done.clone();
         move |_| done.set(true)
+    });
+
+    // Reply (from a message's actions) and send, on their platform, as the chat sends there.
+    let reply: Rc<RefCell<Option<Line>>> = Rc::default();
+    let set_reply: SetReply = {
+        let (reply, replying, body, input, win) = (
+            reply.clone(),
+            replying.clone(),
+            body.clone(),
+            input.clone(),
+            win.clone(),
+        );
+        Rc::new(move |l: Option<&Line>| {
+            let (mut replying, mut body, mut input, mut win) =
+                (replying.clone(), body.clone(), input.clone(), win.clone());
+            *reply.borrow_mut() = l.cloned();
+            match l {
+                Some(l) => {
+                    let said = l.text.replace('@', "@@");
+                    replying.set_label(&trf(
+                        "chat.replying_to",
+                        &[("user", &l.user.replace('@', "@@")), ("said", &said)],
+                    ));
+                    replying.show();
+                    body.fixed(&replying, 18);
+                    let _ = input.take_focus();
+                }
+                None => {
+                    replying.hide();
+                    body.fixed(&replying, 0);
+                }
+            }
+            body.layout();
+            win.redraw();
+        })
+    };
+    pane.on_reply.replace(Some({
+        let set_reply = set_reply.clone();
+        Rc::new(move |l: &Line| set_reply(Some(l)))
+    }));
+    let do_send = {
+        let (cmds, input, reply, set_reply, platform) = (
+            cmds.clone(),
+            input.clone(),
+            reply.clone(),
+            set_reply.clone(),
+            who.platform.clone(),
+        );
+        move || {
+            let text = input.value().trim().to_string();
+            if text.is_empty() {
+                return;
+            }
+            let to = reply.borrow_mut().take();
+            let platform = platform.clone();
+            tell(&cmds, move |e| {
+                let Some(p) = crate::engine::chatlog::PLATFORMS.into_iter().find(|x| *x == platform) else {
+                    return;
+                };
+                let bot = !e.sends_as_broadcaster(p);
+                let _ = e.send_chat_list(&[p], &text, bot, true, to.as_ref());
+            });
+            set_reply(None);
+            input.clone().set_value("");
+        }
+    };
+    send.set_callback({
+        let s = do_send.clone();
+        move |_| s()
+    });
+    input.handle({
+        let (s, reply, set_reply) = (do_send, reply.clone(), set_reply.clone());
+        move |_, ev| {
+            let enter = app::event_key() == Key::Enter || app::event_key().bits() == 0xff8d;
+            if ev == Event::KeyDown && enter {
+                s();
+                return true;
+            }
+            if ev == Event::KeyDown && app::event_key() == Key::Escape && reply.borrow().is_some() {
+                set_reply(None);
+                return true;
+            }
+            false
+        }
     });
 
     // The platform's own answer arrives later.
@@ -444,9 +564,16 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
                 .map(|f| f.1.as_str())
                 .unwrap_or("")
         };
-        row(tr("card.created"), &when(known("Account created")));
         row(tr("card.following"), &when(known("Following since")));
         row(tr("card.subscribed"), known("Subscribed"));
+        row(
+            tr("card.banned"),
+            if known("Banned").is_empty() {
+                ""
+            } else {
+                tr("card.banned_yes")
+            },
+        );
         row(tr("card.category"), known("Their last category"));
         row(tr("card.category"), known("Their category"));
         if let Some(m) = &member {
@@ -467,10 +594,9 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
         row(tr("chat.card_messages_session"), &seen.messages.to_string());
     };
     // The table is as tall as its lines.
-    let mut win = pop.window();
-    let mut fit = |col: &mut Flex, facts: &Rows| {
-        col.fixed(&**facts, facts.size().max(1) * 28 + 8);
-        col.layout();
+    let mut fit = |body: &mut Flex, facts: &Rows| {
+        body.fixed(&**facts, facts.size().max(1) * 28 + 8);
+        body.layout();
         win.redraw();
     };
     fill(&mut facts, &Vec::new());
@@ -481,14 +607,37 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
             tr("chat.card_looking_up")
         ));
     }
+    fit(&mut body, &facts);
 
-    fit(&mut col, &facts);
-    let (mut pic_frame, mut facts_t, mut tries, mut col_t) = (pic.clone(), facts.clone(), 0, col.clone());
+    // Their messages, now and as they come (and as they're deleted).
+    let (mut gen, mut last) = (u64::MAX, 0u64);
+    let mut sync = {
+        let (cmds, pane, p, id) = (cmds.clone(), pane.clone(), p.clone(), id.clone());
+        move || {
+            let (p, id, g, s) = (p.clone(), id.clone(), gen, last);
+            let Some((g, full, lines)) = query(&cmds, move |e| e.chatter_sync(&p, &id, g, s)) else {
+                return;
+            };
+            if full {
+                pane.replace_all(lines.iter().cloned());
+            } else {
+                for l in &lines {
+                    pane.add(l);
+                }
+            }
+            gen = g;
+            last = lines.last().map_or(last, |l| l.seq);
+        }
+    };
+    sync();
+
+    let (mut facts_t, mut tries, mut body_t) = (facts.clone(), 0, body.clone());
     let mut waiting = asks;
     let (mut have_pic, mut banner_url) = (false, String::new());
-    let banner_t = banner.clone();
+    let mut top_t = top.clone();
     pop.run(|| {
         tries += 1;
+        sync();
         if waiting {
             if let Some(found) = answer.lock().ok().and_then(|mut a| a.take()) {
                 waiting = false;
@@ -498,10 +647,13 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
                 }
                 if let Some((_, v)) = found.iter().find(|f| f.0 == "Banner") {
                     banner_url.clone_from(v);
-                    col_t.fixed(&banner_t, 72);
                 }
                 if let Some((_, v)) = found.iter().find(|f| f.0 == "Channel") {
                     *url.borrow_mut() = profile_url(&who.platform, v, &who.user_id);
+                }
+                if let Some((_, v)) = found.iter().find(|f| f.0 == "Account created") {
+                    head.borrow_mut().created = trf("card.created_on", &[("date", &when(v))]);
+                    top_t.redraw();
                 }
                 fill(&mut facts_t, &found);
                 if found.is_empty() {
@@ -511,21 +663,35 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
                         tr("card.nothing")
                     ));
                 }
-                fit(&mut col_t, &facts_t);
+                fit(&mut body_t, &facts_t);
             } else if tries > 75 {
                 waiting = false;
             }
         }
-        if !banner_url.is_empty() && banner_pic.borrow().is_none() {
-            if let Some(p) = img::get(cmds, &banner_url, 210, false) {
-                *banner_pic.borrow_mut() = Some(p.first());
-                banner_t.clone().redraw();
+        if !banner_url.is_empty() && head.borrow().banner.is_none() {
+            // As wide as the card at least: asked at the header's height first, then taller if narrow.
+            if let Some(p) = img::get(cmds, &banner_url, HEAD, false) {
+                let first = p.first();
+                let tall = if first.w() < top_t.w() {
+                    (HEAD * top_t.w() + first.w() - 1) / first.w().max(1)
+                } else {
+                    HEAD
+                };
+                let pic = if tall == HEAD {
+                    Some(first)
+                } else {
+                    img::get(cmds, &banner_url, tall, false).map(|p| p.first())
+                };
+                if let Some(b) = pic.and_then(|b| darker(&b, 0.5)) {
+                    head.borrow_mut().banner = Some(b);
+                    top_t.redraw();
+                }
             }
         }
         if !have_pic && !picture.is_empty() {
             if let Some(p) = img::get(cmds, &picture, 56, true) {
-                pic_frame.set_image(Some(p.first()));
-                pic_frame.redraw();
+                head.borrow_mut().picture = Some(p.first());
+                top_t.redraw();
                 have_pic = true;
             }
         }

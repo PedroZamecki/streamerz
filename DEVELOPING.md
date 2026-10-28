@@ -511,6 +511,8 @@ otherwise, so a release never has them unless the variable is set):
 - `{"request": "InjectChat", "id": "1", "platform": "kick", "user": "bo", "role": "viewer", "text": "!hi"}`
   runs `text` through the commands as a chat message from that platform (`twitch`, `youtube`, `kick`,
   `tiktok`; role `broadcaster`, `moderator`, `vip`, `subscriber` or `viewer`), answering `{"ran": n}`.
+  An optional `userId` gives it a real account's id (the name stands for it otherwise), to try that
+  account's user card.
 - `{"request": "GetChatOut", "id": "2"}` returns and clears what would have been sent:
   `{"messages": [{"platform": "kick", "text": "hi bo", "bot": false}, ...]}` (the last 500).
 

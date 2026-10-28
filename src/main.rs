@@ -179,6 +179,8 @@ pub struct WindowState {
     /// Chat: hide the time, hide the badges.
     pub chat_no_time: bool,
     pub chat_no_badges: bool,
+    /// Emotes keep still (their first frame) in the chat and the user card.
+    pub chat_still_emotes: bool,
     /// Platforms where the individual chat box sends as broadcaster instead of bot-with-fallback.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chat_as_broadcaster: Vec<String>,
