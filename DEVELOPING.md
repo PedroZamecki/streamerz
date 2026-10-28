@@ -804,3 +804,17 @@ subscriptions there too when `twitch.eventsubUrl` points at it.
 The CLI can't send chat messages or chat notifications (subs, gifts, incoming raids, cheers come that
 way); `twitch::tests::events_fire_once_with_their_variables` covers those. Whether Twitch takes each
 subscription needs a real login: run with the real config and look for `Create sub` lines.
+
+## Crash reports
+
+`src/crash.rs` writes `logs/latest.log` (gzipped to `<time>.log.gz` at the next start, seven kept) and, on a
+panic, `logs/crash-<time>.txt` (version, system, message, backtrace, the last 60 log lines, home folder
+hidden). At the next start `crash::offer` asks whether to report it: either answer renames it to `.reported`.
+To try it: `STREAMERZ_CRASH_TEST=1 STREAMERZ_CONFIG=/tmp/x/s.json Streamerz`, then start it again.
+
+## Where the settings are
+
+In order: `--config`, `STREAMERZ_CONFIG`, the folder named in `location` (a file in the usual config
+folder, written when the user chose another one on first run or in Settings), a `streamerz.json` next to the
+program, the usual folder. On a first run (none of those) a dialog asks. Linux logins are tied to the
+settings file's path in the keyring, so moving the file asks for them again.

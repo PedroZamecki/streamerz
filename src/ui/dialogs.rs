@@ -73,6 +73,15 @@ pub fn run(win: &mut Window, answer: &Answer, mut check: impl FnMut() -> bool) -
     }
 }
 
+/// Puts `win` in the middle of the app's window, or of the screen.
+fn centre(win: &mut Window, w: i32, h: i32) {
+    let (cx, cy, cw, ch) = match app::first_window().filter(|f| f.visible()) {
+        Some(f) => (f.x(), f.y(), f.w(), f.h()),
+        None => app::screen_xywh(0),
+    };
+    win.set_pos(cx + (cw - w) / 2, cy + (ch - h) / 2);
+}
+
 /// `text` broken into lines no wider than `room` by `width` (words stay whole; a word wider than the room
 /// is cut). Newlines in `text` are kept.
 fn wrap(text: &str, room: i32, width: impl Fn(&str) -> i32) -> Vec<String> {
@@ -132,15 +141,7 @@ fn notice(icon: &'static str, tint: Color, text: &str, no: Option<&str>, yes: &s
     let body = (lines.len() as i32 * LINE).max(PIC);
     let h = PAD * 2 + body + 18 + ROW;
     let (mut win, answer) = window(w, h, "Streamerz");
-    // Centred on the window it was asked from, or the screen.
-    let (cx, cy, cw, ch) = match app::first_window().filter(|f| f.visible()) {
-        Some(f) => (f.x(), f.y(), f.w(), f.h()),
-        None => {
-            let (sx, sy, sw, sh) = app::screen_xywh(0);
-            (sx, sy, sw, sh)
-        }
-    };
-    win.set_pos(cx + (cw - w) / 2, cy + (ch - h) / 2);
+    centre(&mut win, w, h);
     let mut col = Flex::new(PAD, PAD, w - PAD * 2, h - PAD * 2, None).column();
     col.set_pad(18);
     let mut top = Flex::default().row();
@@ -157,8 +158,7 @@ fn notice(icon: &'static str, tint: Color, text: &str, no: Option<&str>, yes: &s
     // Wrapped here, not by FLTK, so the window is sized for exactly these lines.
     Frame::default()
         .with_label(&lines.join("\n").replace('@', "@@"))
-        .with_align(Align::Left | Align::Inside | Align::Top)
-        .ellipsis();
+        .with_align(Align::Left | Align::Inside | Align::Top);
     top.end();
     let mut bar = Flex::default().row();
     bar.set_pad(8);
@@ -182,6 +182,82 @@ fn notice(icon: &'static str, tint: Color, text: &str, no: Option<&str>, yes: &s
     col.end();
     win.end();
     run(&mut win, &answer, || true)
+}
+
+/// First run: where to keep the settings. Starts at the usual folder (the suggestion); the answer is the
+/// settings file in the folder picked. Closing it takes the suggestion.
+pub fn choose_location(usual: &std::path::Path) -> std::path::PathBuf {
+    super::theme(true);
+    let file = usual.file_name().map_or("streamerz.json".into(), |f| f.to_os_string());
+    let start = usual.parent().map(|p| p.display().to_string()).unwrap_or_default();
+    let (mut win, answer) = window(560, 250, "Streamerz");
+    centre(&mut win, 560, 250);
+    let mut col = Flex::new(22, 20, 516, 210, None).column();
+    col.set_pad(10);
+    let mut title = Frame::default()
+        .with_label(tr("location.title"))
+        .with_align(Align::Left | Align::Inside)
+        .ellipsis();
+    title.set_label_font(Font::HelveticaBold);
+    title.set_label_size(16);
+    col.fixed(&title, 26);
+    draw::set_font(Font::Helvetica, 14);
+    let lines = wrap(tr("location.about"), 516, |t| draw::width(t) as i32);
+    let about = Frame::default()
+        .with_label(&lines.join("\n").replace('@', "@@"))
+        .with_align(Align::Left | Align::Inside | Align::Top);
+    let _ = about;
+    let mut row = Flex::default().row();
+    row.set_pad(8);
+    let mut path = Input::default();
+    path.set_value(&start);
+    let mut browse = button(&mut row, tr("btn.browse"), 100);
+    row.end();
+    col.fixed(&row, ROW);
+    let mut bar = Flex::default().row();
+    bar.set_pad(8);
+    Frame::default();
+    let mut ok = button(&mut bar, tr("location.use"), 140);
+    ok.set_shortcut(Shortcut::from_key(Key::Enter));
+    ok.set_callback({
+        let a = answer.clone();
+        move |_| a.set(Some(true))
+    });
+    bar.end();
+    col.fixed(&bar, ROW);
+    col.end();
+    win.end();
+    browse.set_callback({
+        let mut path = path.clone();
+        move |_| {
+            let mut c = dialog::NativeFileChooser::new(dialog::NativeFileChooserType::BrowseDir);
+            let _ = c.set_directory(&std::path::PathBuf::from(path.value()));
+            c.show();
+            let picked = c.filename();
+            if !picked.as_os_str().is_empty() {
+                path.set_value(&picked.display().to_string());
+            }
+        }
+    });
+    let folder = std::cell::RefCell::new(std::path::PathBuf::from(&start));
+    let ok = run(&mut win, &answer, || {
+        let dir = std::path::PathBuf::from(path.value().trim());
+        match std::fs::create_dir_all(&dir) {
+            Ok(()) => {
+                *folder.borrow_mut() = dir;
+                true
+            }
+            Err(e) => {
+                alert(&trf("location.cant_use", &[("error", &e.to_string())]));
+                false
+            }
+        }
+    });
+    if ok {
+        folder.into_inner().join(file)
+    } else {
+        usual.to_path_buf()
+    }
 }
 
 /// A problem, with an OK.
@@ -568,7 +644,9 @@ pub fn capture_keys() -> Option<(i64, i64)> {
         .with_align(Align::Left | Align::Inside | Align::Wrap);
     note.set_label_size(12);
     col.fixed(&note, 34);
-    let mut line = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+    let mut line = Frame::default()
+        .with_align(Align::Left | Align::Inside | Align::Clip)
+        .ellipsis();
     line.set_label_font(Font::Courier);
     line.set_label_size(12);
     if hypr {

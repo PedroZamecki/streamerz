@@ -3,6 +3,7 @@
 
 mod brand;
 mod commands;
+mod crash;
 pub mod decks;
 pub mod donations;
 mod edit;
@@ -243,6 +244,14 @@ fn status(f: impl FnOnce(&mut Status)) {
     }
 }
 
+/// The log's last `n` lines for a crash report: never waits (the panic may have come with the lock).
+fn log_tail_try(n: usize) -> Vec<String> {
+    STATUS
+        .try_lock()
+        .map(|s| s.log.iter().rev().take(n).rev().cloned().collect())
+        .unwrap_or_default()
+}
+
 /// Print and keep for the window's log.
 /// Hide credentials a log line may carry (error bodies, URLs): the value after each marker.
 fn redact(line: &str) -> String {
@@ -294,6 +303,7 @@ fn redact(line: &str) -> String {
 fn say(line: String) {
     let line = redact(&line);
     let _ = writeln!(std::io::stdout(), "{line}");
+    crash::line(&line);
     status(|s| {
         if s.log.len() == LOG_LINES {
             s.log.pop_front();
@@ -364,35 +374,72 @@ fn resolve_config_path(raw: PathBuf) -> PathBuf {
     abs
 }
 
+/// A settings file named on the command line (`--config`) or in `STREAMERZ_CONFIG`.
+fn explicit_config() -> Option<PathBuf> {
+    let mut args = std::env::args_os().skip(1);
+    while let Some(a) = args.next() {
+        if a == "--config" {
+            if let Some(p) = args.next() {
+                return Some(resolve_config_path(PathBuf::from(p)));
+            }
+        } else if let Some(s) = a.to_str().and_then(|s| s.strip_prefix("--config=")) {
+            return Some(resolve_config_path(PathBuf::from(s)));
+        }
+    }
+    std::env::var_os("STREAMERZ_CONFIG")
+        .filter(|p| !p.is_empty())
+        .map(|p| resolve_config_path(PathBuf::from(p)))
+}
+
+/// The file in the usual folder that says where the settings are, when the user put them elsewhere.
+fn location_file() -> PathBuf {
+    default_config_path().with_file_name("location")
+}
+
+/// A `streamerz.json` next to the program (a portable copy), unless it runs from an AppImage or a
+/// system folder.
+fn portable_config() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    if std::env::var_os("APPIMAGE").is_some() || exe.starts_with("/tmp") || exe.starts_with("/usr") {
+        return None;
+    }
+    Some(exe.parent()?.join("streamerz.json")).filter(|p| p.is_file())
+}
+
+/// Nothing says where the settings are and there are none yet: the user should choose.
+pub(crate) fn first_run() -> bool {
+    explicit_config().is_none()
+        && !location_file().is_file()
+        && portable_config().is_none()
+        && !default_config_path().exists()
+}
+
+/// Where the user chose to keep the settings (the usual folder needs no note).
+pub(crate) fn remember_location(file: &Path) -> std::io::Result<()> {
+    let usual = default_config_path();
+    if file == usual {
+        return Ok(());
+    }
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::create_dir_all(usual.parent().unwrap_or(Path::new(".")))?;
+    std::fs::write(location_file(), file.display().to_string())
+}
+
 pub(crate) fn config_path() -> PathBuf {
     static CFG_PATH: OnceLock<PathBuf> = OnceLock::new();
     CFG_PATH
         .get_or_init(|| {
-            let mut args = std::env::args_os().skip(1);
-            while let Some(a) = args.next() {
-                if a == "--config" {
-                    if let Some(p) = args.next() {
-                        return resolve_config_path(PathBuf::from(p));
-                    }
-                } else if let Some(s) = a.to_str().and_then(|s| s.strip_prefix("--config=")) {
-                    return resolve_config_path(PathBuf::from(s));
-                }
-            }
-            if let Some(p) = std::env::var_os("STREAMERZ_CONFIG").filter(|p| !p.is_empty()) {
-                return resolve_config_path(PathBuf::from(p));
-            }
-            let is_appimage = std::env::var_os("APPIMAGE").is_some();
-            let exe = std::env::current_exe().unwrap_or_default();
-            let in_tmp_or_usr = exe.starts_with("/tmp") || exe.starts_with("/usr");
-            if !is_appimage && !in_tmp_or_usr {
-                if let Some(parent) = exe.parent() {
-                    let local = parent.join("streamerz.json");
-                    if local.is_file() {
-                        return resolve_config_path(local);
-                    }
-                }
-            }
-            resolve_config_path(default_config_path())
+            let chosen = std::fs::read_to_string(location_file())
+                .ok()
+                .map(|t| PathBuf::from(t.trim()))
+                .filter(|p| !p.as_os_str().is_empty());
+            let path = explicit_config()
+                .or(chosen)
+                .or_else(portable_config)
+                .unwrap_or_else(default_config_path);
+            resolve_config_path(path)
         })
         .clone()
 }
@@ -544,14 +591,26 @@ fn main() {
         mcp::run();
         return;
     }
+    let app = ui::app();
+    if first_run() {
+        let usual = default_config_path();
+        let file = ui::dialogs::choose_location(&usual);
+        if let Err(e) = remember_location(&file) {
+            eprintln!("can't remember where the settings are: {e}");
+        }
+    }
     say(version());
     update::tidy();
     secrets::init(&config_path());
+    crash::start();
+    // To try the crash report by hand (see DEVELOPING).
+    if std::env::var_os("STREAMERZ_CRASH_TEST").is_some() {
+        panic!("crash test");
+    }
     let cfg = load_from(&config_path());
     i18n::set(&cfg.locale);
     fmt::set_shown_as(&cfg.date_format, &cfg.time_format);
     say(format!("config: {}", config_path().display()));
-    let app = ui::app();
     let (ui_tx, ui_rx) = fltk::app::channel();
     // ponytail: one runtime thread is plenty for a few sockets, and lighter than one per core.
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -578,6 +637,7 @@ fn main() {
             }
             tokio::task::spawn_local(servers::run(e.clone()));
             e.started();
+            tokio::task::spawn_local(crash::offer());
             tokio::task::spawn_local(update::watch(engine_cfg.clone()));
             e.timers();
             while let Some(f) = cmd_rx.recv().await {

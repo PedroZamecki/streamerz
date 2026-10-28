@@ -353,11 +353,12 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
 
     section(&mut col, tr("settings.files"), "folder");
     let path = crate::config_path();
-    let r = setting(&mut col, tr("settings.settings_file"), &path.display().to_string(), 290);
+    let r = setting(&mut col, tr("settings.settings_file"), &path.display().to_string(), 430);
     let mut row = Flex::default().row();
     row.set_pad(8);
     let mut copy = button(&mut row, tr("btn.copy_path"), 110);
     let mut open = button(&mut row, tr("btn.open_folder"), 120);
+    let mut change = button(&mut row, tr("btn.change"), 90);
     row.end();
     done(r, &row);
     copy.set_callback({
@@ -367,6 +368,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
             crate::say("Copied the settings file's path".into());
         }
     });
+    change.set_callback(move |_| change_location());
     open.set_callback({
         let dir = path.parent().map(|d| d.display().to_string()).unwrap_or_default();
         move |_| crate::oauth::open_browser(&dir)
@@ -393,4 +395,42 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     Frame::default();
     col.end();
     scroll.end();
+}
+
+/// Settings > Files > Change: copies the settings file to a folder picked and makes that the place from
+/// the next start on (the old file stays where it was).
+fn change_location() {
+    let mut c = fltk::dialog::NativeFileChooser::new(fltk::dialog::NativeFileChooserType::BrowseDir);
+    let _ = c.set_directory(
+        &crate::config_path()
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default(),
+    );
+    c.show();
+    let dir = c.filename();
+    if dir.as_os_str().is_empty() {
+        return;
+    }
+    let (from, to) = (crate::config_path(), dir.join("streamerz.json"));
+    if to == from {
+        return;
+    }
+    let done = std::fs::create_dir_all(&dir)
+        .and_then(|()| if to.exists() { Ok(0) } else { std::fs::copy(&from, &to) })
+        .and_then(|_| crate::remember_location(&to));
+    match done {
+        Ok(()) => {
+            let extra = if cfg!(windows) {
+                ""
+            } else {
+                tr("settings.location.relogin")
+            };
+            super::dialogs::message(&format!(
+                "{}{extra}",
+                trf("settings.location.moved", &[("path", &to.display().to_string())])
+            ));
+        }
+        Err(e) => super::dialogs::alert(&trf("location.cant_use", &[("error", &e.to_string())])),
+    }
 }

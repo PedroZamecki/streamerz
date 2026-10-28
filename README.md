@@ -47,6 +47,24 @@ It starts hidden in the tray: click the icon to open the window. Settings are ke
 versions: ask first (the default), download them in the background and use them at the next start, or
 leave them alone. Streamerz looks every hour while it's open and tells you with a desktop notification.
 
+## Where things live
+
+On first run Streamerz asks where to keep its settings, suggesting the folder your system expects
+(`%APPDATA%\\streamerz`, `~/.config/streamerz`). The choice is yours; **Settings > Files > Change** moves it
+later. Next to the settings file:
+
+- `logs/`: the current log (`latest.log`), the last seven gzipped, and a `crash-*.txt` for every crash.
+- If the last run crashed, the next start offers to send the report as a prefilled GitHub issue (you read
+  and edit it first; logins are never in it, and your home folder is hidden).
+
+Chat history is never saved: it is read from Twitch, Kick and YouTube when you join, and kept in memory.
+
+## Languages
+
+Each language is one file in `assets/locales`. To add one, run `dev/locale.py new es_ES "Español (España)"`,
+translate the values, and open a pull request: it is found by itself and shows up in Settings.
+`dev/locale.py check` lists what is missing.
+
 ## Streamer.bot's servers
 
 Streamerz answers on Streamer.bot's WebSocket server (`ws://127.0.0.1:8080/`, on by default), its HTTP
