@@ -1205,7 +1205,10 @@ impl ChatColumn {
                 if click(i, ev) {
                     return true;
                 }
-                if ev == Event::KeyDown && app::event_key() == Key::Enter {
+                // Enter, the numpad's too, or whatever sends a carriage return (some Wayland setups).
+                let enter =
+                    app::event_key() == Key::Enter || app::event_key().bits() == 0xff8d || app::event_text() == "\r";
+                if ev == Event::KeyDown && enter {
                     s();
                     return true;
                 }
@@ -2271,15 +2274,18 @@ fn emote_picker_popup(
             _ => false,
         }
     });
-    let mut col = Flex::new(x, y, pw, ph, None).column();
-    col.set_frame(FrameType::RFlatBox);
-    col.set_color(Color::Background);
+    // A window inside the window: other widgets repainting themselves (a blinking cursor, a hover) can't
+    // draw over it, as they do over a plain group.
+    let mut pop = Window::new(x, y, pw, ph, None);
+    pop.set_frame(FrameType::FlatBox);
+    pop.set_color(Color::Background);
+    pop.draw(|c| {
+        draw::set_draw_color(Color::color_average(Color::Foreground, Color::Background, 0.25));
+        draw::draw_rounded_rect(0, 0, c.w(), c.h(), 8);
+    });
+    let mut col = Flex::new(0, 0, pw, ph, None).column();
     col.set_margin(8);
     col.set_pad(8);
-    col.draw(|c| {
-        draw::set_draw_color(Color::color_average(Color::Foreground, Color::Background, 0.25));
-        draw::draw_rounded_rect(c.x(), c.y(), c.w(), c.h(), 8);
-    });
 
     let mut tab_bar = Flex::default().row();
     tab_bar.set_pad(4);
@@ -2313,6 +2319,7 @@ fn emote_picker_popup(
 
     let grid = super::grid::Grid::new(cmds);
     col.end();
+    pop.end();
     host.end();
 
     let cur_tab = Rc::new(Cell::new(default_tab));
@@ -2471,7 +2478,7 @@ fn emote_picker_popup(
         app::delete_widget(w);
     } else {
         app::delete_widget(catcher);
-        app::delete_widget(col);
+        app::delete_widget(pop);
         host.redraw();
     }
     if picked {
