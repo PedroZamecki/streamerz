@@ -308,6 +308,8 @@ enum It {
     Gap(i32),
     /// What follows starts a new row (after a reply's header).
     Break,
+    /// A line across the chat with words in its middle: where history ends and live messages begin.
+    Rule(String),
 }
 
 impl It {
@@ -329,6 +331,7 @@ impl It {
             }
             It::Gap(w) => (*w, 0),
             It::Break => (0, 0),
+            It::Rule(_) => (0, TEXT + 12),
         }
     }
 }
@@ -341,20 +344,11 @@ thread_local! {
 /// A line's things, in order.
 fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
     let gray = Color::from_rgb(0x88, 0x88, 0x88);
-    let welcome_col = Color::from_rgb(0x9e, 0xa3, 0xb0);
     let (time, badges) = SHOW.get();
     let mut v = Vec::new();
-    // The history divider has no timestamp.
+    // The history divider: a line across, no name, no time.
     if l.welcome {
-        if tag {
-            let p = PLATFORMS.iter().position(|x| *x == l.platform).unwrap_or(0);
-            if let Some(s) = svg(NAMES[p]) {
-                v.push(It::Svg(s));
-                v.push(It::Space);
-            }
-        }
-        v.push(It::Text(l.text.clone(), Font::Helvetica, welcome_col));
-        return v;
+        return vec![It::Rule(l.text.clone())];
     }
     if let Some(r) = &l.reply {
         if let Some(s) = icons::icon("corner-up-left", gray, 14) {
@@ -707,6 +701,18 @@ impl Pane {
                             // Through the space before it too: one line across the message.
                             let sp = draw::width(" ") as i32;
                             draw::draw_line(x - sp, y + rh / 2, x + w, y + rh / 2);
+                        }
+                        It::Rule(t) => {
+                            // Across the whole chat, the words in the middle on a gap in the line.
+                            draw::set_font(Font::Helvetica, 12);
+                            let tw = draw::width(t) as i32;
+                            let (left, right) = (f.x() + 8, f.x() + f.w() - 20);
+                            let mid = (left + right) / 2;
+                            let ink = Color::color_average(Color::Foreground, Color::Background2, 0.35);
+                            draw::set_draw_color(ink);
+                            draw::draw_line(left, y + rh / 2, mid - tw / 2 - 10, y + rh / 2);
+                            draw::draw_line(mid + tw / 2 + 10, y + rh / 2, right, y + rh / 2);
+                            draw::draw_text2(t, mid - tw / 2, y, tw, rh, Align::Center);
                         }
                         It::Space | It::Gap(_) | It::Break => {}
                     }

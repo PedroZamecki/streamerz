@@ -1141,10 +1141,8 @@ pub fn parse_kick_message_line(data: &Value, channel: &str) -> Option<crate::eng
 
     let raw_emotes = kick_emotes(raw_content);
     let (text, emotes) = crate::engine::chatlog::normalize_line_emotes("kick", raw_content.to_string(), &raw_emotes);
-    let time = data["created_at"]
-        .as_str()
-        .and_then(crate::engine::rest_parse_iso)
-        .map_or_else(String::new, crate::engine::chatlog::local_hhmm);
+    let secs = data["created_at"].as_str().and_then(crate::engine::rest_parse_iso);
+    let time = secs.map_or_else(String::new, crate::engine::chatlog::local_hhmm);
 
     // A reply's parent (the metadata is sometimes JSON in a string).
     let meta = match &data["metadata"] {
@@ -1165,6 +1163,7 @@ pub fn parse_kick_message_line(data: &Value, channel: &str) -> Option<crate::eng
         });
     Some(crate::engine::chatlog::Line {
         platform: "kick".into(),
+        ts: secs.unwrap_or(0) * 1000,
         reply,
         msg_id,
         time,

@@ -54,6 +54,10 @@ pub struct Line {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub msg_id: String,
     pub time: String,
+    /// When it was sent, in ms since the epoch (0 when the platform didn't say): history from every
+    /// platform is put in this order.
+    #[serde(skip)]
+    pub ts: i64,
     pub user: String,
     pub user_id: String,
     pub text: String,
@@ -298,81 +302,78 @@ impl Engine {
             let mut st = self.st.borrow_mut();
             let log = &mut st.chat_log;
 
-            let mut other_or_live_before: Vec<Line> = Vec::new();
-            let mut old_hist: Vec<Line> = Vec::new();
-            let mut live_current: Vec<Line> = Vec::new();
-
+            // What there is: history (of any platform) and live lines, in the order they came.
+            let mut history: Vec<Line> = Vec::new();
+            let mut live: Vec<Line> = Vec::new();
+            let mut seen: Vec<Line> = Vec::new();
             for l in log.lines.drain(..) {
-                if l.platform != platform {
-                    other_or_live_before.push(l);
-                } else if l.welcome {
-                    // Replace previous welcome divider on reconnect; previous live lines become history.
-                    old_hist.append(&mut live_current);
-                } else if l.note {
-                    live_current.push(l);
-                } else if l.historical {
-                    old_hist.push(l);
+                if l.welcome {
+                    // The divider is made again below.
+                } else if l.historical && !l.note {
+                    history.push(l);
                 } else {
-                    live_current.push(l);
+                    live.push(l);
                 }
             }
-
-            // Merge old_hist + fetched (preferring fetched metadata like fresh badge URLs when same msg).
-            let mut merged: Vec<Line> = Vec::new();
-            if fetched.is_empty() {
-                merged = old_hist;
-            } else {
-                // Keep older cached lines that precede fetched or aren't in fetched, then fetched in order.
-                for old in old_hist {
-                    if !fetched.iter().any(|f| same_msg(&old, f)) && !live_current.iter().any(|lv| same_msg(&old, lv)) {
-                        merged.push(old);
-                    }
+            // The platform's history: what it says is fresher than what's kept, and what's already here,
+            // as history or live, isn't added twice.
+            history.retain(|h| h.platform != platform || !fetched.iter().any(|f| same_msg(h, f)));
+            for mut f in fetched {
+                f.platform = platform.to_string();
+                f.historical = true;
+                f.note = false;
+                f.welcome = false;
+                for (name, url) in &f.emotes {
+                    let tok = if platform == "kick" {
+                        crate::ui::emotes::kick_tag(name).unwrap_or_else(|| name.clone())
+                    } else {
+                        name.clone()
+                    };
+                    log.remember_emote(p_idx, tok, url.clone());
                 }
-                for mut f in fetched {
-                    f.platform = platform.to_string();
-                    f.historical = true;
-                    f.note = false;
-                    f.welcome = false;
-                    for (name, url) in &f.emotes {
-                        let tok = if platform == "kick" {
-                            crate::ui::emotes::kick_tag(name).unwrap_or_else(|| name.clone())
-                        } else {
-                            name.clone()
-                        };
-                        log.remember_emote(p_idx, tok, url.clone());
-                    }
-                    if !merged.iter().any(|m| same_msg(m, &f)) && !live_current.iter().any(|lv| same_msg(lv, &f)) {
-                        merged.push(f);
-                    }
+                if !history.iter().any(|m| same_msg(m, &f)) && !live.iter().any(|lv| same_msg(lv, &f)) {
+                    seen.push(f.clone());
+                    history.push(f);
                 }
             }
-            if merged.len() > KEEP_HISTORY {
-                let drop_n = merged.len() - KEEP_HISTORY;
-                merged.drain(..drop_n);
+            // One timeline: by when each was sent, not by which platform answered first.
+            history.sort_by_key(|l| l.ts);
+            // At most the last KEEP_HISTORY of each platform.
+            let mut left = [0usize; 4];
+            for l in &history {
+                if let Some(i) = index(&l.platform) {
+                    left[i] += 1;
+                }
             }
-
-            let has_history = !merged.is_empty();
-            for l in other_or_live_before {
-                log.push(l);
-            }
-            for mut l in merged {
+            history.retain(|l| match index(&l.platform) {
+                Some(i) if left[i] > KEEP_HISTORY => {
+                    left[i] -= 1;
+                    false
+                }
+                _ => true,
+            });
+            let has_history = !history.is_empty();
+            for mut l in history {
                 l.historical = true;
                 log.push(l);
             }
-            // Where the platform's recent messages end and live ones begin; nothing if there were none.
+            // One divider for all of them, where the history ends and live messages begin.
             if has_history {
                 log.push(Line {
-                    platform: platform.to_string(),
                     text: crate::i18n::tr("chat.live_below").into(),
                     note: true,
                     welcome: true,
                     ..Default::default()
                 });
             }
-            for l in live_current {
+            for l in live {
                 log.push(l);
             }
             log.reset_gen += 1;
+            drop(st);
+            for l in &seen {
+                self.seen_in_history(l);
+            }
         }
         crate::ui::chat();
     }
@@ -412,6 +413,7 @@ impl Engine {
                 platform: c.platform.clone(),
                 msg_id: c.msg_id.clone(),
                 time,
+                ts: crate::fmt::unix_now().as_millis() as i64,
                 user: c.user.clone(),
                 user_id: c.user_id.clone(),
                 reply,
@@ -965,31 +967,66 @@ mod tests {
     }
 
     #[test]
-    fn welcome_merges_and_deduplicates_history() {
+    fn history_of_every_platform_is_one_timeline_with_one_divider() {
         let cfg = std::sync::Arc::new(tokio::sync::watch::channel(crate::Config::default()).0);
         let e = Engine::new(cfg, |_| {});
-        let h1 = Line {
-            platform: "twitch".into(),
-            msg_id: "m1".into(),
-            time: "12:40".into(),
-            user: "PedroZamecki".into(),
-            text: "hey".into(),
+        let line = |platform: &str, id: &str, ts: i64, text: &str| Line {
+            platform: platform.into(),
+            msg_id: id.into(),
+            user: "u".into(),
+            text: text.into(),
+            ts,
             ..Default::default()
         };
-        e.chat_welcome("twitch", vec![h1.clone()]);
-        // Reconnect with same message + a newer pre-join message: m1 stays once, welcome moves after m2.
-        let h2 = Line {
-            platform: "twitch".into(),
-            msg_id: "m2".into(),
-            time: "12:41".into(),
-            user: "Ana".into(),
-            text: "yo".into(),
-            ..Default::default()
-        };
-        e.chat_welcome("twitch", vec![h1, h2]);
+        // Twitch answers first, Kick a moment later, with messages from between Twitch's.
+        e.chat_welcome(
+            "twitch",
+            vec![line("twitch", "t1", 1000, "a"), line("twitch", "t2", 3000, "c")],
+        );
+        e.chat_welcome(
+            "kick",
+            vec![line("kick", "k1", 2000, "b"), line("kick", "k2", 4000, "d")],
+        );
         let (_, _, lines) = e.chat_sync(999, 0);
         let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
-        assert_eq!(texts, ["hey", "yo", "Live messages below"]);
-        assert!(lines[2].welcome && lines[2].note);
+        assert_eq!(texts, ["a", "b", "c", "d", "Live messages below"]);
+        assert_eq!(lines.iter().filter(|l| l.welcome).count(), 1);
+        // A reconnect makes no second divider and no duplicates.
+        e.chat_welcome(
+            "kick",
+            vec![line("kick", "k2", 4000, "d"), line("kick", "k3", 5000, "e")],
+        );
+        let (_, _, lines) = e.chat_sync(999, 0);
+        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, ["a", "b", "c", "d", "e", "Live messages below"]);
+    }
+
+    #[test]
+    fn nothing_to_catch_up_on_means_no_divider() {
+        let cfg = std::sync::Arc::new(tokio::sync::watch::channel(crate::Config::default()).0);
+        let e = Engine::new(cfg, |_| {});
+        e.chat_welcome("twitch", Vec::new());
+        assert!(e.chat_sync(999, 0).2.is_empty());
+    }
+
+    #[test]
+    fn people_in_the_history_are_in_the_community_once() {
+        let cfg = std::sync::Arc::new(tokio::sync::watch::channel(crate::Config::default()).0);
+        let e = Engine::new(cfg, |_| {});
+        let line = |id: &str, user: &str| Line {
+            platform: "kick".into(),
+            msg_id: id.into(),
+            user: user.into(),
+            user_id: format!("id-{user}"),
+            text: "hi".into(),
+            ..Default::default()
+        };
+        e.chat_welcome("kick", vec![line("1", "Ana"), line("2", "Ana"), line("3", "Bo")]);
+        let names: Vec<String> = e
+            .users()
+            .iter()
+            .map(|u| u["display"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, ["Ana", "Bo"]);
     }
 }

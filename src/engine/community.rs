@@ -267,6 +267,38 @@ impl Engine {
         self.community_changed();
     }
 
+    /// Someone seen in a platform's recent history (read when joining): added to the Community tab when
+    /// not there yet, with no message counted and no credits.
+    pub(super) fn seen_in_history(&self, l: &super::chatlog::Line) {
+        if l.user_id.is_empty() || l.note {
+            return;
+        }
+        let mut st = self.st.borrow_mut();
+        let users = &mut st.community.users;
+        if users
+            .iter()
+            .any(|u| s(u, "type") == l.platform && s(u, "id") == l.user_id)
+        {
+            return;
+        }
+        let role = if l.broadcaster {
+            4
+        } else if l.moderator {
+            3
+        } else if l.vip {
+            2
+        } else {
+            1
+        };
+        let now = super::globals::iso_now();
+        let u = json!({"id": l.user_id, "name": l.user.to_lowercase(), "display": l.user, "role": role,
+            "subscribed": l.subscriber, "type": l.platform, "firstMessage": now, "present": false,
+            "previousActive": NEVER, "lastActive": now, "exempt": false, "color": l.color});
+        users.push(u.as_object().cloned().unwrap_or_default());
+        drop(st);
+        self.community_changed();
+    }
+
     /// A chat message: the users present for the credits, and the user's record.
     pub(super) fn spoke(&self, c: &Chat) {
         let (id, platform, display) = (c.user_id.as_str(), c.platform.as_str(), c.user.as_str());

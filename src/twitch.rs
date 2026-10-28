@@ -2055,6 +2055,7 @@ pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate
         reply,
         msg_id,
         time,
+        ts: sent_ts.unwrap_or(0),
         user,
         user_id,
         text,

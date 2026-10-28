@@ -760,6 +760,7 @@ fn tiktok_chat_line(channel: &str, d: &Value) -> Option<Line> {
         platform: "tiktok".into(),
         msg_id: s("msgId"),
         time,
+        ts: ts as i64 * 1000,
         user,
         user_id: s("userId"),
         text,

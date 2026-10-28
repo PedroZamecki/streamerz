@@ -1417,6 +1417,7 @@ pub fn innertube_action_to_line(act: &Value) -> Option<crate::engine::chatlog::L
     };
     Some(crate::engine::chatlog::Line {
         platform: "youtube".into(),
+        ts: usec / 1000,
         msg_id,
         time,
         user,
