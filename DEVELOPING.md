@@ -810,7 +810,9 @@ subscription needs a real login: run with the real config and look for `Create s
 `src/crash.rs` writes `logs/latest.log` (gzipped to `<time>.log.gz` at the next start, seven kept) and, on a
 panic, `logs/crash-<time>.txt` (version, system, message, backtrace, the last 60 log lines, home folder
 hidden). At the next start `crash::offer` asks whether to report it: either answer renames it to `.reported`.
-To try it: `STREAMERZ_CRASH_TEST=1 STREAMERZ_CONFIG=/tmp/x/s.json Streamerz`, then start it again.
+To try it: `STREAMERZ_CRASH_TEST=1 STREAMERZ_CONFIG=/tmp/x/s.json Streamerz`, then start it again. In dev
+mode, the `ui` tool's `panic` crashes a running window instead: the hook logs a `[FATAL]` line and has the
+engine write `community.json` before the process ends.
 
 ## Where the settings are
 

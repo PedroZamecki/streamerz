@@ -705,12 +705,14 @@ fn main() {
     let cfg = Arc::new(watch::channel(cfg).0);
     let engine_cfg = cfg.clone();
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<engine::UiCmd>();
+    let crash_tx = cmd_tx.clone();
     // The engine isn't Send (one thread, no locks): it lives in a LocalSet on the runtime thread.
     std::thread::spawn(move || {
         tokio::task::LocalSet::new().block_on(&rt, async move {
             let e = engine::Engine::new(engine_cfg.clone(), |c| {
                 let _ = save(c);
             });
+            engine::set_current(&e, crash_tx);
             engine::Engine::forget_saved_chat_history();
             e.load_community();
             e.add_builtins();

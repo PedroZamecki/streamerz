@@ -16,6 +16,7 @@ use std::fmt::Write;
 ///   page LABEL      goes to a page (Chat, Settings...)
 ///   chat            the last chat line the chat page took in (its seq)
 ///   community       how many users the Community tab lists
+///   panic           panics on the window's thread (to try crash reports and saving on a crash)
 pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
     let mut words = cmd.split_whitespace();
     let (what, a, b) = (words.next().unwrap_or(""), words.next(), words.next());
@@ -90,7 +91,8 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
         "community" => super::lists::USERS_SHOWN
             .load(std::sync::atomic::Ordering::Relaxed)
             .to_string(),
-        _ => "commands: shot, windows, tree, find, page, chat, community".into(),
+        "panic" => panic!("dev panic"),
+        _ => "commands: shot, windows, tree, find, page, chat, community, panic".into(),
     }
 }
 

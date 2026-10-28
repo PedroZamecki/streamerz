@@ -113,6 +113,9 @@ pub struct Community {
     /// Changes since start, so the Community tab reloads only when something changed.
     #[serde(skip)]
     rev: u64,
+    /// When it was last written (unix seconds).
+    #[serde(skip)]
+    saved_at: u64,
 }
 
 fn file() -> std::path::PathBuf {
@@ -142,6 +145,11 @@ fn parse(iso: &str) -> Option<crate::fmt::Time> {
     })
 }
 
+/// A change makes a save due: the 50th since the last, or the first a minute after the last save.
+fn due(unsaved: u32, saved_at: u64, now: u64) -> bool {
+    unsaved == 0 || now.saturating_sub(saved_at) >= 60
+}
+
 impl Engine {
     pub fn load_community(&self) {
         let Ok(text) = std::fs::read_to_string(file()) else {
@@ -153,12 +161,17 @@ impl Engine {
         if unix().saturating_sub(c.credits.last_write) > STALE {
             c.credits = Credits::default();
         }
+        c.saved_at = unix();
         self.st.borrow_mut().community = c;
     }
 
     /// Write community.json now.
     pub fn save_community(&self) {
-        let text = serde_json::to_string(&self.st.borrow().community).unwrap_or_default();
+        let text = {
+            let c = &mut self.st.borrow_mut().community;
+            c.saved_at = unix();
+            serde_json::to_string(&*c).unwrap_or_default()
+        };
         let (path, tmp) = (file(), file().with_extension("json.tmp"));
         if std::fs::write(&tmp, text)
             .and_then(|()| std::fs::rename(&tmp, &path))
@@ -168,16 +181,16 @@ impl Engine {
         }
     }
 
-    /// Saved every 50 changes, and on quit.
-    // ponytail: a crash loses up to 49 chat lines' worth of users and credits; a timer if that matters.
+    /// Saved every 50 changes, on the first change a minute after the last save, on quit, and on a
+    /// crash (see `crash`). No timer: a quiet channel has nothing new to lose.
     fn community_changed(&self) {
-        let n = {
+        let due = {
             let c = &mut self.st.borrow_mut().community;
             c.rev += 1;
             c.unsaved = (c.unsaved + 1) % 50;
-            c.unsaved
+            due(c.unsaved, c.saved_at, unix())
         };
-        if n == 0 && !cfg!(test) {
+        if due && !cfg!(test) {
             self.save_community();
         }
     }
@@ -552,6 +565,15 @@ mod tests {
             e.reset_first_words(None);
             assert!(e.first_words("twitch", "cy"));
         });
+    }
+
+    /// A busy chat saves every 50 changes; a slow one a minute after the last save, so a crash loses
+    /// little.
+    #[test]
+    fn community_save_is_due() {
+        assert!(due(0, 1000, 1001));
+        assert!(!due(7, 1000, 1059));
+        assert!(due(7, 1000, 1060));
     }
 
     #[test]

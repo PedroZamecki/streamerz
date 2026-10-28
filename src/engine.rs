@@ -158,6 +158,41 @@ fn subs(o: &Obj) -> &[Value] {
 /// What the window asks of the engine: run this on the engine's thread.
 pub type UiCmd = Box<dyn FnOnce(&Rc<Engine>) + Send>;
 
+thread_local! {
+    /// The engine, on its own thread (for `save_on_crash`).
+    static CURRENT: RefCell<std::rc::Weak<Engine>> = const { RefCell::new(std::rc::Weak::new()) };
+}
+/// How other threads reach the engine (for `save_on_crash`).
+static CMDS: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<UiCmd>> = std::sync::OnceLock::new();
+
+/// Lets `save_on_crash` reach `e`. Call on the engine's thread.
+pub fn set_current(e: &Rc<Engine>, cmds: tokio::sync::mpsc::UnboundedSender<UiCmd>) {
+    CURRENT.with(|c| *c.borrow_mut() = Rc::downgrade(e));
+    let _ = CMDS.set(cmds);
+}
+
+/// From the panic hook: writes what isn't saved as it changes (Community's users and credits). On the
+/// engine's own thread directly, if its state isn't mid-change; from another thread, the engine is asked
+/// and given 2 seconds.
+pub fn save_on_crash() {
+    let here = CURRENT.try_with(|c| c.borrow().upgrade()).ok().flatten();
+    if let Some(e) = here {
+        if e.st.try_borrow_mut().is_ok() {
+            e.save_community();
+        }
+        return;
+    }
+    let Some(cmds) = CMDS.get() else { return };
+    let (done, wait) = std::sync::mpsc::channel();
+    let ask: UiCmd = Box::new(move |e| {
+        e.save_community();
+        let _ = done.send(());
+    });
+    if cmds.send(ask).is_ok() {
+        let _ = wait.recv_timeout(std::time::Duration::from_secs(2));
+    }
+}
+
 /// Whether the engine runs this sub-action type (the rest are kept, logged once and skipped).
 pub fn supported(kind: u32) -> bool {
     matches!(
