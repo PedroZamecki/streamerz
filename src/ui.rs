@@ -65,6 +65,8 @@ pub enum Msg {
     Theme,
     /// A dev command for the window (see `dev`).
     Dev,
+    /// The tray's Quit: save what the window keeps, then quit.
+    Quit,
 }
 
 const ROW: i32 = 26;
@@ -948,6 +950,7 @@ pub fn run(
         }
     });
     let restart = remember.clone();
+    let quitting = remember.clone();
     let close = move |w: &mut Window| {
         remember(w);
         SHOWN.store(false, Ordering::Relaxed);
@@ -1061,6 +1064,10 @@ pub fn run(
                     for mut w in app::windows().unwrap_or_default() {
                         w.redraw();
                     }
+                }
+                Msg::Quit => {
+                    quitting(&win);
+                    crate::crash::quit(0);
                 }
                 Msg::Restart => {
                     restart(&win);

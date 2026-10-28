@@ -171,21 +171,21 @@ pub fn set_current(e: &Rc<Engine>, cmds: tokio::sync::mpsc::UnboundedSender<UiCm
     let _ = CMDS.set(cmds);
 }
 
-/// From the panic hook: writes what isn't saved as it changes (Community's users and credits). On the
-/// engine's own thread directly, if its state isn't mid-change; from another thread, the engine is asked
-/// and given 2 seconds.
-pub fn save_on_crash() {
+/// Before the process ends (a panic, the session ending): writes the settings and what isn't saved as
+/// it changes (Community's users and credits). On the engine's own thread directly, if its state isn't
+/// mid-change; from another thread, the engine is asked and given 2 seconds.
+pub fn save_and_wait() {
     let here = CURRENT.try_with(|c| c.borrow().upgrade()).ok().flatten();
     if let Some(e) = here {
         if e.st.try_borrow_mut().is_ok() {
-            e.save_community();
+            e.save_all();
         }
         return;
     }
     let Some(cmds) = CMDS.get() else { return };
     let (done, wait) = std::sync::mpsc::channel();
     let ask: UiCmd = Box::new(move |e| {
-        e.save_community();
+        e.save_all();
         let _ = done.send(());
     });
     if cmds.send(ask).is_ok() {
@@ -296,6 +296,12 @@ pub fn match_args(r: &regex_lite::Regex, text: &str, args: &mut Obj) -> bool {
 }
 
 impl Engine {
+    /// Writes the settings and the Community data now.
+    pub fn save_all(&self) {
+        (self.save)(&self.cfg.borrow());
+        self.save_community();
+    }
+
     pub fn new(cfg: Arc<watch::Sender<Config>>, save: fn(&Config)) -> Rc<Self> {
         Rc::new(Engine {
             cfg,

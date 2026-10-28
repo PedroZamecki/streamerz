@@ -203,7 +203,7 @@ fn report(info: &std::panic::PanicHookInfo<'_>) {
     keep(&dir, ".txt", KEEP_CRASHES);
     keep(&dir, ".reported", KEEP_CRASHES);
     // The report is written: now keep what would be lost.
-    crate::engine::save_on_crash();
+    crate::engine::save_and_wait();
 }
 
 /// The newest crash report nobody has dealt with, and its text.
