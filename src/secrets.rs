@@ -86,6 +86,8 @@ fn b64() -> base64::engine::GeneralPurpose {
 }
 
 /// Random bytes from the OS.
+// On Windows, DPAPI seals without a key of ours: only the tests use it there.
+#[cfg_attr(windows, allow(dead_code))]
 pub fn random(n: usize) -> Vec<u8> {
     let mut b = vec![0u8; n];
     #[cfg(windows)]
