@@ -300,7 +300,10 @@ impl Rows {
                 let n = self.line_at(&st);
                 if n > 0 {
                     st.sel = n;
-                    drop(st);
+                }
+                // Not held over what follows: the menu going away moves the focus, which comes back here.
+                drop(st);
+                if n > 0 {
                     f.redraw();
                     self.fire();
                 }

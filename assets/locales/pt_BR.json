@@ -293,6 +293,7 @@
   "emotes.favorite_emotes": "Emotes favoritos",
   "emotes.favorites": "Favoritos",
   "emotes.favorites_hint": "Clique com o botão direito em um emote para fixá-lo aqui.",
+  "emotes.from_channel": "De {channel}",
   "emotes.global_bttv": "Emotes globais do BTTV",
   "emotes.global_ffz": "Emotes globais do FFZ",
   "emotes.kick_bot_sub_warning": "Enviando como Bot: emotes exclusivos para inscritos exigem que o bot seja inscrito.",

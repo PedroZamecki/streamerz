@@ -293,6 +293,7 @@
   "emotes.favorite_emotes": "Favorite Emotes",
   "emotes.favorites": "Favorites",
   "emotes.favorites_hint": "Right-click an emote to keep it here.",
+  "emotes.from_channel": "From {channel}",
   "emotes.global_bttv": "Global BTTV Emotes",
   "emotes.global_ffz": "Global FFZ Emotes",
   "emotes.kick_bot_sub_warning": "Sending as Bot: subscriber-only emotes require the bot to be subscribed.",

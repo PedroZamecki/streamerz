@@ -7,7 +7,7 @@
 
 use super::{tell, Msg};
 use crate::engine::UiCmd;
-use crate::i18n::tr;
+use crate::i18n::{tr, trf};
 use crate::Config;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -579,6 +579,29 @@ fn twitch_emote_url(id: &str, x: u8) -> String {
 
 /// Fetch Twitch Helix emotes for a specific account (`user_id` + `token`), falling back to channel +
 /// global emotes when `user:read:emotes` hasn't been granted yet.
+/// The display names of the channels that own emotes (Helix `users`, up to 100 a time).
+async fn owner_names(
+    by_owner: &std::collections::BTreeMap<String, Vec<(String, String)>>,
+    headers: &[(String, String)],
+) -> HashMap<String, String> {
+    let ids: Vec<&String> = by_owner.keys().collect();
+    let mut names = HashMap::new();
+    for chunk in ids.chunks(100) {
+        let q: Vec<String> = chunk
+            .iter()
+            .map(|id| format!("id={}", crate::commands::url_encode(id)))
+            .collect();
+        let url = format!("{}/users?{}", crate::twitch::HELIX_URL, q.join("&"));
+        let (_, body) = get_json(&url, headers).await;
+        for u in body["data"].as_array().into_iter().flatten() {
+            if let (Some(id), Some(name)) = (u["id"].as_str(), u["display_name"].as_str()) {
+                names.insert(id.to_string(), name.to_string());
+            }
+        }
+    }
+    names
+}
+
 async fn fetch_twitch_account_emotes(
     chan_id: &str,
     acct: Option<&(String, String)>,
@@ -604,6 +627,8 @@ async fn fetch_twitch_account_emotes(
     // 1. Try `GET chat/emotes/user` (all unlocked account + sub + follower + global emotes).
     let mut channel_emotes = Vec::new();
     let mut unlocked_emotes = Vec::new();
+    // The unlocked ones of each channel that owns them (subscriptions, follower emotes...).
+    let mut by_owner: std::collections::BTreeMap<String, Vec<(String, String)>> = Default::default();
     let mut global_emotes = Vec::new();
     let mut cursor = String::new();
     let mut user_ep_ok = false;
@@ -640,6 +665,8 @@ async fn fetch_twitch_account_emotes(
                 &mut channel_emotes
             } else if kind == "globals" || owner == "0" || owner == "twitch" {
                 &mut global_emotes
+            } else if !owner.is_empty() {
+                by_owner.entry(owner.to_string()).or_default()
             } else {
                 &mut unlocked_emotes
             };
@@ -662,17 +689,37 @@ async fn fetch_twitch_account_emotes(
                 emotes: channel_emotes,
             });
         }
-        secs.push(EmoteSection {
-            title: if is_bot {
-                tr("emotes.bot_unlocked_emotes").into()
-            } else {
-                tr("emotes.user_unlocked_emotes").into()
-            },
-            note: unlocked_emotes
-                .is_empty()
-                .then(|| tr("emotes.no_unlocked_emotes").into()),
-            emotes: unlocked_emotes,
-        });
+        // One section per channel the emotes come from, named by the channel.
+        let names = owner_names(&by_owner, &headers).await;
+        let mut owners: Vec<(String, Vec<(String, String)>)> = by_owner
+            .into_iter()
+            .map(|(id, e)| (names.get(&id).cloned().unwrap_or(id), e))
+            .collect();
+        owners.sort_by_key(|o| o.0.to_lowercase());
+        for (name, emotes) in owners {
+            secs.push(EmoteSection {
+                title: trf("emotes.from_channel", &[("channel", &name)]),
+                note: None,
+                emotes,
+            });
+        }
+        if !unlocked_emotes.is_empty() {
+            secs.push(EmoteSection {
+                title: if is_bot {
+                    tr("emotes.bot_unlocked_emotes").into()
+                } else {
+                    tr("emotes.user_unlocked_emotes").into()
+                },
+                note: None,
+                emotes: unlocked_emotes,
+            });
+        } else if secs.is_empty() {
+            secs.push(EmoteSection {
+                title: tr("emotes.user_unlocked_emotes").into(),
+                note: Some(tr("emotes.no_unlocked_emotes").into()),
+                emotes: Vec::new(),
+            });
+        }
         if !global_emotes.is_empty() {
             secs.push(EmoteSection {
                 title: tr("emotes.twitch_global_emotes").into(),
