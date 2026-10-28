@@ -253,7 +253,8 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
             }
         }
     });
-    col.fixed(&banner, 0);
+    // 1, not 0: a size of 0 means "share what is left".
+    col.fixed(&banner, 1);
 
     let mut head = Flex::default().row();
     head.set_pad(12);
