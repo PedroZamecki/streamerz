@@ -233,6 +233,7 @@
   "chat.send_all_tooltip": "Enviar para todas as plataformas marcadas (Enter)",
   "chat.send_as": "Enviar como:",
   "chat.send_btn_tooltip": "Enviar mensagem (Enter)",
+  "chat.send_placeholder": "Enviar uma mensagem",
   "chat.send_to": "Enviar para:",
   "chat.sending_as_tip": "{platform}: enviando como {name} ({role}). Clique para alternar",
   "chat.show": "Mostrar:",

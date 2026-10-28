@@ -1323,7 +1323,7 @@ impl ChatColumn {
         });
         let target_plat = Rc::new(Cell::new(init_idx));
         let reply: Rc<RefCell<Option<Line>>> = Rc::default();
-        let click = emote_field(&mut input, cmds, target_plat.clone(), "Send a message");
+        let click = emote_field(&mut input, cmds, target_plat.clone(), tr("chat.send_placeholder"));
         // Answer `l` (None: stop); in the all-platforms box, to `l`'s platform.
         let set_reply: SetReply = {
             let (reply, col, replying, r_text) = (reply.clone(), col.clone(), replying.clone(), r_text.clone());
@@ -1701,18 +1701,34 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
     hint.set_label_color(super::muted());
 
     // Discrete "Message all" button with broadcast icon
-    let mut msg_all = Button::default()
-        .with_label(tr("chat.message_all_btn"))
-        .with_align(Align::Inside | Align::ImageNextToText);
-    msg_all.set_image(icons::icon("megaphone", Color::Foreground, 15));
+    let mut msg_all = Button::default().with_label(tr("chat.message_all_btn"));
+    msg_all.set_image(icons::before_label("megaphone", Color::Foreground, 14));
+    super::fit::adaptive(&mut msg_all);
     msg_all.set_tooltip(tr("chat.message_all_tooltip"));
-    top.fixed(&msg_all, 114);
+    let msg_all_w = super::fit::grown(114, tr("chat.message_all_btn"), true);
+    top.fixed(&msg_all, msg_all_w);
 
     let mut opts = fltk::menu::MenuButton::default().with_label(tr("chat.options"));
     top.fixed(&opts, 84);
     let mut clear = button(&mut top, tr("btn.clear"), 64);
     top.end();
     col.fixed(&top, ROW);
+    // Narrow: the buttons keep only their icons, and the hint goes.
+    top.resize_callback({
+        let (msg_all, clear, mut hint) = (msg_all.clone(), clear.clone(), hint.clone());
+        // As wide as `button` makes them.
+        let clear_w = super::fit::grown(84, tr("btn.clear"), true);
+        move |t, _, _, w, _| {
+            let narrow = w < 600;
+            t.fixed(&msg_all, if narrow { 36 } else { msg_all_w });
+            t.fixed(&clear, if narrow { 36 } else { clear_w });
+            if narrow {
+                hint.hide();
+            } else {
+                hint.show();
+            }
+        }
+    });
 
     let go_accounts: Rc<dyn Fn()> = {
         let tabs = tabs.clone();
@@ -2121,7 +2137,7 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
     let mut bar = Flex::default().row();
     bar.set_pad(4);
     let mut input = Input::default();
-    let click = emote_field(&mut input, cmds, Rc::new(Cell::new(0)), "Send a message");
+    let click = emote_field(&mut input, cmds, Rc::new(Cell::new(0)), tr("chat.send_placeholder"));
     let mut emote_btn = Button::default();
     emote_btn.set_frame(FrameType::FlatBox);
     emote_btn.set_image(icons::icon("smile", super::muted(), 18));
