@@ -413,6 +413,19 @@ struct LoadParams {
     yt_chan_id: String,
 }
 
+/// The channel read, or when none is set, the logged-in broadcaster's own.
+fn kick_slug(cfg: &Config) -> String {
+    let slug = crate::kick::clean_kick_channel(&cfg.kick.channel).to_lowercase();
+    if !slug.is_empty() {
+        return slug;
+    }
+    cfg.kick
+        .broadcaster
+        .as_ref()
+        .map(|b| b.username.to_lowercase())
+        .unwrap_or_default()
+}
+
 impl LoadParams {
     fn from_cfg(cfg: &Config) -> Self {
         let x: u8 = if fltk::app::screen_scale(0) > 1.25 { 2 } else { 1 };
@@ -427,16 +440,7 @@ impl LoadParams {
             .as_ref()
             .map(|a| (a.user_id.clone(), a.token.access_token.clone()));
         let tw_chan_id = tw_broadcaster.as_ref().map(|(id, _)| id.clone()).unwrap_or_default();
-        // The channel read, or when none is set, the logged-in broadcaster's own.
-        let mut kick_slug = crate::kick::clean_kick_channel(&cfg.kick.channel).to_lowercase();
-        if kick_slug.is_empty() {
-            kick_slug = cfg
-                .kick
-                .broadcaster
-                .as_ref()
-                .map(|b| b.username.to_lowercase())
-                .unwrap_or_default();
-        }
+        let kick_slug = kick_slug(cfg);
         let kick_uid = cfg
             .kick
             .channel_id
@@ -1067,10 +1071,10 @@ mod tests {
             username: "PedroZamecki".into(),
             token: Default::default(),
         });
-        assert_eq!(LoadParams::from_cfg(&cfg).kick_slug, "pedrozamecki");
+        assert_eq!(kick_slug(&cfg), "pedrozamecki");
         cfg.kick.channel = "https://kick.com/Other".into();
-        assert_eq!(LoadParams::from_cfg(&cfg).kick_slug, "other");
-        assert_eq!(LoadParams::from_cfg(&Config::default()).kick_slug, "");
+        assert_eq!(kick_slug(&cfg), "other");
+        assert_eq!(kick_slug(&Config::default()), "");
     }
 
     #[test]
