@@ -1383,7 +1383,6 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
 
     let users_v = Flex::default().column();
     let mut users_v = users_v;
-    let ub = bar(&mut users_v, &[tr("btn.user_info")]);
     let mut users = browser(
         &mut users_v,
         &[36, 220, 110, 110, 110],
@@ -1397,7 +1396,6 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
         "lists.community.users_empty",
     );
     users.set_logo_column(0);
-    users.clone().set_menu(&ub);
     users_v.end();
 
     let mut quotes_v = Flex::default().column();
@@ -1435,15 +1433,14 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
         quotes: quotes.clone(),
         credits,
     }));
-    // Double click a user for their card.
-    users_dbl(&me);
+    // Click a user for their card.
+    users_click(&me);
     for (w, f) in [
         (
             show.as_base_widget(),
             Box::new(Community::refresh) as Box<dyn Fn(&mut Community)>,
         ),
         (search.as_base_widget(), Box::new(Community::refresh)),
-        (ub[0].as_base_widget(), Box::new(|m: &mut Community| m.user_card())),
         (qb[0].as_base_widget(), Box::new(|m: &mut Community| m.edit_quote(None))),
         (
             qb[1].as_base_widget(),
@@ -1817,12 +1814,12 @@ fn groups_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Groups>> {
     me
 }
 
-/// Double click on a user opens their card.
-fn users_dbl(me: &Rc<RefCell<Community>>) {
+/// A click on a user opens their card.
+fn users_click(me: &Rc<RefCell<Community>>) {
     let weak = Rc::downgrade(me);
     let mut users = me.borrow().users.clone();
     users.set_callback(move |_| {
-        if fltk::app::event_clicks() {
+        if fltk::app::event() == fltk::enums::Event::Push {
             if let Some(m) = weak.upgrade() {
                 if let Ok(m) = m.try_borrow() {
                     m.user_card();

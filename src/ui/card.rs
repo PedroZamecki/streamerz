@@ -5,7 +5,7 @@
 use super::popover::Popover;
 use super::rows::Rows;
 use super::{button, img, query, tell, Ellipsis};
-use crate::engine::chatlog::Line;
+use crate::engine::chatlog::{Line, Said};
 use crate::engine::UiCmd;
 use crate::i18n::{tr, trf};
 use crate::model::Obj;
@@ -31,6 +31,8 @@ pub struct Who {
     pub color: Color,
     /// Already in the user's words (broadcaster, moderator...).
     pub roles: Vec<&'static str>,
+    /// The badges they wear: key and picture.
+    pub badges: Vec<(String, String)>,
 }
 
 impl Who {
@@ -47,6 +49,7 @@ impl Who {
             name: l.user.clone(),
             color,
             roles: roles.iter().filter(|r| r.0).map(|r| r.1).collect(),
+            badges: l.badges.iter().filter(|b| !b.1.is_empty()).cloned().collect(),
         }
     }
 
@@ -59,12 +62,21 @@ impl Who {
             2 => vec![tr("chat.card_vip")],
             _ => Vec::new(),
         };
+        // The colour they chat in, as last seen ("#RRGGBB").
+        let hex = s("color");
+        let color = u32::from_str_radix(hex.trim_start_matches('#'), 16)
+            .ok()
+            .filter(|_| hex.trim_start_matches('#').len() == 6)
+            .map_or(Color::Foreground, |v| {
+                Color::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
+            });
         Who {
             platform: s("type"),
             user_id: s("id"),
             name: s("display"),
-            color: Color::Foreground,
+            color,
             roles,
+            badges: Vec::new(),
         }
     }
 }
@@ -122,6 +134,79 @@ fn profile_url(platform: &str, login: &str, id: &str) -> String {
     }
 }
 
+/// What they said: a line each, time then words with the emotes as pictures; scrolls, starting at the end.
+fn said_list(cmds: &Cmds, said: Vec<Said>) -> Frame {
+    const LINE: i32 = 28;
+    let mut f = Frame::default();
+    let top = Rc::new(Cell::new(i32::MAX));
+    let (said, cmds) = (Rc::new(said), cmds.clone());
+    f.draw({
+        let (said, top) = (said.clone(), top.clone());
+        move |f| {
+            let (x, y, w, h) = (f.x(), f.y(), f.w(), f.h());
+            draw::set_draw_color(Color::Background2);
+            draw::draw_rounded_rectf(x, y, w, h, 6);
+            draw::set_draw_color(Color::color_average(Color::Foreground, Color::Background, 0.2));
+            draw::draw_rounded_rect(x, y, w, h, 6);
+            if said.is_empty() {
+                draw::set_font(Font::Helvetica, 14);
+                draw::set_draw_color(super::muted());
+                draw::draw_text2(tr("card.no_messages"), x, y, w, h, Align::Center);
+                return;
+            }
+            let max = (said.len() as i32 * LINE + 8 - h).max(0);
+            top.set(top.get().clamp(0, max));
+            draw::push_clip(x + 2, y + 2, w - 4, h - 4);
+            draw::set_font(Font::Helvetica, 14);
+            for (i, m) in said.iter().enumerate() {
+                let ly = y + 4 + i as i32 * LINE - top.get();
+                if ly + LINE < y || ly > y + h {
+                    continue;
+                }
+                let base = ly + (LINE + draw::height()) / 2 - draw::descent();
+                draw::set_draw_color(super::muted());
+                draw::draw_text(&m.time, x + 12, base);
+                let mut cx = x + 12 + 80;
+                for word in m.text.split(' ') {
+                    let picture = m
+                        .emotes
+                        .iter()
+                        .find(|e| e.0 == word)
+                        .and_then(|e| img::get(&cmds, &e.1, 20, false));
+                    match picture {
+                        Some(p) => {
+                            let mut i = p.first();
+                            i.draw(cx, ly + (LINE - i.h()) / 2, i.w(), i.h());
+                            cx += i.w() + 4;
+                        }
+                        None => {
+                            draw::set_draw_color(Color::Foreground);
+                            draw::draw_text(word, cx, base);
+                            cx += draw::width(word) as i32 + draw::width(" ") as i32;
+                        }
+                    }
+                    if cx > x + w {
+                        break;
+                    }
+                }
+            }
+            draw::pop_clip();
+        }
+    });
+    f.handle({
+        let (said, top) = (said, top);
+        move |f, ev| {
+            if ev == fltk::enums::Event::MouseWheel {
+                top.set((top.get().min(said.len() as i32 * LINE) + app::event_dy_value() * LINE).max(0));
+                f.redraw();
+                return true;
+            }
+            ev == fltk::enums::Event::Enter
+        }
+    });
+    f
+}
+
 /// Opens the card near `at` (a point in the window).
 pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
     let Some(host) = app::first_window() else { return };
@@ -154,6 +239,21 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
     let mut col = Flex::new(0, 0, pw, ph, None).column();
     col.set_margin(14);
     col.set_pad(8);
+
+    // The channel's banner, when its platform has one (it arrives with the platform's answer).
+    let mut banner = Frame::default();
+    let banner_pic: Rc<RefCell<Option<fltk::image::RgbImage>>> = Rc::default();
+    banner.draw({
+        let pic = banner_pic.clone();
+        move |f| {
+            if let Some(i) = pic.borrow_mut().as_mut() {
+                draw::push_clip(f.x(), f.y(), f.w(), f.h());
+                i.draw(f.x() + (f.w() - i.w()) / 2, f.y() + (f.h() - i.h()) / 2, i.w(), i.h());
+                draw::pop_clip();
+            }
+        }
+    });
+    col.fixed(&banner, 0);
 
     let mut head = Flex::default().row();
     head.set_pad(12);
@@ -196,6 +296,23 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
         .with_align(Align::Left | Align::Inside)
         .ellipsis();
     role_line.set_label_color(super::muted());
+    who_col.fixed(&name, 26);
+    who_col.fixed(&role_line, 18);
+    // Their badges, as pictures.
+    let mut badge_row = Frame::default();
+    badge_row.draw({
+        let (badges, cmds) = (who.badges.clone(), cmds.clone());
+        move |f| {
+            let mut x = f.x();
+            for (_, url) in &badges {
+                if let Some(p) = img::get(&cmds, url, 18, false) {
+                    let mut i = p.first();
+                    i.draw(x, f.y() + (f.h() - i.h()) / 2, i.w(), i.h());
+                    x += i.w() + 4;
+                }
+            }
+        }
+    });
     who_col.end();
     head.end();
     col.fixed(&head, 60);
@@ -212,8 +329,7 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
     title.set_label_font(Font::HelveticaBold);
     title.set_label_size(13);
     col.fixed(&title, 20);
-    let mut messages = Rows::new(tr("card.no_messages"));
-    messages.set_column_widths(&[78]);
+    let messages = said_list(cmds, said);
     let mut details = Rows::new("");
     details.set_column_widths(&[170]);
     details.hide();
@@ -228,12 +344,6 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
     col.fixed(&bottom, 28);
     col.end();
     pop.finish();
-
-    // Their messages, newest at the bottom.
-    for (time, text) in &said {
-        messages.add(&format!("{time}\t{}", text.replace(['\n', '\t'], " ")));
-    }
-    messages.select(-1);
 
     // What the actions get (%userName%...), for the curious.
     let text_of = |v: &serde_json::Value| v.as_str().map_or_else(|| v.to_string(), str::to_string);
@@ -264,7 +374,7 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
     });
     let showing_details = Rc::new(Cell::new(false));
     more.set_callback({
-        let (mut messages, mut details, mut title, mut col, mut more) = (
+        let (mut messages, mut details, mut title, col, mut more) = (
             messages.clone(),
             details.clone(),
             title.clone(),
@@ -272,6 +382,7 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
             more.clone(),
         );
         let on = showing_details.clone();
+        let mut pw = pop.window();
         move |_| {
             on.set(!on.get());
             if on.get() {
@@ -286,7 +397,7 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
                 more.set_label(tr("card.details"));
             }
             col.layout();
-            col.redraw();
+            pw.redraw();
         }
     });
     close.set_callback({
@@ -373,7 +484,8 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
     fit(&mut col, &facts);
     let (mut pic_frame, mut facts_t, mut tries, mut col_t) = (pic.clone(), facts.clone(), 0, col.clone());
     let mut waiting = asks;
-    let mut have_pic = false;
+    let (mut have_pic, mut banner_url) = (false, String::new());
+    let banner_t = banner.clone();
     pop.run(|| {
         tries += 1;
         if waiting {
@@ -382,6 +494,10 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
                 if let Some((_, v)) = found.iter().find(|f| f.0 == "Picture") {
                     picture.clone_from(v);
                     remember_pic(&pic_key, v);
+                }
+                if let Some((_, v)) = found.iter().find(|f| f.0 == "Banner") {
+                    banner_url.clone_from(v);
+                    col_t.fixed(&banner_t, 72);
                 }
                 if let Some((_, v)) = found.iter().find(|f| f.0 == "Channel") {
                     *url.borrow_mut() = profile_url(&who.platform, v, &who.user_id);
@@ -397,6 +513,12 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
                 fit(&mut col_t, &facts_t);
             } else if tries > 75 {
                 waiting = false;
+            }
+        }
+        if !banner_url.is_empty() && banner_pic.borrow().is_none() {
+            if let Some(p) = img::get(cmds, &banner_url, 210, false) {
+                *banner_pic.borrow_mut() = Some(p.first());
+                banner_t.clone().redraw();
             }
         }
         if !have_pic && !picture.is_empty() {

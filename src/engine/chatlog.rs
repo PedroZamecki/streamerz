@@ -148,6 +148,14 @@ type Facts = Vec<(String, String)>;
 /// How long a user card's lookup is reused.
 const CARD_FOR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
+/// One thing a chatter said: when, the words, and the emotes in them (name and picture).
+#[derive(Clone, Default)]
+pub struct Said {
+    pub time: String,
+    pub text: String,
+    pub emotes: Vec<(String, String)>,
+}
+
 /// A chatter, as seen in chat this session.
 #[derive(Clone, Default)]
 pub struct Seen {
@@ -512,14 +520,18 @@ impl Engine {
 
     /// What chat said about a chatter this session.
     /// What a chatter said, oldest first: time and text (this session's, and the history read when joining).
-    pub fn chatter_lines(&self, platform: &str, user_id: &str) -> Vec<(String, String)> {
+    pub fn chatter_lines(&self, platform: &str, user_id: &str) -> Vec<Said> {
         let st = self.st.borrow();
-        let mut v: Vec<(String, String)> = st
+        let mut v: Vec<Said> = st
             .chat_log
             .lines
             .iter()
             .filter(|l| l.platform == platform && l.user_id == user_id && !l.note && !l.deleted)
-            .map(|l| (l.time.clone(), l.text.clone()))
+            .map(|l| Said {
+                time: l.time.clone(),
+                text: l.text.clone(),
+                emotes: l.emotes.clone(),
+            })
             .collect();
         let drop = v.len().saturating_sub(100);
         v.drain(..drop);
@@ -593,6 +605,7 @@ impl Engine {
                     get("channels", vec![("broadcaster_id", id.into())]),
                 );
                 add("Picture", &u["profile_image_url"]);
+                add("Banner", &u["offline_image_url"]);
                 add("Account created", &u["created_at"]);
                 add("Type", &u["broadcaster_type"]);
                 add("About", &u["description"]);
@@ -623,6 +636,7 @@ impl Engine {
                 add("Picture", &u["data"][0]["profile_picture"]);
                 let c = &c["data"][0];
                 add("Channel", &c["slug"]);
+                add("Banner", &c["banner_picture"]);
                 add("Their stream title", &c["stream_title"]);
                 add("Their category", &c["category"]["name"]);
                 if c["stream"]["is_live"] == true {

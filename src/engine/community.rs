@@ -336,6 +336,7 @@ impl Engine {
                 ("display", json!(display)),
                 ("role", json!(role)),
                 ("subscribed", json!(c.subscriber)),
+                ("color", json!(s(&c.args, "color"))),
                 ("present", json!(true)),
                 ("lastActive", json!(now)),
             ] {
