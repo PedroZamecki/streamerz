@@ -15,6 +15,7 @@ use std::fmt::Write;
 ///   find TEXT [N]   where widgets with TEXT in their label are, as screen coordinates to click
 ///   page LABEL      goes to a page (Chat, Settings...)
 ///   chat            the last chat line the chat page took in (its seq)
+///   community       how many users the Community tab lists
 pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
     let mut words = cmd.split_whitespace();
     let (what, a, b) = (words.next().unwrap_or(""), words.next(), words.next());
@@ -86,7 +87,10 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
         "chat" => super::chat::SHOWN
             .load(std::sync::atomic::Ordering::Relaxed)
             .to_string(),
-        _ => "commands: shot, windows, tree, find, page, chat".into(),
+        "community" => super::lists::USERS_SHOWN
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .to_string(),
+        _ => "commands: shot, windows, tree, find, page, chat, community".into(),
     }
 }
 

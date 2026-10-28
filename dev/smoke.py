@@ -95,6 +95,14 @@ def main():
             time.sleep(0.4)
             xdo("key", "Escape")
             check(f"page {page}")
+        # New chatters show up on an open Community tab.
+        ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Community"})
+        before = json.dumps(ws.ask({"request": "StreamerzUi", "id": "c", "do": "community"}))
+        ws.ask({"request": "InjectChat", "id": "n", "platform": "kick", "user": "Caio", "text": "first time here"})
+        time.sleep(1)
+        after = json.dumps(ws.ask({"request": "StreamerzUi", "id": "c", "do": "community"}))
+        if before == after:
+            failures.append(f"a new chatter didn't show up on the open Community tab ({after})")
         # A right click on a chat line (its menu), and on empty chat.
         ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Chat"})
         for y in ("74", "96", "400"):
@@ -128,4 +136,5 @@ def main():
     sys.exit(1 if failures else 0)
 
 
-main()
+if __name__ == "__main__":
+    main()

@@ -110,6 +110,9 @@ pub struct Community {
     /// Changes since the last save.
     #[serde(skip)]
     unsaved: u32,
+    /// Changes since start, so the Community tab reloads only when something changed.
+    #[serde(skip)]
+    rev: u64,
 }
 
 fn file() -> std::path::PathBuf {
@@ -170,6 +173,7 @@ impl Engine {
     fn community_changed(&self) {
         let n = {
             let c = &mut self.st.borrow_mut().community;
+            c.rev += 1;
             c.unsaved = (c.unsaved + 1) % 50;
             c.unsaved
         };
@@ -220,6 +224,11 @@ impl Engine {
         }
         self.community_changed();
         self.credits()
+    }
+
+    /// Bumped on every change to users or credits.
+    pub fn community_rev(&self) -> u64 {
+        self.st.borrow().community.rev
     }
 
     pub fn users(&self) -> Vec<Obj> {
@@ -518,6 +527,7 @@ mod tests {
         tokio::task::LocalSet::new().block_on(&rt, async {
             let e = engine();
             let args = |v: Value| v.as_object().cloned().unwrap();
+            assert_eq!(e.community_rev(), 0);
             e.record(101, &args(json!({"user": "Ana"})));
             e.record(101, &args(json!({"user": "Ana"})));
             e.record(112, &args(json!({"user": "Bo"})));
@@ -528,6 +538,8 @@ mod tests {
                 moderator: true,
                 ..Default::default()
             });
+            // Every change moves the revision, so the Community tab knows to reload.
+            assert_eq!(e.community_rev(), 4);
             let c = e.credits();
             assert_eq!(c["events"]["follows"], json!(["Ana"]));
             assert_eq!(c["top"]["channelRewards"], json!(["Bo"]));

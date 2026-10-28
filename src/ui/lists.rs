@@ -564,6 +564,12 @@ impl Views {
                 c.refresh();
             }
         }
+        // Chat brings new people to the Community tab.
+        if let Ok(mut c) = self.community.try_borrow_mut() {
+            if up == Some(c.tab.as_widget_ptr()) {
+                c.live();
+            }
+        }
     }
 
     /// A picture arrived: redraw what shows pictures.
@@ -1187,6 +1193,9 @@ fn globals_tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<Globals>> {
 }
 
 /// Users, quotes and credits, one at a time.
+/// How many users the Community tab lists, for dev mode's `community` command.
+pub static USERS_SHOWN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 pub struct Community {
     tab: Flex,
     cfg: Cfg,
@@ -1199,9 +1208,22 @@ pub struct Community {
     shown: Vec<Obj>,
     quotes: Rows,
     credits: Rows,
+    /// The engine's `community_rev` when the users and credits were last read.
+    rev: u64,
 }
 
 impl Community {
+    /// Reloads the users or credits shown if they changed (new chatters, events) since the last look.
+    pub fn live(&mut self) {
+        let Some(rev) = query(&self.cmds, |e| e.community_rev()) else {
+            return;
+        };
+        if rev != self.rev {
+            self.rev = rev;
+            self.refresh();
+        }
+    }
+
     pub fn refresh(&mut self) {
         let shown = self.show.value().max(0) as usize;
         for (i, v) in self.views.iter_mut().enumerate() {
@@ -1230,6 +1252,7 @@ impl Community {
                     .filter(|u| q.is_empty() || s(u, "display").to_lowercase().contains(&q))
                     .cloned()
                     .collect();
+                USERS_SHOWN.store(self.shown.len(), std::sync::atomic::Ordering::Relaxed);
                 for u in &self.shown {
                     let role = [
                         "",
@@ -1432,6 +1455,7 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
         shown: Vec::new(),
         quotes: quotes.clone(),
         credits,
+        rev: 0,
     }));
     // Click a user for their card.
     users_click(&me);
