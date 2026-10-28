@@ -12,7 +12,7 @@ use super::emotes::{self, EmoteSection, Provider};
 use super::fit::Ellipsis;
 use super::img::{self, Pic};
 use super::{button, icons, query, tell, ROW};
-use crate::engine::chatlog::{Line, Moderate, PLATFORMS};
+use crate::engine::chatlog::{Line, Moderate, Pin, PLATFORMS};
 use crate::i18n::{tr, trf};
 use crate::Config;
 use fltk::app;
@@ -245,6 +245,11 @@ fn now_ms() -> u64 {
     START.with(|s| s.elapsed().as_millis() as u64)
 }
 
+/// Milliseconds since the epoch, as pins' ends are.
+fn epoch_ms() -> u64 {
+    crate::fmt::unix_now().as_millis() as u64
+}
+
 /// The name's colour: comes directly from the platform (adjusted only when too dark to read on dark
 /// backgrounds), or falls back to each platform's own default palette if an older cached line lacked one.
 fn name_color(l: &Line) -> Color {
@@ -317,7 +322,7 @@ fn name_color(l: &Line) -> Color {
 
 /// Pinned, and not run out yet.
 fn pinned(l: &Line) -> bool {
-    l.pinned.is_some_and(|until| until > now_ms())
+    l.pinned.is_some_and(|until| until > epoch_ms())
 }
 
 /// One thing on a line.
@@ -524,6 +529,22 @@ struct State {
     act: Option<usize>,
     /// A name opens its user card (not inside a card: it's that user already).
     cards: bool,
+    /// The messages pinned in the chats shown, drawn over the top; and a redraw due for their countdown.
+    pins: Vec<Pin>,
+    pin_tick: bool,
+}
+
+/// A pinned message's box at the top of the chat.
+const PIN_H: i32 = 46;
+
+/// "4:05", "1:02:09": what's left of a pin.
+fn left(ms: u64) -> String {
+    let s = ms.div_ceil(1000);
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+    } else {
+        format!("{}:{:02}", s / 60, s % 60)
+    }
 }
 
 /// A message's hover actions.
@@ -618,6 +639,8 @@ impl Pane {
                 hover: None,
                 act: None,
                 cards: true,
+                pins: Vec::new(),
+                pin_tick: false,
             })),
             cmds: cmds.clone(),
             on_reply: Rc::default(),
@@ -644,7 +667,13 @@ impl Pane {
     }
 
     fn total(&self, st: &State) -> i32 {
-        st.laid.iter().map(|l| l.1).sum::<i32>() + 8
+        st.laid.iter().map(|l| l.1).sum::<i32>() + 8 + self.head(st)
+    }
+
+    /// The room the pins take at the top: the lines start under them.
+    fn head(&self, st: &State) -> i32 {
+        let ms = epoch_ms();
+        st.pins.iter().filter(|p| p.live(ms)).count() as i32 * (PIN_H + 4)
     }
 
     fn lay(&self, l: &Line, tag: bool, w: i32) -> (Rows, i32) {
@@ -690,7 +719,7 @@ impl Pane {
         draw::draw_box(f.frame(), f.x(), f.y(), f.w(), f.h(), f.color());
         draw::push_clip(f.x() + 2, f.y() + 2, f.w() - 4, f.h() - 4);
         let (ms, mut moving, animate) = (now_ms(), false, SHOW.get().2);
-        let mut y = f.y() + 4 - st.top;
+        let mut y = f.y() + 4 + self.head(&st) - st.top;
         for (i, (laid, h)) in st.laid.iter().enumerate() {
             if y + h < f.y() {
                 y += h;
@@ -772,7 +801,19 @@ impl Pane {
                 }
             }
         }
+        let counting = self.draw_pins(f, &st.pins, epoch_ms());
         draw::pop_clip();
+        // A pin's countdown: a redraw a second, only while one with an end is shown.
+        if counting && !st.pin_tick {
+            st.pin_tick = true;
+            let p = self.clone();
+            app::add_timeout3(1.0, move |_| {
+                p.st.borrow_mut().pin_tick = false;
+                if !p.area.was_deleted() {
+                    p.area.clone().redraw();
+                }
+            });
+        }
         // Animated emotes on screen: one redraw ~20 times a second, only while this is drawn.
         if moving && !st.ticking {
             st.ticking = true;
@@ -786,9 +827,88 @@ impl Pane {
         }
     }
 
+    /// The pins over the top of the chat: who pinned, what's left, and the message. Whether one counts down.
+    fn draw_pins(&self, f: &Frame, pins: &[Pin], ms: u64) -> bool {
+        let (fg, bg) = (Color::Foreground, Color::Background);
+        let mut counting = false;
+        for (k, p) in pins.iter().filter(|p| p.live(ms)).enumerate() {
+            let (x, y, w) = (f.x() + 6, f.y() + 6 + k as i32 * (PIN_H + 4), f.w() - 24);
+            draw::set_draw_color(bg);
+            draw::draw_rounded_rectf(x, y, w, PIN_H, 6);
+            draw::set_draw_color(Color::color_average(Color::Selection, bg, 0.6));
+            draw::draw_rounded_rect(x, y, w, PIN_H, 6);
+            if let Some(mut i) = icons::icon("pin", Color::Selection, 14) {
+                i.draw(x + 10, y + 6, 14, 14);
+            }
+            let tag = PLATFORMS.iter().position(|q| *q == p.platform).map(|i| NAMES[i]);
+            let mut tx = x + 30;
+            if let Some(mut s) = tag.and_then(|n| icon_sized(n, 14)) {
+                s.draw(tx, y + 6, 14, 14);
+                tx += 20;
+            }
+            let who = if p.by.is_empty() {
+                tr("chat.pinned").to_string()
+            } else {
+                trf("chat.pinned_by", &[("user", &p.by)])
+            };
+            let when = match p.until {
+                Some(u) => {
+                    counting = true;
+                    trf("chat.pin_left", &[("time", &left(u.saturating_sub(ms)))])
+                }
+                None if p.platform == "youtube" => tr("chat.pin_until_unpinned").to_string(),
+                None => tr("chat.pin_until_end").to_string(),
+            };
+            draw::set_font(Font::Helvetica, 12);
+            let muted = Color::color_average(fg, bg, 0.6);
+            draw::set_draw_color(muted);
+            let ww = draw::width(&when) as i32;
+            draw::draw_text2(&when, x + w - ww - 10, y + 2, ww, 22, Align::Left);
+            draw::draw_text2(
+                &who,
+                tx,
+                y + 2,
+                (x + w - ww - 20 - tx).max(0),
+                22,
+                Align::Left | Align::Clip,
+            );
+            draw::set_font(Font::HelveticaBold, TEXT);
+            draw::set_draw_color(fg);
+            let name = format!("{}:", p.user);
+            let nw = draw::width(&name) as i32;
+            draw::draw_text2(&name, x + 10, y + 22, nw, 22, Align::Left);
+            draw::set_font(Font::Helvetica, TEXT);
+            let room = (w - 20 - nw - 6).max(0);
+            let said = super::fit::ellipsize(&p.text, room, |t| draw::width(t) as i32);
+            draw::draw_text2(&said, x + 16 + nw, y + 22, room, 22, Align::Left | Align::Clip);
+        }
+        counting
+    }
+
+    /// The pin under the pointer, if any.
+    fn pin_at(&self, f: &Frame) -> Option<Pin> {
+        let st = self.st.borrow();
+        let ms = epoch_ms();
+        let dy = app::event_y() - f.y() - 6;
+        let k = dy.div_euclid(PIN_H + 4);
+        (dy >= 0 && dy % (PIN_H + 4) < PIN_H)
+            .then(|| st.pins.iter().filter(|p| p.live(ms)).nth(k as usize).cloned())
+            .flatten()
+    }
+
+    /// The pins of the chats this pane shows.
+    pub(super) fn set_pins(&self, pins: Vec<Pin>) {
+        let mut st = self.st.borrow_mut();
+        if st.pins != pins {
+            st.pins = pins;
+            drop(st);
+            self.area.clone().redraw();
+        }
+    }
+
     /// The line under the pointer's y.
     fn line_at(&self, f: &Frame, st: &State) -> Option<usize> {
-        let mut y = f.y() + 4 - st.top;
+        let mut y = f.y() + 4 + self.head(st) - st.top;
         for (i, (_, h)) in st.laid.iter().enumerate() {
             if (y..y + h).contains(&app::event_y()) {
                 return Some(i);
@@ -805,7 +925,7 @@ impl Pane {
         if n == 0 {
             return None;
         }
-        let y = f.y() + 4 - st.top + st.laid.iter().take(i).map(|l| l.1).sum::<i32>();
+        let y = f.y() + 4 + self.head(st) - st.top + st.laid.iter().take(i).map(|l| l.1).sum::<i32>();
         let first = st.laid.get(i)?.0.first().map_or(LINE, |r| r.1);
         let by = (y + (first - ACT) / 2).clamp(f.y() + 4, f.y() + f.h() - ACT - 4);
         Some((l, f.x() + f.w() - n * ACT - 8, by))
@@ -896,7 +1016,7 @@ impl Pane {
         if !st.cards {
             return None;
         }
-        let mut y = f.y() + 4 - st.top;
+        let mut y = f.y() + 4 + self.head(&st) - st.top;
         for (l, (laid, h)) in st.lines.iter().zip(&st.laid) {
             if !(y..y + h).contains(&ey) {
                 y += h;
@@ -951,6 +1071,34 @@ impl Pane {
                 drop(st);
                 if let Some(mut w) = f.window() {
                     w.set_cursor(fltk::enums::Cursor::Default);
+                }
+                true
+            }
+            // A pin: right click unpins it; a click on it does nothing else.
+            Event::Push if self.pin_at(f).is_some() => {
+                let pin = self.pin_at(f).expect("a pin");
+                if app::event_mouse_button() == app::MouseButton::Right {
+                    use fltk::menu::{MenuButton, MenuFlag};
+                    let mut m = super::menu_at_pointer();
+                    let cmds = self.cmds.clone();
+                    let i = m.add(
+                        tr("chat.act_unpin"),
+                        fltk::enums::Shortcut::None,
+                        MenuFlag::Normal,
+                        move |_| {
+                            let l = Line {
+                                platform: pin.platform.clone(),
+                                msg_id: pin.msg_id.clone(),
+                                ..Default::default()
+                            };
+                            tell(&cmds, move |e| e.moderate(&l, Moderate::Unpin));
+                        },
+                    );
+                    if let Some(mut item) = m.at(i) {
+                        item.add_image(icons::before_label("pin-off", super::muted(), 14), true);
+                    }
+                    m.popup();
+                    MenuButton::delete(m);
                 }
                 true
             }
@@ -1376,6 +1524,7 @@ impl Chat {
             SHOWN.store(l.seq, std::sync::atomic::Ordering::Relaxed);
         }
         let v = self.view.value();
+        self.show_pins(v);
         if full {
             self.seen = lines.last().map_or(0, |l| l.seq);
             match v {
@@ -1407,6 +1556,23 @@ impl Chat {
                 _ => {}
             }
             self.seen = l.seq;
+        }
+    }
+
+    /// Each pane gets the pins of the chats it shows (Twitch is asked, now and then, for pins made on
+    /// its site).
+    fn show_pins(&self, v: i32) {
+        tell(&self.cmds, |e| e.twitch_check_pin());
+        let pins = query(&self.cmds, |e| e.chat_pins()).unwrap_or_default();
+        let of = |p: &str| pins.iter().filter(|x| x.platform == p).cloned().collect::<Vec<_>>();
+        match v {
+            1 => {
+                for (i, col) in self.side.iter().enumerate() {
+                    col.pane.set_pins(of(PLATFORMS[i]));
+                }
+            }
+            0 => self.main.pane.set_pins(pins.clone()),
+            _ => self.main.pane.set_pins(self.shown().map(of).unwrap_or_default()),
         }
     }
 
@@ -2527,4 +2693,14 @@ fn shown_platforms(cmds: &Cmds) -> Vec<usize> {
             .collect()
     })
     .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_pins_time_left_reads_as_a_clock() {
+        assert_eq!(super::left(125_000), "2:05");
+        assert_eq!(super::left(1), "0:01");
+        assert_eq!(super::left(3_729_000), "1:02:09");
+    }
 }

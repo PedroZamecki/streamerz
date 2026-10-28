@@ -513,6 +513,8 @@ otherwise, so a release never has them unless the variable is set):
   `tiktok`; role `broadcaster`, `moderator`, `vip`, `subscriber` or `viewer`), answering `{"ran": n}`.
   An optional `userId` gives it a real account's id (the name stands for it otherwise), to try that
   account's user card.
+- `{"request": "InjectPin", "id": "3", "platform": "kick", "user": "bo", "text": "hi", "by": "mod", "seconds": 120}`
+  pins a message at the top of that chat (`seconds` 0 or missing: no end); `"unpin": true` takes it down.
 - `{"request": "GetChatOut", "id": "2"}` returns and clears what would have been sent:
   `{"messages": [{"platform": "kick", "text": "hi bo", "bot": false}, ...]}` (the last 500).
 

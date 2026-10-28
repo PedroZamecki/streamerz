@@ -1433,6 +1433,7 @@ async fn run_eventsub_loop(
                     };
                     tokio::join!(subs, seed(&e), welcome);
                     e.refresh_chat_badges("twitch", |k| SEEN.with_borrow(|s| s.badges.get(k).cloned()));
+                    e.twitch_check_pin();
                 });
                 if let Some(t) = poll_task.replace(tokio::task::spawn_local(poll(engine.clone(), broadcaster.clone())))
                 {
@@ -2567,6 +2568,8 @@ fn handle_notification(
             engine.emit("Twitch", "StreamOnline", || json!(args));
         }
         "stream.offline" => {
+            // A pin "until the stream ends" ends here.
+            engine.chat_unpinned("twitch", "");
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
             args.insert("endedAt".into(), crate::engine::globals::iso_now().into());

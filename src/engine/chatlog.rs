@@ -144,6 +144,34 @@ pub struct Log {
     users: HashMap<(String, String), Seen>,
     /// What the platforms said about chatters (user cards), and when: reopened at once for a while.
     cards: HashMap<(String, String), (std::time::Instant, Facts)>,
+    /// The message pinned in each platform's chat, if any (one each).
+    pins: Vec<Pin>,
+    /// When Twitch's pin was last asked for (it has no event for pins made elsewhere).
+    twitch_pin_asked: Option<std::time::Instant>,
+}
+
+/// A message pinned at the top of a chat.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Pin {
+    pub platform: String,
+    pub msg_id: String,
+    /// Who wrote it, and what.
+    pub user: String,
+    pub text: String,
+    /// Who pinned it (empty: not said).
+    pub by: String,
+    /// Until when (ms since the epoch); None: until it's unpinned or the stream ends.
+    pub until: Option<u64>,
+}
+
+impl Pin {
+    pub fn live(&self, now_ms: u64) -> bool {
+        self.until.is_none_or(|u| u > now_ms)
+    }
+}
+
+fn now_ms() -> u64 {
+    crate::fmt::unix_now().as_millis() as u64
 }
 
 /// Label and value rows about a chatter.
@@ -285,6 +313,23 @@ pub fn normalize_line_emotes(
         .map(|e| (shown(&e.0).to_string(), e.1.clone()))
         .collect();
     (text, emotes)
+}
+
+/// Twitch's Get Pinned Chat Message answer as a pin (none when nothing is pinned).
+fn twitch_pin(d: &Value) -> Option<Pin> {
+    let id = d["message_id"].as_str().filter(|s| !s.is_empty())?;
+    let until = d["ends_at"]
+        .as_str()
+        .and_then(super::rest_parse_iso)
+        .map(|secs| secs as u64 * 1000);
+    Some(Pin {
+        platform: "twitch".into(),
+        msg_id: id.into(),
+        user: d["sender_user_name"].as_str().unwrap_or("").into(),
+        text: d["message"]["text"].as_str().unwrap_or("").into(),
+        by: d["pinned_by_user_name"].as_str().unwrap_or("").into(),
+        until,
+    })
 }
 
 /// A Kick username as its page's address has it: "Some_Name" is "some-name".
@@ -847,19 +892,105 @@ impl Engine {
         }
     }
 
-    /// `msg_id` pinned for `secs` (none: until the stream ends); "" unpins. One pinned at a time.
+    /// `msg_id` pinned from here for `secs` (none: until the stream ends); "" unpins. One pinned at a time.
     fn chat_pin(&self, platform: &str, msg_id: &str, secs: Option<u64>) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as u64);
-        let until = secs.map_or(u64::MAX, |s| now + s * 1000);
+        if msg_id.is_empty() {
+            return self.chat_unpinned(platform, "");
+        }
+        let line = {
+            let st = self.st.borrow();
+            st.chat_log
+                .lines
+                .iter()
+                .find(|l| l.platform == platform && l.msg_id == msg_id)
+                .map(|l| (l.user.clone(), l.text.clone()))
+                .unwrap_or_default()
+        };
+        self.chat_pinned(Pin {
+            platform: platform.into(),
+            msg_id: msg_id.into(),
+            user: line.0,
+            text: line.1,
+            by: String::new(),
+            until: secs.map(|s| now_ms() + s * 1000),
+        });
+    }
+
+    /// A message got pinned in `pin.platform`'s chat (here or anywhere): it replaces the one there.
+    pub fn chat_pinned(&self, pin: Pin) {
         let mut st = self.st.borrow_mut();
+        let until = pin.until.unwrap_or(u64::MAX);
+        for l in st.chat_log.lines.iter_mut().filter(|l| l.platform == pin.platform) {
+            l.pinned = (l.msg_id == pin.msg_id).then_some(until);
+        }
+        let pins = &mut st.chat_log.pins;
+        if pins.contains(&pin) {
+            return;
+        }
+        pins.retain(|p| p.platform != pin.platform);
+        pins.push(pin);
+        st.chat_log.reset_gen += 1;
+        drop(st);
+        crate::ui::chat();
+    }
+
+    /// `platform`'s pin was taken down (`msg_id`: only if it's that one; "" any).
+    pub fn chat_unpinned(&self, platform: &str, msg_id: &str) {
+        let mut st = self.st.borrow_mut();
+        let before = st.chat_log.pins.len();
+        st.chat_log
+            .pins
+            .retain(|p| p.platform != platform || !(msg_id.is_empty() || p.msg_id == msg_id));
+        if st.chat_log.pins.len() == before {
+            return;
+        }
         for l in st.chat_log.lines.iter_mut().filter(|l| l.platform == platform) {
-            l.pinned = (!msg_id.is_empty() && l.msg_id == msg_id).then_some(until);
+            l.pinned = None;
         }
         st.chat_log.reset_gen += 1;
         drop(st);
         crate::ui::chat();
+    }
+
+    /// The messages pinned now, one per platform at most.
+    pub fn chat_pins(&self) -> Vec<Pin> {
+        let now = now_ms();
+        self.st
+            .borrow()
+            .chat_log
+            .pins
+            .iter()
+            .filter(|p| p.live(now))
+            .cloned()
+            .collect()
+    }
+
+    /// Asks Twitch what's pinned (it has no event for pins made on its site), at most once a minute:
+    /// on connecting, and when the chat is looked at.
+    pub fn twitch_check_pin(self: &Rc<Self>) {
+        {
+            let mut st = self.st.borrow_mut();
+            let asked = &mut st.chat_log.twitch_pin_asked;
+            if asked.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(60)) {
+                return;
+            }
+            *asked = Some(std::time::Instant::now());
+        }
+        let Some(tw) = self.twitch() else { return };
+        let e = self.clone();
+        tokio::task::spawn_local(async move {
+            let who = vec![
+                ("broadcaster_id", "{broadcaster_id}"),
+                ("moderator_id", "{broadcaster_id}"),
+            ];
+            let Ok(v) = tw.helix("GET", "chat/pins", who, None, false, false).await else {
+                return;
+            };
+            match twitch_pin(&v["data"][0]) {
+                Some(p) => e.chat_pinned(p),
+                None => e.chat_unpinned("twitch", ""),
+            }
+        });
     }
 
     /// Whether `platform`'s chat is the broadcaster's own channel (not another one set in Advanced).
@@ -1029,6 +1160,18 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn twitch_pins_read_from_helix() {
+        let d = serde_json::json!({"message_id": "m1", "sender_user_name": "Ana", "message": {"text": "hi"},
+            "pinned_by_user_name": "Mod", "ends_at": "2026-01-01T00:00:00Z"});
+        let p = twitch_pin(&d).unwrap();
+        assert_eq!((p.user.as_str(), p.text.as_str(), p.by.as_str()), ("Ana", "hi", "Mod"));
+        assert_eq!(p.until, Some(1_767_225_600_000));
+        let forever = twitch_pin(&serde_json::json!({"message_id": "m2", "ends_at": null})).unwrap();
+        assert!(forever.until.is_none() && forever.live(u64::MAX - 1));
+        assert!(twitch_pin(&serde_json::json!({})).is_none());
+    }
 
     #[test]
     fn kick_names_as_their_page_has_them() {

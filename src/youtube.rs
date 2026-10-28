@@ -1540,8 +1540,31 @@ fn poll_args(p: &Value) -> Obj {
     a
 }
 
+/// A message pinned at the top of the live chat (YouTube's banner): until it's taken down.
+fn yt_pin(banner: &Value) -> Option<crate::engine::chatlog::Pin> {
+    let r = banner.pointer("/contents/liveChatTextMessageRenderer")?;
+    let (text, _) = runs_text(r.pointer("/message/runs"));
+    Some(crate::engine::chatlog::Pin {
+        platform: "youtube".into(),
+        msg_id: r["id"].as_str().unwrap_or("").into(),
+        user: text_of(&r["authorName"]).trim_start_matches('@').into(),
+        text,
+        by: String::new(),
+        until: None,
+    })
+}
+
 pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value]) {
     for act in actions {
+        if let Some(b) = act.pointer("/addBannerToLiveChatCommand/bannerRenderer/liveChatBannerRenderer") {
+            if let Some(p) = yt_pin(b) {
+                engine.chat_pinned(p);
+            }
+        }
+        // One pin at a time on YouTube: whichever it names, it's that one.
+        if act.get("removeBannerForLiveChatCommand").is_some() {
+            engine.chat_unpinned("youtube", "");
+        }
         let item = act.pointer("/addChatItemAction/item").cloned().unwrap_or_default();
         if let Some(msg) = item.get("liveChatTextMessageRenderer") {
             let (mut args, owner, moderator, member) = yt_base(engine, msg);
@@ -1946,6 +1969,29 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn pinned_banners_come_and_go() {
+        use crate::engine::tests::{engine, run};
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        run(async {
+            let e = engine(json!({"actions": []}));
+            let msg = json!({"id": "m1", "authorName": {"simpleText": "@Ana"}, "message": {"runs": [{"text": "hi"}]}});
+            let banner = json!({"addBannerToLiveChatCommand": {"bannerRenderer": {"liveChatBannerRenderer":
+                {"actionId": "a1", "contents": {"liveChatTextMessageRenderer": msg}}}}});
+            handle_innertube_actions(&e, &[banner]);
+            let pins = e.chat_pins();
+            assert_eq!(
+                (pins.len(), pins[0].user.as_str(), pins[0].text.as_str()),
+                (1, "Ana", "hi")
+            );
+            handle_innertube_actions(
+                &e,
+                &[json!({"removeBannerForLiveChatCommand": {"targetActionId": "a1"}})],
+            );
+            assert!(e.chat_pins().is_empty());
+        });
+    }
 
     #[test]
     fn youtube_config_defaults() {

@@ -631,6 +631,24 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
             Ok(ran) => ok(&id, json!({"ran": ran})),
             Err(m) => error(&id, &m),
         },
+        // Dev mode only: a message pinned in a chat ("seconds" 0: no end), or none ("unpin": true).
+        "InjectPin" if e.dev() => {
+            let platform = get("platform").to_string();
+            if req.get("unpin").and_then(Value::as_bool) == Some(true) {
+                e.chat_unpinned(&platform, "");
+            } else {
+                let secs = req.get("seconds").and_then(Value::as_u64).unwrap_or(0);
+                e.chat_pinned(crate::engine::chatlog::Pin {
+                    platform,
+                    msg_id: crate::engine::uuid(),
+                    user: get("user").into(),
+                    text: get("text").into(),
+                    by: get("by").into(),
+                    until: (secs > 0).then(|| crate::fmt::unix_now().as_millis() as u64 + secs * 1000),
+                });
+            }
+            ok(&id, json!({}))
+        }
         "GetChatOut" if e.dev() => ok(&id, json!({"messages": e.dev_take().unwrap_or_default()})),
         // Dev mode only: fire any trigger (code or name, e.g. 101 or "TwitchFollow") with these
         // arguments, as its platform would; how many actions ran.
