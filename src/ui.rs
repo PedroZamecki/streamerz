@@ -3,6 +3,7 @@
 
 mod accounts;
 mod actions;
+mod card;
 mod chat;
 mod conns;
 mod dev;
@@ -17,6 +18,7 @@ mod lists;
 mod nav;
 pub mod picker;
 mod plugins;
+pub(crate) mod popover;
 mod rows;
 mod settings;
 
@@ -473,6 +475,7 @@ fn icon_for(label: &str) -> Option<&'static str> {
         "open_folder" => "folder-open",
         "open_github" => "external-link",
         "browse" => "folder-open",
+        "user_info" => "user-round",
         "change" => "folder-open",
         "open" | "open_file" | "open_profile" | "open_browser" => "external-link",
         _ => return None,

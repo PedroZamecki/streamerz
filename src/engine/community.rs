@@ -226,6 +226,16 @@ impl Engine {
         self.st.borrow().community.users.clone()
     }
 
+    /// One user of the Community tab.
+    pub fn community_user(&self, platform: &str, id: &str) -> Option<Obj> {
+        let st = self.st.borrow();
+        st.community
+            .users
+            .iter()
+            .find(|u| s(u, "type") == platform && s(u, "id") == id)
+            .cloned()
+    }
+
     /// Credits and users from a trigger that fired.
     pub(super) fn record(self: &Rc<Self>, kind: u32, args: &Obj) {
         let name = |k: &str| s(args, k).to_string();
@@ -310,8 +320,17 @@ impl Engine {
                 mins(b) - mins(a) > 30
             });
             if quiet && last != NEVER {
-                u.insert("previousActive".into(), last.into());
+                u.insert("previousActive".into(), last.clone().into());
             }
+            // What the Community tab shows: messages sent, and the time spent chatting (gaps under half an
+            // hour between messages add up).
+            let (messages, active) = (n(u, "messages") as u64, n(u, "activeSecs") as u64);
+            let gap = super::rest_parse_iso(&last).map_or(u64::MAX, |t| unix().saturating_sub(t as u64));
+            u.insert("messages".into(), json!(messages + 1));
+            u.insert(
+                "activeSecs".into(),
+                json!(if gap <= 30 * 60 { active + gap } else { active }),
+            );
             for (k, v) in [
                 ("name", json!(s(&c.args, "userName"))),
                 ("display", json!(display)),

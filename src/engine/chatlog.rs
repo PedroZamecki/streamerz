@@ -511,6 +511,21 @@ impl Engine {
     }
 
     /// What chat said about a chatter this session.
+    /// What a chatter said, oldest first: time and text (this session's, and the history read when joining).
+    pub fn chatter_lines(&self, platform: &str, user_id: &str) -> Vec<(String, String)> {
+        let st = self.st.borrow();
+        let mut v: Vec<(String, String)> = st
+            .chat_log
+            .lines
+            .iter()
+            .filter(|l| l.platform == platform && l.user_id == user_id && !l.note && !l.deleted)
+            .map(|l| (l.time.clone(), l.text.clone()))
+            .collect();
+        let drop = v.len().saturating_sub(100);
+        v.drain(..drop);
+        v
+    }
+
     pub fn chatter(&self, platform: &str, user_id: &str) -> Option<Seen> {
         let st = self.st.borrow();
         st.chat_log

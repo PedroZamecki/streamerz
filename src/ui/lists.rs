@@ -1195,6 +1195,8 @@ pub struct Community {
     search: fltk::input::Input,
     views: [Flex; 3],
     users: Rows,
+    /// The users in the list, as shown (the list's line n is `shown[n - 1]`).
+    shown: Vec<Obj>,
     quotes: Rows,
     credits: Rows,
 }
@@ -1223,10 +1225,12 @@ impl Community {
                 users.sort_by(|a, b| s(b, "lastActive").cmp(s(a, "lastActive")));
                 let q = self.search.value().to_lowercase();
                 self.users.clear();
-                for u in users
+                self.shown = users
                     .iter()
                     .filter(|u| q.is_empty() || s(u, "display").to_lowercase().contains(&q))
-                {
+                    .cloned()
+                    .collect();
+                for u in &self.shown {
                     let role = [
                         "",
                         tr("lists.community.role_viewer"),
@@ -1281,6 +1285,18 @@ impl Community {
                     self.credits.add("Nothing yet this stream.");
                 }
             }
+        }
+    }
+
+    /// The card of the user selected: who they are, what they said, their time here.
+    fn user_card(&self) {
+        let n = self.users.value();
+        if let Some(u) = self.shown.get((n - 1).max(0) as usize).filter(|_| n > 0) {
+            super::card::open(
+                &self.cmds,
+                super::card::Who::from_member(u),
+                (fltk::app::event_x(), fltk::app::event_y()),
+            );
         }
     }
 
@@ -1367,6 +1383,7 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
 
     let users_v = Flex::default().column();
     let mut users_v = users_v;
+    let ub = bar(&mut users_v, &[tr("btn.user_info")]);
     let mut users = browser(
         &mut users_v,
         &[36, 220, 110, 110, 110],
@@ -1380,6 +1397,7 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
         "lists.community.users_empty",
     );
     users.set_logo_column(0);
+    users.clone().set_menu(&ub);
     users_v.end();
 
     let mut quotes_v = Flex::default().column();
@@ -1413,15 +1431,19 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
         search: search.clone(),
         views: [users_v, quotes_v, credits_v],
         users,
+        shown: Vec::new(),
         quotes: quotes.clone(),
         credits,
     }));
+    // Double click a user for their card.
+    users_dbl(&me);
     for (w, f) in [
         (
             show.as_base_widget(),
             Box::new(Community::refresh) as Box<dyn Fn(&mut Community)>,
         ),
         (search.as_base_widget(), Box::new(Community::refresh)),
+        (ub[0].as_base_widget(), Box::new(|m: &mut Community| m.user_card())),
         (qb[0].as_base_widget(), Box::new(|m: &mut Community| m.edit_quote(None))),
         (
             qb[1].as_base_widget(),
@@ -1793,6 +1815,21 @@ fn groups_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Groups>> {
         }
     });
     me
+}
+
+/// Double click on a user opens their card.
+fn users_dbl(me: &Rc<RefCell<Community>>) {
+    let weak = Rc::downgrade(me);
+    let mut users = me.borrow().users.clone();
+    users.set_callback(move |_| {
+        if fltk::app::event_clicks() {
+            if let Some(m) = weak.upgrade() {
+                if let Ok(m) = m.try_borrow() {
+                    m.user_card();
+                }
+            }
+        }
+    });
 }
 
 #[cfg(test)]

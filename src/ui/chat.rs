@@ -11,7 +11,6 @@ use super::accounts::{platform_accounts, unlock_logins_interactive};
 use super::emotes::{self, EmoteSection, Provider};
 use super::fit::Ellipsis;
 use super::img::{self, Pic};
-use super::rows::Rows as InfoRows;
 use super::{button, icons, query, tell, ROW};
 use crate::engine::chatlog::{Line, Moderate, PLATFORMS};
 use crate::i18n::{tr, trf};
@@ -941,7 +940,13 @@ impl Pane {
                         tr("chat.user_info"),
                         fltk::enums::Shortcut::None,
                         MenuFlag::Normal,
-                        move |_| card(&cmds, &l),
+                        move |_| {
+                            super::card::open(
+                                &cmds,
+                                super::card::Who::from_line(&l, name_color(&l)),
+                                (app::event_x(), app::event_y()),
+                            )
+                        },
                     );
                 }
                 if m.size() > 0 {
@@ -954,7 +959,11 @@ impl Pane {
                 if let Some((l, a)) = self.act_at(f) {
                     self.run(&l, a.0);
                 } else if let Some(l) = self.name_at(f) {
-                    card(&self.cmds, &l);
+                    super::card::open(
+                        &self.cmds,
+                        super::card::Who::from_line(&l, name_color(&l)),
+                        (app::event_x(), app::event_y()),
+                    );
                 }
                 true
             }
@@ -2495,173 +2504,4 @@ fn shown_platforms(cmds: &Cmds) -> Vec<usize> {
             .collect()
     })
     .unwrap_or_default()
-}
-
-/// Label and value rows.
-type Facts = Vec<(String, String)>;
-
-/// A chatter's card: what chat said about them this session, then what their platform says (asked
-/// when it opens). Double click a row to copy its value.
-fn card(cmds: &Cmds, l: &Line) {
-    let (p, id) = (l.platform.clone(), l.user_id.clone());
-    let seen = query(cmds, move |e| e.chatter(&p, &id)).flatten().unwrap_or_default();
-    let platform = NAMES[PLATFORMS.iter().position(|x| *x == l.platform).unwrap_or(0)];
-    let mut win = Window::default().with_size(460, 480).with_label(&trf(
-        "chat.user_on_platform",
-        &[("user", &l.user), ("platform", platform)],
-    ));
-    win.set_xclass("streamerz");
-    let mut col = Flex::new(10, 10, 440, 460, None).column();
-    col.set_pad(8);
-    let mut head = Flex::default().row();
-    head.set_pad(8);
-    let pic = Frame::default();
-    head.fixed(&pic, 64);
-    let mut name = Frame::default()
-        .with_label(&format!("  {}", l.user.replace('@', "@@")))
-        .with_align(Align::Left | Align::Inside | Align::ImageNextToText)
-        .ellipsis();
-    name.set_label_font(Font::HelveticaBold);
-    name.set_label_size(20);
-    name.set_label_color(name_color(l));
-    name.set_image(img::logo(platform, 20));
-    head.end();
-    col.fixed(&head, 64);
-    let mut rows = InfoRows::new("");
-    rows.set_column_widths(&[150]);
-    let mut bottom = Flex::default().row();
-    bottom.set_pad(8);
-    Frame::default();
-    let mut open = button(&mut bottom, "Open profile", 110);
-    let mut close = button(&mut bottom, tr("dialogs.close"), 80);
-    bottom.end();
-    col.fixed(&bottom, ROW);
-    col.end();
-    win.end();
-    win.resizable(&*rows);
-
-    let add = |rows: &mut InfoRows, k: &str, v: &str| {
-        rows.add(&format!("{k}\t{}", v.replace(['\n', '\t'], " ")));
-    };
-    let roles: Vec<&str> = [
-        (l.broadcaster, tr("chat.card_broadcaster")),
-        (l.moderator, tr("chat.card_moderator")),
-        (l.vip, tr("chat.card_vip")),
-        (l.subscriber, tr("chat.card_subscriber")),
-    ]
-    .iter()
-    .filter(|r| r.0)
-    .map(|r| r.1)
-    .collect();
-    add(
-        &mut rows,
-        tr("chat.card_roles"),
-        &if roles.is_empty() {
-            tr("chat.card_viewer").into()
-        } else {
-            roles.join(", ")
-        },
-    );
-    add(&mut rows, tr("chat.card_messages_session"), &seen.messages.to_string());
-    add(&mut rows, tr("chat.card_first_message"), &seen.first);
-    if !seen.args.contains_key("userId") {
-        add(&mut rows, "userId", &l.user_id);
-    }
-    let s = |v: &serde_json::Value| v.as_str().map_or_else(|| v.to_string(), str::to_string);
-    // As the actions get them (%userName%...); "user" is the name above.
-    for (k, v) in seen.args.iter().filter(|a| a.0 != "user") {
-        add(&mut rows, k, &s(v));
-    }
-    let asks = matches!(l.platform.as_str(), "twitch" | "kick");
-    if asks {
-        add(
-            &mut rows,
-            &trf("chat.card_platform_says", &[("platform", platform)]),
-            tr("chat.card_looking_up"),
-        );
-    }
-    rows.set_callback(|b| {
-        if app::event_clicks() {
-            if let Some(t) = b.selected_text() {
-                app::copy(t.split_once('\t').map_or(t.as_str(), |x| x.1));
-                crate::say(tr("chat.copied").into());
-            }
-        }
-    });
-    let login = seen.args.get("userName").map(s).unwrap_or_else(|| l.user.clone());
-    let url: Rc<RefCell<String>> = Rc::new(RefCell::new(match l.platform.as_str() {
-        "twitch" => format!("https://twitch.tv/{}", login.to_lowercase()),
-        "youtube" => format!("https://youtube.com/channel/{}", l.user_id),
-        "kick" => format!("https://kick.com/{}", login.to_lowercase()),
-        _ => format!("https://tiktok.com/@{login}"),
-    }));
-    open.set_callback({
-        let url = url.clone();
-        move |_| crate::oauth::open_browser(&url.borrow())
-    });
-    close.set_callback({
-        let mut win = win.clone();
-        move |_| win.hide()
-    });
-    win.show();
-
-    let picture = seen
-        .args
-        .iter()
-        .find(|(k, v)| k.contains("rofile") && s(v).starts_with("http"))
-        .map(|(_, v)| s(v))
-        .unwrap_or_default();
-    let picture = Rc::new(RefCell::new(picture));
-    let answer: Arc<std::sync::Mutex<Option<Facts>>> = Arc::default();
-    if asks {
-        let (p, id, answer) = (l.platform.clone(), l.user_id.clone(), answer.clone());
-        tell(cmds, move |e| {
-            let e = e.clone();
-            tokio::task::spawn_local(async move {
-                let r = e.chatter_lookup(&p, &id).await;
-                if let Ok(mut a) = answer.lock() {
-                    *a = Some(r);
-                }
-            });
-        });
-    }
-    let (cmds, tries) = (cmds.clone(), Rc::new(Cell::new(0)));
-    let mut asked = asks;
-    let mut pic = pic;
-    app::add_timeout3(0.0, move |h| {
-        if !win.shown() {
-            return;
-        }
-        tries.set(tries.get() + 1);
-        if asked {
-            if let Some(found) = answer.lock().ok().and_then(|mut a| a.take()) {
-                asked = false;
-                rows.remove(rows.size());
-                if found.is_empty() {
-                    add(&mut rows, &format!("{platform} says"), "nothing (not connected?)");
-                }
-                for (k, v) in found {
-                    match k.as_str() {
-                        "Picture" => *picture.borrow_mut() = v,
-                        "Channel" => *url.borrow_mut() = format!("https://kick.com/{v}"),
-                        _ => add(&mut rows, &k, &v),
-                    }
-                }
-                rows.redraw();
-            }
-        }
-        let mut waiting = asked;
-        if pic.image().is_none() && !picture.borrow().is_empty() {
-            match img::get(&cmds, &picture.borrow(), 64, true) {
-                Some(p) => {
-                    pic.set_image(Some(p.first()));
-                    pic.redraw();
-                }
-                None => waiting = true,
-            }
-        }
-        if waiting && tries.get() < 75 {
-            app::repeat_timeout3(0.2, h);
-        }
-    });
 }

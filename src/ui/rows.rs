@@ -119,21 +119,6 @@ impl Rows {
         self.area.redraw();
     }
 
-    pub fn remove(&mut self, n: i32) {
-        let mut st = self.st.borrow_mut();
-        if n < 1 || n as usize > st.lines.len() {
-            return;
-        }
-        st.lines.remove(n as usize - 1);
-        if st.sel == n {
-            st.sel = 0;
-        } else if st.sel > n {
-            st.sel -= 1;
-        }
-        drop(st);
-        self.area.redraw();
-    }
-
     pub fn size(&self) -> i32 {
         self.st.borrow().lines.len() as i32
     }
