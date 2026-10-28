@@ -226,6 +226,16 @@ impl Engine {
         self.st.borrow().community.users.clone()
     }
 
+    /// One user of the Community tab.
+    pub fn community_user(&self, platform: &str, id: &str) -> Option<Obj> {
+        let st = self.st.borrow();
+        st.community
+            .users
+            .iter()
+            .find(|u| s(u, "type") == platform && s(u, "id") == id)
+            .cloned()
+    }
+
     /// Credits and users from a trigger that fired.
     pub(super) fn record(self: &Rc<Self>, kind: u32, args: &Obj) {
         let name = |k: &str| s(args, k).to_string();
@@ -254,6 +264,38 @@ impl Engine {
             c.add(list, name, false);
             c.last_write = unix();
         }
+        self.community_changed();
+    }
+
+    /// Someone seen in a platform's recent history (read when joining): added to the Community tab when
+    /// not there yet, with no message counted and no credits.
+    pub(super) fn seen_in_history(&self, l: &super::chatlog::Line) {
+        if l.user_id.is_empty() || l.note {
+            return;
+        }
+        let mut st = self.st.borrow_mut();
+        let users = &mut st.community.users;
+        if users
+            .iter()
+            .any(|u| s(u, "type") == l.platform && s(u, "id") == l.user_id)
+        {
+            return;
+        }
+        let role = if l.broadcaster {
+            4
+        } else if l.moderator {
+            3
+        } else if l.vip {
+            2
+        } else {
+            1
+        };
+        let now = super::globals::iso_now();
+        let u = json!({"id": l.user_id, "name": l.user.to_lowercase(), "display": l.user, "role": role,
+            "subscribed": l.subscriber, "type": l.platform, "firstMessage": now, "present": false,
+            "previousActive": NEVER, "lastActive": now, "exempt": false, "color": l.color});
+        users.push(u.as_object().cloned().unwrap_or_default());
+        drop(st);
         self.community_changed();
     }
 
@@ -310,13 +352,23 @@ impl Engine {
                 mins(b) - mins(a) > 30
             });
             if quiet && last != NEVER {
-                u.insert("previousActive".into(), last.into());
+                u.insert("previousActive".into(), last.clone().into());
             }
+            // What the Community tab shows: messages sent, and the time spent chatting (gaps under half an
+            // hour between messages add up).
+            let (messages, active) = (n(u, "messages") as u64, n(u, "activeSecs") as u64);
+            let gap = super::rest_parse_iso(&last).map_or(u64::MAX, |t| unix().saturating_sub(t as u64));
+            u.insert("messages".into(), json!(messages + 1));
+            u.insert(
+                "activeSecs".into(),
+                json!(if gap <= 30 * 60 { active + gap } else { active }),
+            );
             for (k, v) in [
                 ("name", json!(s(&c.args, "userName"))),
                 ("display", json!(display)),
                 ("role", json!(role)),
                 ("subscribed", json!(c.subscriber)),
+                ("color", json!(s(&c.args, "color"))),
                 ("present", json!(true)),
                 ("lastActive", json!(now)),
             ] {

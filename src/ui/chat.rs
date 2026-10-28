@@ -5,12 +5,12 @@
 //! - Discrete `"Message all"` button & popup in the top bar
 //! - Individual 7TV-style emote & emoji picker per platform and account, with search, provider tabs,
 //!   collapsible sections, and right-click `★` favorites
-//! - Platform-authentic badges & username colors, plus pre-join history before `"Welcome to the chat room!"`
+//! - Platform-authentic badges & username colors, plus the platform's recent history (memory only) before a divider
 
 use super::accounts::{platform_accounts, unlock_logins_interactive};
 use super::emotes::{self, EmoteSection, Provider};
+use super::fit::Ellipsis;
 use super::img::{self, Pic};
-use super::rows::Rows as InfoRows;
 use super::{button, icons, query, tell, ROW};
 use crate::engine::chatlog::{Line, Moderate, PLATFORMS};
 use crate::i18n::{tr, trf};
@@ -308,6 +308,8 @@ enum It {
     Gap(i32),
     /// What follows starts a new row (after a reply's header).
     Break,
+    /// A line across the chat with words in its middle: where history ends and live messages begin.
+    Rule(String),
 }
 
 impl It {
@@ -329,6 +331,7 @@ impl It {
             }
             It::Gap(w) => (*w, 0),
             It::Break => (0, 0),
+            It::Rule(_) => (0, TEXT + 12),
         }
     }
 }
@@ -341,20 +344,11 @@ thread_local! {
 /// A line's things, in order.
 fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
     let gray = Color::from_rgb(0x88, 0x88, 0x88);
-    let welcome_col = Color::from_rgb(0x9e, 0xa3, 0xb0);
     let (time, badges) = SHOW.get();
     let mut v = Vec::new();
-    // "Welcome to the chat room!" is rendered cleanly without a timestamp, matching official chats.
+    // The history divider: a line across, no name, no time.
     if l.welcome {
-        if tag {
-            let p = PLATFORMS.iter().position(|x| *x == l.platform).unwrap_or(0);
-            if let Some(s) = svg(NAMES[p]) {
-                v.push(It::Svg(s));
-                v.push(It::Space);
-            }
-        }
-        v.push(It::Text(l.text.clone(), Font::Helvetica, welcome_col));
-        return v;
+        return vec![It::Rule(l.text.clone())];
     }
     if let Some(r) = &l.reply {
         if let Some(s) = icons::icon("corner-up-left", gray, 14) {
@@ -708,6 +702,18 @@ impl Pane {
                             let sp = draw::width(" ") as i32;
                             draw::draw_line(x - sp, y + rh / 2, x + w, y + rh / 2);
                         }
+                        It::Rule(t) => {
+                            // Across the whole chat, the words in the middle on a gap in the line.
+                            draw::set_font(Font::Helvetica, 12);
+                            let tw = draw::width(t) as i32;
+                            let (left, right) = (f.x() + 8, f.x() + f.w() - 20);
+                            let mid = (left + right) / 2;
+                            let ink = Color::color_average(Color::Foreground, Color::Background2, 0.35);
+                            draw::set_draw_color(ink);
+                            draw::draw_line(left, y + rh / 2, mid - tw / 2 - 10, y + rh / 2);
+                            draw::draw_line(mid + tw / 2 + 10, y + rh / 2, right, y + rh / 2);
+                            draw::draw_text2(t, mid - tw / 2, y, tw, rh, Align::Center);
+                        }
                         It::Space | It::Gap(_) | It::Break => {}
                     }
                 }
@@ -745,7 +751,9 @@ impl Pane {
             let p = self.clone();
             app::add_timeout3(0.05, move |_| {
                 p.st.borrow_mut().ticking = false;
-                p.area.clone().redraw();
+                if !p.area.was_deleted() {
+                    p.area.clone().redraw();
+                }
             });
         }
     }
@@ -841,7 +849,7 @@ impl Pane {
             }
             Act::Mod(Moderate::Ban) => {
                 let q = trf("chat.ban_confirm", &[("user", &l.user), ("platform", &l.platform)]).replace('@', "@@");
-                if fltk::dialog::choice2_default(&q, tr("btn.ban"), tr("dialogs.cancel"), "") == Some(0) {
+                if super::dialogs::choice(&q, tr("dialogs.cancel"), tr("btn.ban")) {
                     let l = l.clone();
                     tell(&self.cmds, move |e| e.moderate(&l, Moderate::Ban));
                 }
@@ -922,7 +930,7 @@ impl Pane {
                 };
                 let Some(l) = l.filter(|l| !l.note) else { return true };
                 use fltk::menu::{MenuButton, MenuFlag};
-                let mut m = MenuButton::new(app::event_x(), app::event_y(), 0, 0, None);
+                let mut m = super::menu_at_pointer();
                 for (act, icon, name) in acts(&l) {
                     let (p, l) = (self.clone(), l.clone());
                     let i = m.add(name, fltk::enums::Shortcut::None, MenuFlag::Normal, move |_| {
@@ -938,7 +946,13 @@ impl Pane {
                         tr("chat.user_info"),
                         fltk::enums::Shortcut::None,
                         MenuFlag::Normal,
-                        move |_| card(&cmds, &l),
+                        move |_| {
+                            super::card::open(
+                                &cmds,
+                                super::card::Who::from_line(&l, name_color(&l)),
+                                (app::event_x(), app::event_y()),
+                            )
+                        },
                     );
                 }
                 if m.size() > 0 {
@@ -951,7 +965,11 @@ impl Pane {
                 if let Some((l, a)) = self.act_at(f) {
                     self.run(&l, a.0);
                 } else if let Some(l) = self.name_at(f) {
-                    card(&self.cmds, &l);
+                    super::card::open(
+                        &self.cmds,
+                        super::card::Who::from_line(&l, name_color(&l)),
+                        (app::event_x(), app::event_y()),
+                    );
                 }
                 true
             }
@@ -1075,7 +1093,9 @@ impl ChatColumn {
         let mut r_icon = Frame::default();
         r_icon.set_image(icons::icon("corner-up-left", super::muted(), 14));
         replying.fixed(&r_icon, 18);
-        let mut r_text = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+        let mut r_text = Frame::default()
+            .with_align(Align::Left | Align::Inside | Align::Clip)
+            .ellipsis();
         r_text.set_label_size(12);
         r_text.set_label_color(super::muted());
         let mut r_close = Button::default();
@@ -1200,7 +1220,10 @@ impl ChatColumn {
                 if click(i, ev) {
                     return true;
                 }
-                if ev == Event::KeyDown && app::event_key() == Key::Enter {
+                // Enter, the numpad's too, or whatever sends a carriage return (some Wayland setups).
+                let enter =
+                    app::event_key() == Key::Enter || app::event_key().bits() == 0xff8d || app::event_text() == "\r";
+                if ev == Event::KeyDown && enter {
                     s();
                     return true;
                 }
@@ -1460,11 +1483,12 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
     top.set_pad(6);
     let l = Frame::default().with_label(tr("chat.show"));
     top.fixed(&l, 46);
-    let mut view = Choice::default();
+    let mut view = super::fit::choice();
     top.fixed(&view, 136);
     let mut hint = Frame::default()
         .with_label(tr("chat.hint"))
-        .with_align(Align::Right | Align::Inside | Align::Clip);
+        .with_align(Align::Right | Align::Inside | Align::Clip)
+        .ellipsis();
     hint.set_label_size(12);
     hint.set_label_color(super::muted());
 
@@ -1613,7 +1637,8 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
         lrow.set_pad(8);
         let mut lbl = Frame::default()
             .with_label(tr("chat.acct_keyring_locked"))
-            .with_align(Align::Left | Align::Inside);
+            .with_align(Align::Left | Align::Inside)
+            .ellipsis();
         lbl.set_label_color(Color::from_rgb(0xe0, 0xa8, 0x30));
         let mut ubtn = button(&mut lrow, tr("btn.unlock"), 80);
         lrow.end();
@@ -1630,7 +1655,9 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
     head.set_pad(8);
     let head_logo = Frame::default();
     head.fixed(&head_logo, 24);
-    let mut head_title = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+    let mut head_title = Frame::default()
+        .with_align(Align::Left | Align::Inside | Align::Clip)
+        .ellipsis();
     head_title.set_label_font(Font::HelveticaBold);
     head.end();
     root.fixed(&head, ROW);
@@ -1827,7 +1854,8 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
 
     let mut title = Frame::default()
         .with_label(tr("chat.send_to"))
-        .with_align(Align::Left | Align::Inside | Align::Clip);
+        .with_align(Align::Left | Align::Inside | Align::Clip)
+        .ellipsis();
     if let Some(l) = &reply {
         let said = trf("chat.replying_to", &[("user", &l.user), ("said", &l.text)]);
         title.set_label(&said.replace('@', "@@"));
@@ -1861,9 +1889,10 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
     acct_row.set_pad(8);
     let lbl = Frame::default()
         .with_label(tr("chat.send_as"))
-        .with_align(Align::Left | Align::Inside);
+        .with_align(Align::Left | Align::Inside)
+        .ellipsis();
     acct_row.fixed(&lbl, 68);
-    let mut who = Choice::default();
+    let mut who = super::fit::choice();
     who.add_choice(&format!(
         "{}|{}",
         tr("chat.who_bot_accounts"),
@@ -1895,7 +1924,7 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
 
     let mut foot = Flex::default().row();
     foot.set_pad(8);
-    let status = Frame::default().with_align(Align::Left | Align::Inside);
+    let status = Frame::default().with_align(Align::Left | Align::Inside).ellipsis();
     let mut close = button(&mut foot, tr("dialogs.cancel"), 80);
     foot.end();
     col.fixed(&foot, ROW);
@@ -2211,19 +2240,41 @@ fn emote_picker_popup(
 
     let providers = emotes::providers_for(platform);
     let default_tab = providers.iter().position(|&p| p == Provider::Platform).unwrap_or(0);
-    let title_plat = match platform {
-        "twitch" => "Twitch",
-        "kick" => "Kick",
-        "youtube" => "YouTube",
-        "tiktok" => "TikTok",
-        _ => tr("chat.all_platforms"),
+    // A popover over the chat, above its box. Where the box is in a small dialog (no room) it gets a
+    // window of its own, as before.
+    let Some(parent) = target_input.top_window() else {
+        return;
     };
-    let mut win = Window::default()
-        .with_size(380, 480)
-        .with_label(&trf("chat.emotes_window_title", &[("platform", title_plat)]));
-    win.set_xclass("streamerz");
-    win.make_modal(true);
-    let mut col = Flex::new(8, 8, 364, 464, None).column();
+    let own = parent.h() < 520;
+    let mut own_win = own.then(|| {
+        let mut w = Window::default().with_size(380, 480).with_label("Streamerz");
+        w.set_xclass("streamerz");
+        w.make_modal(true);
+        w
+    });
+    let host: Box<dyn WindowExt> = match &own_win {
+        Some(w) => Box::new(w.clone()),
+        None => parent,
+    };
+    let (x, y) = if own {
+        (0, 0)
+    } else {
+        // Above the box, or below it when there's no room above.
+        let above = target_input.y() - 460.min(host.h() - 16) - 8;
+        (
+            target_input.x(),
+            if above >= 8 {
+                above
+            } else {
+                target_input.y() + target_input.h() + 8
+            },
+        )
+    };
+    let mut pop = super::popover::Popover::start(host, x, y, 380, if own { 480 } else { 460 });
+    let (pw, ph) = pop.size();
+    let done = pop.done.clone();
+    let mut col = Flex::new(0, 0, pw, ph, None).column();
+    col.set_margin(8);
     col.set_pad(8);
 
     let mut tab_bar = Flex::default().row();
@@ -2250,15 +2301,15 @@ fn emote_picker_popup(
     };
     let mut sub = Frame::default()
         .with_label(&format!("{who}{}", tr("chat.emote_picker_help")))
-        .with_align(Align::Left | Align::Inside | Align::Clip);
+        .with_align(Align::Left | Align::Inside | Align::Clip)
+        .ellipsis();
     sub.set_label_size(11);
     sub.set_label_color(super::muted());
     col.fixed(&sub, 14);
 
     let grid = super::grid::Grid::new(cmds);
     col.end();
-    win.end();
-    win.resizable(&grid.area);
+    pop.finish();
 
     let cur_tab = Rc::new(Cell::new(default_tab));
     let collapsed: Rc<RefCell<HashSet<String>>> = Rc::default();
@@ -2356,22 +2407,17 @@ fn emote_picker_popup(
         let fill = fill.clone();
         move |_| fill(false)
     });
-    let done = Rc::new(Cell::new(false));
-    win.set_callback({
-        let done = done.clone();
-        move |_| done.set(true)
-    });
-
     style_tabs(default_tab);
-    win.show();
-    col.layout();
+    if let Some(w) = &mut own_win {
+        w.show();
+    }
     fill(false);
     let _ = search.take_focus();
 
     let mut pics = img::ARRIVED.load(std::sync::atomic::Ordering::Relaxed);
     let mut seen_rev = emotes::REV.load(std::sync::atomic::Ordering::Relaxed);
     let mut picked = false;
-    while win.shown() && !done.get() {
+    while !done.get() && own_win.as_ref().is_none_or(|w| w.shown()) {
         let _ = app::wait_for(0.25);
         let asked: Vec<super::grid::Asked> = grid.asked.borrow_mut().drain(..).collect();
         let mut refill = false;
@@ -2415,8 +2461,11 @@ fn emote_picker_popup(
             fill(true);
         }
     }
-    win.hide();
-    app::delete_widget(win);
+    pop.close();
+    if let Some(mut w) = own_win {
+        w.hide();
+        app::delete_widget(w);
+    }
     if picked {
         let _ = target_input.take_focus();
     }
@@ -2431,172 +2480,4 @@ fn shown_platforms(cmds: &Cmds) -> Vec<usize> {
             .collect()
     })
     .unwrap_or_default()
-}
-
-/// Label and value rows.
-type Facts = Vec<(String, String)>;
-
-/// A chatter's card: what chat said about them this session, then what their platform says (asked
-/// when it opens). Double click a row to copy its value.
-fn card(cmds: &Cmds, l: &Line) {
-    let (p, id) = (l.platform.clone(), l.user_id.clone());
-    let seen = query(cmds, move |e| e.chatter(&p, &id)).flatten().unwrap_or_default();
-    let platform = NAMES[PLATFORMS.iter().position(|x| *x == l.platform).unwrap_or(0)];
-    let mut win = Window::default().with_size(460, 480).with_label(&trf(
-        "chat.user_on_platform",
-        &[("user", &l.user), ("platform", platform)],
-    ));
-    win.set_xclass("streamerz");
-    let mut col = Flex::new(10, 10, 440, 460, None).column();
-    col.set_pad(8);
-    let mut head = Flex::default().row();
-    head.set_pad(8);
-    let pic = Frame::default();
-    head.fixed(&pic, 64);
-    let mut name = Frame::default()
-        .with_label(&format!("  {}", l.user.replace('@', "@@")))
-        .with_align(Align::Left | Align::Inside | Align::ImageNextToText);
-    name.set_label_font(Font::HelveticaBold);
-    name.set_label_size(20);
-    name.set_label_color(name_color(l));
-    name.set_image(img::logo(platform, 20));
-    head.end();
-    col.fixed(&head, 64);
-    let mut rows = InfoRows::new("");
-    rows.set_column_widths(&[150]);
-    let mut bottom = Flex::default().row();
-    bottom.set_pad(8);
-    Frame::default();
-    let mut open = button(&mut bottom, "Open profile", 110);
-    let mut close = button(&mut bottom, tr("dialogs.close"), 80);
-    bottom.end();
-    col.fixed(&bottom, ROW);
-    col.end();
-    win.end();
-    win.resizable(&*rows);
-
-    let add = |rows: &mut InfoRows, k: &str, v: &str| {
-        rows.add(&format!("{k}\t{}", v.replace(['\n', '\t'], " ")));
-    };
-    let roles: Vec<&str> = [
-        (l.broadcaster, tr("chat.card_broadcaster")),
-        (l.moderator, tr("chat.card_moderator")),
-        (l.vip, tr("chat.card_vip")),
-        (l.subscriber, tr("chat.card_subscriber")),
-    ]
-    .iter()
-    .filter(|r| r.0)
-    .map(|r| r.1)
-    .collect();
-    add(
-        &mut rows,
-        tr("chat.card_roles"),
-        &if roles.is_empty() {
-            tr("chat.card_viewer").into()
-        } else {
-            roles.join(", ")
-        },
-    );
-    add(&mut rows, tr("chat.card_messages_session"), &seen.messages.to_string());
-    add(&mut rows, tr("chat.card_first_message"), &seen.first);
-    if !seen.args.contains_key("userId") {
-        add(&mut rows, "userId", &l.user_id);
-    }
-    let s = |v: &serde_json::Value| v.as_str().map_or_else(|| v.to_string(), str::to_string);
-    // As the actions get them (%userName%...); "user" is the name above.
-    for (k, v) in seen.args.iter().filter(|a| a.0 != "user") {
-        add(&mut rows, k, &s(v));
-    }
-    let asks = matches!(l.platform.as_str(), "twitch" | "kick");
-    if asks {
-        add(
-            &mut rows,
-            &trf("chat.card_platform_says", &[("platform", platform)]),
-            tr("chat.card_looking_up"),
-        );
-    }
-    rows.set_callback(|b| {
-        if app::event_clicks() {
-            if let Some(t) = b.selected_text() {
-                app::copy(t.split_once('\t').map_or(t.as_str(), |x| x.1));
-                crate::say(tr("chat.copied").into());
-            }
-        }
-    });
-    let login = seen.args.get("userName").map(s).unwrap_or_else(|| l.user.clone());
-    let url: Rc<RefCell<String>> = Rc::new(RefCell::new(match l.platform.as_str() {
-        "twitch" => format!("https://twitch.tv/{}", login.to_lowercase()),
-        "youtube" => format!("https://youtube.com/channel/{}", l.user_id),
-        "kick" => format!("https://kick.com/{}", login.to_lowercase()),
-        _ => format!("https://tiktok.com/@{login}"),
-    }));
-    open.set_callback({
-        let url = url.clone();
-        move |_| crate::oauth::open_browser(&url.borrow())
-    });
-    close.set_callback({
-        let mut win = win.clone();
-        move |_| win.hide()
-    });
-    win.show();
-
-    let picture = seen
-        .args
-        .iter()
-        .find(|(k, v)| k.contains("rofile") && s(v).starts_with("http"))
-        .map(|(_, v)| s(v))
-        .unwrap_or_default();
-    let picture = Rc::new(RefCell::new(picture));
-    let answer: Arc<std::sync::Mutex<Option<Facts>>> = Arc::default();
-    if asks {
-        let (p, id, answer) = (l.platform.clone(), l.user_id.clone(), answer.clone());
-        tell(cmds, move |e| {
-            let e = e.clone();
-            tokio::task::spawn_local(async move {
-                let r = e.chatter_lookup(&p, &id).await;
-                if let Ok(mut a) = answer.lock() {
-                    *a = Some(r);
-                }
-            });
-        });
-    }
-    let (cmds, tries) = (cmds.clone(), Rc::new(Cell::new(0)));
-    let mut asked = asks;
-    let mut pic = pic;
-    app::add_timeout3(0.0, move |h| {
-        if !win.shown() {
-            return;
-        }
-        tries.set(tries.get() + 1);
-        if asked {
-            if let Some(found) = answer.lock().ok().and_then(|mut a| a.take()) {
-                asked = false;
-                rows.remove(rows.size());
-                if found.is_empty() {
-                    add(&mut rows, &format!("{platform} says"), "nothing (not connected?)");
-                }
-                for (k, v) in found {
-                    match k.as_str() {
-                        "Picture" => *picture.borrow_mut() = v,
-                        "Channel" => *url.borrow_mut() = format!("https://kick.com/{v}"),
-                        _ => add(&mut rows, &k, &v),
-                    }
-                }
-                rows.redraw();
-            }
-        }
-        let mut waiting = asked;
-        if pic.image().is_none() && !picture.borrow().is_empty() {
-            match img::get(&cmds, &picture.borrow(), 64, true) {
-                Some(p) => {
-                    pic.set_image(Some(p.first()));
-                    pic.redraw();
-                }
-                None => waiting = true,
-            }
-        }
-        if waiting && tries.get() < 75 {
-            app::repeat_timeout3(0.2, h);
-        }
-    });
 }

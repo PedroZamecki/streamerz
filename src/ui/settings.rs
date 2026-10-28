@@ -1,6 +1,8 @@
 //! The Settings page: sections of settings, each a name, a line on what it does, and its control.
 //! A change applies and saves at once.
 
+use super::fit::Ellipsis;
+use super::Theme;
 use super::{button, icons, tell, ROW};
 use crate::i18n::{self, tr, trf};
 use crate::update::Updates;
@@ -9,7 +11,6 @@ use fltk::button::ToggleButton;
 use fltk::enums::{Align, Color, Font};
 use fltk::frame::Frame;
 use fltk::group::{Flex, Wizard};
-use fltk::menu::Choice;
 use fltk::prelude::*;
 use fltk::{app, draw};
 use std::sync::Arc;
@@ -42,7 +43,8 @@ fn put(cfg: &Cfg, f: impl FnOnce(&mut Config)) {
 fn section(col: &mut Flex, title: &str, icon: &str) {
     let mut f = Frame::default()
         .with_label(title)
-        .with_align(Align::Left | Align::Inside | Align::ImageNextToText);
+        .with_align(Align::Left | Align::Inside | Align::ImageNextToText)
+        .ellipsis();
     f.set_label_font(Font::HelveticaBold);
     f.set_label_size(15);
     f.set_image(icons::before_label(icon, Color::Foreground, 16));
@@ -58,19 +60,23 @@ fn setting(col: &mut Flex, name: &str, about: &str, w: i32) -> Flex {
     text.set_pad(0);
     let mut n = Frame::default()
         .with_label(name)
-        .with_align(Align::Left | Align::Inside | Align::Bottom);
+        .with_align(Align::Left | Align::Inside | Align::Bottom)
+        .ellipsis();
     n.set_label_size(14);
     let mut a = Frame::default()
         .with_label(&about.replace('@', "@@"))
-        .with_align(Align::Left | Align::Inside | Align::Top | Align::Clip);
+        .with_align(Align::Left | Align::Inside | Align::Top | Align::Clip)
+        .ellipsis();
     a.set_label_size(12);
     a.set_label_color(super::muted());
+    // Too long for the line: cut, and whole when pointed at.
+    a.set_tooltip(&about.replace('@', "@@"));
     text.end();
-    let _ = (n, a);
     col.fixed(&row, 44);
     // The control, centred in the line's height.
     let mut right = Flex::default().column();
     Frame::default();
+    WidgetExt::set_size(&mut right, w, ROW);
     row.fixed(&right, w);
     right.set_pad(0);
     right
@@ -81,7 +87,12 @@ fn done(mut right: Flex, control: &impl WidgetExt) {
     right.fixed(control, ROW);
     Frame::default();
     right.end();
-    if let Some(row) = right.parent() {
+    if let Some(mut row) = right.parent().and_then(|p| fltk::group::Flex::from_dyn_widget(&p)) {
+        // The control gives way before the text does: at most what it asked for, at least a stub.
+        let want = right.w();
+        row.resize_callback(move |r, _, _, w, _| {
+            r.fixed(&right, want.min((w - 190).max(64)));
+        });
         row.end();
     }
 }
@@ -124,43 +135,98 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     let (scroll, mut col) = super::tab_scrolled(tabs, "Settings", 620);
     col.set_pad(2);
     let c = cfg.borrow();
-    let (dark, hidden, autostart, updates) = (c.dark, c.start_hidden, c.autostart, c.updates);
+    let chosen = c.theme.unwrap_or(if c.dark { Theme::Dark } else { Theme::Light });
+    let (hidden, autostart, updates) = (c.start_hidden, c.autostart, c.updates);
     let locale = c.locale.clone();
     let (date_f, time_f, instance) = (c.date_format.clone(), c.time_format.clone(), c.instance_name.clone());
     drop(c);
 
+    section(&mut col, tr("settings.about"), "info");
+    let mut row = Flex::default().row();
+    row.set_pad(14);
+    let mut logo = Frame::default();
+    logo.draw(|f| {
+        if let Some(mut l) = icons::logo(icons::is_dark(), 56) {
+            l.draw(f.x(), f.y() + (f.h() - 56) / 2, 56, 56);
+        }
+    });
+    row.fixed(&logo, 56);
+    let mut text = Flex::default().column();
+    text.set_pad(0);
+    let mut name = Frame::default()
+        .with_label(&trf("settings.about.version", &[("version", crate::brand::VERSION)]))
+        .with_align(Align::Left | Align::Inside | Align::Bottom)
+        .ellipsis();
+    name.set_label_font(Font::HelveticaBold);
+    name.set_label_size(16);
+    let mut tag = Frame::default()
+        .with_label(tr("settings.about.tagline"))
+        .with_align(Align::Left | Align::Inside | Align::Top)
+        .ellipsis();
+    tag.set_label_color(super::muted());
+    text.end();
+    let mut right = Flex::default().column();
+    Frame::default();
+    let mut github = button(&mut right, tr("btn.open_github"), 130);
+    right.fixed(&github, ROW);
+    Frame::default();
+    right.end();
+    row.fixed(&right, 150);
+    github.set_callback(|_| crate::oauth::open_browser(&format!("https://github.com/{}", crate::brand::REPO)));
+    row.end();
+    col.fixed(&row, 64);
+
     section(&mut col, tr("settings.appearance"), "sun");
     let r = setting(&mut col, tr("settings.theme"), tr("settings.theme.about"), 200);
-    let mut theme = Choice::default();
-    theme.add_choice(&format!("{}|{}", tr("settings.theme.dark"), tr("settings.theme.light")));
-    theme.set_value(i32::from(!dark));
+    let mut theme = super::fit::choice();
+    let system = if super::system_is_dark() {
+        tr("settings.theme.dark")
+    } else {
+        tr("settings.theme.light")
+    };
+    theme.add_choice(&format!(
+        "{}|{}|{}",
+        trf("settings.theme.system", &[("theme", system)]),
+        tr("settings.theme.dark"),
+        tr("settings.theme.light")
+    ));
+    theme.set_value(match chosen {
+        Theme::System => 0,
+        Theme::Dark => 1,
+        Theme::Light => 2,
+    });
     done(r, &theme);
     theme.set_callback({
         let cfg = cfg.clone();
         move |t| {
-            let dark = t.value() == 0;
-            put(&cfg, |c| c.dark = dark);
-            super::theme(dark);
-            super::window_icons(dark);
-            if let Some(mut w) = app::first_window() {
-                w.redraw();
-            }
+            let picked = [Theme::System, Theme::Dark, Theme::Light][t.value().clamp(0, 2) as usize];
+            put(&cfg, |c| c.theme = Some(picked));
+            // The window applies it (and keeps `dark` in step) as it would a change of the desktop's.
+            super::theme_changed();
         }
     });
 
     let r = setting(&mut col, tr("settings.language"), tr("settings.language.about"), 200);
-    let mut language = Choice::default();
+    let mut language = super::fit::choice();
     let languages: Vec<(&str, String)> = i18n::all().map(|(code, name)| (code, name.to_string())).collect();
-    language.add_choice(&items(&languages.iter().map(|l| l.1.clone()).collect::<Vec<_>>()));
-    language.set_value(languages.iter().position(|l| l.0 == locale).unwrap_or(0) as i32);
+    let detected = languages
+        .iter()
+        .find(|l| l.0 == i18n::detect())
+        .map_or("", |l| l.1.as_str());
+    let mut names = vec![trf("settings.language.auto", &[("language", detected)])];
+    names.extend(languages.iter().map(|l| l.1.clone()));
+    language.add_choice(&items(&names));
+    language.set_value(languages.iter().position(|l| l.0 == locale).map_or(0, |i| i as i32 + 1));
     done(r, &language);
     language.set_callback({
         let cfg = cfg.clone();
         move |l| {
-            if let Some((code, _)) = i18n::all().nth(l.value().max(0) as usize) {
-                put(&cfg, |c| c.locale = code.into());
-                i18n::set(code);
-            }
+            // The first is "automatic": no language saved, the system's followed.
+            let code = i18n::all()
+                .nth((l.value().max(0) as usize).wrapping_sub(1))
+                .map_or("", |l| l.0);
+            put(&cfg, |c| c.locale = code.into());
+            i18n::set(code);
         }
     });
 
@@ -204,7 +270,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     let system = crate::fmt::locale_patterns();
     let example = |d: &str, fallback: &str| crate::fmt::date(&now, if d.is_empty() { fallback } else { d });
     let r = setting(&mut col, tr("settings.dates"), tr("settings.dates.about"), 200);
-    let mut dates = Choice::default();
+    let mut dates = super::fit::choice();
     let names: Vec<String> = DATES
         .iter()
         .map(|d| match *d {
@@ -216,7 +282,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     dates.set_value(DATES.iter().position(|d| *d == date_f).unwrap_or(0) as i32);
     done(r, &dates);
     let r = setting(&mut col, tr("settings.times"), tr("settings.times.about"), 200);
-    let mut times = Choice::default();
+    let mut times = super::fit::choice();
     let names: Vec<String> = TIMES
         .iter()
         .map(|t| match *t {
@@ -247,12 +313,15 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     let r = setting(
         &mut col,
         tr("settings.new_versions"),
-        &trf("settings.new_versions.about", &[("version", &version)]),
+        &match crate::update::found() {
+            Some(tag) => trf("settings.new_versions.found", &[("version", &tag)]),
+            None => trf("settings.new_versions.about", &[("version", &version)]),
+        },
         320,
     );
     let mut row = Flex::default().row();
     row.set_pad(8);
-    let mut upd = Choice::default();
+    let mut upd = super::fit::choice();
     upd.add_choice(&format!(
         "{}|{}|{}",
         tr("settings.updates.ask"),
@@ -263,6 +332,14 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     let mut check = button(&mut row, tr("settings.check_now"), 110);
     check.set_image(icons::before_label("refresh-cw", super::button_ink(), 14));
     check.set_align(Align::ImageNextToText);
+    // Little room: the button keeps only its icon.
+    let full = super::fit::grown(110, tr("settings.check_now"), true);
+    row.resize_callback({
+        let check = check.clone();
+        move |r, _, _, w, _| {
+            r.fixed(&check, if w >= 140 + full { full } else { 34 });
+        }
+    });
     row.end();
     done(r, &row);
     upd.set_callback({
@@ -284,11 +361,12 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
 
     section(&mut col, tr("settings.files"), "folder");
     let path = crate::config_path();
-    let r = setting(&mut col, tr("settings.settings_file"), &path.display().to_string(), 290);
+    let r = setting(&mut col, tr("settings.settings_file"), &path.display().to_string(), 430);
     let mut row = Flex::default().row();
     row.set_pad(8);
     let mut copy = button(&mut row, tr("btn.copy_path"), 110);
     let mut open = button(&mut row, tr("btn.open_folder"), 120);
+    let mut change = button(&mut row, tr("btn.change"), 90);
     row.end();
     done(r, &row);
     copy.set_callback({
@@ -298,6 +376,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
             crate::say("Copied the settings file's path".into());
         }
     });
+    change.set_callback(move |_| change_location());
     open.set_callback({
         let dir = path.parent().map(|d| d.display().to_string()).unwrap_or_default();
         move |_| crate::oauth::open_browser(&dir)
@@ -324,4 +403,42 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     Frame::default();
     col.end();
     scroll.end();
+}
+
+/// Settings > Files > Change: copies the settings file to a folder picked and makes that the place from
+/// the next start on (the old file stays where it was).
+fn change_location() {
+    let mut c = fltk::dialog::NativeFileChooser::new(fltk::dialog::NativeFileChooserType::BrowseDir);
+    let _ = c.set_directory(
+        &crate::config_path()
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default(),
+    );
+    c.show();
+    let dir = c.filename();
+    if dir.as_os_str().is_empty() {
+        return;
+    }
+    let (from, to) = (crate::config_path(), dir.join("streamerz.json"));
+    if to == from {
+        return;
+    }
+    let done = std::fs::create_dir_all(&dir)
+        .and_then(|()| if to.exists() { Ok(0) } else { std::fs::copy(&from, &to) })
+        .and_then(|_| crate::remember_location(&to));
+    match done {
+        Ok(()) => {
+            let extra = if cfg!(windows) {
+                ""
+            } else {
+                tr("settings.location.relogin")
+            };
+            super::dialogs::message(&format!(
+                "{}{extra}",
+                trf("settings.location.moved", &[("path", &to.display().to_string())])
+            ));
+        }
+        Err(e) => super::dialogs::alert(&trf("location.cant_use", &[("error", &e.to_string())])),
+    }
 }

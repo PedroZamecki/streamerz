@@ -1,6 +1,7 @@
 //! The Accounts tab: one row per platform (status, channel, Connect, broadcaster and bot logins),
 //! with the rarely needed settings behind Advanced.
 
+use super::fit::Ellipsis;
 use super::lists::save;
 use super::{button, dialogs, query, tell, ROW};
 use crate::engine::Engine;
@@ -8,7 +9,6 @@ use crate::i18n::{button_id, tr, trf};
 use crate::model::Obj;
 use crate::Config;
 use fltk::button::{Button, CheckButton};
-use fltk::dialog;
 use fltk::enums::Align;
 use fltk::frame::Frame;
 use fltk::group::{Flex, Wizard};
@@ -315,7 +315,7 @@ pub(super) fn unlock_logins_interactive(cmds: &Cmds) {
                 }
                 Ok(false) => {}
                 Err(err) => {
-                    dialog::alert_default(&trf("accounts.keyring_unlock_failed", &[("error", &err.to_string())]));
+                    super::dialogs::alert(&trf("accounts.keyring_unlock_failed", &[("error", &err.to_string())]));
                 }
             }
             break;
@@ -478,6 +478,8 @@ struct Row {
     adv: Button,
     /// Broadcaster, then bot: profile picture, name and Login/Logout.
     who: [(Frame, Frame, Button); 2],
+    /// The row they sit in: Login and Logout have different words, so the button's width follows them.
+    bottom: Flex,
 }
 
 pub struct Accounts {
@@ -562,11 +564,13 @@ impl Accounts {
                         name.set_tooltip(&n.replace('@', "@@"));
                         b.set_label(tr("btn.logout"));
                         super::with_icon(b);
+                        r.bottom.fixed(b, super::fit::grown(80, tr("btn.logout"), true));
                     }
                     None => {
                         name.set_label(&trf("accounts.no_who", &[("who", &who.to_lowercase())]));
                         b.set_label(tr("btn.login"));
                         super::with_icon(b);
+                        r.bottom.fixed(b, super::fit::grown(80, tr("btn.login"), true));
                     }
                 }
                 let raw_name = r.p.raw_account_name(&c, bot == 1);
@@ -584,7 +588,9 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
 
     let mut lock_bar = Flex::default().row();
     lock_bar.set_pad(8);
-    let lock_msg = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+    let lock_msg = Frame::default()
+        .with_align(Align::Left | Align::Inside | Align::Clip)
+        .ellipsis();
     let mut unlock_btn = button(&mut lock_bar, tr("accounts.unlock_logins"), 120);
     lock_bar.end();
     col.fixed(&lock_bar, ROW);
@@ -596,11 +602,14 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
         top.set_pad(8);
         let mut name = Frame::default()
             .with_label(&format!("  {}", p.name()))
-            .with_align(Align::Left | Align::Inside | Align::ImageNextToText);
+            .with_align(Align::Left | Align::Inside | Align::ImageNextToText)
+            .ellipsis();
         name.set_label_font(fltk::enums::Font::HelveticaBold);
         name.set_image(super::img::logo(p.name(), ROW - 8));
         top.fixed(&name, 110);
-        let status = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+        let status = Frame::default()
+            .with_align(Align::Left | Align::Inside | Align::Clip)
+            .ellipsis();
         let auto = CheckButton::default().with_label(tr("accounts.connect_on_start"));
         top.fixed(&auto, 140);
         let connect = button(&mut top, tr("btn.connect"), 100);
@@ -612,14 +621,18 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
         bottom.set_pad(8);
         let gap = Frame::default();
         bottom.fixed(&gap, 110);
-        let mut channel = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+        let mut channel = Frame::default()
+            .with_align(Align::Left | Align::Inside | Align::Clip)
+            .ellipsis();
         channel.set_label_color(super::muted());
         bottom.fixed(&channel, 120);
         let mut who = Vec::new();
         for _ in 0..2 {
             let pic = Frame::default();
             bottom.fixed(&pic, ROW);
-            let f = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+            let f = Frame::default()
+                .with_align(Align::Left | Align::Inside | Align::Clip)
+                .ellipsis();
             let b = button(&mut bottom, tr("btn.login"), 80);
             who.push((pic, f, b));
         }
@@ -636,6 +649,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
             auto,
             connect,
             who,
+            bottom,
         });
     }
     let guide = Frame::default()
@@ -819,7 +833,7 @@ fn browser_login<T: Send + 'static>(
         if let Ok(res) = rx.try_recv() {
             match res {
                 Ok(a) => out = Some(a),
-                Err(e) => dialog::alert_default(&trf(
+                Err(e) => super::dialogs::alert(&trf(
                     "accounts.browser_login_failed",
                     &[("what", what), ("error", &e.to_string())],
                 )),
@@ -975,7 +989,7 @@ fn tiktok_login(cfg: &Cfg, bot: bool) {
                         &mut c.tiktok.broadcaster
                     } = a;
                 }),
-                Err(e) => dialog::alert_default(&trf("accounts.tiktok_login_failed", &[("error", &e.to_string())])),
+                Err(e) => super::dialogs::alert(&trf("accounts.tiktok_login_failed", &[("error", &e.to_string())])),
             }
             break;
         }
@@ -1003,7 +1017,7 @@ fn device_login(cfg: &Cfg, cmds: &Cmds, as_bot: bool) {
     let code_resp = match rx.recv() {
         Ok(Ok(resp)) => resp,
         Ok(Err(e)) => {
-            dialog::alert_default(&trf(
+            super::dialogs::alert(&trf(
                 "accounts.twitch_device.start_failed",
                 &[("error", &e.to_string())],
             ));
@@ -1130,12 +1144,12 @@ fn device_login(cfg: &Cfg, cmds: &Cmds, as_bot: bool) {
             match res {
                 Ok(name) => {
                     win.hide();
-                    dialog::message_default(&trf("accounts.twitch_device.success", &[("who", who), ("name", &name)]));
+                    super::dialogs::message(&trf("accounts.twitch_device.success", &[("who", who), ("name", &name)]));
                     break;
                 }
                 Err(e) => {
                     win.hide();
-                    dialog::alert_default(&trf("accounts.twitch_device.failed", &[("error", &e.to_string())]));
+                    super::dialogs::alert(&trf("accounts.twitch_device.failed", &[("error", &e.to_string())]));
                     break;
                 }
             }

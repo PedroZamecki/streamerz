@@ -1,9 +1,9 @@
 # Plugins
 
-streamerz runs WebAssembly plugins from the `plugins` folder next to `streamerz.json` (Plugins page,
+Streamerz runs WebAssembly plugins from the `plugins` folder next to `streamerz.json` (Plugins page,
 Open folder). A plugin is one `.wasm` file; its file name is its id. Plugins are off until turned on in
-the Plugins page, and one that's off isn't loaded. They run in an interpreter (wasmi) on streamerz's
-engine thread, with no access to files or the network except what streamerz offers below, and each
+the Plugins page, and one that's off isn't loaded. They run in an interpreter (wasmi) on Streamerz's
+engine thread, with no access to files or the network except what Streamerz offers below, and each
 event may run up to 200 million instructions before it's stopped.
 
 `plugins/dice` is a complete example in Rust:
@@ -17,7 +17,7 @@ Any language that compiles to WebAssembly works; JSON is the only format.
 ## What a plugin exports
 
 - `memory`
-- `alloc(len: i32) -> i32`: room for `len` bytes streamerz writes JSON into (the plugin owns it then).
+- `alloc(len: i32) -> i32`: room for `len` bytes Streamerz writes JSON into (the plugin owns it then).
 - `manifest() -> i64`: its manifest, as JSON (see below).
 - `on_event(ptr: i32, len: i32) -> i64`: an event, as JSON; its answer, or 0.
 
@@ -63,7 +63,7 @@ index). `events` are the Streamer.bot trigger names it hears (`"*"` for all).
 
 | kind | with |
 |---|---|
-| `start` | `settings`: it was turned on (or streamerz started) |
+| `start` | `settings`: it was turned on (or Streamerz started) |
 | `settings` | `settings`: they changed |
 | `trigger` | `name`, `args`: a trigger it listens to fired |
 | `subaction` | `name`, `fields`, `args`: one of its sub-actions runs; answer `{"args": {...}}` to add variables, `{"stop": true}` to stop the action |

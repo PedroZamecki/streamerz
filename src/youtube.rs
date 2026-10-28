@@ -1,4 +1,4 @@
-//! YouTube integration for streamerz (Phase 11):
+//! YouTube integration for Streamerz (Phase 11):
 //! - Zero-login public read via InnerTube / live_chat endpoint.
 //! - Chat messages, Super Chats, Super Stickers, Memberships, Member Milestones, Gifts, Polls.
 //! - Official YouTube Data API v3 with OAuth for sending chat, moderation, and updating broadcast metadata.
@@ -1417,6 +1417,7 @@ pub fn innertube_action_to_line(act: &Value) -> Option<crate::engine::chatlog::L
     };
     Some(crate::engine::chatlog::Line {
         platform: "youtube".into(),
+        ts: usec / 1000,
         msg_id,
         time,
         user,

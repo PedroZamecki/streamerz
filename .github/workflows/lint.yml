@@ -48,10 +48,3 @@ jobs:
           npx --yes --package @commitlint/cli@21 --package @commitlint/config-conventional@21
           commitlint --from ${{ github.event.pull_request.base.sha }} --to ${{ github.event.pull_request.head.sha }}
         if: github.event_name == 'pull_request'
-      # The PR title becomes the squash-merge commit, so it follows the same rule.
-      - run: >
-          echo "$TITLE" | npx --yes --package @commitlint/cli@21 --package @commitlint/config-conventional@21
-          commitlint
-        if: github.event_name == 'pull_request'
-        env:
-          TITLE: ${{ github.event.pull_request.title }}

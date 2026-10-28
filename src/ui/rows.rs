@@ -119,21 +119,6 @@ impl Rows {
         self.area.redraw();
     }
 
-    pub fn remove(&mut self, n: i32) {
-        let mut st = self.st.borrow_mut();
-        if n < 1 || n as usize > st.lines.len() {
-            return;
-        }
-        st.lines.remove(n as usize - 1);
-        if st.sel == n {
-            st.sel = 0;
-        } else if st.sel > n {
-            st.sel -= 1;
-        }
-        drop(st);
-        self.area.redraw();
-    }
-
     pub fn size(&self) -> i32 {
         self.st.borrow().lines.len() as i32
     }
@@ -315,7 +300,10 @@ impl Rows {
                 let n = self.line_at(&st);
                 if n > 0 {
                     st.sel = n;
-                    drop(st);
+                }
+                // Not held over what follows: the menu going away moves the focus, which comes back here.
+                drop(st);
+                if n > 0 {
                     f.redraw();
                     self.fire();
                 }

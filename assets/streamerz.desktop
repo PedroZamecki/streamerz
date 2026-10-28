@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
-Name=streamerz
+Name=Streamerz
 Comment=Stream automation: chat, actions and alerts for Twitch, YouTube, Kick and TikTok
-Exec=streamerz
+Exec=Streamerz
 Icon=streamerz
 Categories=AudioVideo;Network;
 Terminal=false
 StartupWMClass=streamerz
-X-AppImage-Name=streamerz
+X-AppImage-Name=Streamerz

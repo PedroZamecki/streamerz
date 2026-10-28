@@ -1,6 +1,7 @@
 //! The Commands, Timers, Queues, History, Globals and Servers tabs. Commands, timers and WebSocket
 //! clients/servers are lists of Streamer.bot objects, each edited in a form.
 
+use super::fit::Ellipsis;
 use super::forms::{self, Done, Lists, F, W::*};
 use super::rows::Rows;
 use super::{button, dialogs, query, tell, ROW};
@@ -9,7 +10,6 @@ use crate::i18n::{tr, trf};
 use crate::model::Obj;
 use crate::Config;
 use fltk::button::Button;
-use fltk::dialog;
 use fltk::enums::{Align, Color, Font};
 use fltk::frame::Frame;
 use fltk::group::{Flex, Wizard};
@@ -59,7 +59,9 @@ pub(super) fn save(cfg: &Cfg, f: impl FnOnce(&mut Config)) {
 
 /// A section title, with the platform's or app's logo when there's one.
 pub(super) fn title(col: &mut Flex, t: &str) {
-    let mut f = Frame::default().with_align(Align::Left | Align::Inside | Align::ImageNextToText);
+    let mut f = Frame::default()
+        .with_align(Align::Left | Align::Inside | Align::ImageNextToText)
+        .ellipsis();
     f.set_label_font(Font::HelveticaBold);
     // The logo of what it's about, or an icon for it.
     let lucide = match t {
@@ -452,7 +454,7 @@ impl List {
     fn delete(&mut self) {
         let Some(id) = self.selected() else { return };
         let q = trf("lists.delete_confirm", &[("what", &tr(self.kind.what).to_lowercase())]);
-        if dialog::choice2_default(&q.replace('@', "@@"), tr("dialogs.cancel"), tr("btn.delete"), "") == Some(1) {
+        if super::dialogs::choice(&q.replace('@', "@@"), tr("dialogs.cancel"), tr("btn.delete")) {
             self.change(|l| l.retain(|o| s(o, "id") != id));
         }
     }
@@ -872,7 +874,7 @@ fn queues_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Queues>> {
                 return;
             };
             let q = tr("lists.queues.delete_confirm");
-            if dialog::choice2_default(q, tr("dialogs.cancel"), tr("btn.delete"), "") == Some(1) {
+            if super::dialogs::choice(q, tr("dialogs.cancel"), tr("btn.delete")) {
                 save(&m.cfg, |c| {
                     c.actions.queues.retain(|q| s(q, "id") != id);
                     for a in c.actions.actions.iter_mut().filter(|a| a.queue.as_deref() == Some(&id)) {
@@ -1174,7 +1176,7 @@ fn globals_tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<Globals>> {
         Box::new(move |m| {
             let Some((name, _, persisted)) = global(m) else { return };
             let q = format!("Delete the global {}?", name.replace('@', "@@"));
-            if dialog::choice2_default(&q, "Cancel", "Delete", "") == Some(1) {
+            if super::dialogs::choice(&q, "Cancel", "Delete") {
                 let _ = query(&m.cmds, move |e| e.delete_global(&name, persisted));
                 m.refresh();
             }
@@ -1193,6 +1195,8 @@ pub struct Community {
     search: fltk::input::Input,
     views: [Flex; 3],
     users: Rows,
+    /// The users in the list, as shown (the list's line n is `shown[n - 1]`).
+    shown: Vec<Obj>,
     quotes: Rows,
     credits: Rows,
 }
@@ -1221,10 +1225,12 @@ impl Community {
                 users.sort_by(|a, b| s(b, "lastActive").cmp(s(a, "lastActive")));
                 let q = self.search.value().to_lowercase();
                 self.users.clear();
-                for u in users
+                self.shown = users
                     .iter()
                     .filter(|u| q.is_empty() || s(u, "display").to_lowercase().contains(&q))
-                {
+                    .cloned()
+                    .collect();
+                for u in &self.shown {
                     let role = [
                         "",
                         tr("lists.community.role_viewer"),
@@ -1279,6 +1285,18 @@ impl Community {
                     self.credits.add("Nothing yet this stream.");
                 }
             }
+        }
+    }
+
+    /// The card of the user selected: who they are, what they said, their time here.
+    fn user_card(&self) {
+        let n = self.users.value();
+        if let Some(u) = self.shown.get((n - 1).max(0) as usize).filter(|_| n > 0) {
+            super::card::open(
+                &self.cmds,
+                super::card::Who::from_member(u),
+                (fltk::app::event_x(), fltk::app::event_y()),
+            );
         }
     }
 
@@ -1345,7 +1363,7 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
     top.set_pad(6);
     let l = Frame::default().with_label(tr("lists.community.show"));
     top.fixed(&l, 44);
-    let mut show = fltk::menu::Choice::default();
+    let mut show = super::fit::choice();
     show.add_choice(&format!(
         "{}|{}|{}",
         tr("lists.community.users"),
@@ -1411,9 +1429,12 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
         search: search.clone(),
         views: [users_v, quotes_v, credits_v],
         users,
+        shown: Vec::new(),
         quotes: quotes.clone(),
         credits,
     }));
+    // Click a user for their card.
+    users_click(&me);
     for (w, f) in [
         (
             show.as_base_widget(),
@@ -1429,13 +1450,11 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
             qb[2].as_base_widget(),
             Box::new(|m: &mut Community| {
                 let Some(id) = m.quote_id() else { return };
-                if dialog::choice2_default(
+                if super::dialogs::choice(
                     &trf("lists.community.delete_quote_confirm", &[("id", &id.to_string())]),
                     tr("dialogs.cancel"),
                     tr("btn.delete"),
-                    "",
-                ) == Some(1)
-                {
+                ) {
                     save(&m.cfg, |c| c.quotes.retain(|q| q["id"] != id));
                     m.refresh();
                 }
@@ -1562,7 +1581,7 @@ impl Servers {
         };
         let port = o.get("port").and_then(Value::as_u64).unwrap_or(0);
         if !(1..=65535).contains(&port) {
-            dialog::alert_default(tr("lists.servers.port_range_warning"));
+            super::dialogs::alert(tr("lists.servers.port_range_warning"));
             return;
         }
         let v = Value::Object(o);
@@ -1576,7 +1595,7 @@ impl Servers {
             bad = r.err();
         });
         if let Some(e) = bad {
-            dialog::alert_default(&e.to_string());
+            super::dialogs::alert(&e.to_string());
         }
         self.refresh();
     }
@@ -1591,7 +1610,7 @@ fn servers_box(col: &mut Flex, cfg: &Cfg) -> Rc<RefCell<Servers>> {
     for i in 0..3 {
         let mut r = Flex::default().row();
         r.set_pad(8);
-        let f = Frame::default().with_align(Align::Left | Align::Inside);
+        let f = Frame::default().with_align(Align::Left | Align::Inside).ellipsis();
         let mut b = button(&mut r, tr("btn.edit"), 70);
         r.end();
         col.fixed(&r, ROW);
@@ -1697,7 +1716,7 @@ fn donations_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Donations>
         col.fixed(&g, ROW);
         let mut r = Flex::default().row();
         r.set_pad(8);
-        let f = Frame::default().with_align(Align::Left | Align::Inside);
+        let f = Frame::default().with_align(Align::Left | Align::Inside).ellipsis();
         let mut b = button(&mut r, tr("btn.edit"), 70);
         r.end();
         col.fixed(&r, ROW);
@@ -1782,19 +1801,32 @@ fn groups_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Groups>> {
             let Some(id) = m.ids.get((m.view.value() - 1).max(-1) as usize).cloned() else {
                 return;
             };
-            if dialog::choice2_default(
+            if super::dialogs::choice(
                 tr("lists.groups.delete_confirm"),
                 tr("dialogs.cancel"),
                 tr("btn.delete"),
-                "",
-            ) == Some(1)
-            {
+            ) {
                 let _ = query(&m.cmds, move |e| e.remove_group(&id));
                 m.refresh();
             }
         }
     });
     me
+}
+
+/// A click on a user opens their card.
+fn users_click(me: &Rc<RefCell<Community>>) {
+    let weak = Rc::downgrade(me);
+    let mut users = me.borrow().users.clone();
+    users.set_callback(move |_| {
+        if fltk::app::event() == fltk::enums::Event::Push {
+            if let Some(m) = weak.upgrade() {
+                if let Ok(m) = m.try_borrow() {
+                    m.user_card();
+                }
+            }
+        }
+    });
 }
 
 #[cfg(test)]

@@ -127,7 +127,7 @@ pub fn profile(bot: bool) -> PathBuf {
     crate::config_path().with_file_name(if bot { "tiktok-bot" } else { "tiktok-broadcaster" })
 }
 
-/// The TikTok window (tiktok_web.rs) with `args`: its own binary on Linux, `streamerz.exe --tiktok` on
+/// The TikTok window (tiktok_web.rs) with `args`: its own binary on Linux, `Streamerz.exe --tiktok` on
 /// Windows. Also checks sibling target profiles (`release`/`debug`) so fast dev builds reuse it.
 fn helper(args: &[&std::ffi::OsStr]) -> Result<std::process::Command, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -136,24 +136,11 @@ fn helper(args: &[&std::ffi::OsStr]) -> Result<std::process::Command, String> {
         c.arg("--tiktok");
         c
     } else {
-        let mut bin = if let Some(name) = exe.file_name().and_then(|n| n.to_str()) {
-            if let Some(suffix) = name.strip_prefix("streamerz") {
-                let suffixed = exe.with_file_name(format!("streamerz-tiktok{suffix}"));
-                if suffixed.is_file() {
-                    suffixed
-                } else {
-                    exe.with_file_name("streamerz-tiktok")
-                }
-            } else {
-                exe.with_file_name("streamerz-tiktok")
-            }
-        } else {
-            exe.with_file_name("streamerz-tiktok")
-        };
+        let mut bin = exe.with_file_name("Streamerz-tiktok");
         if !bin.is_file() {
             if let Some(target_dir) = exe.parent().and_then(|p| p.parent()) {
                 for profile in ["release", "debug"] {
-                    let alt = target_dir.join(profile).join("streamerz-tiktok");
+                    let alt = target_dir.join(profile).join("Streamerz-tiktok");
                     if alt.is_file() {
                         bin = alt;
                         break;
@@ -773,6 +760,7 @@ fn tiktok_chat_line(channel: &str, d: &Value) -> Option<Line> {
         platform: "tiktok".into(),
         msg_id: s("msgId"),
         time,
+        ts: ts as i64 * 1000,
         user,
         user_id: s("userId"),
         text,

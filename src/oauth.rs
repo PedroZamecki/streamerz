@@ -100,7 +100,7 @@ impl Login {
                     )
                 } else if let Some(code) = get("code") {
                     if get("state").as_deref() == Some(self.state.as_str()) {
-                        ("Logged in to streamerz, you can close this tab.", Some(Ok(code)))
+                        ("Logged in to Streamerz, you can close this tab.", Some(Ok(code)))
                     } else {
                         (
                             "Login failed (state), you can close this tab.",

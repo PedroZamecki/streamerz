@@ -1,4 +1,4 @@
-# streamerz coverage
+# Streamerz coverage
 
 Every documented Streamer.bot trigger and sub-action in scope, from docs.streamer.bot (Streamerbot/docs). Each phase in `PLAN.md` ticks its own list here; nothing is dropped silently: an item that can't be done is struck through (`~~name~~`) with the reason.
 
@@ -218,8 +218,8 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] chat/mode: Subscriber Mode On
 - [x] chat/mode: Unique Mode Off
 - [x] chat/mode: Unique Mode On
-- [ ] chat: Modiversary (an IRC notice only; streamerz reads chat through EventSub)
-- [ ] chat: Watch Streak (an IRC notice only; streamerz reads chat through EventSub)
+- [ ] chat: Modiversary (an IRC notice only; Streamerz reads chat through EventSub)
+- [ ] chat: Watch Streak (an IRC notice only; Streamerz reads chat through EventSub)
 - [x] chat: Whispers
 - [ ] community-goal: Community Goal Contribution (PubSub only, which Twitch shut down; no EventSub or Helix)
 - [ ] community-goal: Community Goal Ended (PubSub only, which Twitch shut down; no EventSub or Helix)

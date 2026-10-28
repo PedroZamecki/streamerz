@@ -3,10 +3,13 @@
 
 mod accounts;
 mod actions;
+mod card;
 mod chat;
 mod conns;
-mod dialogs;
+mod dev;
+pub(crate) mod dialogs;
 pub(crate) mod emotes;
+pub(crate) mod fit;
 pub(crate) mod forms;
 mod grid;
 pub(crate) mod icons;
@@ -15,9 +18,11 @@ mod lists;
 mod nav;
 pub mod picker;
 mod plugins;
+pub(crate) mod popover;
 mod rows;
 mod settings;
 
+use self::fit::Ellipsis;
 use crate::brand;
 use crate::engine::{Engine, UiCmd};
 use crate::i18n::{tr, trf};
@@ -30,9 +35,8 @@ use fltk::image::RgbImage;
 use fltk::prelude::*;
 use fltk::text::{TextBuffer, TextDisplay};
 use fltk::window::Window;
-use fltk::{app, dialog, draw};
+use fltk::{app, draw};
 use std::cell::Cell;
-use std::io::Write;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -56,11 +60,78 @@ pub enum Msg {
     Image,
     /// An update is in place: restart into it.
     Restart,
+    /// The desktop's colour scheme changed.
+    Theme,
+    /// A dev command for the window (see `dev`).
+    Dev,
 }
 
 const ROW: i32 = 26;
 const W: i32 = 1000;
 const H: i32 = 700;
+
+/// How the window's colours are picked.
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Theme {
+    System,
+    Dark,
+    Light,
+}
+
+/// Whether the desktop is dark, as the tray or the system settings last said.
+static SYSTEM_DARK: AtomicBool = AtomicBool::new(true);
+
+/// The desktop's colour scheme is `dark` now: a window following it changes too.
+pub fn system_dark(dark: bool) {
+    if SYSTEM_DARK.swap(dark, Ordering::Relaxed) != dark {
+        if let Some(ui) = UI.get() {
+            ui.send(Msg::Theme);
+        }
+    }
+}
+
+/// The desktop's accent colour (0x01RRGGBB; 0 when it has none).
+static SYSTEM_ACCENT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The desktop's accent colour changed (or it has none): a window following the system changes too.
+pub fn system_accent(rgb: Option<(u8, u8, u8)>) {
+    let v = rgb.map_or(0, |(r, g, b)| {
+        0x0100_0000 | (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)
+    });
+    if SYSTEM_ACCENT.swap(v, Ordering::Relaxed) != v {
+        if let Some(ui) = UI.get() {
+            ui.send(Msg::Theme);
+        }
+    }
+}
+
+/// The accent the window uses: the desktop's when following the system, else the app's own blue.
+fn accent_of(c: &crate::Config) -> Option<(u8, u8, u8)> {
+    let v = SYSTEM_ACCENT.load(Ordering::Relaxed);
+    (c.theme == Some(Theme::System) && v != 0).then_some(((v >> 16) as u8, (v >> 8) as u8, v as u8))
+}
+
+/// The desktop's scheme is dark.
+fn system_is_dark() -> bool {
+    SYSTEM_DARK.load(Ordering::Relaxed)
+}
+
+/// The theme setting changed: apply it.
+fn theme_changed() {
+    if let Some(ui) = UI.get() {
+        ui.send(Msg::Theme);
+    }
+}
+
+/// The theme in the config, and whether it makes the window dark right now.
+fn is_dark(c: &crate::Config) -> bool {
+    match c.theme.unwrap_or(if c.dark { Theme::Dark } else { Theme::Light }) {
+        Theme::Dark => true,
+        Theme::Light => false,
+        Theme::System => SYSTEM_DARK.load(Ordering::Relaxed),
+    }
+}
 
 /// Where `logged` wakes the window, and whether it's up (no wakeups while hidden).
 static UI: OnceLock<app::Sender<Msg>> = OnceLock::new();
@@ -78,6 +149,28 @@ pub fn input(title: String, prompt: String, text: String) -> oneshot::Receiver<O
         ui.send(Msg::Input);
     }
     rx
+}
+
+/// Dev commands for the window (see `dev`): the command, and where its answer goes.
+type DevCmd = (String, oneshot::Sender<String>);
+static DEV: Mutex<Vec<DevCmd>> = Mutex::new(Vec::new());
+
+/// Runs a dev command on the window's thread (dev mode only; `None` when there's no window).
+pub fn dev(cmd: String) -> Option<oneshot::Receiver<String>> {
+    let ui = UI.get()?;
+    let (tx, rx) = oneshot::channel();
+    DEV.lock().ok()?.push((cmd, tx));
+    ui.send(Msg::Dev);
+    Some(rx)
+}
+
+/// Answers the dev commands waiting, from inside a dialog or popover that is holding the window's loop
+/// (a page can't be changed then, but a screenshot can be taken).
+pub(crate) fn pump_dev() {
+    let asked = DEV.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+    for (cmd, answer) in asked {
+        let _ = answer.send(dev::run(&cmd, None));
+    }
 }
 
 /// Yes/no questions from the engine: the text, the two buttons (no, yes), and where the answer goes.
@@ -111,7 +204,7 @@ fn ask(title: &str, prompt: &str, text: &str) -> Option<String> {
     win.set_xclass("streamerz");
     let mut col = Flex::new(10, 10, 400, 110, None).column();
     col.set_pad(6);
-    let p = Frame::default()
+    Frame::default()
         .with_label(&prompt.replace('@', "@@"))
         .with_align(Align::Left | Align::Inside | Align::Wrap);
     let mut input = fltk::input::Input::default();
@@ -124,7 +217,6 @@ fn ask(title: &str, prompt: &str, text: &str) -> Option<String> {
     let mut cancel = button(&mut bar, "Cancel", 90);
     bar.end();
     col.fixed(&bar, ROW + 4);
-    let _ = p;
     col.end();
     win.end();
     win.make_modal(true);
@@ -196,27 +288,21 @@ pub fn app() -> app::App {
     app::App::default().with_scheme(app::Scheme::Gtk)
 }
 
-/// Show a startup error; there's no console on Windows.
-#[allow(dead_code)] // ponytail: first used by the servers (port taken), phase 4.
-pub fn fatal(msg: &str) -> ! {
-    let _ = writeln!(std::io::stderr(), "{msg}");
-    dialog::alert_default(msg);
-    std::process::exit(1);
-}
-
 /// Flat, rounded and quiet (zinc colours, like shadcn/ui): every button, field, list and tab is drawn
 /// by the two box functions below, so the whole window follows.
-fn theme(dark: bool) {
+fn theme(dark: bool, accent: Option<(u8, u8, u8)>) {
     if dark {
         app::background(24, 24, 27);
         app::background2(9, 9, 11);
         app::foreground(244, 244, 245);
-        app::set_selection_color(59, 130, 246);
+        let (r, g, b) = accent.unwrap_or((59, 130, 246));
+        app::set_selection_color(r, g, b);
     } else {
         app::background(244, 244, 245);
         app::background2(255, 255, 255);
         app::foreground(9, 9, 11);
-        app::set_selection_color(37, 99, 235);
+        let (r, g, b) = accent.unwrap_or((37, 99, 235));
+        app::set_selection_color(r, g, b);
     }
     // Raised: a button, a tab, a menu button. Sunken: a field, a list, a check box.
     // Small boxes (check boxes) get small corners.
@@ -321,7 +407,8 @@ fn placeholder(i: &mut fltk::input::Input, text: &'static str) {
         if i.value().is_empty() && !i.has_focus() {
             draw::set_font(Font::Helvetica, i.text_size());
             draw::set_draw_color(muted());
-            draw::draw_text2(text, i.x() + 6, i.y(), i.w() - 12, i.h(), Align::Left | Align::Clip);
+            let shown = fit::ellipsize(text, i.w() - 12, |t| draw::width(t) as i32);
+            draw::draw_text2(&shown, i.x() + 6, i.y(), i.w() - 12, i.h(), Align::Left | Align::Clip);
         }
     });
 }
@@ -346,12 +433,13 @@ pub(crate) fn header(col: &mut Flex, widths: &'static [i32], titles: &[&'static 
 fn button(row: &mut Flex, label: &str, w: i32) -> Button {
     let mut b = Button::default().with_label(label);
     let wide = with_icon(&mut b);
-    row.fixed(&b, w + if wide { 20 } else { 0 });
+    row.fixed(&b, fit::grown(w + if wide { 20 } else { 0 }, label, wide));
     b
 }
 
 /// The icon of a button's label (call again after relabelling it) (Add, Edit, Delete...) before it, if it has one; true if so.
 pub(crate) fn with_icon(b: &mut Button) -> bool {
+    fit::adaptive(b);
     match icon_for(&b.label()) {
         Some(name) => {
             b.set_image(icons::before_label(name, button_ink(), 14));
@@ -394,15 +482,38 @@ fn icon_for(label: &str) -> Option<&'static str> {
         "settings" => "settings",
         "fill_with_test_names" => "users",
         "open_folder" => "folder-open",
+        "open_github" => "external-link",
+        "browse" => "folder-open",
+        "user_info" => "user-round",
+        "change" => "folder-open",
         "open" | "open_file" | "open_profile" | "open_browser" => "external-link",
         _ => return None,
     })
 }
 
+/// A menu button at the pointer, in the window the pointer is in. Wayland places a popup relative to the
+/// window of the widget that opens it (a button with no window opens it in the corner), and refuses an
+/// empty box, so it is 1x1.
+pub(crate) fn menu_at_pointer() -> fltk::menu::MenuButton {
+    let host: Option<Box<dyn WindowExt>> = app::belowmouse::<fltk::widget::Widget>()
+        .and_then(|w| w.window())
+        .or_else(|| app::first_window().map(|w| Box::new(w) as Box<dyn WindowExt>));
+    if let Some(h) = &host {
+        h.begin();
+    }
+    let m = fltk::menu::MenuButton::new(app::event_x(), app::event_y(), 1, 1, None);
+    if let Some(h) = host {
+        h.end();
+        // Not dropped: a window got this way owns its widget, and dropping it would delete the window.
+        std::mem::forget(h);
+    }
+    m
+}
+
 /// The menu a right click opens: `buttons`' actions, the inactive ones greyed. Runs the one picked.
 pub(crate) fn context_menu(buttons: &[Button]) {
     use fltk::menu::{MenuButton, MenuFlag};
-    let mut m = MenuButton::new(app::event_x(), app::event_y(), 0, 0, None);
+    let mut m = menu_at_pointer();
     for b in buttons {
         let l = b.label();
         let l = if l.is_empty() {
@@ -554,15 +665,21 @@ pub fn run(
     tx: app::Sender<Msg>,
     rx: app::Receiver<Msg>,
 ) {
+    #[cfg(windows)]
+    {
+        SYSTEM_DARK.store(crate::tray::apps_dark(), Ordering::Relaxed);
+        system_accent(crate::tray::accent());
+    }
     let (c_dark, c_hidden) = {
         let c = cfg.borrow();
-        (c.dark, c.start_hidden)
+        (is_dark(&c), c.start_hidden)
     };
     let _ = UI.set(tx);
     if CONFIRMS.lock().is_ok_and(|q| !q.is_empty()) {
         tx.send(Msg::Input);
     }
-    theme(c_dark);
+    let c_accent = accent_of(&cfg.borrow());
+    theme(c_dark, c_accent);
     // Pictures drawn bigger than they are come out smooth, not blocky.
     RgbImage::set_scaling_algorithm(fltk::image::RgbScaling::Bilinear);
     fltk::image::Image::set_scaling_algorithm(fltk::image::RgbScaling::Bilinear);
@@ -604,7 +721,7 @@ pub fn run(
     let mut conns = Button::default().with_align(Align::Left | Align::Inside);
     conns.set_frame(fltk::enums::FrameType::NoBox);
     bar.fixed(&conns, 240);
-    let mut saved = Frame::default().with_align(Align::Left | Align::Inside);
+    let mut saved = Frame::default().with_align(Align::Left | Align::Inside).ellipsis();
     let mut hide = button(&mut bar, tr("btn.hide"), 90);
     let mut quit = button(&mut bar, tr("btn.quit"), 90);
     bar.end();
@@ -620,7 +737,7 @@ pub fn run(
             tabs.set_current_widget(&p);
         }
     }
-    // Kept as it changes, written with the next save (and when the window hides or streamerz quits).
+    // Kept as it changes, written with the next save (and when the window hides or Streamerz quits).
     let remember = {
         let cfg = cfg.clone();
         let cmds = cmds.clone();
@@ -632,7 +749,6 @@ pub fn run(
             let _ = crate::save(&cfg.borrow());
             // Waited for: Quit exits right after.
             let _ = query(&cmds, |e| {
-                e.save_chat_history();
                 e.save_community();
             });
         }
@@ -687,7 +803,7 @@ pub fn run(
         let (win, remember) = (win.clone(), remember.clone());
         move |_| {
             remember(&win);
-            std::process::exit(0)
+            crate::crash::quit(0)
         }
     });
     let restart = remember.clone();
@@ -710,7 +826,7 @@ pub fn run(
             if app::event() == Event::Close {
                 close(w);
                 if !tray_ok.get() {
-                    std::process::exit(0);
+                    crate::crash::quit(0);
                 }
             }
         }
@@ -721,6 +837,12 @@ pub fn run(
     // and loads the fonts (~14 MB) even with the window hidden.
     let open = |win: &mut Window, log: &mut Log| {
         if !win.visible() {
+            // Windows tells no one when its colours change: ask as the window opens.
+            #[cfg(windows)]
+            {
+                system_dark(crate::tray::apps_dark());
+                system_accent(crate::tray::accent());
+            }
             SHOWN.store(true, Ordering::Relaxed);
             acts.borrow_mut().refresh();
             views.refresh(&tabs);
@@ -732,12 +854,7 @@ pub fn run(
                 let cmds = cmds.clone();
                 app::add_timeout3(0.25, move |_| {
                     if crate::secrets::is_locked()
-                        && dialog::choice2_default(
-                            tr("ui.unlock_prompt"),
-                            tr("ui.unlock_later"),
-                            tr("ui.unlock_now"),
-                            "",
-                        ) == Some(1)
+                        && dialogs::choice(tr("ui.unlock_prompt"), tr("ui.unlock_later"), tr("ui.unlock_now"))
                     {
                         accounts::unlock_logins_interactive(&cmds);
                     }
@@ -783,7 +900,25 @@ pub fn run(
                     }
                     let confirms = CONFIRMS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
                     for (text, no, yes, answer) in confirms {
-                        let _ = answer.send(dialog::choice2_default(&text.replace('@', "@@"), no, yes, "") == Some(1));
+                        let _ = answer.send(dialogs::choice(&text.replace('@', "@@"), no, yes));
+                    }
+                }
+                Msg::Dev => {
+                    let asked = DEV.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+                    for (cmd, answer) in asked {
+                        let _ = answer.send(dev::run(&cmd, Some(&tabs)));
+                    }
+                }
+                Msg::Theme => {
+                    let dark = is_dark(&cfg.borrow());
+                    if cfg.borrow().dark != dark {
+                        cfg.send_modify(|c| c.dark = dark);
+                    }
+                    let accent = accent_of(&cfg.borrow());
+                    theme(dark, accent);
+                    window_icons(dark);
+                    for mut w in app::windows().unwrap_or_default() {
+                        w.redraw();
                     }
                 }
                 Msg::Restart => {

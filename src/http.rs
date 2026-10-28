@@ -125,7 +125,7 @@ async fn once(method: &str, url: &str, headers: &[(String, String)], body: &[u8]
     let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {host_header}\r\nConnection: close\r\n");
     let has = |name: &str| headers.iter().any(|(k, _)| k.eq_ignore_ascii_case(name));
     if !has("user-agent") {
-        req += "User-Agent: streamerz\r\n";
+        req += "User-Agent: Streamerz\r\n";
     }
     for (k, v) in headers {
         req += &format!("{k}: {v}\r\n");

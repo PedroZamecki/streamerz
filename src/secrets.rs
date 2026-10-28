@@ -5,7 +5,7 @@
 //!   is HMAC-SHA256 in counter mode, encrypt-then-MAC. Without a keyring, new secrets stay in the
 //!   file, which is only readable by its owner (0600).
 //!
-//! When the key can't be read right away (transient D-Bus hiccup or locked keyring), streamerz
+//! When the key can't be read right away (transient D-Bus hiccup or locked keyring), Streamerz
 //! retries transient D-Bus errors immediately, keeps the encrypted value intact if still locked,
 //! and automatically unlocks and reconnects once the keyring becomes available.
 
@@ -493,7 +493,7 @@ mod keyring {
         prompt(c, &p, interactive).await
     }
 
-    /// streamerz's key for this config file: read, or made and stored.
+    /// Streamerz's key for this config file: read, or made and stored.
     pub async fn key(config: &str, interactive: bool) -> Result<[u8; 32], String> {
         let e = |x: zbus::Error| x.to_string();
         let c = Connection::session().await.map_err(e)?;

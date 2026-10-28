@@ -1,20 +1,20 @@
 //! Modal dialogs: JSON editor, type picker, the action form, import and export.
 
+use super::fit::Ellipsis;
 use super::{button, ROW};
 use crate::i18n::{tr, trf};
 use crate::model::{Action, Obj};
 use fltk::browser::CheckBrowser;
 use fltk::button::CheckButton;
-use fltk::enums::{Align, Font, Key, Shortcut};
+use fltk::enums::{Align, Color, Font, Key, Shortcut};
 use fltk::frame::Frame;
 use fltk::group::Flex;
 use fltk::input::{Input, MultilineInput};
-use fltk::menu::Choice;
 use fltk::misc::InputChoice;
 use fltk::prelude::*;
 use fltk::text::{TextBuffer, TextEditor};
 use fltk::window::Window;
-use fltk::{app, dialog};
+use fltk::{app, dialog, draw};
 use serde_json::Value;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -62,6 +62,7 @@ pub fn run(win: &mut Window, answer: &Answer, mut check: impl FnMut() -> bool) -
             if !app::wait() {
                 break;
             }
+            super::pump_dev();
         }
         match answer.get() {
             Some(true) if !check() => answer.set(None),
@@ -73,12 +74,226 @@ pub fn run(win: &mut Window, answer: &Answer, mut check: impl FnMut() -> bool) -
     }
 }
 
+/// Puts `win` in the middle of the app's window, or of the screen.
+fn centre(win: &mut Window, w: i32, h: i32) {
+    let (cx, cy, cw, ch) = match app::first_window().filter(|f| f.visible()) {
+        Some(f) => (f.x(), f.y(), f.w(), f.h()),
+        None => app::screen_xywh(0),
+    };
+    win.set_pos(cx + (cw - w) / 2, cy + (ch - h) / 2);
+}
+
+/// `text` broken into lines no wider than `room` by `width` (words stay whole; a word wider than the room
+/// is cut). Newlines in `text` are kept.
+fn wrap(text: &str, room: i32, width: impl Fn(&str) -> i32) -> Vec<String> {
+    let mut out = Vec::new();
+    for para in text.split('\n') {
+        let mut line = String::new();
+        for word in para.split(' ').filter(|w| !w.is_empty()) {
+            let joined = if line.is_empty() {
+                word.to_string()
+            } else {
+                format!("{line} {word}")
+            };
+            if width(&joined) <= room {
+                line = joined;
+                continue;
+            }
+            if !line.is_empty() {
+                out.push(std::mem::take(&mut line));
+            }
+            // A word too wide for a line alone: cut where it stops fitting.
+            let mut rest = word;
+            while width(rest) > room && rest.chars().count() > 1 {
+                let mut cut = rest
+                    .char_indices()
+                    .map(|(i, _)| i)
+                    .skip(1)
+                    .take_while(|&i| width(&rest[..i]) <= room)
+                    .last();
+                cut = cut.or_else(|| rest.char_indices().nth(1).map(|(i, _)| i));
+                let (head, tail) = rest.split_at(cut.unwrap_or(rest.len()));
+                out.push(head.to_string());
+                rest = tail;
+            }
+            line = rest.to_string();
+        }
+        out.push(line);
+    }
+    out
+}
+
+/// A small modal message: an icon in the app's colours, the text wrapped to fit, and its buttons (`no`
+/// is None for a plain notice). True when `yes` was pressed.
+fn notice(icon: &'static str, tint: Color, text: &str, no: Option<&str>, yes: &str) -> bool {
+    const PAD: i32 = 22;
+    const PIC: i32 = 40;
+    const GAP: i32 = 16;
+    const LINE: i32 = 19;
+    draw::set_font(Font::Helvetica, 14);
+    let buttons: Vec<&str> = no.into_iter().chain([yes]).collect();
+    let button_w = |b: &str| (draw::width(b) as i32 + 56).max(90);
+    let bar_w: i32 = buttons.iter().map(|b| button_w(b) + 8).sum();
+    // The window is as wide as its longest line wants (within reason), and wide enough for its buttons.
+    let one_line = text.split('\n').map(|l| draw::width(l) as i32).max().unwrap_or(0);
+    let room = one_line.clamp(220, 420).max(bar_w - PIC - GAP);
+    let lines = wrap(text, room, |t| draw::width(t) as i32);
+    let w = PAD * 2 + PIC + GAP + room;
+    let body = (lines.len() as i32 * LINE).max(PIC);
+    let h = PAD * 2 + body + 18 + ROW;
+    let (mut win, answer) = window(w, h, "Streamerz");
+    centre(&mut win, w, h);
+    let mut col = Flex::new(PAD, PAD, w - PAD * 2, h - PAD * 2, None).column();
+    col.set_pad(18);
+    let mut top = Flex::default().row();
+    top.set_pad(GAP);
+    let mut pic = Frame::default();
+    pic.draw(move |f| {
+        draw::set_draw_color(Color::color_average(tint, Color::Background, 0.18));
+        draw::draw_pie(f.x(), f.y(), PIC, PIC, 0.0, 360.0);
+        if let Some(mut i) = super::icons::icon(icon, tint, 22) {
+            i.draw(f.x() + 9, f.y() + 9, 22, 22);
+        }
+    });
+    top.fixed(&pic, PIC);
+    // Wrapped here, not by FLTK, so the window is sized for exactly these lines.
+    Frame::default()
+        .with_label(&lines.join("\n").replace('@', "@@"))
+        .with_align(Align::Left | Align::Inside | Align::Top);
+    top.end();
+    let mut bar = Flex::default().row();
+    bar.set_pad(8);
+    Frame::default();
+    if let Some(no) = no {
+        let mut b = button(&mut bar, no, button_w(no));
+        b.set_shortcut(Shortcut::from_key(Key::Escape));
+        b.set_callback({
+            let a = answer.clone();
+            move |_| a.set(Some(false))
+        });
+    }
+    let mut b = button(&mut bar, yes, button_w(yes));
+    b.set_shortcut(Shortcut::from_key(Key::Enter));
+    b.set_callback({
+        let a = answer.clone();
+        move |_| a.set(Some(true))
+    });
+    bar.end();
+    col.fixed(&bar, ROW);
+    col.end();
+    win.end();
+    run(&mut win, &answer, || true)
+}
+
+/// First run: where to keep the settings. Starts at the usual folder (the suggestion); the answer is the
+/// settings file in the folder picked. Closing it takes the suggestion.
+pub fn choose_location(usual: &std::path::Path) -> std::path::PathBuf {
+    super::theme(true, None);
+    let file = usual.file_name().map_or("streamerz.json".into(), |f| f.to_os_string());
+    let start = usual.parent().map(|p| p.display().to_string()).unwrap_or_default();
+    let (mut win, answer) = window(560, 250, "Streamerz");
+    centre(&mut win, 560, 250);
+    let mut col = Flex::new(22, 20, 516, 210, None).column();
+    col.set_pad(10);
+    let mut title = Frame::default()
+        .with_label(tr("location.title"))
+        .with_align(Align::Left | Align::Inside)
+        .ellipsis();
+    title.set_label_font(Font::HelveticaBold);
+    title.set_label_size(16);
+    col.fixed(&title, 26);
+    draw::set_font(Font::Helvetica, 14);
+    let lines = wrap(tr("location.about"), 516, |t| draw::width(t) as i32);
+    let about = Frame::default()
+        .with_label(&lines.join("\n").replace('@', "@@"))
+        .with_align(Align::Left | Align::Inside | Align::Top);
+    let _ = about;
+    let mut row = Flex::default().row();
+    row.set_pad(8);
+    let mut path = Input::default();
+    path.set_value(&start);
+    let mut browse = button(&mut row, tr("btn.browse"), 100);
+    row.end();
+    col.fixed(&row, ROW);
+    let mut bar = Flex::default().row();
+    bar.set_pad(8);
+    Frame::default();
+    let mut ok = button(&mut bar, tr("location.use"), 140);
+    ok.set_shortcut(Shortcut::from_key(Key::Enter));
+    ok.set_callback({
+        let a = answer.clone();
+        move |_| a.set(Some(true))
+    });
+    bar.end();
+    col.fixed(&bar, ROW);
+    col.end();
+    win.end();
+    browse.set_callback({
+        let mut path = path.clone();
+        move |_| {
+            let mut c = dialog::NativeFileChooser::new(dialog::NativeFileChooserType::BrowseDir);
+            let _ = c.set_directory(&std::path::PathBuf::from(path.value()));
+            c.show();
+            let picked = c.filename();
+            if !picked.as_os_str().is_empty() {
+                path.set_value(&picked.display().to_string());
+            }
+        }
+    });
+    let folder = std::cell::RefCell::new(std::path::PathBuf::from(&start));
+    let ok = run(&mut win, &answer, || {
+        let dir = std::path::PathBuf::from(path.value().trim());
+        match std::fs::create_dir_all(&dir) {
+            Ok(()) => {
+                *folder.borrow_mut() = dir;
+                true
+            }
+            Err(e) => {
+                alert(&trf("location.cant_use", &[("error", &e.to_string())]));
+                false
+            }
+        }
+    });
+    if ok {
+        folder.into_inner().join(file)
+    } else {
+        usual.to_path_buf()
+    }
+}
+
+/// A problem, with an OK.
+pub fn alert(text: &str) {
+    notice(
+        "triangle-alert",
+        Color::from_rgb(0xe0, 0xa8, 0x30),
+        text,
+        None,
+        tr("dialogs.ok"),
+    );
+}
+
+/// News, with an OK.
+pub fn message(text: &str) {
+    notice("info", Color::Selection, text, None, tr("dialogs.ok"));
+}
+
+/// A question: true for `yes`, false for `no` (or closing it).
+pub fn choice(text: &str, no: &str, yes: &str) -> bool {
+    // No second button asked for: a notice, closed by its one button.
+    if yes.is_empty() {
+        notice("info", Color::Selection, text, None, no);
+        return false;
+    }
+    notice("circle-help", Color::Selection, text, Some(no), yes)
+}
+
 pub fn row(label: &str) -> Flex {
     let mut r = Flex::default().row();
     r.set_pad(8);
     let l = Frame::default()
         .with_label(label)
-        .with_align(Align::Left | Align::Inside);
+        .with_align(Align::Left | Align::Inside)
+        .ellipsis();
     r.fixed(&l, 150);
     r
 }
@@ -174,7 +389,7 @@ pub fn action(a: &Action, groups: &[String], queues: &[(String, String)]) -> Opt
     r.end();
     col.fixed(&r, ROW);
     let r = row(tr("dialogs.action.queue"));
-    let mut queue = Choice::default();
+    let mut queue = super::fit::choice();
     for (_, n) in queues {
         queue.add_choice(&n.replace('/', "\\/").replace('&', "&&").replace('|', "\\|"));
     }
@@ -240,7 +455,8 @@ pub fn import() -> Option<Obj> {
     col.set_pad(6);
     let l = Frame::default()
         .with_label(tr("dialogs.import.hint"))
-        .with_align(Align::Left | Align::Inside);
+        .with_align(Align::Left | Align::Inside)
+        .ellipsis();
     col.fixed(&l, ROW);
     let mut text = MultilineInput::default();
     text.set_wrap(true);
@@ -429,7 +645,9 @@ pub fn capture_keys() -> Option<(i64, i64)> {
         .with_align(Align::Left | Align::Inside | Align::Wrap);
     note.set_label_size(12);
     col.fixed(&note, 34);
-    let mut line = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+    let mut line = Frame::default()
+        .with_align(Align::Left | Align::Inside | Align::Clip)
+        .ellipsis();
     line.set_label_font(Font::Courier);
     line.set_label_size(12);
     if hypr {
@@ -724,4 +942,65 @@ pub fn values(title: &str, hint: &str, o: &Obj, edit: bool) -> Option<Obj> {
     let ok = run(&mut win, &answer, || true);
     let out = vars.borrow().clone();
     (ok && edit).then_some(out)
+}
+
+#[cfg(test)]
+mod wrap_tests {
+    use super::wrap;
+
+    /// Seven pixels a character, like a font.
+    fn w(t: &str) -> i32 {
+        t.chars().count() as i32 * 7
+    }
+
+    #[test]
+    fn lines_fit_and_keep_every_word() {
+        let text = "Streamerz v1.2.3 is out (this is v1.2.2). Update now, or later if you are streaming?";
+        for room in [70, 140, 210, 420] {
+            let lines = wrap(text, room, w);
+            assert!(lines.iter().all(|l| w(l) <= room), "{room}: {lines:?}");
+            assert_eq!(lines.join(" "), text);
+        }
+    }
+
+    #[test]
+    fn newlines_stay_and_blank_lines_hold_their_place() {
+        assert_eq!(wrap("one\n\ntwo", 700, w), ["one", "", "two"]);
+        assert_eq!(wrap("", 700, w), [""]);
+    }
+
+    #[test]
+    fn a_word_too_wide_is_cut_never_overflowing() {
+        let lines = wrap("see /home/user/.config/streamerz/streamerz.json now", 105, w);
+        assert!(lines.iter().all(|l| w(l) <= 105), "{lines:?}");
+        assert_eq!(
+            lines.join("").replace(' ', ""),
+            "see/home/user/.config/streamerz/streamerz.jsonnow"
+        );
+    }
+
+    #[test]
+    fn a_room_narrower_than_a_letter_still_ends() {
+        assert_eq!(wrap("abc", 1, w).concat(), "abc");
+    }
+}
+
+#[cfg(test)]
+mod look {
+    /// By eye, on a display (`DISPLAY=:99 cargo test look -- --ignored`): each dialog waits for Enter.
+    #[test]
+    #[ignore]
+    fn dialogs() {
+        let _app = crate::ui::app();
+        crate::ui::theme(true, None);
+        let only = std::env::var("DLG").unwrap_or_default();
+        if only == "1" {
+            super::message("Short one.");
+        } else if only == "2" {
+            super::alert("Can't save /home/someone/.config/streamerz/a-very-long-folder-name-that-has-no-spaces/streamerz.json: permission denied (os error 13), so nothing was written. Try another folder.");
+        } else {
+            let long = "Streamerz v1.2.3 is out (this is v1.2.2).\n\nIt was downloaded and goes in place the next time Streamerz starts. Update now, or later if you are streaming?";
+            super::choice(long, "Later", "Update and restart now");
+        }
+    }
 }

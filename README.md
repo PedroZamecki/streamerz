@@ -1,20 +1,73 @@
-# streamerz
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/streamerz-dark.svg">
+    <img src="assets/brand/streamerz.svg" alt="streamerz" width="120">
+  </picture>
+</p>
 
-A small, light Streamer.bot replacement in Rust: Twitch, Kick, YouTube, OBS Studio and Streamlabs Desktop,
-with Streamer.bot's actions, triggers and servers. Not usable yet; see [PLAN.md](PLAN.md).
+<h1 align="center">Streamerz</h1>
+
+<p align="center">
+  A light, fast Streamer.bot replacement in Rust.<br>
+  Twitch, Kick, YouTube and TikTok chat, OBS Studio, Streamlabs Desktop, and Streamer.bot's actions,
+  triggers and servers, in one small window that lives in your tray.
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/actions.png" alt="The Actions page" width="49%">
+  <img src="assets/screenshots/settings.png" alt="The Settings page" width="49%">
+</p>
+
+## Why
+
+- **Light.** Hidden in the tray with Twitch and OBS connected it stays under 25 MB of RAM and uses no CPU
+  while idle. Nothing you don't turn on opens a socket, a timer or a task.
+- **Compatible.** The same WebSocket, HTTP and UDP servers, requests, events and import strings as
+  Streamer.bot: overlays, Stream Deck and your existing actions work without changes.
+- **Everything in one place.** Chat from every platform together, commands, timers, queues, globals,
+  donations (StreamElements, Streamlabs, DonorDrive), hotkeys, MIDI, Stream Deck and more.
+- **Extensible.** Plugins are WebAssembly files (see [PLUGINS.md](PLUGINS.md)), and an MCP server lets an
+  AI assistant build and test actions for you.
+- **Private.** Logins live in your system's keyring (DPAPI on Windows), never in plain text. Websites
+  can't reach your local servers.
+- **Native.** Dark and light themes, many languages, native notifications, and updates that keep
+  themselves current.
 
 ## Install
 
-Download `streamerz.exe` (Windows) or `streamerz` (Linux) from the latest
-[release](https://github.com/PedroZamecki/streamerz/releases) and run it; on Linux, make it executable
-first (`chmod +x streamerz`). It starts hidden in the tray: click the icon to open the window. Settings
-are kept in `streamerz.json` next to it (and the previous version in `streamerz.json.bak`).
+Download the latest [release](https://github.com/PedroZamecki/streamerz/releases):
 
-Settings → Window: dark theme, start hidden in the tray, and start with Windows / when you log in.
+| System | File |
+| --- | --- |
+| Windows | `Streamerz-windows-x86_64.exe` |
+| Linux (any distribution) | `Streamerz-linux-x86_64.AppImage` (`chmod +x`, then run it) |
+
+It starts hidden in the tray: click the icon to open the window. Settings are kept in `streamerz.json`
+(and the previous version in `streamerz.json.bak`). **Settings > Updates** chooses what happens with new
+versions: ask first (the default), download them in the background and use them at the next start, or
+leave them alone. Streamerz looks every hour while it's open and tells you with a desktop notification.
+
+## Where things live
+
+On first run Streamerz asks where to keep its settings, suggesting the folder your system expects
+(`%APPDATA%\\streamerz`, `~/.config/streamerz`). The choice is yours; **Settings > Files > Change** moves it
+later. Next to the settings file:
+
+- `logs/`: the current log (`latest.log`), the last seven gzipped, and a `crash-*.txt` for every crash.
+- If the last run crashed, the next start offers to send the report as a prefilled GitHub issue (you read
+  and edit it first; logins are never in it, and your home folder is hidden).
+
+Chat history is never saved: it is read from Twitch, Kick and YouTube when you join, and kept in memory.
+
+## Languages
+
+Each language is one file in `assets/locales`. To add one, run `dev/locale.py new es_ES "Español (España)"`,
+translate the values, and open a pull request: it is found by itself and shows up in Settings.
+`dev/locale.py check` lists what is missing.
 
 ## Streamer.bot's servers
 
-streamerz answers on Streamer.bot's WebSocket server (`ws://127.0.0.1:8080/`, on by default), its HTTP
+Streamerz answers on Streamer.bot's WebSocket server (`ws://127.0.0.1:8080/`, on by default), its HTTP
 server (port 7474) and its UDP server (port 4242), both off by default, with the same requests, events
 and authentication, so tools made for Streamer.bot (songrequestz, overlays, Stream Deck) connect without
 changes. Set them in the Servers tab (changes apply at once), along with WebSocket clients and custom
@@ -42,7 +95,7 @@ loop. Double-click anything to edit it. Core sub-actions and triggers open in a 
 timers and commands picked by name; "Edit JSON" shows the whole thing); the others open as JSON.
 **Import** takes a Streamer.bot import string (pasted or from a file); **Export** makes one from the
 actions you tick, with the commands, timers and queues they use. Sub-actions that don't run in
-streamerz are kept, shown greyed out with "(not supported)", and skipped.
+Streamerz are kept, shown greyed out with "(not supported)", and skipped.
 
 The other tabs, as in Streamer.bot:
 
@@ -92,9 +145,9 @@ Added once on first run, in the Built-in group: edit, turn off or re-alias them 
     (External, then **Publish app**; unpublished apps log you out every 7 days) > Credentials > Create
     OAuth client ID, type **Desktop app**. Paste its ID and secret, then Login. Google warns that the app
     is unverified: it's yours, so continue. Reading chat needs no login.
-  - TikTok: streamerz reads the channel's live itself, with no login (it waits while the
+  - TikTok: Streamerz reads the channel's live itself, with no login (it waits while the
     channel is offline). Login opens TikTok's own login page; sending types into the live page's chat in a
-    hidden window (`streamerz-tiktok` next to streamerz on Linux), which closes after 2 idle minutes.
+    hidden window (`Streamerz-tiktok` next to Streamerz on Linux), which closes after 2 idle minutes.
 - **Stream Apps**: OBS Studio and Streamlabs Desktop connections.
 - **Settings**: window options and this instance's name (what GetInfo reports).
 
@@ -111,7 +164,7 @@ connecting, or not and why), with **Retry** and **Settings** (its tab).
 ## Streamlabs Desktop
 
 In Streamlabs Desktop, open Settings → Remote Control, click the QR code to show the details, and copy
-the token (the port is 59650 unless you changed it). In streamerz, add a connection in the Stream Apps
+the token (the port is 59650 unless you changed it). In Streamerz, add a connection in the Stream Apps
 tab with that token. "Default connection" is the one sub-actions use when they don't name one. Every
 Streamlabs Desktop trigger and sub-action of Streamer.bot works, with the same arguments. Differences:
 Set Browser Source URL and Set GDI Text work (in Streamer.bot 1.0.7 they do nothing), and in a
@@ -127,7 +180,7 @@ In the Donations tab:
 - **Streamlabs**: paste Your Socket API Token (Dashboard → Settings → API Settings → API Tokens).
   Donations, charity donations and merch arrive live, including test alerts.
 - **DonorDrive** (Extra Life and other charities on DonorDrive): the site and your participant ID.
-  streamerz asks every 15 s whether your page changed (what DonorDrive asks for), so a donation
+  Streamerz asks every 15 s whether your page changed (what DonorDrive asks for), so a donation
   shows up within 15 s.
 
 Each one connects only when it's filled in, and reconnects a minute after it drops. Tip, Donation and
@@ -138,7 +191,7 @@ Charity Donation triggers have Streamer.bot's Range (Min and Max amount).
 - **Discord Webhook**: post basic messages, embeds, custom username/avatar and TTS directly to Discord webhooks.
 - **IFTTT**: send basic and advanced notification triggers directly to IFTTT webhooks.
 - **Pronouns**: fetch and cache user pronouns using the alejo.io Twitch Chat Pronouns API, populating standard pronoun variables.
-- **Remote Instances**: connect multiple streamerz or Streamer.bot instances via WebSocket clients or servers, sending and waiting for remote triggers and signals.
+- **Remote Instances**: connect multiple Streamerz or Streamer.bot instances via WebSocket clients or servers, sending and waiting for remote triggers and signals.
 
 ## Hotkeys, inputs, MIDI and voice control
 
@@ -186,12 +239,12 @@ Charity Donation triggers have Streamer.bot's Range (Min and Max amount).
 
 ## MCP (AI assistants)
 
-`streamerz --mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server on stdin/stdout that
-drives a running streamerz through its WebSocket server: status, log, actions, run an action, list and
-fire triggers, inject a chat message and read what would have been sent. Start streamerz with
+`Streamerz --mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server on stdin/stdout that
+drives a running Streamerz through its WebSocket server: status, log, actions, run an action, list and
+fire triggers, inject a chat message and read what would have been sent. Start Streamerz with
 `STREAMERZ_DEV=1` for the testing tools (it then keeps chat replies instead of sending them). It connects to
 the address in `streamerz.json` next to the exe, or `STREAMERZ_URL`.
 
-- Claude Code: `claude mcp add streamerz -- /path/to/streamerz --mcp` (this repo's `.mcp.json` points at
-  `target/release/streamerz` and a dev instance on port 8090).
-- Other clients: command `/path/to/streamerz`, argument `--mcp`.
+- Claude Code: `claude mcp add Streamerz -- /path/to/Streamerz --mcp` (this repo's `.mcp.json` points at
+  `target/release/Streamerz` and a dev instance on port 8090).
+- Other clients: command `/path/to/Streamerz`, argument `--mcp`.

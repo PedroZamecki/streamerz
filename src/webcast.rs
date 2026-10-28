@@ -1,6 +1,6 @@
 //! TikTok Live's own web protocol, read without logging in: an anonymous `ttwid` cookie, the
 //! channel's room ID, then a WebSocket of protobuf frames. Ported from piratetok-live-rs (0BSD,
-//! https://github.com/PirateTok/live-rs): only the frames and fields streamerz uses, on the HTTP and
+//! https://github.com/PirateTok/live-rs): only the frames and fields Streamerz uses, on the HTTP and
 //! WebSocket code already here instead of its own HTTP and protobuf stacks.
 
 use serde_json::{json, Value};
@@ -291,7 +291,7 @@ fn chat_comment_and_emotes(raw_comment: String, m: Msg) -> (String, Vec<Value>) 
     (chars.into_iter().collect::<String>().trim().to_string(), emotes_json)
 }
 
-/// A Webcast message as streamerz's TikTok event name and data.
+/// A Webcast message as Streamerz's TikTok event name and data.
 pub fn event(kind: &str, m: Msg) -> Option<(&'static str, Value)> {
     let c = m.msg(1);
     Some(match kind {

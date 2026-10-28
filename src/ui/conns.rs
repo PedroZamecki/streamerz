@@ -2,6 +2,7 @@
 //! connected", and on a click each one's state (connected, standby, connecting, or not and why, from its
 //! last log line), with Retry and a way to its settings.
 
+use super::fit::Ellipsis;
 use super::{button, img, query, tell, ROW};
 use crate::i18n::{tr, trf};
 use crate::Config;
@@ -265,7 +266,8 @@ pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: im
         lrow.set_pad(8);
         let mut msg = Frame::default()
             .with_label(tr("conns.keyring_hint"))
-            .with_align(Align::Left | Align::Inside | Align::Clip);
+            .with_align(Align::Left | Align::Inside | Align::Clip)
+            .ellipsis();
         msg.set_label_color(Color::from_rgb(0xe0, 0xa8, 0x30));
         let mut ubtn = button(&mut lrow, tr("ui.unlock_now"), 110);
         lrow.end();
@@ -283,7 +285,8 @@ pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: im
     if conns.is_empty() {
         let f = Frame::default()
             .with_label(tr("conns.empty_hint"))
-            .with_align(Align::Left | Align::Inside);
+            .with_align(Align::Left | Align::Inside)
+            .ellipsis();
         col.fixed(&f, ROW);
     }
     let retried: Rc<RefCell<HashMap<String, (Instant, u64)>>> = Rc::default();
@@ -297,10 +300,13 @@ pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: im
         row.fixed(&logo, 22);
         let mut name = Frame::default()
             .with_label(&c.name.replace('@', "@@"))
-            .with_align(Align::Left | Align::Inside | Align::Clip);
+            .with_align(Align::Left | Align::Inside | Align::Clip)
+            .ellipsis();
         name.set_label_font(Font::HelveticaBold);
         row.fixed(&name, 190);
-        let st = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+        let st = Frame::default()
+            .with_align(Align::Left | Align::Inside | Align::Clip)
+            .ellipsis();
         let mut r = button(&mut row, if c.standby { tr("btn.check") } else { tr("btn.retry") }, 70);
         r.set_tooltip(tr("conns.retry_tooltip"));
         let mut s = button(&mut row, tr("btn.settings"), 80);

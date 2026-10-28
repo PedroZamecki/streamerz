@@ -1,11 +1,11 @@
-# streamerz project rules
+# Streamerz project rules
 
 - Commits: conventional commits, one line, max 72 chars: `type(scope)?: subject`.
   Scope is optional. No body, no footer, no `Co-Authored-By` or other trailers. Enforced by
   commitlint (`.githooks/commit-msg`, `commitlint.config.mjs`) and in CI.
-- `main` is protected: no direct pushes. Work on a branch, open a pull request; it's squash-merged,
-  so the PR title becomes the commit on `main` and must follow the same commit rule.
-  No approvals required.
+- `main` is protected: no direct pushes. Work on a branch, open a pull request; it's merged with a merge
+  commit, NEVER squashed or rebased: the history of every commit is kept, so each commit follows the commit
+  rule. No approvals required.
 - Work goes in versions: one branch and one PR per version, never stacked. A version holds every feature,
   fix and refactor the user asks for while it's open (PLAN.md phases included: tick them as they're done).
   Keep asking the user what else goes in; close it only when they say so, and at the end of every version
@@ -16,9 +16,16 @@
   `fix/obs-reconnect`, using the same types as commits.
 - Before committing, `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` must pass
   (`.githooks/pre-commit`, and the `lint` workflow on every PR).
+- Builds are never repeated: a pull request's CI builds the binaries and keeps them as artifacts named by
+  version and tree hash; the merge to `main` publishes those same files when the merged tree is the same
+  (`.github/workflows/build.yml`). Keep that working: don't add steps that change the tree after the PR
+  is built.
 - Releases are automatic: each merge to `main` bumps the version from the commit types
-  (`type!:` major, `feat` minor, `fix`/`perf` patch) and publishes the Windows exe and the Linux binary.
+  (`type!:` major, `feat` minor, `fix`/`perf` patch) and publishes the Windows exe and the Linux AppImage (the only Linux file: the TikTok helper lives inside it).
   Don't tag by hand, and don't bump the version in `Cargo.toml` (it's unused).
+- The name is **Streamerz**, capitalized, everywhere a person or the system sees it: UI, docs, window and
+  notification titles, desktop entries, the executable (`Streamerz`, `Streamerz.exe`) and the release files.
+  Only identifiers keep lowercase (crate and repo `streamerz`, `streamerz.json`, the config folder, wire ids).
 - Language: English everywhere (code, comments, commits, PRs, docs, UI).
 - Push as rarely as possible: every push runs CI. Commit locally, test locally, and push once when the
   version is closed (not after every commit or fix).
@@ -38,7 +45,7 @@
   formats; songrequestz (`../songrequestz`) and tikstream (`../tikstream`) are the reference for code style,
   structure and CI.
 - Test against the real services where possible: the real Streamer.bot (ws://127.0.0.1:8080/, under Wine in
-  `~/Games/streamerbot`), OBS, and live Twitch/Kick/YouTube channels. During development streamerz runs on
+  `~/Games/streamerbot`), OBS, and live Twitch/Kick/YouTube channels. During development Streamerz runs on
   port 8090 next to the real Streamer.bot; the shipped default is 8080.
 - Never commit secrets or user data: OAuth tokens, Kick client secret, passwords and anything read from
   the real Streamer.bot's `data/` live only in `streamerz.json` (gitignored) or stay outside the repo.
@@ -57,7 +64,12 @@
 - Raw JSON is for power users: show values as forms or tables, with JSON one button away.
 - Dates and times on screen go through `fmt::shown_date`, `shown_time`, `shown_iso` or `shown_clock`
   (the user's pick in Settings, else the system's). Never format a date by hand for display.
-- Check every UI change on the hidden display (`DISPLAY=:99`) with a screenshot, narrow and wide.
+- Check every UI change on the hidden display (`DISPLAY=:99`) with a screenshot, narrow and wide. Use the
+  MCP `ui` tool (dev mode): `shot` saves the app's own window as a PNG (no desktop screenshot, no blind
+  coordinates), `find TEXT` says where to click. Run the dev instance only with `env -u WAYLAND_DISPLAY
+  DISPLAY=:99`, and kill it by pid (`pkill -x Streamerz`). `dev/smoke.py` starts it, visits every page,
+  right-clicks, opens the user card and fails on a crash report or a missing screenshot: run it before
+  closing a version. Every bug fixed gets a test (a unit test where it can be, else a step in the smoke).
 
 ## Code
 

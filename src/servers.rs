@@ -489,7 +489,7 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
             ok(&id, json!({}))
         }
         "GetActiveViewers" => ok(&id, json!({"count": 0, "viewers": []})),
-        // Code triggers are registered by C#, which streamerz doesn't run.
+        // Code triggers are registered by C#, which Streamerz doesn't run.
         "GetCodeTriggers" => ok(&id, json!({"count": 0, "triggers": []})),
         "ExecuteCodeTrigger" => {
             let name = get("triggerName").to_string();
@@ -592,7 +592,7 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
             e.deliver_remote_signal(instance_id, signal_name, args);
             ok(&id, json!({}))
         }
-        // streamerz's own: read and write what's set up (actions, commands...), for the MCP server.
+        // Streamerz's own: read and write what's set up (actions, commands...), for the MCP server.
         "StreamerzGet" | "StreamerzSave" | "StreamerzDelete" if !authed && e.config().websockets.enable_auth => {
             error(&id, "Authentication required to use this method")
         }
@@ -862,6 +862,14 @@ async fn connection(e: &Rc<Engine>, s: &WsSettings, tcp: TcpStream, conn: u64) -
                         events::update(&mut subs, &ev, kind == "Subscribe");
                         e.listen(conn, &subs, &tx);
                         ok(&id, json!({"events": ev}))
+                    }
+                    // Dev mode: what the window looks like, and where things are (see ui/dev.rs).
+                    "StreamerzUi" if e.dev() => {
+                        let cmd = req.get("do").and_then(Value::as_str).unwrap_or_default().to_string();
+                        match crate::ui::dev(cmd) {
+                            Some(rx) => ok(&id, json!({"result": rx.await.unwrap_or_default()})),
+                            None => error(&id, "no window"),
+                        }
                     }
                     _ => answer(e, &req, authed).unwrap_or_else(|| json!({"id": id})),
                 };
@@ -1133,7 +1141,7 @@ mod tests {
             ws.send(Message::Text("hi".into())).await.unwrap();
             ws.close(None).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            // streamerz's own client, talking to a one-shot server.
+            // Streamerz's own client, talking to a one-shot server.
             let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let p2 = l.local_addr().unwrap().port();
             tokio::task::spawn_local(async move {

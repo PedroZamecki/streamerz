@@ -3,7 +3,7 @@
 //!
 //! The plugin's side (see PLUGINS.md): it exports `memory`, `alloc(len) -> ptr`, `manifest() -> packed`
 //! and `on_event(ptr, len) -> packed` (packed: `ptr << 32 | len` of JSON in its memory, 0 for none). It
-//! imports `streamerz.call(ptr, len) -> packed`: a JSON request to streamerz, answered at once.
+//! imports `streamerz.call(ptr, len) -> packed`: a JSON request to Streamerz, answered at once.
 //! Everything that changes something (sending chat, running an action, a web request...) runs right
 //! after the plugin's event returns; answers to web requests and timers come back as events.
 

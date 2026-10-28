@@ -1,4 +1,4 @@
-# streamerz plan
+# Streamerz plan
 
 Streamer.bot rebuilt in Rust, built like songrequestz and tikstream: one small exe, FLTK window + tray,
 ~nothing idle. Same model as Streamer.bot (actions made of sub-actions, fired by triggers, with
@@ -17,8 +17,8 @@ phase, following `CLAUDE.md`.
 
 | topic | decision |
 |---|---|
-| Name / repo | `streamerz`, public GitHub `PedroZamecki/streamerz`, MIT. Same rules and CI as songrequestz (`CLAUDE.md`). |
-| Compatibility | Drop-in for Streamer.bot's servers: WebSocket (127.0.0.1:8080, `/`), HTTP (7474), UDP (4242). The WebSocket server is on by default (127.0.0.1:8080, no auth); HTTP and UDP are off by default. GetInfo/Hello report version 1.0.7 (the Streamer.bot API level copied), the instance name (default "streamerz"), and an extra `streamerz` field with its own version. Same requests, events, auth and JSON. songrequestz stays a separate app with no changes; it connects to streamerz exactly as it does to Streamer.bot. |
+| Name / repo | `Streamerz`, repo `streamerz`, public GitHub `PedroZamecki/streamerz`, MIT. Same rules and CI as songrequestz (`CLAUDE.md`). |
+| Compatibility | Drop-in for Streamer.bot's servers: WebSocket (127.0.0.1:8080, `/`), HTTP (7474), UDP (4242). The WebSocket server is on by default (127.0.0.1:8080, no auth); HTTP and UDP are off by default. GetInfo/Hello report version 1.0.7 (the Streamer.bot API level copied), the instance name (default "streamerz"), and an extra `streamerz` field with its own version. Same requests, events, auth and JSON. songrequestz stays a separate app with no changes; it connects to Streamerz exactly as it does to Streamer.bot. |
 | Data model | Streamer.bot's own model and field names (`actions.json` v24: actions, `subActions` with numeric `type`, triggers, queues, groups, commands, timers, globals). Import Streamer.bot export strings from day one. Export works too, so actions can go back to Streamer.bot. |
 | Type codes | Built from Streamer.bot.exe's .NET metadata (sub-action/trigger enums and their property names), read with a decompiler, for interoperability only. Only the code↔name/field mapping goes into the repo; no Streamer.bot code or data. |
 | Unsupported on import | Kept untouched (so a re-export loses nothing), shown disabled, logged once, skipped at run. This applies to C# code, out-of-scope integrations and the later extras. |
@@ -33,10 +33,10 @@ phase, following `CLAUDE.md`.
 | Security | Tokens and cookies live in the OS keychain (Windows DPAPI, Linux Secret Service; `streamerz.json` with 0600 when there is none), are revoked on logout and never logged. The WebSocket and HTTP servers refuse browser origins other than local ones (`null`, `file://`, localhost) and an allowlist in Servers; clients without an Origin (apps) are unchanged. Importing actions that run programs asks first. Minimum scopes per account. |
 | Stream apps | OBS Studio (obs-websocket v5) and Streamlabs Desktop (its websocket API). Meld Studio and PolyPop are not supported. |
 | Integrations | Opt-in and off by default; a disabled one opens nothing. In scope: donations/shops (Ko-fi, StreamElements, Streamlabs, Patreon, Fourthwall, Throne, Tipeee, Treatstream, DonorDrive, Pally, Shopify, Streamloots) and webhooks/remote (Discord, IFTTT, pronouns, Streamer.bot remote instances). |
-| OS | Windows + Linux (Wayland, ksni tray). CI releases a Windows exe and a Linux binary on every release. |
+| OS | Windows + Linux (Wayland, ksni tray). CI releases a Windows exe and the Linux AppImage on every release. |
 | Budget | Hidden window, Twitch + OBS connected: < 25 MB RSS and ~0% idle CPU, measured and written in every PR. Streamer.bot uses ~300 MB. |
 | Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, fltk, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only), **wry** + **tao** (the TikTok window, child process only). **image-webp** (WebP emotes and avatars; FLTK decodes the other formats itself). HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. **tokio-native-tls** (the crate tokio-tungstenite's native-tls feature uses, for HTTPS), **regex-lite** (If/Else, While, Switch and regex commands; .NET's backreferences and lookaround aren't supported). Anything else needs a question first. |
-| TikTok | Read natively, no bridge app: `webcast.rs` ports the part of piratetok-live-rs (0BSD) streamerz uses (ttwid cookie, room lookup, WebSocket, ~10 protobuf messages) onto the HTTP/WebSocket code and flate2 already here, instead of vendoring it with reqwest, prost and tracing. Send through streamerz's own TikTok window (OS webview via wry/tao, a child process: `streamerz-tiktok` on Linux so streamerz never loads WebKitGTK, `streamerz.exe --tiktok` on Windows) typing into the logged-in live page's chat, since TikTok signs its chat requests; it runs only around sends (~1 GB while open, closes after 2 idle minutes). Its login replaces tikstream-login. Broadcaster + bot accounts like the other platforms. |
+| TikTok | Read natively, no bridge app: `webcast.rs` ports the part of piratetok-live-rs (0BSD) Streamerz uses (ttwid cookie, room lookup, WebSocket, ~10 protobuf messages) onto the HTTP/WebSocket code and flate2 already here, instead of vendoring it with reqwest, prost and tracing. Send through Streamerz's own TikTok window (OS webview via wry/tao, a child process: `Streamerz-tiktok` on Linux so Streamerz never loads WebKitGTK, `Streamerz.exe --tiktok` on Windows) typing into the logged-in live page's chat, since TikTok signs its chat requests; it runs only around sends (~1 GB while open, closes after 2 idle minutes). Its login replaces tikstream-login. Broadcaster + bot accounts like the other platforms. |
 | Chat commands | Commands keep Streamer.bot's `sources` bitmask (Twitch 1/2/8, YouTube 1024, Kick 2097152, TikTok 4194304), so each command chooses its platforms. Built-in commands (`!commands`, `!command add/edit/remove`, `!command platforms`, `!so`, `!uptime`, `!title`) are normal commands created on first run, editable and disable-able. Replies go to the platform the command came from; a command can opt in to reply on all connected platforms. |
 | Not in scope | Meld, PolyPop, Elgato, VTube Studio/Voicemod/Speaker.bot/TITS/Crowd Control/HypeRate/Pulsoid/Lumia/Streamfog/mtion, the Streamer.bot website integration/cloud, C# and plugins. |
 | Later (own phases, after phase 14) | Quotes, credits, points, users/first words; sounds and TTS; file I/O, file tail, folder watcher, process triggers; hotkeys/inputs, MIDI, voice control; Decks, HTML overlay, multi-platform chat window. |
@@ -139,11 +139,11 @@ platform handles through channels, never through shared locks held across awaits
 ## Phases
 
 - [x] 0. Plan, rules (`CLAUDE.md`/`AGENTS.md`), commit hooks, the `commits` CI check, coverage list.
-  Public repo with the songrequestz settings (squash only, delete branch on merge, "protect main" ruleset).
+  Public repo with the songrequestz settings (merge commits only, never squash; delete branch on merge, "protect main" ruleset).
 - [x] 1. Scaffold:
   - Cargo, single-thread runtime, `streamerz.json` (atomic save + `.bak`), shared status, log.
   - Window and tray skeleton from songrequestz (starts hidden, autostart, dark theme), with the icon.
-  - CI: `lint` (rust + commits); `build` with the Windows exe and Linux binary on PRs and releases.
+  - CI: `lint` (rust + commits); `build` with the Windows exe and Linux AppImage on PRs and releases.
   - Add `rust`, `windows` and `linux` to the ruleset's required checks.
   - Measure empty baseline RSS: 10.1 MB hidden, 0 CPU ticks in 30 s idle (Linux, release build).
 - [x] 2. Data model and import/export:
@@ -224,13 +224,13 @@ platform handles through channels, never through shared locks held across awaits
   the channel's live video), YouTube send (live chat id, not video id), YouTube auto-connect, Kick channel
   change keeping the old chatroom, one shared TLS setup instead of one per request.
 - [x] 22. Built-in commands (`!commands`, `!command add/edit/remove/platforms/show`, `!so`, `!uptime`, `!title`)
-  as ordinary editable commands with streamerz-only `builtin`/`response`/`replyAll` fields; text replies
+  as ordinary editable commands with Streamerz-only `builtin`/`response`/`replyAll` fields; text replies
   for any command; new commands work on every platform.
 - [x] 23. TikTok native read (`webcast.rs`, ported from piratetok-live-rs): chat, gifts, likes, follows,
   shares, subscriptions and joins without tikstream or TikFinity; the bridge URL and Start tikstream removed.
 - [x] 23b. TikTok window (`tiktok_web.rs`, wry/tao): TikTok's login page, and sending by typing into the
   live page's chat in a hidden window (video paused) that opens on first send and closes after 2 idle
-  minutes. Its own `streamerz-tiktok` binary on Linux, `streamerz.exe --tiktok` on Windows; tikstream-login
+  minutes. Its own `Streamerz-tiktok` binary on Linux, `Streamerz.exe --tiktok` on Windows; tikstream-login
   no longer needed.
 - [x] 24. Images and icons: FLTK's own PNG/JPEG/GIF/SVG plus `image-webp`; web pictures fetched on the engine's
   thread into `cache/` next to `streamerz.json`, decoded only while the window shows them and freed when it hides.

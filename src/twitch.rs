@@ -1,4 +1,4 @@
-//! Twitch integration for streamerz (Phase 6):
+//! Twitch integration for Streamerz (Phase 6):
 //! - Login via Device Code OAuth (broadcaster + optional bot account).
 //! - EventSub WebSocket session (`wss://eventsub.wss.twitch.tv/ws`).
 //! - Chat messages in and out, whispers, announcements, raids.
@@ -1958,7 +1958,8 @@ pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate
     let login = prefix.split('!').next().unwrap_or("");
     let cmd_rest = cmd_rest.trim_start();
     let after_cmd = cmd_rest.strip_prefix("PRIVMSG ")?;
-    let (_, trailing) = after_cmd.split_once(" :")?;
+    // The text follows ` :`, except a one-word message, which IRC sends without the colon.
+    let (_, trailing) = after_cmd.split_once(" :").or_else(|| after_cmd.split_once(' '))?;
     let mut text = trailing.to_string();
     if let Some(act) = text.strip_prefix("\x01ACTION ").and_then(|s| s.strip_suffix('\x01')) {
         text = act.to_string();
@@ -1983,6 +1984,8 @@ pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate
             "badges" => badges_raw = v.to_string(),
             "emotes" => emotes_raw = v.to_string(),
             "tmi-sent-ts" => sent_ts = v.parse::<i64>().ok(),
+            // Deleted by a moderator since: not shown again.
+            "rm-deleted" if v == "1" => return None,
             "reply-parent-display-name" => reply.user = unescape_irc_tag(v),
             "reply-parent-msg-body" => reply.text = unescape_irc_tag(v),
             _ => {}
@@ -2052,6 +2055,7 @@ pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate
         reply,
         msg_id,
         time,
+        ts: sent_ts.unwrap_or(0),
         user,
         user_id,
         text,
@@ -2073,7 +2077,7 @@ async fn fetch_recent_messages(login: &str, broadcaster_id: &str) -> Vec<crate::
         return Vec::new();
     }
     let url = format!(
-        "https://recent-messages.robotty.de/api/v2/recent-messages/{}?limit=50&hide_moderation_messages=true&hide_moderated_messages=true",
+        "https://recent-messages.robotty.de/api/v2/recent-messages/{}?limit=100&hide_moderation_messages=true&hide_moderated_messages=true",
         commands::url_encode(&ch)
     );
     let Ok(res) = crate::http::request("GET", &url, &[], b"").await else {
@@ -4137,6 +4141,15 @@ async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn recent_messages_of_one_word_have_no_colon() {
+        let one = "@display-name=Ana;user-id=7;tmi-sent-ts=1793151375247 :ana!ana@ana.tmi.twitch.tv PRIVMSG #pedro opa";
+        assert_eq!(parse_irc_recent_message(one, "1").unwrap().text, "opa");
+        let many = "@display-name=Ana;user-id=7 :ana!ana@ana.tmi.twitch.tv PRIVMSG #pedro :two words";
+        assert_eq!(parse_irc_recent_message(many, "1").unwrap().text, "two words");
+        let gone = "@display-name=Ana;rm-deleted=1 :ana!ana@ana.tmi.twitch.tv PRIVMSG #pedro :bye";
+        assert!(parse_irc_recent_message(gone, "1").is_none());
+    }
     use super::*;
 
     #[test]

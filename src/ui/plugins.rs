@@ -158,7 +158,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Plugins>> {
                 return;
             };
             if man.settings.is_empty() {
-                return fltk::dialog::message_default(&trf("plugins.no_settings", &[("name", &man.name)]));
+                return super::dialogs::message(&trf("plugins.no_settings", &[("name", &man.name)]));
             }
             let fields = forms::plugin_fields(&format!("{id}/settings"), &man.settings);
             let mut now = m

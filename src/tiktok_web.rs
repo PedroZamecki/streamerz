@@ -1,5 +1,5 @@
 //! TikTok's own pages in the OS webview, as a child process so the browser's memory goes away with it:
-//! `streamerz-tiktok` on Linux (so streamerz itself doesn't load WebKitGTK), `streamerz.exe --tiktok`
+//! `streamerz-tiktok` on Linux (so Streamerz itself doesn't load WebKitGTK), `streamerz.exe --tiktok`
 //! on Windows. TikTok signs its web chat requests, so chat is sent by typing into its live page.
 //!
 //! - `login <profile>`: TikTok's login page. Once logged in, prints {"username","cookies","avatar"} and exits 0;
@@ -90,7 +90,7 @@ pub fn run(args: &[std::ffi::OsString]) -> ! {
     };
     let event_loop = EventLoopBuilder::<Ev>::with_user_event().build();
     let window = WindowBuilder::new()
-        .with_title("streamerz: TikTok")
+        .with_title("Streamerz: TikTok")
         .with_inner_size(LogicalSize::new(520.0, 760.0))
         .with_visible(!send || std::env::var_os("STREAMERZ_TIKTOK_SHOW").is_some())
         .build(&event_loop)
