@@ -48,6 +48,7 @@ const TOOLS: &[(&str, &str, &str, &[&str])] = &[
     ("new_action", "A new, empty action (name, group) ready to fill with triggers and sub-actions from describe, then save.", r#"{"name": {"type": "string"}, "group": {"type": "string"}}"#, &["name"]),
     ("list_plugins", "The WebAssembly plugins in the plugins folder: on or off, and for those on their manifest (sub-actions, triggers, settings). Plugin sub-actions are type 99800 with plugin and name; plugin triggers type 99801 with plugin and event. See PLUGINS.md.", "{}", &[]),
     ("plugin_enable", "Turn a plugin on or off.", r#"{"plugin": {"type": "string", "description": "Its id (the .wasm file's name)"}, "on": {"type": "boolean"}}"#, &["plugin"]),
+    ("ui", "Look at the window (needs STREAMERZ_DEV=1): `shot /tmp/a.png [n]` saves window n (0 = the top one) as a PNG you can read, `windows`, `tree [n]` lists every widget with its place, `find TEXT [n]` gives screen coordinates to click (xdotool), `page Settings` goes to a page. Take a shot after every UI change you make.", r#"{"do": {"type": "string"}}"#, &["do"]),
     ("request", "Any Streamer.bot WebSocket request, as JSON (e.g. {\"request\": \"GetGlobals\"}).", r#"{"json": {"type": "object"}}"#, &["json"]),
 ];
 
@@ -236,6 +237,7 @@ impl Client {
             "new_action" => Ok(
                 serde_json::to_value(crate::edit::new_action(&s("name"), &s("group"))).map_err(|e| e.to_string())?
             ),
+            "ui" => self.ask(json!({"request": "StreamerzUi", "do": s("do")})).await,
             "request" => self.ask(a["json"].clone()).await,
             _ => Err(format!("no tool {name}")),
         }

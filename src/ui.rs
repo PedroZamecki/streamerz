@@ -5,6 +5,7 @@ mod accounts;
 mod actions;
 mod chat;
 mod conns;
+mod dev;
 pub(crate) mod dialogs;
 pub(crate) mod emotes;
 pub(crate) mod fit;
@@ -59,6 +60,8 @@ pub enum Msg {
     Restart,
     /// The desktop's colour scheme changed.
     Theme,
+    /// A dev command for the window (see `dev`).
+    Dev,
 }
 
 const ROW: i32 = 26;
@@ -123,6 +126,19 @@ pub fn input(title: String, prompt: String, text: String) -> oneshot::Receiver<O
         ui.send(Msg::Input);
     }
     rx
+}
+
+/// Dev commands for the window (see `dev`): the command, and where its answer goes.
+type DevCmd = (String, oneshot::Sender<String>);
+static DEV: Mutex<Vec<DevCmd>> = Mutex::new(Vec::new());
+
+/// Runs a dev command on the window's thread (dev mode only; `None` when there's no window).
+pub fn dev(cmd: String) -> Option<oneshot::Receiver<String>> {
+    let ui = UI.get()?;
+    let (tx, rx) = oneshot::channel();
+    DEV.lock().ok()?.push((cmd, tx));
+    ui.send(Msg::Dev);
+    Some(rx)
 }
 
 /// Yes/no questions from the engine: the text, the two buttons (no, yes), and where the answer goes.
@@ -824,6 +840,12 @@ pub fn run(
                     let confirms = CONFIRMS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
                     for (text, no, yes, answer) in confirms {
                         let _ = answer.send(dialogs::choice(&text.replace('@', "@@"), no, yes));
+                    }
+                }
+                Msg::Dev => {
+                    let asked = DEV.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+                    for (cmd, answer) in asked {
+                        let _ = answer.send(dev::run(&cmd, &tabs));
                     }
                 }
                 Msg::Theme => {

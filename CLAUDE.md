@@ -64,7 +64,10 @@
 - Raw JSON is for power users: show values as forms or tables, with JSON one button away.
 - Dates and times on screen go through `fmt::shown_date`, `shown_time`, `shown_iso` or `shown_clock`
   (the user's pick in Settings, else the system's). Never format a date by hand for display.
-- Check every UI change on the hidden display (`DISPLAY=:99`) with a screenshot, narrow and wide.
+- Check every UI change on the hidden display (`DISPLAY=:99`) with a screenshot, narrow and wide. Use the
+  MCP `ui` tool (dev mode): `shot` saves the app's own window as a PNG (no desktop screenshot, no blind
+  coordinates), `find TEXT` says where to click. Run the dev instance only with `env -u WAYLAND_DISPLAY
+  DISPLAY=:99`, and kill it by pid (`pkill -x Streamerz`).
 
 ## Code
 

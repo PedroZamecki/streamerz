@@ -863,6 +863,14 @@ async fn connection(e: &Rc<Engine>, s: &WsSettings, tcp: TcpStream, conn: u64) -
                         e.listen(conn, &subs, &tx);
                         ok(&id, json!({"events": ev}))
                     }
+                    // Dev mode: what the window looks like, and where things are (see ui/dev.rs).
+                    "StreamerzUi" if e.dev() => {
+                        let cmd = req.get("do").and_then(Value::as_str).unwrap_or_default().to_string();
+                        match crate::ui::dev(cmd) {
+                            Some(rx) => ok(&id, json!({"result": rx.await.unwrap_or_default()})),
+                            None => error(&id, "no window"),
+                        }
+                    }
                     _ => answer(e, &req, authed).unwrap_or_else(|| json!({"id": id})),
                 };
                 sink.send(text(reply)).await.map_err(|e| e.to_string())?;
