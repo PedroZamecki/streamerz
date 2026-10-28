@@ -8,18 +8,6 @@ default-run = "Streamerz"
 name = "Streamerz"
 path = "src/main.rs"
 
-[features]
-default = ["tiktok-web"]
-# Optional so local dev builds (`--no-default-features`) skip compiling 141 WebKitGTK/GTK3/wry/tao crates.
-tiktok-web = ["dep:wry", "dep:tao"]
-
-# Linux only: TikTok's pages (login, sending chat) in their own binary (inside the AppImage), so Streamerz
-# itself doesn't load WebKitGTK. On Windows it's built into Streamerz.exe (`--tiktok`), and this one is never shipped.
-[[bin]]
-name = "Streamerz-tiktok"
-path = "src/tiktok_web.rs"
-required-features = ["tiktok-web"]
-
 [dependencies]
 tokio = { version = "1", features = [
     "rt",
@@ -48,11 +36,6 @@ native-tls = "0.2"
 tokio-native-tls = "0.3"
 serde = { version = "1.0.229", features = ["derive"] }
 fltk = "1.5.23"
-# The OS webview (WebKitGTK / WebView2) for TikTok's login and chat, in a child process only.
-wry = { version = "0.57", default-features = false, features = [
-    "os-webview",
-], optional = true }
-tao = { version = "0.37", optional = true }
 # WebP emotes and avatars (BTTV, 7TV, Kick, TikTok serve WebP); FLTK decodes PNG/JPEG/GIF/SVG itself.
 image-webp = "0.2"
 # Twitch serves animated emotes only as GIF; FLTK reads only their first frame (and not into RGB).

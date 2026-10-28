@@ -23,20 +23,18 @@ cargo build --release
 
 ### Fast builds and testing
 
-Full release builds compile `wry`/`tao`/WebKitGTK (`242` crates, LTO, single codegen unit). For rapid
-day-to-day iteration, `.cargo/config.toml` and `Cargo.toml` provide a `[profile.fast]` (`opt-level = 1`,
-incremental, line-table debug info) and make `tiktok-web` (`Streamerz-tiktok`) optional (`141` crates):
+Full release builds use LTO. For day-to-day iteration, `.cargo/config.toml` and `Cargo.toml` provide a
+`[profile.fast]` (`opt-level = 1`, incremental, line-table debug info):
 
 ```
-cargo fcheck                  # fast type-check (--no-default-features)
+cargo fcheck                  # fast type-check
 cargo fbuild                  # fast optimized dev binary -> target/fast/Streamerz
 cargo frun                    # build & run target/fast/Streamerz
-cargo ftest                   # run all tests without building wry/tao
+cargo ftest                   # run all tests
 cargo ftest twitch::tests     # run only matching unit tests
 ```
 
-`target/fast/Streamerz` automatically reuses `target/release/Streamerz-tiktok` (or `target/debug/`) if
-already built once. To share your existing release `streamerz.json` and `cache/` without copying files:
+To share your existing release `streamerz.json` and `cache/` without copying files:
 
 ```
 STREAMERZ_CONFIG=target/release/streamerz.json cargo frun
@@ -536,13 +534,13 @@ every few seconds. Then run Streamerz with `"tiktok": {"channel": NAME, "autoCon
 to the TikTok events on its WebSocket. Chat on a quiet live can take minutes; joins and likes come at once.
 An emote-only comment has no text (its emotes are in field 13).
 
-Sending (src/tiktok_web.rs) types into the live page's chat. To test it without posting anywhere, point
-the window at a local copy of that page: `STREAMERZ_TIKTOK_URL=http://127.0.0.1:8765` loads
-`{url}/@{channel}/live`, so serve files `@NAME/live` holding a `contenteditable` element with
-`data-e2e="room-chat-input-field"` (add `disabled` and a `placeholder` for a room that refuses comments)
-and a `data-e2e="room-chat-send-btn"`, whose Enter or click handler records the text (e.g. fetches
-`/sent?text`). Run `Streamerz-tiktok send <profile dir> NAME` and write JSON strings to its stdin; each
-gets `{"ok":true}` or `{"error":...}`. `STREAMERZ_TIKTOK_SHOW=1` shows the window.
+Login and sending use the user's own browser over its DevTools port (src/cdp.rs: Chrome, Chromium, Edge,
+Brave or Vivaldi; `STREAMERZ_BROWSER` picks another, e.g. `/usr/lib/chromium/chromium` to skip a
+distribution's wrapper and its flags). Sending types into the live page's chat in a headless tab; the
+test `tiktok::tests::sends_by_typing_into_the_live_page` runs it against a local stand-in for the page
+(skipped when no such browser is installed). To try a real live page by hand without posting to TikTok,
+point it at a local copy: `STREAMERZ_TIKTOK_URL=http://127.0.0.1:8765` loads `{url}/@{channel}/live`.
+On a display without Wayland (the hidden `:99`), Chromium may need `--ozone-platform=x11`.
 
 ## OBS sub-actions against a real OBS
 

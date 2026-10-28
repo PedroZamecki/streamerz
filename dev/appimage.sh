@@ -1,7 +1,7 @@
 #!/bin/sh
-# Packs target/release/Streamerz (and Streamerz-tiktok, if built) into Streamerz-linux-x86_64.AppImage with
-# the libraries it needs (linuxdeploy; base system ones like glibc stay the system's). The TikTok window
-# is copied as is: it uses the system's WebKitGTK, too big and too tied to the desktop to bundle.
+# Packs target/release/Streamerz into Streamerz-linux-x86_64.AppImage with the libraries it needs
+# (linuxdeploy; base system ones like glibc stay the system's). TikTok's login and sending use the user's
+# own browser (cdp.rs): no webview is bundled.
 # Usage: dev/appimage.sh [version]
 set -eu
 ver=${1:-dev}
@@ -15,9 +15,6 @@ ld="$tools/linuxdeploy-x86_64.AppImage"
 }
 app=target/AppDir
 rm -rf "$app"
-if [ -f target/release/Streamerz-tiktok ]; then
-    install -Dm755 target/release/Streamerz-tiktok "$app/usr/bin/Streamerz-tiktok"
-fi
 
 install -Dm644 assets/brand/streamerz.png "$app/usr/share/icons/hicolor/256x256/apps/streamerz.png"
 install -Dm644 assets/brand/streamerz.svg "$app/usr/share/icons/hicolor/scalable/apps/streamerz.svg"

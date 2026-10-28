@@ -3,6 +3,7 @@
 
 mod backup;
 mod brand;
+mod cdp;
 mod commands;
 mod crash;
 pub mod decks;
@@ -29,8 +30,6 @@ pub mod servers;
 mod slobs;
 mod templates;
 pub mod tiktok;
-#[cfg(all(windows, feature = "tiktok-web"))]
-mod tiktok_web;
 mod tray;
 pub mod twitch;
 pub mod types;
@@ -689,11 +688,6 @@ fn autostart(on: bool) -> std::io::Result<()> {
 }
 
 fn main() {
-    // The TikTok window (tiktok_web.rs), its own process; on Linux it's the streamerz-tiktok binary.
-    #[cfg(all(windows, feature = "tiktok-web"))]
-    if std::env::args_os().nth(1).is_some_and(|a| a == "--tiktok") {
-        tiktok_web::run(&std::env::args_os().skip(2).collect::<Vec<_>>());
-    }
     // An MCP server for AI assistants, driving the running instance (mcp.rs); no window.
     if std::env::args_os().any(|a| a == "--mcp") {
         mcp::run();

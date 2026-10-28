@@ -11,11 +11,12 @@ use crate::Config;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
@@ -121,114 +122,184 @@ pub fn clean_tiktok_channel(input: &str) -> String {
     s.trim_start_matches('@').trim_end_matches('/').trim().to_string()
 }
 
-/// The TikTok window's browser data per account, next to streamerz.json, so logging in again is one
-/// click and sending uses the same session. Log out deletes it.
+/// The browser profile per account, next to streamerz.json, so logging in again is one click and
+/// sending uses the same session. Log out deletes it.
 pub fn profile(bot: bool) -> PathBuf {
     crate::config_path().with_file_name(if bot { "tiktok-bot" } else { "tiktok-broadcaster" })
 }
 
-/// The TikTok window (tiktok_web.rs) with `args`: its own binary on Linux, `Streamerz.exe --tiktok` on
-/// Windows. Also checks sibling target profiles (`release`/`debug`) so fast dev builds reuse it.
-fn helper(args: &[&std::ffi::OsStr]) -> Result<std::process::Command, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let mut cmd = if cfg!(windows) {
-        let mut c = std::process::Command::new(exe);
-        c.arg("--tiktok");
-        c
-    } else {
-        let mut bin = exe.with_file_name("Streamerz-tiktok");
-        if !bin.is_file() {
-            if let Some(target_dir) = exe.parent().and_then(|p| p.parent()) {
-                for profile in ["release", "debug"] {
-                    let alt = target_dir.join(profile).join("Streamerz-tiktok");
-                    if alt.is_file() {
-                        bin = alt;
-                        break;
-                    }
-                }
-            }
-        }
-        if !bin.is_file() {
-            return Err(format!(
-                "{} is missing (build with `--features tiktok-web` when developing)",
-                bin.display()
-            ));
-        }
-        std::process::Command::new(bin)
-    };
-    cmd.args(args);
-    Ok(cmd)
-}
-
-/// Opens TikTok's login in the TikTok window; blocks until it closes.
-pub fn login(bot: bool) -> Result<TikTokAccount, String> {
+/// The profile, without what the old TikTok window (WebKit) left in it: a browser starts it afresh.
+fn browser_profile(bot: bool) -> PathBuf {
     let p = profile(bot);
-    let out = helper(&["login".as_ref(), p.as_os_str()])?
-        .output()
-        .map_err(|e| format!("can't open the TikTok window: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "the login window was closed. {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
+    if p.is_dir() && !p.join("Local State").exists() {
+        let _ = std::fs::remove_dir_all(&p);
     }
-    let v: Value = serde_json::from_slice(&out.stdout).map_err(|_| "the login window answered nothing".to_string())?;
-    match v["cookies"].as_str().filter(|c| !c.is_empty()) {
-        Some(c) => Ok(TikTokAccount {
-            username: v["username"].as_str().unwrap_or("").into(),
-            session_cookie: c.into(),
-            avatar: v["avatar"].as_str().unwrap_or("").into(),
-        }),
-        None => Err("no TikTok session after login".into()),
-    }
+    p
 }
 
-/// A running send window: the account's session on the channel's live page.
+/// The cookies that make a session.
+const KEEP: [&str; 6] = [
+    "sessionid",
+    "sessionid_ss",
+    "sid_tt",
+    "sid_guard",
+    "uid_tt",
+    "tt-target-idc",
+];
+
+/// Logged-in user and profile picture, from the data TikTok's own page loads with.
+const WHO: &str = r#"(() => { try {
+  const d = JSON.parse(document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__').textContent);
+  const u = d.__DEFAULT_SCOPE__['webapp.app-context'].user;
+  return [u.uniqueId || '', (u.avatarUri || [])[0] || u.avatarThumb || ''];
+} catch (e) { return ['', '']; } })()"#;
+
+/// Sends one chat message on the live page, typed into TikTok's own box (TikTok signs its chat
+/// requests, so the page sends them); the box is `disabled`, with the reason as placeholder, when this
+/// account can't comment. Called with the text; gives {ok:true} or {error}.
+const SEND: &str = r#"(async text => {
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  let box;
+  for (let i = 0; i < 40 && !(box = document.querySelector('[data-e2e="room-chat-input-field"]')); i++) await sleep(500);
+  if (!box) return { error: "the live page has no chat (not live, or not logged in)" };
+  if (box.hasAttribute('disabled')) return { error: 'TikTok: ' + (box.getAttribute('placeholder') || "can't comment") };
+  const clear = () => { box.focus(); document.execCommand('selectAll'); document.execCommand('delete'); };
+  clear();
+  document.execCommand('insertText', false, text.slice(0, 150));
+  for (const t of ['keydown', 'keypress', 'keyup'])
+    box.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+  await sleep(1500);
+  if (box.textContent) { document.querySelector('[data-e2e="room-chat-send-btn"]')?.click(); await sleep(1500); }
+  if (box.textContent) { clear(); return { error: "TikTok didn't take the message" }; }
+  return { ok: true };
+})"#;
+
+/// The live page keeps its video still (it costs CPU, and nobody watches it).
+const STILL: &str = "setInterval(() => document.querySelectorAll('video').forEach(v => v.paused || v.pause()), 2000)";
+
+/// A send tab closes after this long without a message.
+const IDLE: Duration = Duration::from_secs(120);
+
+/// Opens TikTok's login in a browser window; blocks until the user logged in or closed it.
+pub fn login(bot: bool) -> Result<TikTokAccount, String> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?
+        .block_on(login_in_browser(bot))
+}
+
+async fn login_in_browser(bot: bool) -> Result<TikTokAccount, String> {
+    let mut b = crate::cdp::Browser::launch(&browser_profile(bot), false, "https://www.tiktok.com/login").await?;
+    // Logged in: the session cookie is there.
+    let cookies = loop {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        if b.gone() {
+            return Err("the login window was closed".into());
+        }
+        let jar = b.cookies("https://www.tiktok.com/").await.unwrap_or_default();
+        if jar.iter().any(|(k, v)| k == "sessionid" && !v.is_empty()) {
+            break jar
+                .iter()
+                .filter(|(k, _)| KEEP.contains(&k.as_str()))
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+        }
+    };
+    // The login page doesn't say who you are; the home page does.
+    let _ = b.navigate("https://www.tiktok.com/").await;
+    let (mut user, mut avatar) = (String::new(), String::new());
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let who: (String, String) = b
+            .eval(WHO)
+            .await
+            .ok()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+        if !who.0.is_empty() {
+            (user, avatar) = who;
+            break;
+        }
+    }
+    b.close().await;
+    Ok(TikTokAccount {
+        username: user,
+        session_cookie: cookies,
+        avatar,
+    })
+}
+
+/// A hidden browser tab on the channel's live page, with the account's session, for sending.
 struct Sender {
     channel: String,
-    _child: tokio::process::Child,
-    stdin: tokio::process::ChildStdin,
-    out: tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+    /// Shared with the task that closes it after `IDLE` (None once closed).
+    tab: Rc<RefCell<Option<crate::cdp::Browser>>>,
+    last: Rc<Cell<Instant>>,
 }
 
 impl Sender {
-    fn spawn(bot: bool, channel: &str) -> Result<Sender, String> {
-        let p = profile(bot);
-        let mut cmd = tokio::process::Command::from(helper(&["send".as_ref(), p.as_os_str(), channel.as_ref()])?);
-        let mut child = cmd
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| format!("can't open the TikTok window: {e}"))?;
-        let (Some(stdin), Some(out)) = (child.stdin.take(), child.stdout.take()) else {
-            return Err("can't talk to the TikTok window".into());
-        };
-        use tokio::io::AsyncBufReadExt;
-        Ok(Sender {
-            channel: channel.into(),
-            _child: child,
-            stdin,
-            out: tokio::io::BufReader::new(out).lines(),
-        })
+    async fn spawn(bot: bool, channel: &str, cookies: &str) -> Result<Sender, String> {
+        // STREAMERZ_TIKTOK_URL: a local copy of the page, for tests (see DEVELOPING).
+        let site = std::env::var("STREAMERZ_TIKTOK_URL").unwrap_or_else(|_| "https://www.tiktok.com".into());
+        Sender::open(&browser_profile(bot), &site, channel, cookies).await
     }
 
-    /// None: the window is gone (it closes after 2 idle minutes); start another.
-    async fn send(&mut self, text: &str) -> Option<Result<(), String>> {
-        use tokio::io::AsyncWriteExt;
-        let line = format!("{}\n", serde_json::to_string(text).unwrap_or_default());
-        self.stdin.write_all(line.as_bytes()).await.ok()?;
-        // The first message waits for the live page to load.
-        let r = tokio::time::timeout(Duration::from_secs(90), self.out.next_line()).await;
-        let v: Value = match r {
-            Ok(Ok(Some(l))) => serde_json::from_str(&l).unwrap_or_default(),
-            Ok(_) => return None,
-            Err(_) => return Some(Err("TikTok's page didn't answer in 90s".into())),
+    /// The tab on `site`'s live page of `channel`, in the browser profile `profile`.
+    async fn open(profile: &std::path::Path, site: &str, channel: &str, cookies: &str) -> Result<Sender, String> {
+        let mut b = crate::cdp::Browser::launch(profile, true, "about:blank").await?;
+        // The session as logged in, even if the browser's own copy is gone.
+        b.set_cookies(cookies, ".tiktok.com").await?;
+        b.navigate(&format!("{site}/@{channel}/live")).await?;
+        let s = Sender {
+            channel: channel.into(),
+            tab: Rc::new(RefCell::new(Some(b))),
+            last: Rc::new(Cell::new(Instant::now())),
         };
-        Some(match v["error"].as_str() {
-            Some(e) => Err(e.to_string()),
-            None => Ok(()),
-        })
+        // Closed after a while without messages: the page costs memory and some CPU.
+        let (tab, last) = (Rc::downgrade(&s.tab), s.last.clone());
+        tokio::task::spawn_local(async move {
+            loop {
+                let due = last.get() + IDLE;
+                tokio::time::sleep_until(due.into()).await;
+                let Some(tab) = tab.upgrade() else { return };
+                if last.get().elapsed() < IDLE {
+                    continue;
+                }
+                // A send takes it out for at most 90 s (less than IDLE), so after IDLE without one, an
+                // empty slot means the tab is gone already: nothing to close.
+                let taken = tab.try_borrow_mut().ok().and_then(|mut t| t.take());
+                if let Some(b) = taken {
+                    b.close().await;
+                }
+                return;
+            }
+        });
+        Ok(s)
+    }
+
+    /// None: the tab is gone (closed when idle, or the browser quit); start another.
+    async fn send(&mut self, text: &str) -> Option<Result<(), String>> {
+        self.last.set(Instant::now());
+        let mut b = self.tab.try_borrow_mut().ok()?.take()?;
+        if b.gone() {
+            return None;
+        }
+        let _ = b.eval(STILL).await;
+        let js = format!("{SEND}({})", serde_json::to_string(text).unwrap_or_default());
+        let r = tokio::time::timeout(Duration::from_secs(90), b.eval(&js)).await;
+        let r = match r {
+            Ok(Ok(v)) => match v["error"].as_str() {
+                Some(e) => Err(e.to_string()),
+                None => Ok(()),
+            },
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err("TikTok's page didn't answer in 90s".into()),
+        };
+        self.last.set(Instant::now());
+        *self.tab.borrow_mut() = Some(b);
+        Some(r)
     }
 }
 
@@ -418,17 +489,22 @@ impl Runner {
         if channel.is_empty() {
             return Err("TikTok: set the channel first".into());
         }
+        let cookies = {
+            let c = self.cfg.borrow();
+            let acct = if bot { &c.tiktok.bot } else { &c.tiktok.broadcaster };
+            acct.as_ref().map(|a| a.session_cookie.clone()).unwrap_or_default()
+        };
         let slot = &mut self.senders[usize::from(bot)];
         for _ in 0..2 {
             if slot.as_ref().is_none_or(|s| s.channel != channel) {
-                *slot = Some(Sender::spawn(bot, &channel)?);
+                *slot = Some(Sender::spawn(bot, &channel, &cookies).await?);
             }
             if let Some(r) = slot.as_mut().unwrap().send(text).await {
                 return r;
             }
             *slot = None;
         }
-        Err("the TikTok window closed".into())
+        Err("the browser's TikTok tab closed".into())
     }
 
     fn connect(&mut self) {
@@ -873,6 +949,81 @@ pub fn handle_tiktok_event(engine: &Rc<Engine>, channel: &str, event: &str, d: &
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    /// A stand-in for TikTok's live page: `@open/live` takes comments (each Enter fetches `/sent?text`),
+    /// `@closed/live` has its box disabled. What was sent, as the server saw it.
+    async fn fake_tiktok() -> (String, Rc<RefCell<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        const PAGE: &str = r#"<html><body>
+<div contenteditable="true" data-e2e="room-chat-input-field"></div>
+<button data-e2e="room-chat-send-btn">Send</button>
+<script>
+const box = document.querySelector('[data-e2e="room-chat-input-field"]');
+box.addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  fetch('/sent?' + encodeURIComponent(box.textContent)).then(() => { box.textContent = ''; });
+});
+</script></body></html>"#;
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let site = format!("http://{}", l.local_addr().unwrap());
+        let sent: Rc<RefCell<Vec<String>>> = Rc::default();
+        let got = sent.clone();
+        tokio::task::spawn_local(async move {
+            while let Ok((mut s, _)) = l.accept().await {
+                let mut buf = vec![0u8; 4096];
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = req.split(' ').nth(1).unwrap_or("").to_string();
+                let body = if let Some(t) = path.strip_prefix("/sent?") {
+                    got.borrow_mut().push(crate::oauth::decode(t));
+                    String::new()
+                } else if path.starts_with("/@closed/") {
+                    PAGE.replace(
+                        "contenteditable=\"true\"",
+                        "contenteditable=\"true\" disabled placeholder=\"Comments are off\"",
+                    )
+                } else {
+                    PAGE.into()
+                };
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = s.write_all(format!("{head}{body}").as_bytes()).await;
+            }
+        });
+        (site, sent)
+    }
+
+    /// Sending types into the live page in the user's own browser, over its DevTools port. Skipped where
+    /// there is no Chromium-based browser (CI has Chrome or Edge).
+    #[test]
+    fn sends_by_typing_into_the_live_page() {
+        if crate::cdp::find().is_none() {
+            eprintln!("no Chromium-based browser: skipped");
+            return;
+        }
+        crate::engine::tests::run(async {
+            let (site, sent) = fake_tiktok().await;
+            let profile = std::env::temp_dir().join(format!("streamerz-cdp-{}", std::process::id()));
+            let mut s = Sender::open(&profile, &site, "open", "sessionid=abc").await.unwrap();
+            assert_eq!(s.send("hello there").await, Some(Ok(())));
+            assert_eq!(s.send("again").await, Some(Ok(())));
+            assert_eq!(*sent.borrow(), ["hello there", "again"]);
+            let tab = s.tab.borrow_mut().take();
+            if let Some(b) = tab {
+                b.close().await;
+            }
+            let mut closed = Sender::open(&profile, &site, "closed", "").await.unwrap();
+            let r = closed.send("hi").await;
+            assert_eq!(r, Some(Err("TikTok: Comments are off".into())));
+            let tab = closed.tab.borrow_mut().take();
+            if let Some(b) = tab {
+                b.close().await;
+            }
+            let _ = std::fs::remove_dir_all(&profile);
+        });
+    }
 
     #[test]
     fn test_clean_tiktok_channel() {
