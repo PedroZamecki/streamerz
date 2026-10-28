@@ -784,7 +784,7 @@ pub fn run(
         let (win, remember) = (win.clone(), remember.clone());
         move |_| {
             remember(&win);
-            std::process::exit(0)
+            crate::crash::quit(0)
         }
     });
     let restart = remember.clone();
@@ -807,7 +807,7 @@ pub fn run(
             if app::event() == Event::Close {
                 close(w);
                 if !tray_ok.get() {
-                    std::process::exit(0);
+                    crate::crash::quit(0);
                 }
             }
         }

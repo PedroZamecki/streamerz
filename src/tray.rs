@@ -54,7 +54,7 @@ impl ksni::Tray for Tray {
             .into(),
             StandardItem {
                 label: tr("tray.quit").into(),
-                activate: Box::new(|_| std::process::exit(0)),
+                activate: Box::new(|_| crate::crash::quit(0)),
                 ..Default::default()
             }
             .into(),
@@ -269,7 +269,7 @@ pub async fn run(ui: Sender<Msg>) {
             if e.id == open_id {
                 menu_ui.send(Msg::Toggle);
             } else if e.id == close_id {
-                std::process::exit(0);
+                crate::crash::quit(0);
             }
         }));
         // Left click toggles the window; right click opens the menu.

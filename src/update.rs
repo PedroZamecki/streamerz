@@ -277,7 +277,7 @@ pub fn restart() -> ! {
         }
         let _ = cmd.spawn();
     }
-    std::process::exit(0)
+    crate::crash::quit(0)
 }
 
 #[cfg(test)]

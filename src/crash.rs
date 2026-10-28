@@ -27,6 +27,20 @@ pub fn start() {
         return;
     }
     let latest = dir.join("latest.log");
+    // The last run left its marker: it never got to quit. Whatever it said last is the report.
+    let running = dir.join("running");
+    if running.exists() {
+        let tail = |name: &str, n: usize| {
+            let t = std::fs::read_to_string(dir.join(name)).unwrap_or_default();
+            let lines: Vec<&str> = t.lines().collect();
+            lines[lines.len().saturating_sub(n)..].join("\n")
+        };
+        let body = private(&unclean_report(&tail("latest.log", 60), &tail("stderr.log", 20)));
+        let stamp = crate::fmt::date(&crate::fmt::now(), "yyyyMMdd-HHmmss");
+        let _ = std::fs::write(dir.join(format!("crash-{stamp}.txt")), body);
+        keep(&dir, ".txt", KEEP_CRASHES);
+    }
+    let _ = std::fs::write(&running, std::process::id().to_string());
     if let Ok(old) = std::fs::read(&latest) {
         if !old.is_empty() {
             let stamp = std::fs::metadata(&latest)
@@ -43,6 +57,8 @@ pub fn start() {
         }
     }
     keep(&dir, "log.gz", KEEP_LOGS);
+    #[cfg(unix)]
+    keep_stderr(&dir);
     if let Ok(f) = std::fs::File::create(&latest) {
         if let Ok(mut l) = LOG.lock() {
             *l = Some((f, 0));
@@ -55,6 +71,41 @@ pub fn start() {
             previous(info);
         })
     });
+}
+
+/// Started from a launcher (stderr isn't a terminal), what the libraries print to stderr (a Wayland protocol
+/// error is printed there, and then the process exits) goes to `logs/stderr.log` instead of nowhere.
+#[cfg(unix)]
+fn keep_stderr(dir: &Path) {
+    use std::os::fd::AsRawFd;
+    extern "C" {
+        fn isatty(fd: i32) -> i32;
+        fn dup2(old: i32, new: i32) -> i32;
+    }
+    // SAFETY: plain libc calls on standard descriptors and a file we just opened (dup2 copies it).
+    unsafe {
+        if isatty(2) == 0 {
+            if let Ok(f) = std::fs::File::create(dir.join("stderr.log")) {
+                dup2(f.as_raw_fd(), 2);
+            }
+        }
+    }
+}
+
+/// A run that ended without a panic: no message, so the end of the log and of stderr.
+fn unclean_report(log: &str, stderr: &str) -> String {
+    format!(
+        "Streamerz {} on {} {}\nIt stopped without a crash message (killed, or the display or a library ended it).\n\nLast stderr lines:\n{stderr}\n\nLast log lines:\n{log}\n",
+        crate::brand::VERSION,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )
+}
+
+/// Quits for good: the marker that says "it stopped unexpectedly" is removed first.
+pub fn quit(code: i32) -> ! {
+    let _ = std::fs::remove_file(dir().join("running"));
+    std::process::exit(code)
 }
 
 /// Deletes the oldest files of `dir` ending in `.ext`, keeping `n`.
@@ -125,6 +176,8 @@ fn report(info: &std::panic::PanicHookInfo<'_>) {
     let _ = std::fs::create_dir_all(&dir);
     let stamp = crate::fmt::date(&crate::fmt::now(), "yyyyMMdd-HHmmss");
     let _ = std::fs::write(dir.join(format!("crash-{stamp}.txt")), body);
+    // This report says it; the next start needn't make another from the marker.
+    let _ = std::fs::remove_file(dir.join("running"));
     keep(&dir, ".txt", KEEP_CRASHES);
     keep(&dir, ".reported", KEEP_CRASHES);
 }
@@ -181,6 +234,12 @@ mod tests {
         assert!(url.len() < 8000, "{}", url.len());
         assert!(url.starts_with("https://github.com/") && url.contains("labels=crash"));
         assert!(url.contains("line+of+the+report"));
+    }
+
+    #[test]
+    fn a_run_that_never_quit_is_reported_with_its_last_words() {
+        let r = unclean_report("12:00:01 connected", "[destroyed object]: error 0: Invalid box");
+        assert!(r.contains("without a crash message") && r.contains("Invalid box") && r.contains("12:00:01"));
     }
 
     #[test]
