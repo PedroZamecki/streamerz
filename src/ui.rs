@@ -7,6 +7,7 @@ mod chat;
 mod conns;
 mod dialogs;
 pub(crate) mod emotes;
+pub(crate) mod fit;
 pub(crate) mod forms;
 mod grid;
 pub(crate) mod icons;
@@ -55,11 +56,55 @@ pub enum Msg {
     Image,
     /// An update is in place: restart into it.
     Restart,
+    /// The desktop's colour scheme changed.
+    Theme,
 }
 
 const ROW: i32 = 26;
 const W: i32 = 1000;
 const H: i32 = 700;
+
+/// How the window's colours are picked.
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Theme {
+    System,
+    Dark,
+    Light,
+}
+
+/// Whether the desktop is dark, as the tray or the system settings last said.
+static SYSTEM_DARK: AtomicBool = AtomicBool::new(true);
+
+/// The desktop's colour scheme is `dark` now: a window following it changes too.
+pub fn system_dark(dark: bool) {
+    if SYSTEM_DARK.swap(dark, Ordering::Relaxed) != dark {
+        if let Some(ui) = UI.get() {
+            ui.send(Msg::Theme);
+        }
+    }
+}
+
+/// The desktop's scheme is dark.
+fn system_is_dark() -> bool {
+    SYSTEM_DARK.load(Ordering::Relaxed)
+}
+
+/// The theme setting changed: apply it.
+fn theme_changed() {
+    if let Some(ui) = UI.get() {
+        ui.send(Msg::Theme);
+    }
+}
+
+/// The theme in the config, and whether it makes the window dark right now.
+fn is_dark(c: &crate::Config) -> bool {
+    match c.theme.unwrap_or(if c.dark { Theme::Dark } else { Theme::Light }) {
+        Theme::Dark => true,
+        Theme::Light => false,
+        Theme::System => SYSTEM_DARK.load(Ordering::Relaxed),
+    }
+}
 
 /// Where `logged` wakes the window, and whether it's up (no wakeups while hidden).
 static UI: OnceLock<app::Sender<Msg>> = OnceLock::new();
@@ -336,12 +381,13 @@ pub(crate) fn header(col: &mut Flex, widths: &'static [i32], titles: &[&'static 
 fn button(row: &mut Flex, label: &str, w: i32) -> Button {
     let mut b = Button::default().with_label(label);
     let wide = with_icon(&mut b);
-    row.fixed(&b, w + if wide { 20 } else { 0 });
+    row.fixed(&b, fit::grown(w + if wide { 20 } else { 0 }, label, wide));
     b
 }
 
 /// The icon of a button's label (call again after relabelling it) (Add, Edit, Delete...) before it, if it has one; true if so.
 pub(crate) fn with_icon(b: &mut Button) -> bool {
+    fit::adaptive(b);
     match icon_for(&b.label()) {
         Some(name) => {
             b.set_image(icons::before_label(name, button_ink(), 14));
@@ -545,9 +591,11 @@ pub fn run(
     tx: app::Sender<Msg>,
     rx: app::Receiver<Msg>,
 ) {
+    #[cfg(windows)]
+    SYSTEM_DARK.store(crate::tray::apps_dark(), Ordering::Relaxed);
     let (c_dark, c_hidden) = {
         let c = cfg.borrow();
-        (c.dark, c.start_hidden)
+        (is_dark(&c), c.start_hidden)
     };
     let _ = UI.set(tx);
     if CONFIRMS.lock().is_ok_and(|q| !q.is_empty()) {
@@ -712,6 +760,9 @@ pub fn run(
     // and loads the fonts (~14 MB) even with the window hidden.
     let open = |win: &mut Window, log: &mut Log| {
         if !win.visible() {
+            // Windows tells no one when its colours change: ask as the window opens.
+            #[cfg(windows)]
+            system_dark(crate::tray::apps_dark());
             SHOWN.store(true, Ordering::Relaxed);
             acts.borrow_mut().refresh();
             views.refresh(&tabs);
@@ -770,6 +821,17 @@ pub fn run(
                     let confirms = CONFIRMS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
                     for (text, no, yes, answer) in confirms {
                         let _ = answer.send(dialogs::choice(&text.replace('@', "@@"), no, yes));
+                    }
+                }
+                Msg::Theme => {
+                    let dark = is_dark(&cfg.borrow());
+                    if cfg.borrow().dark != dark {
+                        cfg.send_modify(|c| c.dark = dark);
+                    }
+                    theme(dark);
+                    window_icons(dark);
+                    for mut w in app::windows().unwrap_or_default() {
+                        w.redraw();
                     }
                 }
                 Msg::Restart => {

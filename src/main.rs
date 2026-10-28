@@ -49,7 +49,11 @@ use tokio::sync::watch;
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// Whether the window is dark now (kept for GetInfo); `theme` says how that's decided.
     dark: bool,
+    /// Follow the system, or always dark or light. None: an older file, which only has `dark`.
+    #[serde(default)]
+    theme: Option<ui::Theme>,
     /// The language of the app (a code from `i18n`).
     locale: String,
     start_hidden: bool,
@@ -123,6 +127,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             dark: true,
+            theme: Some(ui::Theme::System),
             locale: i18n::DEFAULT.into(),
             start_hidden: true,
             autostart: false,

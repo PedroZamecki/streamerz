@@ -1,5 +1,6 @@
 //! Modal dialogs: JSON editor, type picker, the action form, import and export.
 
+use super::fit::Ellipsis;
 use super::{button, ROW};
 use crate::i18n::{tr, trf};
 use crate::model::{Action, Obj};
@@ -9,7 +10,6 @@ use fltk::enums::{Align, Color, Font, Key, Shortcut};
 use fltk::frame::Frame;
 use fltk::group::Flex;
 use fltk::input::{Input, MultilineInput};
-use fltk::menu::Choice;
 use fltk::misc::InputChoice;
 use fltk::prelude::*;
 use fltk::text::{TextBuffer, TextEditor};
@@ -157,7 +157,8 @@ fn notice(icon: &'static str, tint: Color, text: &str, no: Option<&str>, yes: &s
     // Wrapped here, not by FLTK, so the window is sized for exactly these lines.
     Frame::default()
         .with_label(&lines.join("\n").replace('@', "@@"))
-        .with_align(Align::Left | Align::Inside | Align::Top);
+        .with_align(Align::Left | Align::Inside | Align::Top)
+        .ellipsis();
     top.end();
     let mut bar = Flex::default().row();
     bar.set_pad(8);
@@ -214,7 +215,8 @@ pub fn row(label: &str) -> Flex {
     r.set_pad(8);
     let l = Frame::default()
         .with_label(label)
-        .with_align(Align::Left | Align::Inside);
+        .with_align(Align::Left | Align::Inside)
+        .ellipsis();
     r.fixed(&l, 150);
     r
 }
@@ -310,7 +312,7 @@ pub fn action(a: &Action, groups: &[String], queues: &[(String, String)]) -> Opt
     r.end();
     col.fixed(&r, ROW);
     let r = row(tr("dialogs.action.queue"));
-    let mut queue = Choice::default();
+    let mut queue = super::fit::choice();
     for (_, n) in queues {
         queue.add_choice(&n.replace('/', "\\/").replace('&', "&&").replace('|', "\\|"));
     }
@@ -376,7 +378,8 @@ pub fn import() -> Option<Obj> {
     col.set_pad(6);
     let l = Frame::default()
         .with_label(tr("dialogs.import.hint"))
-        .with_align(Align::Left | Align::Inside);
+        .with_align(Align::Left | Align::Inside)
+        .ellipsis();
     col.fixed(&l, ROW);
     let mut text = MultilineInput::default();
     text.set_wrap(true);

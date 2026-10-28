@@ -30,7 +30,7 @@ const ICONS: &[(&str, &str)] = &[
     ),
     (
         "circle-alert",
-        r#"<circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/>"#,
+        r#"<circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><circle cx="12" cy="16" r=".5"/>"#,
     ),
     (
         "circle-check",
@@ -66,11 +66,11 @@ const ICONS: &[(&str, &str)] = &[
     ),
     (
         "circle-help",
-        r#"<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>"#,
+        r#"<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r=".5"/>"#,
     ),
     (
         "triangle-alert",
-        r#"<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>"#,
+        r#"<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><circle cx="12" cy="17" r=".5"/>"#,
     ),
     (
         "eraser",
@@ -118,11 +118,11 @@ const ICONS: &[(&str, &str)] = &[
     ),
     (
         "info",
-        r#"<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>"#,
+        r#"<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><circle cx="12" cy="8" r=".5"/>"#,
     ),
     (
         "keyboard",
-        r#"<path d="M10 8h.01"/><path d="M12 12h.01"/><path d="M14 8h.01"/><path d="M16 12h.01"/><path d="M18 8h.01"/><path d="M6 8h.01"/><path d="M7 16h10"/><path d="M8 12h.01"/><rect width="20" height="16" x="2" y="4" rx="2"/>"#,
+        r#"<circle cx="10" cy="8" r=".5"/><circle cx="12" cy="12" r=".5"/><circle cx="14" cy="8" r=".5"/><circle cx="16" cy="12" r=".5"/><circle cx="18" cy="8" r=".5"/><circle cx="6" cy="8" r=".5"/><path d="M7 16h10"/><circle cx="8" cy="12" r=".5"/><rect width="20" height="16" x="2" y="4" rx="2"/>"#,
     ),
     (
         "layout-template",
@@ -134,7 +134,7 @@ const ICONS: &[(&str, &str)] = &[
     ),
     (
         "list",
-        r#"<path d="M3 12h.01"/><path d="M3 18h.01"/><path d="M3 6h.01"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M8 6h13"/>"#,
+        r#"<circle cx="3" cy="12" r=".5"/><circle cx="3" cy="18" r=".5"/><circle cx="3" cy="6" r=".5"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M8 6h13"/>"#,
     ),
     ("loader-circle", r#"<path d="M21 12a9 9 0 1 1-6.219-8.56"/>"#),
     (
@@ -219,7 +219,7 @@ const ICONS: &[(&str, &str)] = &[
     ),
     (
         "server",
-        r#"<rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/>"#,
+        r#"<rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><circle cx="6" cy="6" r=".5"/><circle cx="6" cy="18" r=".5"/>"#,
     ),
     (
         "settings",
@@ -231,7 +231,7 @@ const ICONS: &[(&str, &str)] = &[
     ),
     (
         "smile",
-        r#"<circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" x2="9.01" y1="9" y2="9"/><line x1="15" x2="15.01" y1="9" y2="9"/>"#,
+        r#"<circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><circle cx="9" cy="9" r=".5"/><circle cx="15" cy="9" r=".5"/>"#,
     ),
     (
         "star",

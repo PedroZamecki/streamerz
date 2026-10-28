@@ -106,6 +106,7 @@ pub async fn run(ui: Sender<Msg>) {
         Some(s) => desktop_dark(s).await.unwrap_or(true),
         None => true,
     };
+    crate::ui::system_dark(dark);
     match (Tray(ui, dark)).spawn().await {
         // The tray lives as long as its handle; its icon follows the desktop's colours.
         Ok(handle) => {
@@ -122,6 +123,7 @@ pub async fn run(ui: Sender<Msg>) {
                         }
                         if let Some(now) = desktop_dark(s).await.filter(|&n| n != dark) {
                             dark = now;
+                            crate::ui::system_dark(now);
                             handle.update(|t| t.1 = now).await;
                         }
                     }
@@ -140,11 +142,22 @@ pub async fn run(ui: Sender<Msg>) {
 /// dark. Unset (Windows before 10 1903) means dark. Read at start: a change shows on the next one.
 #[cfg(windows)]
 fn taskbar_dark() -> bool {
+    light_off("SystemUsesLightTheme")
+}
+
+/// Whether Windows' apps are dark (`AppsUseLightTheme`).
+#[cfg(windows)]
+pub fn apps_dark() -> bool {
+    light_off("AppsUseLightTheme")
+}
+
+#[cfg(windows)]
+fn light_off(value: &str) -> bool {
     use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
     let w = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
     let (key, name) = (
         w(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"),
-        w("SystemUsesLightTheme"),
+        w(value),
     );
     let (mut light, mut size) = (1u32, 4u32);
     // SAFETY: NUL-terminated UTF-16 strings that outlive the call; `light` has room for the `size` (4)

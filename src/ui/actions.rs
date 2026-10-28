@@ -2,6 +2,7 @@
 //! triggers and sub-actions on the right. Drag an action onto a group (or another action) to move it
 //! there; drag a sub-action to reorder it or into a container (group, branch, loop).
 
+use super::fit::Ellipsis;
 use super::forms::{self, Done, Lists};
 use super::rows::Rows;
 use super::{button, dialogs, ROW};
@@ -591,7 +592,8 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
     act_head.set_pad(4);
     let t = Frame::default()
         .with_label("Actions")
-        .with_align(Align::Left | Align::Inside);
+        .with_align(Align::Left | Align::Inside)
+        .ellipsis();
     act_head.fixed(&t, 60);
     let mut search_actions = Input::default();
     search_actions.set_tooltip(tr("actions.filter_actions"));
@@ -623,7 +625,8 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
     right.fixed(&title, ROW - 2);
     let t = Frame::default()
         .with_label("Triggers")
-        .with_align(Align::Left | Align::Inside);
+        .with_align(Align::Left | Align::Inside)
+        .ellipsis();
     right.fixed(&t, ROW - 4);
     let triggers = Rows::new(tr("actions.empty_triggers"));
     right.fixed(&*triggers, 120);
@@ -641,7 +644,8 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
     sub_head.set_pad(4);
     let t = Frame::default()
         .with_label("Sub-actions")
-        .with_align(Align::Left | Align::Inside);
+        .with_align(Align::Left | Align::Inside)
+        .ellipsis();
     sub_head.fixed(&t, 90);
     let mut search_subs = Input::default();
     search_subs.set_tooltip(tr("actions.filter_subactions"));

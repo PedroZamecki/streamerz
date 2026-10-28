@@ -1264,7 +1264,7 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
                 Widget::Num(i)
             }
             Pick(opts) => {
-                let mut c = Choice::default();
+                let mut c = super::fit::choice();
                 for x in *opts {
                     c.add_choice(x);
                 }
@@ -1273,7 +1273,7 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
             }
             Action | Queue | Timer | Command | UserGroup | Client | Server | ObsConnection | SlobsConnection | Sub
             | Trigger => {
-                let mut c = Choice::default();
+                let mut c = super::fit::choice();
                 let list = match w {
                     Action => lists.actions.iter().map(|a| (a.0.clone(), a.1.clone())).collect(),
                     Queue => lists.queues.clone(),

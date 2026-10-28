@@ -9,6 +9,7 @@
 
 use super::accounts::{platform_accounts, unlock_logins_interactive};
 use super::emotes::{self, EmoteSection, Provider};
+use super::fit::Ellipsis;
 use super::img::{self, Pic};
 use super::rows::Rows as InfoRows;
 use super::{button, icons, query, tell, ROW};
@@ -1460,11 +1461,12 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
     top.set_pad(6);
     let l = Frame::default().with_label(tr("chat.show"));
     top.fixed(&l, 46);
-    let mut view = Choice::default();
+    let mut view = super::fit::choice();
     top.fixed(&view, 136);
     let mut hint = Frame::default()
         .with_label(tr("chat.hint"))
-        .with_align(Align::Right | Align::Inside | Align::Clip);
+        .with_align(Align::Right | Align::Inside | Align::Clip)
+        .ellipsis();
     hint.set_label_size(12);
     hint.set_label_color(super::muted());
 
@@ -1613,7 +1615,8 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
         lrow.set_pad(8);
         let mut lbl = Frame::default()
             .with_label(tr("chat.acct_keyring_locked"))
-            .with_align(Align::Left | Align::Inside);
+            .with_align(Align::Left | Align::Inside)
+            .ellipsis();
         lbl.set_label_color(Color::from_rgb(0xe0, 0xa8, 0x30));
         let mut ubtn = button(&mut lrow, tr("btn.unlock"), 80);
         lrow.end();
@@ -1827,7 +1830,8 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
 
     let mut title = Frame::default()
         .with_label(tr("chat.send_to"))
-        .with_align(Align::Left | Align::Inside | Align::Clip);
+        .with_align(Align::Left | Align::Inside | Align::Clip)
+        .ellipsis();
     if let Some(l) = &reply {
         let said = trf("chat.replying_to", &[("user", &l.user), ("said", &l.text)]);
         title.set_label(&said.replace('@', "@@"));
@@ -1861,9 +1865,10 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
     acct_row.set_pad(8);
     let lbl = Frame::default()
         .with_label(tr("chat.send_as"))
-        .with_align(Align::Left | Align::Inside);
+        .with_align(Align::Left | Align::Inside)
+        .ellipsis();
     acct_row.fixed(&lbl, 68);
-    let mut who = Choice::default();
+    let mut who = super::fit::choice();
     who.add_choice(&format!(
         "{}|{}",
         tr("chat.who_bot_accounts"),
@@ -2250,7 +2255,8 @@ fn emote_picker_popup(
     };
     let mut sub = Frame::default()
         .with_label(&format!("{who}{}", tr("chat.emote_picker_help")))
-        .with_align(Align::Left | Align::Inside | Align::Clip);
+        .with_align(Align::Left | Align::Inside | Align::Clip)
+        .ellipsis();
     sub.set_label_size(11);
     sub.set_label_color(super::muted());
     col.fixed(&sub, 14);
@@ -2455,7 +2461,8 @@ fn card(cmds: &Cmds, l: &Line) {
     head.fixed(&pic, 64);
     let mut name = Frame::default()
         .with_label(&format!("  {}", l.user.replace('@', "@@")))
-        .with_align(Align::Left | Align::Inside | Align::ImageNextToText);
+        .with_align(Align::Left | Align::Inside | Align::ImageNextToText)
+        .ellipsis();
     name.set_label_font(Font::HelveticaBold);
     name.set_label_size(20);
     name.set_label_color(name_color(l));

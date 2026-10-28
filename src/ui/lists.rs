@@ -1344,7 +1344,7 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
     top.set_pad(6);
     let l = Frame::default().with_label(tr("lists.community.show"));
     top.fixed(&l, 44);
-    let mut show = fltk::menu::Choice::default();
+    let mut show = super::fit::choice();
     show.add_choice(&format!(
         "{}|{}|{}",
         tr("lists.community.users"),

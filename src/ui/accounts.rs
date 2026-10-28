@@ -1,6 +1,7 @@
 //! The Accounts tab: one row per platform (status, channel, Connect, broadcaster and bot logins),
 //! with the rarely needed settings behind Advanced.
 
+use super::fit::Ellipsis;
 use super::lists::save;
 use super::{button, dialogs, query, tell, ROW};
 use crate::engine::Engine;
@@ -595,7 +596,8 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
         top.set_pad(8);
         let mut name = Frame::default()
             .with_label(&format!("  {}", p.name()))
-            .with_align(Align::Left | Align::Inside | Align::ImageNextToText);
+            .with_align(Align::Left | Align::Inside | Align::ImageNextToText)
+            .ellipsis();
         name.set_label_font(fltk::enums::Font::HelveticaBold);
         name.set_image(super::img::logo(p.name(), ROW - 8));
         top.fixed(&name, 110);

@@ -1,6 +1,7 @@
 //! Hierarchical grouped picker dialog with multi-level submenus, live search,
 //! breadcrumb navigation, and real-time detail/description panel.
 
+use super::fit::Ellipsis;
 use super::{button, ROW};
 use crate::types::{SUB_ACTION_INFO, TRIGGERS};
 use fltk::app;
@@ -634,7 +635,8 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
     filter_row.set_pad(4);
     let f_label = Frame::default()
         .with_label("Search:")
-        .with_align(Align::Left | Align::Inside);
+        .with_align(Align::Left | Align::Inside)
+        .ellipsis();
     filter_row.fixed(&f_label, 50);
     let mut filter = Input::default();
     filter.set_tooltip("Filter triggers by title, category, or description...");
@@ -658,14 +660,16 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
     detail_col.set_pad(4);
     let mut d_title = Frame::default()
         .with_label("Select an option")
-        .with_align(Align::Left | Align::Inside);
+        .with_align(Align::Left | Align::Inside)
+        .ellipsis();
     d_title.set_label_font(Font::HelveticaBold);
     d_title.set_label_size(14);
     detail_col.fixed(&d_title, 24);
 
     let mut d_cat = Frame::default()
         .with_label("Browse submenus on the left")
-        .with_align(Align::Left | Align::Inside);
+        .with_align(Align::Left | Align::Inside)
+        .ellipsis();
     d_cat.set_label_font(Font::HelveticaItalic);
     d_cat.set_label_color(Color::from_rgb(100, 160, 240));
     detail_col.fixed(&d_cat, 18);
