@@ -88,6 +88,7 @@ impl Popover {
         while !self.done.get() {
             let _ = app::wait_for(0.2);
             super::pump_dev();
+            super::pump_chat();
             tick();
         }
     }

@@ -1316,6 +1316,9 @@ pub struct Chat {
     seen: u64,
 }
 
+/// The last chat line the page took in (its `seq`), for dev mode's `chat` command.
+pub static SHOWN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 impl Chat {
     /// Sync new lines (or full history resync when pre-join history / badges updated) and refresh avatars.
     pub fn refresh(&mut self) {
@@ -1333,6 +1336,9 @@ impl Chat {
             return;
         };
         self.client_gen = new_gen;
+        if let Some(l) = lines.last() {
+            SHOWN.store(l.seq, std::sync::atomic::Ordering::Relaxed);
+        }
         let v = self.view.value();
         if full {
             self.seen = lines.last().map_or(0, |l| l.seq);

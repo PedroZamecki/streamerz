@@ -173,6 +173,19 @@ pub(crate) fn pump_dev() {
     }
 }
 
+thread_local! {
+    /// Refreshes the chat page; set once the window is built.
+    static CHAT_PUMP: std::cell::RefCell<Option<Rc<dyn Fn()>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Shows the chat lines that arrived, from inside a popover holding the window's loop (the main loop
+/// drains `Msg::Chat` only between its own waits, so without this the chat would freeze under a card).
+pub(crate) fn pump_chat() {
+    if let Some(f) = CHAT_PUMP.with(|p| p.borrow().clone()) {
+        f();
+    }
+}
+
 /// Yes/no questions from the engine: the text, the two buttons (no, yes), and where the answer goes.
 type Confirm = (String, &'static str, &'static str, oneshot::Sender<bool>);
 static CONFIRMS: Mutex<Vec<Confirm>> = Mutex::new(Vec::new());
@@ -774,6 +787,10 @@ pub fn run(
         }
     });
     let views = Rc::new(views);
+    CHAT_PUMP.with(|p| {
+        let (views, tabs) = (views.clone(), tabs.clone());
+        *p.borrow_mut() = Some(Rc::new(move || views.chat_refresh(&tabs)));
+    });
     tabs.clone().set_callback({
         let views = views.clone();
         let cfg = cfg.clone();

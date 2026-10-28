@@ -14,6 +14,7 @@ use std::fmt::Write;
 ///   tree [N]        the widgets of window N: depth, label, x y w h (in the window), hidden ones marked
 ///   find TEXT [N]   where widgets with TEXT in their label are, as screen coordinates to click
 ///   page LABEL      goes to a page (Chat, Settings...)
+///   chat            the last chat line the chat page took in (its seq)
 pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
     let mut words = cmd.split_whitespace();
     let (what, a, b) = (words.next().unwrap_or(""), words.next(), words.next());
@@ -82,7 +83,10 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
             );
             out
         }
-        _ => "commands: shot, windows, tree, find, page".into(),
+        "chat" => super::chat::SHOWN
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .to_string(),
+        _ => "commands: shot, windows, tree, find, page, chat".into(),
     }
 }
 

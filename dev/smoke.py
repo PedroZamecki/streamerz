@@ -111,6 +111,13 @@ def main():
         r = ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/card.png"})
         if "saved" not in json.dumps(r):
             failures.append("the user card: no screenshot")
+        # The chat keeps going under the card.
+        before = json.dumps(ws.ask({"request": "StreamerzUi", "id": "c", "do": "chat"}))
+        ws.ask({"request": "InjectChat", "id": "n", "platform": "twitch", "user": "Bia", "text": "still here?"})
+        time.sleep(1)
+        after = json.dumps(ws.ask({"request": "StreamerzUi", "id": "c", "do": "chat"}))
+        if before == after:
+            failures.append(f"the chat froze under the user card ({after})")
         xdo("key", "Escape")
         check("user card")
     finally:
