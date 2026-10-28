@@ -1,6 +1,7 @@
 //! Streamer.bot rebuilt small: actions, triggers and Streamer.bot's servers for Twitch, Kick, YouTube,
 //! OBS and Streamlabs Desktop, running on ~nothing.
 
+mod backup;
 mod brand;
 mod commands;
 mod crash;
@@ -682,14 +683,15 @@ fn main() {
             eprintln!("can't remember where the settings are: {e}");
         }
     }
-    say(version());
     update::tidy();
     secrets::init(&config_path());
     crash::start();
+    say(version());
     // To try the crash report by hand (see DEVELOPING).
     if std::env::var_os("STREAMERZ_CRASH_TEST").is_some() {
         panic!("crash test");
     }
+    backup::on_start();
     let cfg = load_from(&config_path());
     i18n::set(&cfg.locale);
     set_debug_log(cfg.debug_log);

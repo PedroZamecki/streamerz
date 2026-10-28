@@ -234,6 +234,100 @@ fn issue_url(report: &str) -> String {
     )
 }
 
+/// A crash report, for the Crashes page.
+pub struct Report {
+    pub path: PathBuf,
+    /// When it was written (unix seconds).
+    pub made: i64,
+    /// The version that crashed, and what it said (or that it said nothing).
+    pub version: String,
+    pub what: String,
+    /// Offered at a start already (and reported or dismissed).
+    pub seen: bool,
+}
+
+impl Report {
+    pub fn text(&self) -> String {
+        std::fs::read_to_string(&self.path).unwrap_or_default()
+    }
+}
+
+/// The version and the message of a report's text.
+fn summary(text: &str) -> (String, String) {
+    let mut lines = text.lines();
+    let version = lines
+        .next()
+        .and_then(|l| l.strip_prefix("Streamerz "))
+        .and_then(|l| l.split(" on ").next())
+        .unwrap_or("")
+        .to_string();
+    let what = match lines.next() {
+        Some(l) if l.starts_with("Panic in") => lines.next().unwrap_or(l),
+        Some(l) => l,
+        None => "",
+    };
+    (version, what.to_string())
+}
+
+/// The crash reports, newest first.
+pub fn reports() -> Vec<Report> {
+    let Ok(rd) = std::fs::read_dir(dir()) else {
+        return Vec::new();
+    };
+    let mut out: Vec<Report> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            name.starts_with("crash-") && (name.ends_with(".txt") || name.ends_with(".reported"))
+        })
+        .map(|path| {
+            let made = std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_secs() as i64);
+            let head: String = std::fs::read_to_string(&path)
+                .unwrap_or_default()
+                .lines()
+                .take(3)
+                .collect::<Vec<_>>()
+                .join("\n");
+            let (version, what) = summary(&head);
+            let seen = path.extension().is_some_and(|x| x == "reported");
+            Report {
+                path,
+                made,
+                version,
+                what,
+                seen,
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| b.made.cmp(&a.made).then_with(|| b.path.cmp(&a.path)));
+    out
+}
+
+/// Opens a prefilled GitHub issue for `r`, and marks it seen.
+pub fn report_on_github(r: &Report) {
+    crate::oauth::open_browser(&issue_url(&r.text()));
+    if !r.seen {
+        let _ = std::fs::rename(&r.path, r.path.with_extension("reported"));
+    }
+}
+
+pub fn delete(r: &Report) -> Result<(), String> {
+    std::fs::remove_file(&r.path).map_err(|e| format!("{}: {e}", r.path.display()))
+}
+
+/// The folder with the logs and the crash reports.
+pub fn folder() -> PathBuf {
+    dir()
+}
+
 /// At start: if the last run left a crash report, offers to report it. Either answer settles it.
 pub async fn offer() {
     use crate::i18n::tr;
@@ -250,6 +344,16 @@ pub async fn offer() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_report_says_its_version_and_message() {
+        let panic =
+            "Streamerz 1.0.0 on linux x86_64\nPanic in thread 'main' at src/ui.rs:9:\nInvalid box\n\nBacktrace:";
+        assert_eq!(summary(panic), ("1.0.0".into(), "Invalid box".into()));
+        let quiet = unclean_report("", "");
+        let (v, what) = summary(&quiet);
+        assert!(!v.is_empty() && what.starts_with("It stopped without a crash message"));
+    }
 
     #[test]
     fn the_issue_address_is_short_and_carries_the_report() {

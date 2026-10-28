@@ -20,8 +20,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::{mpsc::UnboundedSender, watch};
 
-type Cfg = Arc<watch::Sender<Config>>;
-type Cmds = UnboundedSender<crate::engine::UiCmd>;
+pub(super) type Cfg = Arc<watch::Sender<Config>>;
+pub(super) type Cmds = UnboundedSender<crate::engine::UiCmd>;
 
 fn s<'a>(o: &'a Obj, k: &str) -> &'a str {
     o.get(k).and_then(Value::as_str).unwrap_or("")
@@ -32,7 +32,7 @@ fn on(o: &Obj, k: &str) -> bool {
 }
 
 /// A list line: columns split by tabs.
-fn line(cols: &[String]) -> String {
+pub(super) fn line(cols: &[String]) -> String {
     cols.iter()
         .map(|c| c.replace(['\t', '\r', '\n'], " "))
         .collect::<Vec<_>>()
@@ -86,7 +86,7 @@ pub(super) fn title(col: &mut Flex, t: &str) {
 }
 
 /// A list with column titles over it (when there are), and `empty` in it while it's empty.
-fn browser(col: &mut Flex, widths: &'static [i32], titles: &[&'static str], empty: &'static str) -> Rows {
+pub(super) fn browser(col: &mut Flex, widths: &'static [i32], titles: &[&'static str], empty: &'static str) -> Rows {
     if !titles.is_empty() {
         let tr_titles: Vec<&'static str> = titles.iter().map(|t| if t.is_empty() { "" } else { tr(t) }).collect();
         super::header(col, widths, &tr_titles);
@@ -484,7 +484,7 @@ fn json(what: &str, o: &Obj) -> Option<Obj> {
 }
 
 /// A row of buttons.
-fn bar(col: &mut Flex, labels: &[&str]) -> Vec<Button> {
+pub(super) fn bar(col: &mut Flex, labels: &[&str]) -> Vec<Button> {
     super::grid(col, labels, 1)
 }
 
@@ -553,6 +553,8 @@ pub struct Views {
     pub donations: Rc<RefCell<Donations>>,
     pub accounts: Rc<RefCell<super::accounts::Accounts>>,
     pub chat: Rc<RefCell<super::chat::Chat>>,
+    pub crashes: Rc<RefCell<super::recovery::Crashes>>,
+    pub backups: Rc<RefCell<super::recovery::Backups>>,
 }
 
 impl Views {
@@ -629,6 +631,16 @@ impl Views {
                 p.refresh();
             }
         }
+        if let Ok(mut c) = self.crashes.try_borrow_mut() {
+            if is(&c.tab) {
+                c.refresh();
+            }
+        }
+        if let Ok(mut b) = self.backups.try_borrow_mut() {
+            if is(&b.tab) {
+                b.refresh();
+            }
+        }
     }
 }
 
@@ -703,6 +715,8 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
     b_disconnect.set_callback(move |_| tell(&c, |e| e.slobs_disconnect("")));
     col.end();
     let donations = donations_tab(tabs, cfg, cmds);
+    let crashes = super::recovery::crashes_tab(tabs);
+    let backups = super::recovery::backups_tab(tabs, cfg, cmds);
 
     Views {
         lists: vec![commands, timers, clients, custom, obs, slobs],
@@ -716,6 +730,8 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
         donations,
         accounts,
         chat,
+        crashes,
+        backups,
     }
 }
 

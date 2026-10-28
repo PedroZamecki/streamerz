@@ -73,6 +73,8 @@ const NAV: &[Section] = &[
         &[
             ("Settings", "nav.page.settings", "settings"),
             ("Log", "nav.page.log", "scroll-text"),
+            ("Crashes", "nav.page.crashes", "bug"),
+            ("Backups", "nav.page.backups", "archive"),
         ],
     ),
 ];

@@ -83,7 +83,7 @@ def main():
         for p in ("twitch", "kick", "youtube", "tiktok"):
             ws.ask({"request": "InjectChat", "id": p, "platform": p, "user": "Ana", "text": f"hello from {p}"})
         pages = ["Chat", "Accounts", "Community", "Actions", "Commands", "Timers", "Queues", "Groups", "Plugins",
-                 "Servers", "Stream Apps", "Donations", "Globals", "History", "Settings", "Log"]
+                 "Servers", "Stream Apps", "Donations", "Globals", "History", "Settings", "Log", "Crashes", "Backups"]
         for page in pages:
             ws.ask({"request": "StreamerzUi", "id": "p", "do": f"page {page}"})
             r = ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/{page.replace(' ', '_')}.png"})

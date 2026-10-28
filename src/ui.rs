@@ -19,6 +19,7 @@ mod nav;
 pub mod picker;
 mod plugins;
 pub(crate) mod popover;
+mod recovery;
 mod rows;
 mod settings;
 
@@ -498,6 +499,9 @@ fn icon_for(label: &str) -> Option<&'static str> {
         "open_github" => "external-link",
         "browse" => "folder-open",
         "user_info" => "user-round",
+        "report_github" => "bug",
+        "backup_now" => "archive",
+        "restore" => "rotate-ccw",
         "change" => "folder-pen",
         "open_file" | "open_profile" | "open_browser" => "external-link",
         _ => return None,
@@ -602,6 +606,16 @@ fn grid(col: &mut Flex, labels: &[&str], rows: i32) -> Vec<Button> {
     place(g.x(), g.y(), g.w(), g.h());
     g.resize_callback(move |_, x, y, w, h| place(x, y, w, h));
     out
+}
+
+/// A quiet line of help text in `col`, `h` tall, wrapped.
+pub(crate) fn hint(col: &mut Flex, text: &str, h: i32) -> Frame {
+    let mut f = Frame::default()
+        .with_label(&text.replace('@', "@@"))
+        .with_align(Align::Left | Align::Inside | Align::Wrap);
+    f.set_label_color(muted());
+    col.fixed(&f, h);
+    f
 }
 
 /// A page: `label` is its name in the sidebar.

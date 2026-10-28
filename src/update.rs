@@ -213,7 +213,7 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
     // Told once per release, however many times it's looked for.
     let fresh = std::mem::replace(&mut *ANNOUNCED.lock().unwrap(), tag.clone()) != tag;
     if fresh {
-        crate::say(format!("streamerz {tag} is out"));
+        crate::say(format!("Streamerz {tag} is out"));
     }
     if mode == Updates::Background && !asked {
         crate::say(format!("Downloading {tag}..."));
