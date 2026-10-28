@@ -1,7 +1,7 @@
 //! Translations: every text the user reads goes through `tr("some.key")`. The words live in
 //! `assets/locales/<code>.json` (flat, key to text), built into the binary; a key a language lacks falls
-//! back to `en_US`, and a key nobody has shows as itself. Only `en_US` for now. To add a language: drop
-//! its file next to the English one and add a line to `LOCALES`; the tests check it has every key.
+//! back to `en_US`, and a key nobody has shows as itself. To add a language, make its file with
+//! `dev/locale.py new <code> "<name>"`: it's found at build time (build.rs), with nothing to register.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -10,18 +10,13 @@ use std::sync::OnceLock;
 /// The language the keys are written in, and the fallback of all others (the first of `LOCALES`).
 pub const DEFAULT: &str = "en_US";
 
-/// A language: its code (Settings stores it), its name in itself, and its texts.
-struct Locale {
-    code: &'static str,
-    name: &'static str,
-    json: &'static str,
-}
+// `LOCALES`: every `assets/locales/<code>.json` as (code, its text), en_US first (made by build.rs).
+include!(concat!(env!("OUT_DIR"), "/locales.rs"));
 
-const LOCALES: [Locale; 1] = [Locale {
-    code: DEFAULT,
-    name: "English (United States)",
-    json: include_str!("../assets/locales/en_US.json"),
-}];
+/// A language's name in itself, the `locale.name` of its file.
+fn name(i: usize) -> &'static str {
+    catalog(i).get("locale.name").map_or(LOCALES[i].0, String::as_str)
+}
 
 /// The language in use (an index of `LOCALES`).
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
@@ -29,18 +24,18 @@ static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static CATALOGS: [OnceLock<HashMap<String, String>>; LOCALES.len()] = [const { OnceLock::new() }; LOCALES.len()];
 
 fn catalog(i: usize) -> &'static HashMap<String, String> {
-    CATALOGS[i].get_or_init(|| serde_json::from_str(LOCALES[i].json).unwrap_or_default())
+    CATALOGS[i].get_or_init(|| serde_json::from_str(LOCALES[i].1).unwrap_or_default())
 }
 
 /// Picks the language by its code; one this build doesn't have means `en_US`.
 pub fn set(code: &str) {
-    let i = LOCALES.iter().position(|l| l.code == code).unwrap_or(0);
+    let i = LOCALES.iter().position(|l| l.0 == code).unwrap_or(0);
     ACTIVE.store(i, Ordering::Relaxed);
 }
 
 /// The languages to choose from: code and name.
 pub fn all() -> impl Iterator<Item = (&'static str, &'static str)> {
-    LOCALES.iter().map(|l| (l.code, l.name))
+    (0..LOCALES.len()).map(|i| (LOCALES[i].0, name(i)))
 }
 
 /// The text of `key` in the language in use.
@@ -91,12 +86,27 @@ mod tests {
 
     #[test]
     fn every_language_is_valid_and_has_every_key_of_the_english_one() {
-        assert_eq!(LOCALES[0].code, DEFAULT);
+        assert_eq!(LOCALES[0].0, DEFAULT);
         let keys = |i| catalog(i).keys().cloned().collect::<BTreeSet<_>>();
         for (i, l) in LOCALES.iter().enumerate() {
-            let parsed = serde_json::from_str::<HashMap<String, String>>(l.json);
-            assert!(parsed.is_ok(), "{}.json is not a flat key to text object", l.code);
-            assert_eq!(keys(i), keys(0), "{}.json and en_US.json differ in keys", l.code);
+            let parsed = serde_json::from_str::<HashMap<String, String>>(l.1);
+            assert!(parsed.is_ok(), "{}.json is not a flat key to text object", l.0);
+            assert_eq!(keys(i), keys(0), "{}.json and en_US.json differ in keys", l.0);
+            assert!(!name(i).is_empty() && name(i) != l.0, "{}.json has no locale.name", l.0);
+            // The same {placeholders} as the English text, or a text fills in wrong.
+            fn holes(t: &str) -> Vec<&str> {
+                let mut h: Vec<&str> = t.split('{').skip(1).filter_map(|r| r.split('}').next()).collect();
+                h.sort_unstable();
+                h
+            }
+            for (k, v) in catalog(i) {
+                assert_eq!(
+                    holes(v),
+                    holes(&catalog(0)[k]),
+                    "{}.json: {k} has other {{placeholders}}",
+                    l.0
+                );
+            }
         }
     }
 
@@ -114,7 +124,7 @@ mod tests {
             assert!(catalog(0).contains_key(key), "tr(\"{key}\") is not in en_US.json");
         }
         for key in catalog(0).keys() {
-            if !key.starts_with("btn.") {
+            if !key.starts_with("btn.") && key != "locale.name" {
                 assert!(
                     code.contains(&format!("\"{key}\"")),
                     "\"{key}\" is in en_US.json but unused"
@@ -136,7 +146,7 @@ mod tests {
                 words.len(),
                 unique.len(),
                 "{}.json has two buttons with the same words",
-                l.code
+                l.0
             );
         }
         assert_eq!(button_id("Add"), Some("add"));
@@ -153,10 +163,18 @@ mod tests {
 
     #[test]
     fn unknown_things_fall_back() {
+        set("pt_BR");
+        assert_eq!(LOCALES[ACTIVE.load(Ordering::Relaxed)].0, "pt_BR");
+        assert_eq!(tr("tray.quit"), "Encerrar");
+        assert_eq!(button_id("Adicionar"), Some("add"));
+        assert_eq!(button_id("Editar…"), Some("edit"));
+        assert_eq!(button_id("Conectar todos"), Some("connect_all"));
+
         set("xx_XX");
         assert_eq!(ACTIVE.load(Ordering::Relaxed), 0);
         assert_eq!(tr("tray.quit"), "Quit");
         assert_eq!(tr("no.such.key"), "no.such.key");
         assert_eq!(all().next(), Some((DEFAULT, "English (United States)")));
+        set(DEFAULT);
     }
 }

@@ -778,14 +778,14 @@ dev/icons.sh
 ## Languages
 
 Every text the user reads goes through `i18n::tr("some.key")` (`src/i18n.rs`), never a literal. The texts
-live in `assets/locales/<code>.json` (flat, key to text, e.g. `en_US.json`), built into the binary. Only
-`en_US` exists for now; it is the fallback of every other language, and a key nobody has shows as itself.
+live in `assets/locales/<code>.json` (flat, key to text, e.g. `en_US.json`), built into the binary. `en_US` is the fallback of every other language (such as `pt_BR`), and a key nobody has shows as itself.
 The language is a setting (`locale` in the config, Settings > Appearance) and applies at the next start.
 
-To add a language: copy `en_US.json` to `<code>.json`, translate the values, and add a line to `LOCALES` in
-`i18n.rs`. The tests check that every file is valid and has exactly the keys of `en_US.json`, that every
-`tr("...")` names an existing key and that no key is unused. Texts built from pieces (names, numbers) and
-the long tail of older literal texts are still to be moved: do it as each is touched.
+To add a language: `dev/locale.py new es_ES "Español (España)"` copies the English file; translate the values
+(not the keys, and keep each `{placeholder}`). Nothing else: build.rs finds every file in `assets/locales`, and
+`locale.name` is the name Settings shows. `dev/locale.py check` lists missing or extra keys, changed
+placeholders and an empty name; the `locales` workflow runs it on pull requests, and `cargo test i18n` checks
+the rest (every `tr("key")` in the code exists, and no key is unused).
 
 ## Twitch events without a Twitch login (Twitch CLI mock)
 
