@@ -1,5 +1,5 @@
-//! The emote picker's grid, drawn by hand in one widget: section titles that fold, emotes in rows, a
-//! highlight under the mouse (an animated emote plays there), and a thin scrollbar.
+//! The emote picker's grid, drawn by hand in one widget: section titles that fold, emotes in rows (the
+//! animated ones play), a highlight under the mouse, and a thin scrollbar.
 
 use super::icons::icon;
 use super::img;
@@ -200,8 +200,8 @@ impl Grid {
                     }
                     match img::get(cmds, url, PIC, false) {
                         Some(p) => {
-                            // Still, but playing under the mouse.
-                            let mut i = if hover && p.animated() {
+                            // Every animated emote on screen plays; the grid is only open while picking.
+                            let mut i = if p.animated() {
                                 moving = true;
                                 p.at(now_ms()).clone()
                             } else {
@@ -228,7 +228,10 @@ impl Grid {
             let g = self.clone();
             app::add_timeout3(0.05, move |_| {
                 g.st.borrow_mut().ticking = false;
-                g.area.clone().redraw();
+                // The picker may have closed (and its widgets with it) in the meantime.
+                if !g.area.was_deleted() {
+                    g.area.clone().redraw();
+                }
             });
         }
     }

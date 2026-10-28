@@ -746,7 +746,9 @@ impl Pane {
             let p = self.clone();
             app::add_timeout3(0.05, move |_| {
                 p.st.borrow_mut().ticking = false;
-                p.area.clone().redraw();
+                if !p.area.was_deleted() {
+                    p.area.clone().redraw();
+                }
             });
         }
     }
