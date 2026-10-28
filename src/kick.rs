@@ -321,6 +321,11 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> KickHandle
     handle
 }
 
+/// A task that hasn't ended yet.
+fn running(task: &Option<tokio::task::JoinHandle<()>>) -> bool {
+    task.as_ref().is_some_and(|t| !t.is_finished())
+}
+
 struct Runner {
     engine: Rc<Engine>,
     cfg: Arc<watch::Sender<Config>>,
@@ -428,7 +433,9 @@ impl Runner {
     }
 
     fn connect_pusher(&mut self) {
-        if self.connected.load(Ordering::Relaxed) {
+        // Not just `connected`: that's false until the socket is up, and a second Connect meanwhile
+        // would start a second reader (every message twice).
+        if self.connected.load(Ordering::Relaxed) || running(&self.read_task) {
             return;
         }
 
@@ -1685,6 +1692,24 @@ mod tests {
     }
 
     use super::*;
+
+    /// A Connect while the first is still opening the socket must not start a second reader.
+    #[test]
+    fn a_reader_still_connecting_counts_as_running() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tokio::task::LocalSet::new().block_on(&rt, async {
+            assert!(!running(&None));
+            let task = Some(tokio::task::spawn_local(std::future::pending::<()>()));
+            assert!(running(&task));
+            task.as_ref().unwrap().abort();
+            tokio::task::yield_now().await;
+            assert!(!running(&task));
+        });
+    }
+
     #[test]
     fn test_mock_pusher_protocol() {
         let _g = crate::TEST_LOCK.lock().unwrap();
