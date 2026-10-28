@@ -9,11 +9,11 @@ use crate::engine::chatlog::Line;
 use crate::engine::UiCmd;
 use crate::i18n::{tr, trf};
 use crate::model::Obj;
-use fltk::app;
 use fltk::enums::{Align, Color, Font};
 use fltk::frame::Frame;
 use fltk::group::Flex;
 use fltk::prelude::*;
+use fltk::{app, draw};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -157,7 +157,24 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
 
     let mut head = Flex::default().row();
     head.set_pad(12);
-    let pic = Frame::default();
+    let mut pic = Frame::default();
+    // Until the picture is there (or when there is none): a circle with their initial.
+    let initial: String = who
+        .name
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().collect())
+        .unwrap_or_default();
+    let tint = who.color;
+    pic.draw(move |f| {
+        if f.image().is_none() {
+            draw::set_draw_color(Color::color_average(tint, Color::Background, 0.25));
+            draw::draw_pie(f.x(), f.y(), 56, 56, 0.0, 360.0);
+            draw::set_font(Font::HelveticaBold, 24);
+            draw::set_draw_color(tint);
+            draw::draw_text2(&initial, f.x(), f.y(), 56, 56, Align::Center);
+        }
+    });
     head.fixed(&pic, 60);
     let mut who_col = Flex::default().column();
     who_col.set_pad(0);
@@ -337,6 +354,12 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
         }
         row(tr("chat.card_messages_session"), &seen.messages.to_string());
     };
+    // The table is as tall as its lines.
+    let fit = |col: &mut Flex, facts: &Rows| {
+        col.fixed(&**facts, facts.size().max(1) * 28 + 8);
+        col.layout();
+        col.redraw();
+    };
     fill(&mut facts, &Vec::new());
     if asks {
         facts.add(&format!(
@@ -346,7 +369,8 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
         ));
     }
 
-    let (mut pic_frame, mut facts_t, mut tries) = (pic.clone(), facts.clone(), 0);
+    fit(&mut col, &facts);
+    let (mut pic_frame, mut facts_t, mut tries, mut col_t) = (pic.clone(), facts.clone(), 0, col.clone());
     let mut waiting = asks;
     let mut have_pic = false;
     pop.run(|| {
@@ -369,6 +393,7 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
                         tr("card.nothing")
                     ));
                 }
+                fit(&mut col_t, &facts_t);
             } else if tries > 75 {
                 waiting = false;
             }

@@ -164,6 +164,15 @@ pub fn dev(cmd: String) -> Option<oneshot::Receiver<String>> {
     Some(rx)
 }
 
+/// Answers the dev commands waiting, from inside a dialog or popover that is holding the window's loop
+/// (a page can't be changed then, but a screenshot can be taken).
+pub(crate) fn pump_dev() {
+    let asked = DEV.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+    for (cmd, answer) in asked {
+        let _ = answer.send(dev::run(&cmd, None));
+    }
+}
+
 /// Yes/no questions from the engine: the text, the two buttons (no, yes), and where the answer goes.
 type Confirm = (String, &'static str, &'static str, oneshot::Sender<bool>);
 static CONFIRMS: Mutex<Vec<Confirm>> = Mutex::new(Vec::new());
@@ -878,7 +887,7 @@ pub fn run(
                 Msg::Dev => {
                     let asked = DEV.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
                     for (cmd, answer) in asked {
-                        let _ = answer.send(dev::run(&cmd, &tabs));
+                        let _ = answer.send(dev::run(&cmd, Some(&tabs)));
                     }
                 }
                 Msg::Theme => {

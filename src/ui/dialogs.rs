@@ -62,6 +62,7 @@ pub fn run(win: &mut Window, answer: &Answer, mut check: impl FnMut() -> bool) -
             if !app::wait() {
                 break;
             }
+            super::pump_dev();
         }
         match answer.get() {
             Some(true) if !check() => answer.set(None),

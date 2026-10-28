@@ -2240,58 +2240,33 @@ fn emote_picker_popup(
         return;
     };
     let own = parent.h() < 520;
-    let own_win = own.then(|| {
+    let mut own_win = own.then(|| {
         let mut w = Window::default().with_size(380, 480).with_label("Streamerz");
         w.set_xclass("streamerz");
         w.make_modal(true);
         w
     });
-    let mut host: Box<dyn WindowExt> = match &own_win {
+    let host: Box<dyn WindowExt> = match &own_win {
         Some(w) => Box::new(w.clone()),
         None => parent,
     };
-    let (pw, ph) = if own { (380, 480) } else { (380, 460.min(host.h() - 16)) };
     let (x, y) = if own {
         (0, 0)
     } else {
-        let above = target_input.y() - ph - 8;
+        // Above the box, or below it when there's no room above.
+        let above = target_input.y() - 460.min(host.h() - 16) - 8;
         (
-            target_input.x().min(host.w() - pw - 8).max(8),
+            target_input.x(),
             if above >= 8 {
                 above
             } else {
-                (target_input.y() + target_input.h() + 8).min(host.h() - ph - 8)
+                target_input.y() + target_input.h() + 8
             },
         )
     };
-    let done = Rc::new(Cell::new(false));
-    host.begin();
-    // Under the popover and over everything else: it takes every click outside, and closes the popover.
-    let mut catcher = Frame::new(0, 0, host.w(), host.h(), None);
-    catcher.handle({
-        let done = done.clone();
-        move |_, ev| match ev {
-            Event::Push => {
-                done.set(true);
-                true
-            }
-            Event::Released | Event::Enter | Event::Move | Event::MouseWheel => true,
-            Event::KeyDown | Event::Shortcut if app::event_key() == fltk::enums::Key::Escape => {
-                done.set(true);
-                true
-            }
-            _ => false,
-        }
-    });
-    // A window inside the window: other widgets repainting themselves (a blinking cursor, a hover) can't
-    // draw over it, as they do over a plain group.
-    let mut pop = Window::new(x, y, pw, ph, None);
-    pop.set_frame(FrameType::FlatBox);
-    pop.set_color(Color::Background);
-    pop.draw(|c| {
-        draw::set_draw_color(Color::color_average(Color::Foreground, Color::Background, 0.25));
-        draw::draw_rounded_rect(0, 0, c.w(), c.h(), 8);
-    });
+    let mut pop = super::popover::Popover::start(host, x, y, 380, if own { 480 } else { 460 });
+    let (pw, ph) = pop.size();
+    let done = pop.done.clone();
     let mut col = Flex::new(0, 0, pw, ph, None).column();
     col.set_margin(8);
     col.set_pad(8);
@@ -2328,8 +2303,7 @@ fn emote_picker_popup(
 
     let grid = super::grid::Grid::new(cmds);
     col.end();
-    pop.end();
-    host.end();
+    pop.finish();
 
     let cur_tab = Rc::new(Cell::new(default_tab));
     let collapsed: Rc<RefCell<HashSet<String>>> = Rc::default();
@@ -2428,17 +2402,16 @@ fn emote_picker_popup(
         move |_| fill(false)
     });
     style_tabs(default_tab);
-    if own {
-        host.show();
+    if let Some(w) = &mut own_win {
+        w.show();
     }
-    host.redraw();
     fill(false);
     let _ = search.take_focus();
 
     let mut pics = img::ARRIVED.load(std::sync::atomic::Ordering::Relaxed);
     let mut seen_rev = emotes::REV.load(std::sync::atomic::Ordering::Relaxed);
     let mut picked = false;
-    while !done.get() && (!own || host.shown()) {
+    while !done.get() && own_win.as_ref().is_none_or(|w| w.shown()) {
         let _ = app::wait_for(0.25);
         let asked: Vec<super::grid::Asked> = grid.asked.borrow_mut().drain(..).collect();
         let mut refill = false;
@@ -2482,13 +2455,10 @@ fn emote_picker_popup(
             fill(true);
         }
     }
+    pop.close();
     if let Some(mut w) = own_win {
         w.hide();
         app::delete_widget(w);
-    } else {
-        app::delete_widget(catcher);
-        app::delete_widget(pop);
-        host.redraw();
     }
     if picked {
         let _ = target_input.take_focus();

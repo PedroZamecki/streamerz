@@ -14,16 +14,19 @@ use std::fmt::Write;
 ///   tree [N]        the widgets of window N: depth, label, x y w h (in the window), hidden ones marked
 ///   find TEXT [N]   where widgets with TEXT in their label are, as screen coordinates to click
 ///   page LABEL      goes to a page (Chat, Settings...)
-pub fn run(cmd: &str, pages: &Wizard) -> String {
+pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
     let mut words = cmd.split_whitespace();
     let (what, a, b) = (words.next().unwrap_or(""), words.next(), words.next());
     let mut windows = app::windows().unwrap_or_default();
     let at = |i: Option<&str>| i.and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
     match what {
-        "page" => {
-            nav::go(pages, cmd.trim_start_matches("page").trim());
-            "ok".into()
-        }
+        "page" => match pages {
+            Some(p) => {
+                nav::go(p, cmd.trim_start_matches("page").trim());
+                "ok".into()
+            }
+            None => "a dialog or popover is open: close it first".into(),
+        },
         "windows" => windows
             .iter()
             .enumerate()
@@ -44,15 +47,15 @@ pub fn run(cmd: &str, pages: &Wizard) -> String {
             let (Some(path), Some(w)) = (a, windows.get_mut(at(b))) else {
                 return "usage: shot PATH [N]".into();
             };
-            match draw::capture_window(w) {
-                Ok(img) => match png(&img.to_rgb_data(), img.w() as u32, img.h() as u32, img.depth() as usize) {
+            match capture(w) {
+                Some(img) => match png(&img.to_rgb_data(), img.w() as u32, img.h() as u32, img.depth() as usize) {
                     Ok(bytes) => std::fs::write(path, bytes).map_or_else(
                         |e| e.to_string(),
                         |()| format!("saved {path} ({}x{})", img.w(), img.h()),
                     ),
                     Err(e) => e,
                 },
-                Err(e) => format!("can't capture: {e}"),
+                None => "can't capture".into(),
             }
         }
         "tree" => {
@@ -81,6 +84,31 @@ pub fn run(cmd: &str, pages: &Wizard) -> String {
         }
         _ => "commands: shot, windows, tree, find, page".into(),
     }
+}
+
+/// The window as drawn, with the windows inside it (popovers). Not `draw::capture_window`: it reads the
+/// screen and crashes on windows inside windows.
+fn capture(win: &impl WindowExt) -> Option<fltk::image::RgbImage> {
+    use fltk::surface::ImageSurface;
+    let surface = ImageSurface::new(win.w(), win.h(), false);
+    ImageSurface::push_current(&surface);
+    draw::set_draw_color(fltk::enums::Color::Background);
+    draw::draw_rectf(0, 0, win.w(), win.h());
+    surface.draw(win, 0, 0);
+    fn inside(g: &Option<fltk::group::Group>, at: (i32, i32), surface: &ImageSurface) {
+        let Some(g) = g else { return };
+        for i in 0..g.children() {
+            let Some(c) = g.child(i) else { continue };
+            if c.as_window().is_some() {
+                c.clone().redraw();
+                surface.draw(&c, at.0 + c.x(), at.1 + c.y());
+            }
+            inside(&c.as_group(), at, surface);
+        }
+    }
+    inside(&win.as_base_widget().as_group(), (0, 0), &surface);
+    ImageSurface::pop_current();
+    surface.image()
 }
 
 fn walk(g: &Option<fltk::group::Group>, depth: usize, out: &mut String) {

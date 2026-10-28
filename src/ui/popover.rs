@@ -12,7 +12,9 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 pub struct Popover {
-    host: Box<dyn WindowExt>,
+    /// Never dropped: a window got from `first_window()` owns its widget, and dropping it would delete the
+    /// app's window.
+    host: std::mem::ManuallyDrop<Box<dyn WindowExt>>,
     pop: Window,
     catcher: Frame,
     /// Set by a click outside, Escape, or `close_now`.
@@ -55,7 +57,7 @@ impl Popover {
             draw::draw_rounded_rect(0, 0, c.w(), c.h(), 8);
         });
         Popover {
-            host,
+            host: std::mem::ManuallyDrop::new(host),
             pop,
             catcher,
             done,
@@ -71,6 +73,8 @@ impl Popover {
     pub fn finish(&mut self) {
         self.pop.end();
         self.host.end();
+        // A window made after its parent was shown has to be shown itself.
+        self.pop.show();
         self.host.redraw();
     }
 
@@ -78,6 +82,7 @@ impl Popover {
     pub fn run(&self, mut tick: impl FnMut()) {
         while !self.done.get() {
             let _ = app::wait_for(0.2);
+            super::pump_dev();
             tick();
         }
     }
