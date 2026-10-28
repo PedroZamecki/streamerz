@@ -427,7 +427,16 @@ impl LoadParams {
             .as_ref()
             .map(|a| (a.user_id.clone(), a.token.access_token.clone()));
         let tw_chan_id = tw_broadcaster.as_ref().map(|(id, _)| id.clone()).unwrap_or_default();
-        let kick_slug = crate::kick::clean_kick_channel(&cfg.kick.channel);
+        // The channel read, or when none is set, the logged-in broadcaster's own.
+        let mut kick_slug = crate::kick::clean_kick_channel(&cfg.kick.channel).to_lowercase();
+        if kick_slug.is_empty() {
+            kick_slug = cfg
+                .kick
+                .broadcaster
+                .as_ref()
+                .map(|b| b.username.to_lowercase())
+                .unwrap_or_default();
+        }
         let kick_uid = cfg
             .kick
             .channel_id
@@ -1002,6 +1011,20 @@ async fn fetch_all(p: &LoadParams) -> Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kick_emotes_are_the_logged_in_channels_when_no_other_is_set() {
+        let mut cfg = Config::default();
+        cfg.kick.broadcaster = Some(crate::kick::KickAccount {
+            user_id: 5,
+            username: "PedroZamecki".into(),
+            token: Default::default(),
+        });
+        assert_eq!(LoadParams::from_cfg(&cfg).kick_slug, "pedrozamecki");
+        cfg.kick.channel = "https://kick.com/Other".into();
+        assert_eq!(LoadParams::from_cfg(&cfg).kick_slug, "other");
+        assert_eq!(LoadParams::from_cfg(&Config::default()).kick_slug, "");
+    }
 
     #[test]
     fn splits_emoji_out_of_text() {
