@@ -620,7 +620,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
     row.fixed(&left, 340);
     let mut right = Flex::default().column();
     right.set_pad(4);
-    let mut title = Frame::default().with_align(Align::Left | Align::Inside);
+    let mut title = Frame::default().with_align(Align::Left | Align::Inside).ellipsis();
     title.set_label_font(Font::HelveticaBold);
     right.fixed(&title, ROW - 2);
     let t = Frame::default()
@@ -658,7 +658,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
         &[tr("btn.add"), tr("btn.edit"), tr("btn.on_off"), tr("btn.delete")],
     );
 
-    let mut detail_title = Frame::default().with_align(Align::Left | Align::Inside);
+    let mut detail_title = Frame::default().with_align(Align::Left | Align::Inside).ellipsis();
     detail_title.set_label_font(Font::HelveticaBold);
     detail_title.set_label_color(Color::from_u32(0x5599ff));
     right.fixed(&detail_title, 18);

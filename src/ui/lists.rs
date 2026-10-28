@@ -1,6 +1,7 @@
 //! The Commands, Timers, Queues, History, Globals and Servers tabs. Commands, timers and WebSocket
 //! clients/servers are lists of Streamer.bot objects, each edited in a form.
 
+use super::fit::Ellipsis;
 use super::forms::{self, Done, Lists, F, W::*};
 use super::rows::Rows;
 use super::{button, dialogs, query, tell, ROW};
@@ -58,7 +59,9 @@ pub(super) fn save(cfg: &Cfg, f: impl FnOnce(&mut Config)) {
 
 /// A section title, with the platform's or app's logo when there's one.
 pub(super) fn title(col: &mut Flex, t: &str) {
-    let mut f = Frame::default().with_align(Align::Left | Align::Inside | Align::ImageNextToText);
+    let mut f = Frame::default()
+        .with_align(Align::Left | Align::Inside | Align::ImageNextToText)
+        .ellipsis();
     f.set_label_font(Font::HelveticaBold);
     // The logo of what it's about, or an icon for it.
     let lucide = match t {
@@ -1588,7 +1591,7 @@ fn servers_box(col: &mut Flex, cfg: &Cfg) -> Rc<RefCell<Servers>> {
     for i in 0..3 {
         let mut r = Flex::default().row();
         r.set_pad(8);
-        let f = Frame::default().with_align(Align::Left | Align::Inside);
+        let f = Frame::default().with_align(Align::Left | Align::Inside).ellipsis();
         let mut b = button(&mut r, tr("btn.edit"), 70);
         r.end();
         col.fixed(&r, ROW);
@@ -1694,7 +1697,7 @@ fn donations_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Donations>
         col.fixed(&g, ROW);
         let mut r = Flex::default().row();
         r.set_pad(8);
-        let f = Frame::default().with_align(Align::Left | Align::Inside);
+        let f = Frame::default().with_align(Align::Left | Align::Inside).ellipsis();
         let mut b = button(&mut r, tr("btn.edit"), 70);
         r.end();
         col.fixed(&r, ROW);

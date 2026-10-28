@@ -478,6 +478,8 @@ struct Row {
     adv: Button,
     /// Broadcaster, then bot: profile picture, name and Login/Logout.
     who: [(Frame, Frame, Button); 2],
+    /// The row they sit in: Login and Logout have different words, so the button's width follows them.
+    bottom: Flex,
 }
 
 pub struct Accounts {
@@ -562,11 +564,13 @@ impl Accounts {
                         name.set_tooltip(&n.replace('@', "@@"));
                         b.set_label(tr("btn.logout"));
                         super::with_icon(b);
+                        r.bottom.fixed(b, super::fit::grown(80, tr("btn.logout"), true));
                     }
                     None => {
                         name.set_label(&trf("accounts.no_who", &[("who", &who.to_lowercase())]));
                         b.set_label(tr("btn.login"));
                         super::with_icon(b);
+                        r.bottom.fixed(b, super::fit::grown(80, tr("btn.login"), true));
                     }
                 }
                 let raw_name = r.p.raw_account_name(&c, bot == 1);
@@ -584,7 +588,9 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
 
     let mut lock_bar = Flex::default().row();
     lock_bar.set_pad(8);
-    let lock_msg = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+    let lock_msg = Frame::default()
+        .with_align(Align::Left | Align::Inside | Align::Clip)
+        .ellipsis();
     let mut unlock_btn = button(&mut lock_bar, tr("accounts.unlock_logins"), 120);
     lock_bar.end();
     col.fixed(&lock_bar, ROW);
@@ -601,7 +607,9 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
         name.set_label_font(fltk::enums::Font::HelveticaBold);
         name.set_image(super::img::logo(p.name(), ROW - 8));
         top.fixed(&name, 110);
-        let status = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+        let status = Frame::default()
+            .with_align(Align::Left | Align::Inside | Align::Clip)
+            .ellipsis();
         let auto = CheckButton::default().with_label(tr("accounts.connect_on_start"));
         top.fixed(&auto, 140);
         let connect = button(&mut top, tr("btn.connect"), 100);
@@ -613,14 +621,18 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
         bottom.set_pad(8);
         let gap = Frame::default();
         bottom.fixed(&gap, 110);
-        let mut channel = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+        let mut channel = Frame::default()
+            .with_align(Align::Left | Align::Inside | Align::Clip)
+            .ellipsis();
         channel.set_label_color(super::muted());
         bottom.fixed(&channel, 120);
         let mut who = Vec::new();
         for _ in 0..2 {
             let pic = Frame::default();
             bottom.fixed(&pic, ROW);
-            let f = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+            let f = Frame::default()
+                .with_align(Align::Left | Align::Inside | Align::Clip)
+                .ellipsis();
             let b = button(&mut bottom, tr("btn.login"), 80);
             who.push((pic, f, b));
         }
@@ -637,6 +649,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
             auto,
             connect,
             who,
+            bottom,
         });
     }
     let guide = Frame::default()

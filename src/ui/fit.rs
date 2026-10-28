@@ -55,12 +55,19 @@ pub trait Ellipsis {
 
 impl Ellipsis for Frame {
     fn ellipsis(mut self) -> Self {
+        // The widget's own drawing runs first, then this: its label has to be left to this.
+        self.set_label_type(fltk::enums::LabelType::None);
         self.draw(|f| {
             let label = plain(&f.label());
             draw::set_font(f.label_font(), f.label_size());
             let img = f.image();
             let pad = img.as_ref().map_or(0, |i| i.w());
-            let text = ellipsize(&label, f.w() - pad, measure);
+            // Each line on its own (a label may hold several).
+            let text = label
+                .split('\n')
+                .map(|l| ellipsize(l, f.w() - pad, measure))
+                .collect::<Vec<_>>()
+                .join("\n");
             tip(f, &label, text != label);
             if let Some(mut i) = img {
                 i.draw(f.x(), f.y() + (f.h() - i.h()) / 2, i.w(), i.h());
@@ -109,6 +116,7 @@ pub fn choice() -> Choice {
 /// A button that fits its room: icon and words, only the icon (the words as its tooltip), or, with no
 /// icon, the words cut with "...". The icon is the button's image (`with_icon` sets it).
 pub fn adaptive(b: &mut Button) {
+    b.set_label_type(fltk::enums::LabelType::None);
     b.draw(|b| {
         let frame = if b.value() { b.down_frame() } else { b.frame() };
         draw::draw_box(frame, b.x(), b.y(), b.w(), b.h(), b.color());

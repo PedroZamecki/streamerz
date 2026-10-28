@@ -1078,7 +1078,9 @@ impl ChatColumn {
         let mut r_icon = Frame::default();
         r_icon.set_image(icons::icon("corner-up-left", super::muted(), 14));
         replying.fixed(&r_icon, 18);
-        let mut r_text = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+        let mut r_text = Frame::default()
+            .with_align(Align::Left | Align::Inside | Align::Clip)
+            .ellipsis();
         r_text.set_label_size(12);
         r_text.set_label_color(super::muted());
         let mut r_close = Button::default();
@@ -1635,7 +1637,9 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
     head.set_pad(8);
     let head_logo = Frame::default();
     head.fixed(&head_logo, 24);
-    let mut head_title = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+    let mut head_title = Frame::default()
+        .with_align(Align::Left | Align::Inside | Align::Clip)
+        .ellipsis();
     head_title.set_label_font(Font::HelveticaBold);
     head.end();
     root.fixed(&head, ROW);
@@ -1902,7 +1906,7 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
 
     let mut foot = Flex::default().row();
     foot.set_pad(8);
-    let status = Frame::default().with_align(Align::Left | Align::Inside);
+    let status = Frame::default().with_align(Align::Left | Align::Inside).ellipsis();
     let mut close = button(&mut foot, tr("dialogs.cancel"), 80);
     foot.end();
     col.fixed(&foot, ROW);

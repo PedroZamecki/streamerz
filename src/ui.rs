@@ -19,6 +19,7 @@ mod plugins;
 mod rows;
 mod settings;
 
+use self::fit::Ellipsis;
 use crate::brand;
 use crate::engine::{Engine, UiCmd};
 use crate::i18n::{tr, trf};
@@ -356,7 +357,8 @@ fn placeholder(i: &mut fltk::input::Input, text: &'static str) {
         if i.value().is_empty() && !i.has_focus() {
             draw::set_font(Font::Helvetica, i.text_size());
             draw::set_draw_color(muted());
-            draw::draw_text2(text, i.x() + 6, i.y(), i.w() - 12, i.h(), Align::Left | Align::Clip);
+            let shown = fit::ellipsize(text, i.w() - 12, |t| draw::width(t) as i32);
+            draw::draw_text2(&shown, i.x() + 6, i.y(), i.w() - 12, i.h(), Align::Left | Align::Clip);
         }
     });
 }
@@ -645,7 +647,7 @@ pub fn run(
     let mut conns = Button::default().with_align(Align::Left | Align::Inside);
     conns.set_frame(fltk::enums::FrameType::NoBox);
     bar.fixed(&conns, 240);
-    let mut saved = Frame::default().with_align(Align::Left | Align::Inside);
+    let mut saved = Frame::default().with_align(Align::Left | Align::Inside).ellipsis();
     let mut hide = button(&mut bar, tr("btn.hide"), 90);
     let mut quit = button(&mut bar, tr("btn.quit"), 90);
     bar.end();

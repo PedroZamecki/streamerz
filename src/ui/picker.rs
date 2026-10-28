@@ -694,7 +694,7 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
     // Bottom action bar
     let mut bot_row = Flex::default().row();
     bot_row.set_pad(6);
-    let mut count_label = Frame::default().with_align(Align::Left | Align::Inside);
+    let mut count_label = Frame::default().with_align(Align::Left | Align::Inside).ellipsis();
     count_label.set_label_color(Color::from_rgb(140, 140, 140));
     Frame::default();
 

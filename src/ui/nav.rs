@@ -207,7 +207,8 @@ pub fn sidebar(h: i32, pages: &Wizard, cfg: &Cfg) -> Frame {
                 draw::set_font(if on { Font::HelveticaBold } else { Font::Helvetica }, 14);
                 draw::set_draw_color(c);
                 draw::push_clip(f.x() + 8, ly, f.w() - 16, ITEM);
-                draw::draw_text2(tr(tr_key), f.x() + 44, ly, WIDE - 52, ITEM, Align::Left);
+                let name = super::fit::ellipsize(tr(tr_key), WIDE - 56, |t| draw::width(t) as i32);
+                draw::draw_text2(&name, f.x() + 44, ly, WIDE - 52, ITEM, Align::Left);
                 draw::pop_clip();
             }
             draw::pop_clip();

@@ -304,7 +304,9 @@ pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: im
             .ellipsis();
         name.set_label_font(Font::HelveticaBold);
         row.fixed(&name, 190);
-        let st = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+        let st = Frame::default()
+            .with_align(Align::Left | Align::Inside | Align::Clip)
+            .ellipsis();
         let mut r = button(&mut row, if c.standby { tr("btn.check") } else { tr("btn.retry") }, 70);
         r.set_tooltip(tr("conns.retry_tooltip"));
         let mut s = button(&mut row, tr("btn.settings"), 80);
