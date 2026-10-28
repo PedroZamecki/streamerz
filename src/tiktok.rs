@@ -486,7 +486,7 @@ impl Runner {
                         }
                         let msg = format!("@{channel} not found, check the @handle in Accounts");
                         if msg != said {
-                            crate::say(format!("TikTok: {msg}"));
+                            crate::warn(format!("TikTok: {msg}"));
                             said.clone_from(&msg);
                             standby_logged = false;
                         }
@@ -498,7 +498,7 @@ impl Runner {
                             disconnected(&engine, &channel);
                         }
                         if e != said {
-                            crate::say(format!("TikTok (@{channel}): {e}"));
+                            crate::warn(format!("TikTok (@{channel}): {e}"));
                             said.clone_from(&e);
                             standby_logged = false;
                         }

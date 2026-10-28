@@ -123,19 +123,23 @@ fn keep(dir: &Path, ext: &str, n: usize) {
 }
 
 /// One line of the log (already redacted).
-pub fn line(text: &str) {
+pub fn line(level: crate::Level, text: &str) {
     let Ok(mut l) = LOG.lock() else { return };
     if let Some((f, size)) = l.as_mut() {
         if *size < LOG_MAX {
-            let t = format!("{} {text}\n", crate::fmt::date(&crate::fmt::now(), "HH:mm:ss"));
+            let t = format!(
+                "{} [{}] {text}\n",
+                crate::fmt::date(&crate::fmt::now(), "HH:mm:ss"),
+                level.tag()
+            );
             *size += t.len() as u64;
             let _ = f.write_all(t.as_bytes());
         }
     }
 }
 
-/// The report of a panic: what, where, the recent log and a backtrace, with the home folder hidden.
-fn text(info: &std::panic::PanicHookInfo<'_>, log: &[String]) -> String {
+/// A panic's message and where it happened.
+fn what_at(info: &std::panic::PanicHookInfo<'_>) -> (String, String) {
     let what = info
         .payload()
         .downcast_ref::<&str>()
@@ -145,6 +149,12 @@ fn text(info: &std::panic::PanicHookInfo<'_>, log: &[String]) -> String {
     let at = info
         .location()
         .map_or(String::new(), |l| format!("{}:{}", l.file(), l.line()));
+    (what, at)
+}
+
+/// The report of a panic: what, where, the recent log and a backtrace, with the home folder hidden.
+fn text(info: &std::panic::PanicHookInfo<'_>, log: &[String]) -> String {
+    let (what, at) = what_at(info);
     let thread = std::thread::current().name().unwrap_or("?").to_string();
     let trace = std::backtrace::Backtrace::force_capture();
     let report = format!(
@@ -170,6 +180,18 @@ fn private(text: &str) -> String {
 }
 
 fn report(info: &std::panic::PanicHookInfo<'_>) {
+    // The log file says it too. Never waits: the panic may have come while writing a line.
+    if let Ok(mut l) = LOG.try_lock() {
+        if let Some((f, _)) = l.as_mut() {
+            let (what, at) = what_at(info);
+            let _ = writeln!(
+                f,
+                "{} [FATAL] {} ({at})",
+                crate::fmt::date(&crate::fmt::now(), "HH:mm:ss"),
+                private(&what)
+            );
+        }
+    }
     let log = crate::log_tail_try(60);
     let body = text(info, &log);
     let dir = dir();

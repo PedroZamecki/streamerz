@@ -189,7 +189,7 @@ pub async fn run(ui: Sender<Msg>) {
             std::future::pending().await
         }
         Err(e) => {
-            crate::say(format!("no tray icon ({e})"));
+            crate::warn(format!("no tray icon ({e})"));
             ui.send(Msg::NoTray);
         }
     }
@@ -257,7 +257,7 @@ pub async fn run(ui: Sender<Msg>) {
         let close = MenuItem::new(tr("tray.quit"), true, None);
         let menu = Menu::new();
         let fail = |e: String| {
-            crate::say(format!("no tray icon ({e})"));
+            crate::warn(format!("no tray icon ({e})"));
             ui.send(Msg::NoTray);
         };
         if let Err(e) = menu.append_items(&[&open, &close]) {

@@ -441,7 +441,7 @@ impl Runner {
 
         let channel = self.cfg.borrow().kick.channel.trim().to_string();
         if channel.is_empty() {
-            crate::say("Kick: channel name is empty".into());
+            crate::error("Kick: channel name is empty".into());
             return;
         }
 
@@ -877,7 +877,7 @@ pub async fn run_pusher_loop_url(
                                 break;
                             }
                             if val["event"].as_str() == Some("pusher:error") {
-                                crate::say(format!(
+                                crate::error(format!(
                                     "Kick: Pusher refused: {}",
                                     val["data"]["message"].as_str().unwrap_or("")
                                 ));
@@ -888,7 +888,7 @@ pub async fn run_pusher_loop_url(
                 }
 
                 if !established {
-                    crate::say("Kick: connection established handshake failed".into());
+                    crate::warn("Kick: connection established handshake failed".into());
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     continue;
                 }
@@ -964,7 +964,7 @@ pub async fn run_pusher_loop_url(
                     let msg = match msg_res {
                         Ok(m) => m,
                         Err(e) => {
-                            crate::say(format!("Kick: websocket error: {e}"));
+                            crate::warn(format!("Kick: websocket error: {e}"));
                             break;
                         }
                     };
@@ -986,7 +986,7 @@ pub async fn run_pusher_loop_url(
                             let _ = sink.send(Message::Pong(data)).await;
                         }
                         Message::Close(_) => {
-                            crate::say("Kick: connection closed by server".into());
+                            crate::warn("Kick: connection closed by server".into());
                             break;
                         }
                         _ => {}
@@ -1007,7 +1007,7 @@ pub async fn run_pusher_loop_url(
                 engine.emit("Kick", "BroadcasterChatDisconnected", || json!(args));
             }
             Err(e) => {
-                crate::say(format!("Kick: connection error: {e}"));
+                crate::warn(format!("Kick: connection error: {e}"));
             }
         }
 

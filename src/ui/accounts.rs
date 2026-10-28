@@ -736,7 +736,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
                                 };
                                 let r = crate::http::request("POST", u, &h, q.as_bytes()).await;
                                 let ok = r.as_ref().is_ok_and(|r| (200..300).contains(&r.status));
-                                crate::say(format!(
+                                crate::warn(format!(
                                     "{}: login revoked{}",
                                     p.name(),
                                     if ok { "" } else { " (the server didn't confirm)" }

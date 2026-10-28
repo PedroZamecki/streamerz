@@ -774,9 +774,9 @@ async fn refresh_accounts(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>,
                         a.token = TwitchToken::default();
                     }
                 });
-                crate::say(format!("Twitch: {who} login expired; log in again in Accounts"));
+                crate::error(format!("Twitch: {who} login expired; log in again in Accounts"));
             }
-            Err(e) => crate::say(format!("Twitch: token refresh failed for {who} ({e}); will retry")),
+            Err(e) => crate::warn(format!("Twitch: token refresh failed for {who} ({e}); will retry")),
         }
     }
 }
@@ -923,7 +923,7 @@ impl Runner {
             return;
         }
         if self.cfg.borrow().twitch.broadcaster.is_none() {
-            crate::say("Twitch: no broadcaster account configured".into());
+            crate::error("Twitch: no broadcaster account configured".into());
             return;
         }
         if let Some(t) = self.read_task.take() {
@@ -1038,7 +1038,7 @@ impl Runner {
             );
             Ok(true)
         } else {
-            crate::say(format!("Start raid failed: HTTP {} {}", res.status, res.text()));
+            crate::error(format!("Start raid failed: HTTP {} {}", res.status, res.text()));
             Ok(false)
         }
     }
@@ -1215,7 +1215,7 @@ async fn supervise_eventsub(
             if b.token.access_token.is_empty() {
                 if crate::secrets::is_locked() {
                     if !logged_locked {
-                        crate::say("Twitch: waiting for system keyring to unlock saved login...".into());
+                        crate::warn("Twitch: waiting for system keyring to unlock saved login...".into());
                         logged_locked = true;
                         crate::ui::changed();
                     }
@@ -1223,7 +1223,7 @@ async fn supervise_eventsub(
                     tokio::time::sleep(Duration::from_secs(3)).await;
                     continue;
                 }
-                crate::say(format!(
+                crate::error(format!(
                     "Twitch: @{} login missing or expired; log in again in Accounts",
                     b.login
                 ));
@@ -1254,7 +1254,7 @@ async fn supervise_eventsub(
         let ws = match crate::http::ws_connect(&url).await {
             Ok((ws, _)) => ws,
             Err(e) => {
-                crate::say(format!(
+                crate::warn(format!(
                     "Twitch: EventSub connect failed for @{} ({e}); retrying in {backoff_secs}s",
                     broadcaster.login
                 ));
@@ -1278,7 +1278,7 @@ async fn supervise_eventsub(
                         run_bot_eventsub_loop(bot_ws, bot_engine, bot_cfg, b_acct, bot_acct).await;
                     }
                     Err(e) => {
-                        crate::say(format!("Twitch: bot EventSub connect failed ({e})"));
+                        crate::warn(format!("Twitch: bot EventSub connect failed ({e})"));
                     }
                 }
             })
@@ -1462,14 +1462,14 @@ async fn run_eventsub_loop(
                     .pointer("/payload/session/reconnect_url")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                crate::say(format!("Twitch: EventSub session handoff (@{})", broadcaster.login));
+                crate::debug(format!("Twitch: EventSub session handoff (@{})", broadcaster.login));
                 match crate::http::ws_connect(url).await {
                     Ok((new_ws, _)) => {
                         ws = new_ws;
                         reconnecting = true;
                     }
                     Err(e) => {
-                        crate::say(format!("Twitch: EventSub handoff failed ({e})"));
+                        crate::warn(format!("Twitch: EventSub handoff failed ({e})"));
                         break;
                     }
                 }
@@ -1479,7 +1479,7 @@ async fn run_eventsub_loop(
                     .pointer("/payload/subscription/type")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                crate::say(format!("Twitch: subscription revoked ({sub_type})"));
+                crate::warn(format!("Twitch: subscription revoked ({sub_type})"));
             }
             _ => {}
         }
@@ -1491,7 +1491,7 @@ async fn run_eventsub_loop(
     if !is_connected.swap(false, Ordering::Relaxed) {
         return;
     }
-    crate::say(format!("Twitch: EventSub connection lost (@{})", broadcaster.login));
+    crate::warn(format!("Twitch: EventSub connection lost (@{})", broadcaster.login));
     let mut args = Obj::new();
     populate_broadcaster_vars(&mut args, &broadcaster);
     engine.fire(
@@ -1608,7 +1608,7 @@ async fn run_bot_eventsub_loop(
                         reconnecting = true;
                     }
                     Err(e) => {
-                        crate::say(format!("Twitch: bot EventSub handoff failed ({e})"));
+                        crate::warn(format!("Twitch: bot EventSub handoff failed ({e})"));
                         break;
                     }
                 }
@@ -1618,7 +1618,7 @@ async fn run_bot_eventsub_loop(
                     .pointer("/payload/subscription/type")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                crate::say(format!("Twitch: bot subscription revoked ({sub_type})"));
+                crate::warn(format!("Twitch: bot subscription revoked ({sub_type})"));
             }
             _ => {}
         }
@@ -1901,17 +1901,17 @@ async fn create_sub(
     let res = match crate::http::request("POST", &url, &headers, &body).await {
         Ok(r) => r,
         Err(e) => {
-            crate::say(format!("Twitch: create sub {sub_type}: {e}"));
+            crate::error(format!("Twitch: create sub {sub_type}: {e}"));
             return true;
         }
     };
     if res.status == 401 {
         auth_refused.store(true, Ordering::Relaxed);
-        crate::say("Twitch: token rejected (HTTP 401); refreshing...".into());
+        crate::warn("Twitch: token rejected (HTTP 401); refreshing...".into());
         return false;
     }
     if res.status != 202 && res.status != 200 {
-        crate::say(format!(
+        crate::error(format!(
             "Twitch: create sub {sub_type} HTTP {}: {}",
             res.status,
             res.text()

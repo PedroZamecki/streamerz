@@ -608,7 +608,7 @@ impl Engine {
                     sock.send_to(payload.as_bytes(), ("255.255.255.255", port)).await
                 };
                 if let Err(e) = sent.await {
-                    crate::say(format!("UDP Broadcast to port {port}: {e}"));
+                    crate::error(format!("UDP Broadcast to port {port}: {e}"));
                 }
             }
             6 => self.run_program(ctx, o).await,
@@ -637,7 +637,7 @@ impl Engine {
                 if self.dev_out("twitch", &text, use_bot) {
                 } else if let Some(tw) = self.twitch() {
                     if let Err(e) = tw.send_message(text, None, use_bot, fallback).await {
-                        crate::say(e);
+                        crate::error(e);
                     }
                 }
             }
@@ -649,7 +649,7 @@ impl Engine {
                 let fallback = b(o, "fallback", false);
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw.send_announcement(text, color, use_bot, fallback).await {
-                        crate::say(e);
+                        crate::error(e);
                     }
                 }
             }
@@ -665,7 +665,7 @@ impl Engine {
             501 => {
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw.cancel_raid().await {
-                        crate::say(e);
+                        crate::error(e);
                     }
                 }
             }
@@ -678,7 +678,7 @@ impl Engine {
                 if self.dev_out("twitch", &text, use_bot) {
                 } else if let Some(tw) = self.twitch() {
                     if let Err(e) = tw.send_message(text, Some(reply_id), use_bot, fallback).await {
-                        crate::say(e);
+                        crate::error(e);
                     }
                 }
             }
@@ -722,7 +722,7 @@ impl Engine {
                         )
                         .await
                     {
-                        crate::say(format!("Twitch: {e}"));
+                        crate::error(format!("Twitch: {e}"));
                     }
                 }
             }
@@ -746,7 +746,7 @@ impl Engine {
                             ctx.args.insert("titleSuccess".into(), true.into());
                         }
                         Err(e) => {
-                            crate::say(format!("Twitch: {e}"));
+                            crate::error(format!("Twitch: {e}"));
                         }
                     }
                 }
@@ -781,7 +781,7 @@ impl Engine {
                 .await;
                 match r {
                     Ok(()) => drop(ctx.args.insert("gameSuccess".into(), true.into())),
-                    Err(e) => crate::say(format!("Twitch: {e}")),
+                    Err(e) => crate::error(format!("Twitch: {e}")),
                 }
             }
 
@@ -807,7 +807,7 @@ impl Engine {
                             ctx.args.insert(format!("streamMarker{k}"), m[f].clone());
                         }
                     }
-                    Err(e) => crate::say(format!("Twitch: {e}")),
+                    Err(e) => crate::error(format!("Twitch: {e}")),
                 }
             }
 
@@ -840,7 +840,7 @@ impl Engine {
                                     .insert("createClipCreatedAt".into(), super::globals::iso_now().into());
                             }
                         }
-                        Err(e) => crate::say(format!("Twitch: {e}")),
+                        Err(e) => crate::error(format!("Twitch: {e}")),
                     }
                 }
             }
@@ -860,7 +860,7 @@ impl Engine {
                         )
                         .await
                     {
-                        crate::say(format!("Twitch: {e}"));
+                        crate::error(format!("Twitch: {e}"));
                     }
                 }
             }
@@ -900,7 +900,7 @@ impl Engine {
                         )
                         .await
                     {
-                        crate::say(format!("Twitch: {e}"));
+                        crate::error(format!("Twitch: {e}"));
                     }
                 }
             }
@@ -921,7 +921,7 @@ impl Engine {
                         )
                         .await
                     {
-                        crate::say(format!("Twitch: {e}"));
+                        crate::error(format!("Twitch: {e}"));
                     }
                 }
             }
@@ -941,7 +941,7 @@ impl Engine {
                         )
                         .await
                     {
-                        crate::say(format!("Twitch: {e}"));
+                        crate::error(format!("Twitch: {e}"));
                     }
                 }
             }
@@ -961,7 +961,7 @@ impl Engine {
                         )
                         .await
                     {
-                        crate::say(format!("Twitch: {e}"));
+                        crate::error(format!("Twitch: {e}"));
                     }
                 }
             }
@@ -981,7 +981,7 @@ impl Engine {
                         )
                         .await
                     {
-                        crate::say(format!("Twitch: {e}"));
+                        crate::error(format!("Twitch: {e}"));
                     }
                 }
             }
@@ -1048,7 +1048,7 @@ impl Engine {
                         )
                         .await
                     {
-                        crate::say(format!("Twitch: {e}"));
+                        crate::error(format!("Twitch: {e}"));
                     }
                 }
             }
@@ -1068,7 +1068,7 @@ impl Engine {
                         )
                         .await
                     {
-                        crate::say(format!("Twitch: {e}"));
+                        crate::error(format!("Twitch: {e}"));
                     }
                 }
             }
@@ -1095,7 +1095,7 @@ impl Engine {
                 }
                 .await;
                 if let Err(e) = r {
-                    crate::say(format!("Twitch: {e}"));
+                    crate::error(format!("Twitch: {e}"));
                 }
             }
             // Snooze Ad (555)
@@ -1117,7 +1117,7 @@ impl Engine {
                             ctx.args.insert("snooze.success".into(), true.into());
                         }
                         Err(e) => {
-                            crate::say(format!("Twitch: {e}"));
+                            crate::error(format!("Twitch: {e}"));
                         }
                     }
                 }
@@ -1146,7 +1146,7 @@ impl Engine {
                             ctx.args.insert("adScheduleNextAdAt".into(), d["next_ad_at"].clone());
                         }
                     }
-                    Err(e) => crate::say(format!("Twitch: {e}")),
+                    Err(e) => crate::error(format!("Twitch: {e}")),
                 }
             }
 
@@ -1171,7 +1171,7 @@ impl Engine {
                         ctx.args.insert("success".into(), true.into());
                         ctx.args.insert("pollId".into(), v["data"][0]["id"].clone());
                     }
-                    Err(e) => crate::say(format!("Twitch: {e}")),
+                    Err(e) => crate::error(format!("Twitch: {e}")),
                 }
             }
 
@@ -1200,7 +1200,7 @@ impl Engine {
                 }
                 .await;
                 if let Err(e) = r {
-                    crate::say(format!("Twitch: {e}"));
+                    crate::error(format!("Twitch: {e}"));
                 }
             }
 
@@ -1229,7 +1229,7 @@ impl Engine {
                 }
                 .await;
                 if let Err(e) = r {
-                    crate::say(format!("Twitch: {e}"));
+                    crate::error(format!("Twitch: {e}"));
                 }
             }
 
@@ -1253,7 +1253,7 @@ impl Engine {
                             ctx.args.insert("success".into(), true.into());
                         }
                         Err(e) => {
-                            crate::say(format!("Twitch: {e}"));
+                            crate::error(format!("Twitch: {e}"));
                         }
                     }
                 }
@@ -1323,7 +1323,7 @@ impl Engine {
                         ctx.args.insert("success".into(), true.into());
                         ctx.args.insert("prediction.Id".into(), v["data"][0]["id"].clone());
                     }
-                    Err(e) => crate::say(format!("Twitch: {e}")),
+                    Err(e) => crate::error(format!("Twitch: {e}")),
                 }
             }
 
@@ -1401,7 +1401,7 @@ impl Engine {
                 }
                 .await;
                 if let Err(e) = r {
-                    crate::say(format!("Twitch prediction: {e}"));
+                    crate::error(format!("Twitch prediction: {e}"));
                 }
             }
 
@@ -1438,7 +1438,7 @@ impl Engine {
                         )
                         .await
                     {
-                        crate::say(format!("Twitch: {e}"));
+                        crate::error(format!("Twitch: {e}"));
                     }
                 }
             }
@@ -1460,7 +1460,7 @@ impl Engine {
                         )
                         .await
                     {
-                        crate::say(format!("Twitch: {e}"));
+                        crate::error(format!("Twitch: {e}"));
                     }
                 }
             }
@@ -1483,7 +1483,7 @@ impl Engine {
                         )
                         .await
                     {
-                        crate::say(format!("Twitch: {e}"));
+                        crate::error(format!("Twitch: {e}"));
                     }
                 }
             }
@@ -1506,7 +1506,7 @@ impl Engine {
                         )
                         .await
                     {
-                        crate::say(format!("Twitch: {e}"));
+                        crate::error(format!("Twitch: {e}"));
                     }
                 }
             }
@@ -1540,7 +1540,7 @@ impl Engine {
                                 ctx.args.insert("timeoutResult".into(), true.into());
                             }
                             Err(e) => {
-                                crate::say(format!("Twitch: {e}"));
+                                crate::error(format!("Twitch: {e}"));
                             }
                         }
                     }
@@ -1584,7 +1584,7 @@ impl Engine {
                 ];
                 let mut users: Vec<Value> = match tw.helix("GET", "chat/chatters", who, None, false, true).await {
                     Ok(v) => v["data"].as_array().cloned().unwrap_or_default(),
-                    Err(e) => return crate::say(format!("Twitch: {e}")),
+                    Err(e) => return crate::error(format!("Twitch: {e}")),
                 };
                 for i in 0..count.min(users.len()) {
                     let pick = i + (crate::math::secure_u64() as usize) % (users.len() - i);
@@ -1628,7 +1628,7 @@ impl Engine {
                             ctx.args.insert(k.into(), x);
                         }
                     }
-                    Err(e) => crate::say(format!("Twitch: {e}")),
+                    Err(e) => crate::error(format!("Twitch: {e}")),
                 }
             }
 
@@ -1675,7 +1675,7 @@ impl Engine {
                         )
                         .await
                     {
-                        crate::say(format!("Twitch: {e}"));
+                        crate::error(format!("Twitch: {e}"));
                     }
                 }
             }
@@ -1704,7 +1704,7 @@ impl Engine {
                                 ctx.args.insert("shoutoutSuccess".into(), true.into());
                             }
                             Err(e) => {
-                                crate::say(format!("Twitch: {e}"));
+                                crate::error(format!("Twitch: {e}"));
                             }
                         }
                     }
@@ -1811,7 +1811,7 @@ impl Engine {
                 let q = vec![("broadcaster_id", "{broadcaster_id}"), ("user_id", uid.as_str())];
                 let v = match tw.helix("GET", "channels/followers", q, None, false, true).await {
                     Ok(v) => v,
-                    Err(e) => return crate::say(format!("Twitch: {e}")),
+                    Err(e) => return crate::error(format!("Twitch: {e}")),
                 };
                 let f = &v["data"][0];
                 ctx.args.insert("followUser".into(), f["user_name"].clone());
@@ -1870,7 +1870,7 @@ impl Engine {
                             }
                         }
                     }
-                    Err(e) => crate::say(format!("Twitch: {e}")),
+                    Err(e) => crate::error(format!("Twitch: {e}")),
                 }
             }
 
@@ -1890,7 +1890,7 @@ impl Engine {
                         )
                         .await
                     {
-                        crate::say(format!("Twitch: {e}"));
+                        crate::error(format!("Twitch: {e}"));
                     }
                 }
             }
@@ -1912,7 +1912,7 @@ impl Engine {
                         )
                         .await
                     {
-                        crate::say(format!("Twitch: {e}"));
+                        crate::error(format!("Twitch: {e}"));
                     }
                 }
             }
@@ -1932,7 +1932,7 @@ impl Engine {
                         )
                         .await
                     {
-                        crate::say(format!("Twitch: {e}"));
+                        crate::error(format!("Twitch: {e}"));
                     }
                 }
             }
@@ -1954,7 +1954,7 @@ impl Engine {
                         )
                         .await
                     {
-                        crate::say(format!("Twitch: {e}"));
+                        crate::error(format!("Twitch: {e}"));
                     }
                 }
             }
@@ -1974,7 +1974,7 @@ impl Engine {
                         )
                         .await
                     {
-                        crate::say(format!("Twitch: {e}"));
+                        crate::error(format!("Twitch: {e}"));
                     }
                 }
             }
@@ -1994,7 +1994,7 @@ impl Engine {
                             )
                             .await
                         {
-                            crate::say(format!("Twitch: {e}"));
+                            crate::error(format!("Twitch: {e}"));
                         }
                     }
                 }
@@ -2015,7 +2015,7 @@ impl Engine {
                             )
                             .await
                         {
-                            crate::say(format!("Twitch: {e}"));
+                            crate::error(format!("Twitch: {e}"));
                         }
                     }
                 }
@@ -2036,7 +2036,7 @@ impl Engine {
                             )
                             .await
                         {
-                            crate::say(format!("Twitch: {e}"));
+                            crate::error(format!("Twitch: {e}"));
                         }
                     }
                 }
@@ -2057,7 +2057,7 @@ impl Engine {
                             )
                             .await
                         {
-                            crate::say(format!("Twitch: {e}"));
+                            crate::error(format!("Twitch: {e}"));
                         }
                     }
                 }
@@ -2124,7 +2124,7 @@ impl Engine {
                             ctx.args.insert("clearSuccess".into(), true.into());
                         }
                         Err(e) => {
-                            crate::say(format!("Twitch: {e}"));
+                            crate::error(format!("Twitch: {e}"));
                         }
                     }
                 }
@@ -2158,7 +2158,7 @@ impl Engine {
                                 ctx.args.insert("banResult".into(), true.into());
                             }
                             Err(e) => {
-                                crate::say(format!("Twitch: {e}"));
+                                crate::error(format!("Twitch: {e}"));
                             }
                         }
                     }
@@ -2188,7 +2188,7 @@ impl Engine {
                 ];
                 match tw.helix("DELETE", "moderation/bans", q, None, false, true).await {
                     Ok(_) => drop(ctx.args.insert(res.into(), true.into())),
-                    Err(e) => crate::say(format!("Twitch: {e}")),
+                    Err(e) => crate::error(format!("Twitch: {e}")),
                 }
             }
 
@@ -2212,7 +2212,7 @@ impl Engine {
                             ctx.args.insert("presentUserType".into(), "twitch".into());
                         }
                     }
-                    Err(e) => crate::say(format!("Twitch: {e}")),
+                    Err(e) => crate::error(format!("Twitch: {e}")),
                 }
             }
             // Get Twitch Sub Counter Count (551) / Set Twitch Sub Counter Count (552)
@@ -2316,7 +2316,7 @@ impl Engine {
                                 ctx.args.insert("warnedResult".into(), true.into());
                             }
                             Err(e) => {
-                                crate::say(format!("Twitch: {e}"));
+                                crate::error(format!("Twitch: {e}"));
                             }
                         }
                     }
@@ -2404,7 +2404,7 @@ impl Engine {
                     }
                 };
                 if let Err(e) = r {
-                    crate::say(format!("Twitch pins: {e}"));
+                    crate::error(format!("Twitch pins: {e}"));
                 }
             }
             // Add Suspicious Status (579) / Remove Suspicious Status (580)
@@ -2435,7 +2435,7 @@ impl Engine {
                 }
                 .await;
                 if let Err(e) = r {
-                    crate::say(format!("Twitch: {e}"));
+                    crate::error(format!("Twitch: {e}"));
                 }
             }
             1010 => {
@@ -3347,7 +3347,7 @@ impl Engine {
                 if !self.dev_out("youtube", &text, use_bot) {
                     let yt = self.youtube_start();
                     if let Err(e) = yt.send_message(&broadcast, &text, use_bot, fallback).await {
-                        crate::say(e);
+                        crate::error(e);
                     }
                 }
             }
@@ -3357,7 +3357,7 @@ impl Engine {
                 let title = self.expand(ctx, s(o, "title"));
                 let yt = self.youtube_start();
                 if let Err(e) = yt.set_title(&broadcast, &title).await {
-                    crate::say(e);
+                    crate::error(e);
                 }
             }
             // 4003: Set Description
@@ -3366,7 +3366,7 @@ impl Engine {
                 let desc = self.expand(ctx, s(o, "description"));
                 let yt = self.youtube_start();
                 if let Err(e) = yt.set_description(&broadcast, &desc).await {
-                    crate::say(e);
+                    crate::error(e);
                 }
             }
             // 4004: Set Title and Description
@@ -3376,7 +3376,7 @@ impl Engine {
                 let desc = self.expand(ctx, s(o, "description"));
                 let yt = self.youtube_start();
                 if let Err(e) = yt.set_title_and_description(&broadcast, &title, &desc).await {
-                    crate::say(e);
+                    crate::error(e);
                 }
             }
             // 4008: Ban User
@@ -3394,7 +3394,7 @@ impl Engine {
                         ctx.args.insert("banResult".into(), true.into());
                     }
                     Err(e) => {
-                        crate::say(e);
+                        crate::error(e);
                     }
                 }
             }
@@ -3414,7 +3414,7 @@ impl Engine {
                         ctx.args.insert("timeoutResult".into(), true.into());
                     }
                     Err(e) => {
-                        crate::say(e);
+                        crate::error(e);
                     }
                 }
             }
@@ -3441,7 +3441,7 @@ impl Engine {
                         ctx.args.insert("pollId".into(), id.into());
                     }
                     Err(e) => {
-                        crate::say(e);
+                        crate::error(e);
                     }
                 }
             }
@@ -3450,7 +3450,7 @@ impl Engine {
                 let broadcast = self.expand(ctx, s(o, "broadcast"));
                 let yt = self.youtube_start();
                 if let Err(e) = yt.end_poll(&broadcast).await {
-                    crate::say(e);
+                    crate::error(e);
                 }
             }
             // Kick Sub-actions
@@ -3462,7 +3462,7 @@ impl Engine {
                 if !self.dev_out("kick", &text, use_bot) {
                     let kick = self.kick_start();
                     if let Err(e) = kick.send_message(&text, use_bot, fallback).await {
-                        crate::say(e);
+                        crate::error(e);
                     }
                 }
             }
@@ -3475,7 +3475,7 @@ impl Engine {
                 if !self.dev_out("kick", &text, use_bot) {
                     let kick = self.kick_start();
                     if let Err(e) = kick.reply_message(&text, &reply_id, use_bot, fallback).await {
-                        crate::say(e);
+                        crate::error(e);
                     }
                 }
             }
@@ -3531,8 +3531,8 @@ impl Engine {
                         put("tagsDelimited", tags.join(", ").into());
                         put("tags", tags.into());
                     }
-                    Ok(_) => crate::say(format!("Kick: no user '{login}'")),
-                    Err(e) => crate::say(e),
+                    Ok(_) => crate::error(format!("Kick: no user '{login}'")),
+                    Err(e) => crate::error(e),
                 }
             }
 
@@ -3565,7 +3565,7 @@ impl Engine {
                         ctx.args.insert("titleSuccess".into(), true.into());
                     }
                     Err(e) => {
-                        crate::say(e);
+                        crate::error(e);
                     }
                 }
             }
@@ -3600,7 +3600,7 @@ impl Engine {
                 .await;
                 match r {
                     Ok(()) => drop(ctx.args.insert("category.success".into(), true.into())),
-                    Err(e) => crate::say(e),
+                    Err(e) => crate::error(e),
                 }
             }
 
@@ -3618,7 +3618,7 @@ impl Engine {
                         ctx.args.insert("banResult".into(), true.into());
                     }
                     Err(e) => {
-                        crate::say(e);
+                        crate::error(e);
                     }
                 }
             }
@@ -3635,7 +3635,7 @@ impl Engine {
                         ctx.args.insert("unbanResult".into(), true.into());
                     }
                     Err(e) => {
-                        crate::say(e);
+                        crate::error(e);
                     }
                 }
             }
@@ -3654,7 +3654,7 @@ impl Engine {
                         ctx.args.insert("timeoutResult".into(), true.into());
                     }
                     Err(e) => {
-                        crate::say(e);
+                        crate::error(e);
                     }
                 }
             }
@@ -3671,7 +3671,7 @@ impl Engine {
                         ctx.args.insert("unTimedOutResult".into(), true.into());
                     }
                     Err(e) => {
-                        crate::say(e);
+                        crate::error(e);
                     }
                 }
             }
@@ -3757,7 +3757,7 @@ impl Engine {
                 }
                 .await;
                 if let Err(e) = r {
-                    crate::say(e);
+                    crate::error(e);
                 }
             }
             // TikTok Sub-actions
@@ -3769,7 +3769,7 @@ impl Engine {
                 if !self.dev_out("tiktok", &text, use_bot) {
                     let tiktok = self.tiktok_start();
                     if let Err(e) = tiktok.send_message(&text, use_bot, fallback).await {
-                        crate::say(e);
+                        crate::error(e);
                     }
                 }
             }
@@ -3793,7 +3793,7 @@ impl Engine {
                 let tts = b(o, "textToSpeech", false);
                 match crate::remote::execute_discord_webhook(&url, &content, &username, &avatar, &image, tts).await {
                     Ok(id) => drop(ctx.args.insert("messageId".into(), id.into())),
-                    Err(e) => crate::say(format!("Discord webhook: {e}")),
+                    Err(e) => crate::error(format!("Discord webhook: {e}")),
                 }
             }
 
@@ -3808,7 +3808,7 @@ impl Engine {
                     .and_then(Value::as_str);
                 let payload = crate::remote::build_ifttt_basic_payload(&text_val);
                 if let Err(e) = crate::remote::execute_ifttt_notification(&event, &payload, key).await {
-                    crate::say(format!("IFTTT: {e}"));
+                    crate::error(format!("IFTTT: {e}"));
                 }
             }
 
@@ -3828,7 +3828,7 @@ impl Engine {
                     .and_then(Value::as_str);
                 let payload = crate::remote::build_ifttt_advanced_payload(&expanded_args);
                 if let Err(e) = crate::remote::execute_ifttt_notification(&event, &payload, key).await {
-                    crate::say(format!("IFTTT: {e}"));
+                    crate::error(format!("IFTTT: {e}"));
                 }
             }
 
@@ -4276,8 +4276,8 @@ impl Engine {
             .unwrap_or_default();
         let r = match crate::http::request("GET", &url, &headers, b"").await {
             Ok(r) if (200..300).contains(&r.status) => r,
-            Ok(r) => return crate::say(format!("Fetch URL {url}: HTTP {}", r.status)),
-            Err(e) => return crate::say(format!("Fetch URL: {e}")),
+            Ok(r) => return crate::error(format!("Fetch URL {url}: HTTP {}", r.status)),
+            Err(e) => return crate::error(format!("Fetch URL: {e}")),
         };
         let body = r.text();
         let auto = b(o, "autoType", false);
@@ -4286,7 +4286,7 @@ impl Engine {
             return;
         }
         let Ok(v) = serde_json::from_str::<Value>(&body) else {
-            return crate::say(format!("Fetch URL {url}: not JSON"));
+            return crate::error(format!("Fetch URL {url}: not JSON"));
         };
         fn flat(prefix: &str, v: &Value, out: &mut Obj) {
             match v {
@@ -4346,7 +4346,7 @@ impl Engine {
         }
         let mut child = match cmd.spawn() {
             Ok(c) => c,
-            Err(e) => return crate::say(format!("Run a Program {prog}: {e}")),
+            Err(e) => return crate::error(format!("Run a Program {prog}: {e}")),
         };
         let input = serde_json::to_vec(&ctx.args).unwrap_or_default();
         let stdin = child.stdin.take();
@@ -4366,7 +4366,7 @@ impl Engine {
         feed.await;
         let out = tokio::time::timeout(Duration::from_secs_f64(wait), child.wait_with_output()).await;
         let Ok(Ok(out)) = out else {
-            return crate::say(format!("Run a Program {prog}: didn't finish in {wait} s"));
+            return crate::error(format!("Run a Program {prog}: didn't finish in {wait} s"));
         };
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
         let lines: Vec<&str> = stdout.split('\n').collect();

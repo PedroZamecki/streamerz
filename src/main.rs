@@ -59,6 +59,8 @@ pub struct Config {
     locale: String,
     start_hidden: bool,
     autostart: bool,
+    /// Keep [DEBUG] lines in the log.
+    debug_log: bool,
     /// Actions, groups and queues, in Streamer.bot's actions.json shape.
     actions: model::ActionsFile,
     /// Persisted globals, and persisted user globals by user ("platform:id", then name).
@@ -132,6 +134,7 @@ impl Default for Config {
             locale: String::new(),
             start_hidden: true,
             autostart: false,
+            debug_log: false,
             actions: model::ActionsFile::default(),
             globals: Map::new(),
             user_globals: Map::new(),
@@ -210,10 +213,42 @@ impl Config {
     }
 }
 
+/// How bad a log line is. Each has its tag in the log file and its colour on the Log page.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Level {
+    Debug,
+    Info,
+    Warn,
+    Error,
+    Fatal,
+}
+
+impl Level {
+    pub const ALL: [Level; 5] = [Level::Debug, Level::Info, Level::Warn, Level::Error, Level::Fatal];
+
+    pub fn tag(self) -> &'static str {
+        match self {
+            Level::Debug => "DEBUG",
+            Level::Info => "INFO",
+            Level::Warn => "WARN",
+            Level::Error => "ERROR",
+            Level::Fatal => "FATAL",
+        }
+    }
+}
+
+/// Debug lines are dropped unless Settings turns them on.
+static DEBUG_LOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_debug_log(on: bool) {
+    DEBUG_LOG.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// What the window and tray show. Shared by the tasks.
 struct Status {
-    /// The last LOG_LINES log lines, and how many were ever logged (so the window knows what's new).
-    log: VecDeque<String>,
+    /// The last LOG_LINES log lines (level, when in unix seconds, text), and how many were ever logged
+    /// (so the window knows what's new).
+    log: VecDeque<(Level, i64, String)>,
     logged: u64,
 }
 
@@ -226,10 +261,26 @@ pub fn log_count() -> u64 {
     n
 }
 
-/// The log's last `n` lines (the dev WebSocket's GetLog).
+/// The log's last `n` lines, without their levels.
 pub fn log_tail(n: usize) -> Vec<String> {
     let mut out = Vec::new();
-    status(|s| out = s.log.iter().rev().take(n).rev().cloned().collect());
+    status(|s| out = s.log.iter().rev().take(n).rev().map(|(_, _, l)| l.clone()).collect());
+    out
+}
+
+/// The log's last `n` lines with their levels: "[WARN] text" (the dev WebSocket's GetLog).
+pub fn log_tail_tagged(n: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    status(|s| {
+        out = s
+            .log
+            .iter()
+            .rev()
+            .take(n)
+            .rev()
+            .map(|(lv, _, l)| format!("[{}] {l}", lv.tag()))
+            .collect()
+    });
     out
 }
 
@@ -248,7 +299,15 @@ fn status(f: impl FnOnce(&mut Status)) {
 fn log_tail_try(n: usize) -> Vec<String> {
     STATUS
         .try_lock()
-        .map(|s| s.log.iter().rev().take(n).rev().cloned().collect())
+        .map(|s| {
+            s.log
+                .iter()
+                .rev()
+                .take(n)
+                .rev()
+                .map(|(lv, _, l)| format!("[{}] {l}", lv.tag()))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -300,18 +359,42 @@ fn redact(line: &str) -> String {
     out
 }
 
-fn say(line: String) {
+/// Logs `line` at `level`: printed, written to the log file, and kept for the Log page.
+fn log(level: Level, line: String) {
+    if level == Level::Debug && !DEBUG_LOG.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     let line = redact(&line);
-    let _ = writeln!(std::io::stdout(), "{line}");
-    crash::line(&line);
+    let _ = writeln!(std::io::stdout(), "[{}] {line}", level.tag());
+    crash::line(level, &line);
     status(|s| {
         if s.log.len() == LOG_LINES {
             s.log.pop_front();
         }
-        s.log.push_back(line);
+        s.log.push_back((level, fmt::unix_now().as_secs() as i64, line));
         s.logged += 1;
     });
     ui::logged();
+}
+
+/// Something that happened, worth knowing.
+fn say(line: String) {
+    log(Level::Info, line);
+}
+
+/// Detail for finding a problem; only kept when Settings turns debug lines on.
+fn debug(line: String) {
+    log(Level::Debug, line);
+}
+
+/// Something went wrong but Streamerz carries on (it retries, or uses a fallback).
+fn warn(line: String) {
+    log(Level::Warn, line);
+}
+
+/// Something failed: what was asked wasn't done.
+fn error(line: String) {
+    log(Level::Error, line);
 }
 
 fn version() -> String {
@@ -483,7 +566,7 @@ fn save_to(path: &Path, c: &Config) -> std::io::Result<()> {
 fn save(c: &Config) -> std::io::Result<()> {
     let r = save_to(&config_path(), c);
     if let Err(e) = &r {
-        say(format!("can't save streamerz.json ({e})"));
+        error(format!("can't save streamerz.json ({e})"));
     }
     r
 }
@@ -503,14 +586,14 @@ fn load_from(path: &Path) -> Config {
         Ok(Ok(c)) => c,
         Err(_) => Config::default(),
         Ok(Err(e)) => {
-            say(format!("{} is invalid ({e})", path.display()));
+            error(format!("{} is invalid ({e})", path.display()));
             return match read(&with(path, ".bak")) {
                 Ok(Ok(c)) => {
-                    say("using its .bak, the previous version".into());
+                    warn("using its .bak, the previous version".into());
                     c
                 }
                 _ => {
-                    say("using the defaults".into());
+                    warn("using the defaults".into());
                     Config::default()
                 }
             };
@@ -609,6 +692,7 @@ fn main() {
     }
     let cfg = load_from(&config_path());
     i18n::set(&cfg.locale);
+    set_debug_log(cfg.debug_log);
     fmt::set_shown_as(&cfg.date_format, &cfg.time_format);
     say(format!("config: {}", config_path().display()));
     let (ui_tx, ui_rx) = fltk::app::channel();

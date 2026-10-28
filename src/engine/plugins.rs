@@ -277,7 +277,7 @@ impl Engine {
 
     fn plugin_load(self: &Rc<Self>, id: &str) {
         let Some((_, path)) = installed().into_iter().find(|p| p.0 == id) else {
-            return crate::say(format!("Plugin {id}: not in {}", dir().display()));
+            return crate::error(format!("Plugin {id}: not in {}", dir().display()));
         };
         match load(id, &path, Rc::downgrade(self)) {
             Ok(p) => {
@@ -286,7 +286,7 @@ impl Engine {
                 let settings = self.plugin_settings(id);
                 self.plugin_event(id, json!({"kind": "start", "settings": settings}));
             }
-            Err(e) => crate::say(format!("Plugin {id}: {e}")),
+            Err(e) => crate::error(format!("Plugin {id}: {e}")),
         }
     }
 
@@ -341,7 +341,7 @@ impl Engine {
                 reply
             }
             Err(e) => {
-                crate::say(format!("Plugin {id}: {e}"));
+                crate::error(format!("Plugin {id}: {e}"));
                 None
             }
         }
@@ -375,7 +375,7 @@ impl Engine {
         let ev = json!({"kind": "subaction", "name": name, "fields": o, "args": ctx.args});
         let Some(reply) = self.plugin_event(&id, ev) else {
             if !self.plugins.borrow().iter().any(|p| p.id == id) {
-                crate::say(format!("Plugin {id} is off: its {name} skipped"));
+                crate::warn(format!("Plugin {id} is off: its {name} skipped"));
             }
             return Flow::Continue;
         };
@@ -414,7 +414,7 @@ impl Engine {
                 };
                 match found {
                     Some(a) => drop(self.queue(&a, args)),
-                    None => crate::say(format!("Plugin {id}: no action {}", s("action"))),
+                    None => crate::error(format!("Plugin {id}: no action {}", s("action"))),
                 }
             }
             "global_set" => self.put_global(
@@ -487,7 +487,7 @@ impl Engine {
                     });
                 }
             }
-            other => crate::say(format!("Plugin {id}: no op {other}")),
+            other => crate::error(format!("Plugin {id}: no op {other}")),
         }
     }
 }

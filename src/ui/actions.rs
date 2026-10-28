@@ -830,7 +830,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
                 Ok(u) if u.is_empty() => crate::say(tr("actions.imported_toast").into()),
                 Ok(u) => {
                     let msg = trf("actions.imported_unsupported", &[("items", &u.join(", "))]);
-                    crate::say(msg.clone());
+                    crate::warn(msg.clone());
                     super::dialogs::message(&plain(&msg));
                 }
                 Err(e) => super::dialogs::alert(&plain(&e)),

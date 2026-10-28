@@ -223,7 +223,7 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
                 tr("update.ready.body"),
             ),
             Ok(()) => {}
-            Err(e) => crate::say(format!("Download of {tag} failed: {e}")),
+            Err(e) => crate::error(format!("Download of {tag} failed: {e}")),
         }
         return;
     }
@@ -243,7 +243,7 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
     }
     crate::say(format!("Updating to {tag}..."));
     if let Err(e) = stage(&release).await.and_then(|()| apply(&release.path)) {
-        crate::say(format!("Update to {tag} failed: {e}"));
+        crate::error(format!("Update to {tag} failed: {e}"));
         let _ = crate::ui::confirm(trf("update.failed", &[("error", &e)]), tr("dialogs.ok"), "").await;
         return;
     }

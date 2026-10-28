@@ -151,7 +151,7 @@ pub fn seal(v: &mut Value) {
         }
         Err(e) => {
             if !WARNED_NO_KEYRING.swap(true, Ordering::Relaxed) {
-                crate::say(format!(
+                crate::warn(format!(
                     "Keyring unavailable ({e}): keeping new logins in streamerz.json (0600)"
                 ));
             }
@@ -187,7 +187,7 @@ pub fn open(v: &mut Value) {
             merge(v, &secrets);
         }
         Err(why) => {
-            crate::say(format!(
+            crate::warn(format!(
                 "Keyring: saved logins are locked ({why}); keeping them safe and retrying automatically"
             ));
             if let Ok(mut k) = KEPT.lock() {

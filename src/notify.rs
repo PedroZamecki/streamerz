@@ -7,7 +7,7 @@ pub fn send(title: &str, body: &str) {
     let (title, body) = (title.to_string(), body.to_string());
     tokio::task::spawn_local(async move {
         if let Err(e) = show(&title, &body).await {
-            crate::say(format!("Notification ({title}): {e}"));
+            crate::warn(format!("Notification ({title}): {e}"));
         }
     });
 }

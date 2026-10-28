@@ -164,7 +164,7 @@ impl Engine {
             .and_then(|()| std::fs::rename(&tmp, &path))
             .is_err()
         {
-            crate::say(format!("can't save {}", path.display()));
+            crate::error(format!("can't save {}", path.display()));
         }
     }
 

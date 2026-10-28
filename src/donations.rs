@@ -1014,7 +1014,7 @@ async fn keep(
             None
         })
         .await;
-        crate::say(format!("{who}: {why}; trying again in a minute"));
+        crate::warn(format!("{who}: {why}; trying again in a minute"));
         if up.replace(false) {
             handle(&e, "disconnected", &Value::Null);
         }
@@ -1085,7 +1085,7 @@ async fn donordrive(e: Rc<Engine>, base: String, id: String) {
                 first = false;
             }
             304 => {}
-            404 => crate::say(format!("DonorDrive: no participant {id} at {base}")),
+            404 => crate::error(format!("DonorDrive: no participant {id} at {base}")),
             429 => tokio::time::sleep(Duration::from_secs(45)).await,
             _ => {}
         }

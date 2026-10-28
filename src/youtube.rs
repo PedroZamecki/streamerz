@@ -1107,7 +1107,7 @@ pub async fn read_chat_with_standby(
                     format!("YouTube: {label}: {e}")
                 };
                 if last_offline_note != msg && !msg.is_empty() {
-                    crate::say(msg.clone());
+                    crate::warn(msg.clone());
                     last_offline_note = msg;
                 }
                 let now_unix = crate::fmt::unix_now().as_secs() as i64;
@@ -1179,11 +1179,11 @@ pub async fn read_chat_with_standby(
             let v: Value = match r {
                 Ok(r) if (200..300).contains(&r.status) => serde_json::from_slice(&r.body).unwrap_or_default(),
                 Ok(r) => {
-                    crate::say(format!("YouTube: chat read failed (HTTP {})", r.status));
+                    crate::warn(format!("YouTube: chat read failed (HTTP {})", r.status));
                     Value::Null
                 }
                 Err(e) => {
-                    crate::say(format!("YouTube: chat read failed ({e})"));
+                    crate::warn(format!("YouTube: chat read failed ({e})"));
                     Value::Null
                 }
             };

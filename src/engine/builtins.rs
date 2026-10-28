@@ -198,7 +198,7 @@ impl Engine {
                                 ("moderator_id", "{broadcaster_id}"),
                             ];
                             if let Err(err) = tw.helix("POST", "chat/shoutouts", q, None, false, true).await {
-                                crate::say(format!("Twitch shoutout: {err}"));
+                                crate::error(format!("Twitch shoutout: {err}"));
                             }
                         }
                     }

@@ -631,43 +631,113 @@ pub(crate) fn tab_scrolled(tabs: &Wizard, label: &str, content_h: i32) -> (fltk:
     (s, col)
 }
 
-/// The Log tab: appends only the new lines; rebuilds after a gap or when far behind.
+/// The Log tab: each line's time, its level in the level's colour, and its text, filtered by level and
+/// words. Appends only the new lines; rebuilds after a gap, when far behind, or when the filter changes.
 struct Log {
     view: TextDisplay,
     buf: TextBuffer,
+    /// One style letter per byte of `buf` (see `LOG_STYLES`).
+    styles: TextBuffer,
+    /// The lowest level shown: an index into `LOG_LEVELS`.
+    level: fltk::menu::Choice,
+    search: fltk::input::Input,
+    /// The filter changed: rebuild.
+    dirty: Rc<Cell<bool>>,
     seen: u64,
     shown: usize,
 }
 
+/// The level filter's choices: the lowest level each shows.
+const LOG_LEVELS: [crate::Level; 4] = [
+    crate::Level::Debug,
+    crate::Level::Info,
+    crate::Level::Warn,
+    crate::Level::Error,
+];
+
+/// The log's styles: A text, B time, then one per level (C debug ... G fatal).
+fn log_styles() -> Vec<fltk::text::StyleTableEntry> {
+    use fltk::text::StyleTableEntry as S;
+    let size = app::font_size();
+    let s = |color: Color, font: Font| S { color, font, size };
+    // The time and the level in a fixed-width font, so the texts after them line up.
+    vec![
+        s(Color::Foreground, Font::Helvetica),
+        s(muted(), Font::Courier),
+        s(muted(), Font::CourierBold),
+        s(Health::Standby.color(), Font::CourierBold),
+        s(Health::Busy.color(), Font::CourierBold),
+        s(Health::Down.color(), Font::CourierBold),
+        s(Health::Down.color(), Font::CourierBold),
+    ]
+}
+
+/// One line as shown, and its styles (a letter per byte).
+fn log_line(level: crate::Level, at: i64, text: &str) -> (String, String) {
+    let time = crate::fmt::shown_clock(at);
+    let tag = format!("{:<5}", level.tag());
+    let style = (b'C' + level as u8) as char;
+    let line = format!("{time}  {tag}  {text}");
+    let mut st = String::with_capacity(line.len());
+    st.extend(std::iter::repeat_n('B', time.len()));
+    st.push_str("AA");
+    st.extend(std::iter::repeat_n(style, tag.len()));
+    st.push_str("AA");
+    st.extend(std::iter::repeat_n('A', text.len()));
+    (line, st)
+}
+
 impl Log {
     fn refresh(&mut self) {
-        let (mut full, mut append) = (None, None);
+        if self.dirty.replace(false) {
+            self.seen = u64::MAX;
+        }
+        let min = LOG_LEVELS[self.level.value().clamp(0, 3) as usize];
+        let words = self.search.value().to_lowercase();
+        let keep =
+            |lv: crate::Level, text: &str| lv >= min && (words.is_empty() || text.to_lowercase().contains(&words));
+        let (mut text, mut styles, mut full) = (String::new(), String::new(), false);
+        let mut add = |lv: crate::Level, at: i64, l: &str| {
+            if keep(lv, l) {
+                let (line, st) = log_line(lv, at, l);
+                for (out, part) in [(&mut text, line), (&mut styles, st)] {
+                    if !out.is_empty() {
+                        out.push('\n');
+                    }
+                    out.push_str(&part);
+                }
+            }
+        };
         status(|s| {
             if s.logged == self.seen {
                 return;
             }
             let new = s.logged.wrapping_sub(self.seen) as usize;
-            if self.seen == u64::MAX || new > s.log.len() || self.shown + new > 2 * crate::LOG_LINES {
-                full = Some(s.log.iter().map(String::as_str).collect::<Vec<_>>().join("\n"));
+            let skip = if self.seen == u64::MAX || new > s.log.len() || self.shown + new > 2 * crate::LOG_LINES {
+                full = true;
                 self.shown = s.log.len();
+                0
             } else {
-                let skip = s.log.len() - new;
-                append = Some(s.log.iter().skip(skip).fold(String::new(), |a, l| a + "\n" + l));
                 self.shown += new;
+                s.log.len() - new
+            };
+            for (lv, at, l) in s.log.iter().skip(skip) {
+                add(*lv, *at, l);
             }
             self.seen = s.logged;
         });
-        if let Some(full) = &full {
-            self.buf.set_text(full);
-        }
-        if let Some(append) = &append {
+        if full {
+            self.buf.set_text(&text);
+            self.styles.set_text(&styles);
+        } else if !text.is_empty() {
             // The first line has no newline before it.
-            self.buf
-                .append(if self.buf.length() == 0 { &append[1..] } else { append });
+            let gap = if self.buf.length() == 0 { "" } else { "\n" };
+            self.buf.append(&format!("{gap}{text}"));
+            self.styles.append(&format!("{gap}{styles}"));
+        } else {
+            return;
         }
-        if full.is_some() || append.is_some() {
-            self.view.scroll(self.view.count_lines(0, self.buf.length(), true), 0);
-        }
+        self.view.scroll(self.view.count_lines(0, self.buf.length(), true), 0);
     }
 }
 
@@ -712,16 +782,56 @@ pub fn run(
     settings::tab(&tabs, &cfg, &cmds);
 
     // Log
-    let col = tab(&tabs, "Log");
+    let mut col = tab(&tabs, "Log");
+    let mut top = Flex::default().row();
+    top.set_pad(6);
+    let l = Frame::default().with_label(tr("log.show"));
+    top.fixed(&l, 44);
+    let mut level = fit::choice();
+    level.add_choice(&format!(
+        "{}|{}|{}|{}",
+        tr("log.level.everything"),
+        tr("log.level.info"),
+        tr("log.level.warn"),
+        tr("log.level.error")
+    ));
+    level.set_value(1);
+    top.fixed(&level, 160);
+    let mut search = fltk::input::Input::default();
+    placeholder(&mut search, tr("log.search"));
+    search.set_trigger(fltk::enums::CallbackTrigger::Changed);
+    // The search takes what's left, so the row fits narrow windows.
+    let mut open_logs = button(&mut top, tr("btn.open_folder"), 120);
+    top.end();
+    col.fixed(&top, ROW);
     let mut view = TextDisplay::default();
-    let buf = TextBuffer::default();
+    let (buf, styles) = (TextBuffer::default(), TextBuffer::default());
     view.set_buffer(buf.clone());
+    view.set_highlight_data(styles.clone(), log_styles());
     col.end();
     tabs.end();
     let sidebar = nav::sidebar(H - 46, &tabs, &cfg);
+    let dirty = Rc::new(Cell::new(false));
+    for w in [level.as_base_widget(), search.as_base_widget()] {
+        let dirty = dirty.clone();
+        w.clone().set_callback(move |_| {
+            dirty.set(true);
+            if let Some(ui) = UI.get() {
+                ui.send(Msg::Log);
+            }
+        });
+    }
+    open_logs.set_callback(|_| {
+        let dir = crate::config_path().with_file_name("logs");
+        crate::oauth::open_browser(&dir.display().to_string());
+    });
     let mut log = Log {
         view,
         buf,
+        styles,
+        level,
+        search,
+        dirty,
         seen: u64::MAX,
         shown: 0,
     };
@@ -947,5 +1057,21 @@ pub fn run(
         if pictures {
             views.images();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The log's styles have one letter per byte (FLTK styles bytes), so colours stay on their words
+    /// even with accented text.
+    #[test]
+    fn log_line_styles_fit_the_text() {
+        let (line, st) = log_line(crate::Level::Warn, 0, "Conexão perdida");
+        assert_eq!(line.len(), st.len());
+        let at = line.find("WARN").unwrap();
+        assert_eq!(&st[at..at + 5], "EEEEE");
+        assert!(st.ends_with(&"A".repeat("Conexão perdida".len())));
     }
 }

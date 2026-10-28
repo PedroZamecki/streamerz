@@ -132,11 +132,11 @@ fn items(names: &[String]) -> String {
 }
 
 pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
-    let (scroll, mut col) = super::tab_scrolled(tabs, "Settings", 620);
+    let (scroll, mut col) = super::tab_scrolled(tabs, "Settings", 690);
     col.set_pad(2);
     let c = cfg.borrow();
     let chosen = c.theme.unwrap_or(if c.dark { Theme::Dark } else { Theme::Light });
-    let (hidden, autostart, updates) = (c.start_hidden, c.autostart, c.updates);
+    let (hidden, autostart, updates, debug_log) = (c.start_hidden, c.autostart, c.updates, c.debug_log);
     let locale = c.locale.clone();
     let (date_f, time_f, instance) = (c.date_format.clone(), c.time_format.clone(), c.instance_name.clone());
     drop(c);
@@ -260,7 +260,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
             let on = b.value();
             put(&cfg, |c| c.autostart = on);
             if let Err(e) = crate::autostart(on) {
-                crate::say(format!("Start automatically: {e}"));
+                crate::error(format!("Start automatically: {e}"));
             }
         }
     });
@@ -356,6 +356,19 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
             tell(&cmds, move |_| {
                 tokio::task::spawn_local(crate::update::check(cfg, true));
             });
+        }
+    });
+
+    section(&mut col, tr("settings.log"), "scroll-text");
+    let r = setting(&mut col, tr("settings.debug_log"), tr("settings.debug_log.about"), 44);
+    let debug = switch(debug_log);
+    done(r, &debug);
+    debug.clone().set_callback({
+        let cfg = cfg.clone();
+        move |b| {
+            let on = b.value();
+            put(&cfg, |c| c.debug_log = on);
+            crate::set_debug_log(on);
         }
     });
 
