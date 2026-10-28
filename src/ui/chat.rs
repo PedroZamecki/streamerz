@@ -2222,20 +2222,64 @@ fn emote_picker_popup(
 
     let providers = emotes::providers_for(platform);
     let default_tab = providers.iter().position(|&p| p == Provider::Platform).unwrap_or(0);
-    let title_plat = match platform {
-        "twitch" => "Twitch",
-        "kick" => "Kick",
-        "youtube" => "YouTube",
-        "tiktok" => "TikTok",
-        _ => tr("chat.all_platforms"),
+    // A popover over the chat, above its box. Where the box is in a small dialog (no room) it gets a
+    // window of its own, as before.
+    let Some(parent) = target_input.top_window() else {
+        return;
     };
-    let mut win = Window::default()
-        .with_size(380, 480)
-        .with_label(&trf("chat.emotes_window_title", &[("platform", title_plat)]));
-    win.set_xclass("streamerz");
-    win.make_modal(true);
-    let mut col = Flex::new(8, 8, 364, 464, None).column();
+    let own = parent.h() < 520;
+    let own_win = own.then(|| {
+        let mut w = Window::default().with_size(380, 480).with_label("Streamerz");
+        w.set_xclass("streamerz");
+        w.make_modal(true);
+        w
+    });
+    let mut host: Box<dyn WindowExt> = match &own_win {
+        Some(w) => Box::new(w.clone()),
+        None => parent,
+    };
+    let (pw, ph) = if own { (380, 480) } else { (380, 460.min(host.h() - 16)) };
+    let (x, y) = if own {
+        (0, 0)
+    } else {
+        let above = target_input.y() - ph - 8;
+        (
+            target_input.x().min(host.w() - pw - 8).max(8),
+            if above >= 8 {
+                above
+            } else {
+                (target_input.y() + target_input.h() + 8).min(host.h() - ph - 8)
+            },
+        )
+    };
+    let done = Rc::new(Cell::new(false));
+    host.begin();
+    // Under the popover and over everything else: it takes every click outside, and closes the popover.
+    let mut catcher = Frame::new(0, 0, host.w(), host.h(), None);
+    catcher.handle({
+        let done = done.clone();
+        move |_, ev| match ev {
+            Event::Push => {
+                done.set(true);
+                true
+            }
+            Event::Released | Event::Enter | Event::Move | Event::MouseWheel => true,
+            Event::KeyDown | Event::Shortcut if app::event_key() == fltk::enums::Key::Escape => {
+                done.set(true);
+                true
+            }
+            _ => false,
+        }
+    });
+    let mut col = Flex::new(x, y, pw, ph, None).column();
+    col.set_frame(FrameType::RFlatBox);
+    col.set_color(Color::Background);
+    col.set_margin(8);
     col.set_pad(8);
+    col.draw(|c| {
+        draw::set_draw_color(Color::color_average(Color::Foreground, Color::Background, 0.25));
+        draw::draw_rounded_rect(c.x(), c.y(), c.w(), c.h(), 8);
+    });
 
     let mut tab_bar = Flex::default().row();
     tab_bar.set_pad(4);
@@ -2269,8 +2313,7 @@ fn emote_picker_popup(
 
     let grid = super::grid::Grid::new(cmds);
     col.end();
-    win.end();
-    win.resizable(&grid.area);
+    host.end();
 
     let cur_tab = Rc::new(Cell::new(default_tab));
     let collapsed: Rc<RefCell<HashSet<String>>> = Rc::default();
@@ -2368,22 +2411,18 @@ fn emote_picker_popup(
         let fill = fill.clone();
         move |_| fill(false)
     });
-    let done = Rc::new(Cell::new(false));
-    win.set_callback({
-        let done = done.clone();
-        move |_| done.set(true)
-    });
-
     style_tabs(default_tab);
-    win.show();
-    col.layout();
+    if own {
+        host.show();
+    }
+    host.redraw();
     fill(false);
     let _ = search.take_focus();
 
     let mut pics = img::ARRIVED.load(std::sync::atomic::Ordering::Relaxed);
     let mut seen_rev = emotes::REV.load(std::sync::atomic::Ordering::Relaxed);
     let mut picked = false;
-    while win.shown() && !done.get() {
+    while !done.get() && (!own || host.shown()) {
         let _ = app::wait_for(0.25);
         let asked: Vec<super::grid::Asked> = grid.asked.borrow_mut().drain(..).collect();
         let mut refill = false;
@@ -2427,8 +2466,14 @@ fn emote_picker_popup(
             fill(true);
         }
     }
-    win.hide();
-    app::delete_widget(win);
+    if let Some(mut w) = own_win {
+        w.hide();
+        app::delete_widget(w);
+    } else {
+        app::delete_widget(catcher);
+        app::delete_widget(col);
+        host.redraw();
+    }
     if picked {
         let _ = target_input.take_focus();
     }
