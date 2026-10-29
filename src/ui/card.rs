@@ -6,8 +6,8 @@
 
 use super::chat::{draw_badge, Pane};
 use super::popover::Popover;
-use super::tip::Tip;
 use super::rows::Rows;
+use super::tip::Tip;
 use super::{icons, img, query, tell, Ellipsis};
 use crate::engine::chatlog::Line;
 use crate::engine::UiCmd;

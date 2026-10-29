@@ -577,8 +577,14 @@ impl Accounts {
             // Reading your own channel shows an empty box (the same on every platform): the name is kept,
             // but it isn't something typed.
             let shown = r.p.typed_channel(&c);
-            r.channel
-                .set_label(&if shown.is_empty() { tr("accounts.channel_placeholder") } else { shown }.replace('@', "@@"));
+            r.channel.set_label(
+                &if shown.is_empty() {
+                    tr("accounts.channel_placeholder")
+                } else {
+                    shown
+                }
+                .replace('@', "@@"),
+            );
             r.whose.set_label(
                 if r.p.channel(&c).is_empty() || r.p.raw_account_name(&c, false).is_none() {
                     ""

@@ -64,7 +64,11 @@ fn quoted_after(page: &[u8], marker: &[u8]) -> Option<String> {
 /// A channel's banner and picture, read from its public page (the API has no banner for other people's
 /// channels): what youtube.com's own channel card shows. None when it has none, or the page doesn't answer.
 pub async fn public_channel(channel_id: &str) -> (Option<String>, Option<String>) {
-    if !channel_id.starts_with("UC") || !channel_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+    if !channel_id.starts_with("UC")
+        || !channel_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
         return (None, None);
     }
     // The cookie keeps the consent page out of the way.

@@ -9,8 +9,8 @@ mod conns;
 mod dev;
 pub(crate) mod dialogs;
 pub(crate) mod emotes;
-pub(crate) mod fit;
 mod find;
+pub(crate) mod fit;
 pub(crate) mod forms;
 mod grid;
 pub(crate) mod icons;
@@ -553,12 +553,6 @@ pub(crate) fn sort_header(
         Event::Enter | Event::Move => {
             if let Some(mut w) = f.window() {
                 w.set_cursor(fltk::enums::Cursor::Hand);
-            }
-            true
-        }
-        Event::Leave => {
-            if let Some(mut w) = f.window() {
-                w.set_cursor(fltk::enums::Cursor::Default);
             }
             true
         }

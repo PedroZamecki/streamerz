@@ -19,7 +19,7 @@ pub struct Found {
 fn compact(n: u64) -> String {
     let tenths = |n: u64, unit: u64| {
         let t = n * 10 / unit;
-        if t % 10 == 0 || t >= 100 {
+        if t.is_multiple_of(10) || t >= 100 {
             format!("{}", t / 10)
         } else {
             format!("{}.{}", t / 10, t % 10)
@@ -91,7 +91,10 @@ fn twitch_found(v: &Value) -> Vec<Found> {
 }
 
 async fn kick(query: &str) -> Vec<Found> {
-    let url = format!("https://kick.com/api/search?searched_word={}", crate::commands::url_encode(query));
+    let url = format!(
+        "https://kick.com/api/search?searched_word={}",
+        crate::commands::url_encode(query)
+    );
     let h = [("Accept".to_string(), "application/json".to_string())];
     let Ok(r) = crate::http::request("GET", &url, &h, b"").await else {
         return Vec::new();
@@ -169,7 +172,11 @@ fn youtube_found(v: &Value, out: &mut Vec<Found>) {
                     out.push(Found {
                         handle,
                         name: c["title"]["simpleText"].as_str().unwrap_or(id).to_string(),
-                        picture: if pic.starts_with("//") { format!("https:{pic}") } else { pic.to_string() },
+                        picture: if pic.starts_with("//") {
+                            format!("https:{pic}")
+                        } else {
+                            pic.to_string()
+                        },
                         detail: c["videoCountText"]["simpleText"]
                             .as_str()
                             .or_else(|| c["subscriberCountText"]["simpleText"].as_str())
@@ -215,13 +222,19 @@ mod tests {
         ]}}});
         let f = twitch_found(&t);
         assert_eq!(f.len(), 2);
-        assert_eq!((f[0].handle.as_str(), f[0].detail.as_str(), f[0].live), ("ana", "1.5K", true));
+        assert_eq!(
+            (f[0].handle.as_str(), f[0].detail.as_str(), f[0].live),
+            ("ana", "1.5K", true)
+        );
         assert!(!f[1].live);
         let k = json!({"channels": [
             {"slug": "xqc", "user": {"username": "xQc", "profilePic": "https://k/p.webp"}, "followersCount": 1415276, "isLive": false},
         ]});
         let f = kick_found(&k);
-        assert_eq!((f[0].handle.as_str(), f[0].name.as_str(), f[0].detail.as_str()), ("xqc", "xQc", "1.4M"));
+        assert_eq!(
+            (f[0].handle.as_str(), f[0].name.as_str(), f[0].detail.as_str()),
+            ("xqc", "xQc", "1.4M")
+        );
     }
 
     #[test]

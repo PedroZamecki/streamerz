@@ -8,7 +8,7 @@ user card and the emote picker, right-clicks around, and checks after each step 
 no crash report was written, and that a screenshot of its own window can be taken (saved in /tmp/szsmoke).
 Needs xdotool, and the nested display from the project's notes running as :99.
 """
-import base64, json, os, socket, struct, subprocess, sys, tempfile, time
+import base64, json, os, re, socket, struct, subprocess, sys, tempfile, time
 
 BIN = sys.argv[1] if len(sys.argv) > 1 else "target/fast/Streamerz"
 PORT = 8095
@@ -107,6 +107,36 @@ def main():
         after = json.dumps(ws.ask({"request": "StreamerzUi", "id": "c", "do": "community"}))
         if before == after:
             failures.append(f"a new chatter didn't show up on the open Community tab ({after})")
+        # The window sits 1 px right and 20 px down on the screen (no window manager here).
+        # Community sorts by a clicked title, and again the other way.
+        ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Community"})
+        for _ in range(2):
+            xdo("mousemove", "252", "68")
+            xdo("click", "1")
+            time.sleep(0.4)
+            check("sorting the community")
+        ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/community_sorted.png"})
+        # The channel search opens from Accounts, finds something, and closes with Escape.
+        ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Accounts"})
+        xdo("mousemove", "415", "102")
+        xdo("click", "1")
+        time.sleep(1)
+        xdo("type", "--delay", "60", "xqc")
+        time.sleep(3)
+        subprocess.run(["import", "-window", "root", f"{OUT}/find.png"], env=env)
+        xdo("key", "Escape")
+        check("the channel search")
+        # Pointing at a badge and an emoji tells what they are.
+        ws.ask({"request": "InjectChat", "id": "b", "platform": "twitch", "user": "Ana", "role": "moderator", "text": "hello \U0001F600",
+                "badges": [{"name": "subscriber", "version": "12", "imageUrl": ""}]})
+        ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Chat"})
+        time.sleep(1)
+        for x in (308, 404):
+            xdo("mousemove", str(x - 6), "78")
+            xdo("mousemove", str(x), "78")
+            time.sleep(1)
+            check("hover details")
+        xdo("mousemove", "600", "400")
         # A right click on a chat line (its menu), and on empty chat.
         ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Chat"})
         for y in ("74", "96", "400"):

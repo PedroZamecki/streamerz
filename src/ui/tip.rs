@@ -20,8 +20,16 @@ type Cmds = UnboundedSender<UiCmd>;
 /// What a tip is about.
 #[derive(Clone, PartialEq)]
 pub(super) enum Tip {
-    Emote { platform: String, name: String, url: String },
-    Badge { platform: String, key: String, url: String },
+    Emote {
+        platform: String,
+        name: String,
+        url: String,
+    },
+    Badge {
+        platform: String,
+        key: String,
+        url: String,
+    },
 }
 
 /// The picture's side.
@@ -40,20 +48,26 @@ fn source(platform: &str, url: &str) -> Option<&'static str> {
         ("ggpht.com", "youtube"),
         ("twemoji", "smile"),
     ];
-    HOSTS.iter().find(|h| url.contains(h.0)).map(|h| h.1).or(match platform {
-        "twitch" => Some("twitch"),
-        "kick" => Some("kick"),
-        "youtube" => Some("youtube"),
-        "tiktok" => Some("tiktok"),
-        _ => None,
-    })
+    HOSTS
+        .iter()
+        .find(|h| url.contains(h.0))
+        .map(|h| h.1)
+        .or(match platform {
+            "twitch" => Some("twitch"),
+            "kick" => Some("kick"),
+            "youtube" => Some("youtube"),
+            "tiktok" => Some("tiktok"),
+            _ => None,
+        })
 }
 
 /// The emote's id in its picture's address, when it has one (".../emote/ID/2x.webp").
 fn emote_id(url: &str) -> Option<String> {
     let path = url.split("//").nth(1)?.split_once('/')?.1;
     let parts: Vec<&str> = path.split(['/', '?']).collect();
-    let at = parts.iter().rposition(|p| matches!(*p, "emote" | "emotes" | "emoticons"))?;
+    let at = parts
+        .iter()
+        .rposition(|p| matches!(*p, "emote" | "emotes" | "emoticons"))?;
     let id = parts.get(at + 1).filter(|id| **id != "v2").or(parts.get(at + 2))?;
     Some((*id).to_string())
 }
@@ -80,7 +94,12 @@ impl Content {
         draw::set_font(Font::HelveticaBold, 14);
         let title = draw::width(&self.title) as i32 + self.source.as_ref().map_or(0, |_| 22);
         draw::set_font(Font::Helvetica, 12);
-        let rows = self.rows.iter().map(|r| draw::width(&r.1) as i32 + 22).max().unwrap_or(0);
+        let rows = self
+            .rows
+            .iter()
+            .map(|r| draw::width(&r.1) as i32 + 22)
+            .max()
+            .unwrap_or(0);
         let side = if self.pic.is_some() { PIC + PAD } else { 0 };
         let text_h = 22 + ROW * self.rows.len() as i32;
         let w = (PAD * 2 + side + title.max(rows)).clamp(120, 360);

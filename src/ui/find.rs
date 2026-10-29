@@ -8,13 +8,13 @@ use super::{img, nested_wait, tell};
 use crate::engine::UiCmd;
 use crate::i18n::{tr, trf};
 use crate::search::{self, Found};
+use fltk::app;
 use fltk::button::Button;
 use fltk::enums::{Align, CallbackTrigger};
 use fltk::frame::Frame;
 use fltk::group::Flex;
 use fltk::input::Input;
 use fltk::prelude::*;
-use fltk::app;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -49,6 +49,11 @@ pub(super) fn channel(cmds: &Cmds, platform: &str) -> Option<String> {
     super::placeholder(&mut input, tr("find.placeholder"));
     input.set_trigger(CallbackTrigger::Changed);
     col.fixed(&input, super::ROW);
+    super::header(
+        &mut col,
+        &[40, 250, 100, 60],
+        &["", tr("find.channel"), tr("find.followers"), ""],
+    );
     let mut list = Rows::new(tr("find.empty"));
     list.set_column_widths(&[40, 250, 100, 60]);
     list.set_pic_column(0);

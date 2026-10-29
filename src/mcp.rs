@@ -34,6 +34,7 @@ fn url() -> String {
 const TOOLS: &[(&str, &str, &str, &[&str])] = &[
     ("status", "What's connected (Twitch, YouTube, Kick, TikTok, OBS, Streamlabs Desktop, StreamElements, Streamlabs), the version, and how many actions, commands and timers are set up.", "{}", &[]),
     ("log", "The last lines of streamerz's log.", r#"{"lines": {"type": "integer", "description": "How many (default 50)"}}"#, &[]),
+    ("search_channels", "Channels by name on Twitch, Kick or YouTube, as the Accounts page's search shows them: handle (what goes in the channel box), name, followers, live. No login.", r#"{"platform": {"type": "string", "enum": ["twitch", "kick", "youtube"]}, "query": {"type": "string"}}"#, &["platform", "query"]),
     ("list_actions", "Every action: id, name, group, enabled, trigger and sub-action counts.", "{}", &[]),
     ("run_action", "Run an action by name or id, with arguments, as its Test does.", r#"{"action": {"type": "string", "description": "Name or id"}, "args": {"type": "object"}}"#, &["action"]),
     ("list_triggers", "Trigger type codes and names (e.g. 101 TwitchFollow), filtered by a word.", r#"{"filter": {"type": "string"}}"#, &[]),
@@ -121,6 +122,14 @@ impl Client {
             "log" => {
                 self.ask(json!({"request": "GetLog", "lines": a["lines"].as_u64().unwrap_or(50)}))
                     .await
+            }
+            "search_channels" => {
+                let found = crate::search::channels(&s("platform"), &s("query")).await;
+                let list: Vec<Value> = found
+                    .iter()
+                    .map(|f| json!({"handle": f.handle, "name": f.name, "detail": f.detail, "live": f.live}))
+                    .collect();
+                Ok(json!({"channels": list}))
             }
             "list_actions" => self.ask(json!({"request": "GetActions"})).await,
             "run_action" => {

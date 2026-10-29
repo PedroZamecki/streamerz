@@ -1012,7 +1012,8 @@ impl Pane {
         let (l, bx, by) = self.bar_at(f, st, st.hover?)?;
         let (ex, ey) = (app::event_x(), app::event_y());
         let k = (ex - bx).div_euclid(ACT);
-        ((by..by + ACT).contains(&ey) && (0..acts(l, self.on_reply.borrow().is_some()).len() as i32).contains(&k)).then_some(k as usize)
+        ((by..by + ACT).contains(&ey) && (0..acts(l, self.on_reply.borrow().is_some()).len() as i32).contains(&k))
+            .then_some(k as usize)
     }
 
     /// The action under the pointer, on the hovered line: the line and its `acts` entry.
