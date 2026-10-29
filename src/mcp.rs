@@ -50,6 +50,10 @@ const TOOLS: &[(&str, &str, &str, &[&str])] = &[
     ("list_plugins", "The WebAssembly plugins in the plugins folder: on or off, and for those on their manifest (sub-actions, triggers, settings). Plugin sub-actions are type 99800 with plugin and name; plugin triggers type 99801 with plugin and event. See PLUGINS.md.", "{}", &[]),
     ("plugin_enable", "Turn a plugin on or off.", r#"{"plugin": {"type": "string", "description": "Its id (the .wasm file's name)"}, "on": {"type": "boolean"}}"#, &["plugin"]),
     ("ui", "Look at the window (needs STREAMERZ_DEV=1): `shot /tmp/a.png [n]` saves window n (0 = the top one) as a PNG you can read, `windows`, `tree [n]` lists every widget with its place, `find TEXT [n]` gives screen coordinates to click (xdotool), `page Settings` goes to a page. Take a shot after every UI change you make.", r#"{"do": {"type": "string"}}"#, &["do"]),
+    ("docs", "Streamerz's own reference page for a sub-action or trigger: what it does, its fields, the arguments it reads and sets, what login or role it needs, and examples. Read it before using one.", r#"{"kind": {"type": "string", "enum": ["subaction", "trigger"]}, "code": {"type": "integer"}}"#, &["kind", "code"]),
+    ("docs_search", "Search the reference (every trigger and sub-action) by words, e.g. \"obs scene\" or \"first words\": kind, code, title and the first line of each match.", r#"{"query": {"type": "string"}, "limit": {"type": "integer", "description": "Default 20"}}"#, &["query"]),
+    ("guide", "Streamerz's guides: with no name, their list (README, chat, plugins, commands, integrations, the reference's index...); with one, its text.", r#"{"name": {"type": "string"}}"#, &[]),
+    ("run_scenario", "Test actions with no running app: a scenario (actions, optional config with commands or globals, steps that fire triggers, send chat or run actions, and what must come of it: chat sent, log lines, globals) runs on a fresh engine here, nothing sent anywhere. Returns what failed. Format: guide scenarios, or tests/scenarios in the repo.", r#"{"scenario": {"type": "object", "description": "{name, actions: [...], config: {...}, steps: [{fire: 101, args: {...}, ran: 1}, {chat: {platform, user, text, role}}, {run: \"name\", args: {...}}, {wait: ms}], expect: {chat: [...], log: [...], notLog: [...], globals: {...}}}"}}"#, &["scenario"]),
     ("request", "Any Streamer.bot WebSocket request, as JSON (e.g. {\"request\": \"GetGlobals\"}).", r#"{"json": {"type": "object"}}"#, &["json"]),
 ];
 
@@ -221,11 +225,48 @@ impl Client {
                     .iter()
                     .map(|(k, l, w)| json!({"key": k, "label": l, "holds": w.about()}))
                     .collect();
+                let kind = if sub { "subaction" } else { "trigger" };
+                let docs = crate::docs::entry(kind, code as u32).map(|e| e.text).unwrap_or_default();
                 Ok(
-                    json!({"code": code, "name": name, "about": about, "fields": fields, "new": new,
+                    json!({"code": code, "name": name, "about": about, "fields": fields, "new": new, "docs": docs,
                     "note": if fields.is_empty() { "No form: fields as Streamer.bot stores them." } else { "" }}),
                 )
             }
+            "run_scenario" => {
+                let sc = a["scenario"].clone();
+                // Its own engine and runtime, off this one.
+                let o = std::thread::spawn(move || {
+                    crate::set_quiet(true);
+                    crate::scenario::run(&sc)
+                })
+                .join()
+                .map_err(|_| "the scenario crashed".to_string())?;
+                Ok(json!({"name": o.name, "passed": o.failures.is_empty(), "failures": o.failures}))
+            }
+            "docs" => {
+                let code = a["code"].as_u64().ok_or("code: a number")? as u32;
+                crate::docs::entry(&s("kind"), code)
+                    .map(|e| json!({"title": e.title, "file": e.file, "text": e.text}))
+                    .ok_or_else(|| format!("no page for {} {code}", s("kind")))
+            }
+            "docs_search" => {
+                let limit = a["limit"].as_u64().unwrap_or(20) as usize;
+                let found: Vec<Value> = crate::docs::search(&s("query"))
+                    .into_iter()
+                    .take(limit)
+                    .map(|e| {
+                        let first = e.text.lines().skip(1).find(|l| !l.trim().is_empty() && !l.starts_with("- "));
+                        json!({"kind": e.kind, "code": e.code, "title": e.title, "about": first.unwrap_or("")})
+                    })
+                    .collect();
+                Ok(json!({ "found": found }))
+            }
+            "guide" => match s("name").trim() {
+                "" => Ok(json!({ "guides": crate::docs::guides() })),
+                n => crate::docs::guide(n)
+                    .map(|t| json!({ "text": t }))
+                    .ok_or_else(|| format!("no guide {n}; call guide with no name for the list")),
+            },
             "get" => {
                 self.ask(json!({"request": "StreamerzGet", "what": s("what"), "id": s("id"), "name": s("name")}))
                     .await
