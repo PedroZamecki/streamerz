@@ -92,10 +92,10 @@ Streamerz speaks the languages below, picked in **Settings**. Each one is a sing
 `assets/locales`, made by the people listed here. Yours is missing, or a word is off? It takes one file
 and no code: see [LOCALIZATION.md](LOCALIZATION.md).
 
-| Language | Code | Translated by |
-| --- | --- | --- |
-| English (United States) | `en_US` | [Pedro Zamecki](https://github.com/PedroZamecki) |
-| Português (Brasil) | `pt_BR` | [Pedro Zamecki](https://github.com/PedroZamecki) |
+| Language | Code | Translated by | Added in |
+| --- | --- | --- | --- |
+| English (United States) | `en_US` | <img src="https://github.com/PedroZamecki.png?size=32" width="24" alt="" align="center"> [Pedro Zamecki](https://github.com/PedroZamecki) | [#60](https://github.com/PedroZamecki/streamerz/pull/60) |
+| Português (Brasil) | `pt_BR` | <img src="https://github.com/PedroZamecki.png?size=32" width="24" alt="" align="center"> [Pedro Zamecki](https://github.com/PedroZamecki) | [#64](https://github.com/PedroZamecki/streamerz/pull/64) |
 
 *Add your language and your row in the same pull request: you get the credit here.*
 
@@ -165,10 +165,6 @@ word in your language, a fix, a feature.
   [DEVELOPING.md](DEVELOPING.md) has how it works inside; [PLAN.md](PLAN.md) is what comes next.
 - **Found a security problem?** Please don't post it: [SECURITY.md](SECURITY.md).
 
-<a href="https://github.com/PedroZamecki/streamerz/graphs/contributors">
-  <img alt="Contributors" src="https://contrib.rocks/image?repo=PedroZamecki/streamerz">
-</a>
-
 More guides: [Built-in chat commands](docs/COMMANDS.md), [Integrations](docs/INTEGRATIONS.md) (Streamlabs
 Desktop, donations, webhooks, hotkeys, MIDI, Stream Deck, files), [Plugins](PLUGINS.md), [what each chat
 effect does](CHAT.md).
@@ -178,6 +174,15 @@ effect does](CHAT.md).
 - Platform logos: [Simple Icons](https://simpleicons.org) (CC0 1.0).
 - Emoji pictures: [Twemoji](https://github.com/jdecked/twemoji) by Twitter and contributors (CC-BY 4.0), loaded from jsDelivr when shown.
 - Emoji list: Unicode's [emoji-test.txt](https://unicode.org/Public/emoji/latest/emoji-test.txt) (Unicode License v3).
+
+## Thank you
+
+Thank you to everyone who has written code, translated a language, reported a bug or suggested an idea.
+Every name below is a person who made Streamerz better.
+
+<a href="https://github.com/PedroZamecki/streamerz/graphs/contributors">
+  <img alt="Contributors" src="https://contrib.rocks/image?repo=PedroZamecki/streamerz">
+</a>
 
 ## MCP (AI assistants)
 
