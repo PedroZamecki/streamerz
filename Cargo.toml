@@ -46,7 +46,7 @@ wasmi = { version = "2", default-features = false, features = ["std", "validate"
 
 [profile.dev]
 opt-level = 0
-debug = 1
+debug = "line-tables-only"
 incremental = true
 
 [profile.dev.package."*"]
