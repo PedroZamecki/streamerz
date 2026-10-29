@@ -1,0 +1,33 @@
+[
+  {
+    "name": "only actions with the fired trigger run",
+    "actions": [
+      {"name": "on follow", "triggers": [{"type": 101}], "subActions": [{"type": 35001, "text": "follow %user%"}]},
+      {"name": "on raid", "triggers": [{"type": 107}], "subActions": [{"type": 35001, "text": "raid %user% with %viewers%"}]},
+      {"name": "off", "enabled": false, "triggers": [{"type": 101}], "subActions": [{"type": 35001, "text": "disabled ran"}]}
+    ],
+    "steps": [
+      {"fire": 107, "args": {"user": "big", "viewers": 50}, "ran": 1},
+      {"fire": 101, "args": {"user": "ana"}, "ran": 1}
+    ],
+    "expect": {"chat": ["raid big with 50", "follow ana"]}
+  },
+  {
+    "name": "a disabled trigger doesn't start its action",
+    "actions": [{"name": "a", "triggers": [{"type": 101, "enabled": false}], "subActions": [{"type": 35001, "text": "ran"}]}],
+    "steps": [{"fire": 101, "args": {"user": "ana"}, "ran": 0}],
+    "expect": {"chat": []}
+  },
+  {
+    "name": "TikTok gift and Kick follow start their actions",
+    "actions": [
+      {"name": "gift", "triggers": [{"type": 41002}], "subActions": [{"type": 43001, "text": "thanks %user% for %repeatCount% %giftName%"}]},
+      {"name": "kick follow", "triggers": [{"type": 35011}], "subActions": [{"type": 35001, "text": "welcome %user%"}]}
+    ],
+    "steps": [
+      {"fire": 41002, "args": {"user": "bo", "giftName": "Rose", "repeatCount": 5}, "ran": 1},
+      {"fire": "KickFollow", "args": {"user": "cy"}}
+    ],
+    "expect": {"chat": [{"platform": "tiktok", "text": "thanks bo for 5 Rose"}, {"platform": "kick", "text": "welcome cy"}]}
+  }
+]

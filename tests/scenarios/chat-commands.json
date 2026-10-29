@@ -1,0 +1,40 @@
+[
+  {
+    "name": "a chat command answers on the platform it came from",
+    "config": {"commands": [{"id": "c-hi", "name": "hi", "command": "!hi", "mode": 0, "location": 0}]},
+    "actions": [{"name": "hi", "triggers": [{"type": 401, "commandId": "c-hi"}],
+      "subActions": [{"type": 35001, "text": "hi %user%"}]}],
+    "steps": [
+      {"chat": {"platform": "kick", "user": "bo", "text": "!hi"}, "ran": 1},
+      {"chat": {"platform": "kick", "user": "bo", "text": "hi there"}, "ran": 0}
+    ],
+    "expect": {"chat": [{"platform": "kick", "text": "hi bo"}]}
+  },
+  {
+    "name": "a moderators-only command ignores viewers",
+    "config": {"commands": [{"id": "c-mod", "name": "so", "command": "!so", "mode": 0, "location": 0,
+      "permittedGroups": ["Moderators"]}]},
+    "actions": [{"name": "so", "triggers": [{"type": 401, "commandId": "c-mod"}],
+      "subActions": [{"type": 35001, "text": "shoutout by %user%"}]}],
+    "steps": [
+      {"chat": {"platform": "kick", "user": "viewer1", "text": "!so", "role": "viewer"}, "ran": 0},
+      {"chat": {"platform": "kick", "user": "mod1", "text": "!so", "role": "moderator"}, "ran": 1},
+      {"chat": {"platform": "kick", "user": "owner", "text": "!so", "role": "broadcaster"}, "ran": 1}
+    ],
+    "expect": {"chat": ["shoutout by mod1", "shoutout by owner"]}
+  },
+  {
+    "name": "a command's input words become arguments",
+    "config": {"commands": [{"id": "c-say", "name": "say", "command": "!say", "mode": 0, "location": 0}]},
+    "actions": [{"name": "say", "triggers": [{"type": 401, "commandId": "c-say"}],
+      "subActions": [{"type": 35001, "text": "%input0% then %input1% (%rawInput%)"}]}],
+    "steps": [{"chat": {"platform": "kick", "user": "ana", "text": "!say one two"}, "ran": 1}],
+    "expect": {"chat": ["one then two (one two)"]}
+  },
+  {
+    "name": "TikTok and Kick each get their own message",
+    "actions": [{"name": "both", "subActions": [{"type": 35001, "text": "kick %who%"}, {"type": 43001, "text": "tiktok %who%"}]}],
+    "steps": [{"run": "both", "args": {"who": "ana"}}],
+    "expect": {"chat": [{"platform": "kick", "text": "kick ana"}, {"platform": "tiktok", "text": "tiktok ana"}]}
+  }
+]

@@ -7,6 +7,7 @@ mod cdp;
 mod commands;
 mod crash;
 pub mod decks;
+mod docs;
 pub mod donations;
 mod edit;
 mod emote_events;
@@ -17,6 +18,7 @@ pub mod hotkeys;
 pub mod http;
 mod i18n;
 pub mod inputs;
+mod irc;
 pub mod kick;
 mod math;
 mod mcp;
@@ -25,6 +27,8 @@ mod notify;
 mod oauth;
 pub mod obs;
 pub mod remote;
+pub mod roles;
+mod scenario;
 mod search;
 mod secrets;
 pub mod servers;
@@ -242,6 +246,23 @@ impl Level {
 
 /// Debug lines are dropped unless Settings turns them on.
 static DEBUG_LOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Log lines aren't printed (the scenario runner prints its own results).
+static QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+thread_local! {
+    /// A scenario's own copy of the log lines logged on its thread (scenario.rs), so tests running
+    /// side by side don't mix their lines.
+    static CAPTURE: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Starts (true) or ends this thread's capture of log lines; what was caught.
+fn capture(on: bool) -> Vec<String> {
+    CAPTURE.with_borrow_mut(|c| std::mem::replace(c, on.then(Vec::new)).unwrap_or_default())
+}
+
+fn set_quiet(on: bool) {
+    QUIET.store(on, std::sync::atomic::Ordering::Relaxed);
+}
 
 pub fn set_debug_log(on: bool) {
     DEBUG_LOG.store(on, std::sync::atomic::Ordering::Relaxed);
@@ -368,8 +389,15 @@ fn log(level: Level, line: String) {
         return;
     }
     let line = redact(&line);
-    let _ = writeln!(std::io::stdout(), "[{}] {line}", level.tag());
+    if !QUIET.load(std::sync::atomic::Ordering::Relaxed) {
+        let _ = writeln!(std::io::stdout(), "[{}] {line}", level.tag());
+    }
     crash::line(level, &line);
+    CAPTURE.with_borrow_mut(|c| {
+        if let Some(c) = c {
+            c.push(line.clone());
+        }
+    });
     status(|s| {
         if s.log.len() == LOG_LINES {
             s.log.pop_front();
@@ -693,6 +721,16 @@ fn main() {
     if std::env::args_os().any(|a| a == "--mcp") {
         mcp::run();
         return;
+    }
+    // Scenarios (scenario.rs): the engine alone, on settings of their own in a scratch folder.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--scenario") {
+        let scratch = std::env::temp_dir().join(format!("streamerz-scenario-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&scratch);
+        std::env::set_var("STREAMERZ_CONFIG", scratch.join("streamerz.json"));
+        let code = scenario::cli(&args[i + 1..]);
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::process::exit(code);
     }
     let app = ui::app();
     if first_run() {

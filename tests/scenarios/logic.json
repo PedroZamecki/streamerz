@@ -1,0 +1,46 @@
+[
+  {
+    "name": "if/else picks the branch by a number comparison",
+    "actions": [{"name": "check", "subActions": [
+      {"type": 120, "input": "%viewers%", "operation": 5, "value": "10", "autoType": true, "subActions": [
+        {"type": 99901, "subActions": [{"type": 1020, "logLevel": 2, "message": "big %viewers%"}]},
+        {"type": 99902, "subActions": [{"type": 1020, "logLevel": 2, "message": "small %viewers%"}]}]}]}],
+    "steps": [{"run": "check", "args": {"viewers": 25}}, {"run": "check", "args": {"viewers": 3}}],
+    "expect": {"log": ["big 25", "small 3"], "notLog": ["big 3", "small 25"]}
+  },
+  {
+    "name": "while counts up and switch picks a case",
+    "actions": [{"name": "loop", "subActions": [
+      {"type": 123, "variableName": "i", "value": "0", "autoType": true},
+      {"type": 128, "input": "%i%", "operation": 2, "value": "3", "autoType": true, "subActions": [
+        {"type": 123, "variableName": "i", "value": "$math(%i% + 1)$", "autoType": true},
+        {"type": 1020, "logLevel": 2, "message": "turn %i%"}]},
+      {"type": 127, "input": "%i%", "autoType": true, "subActions": [
+        {"type": 99903, "values": ["3"], "caseSensitive": false, "subActions": [{"type": 1020, "logLevel": 2, "message": "ended at three"}]},
+        {"type": 99904, "subActions": [{"type": 1020, "logLevel": 2, "message": "ended elsewhere"}]}]}]}],
+    "steps": [{"run": "loop"}],
+    "expect": {"log": ["turn 1", "turn 2", "turn 3", "ended at three"], "notLog": ["turn 4", "ended elsewhere"]}
+  },
+  {
+    "name": "run action passes the arguments on, and break stops the rest",
+    "actions": [
+      {"id": "parent", "name": "parent", "subActions": [
+        {"type": 123, "variableName": "who", "value": "ana", "autoType": false},
+        {"type": 4, "actionId": "child", "runImmedately": true},
+        {"type": 1020, "logLevel": 2, "message": "parent goes on"}]},
+      {"id": "child", "name": "child", "subActions": [
+        {"type": 1020, "logLevel": 2, "message": "child sees %who%"},
+        {"type": 124},
+        {"type": 1020, "logLevel": 2, "message": "after break"}]}],
+    "steps": [{"run": "parent"}],
+    "expect": {"log": ["child sees ana"], "notLog": ["after break"]}
+  },
+  {
+    "name": "math and a missing variable",
+    "actions": [{"name": "m", "subActions": [
+      {"type": 123, "variableName": "total", "value": "$math(%a% * 2 + 1)$", "autoType": true},
+      {"type": 1020, "logLevel": 2, "message": "total %total%, missing [%nothere%]"}]}],
+    "steps": [{"run": "m", "args": {"a": 20}}],
+    "expect": {"log": ["total 41"]}
+  }
+]
