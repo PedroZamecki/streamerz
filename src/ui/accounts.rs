@@ -209,6 +209,16 @@ impl P {
         ch.is_empty() || mine.is_some_and(|m| m.contains(&ch))
     }
 
+    /// What the channel box shows: nothing while the channel read is the broadcaster's own (the name is
+    /// kept, but it isn't something typed), the same on every platform.
+    fn typed_channel(self, c: &Config) -> &str {
+        if self.raw_account_name(c, false).is_some() && self.own(c) {
+            ""
+        } else {
+            self.channel(c)
+        }
+    }
+
     /// Set the channel from what was typed (a URL or @handle works); what was kept.
     fn set_channel(self, c: &mut Config, raw: &str) -> String {
         let (v, slot) = match self {
@@ -564,8 +574,10 @@ impl Accounts {
                 tr("btn.connect")
             });
             super::with_icon(&mut r.connect);
+            // Reading your own channel shows an empty box (the same on every platform): the name is kept,
+            // but it isn't something typed.
             if !r.channel.has_focus() {
-                r.channel.set_value(r.p.channel(&c));
+                r.channel.set_value(r.p.typed_channel(&c));
             }
             r.whose.set_label(
                 if r.p.channel(&c).is_empty() || r.p.raw_account_name(&c, false).is_none() {
@@ -775,7 +787,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
                         p.connect(&cmds, true);
                     }
                 }
-                i.set_value(p.channel(&cfg.borrow()));
+                i.set_value(p.typed_channel(&cfg.borrow()));
                 refresh();
             }
         });
@@ -1234,5 +1246,21 @@ mod tests {
         assert_eq!(super::clean_twitch_channel("https://www.twitch.tv/Umanana/"), "umanana");
         assert_eq!(super::clean_twitch_channel(" @Umanana "), "umanana");
         assert_eq!(super::clean_twitch_channel(""), "");
+    }
+
+    #[test]
+    fn the_channel_box_is_empty_on_your_own_channel() {
+        use super::P;
+        let mut c = crate::Config::default();
+        c.kick.broadcaster = Some(crate::kick::KickAccount {
+            username: "Ana".into(),
+            ..Default::default()
+        });
+        // The own channel is filled in after a save, yet the box stays empty (and can be emptied).
+        c.own_channels();
+        assert_eq!(c.kick.channel, "ana");
+        assert_eq!(P::Kick.typed_channel(&c), "");
+        c.kick.channel = "bia".into();
+        assert_eq!(P::Kick.typed_channel(&c), "bia");
     }
 }
