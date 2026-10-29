@@ -248,8 +248,36 @@ pub struct TwitchConfig {
     pub ignore_bot_internal: bool,
     /// Overrides the EventSub WebSocket URL (for testing or proxying).
     pub eventsub_url: Option<String>,
+    /// The channel to read and moderate (its login); empty: the logged-in account's own. Someone else's
+    /// works for a moderator: what needs the owner's login (channel points, bits, polls...) is left out.
+    pub channel: String,
+    /// `channel`'s user id, looked up on connecting.
+    pub channel_id: String,
     #[serde(flatten)]
     pub rest: Map<String, Value>,
+}
+
+/// Whether `c` reads someone else's channel (set, and not the logged-in account's).
+pub fn other_channel(c: &Config) -> bool {
+    let ch = c.twitch.channel.trim();
+    !ch.is_empty()
+        && c.twitch
+            .broadcaster
+            .as_ref()
+            .is_none_or(|b| !b.login.eq_ignore_ascii_case(ch))
+}
+
+/// The id of the channel read: the one set, else the logged-in account's.
+pub fn channel_id(c: &Config) -> String {
+    if other_channel(c) {
+        c.twitch.channel_id.clone()
+    } else {
+        c.twitch
+            .broadcaster
+            .as_ref()
+            .map(|b| b.user_id.clone())
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -1103,11 +1131,21 @@ impl Runner {
         fallback: bool,
     ) -> Result<Value, String> {
         let (token, broadcaster_id, sender_id) = self.pick_account(use_bot, fallback)?;
+        // Who moderates: the logged-in account (on someone else's channel, a moderator there).
+        let moderator_id = {
+            let c = self.cfg.borrow();
+            c.twitch
+                .broadcaster
+                .as_ref()
+                .map(|b| b.user_id.clone())
+                .unwrap_or_default()
+        };
         let mut qs = Vec::new();
         for (k, v) in query {
             let val = match v.as_str() {
                 "{broadcaster_id}" => broadcaster_id.as_str(),
                 "{sender_id}" => sender_id.as_str(),
+                "{moderator_id}" => moderator_id.as_str(),
                 _ => v.as_str(),
             };
             qs.push(format!("{}={}", commands::url_encode(k), commands::url_encode(val)));
@@ -1129,6 +1167,7 @@ impl Runner {
                 .unwrap_or_default()
                 .replace("\"{broadcaster_id}\"", &ids(&broadcaster_id))
                 .replace("\"{sender_id}\"", &ids(&sender_id))
+                .replace("\"{moderator_id}\"", &ids(&moderator_id))
                 .into_bytes()
         } else {
             Vec::new()
@@ -1152,6 +1191,8 @@ impl Runner {
     fn pick_account(&self, use_bot: bool, fallback: bool) -> Result<(String, String, String), String> {
         let c = self.cfg.borrow();
         let broadcaster = c.twitch.broadcaster.as_ref().ok_or("No broadcaster account")?;
+        // The channel acted on: the one read (someone else's for a moderator), else the account's own.
+        let chan = channel_id(&c);
         if broadcaster.token.access_token.is_empty() {
             if crate::secrets::is_locked() {
                 return Err("System keyring is locked; unlock it to use saved Twitch login".into());
@@ -1161,15 +1202,11 @@ impl Runner {
         if use_bot {
             if let Some(bot) = &c.twitch.bot {
                 if !bot.token.access_token.is_empty() {
-                    return Ok((
-                        bot.token.access_token.clone(),
-                        broadcaster.user_id.clone(),
-                        bot.user_id.clone(),
-                    ));
+                    return Ok((bot.token.access_token.clone(), chan.clone(), bot.user_id.clone()));
                 } else if fallback {
                     return Ok((
                         broadcaster.token.access_token.clone(),
-                        broadcaster.user_id.clone(),
+                        chan.clone(),
                         broadcaster.user_id.clone(),
                     ));
                 } else {
@@ -1178,7 +1215,7 @@ impl Runner {
             } else if fallback {
                 return Ok((
                     broadcaster.token.access_token.clone(),
-                    broadcaster.user_id.clone(),
+                    chan.clone(),
                     broadcaster.user_id.clone(),
                 ));
             } else {
@@ -1187,10 +1224,37 @@ impl Runner {
         }
         Ok((
             broadcaster.token.access_token.clone(),
-            broadcaster.user_id.clone(),
+            chan.clone(),
             broadcaster.user_id.clone(),
         ))
     }
+}
+
+/// The logged-in account as the channel read: itself, or (someone else's channel) the channel's id and
+/// names with this account's login.
+async fn channel_view(cfg: &Arc<watch::Sender<Config>>, me: TwitchAccount) -> Result<TwitchAccount, String> {
+    let (other, login, known) = {
+        let c = cfg.borrow();
+        let login = c.twitch.channel.trim().trim_start_matches('@').to_lowercase();
+        (other_channel(&c), login, c.twitch.channel_id.clone())
+    };
+    if !other {
+        return Ok(me);
+    }
+    let found = fetch_user(CLIENT_ID, &me.token.access_token, Some(&login))
+        .await
+        .map_err(|e| format!("no channel @{login} ({e})"))?;
+    if found.user_id != known {
+        let id = found.user_id.clone();
+        cfg.send_modify(|c| c.twitch.channel_id = id);
+        let _ = crate::save(&cfg.borrow());
+    }
+    Ok(TwitchAccount {
+        user_id: found.user_id,
+        login: found.login,
+        display_name: found.display_name,
+        token: me.token,
+    })
 }
 
 async fn supervise_eventsub(
@@ -1246,6 +1310,17 @@ async fn supervise_eventsub(
             (b, bot, u, custom)
         };
 
+        // Someone else's channel (a moderator's use): the session is about that channel, with this
+        // account's login. Its id is looked up once.
+        let broadcaster = match channel_view(&cfg, broadcaster).await {
+            Ok(b) => b,
+            Err(e) => {
+                crate::error(format!("Twitch: {e}"));
+                wanted.store(false, Ordering::Relaxed);
+                crate::ui::changed();
+                break;
+            }
+        };
         SUBS_URL.with_borrow_mut(|s| *s = subs_url(&url));
         if first_connect_log {
             crate::say(format!("Twitch: connecting to EventSub (@{})...", broadcaster.login));
@@ -1402,6 +1477,13 @@ async fn run_eventsub_loop(
                 // Create subscriptions via Helix, seed channel metadata + badges, and load pre-join history.
                 let token = broadcaster.token.access_token.clone();
                 let bid = broadcaster.user_id.clone();
+                // Who's logged in: the channel's owner, or a moderator of someone else's channel.
+                let me = cfg
+                    .borrow()
+                    .twitch
+                    .broadcaster
+                    .as_ref()
+                    .map_or_else(|| bid.clone(), |b| b.user_id.clone());
                 let login = broadcaster.login.clone();
                 let sid = sid.to_string();
                 let e = engine.clone();
@@ -1415,7 +1497,7 @@ async fn run_eventsub_loop(
                             fetch_recent_messages(&login, &bid).await
                         }
                     };
-                    let subs = create_all_subscriptions(&sid, &token, &bid, &refused);
+                    let subs = create_all_subscriptions(&sid, &token, &bid, &me, &refused);
                     let welcome = async {
                         let mut hist = hist_fut.await;
                         SEEN.with_borrow(|s| {
@@ -1640,79 +1722,79 @@ async fn run_bot_eventsub_loop(
     engine.emit("Twitch", "BotChatDisconnected", || json!(args));
 }
 
-async fn create_all_subscriptions(sid: &str, token: &str, bid: &str, auth_refused: &AtomicBool) {
+async fn create_all_subscriptions(sid: &str, token: &str, bid: &str, me: &str, auth_refused: &AtomicBool) {
     let subs = [
         (
             "channel.chat.message",
             "1",
-            json!({"broadcaster_user_id": bid, "user_id": bid}),
+            json!({"broadcaster_user_id": bid, "user_id": me}),
         ),
         (
             "channel.chat.notification",
             "1",
-            json!({"broadcaster_user_id": bid, "user_id": bid}),
+            json!({"broadcaster_user_id": bid, "user_id": me}),
         ),
         (
             "channel.follow",
             "2",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         ("channel.raid", "1", json!({"from_broadcaster_user_id": bid})),
         // Subs, resubs, gifts and incoming raids come as chat notifications; cheers with the message.
         (
             "channel.chat.message_delete",
             "1",
-            json!({"broadcaster_user_id": bid, "user_id": bid}),
+            json!({"broadcaster_user_id": bid, "user_id": me}),
         ),
         (
             "channel.moderate",
             "2",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "automod.message.hold",
             "2",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "automod.message.update",
             "2",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "automod.terms.update",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.unban_request.create",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.unban_request.resolve",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.warning.send",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.warning.acknowledge",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.suspicious_user.update",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.suspicious_user.message",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.channel_points_automatic_reward_redemption.add",
@@ -1722,7 +1804,7 @@ async fn create_all_subscriptions(sid: &str, token: &str, bid: &str, auth_refuse
         ("channel.bits.use", "1", json!({"broadcaster_user_id": bid})),
         ("stream.online", "1", json!({"broadcaster_user_id": bid})),
         ("stream.offline", "1", json!({"broadcaster_user_id": bid})),
-        ("user.whisper.message", "1", json!({"user_id": bid})),
+        ("user.whisper.message", "1", json!({"user_id": me})),
         (
             "channel.channel_points_custom_reward.add",
             "1",
@@ -1772,37 +1854,37 @@ async fn create_all_subscriptions(sid: &str, token: &str, bid: &str, auth_refuse
         (
             "channel.shield_mode.begin",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.shield_mode.end",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.shoutout.create",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.shoutout.receive",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.chat.clear",
             "1",
-            json!({"broadcaster_user_id": bid, "user_id": bid}),
+            json!({"broadcaster_user_id": bid, "user_id": me}),
         ),
         (
             "channel.chat.clear_user_messages",
             "1",
-            json!({"broadcaster_user_id": bid, "user_id": bid}),
+            json!({"broadcaster_user_id": bid, "user_id": me}),
         ),
         (
             "channel.chat_settings.update",
             "1",
-            json!({"broadcaster_user_id": bid, "user_id": bid}),
+            json!({"broadcaster_user_id": bid, "user_id": me}),
         ),
         (
             "channel.charity_campaign.donate",
@@ -1827,33 +1909,47 @@ async fn create_all_subscriptions(sid: &str, token: &str, bid: &str, auth_refuse
         (
             "channel.guest_star_session.begin",
             "beta",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.guest_star_session.end",
             "beta",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.guest_star_guest.update",
             "beta",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.guest_star_settings.update",
             "beta",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         ("channel.shared_chat.begin", "1", json!({"broadcaster_user_id": bid})),
         ("channel.shared_chat.update", "1", json!({"broadcaster_user_id": bid})),
         ("channel.shared_chat.end", "1", json!({"broadcaster_user_id": bid})),
     ];
 
-    for (stype, ver, cond) in subs {
+    // On someone else's channel, only what a moderator (or anyone) may read: the rest needs the owner's
+    // login, and would only be refused.
+    let own = bid == me;
+    for (stype, ver, cond) in subs.into_iter().filter(|s| own || moderator_can(s.0, &s.2)) {
         if !create_sub(sid, token, stype, ver, cond, auth_refused).await {
             break;
         }
     }
+}
+
+/// Whether a moderator (not the channel's owner) can subscribe: chat and moderation (they name the
+/// moderator or the reader), and what's public.
+fn moderator_can(stype: &str, cond: &Value) -> bool {
+    cond.get("moderator_user_id").is_some()
+        || cond.get("user_id").is_some()
+        || matches!(
+            stype,
+            "stream.online" | "stream.offline" | "channel.update" | "channel.raid"
+        )
 }
 
 thread_local! {
@@ -4173,6 +4269,36 @@ async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn a_moderator_subscribes_to_chat_and_moderation_only() {
+        use super::*;
+        let chat = json!({"broadcaster_user_id": "1", "user_id": "2"});
+        let modr = json!({"broadcaster_user_id": "1", "moderator_user_id": "2"});
+        let owner = json!({"broadcaster_user_id": "1"});
+        assert!(moderator_can("channel.chat.message", &chat));
+        assert!(moderator_can("channel.follow", &modr));
+        assert!(moderator_can("stream.online", &owner));
+        assert!(!moderator_can("channel.bits.use", &owner));
+        assert!(!moderator_can("channel.poll.begin", &owner));
+    }
+
+    #[test]
+    fn another_channel_is_read_by_id_once_known() {
+        use super::*;
+        let mut c = Config::default();
+        c.twitch.broadcaster = Some(TwitchAccount {
+            user_id: "10".into(),
+            login: "me".into(),
+            ..Default::default()
+        });
+        assert!(!other_channel(&c) && channel_id(&c) == "10");
+        c.twitch.channel = "Me".into();
+        assert!(!other_channel(&c), "your own name is your own channel");
+        c.twitch.channel = "someone".into();
+        c.twitch.channel_id = "20".into();
+        assert!(other_channel(&c) && channel_id(&c) == "20");
+    }
+
     #[test]
     fn recent_messages_of_one_word_have_no_colon() {
         let one = "@display-name=Ana;user-id=7;tmi-sent-ts=1793151375247 :ana!ana@ana.tmi.twitch.tv PRIVMSG #pedro opa";

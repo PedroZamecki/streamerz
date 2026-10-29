@@ -1434,7 +1434,7 @@ impl Engine {
                             "chat/settings",
                             vec![
                                 ("broadcaster_id", "{broadcaster_id}"),
-                                ("moderator_id", "{broadcaster_id}"),
+                                ("moderator_id", "{moderator_id}"),
                             ],
                             Some(json!({"subscriber_mode": status})),
                             false,
@@ -1456,7 +1456,7 @@ impl Engine {
                             "chat/settings",
                             vec![
                                 ("broadcaster_id", "{broadcaster_id}"),
-                                ("moderator_id", "{broadcaster_id}"),
+                                ("moderator_id", "{moderator_id}"),
                             ],
                             Some(json!({"emote_mode": status})),
                             false,
@@ -1479,7 +1479,7 @@ impl Engine {
                             "chat/settings",
                             vec![
                                 ("broadcaster_id", "{broadcaster_id}"),
-                                ("moderator_id", "{broadcaster_id}"),
+                                ("moderator_id", "{moderator_id}"),
                             ],
                             Some(json!({"slow_mode": status, "slow_mode_wait_time": dur})),
                             false,
@@ -1502,7 +1502,7 @@ impl Engine {
                             "chat/settings",
                             vec![
                                 ("broadcaster_id", "{broadcaster_id}"),
-                                ("moderator_id", "{broadcaster_id}"),
+                                ("moderator_id", "{moderator_id}"),
                             ],
                             Some(json!({"follower_mode": status, "follower_mode_duration": dur})),
                             false,
@@ -1532,7 +1532,7 @@ impl Engine {
                                 "moderation/bans",
                                 vec![
                                     ("broadcaster_id", "{broadcaster_id}"),
-                                    ("moderator_id", "{broadcaster_id}"),
+                                    ("moderator_id", "{moderator_id}"),
                                 ],
                                 Some(json!({"data": {"user_id": uid, "duration": dur, "reason": reason}})),
                                 false,
@@ -1583,7 +1583,7 @@ impl Engine {
                 let Some(tw) = self.twitch() else { return };
                 let who = vec![
                     ("broadcaster_id", "{broadcaster_id}"),
-                    ("moderator_id", "{broadcaster_id}"),
+                    ("moderator_id", "{moderator_id}"),
                     ("first", "1000"),
                 ];
                 let mut users: Vec<Value> = match tw.helix("GET", "chat/chatters", who, None, false, true).await {
@@ -1645,7 +1645,7 @@ impl Engine {
                             "moderation/shield_mode",
                             vec![
                                 ("broadcaster_id", "{broadcaster_id}"),
-                                ("moderator_id", "{broadcaster_id}"),
+                                ("moderator_id", "{moderator_id}"),
                             ],
                             None,
                             false,
@@ -1671,7 +1671,7 @@ impl Engine {
                             "moderation/shield_mode",
                             vec![
                                 ("broadcaster_id", "{broadcaster_id}"),
-                                ("moderator_id", "{broadcaster_id}"),
+                                ("moderator_id", "{moderator_id}"),
                             ],
                             Some(json!({"is_active": status})),
                             false,
@@ -1696,7 +1696,7 @@ impl Engine {
                                 vec![
                                     ("from_broadcaster_id", "{broadcaster_id}"),
                                     ("to_broadcaster_id", &uid),
-                                    ("moderator_id", "{broadcaster_id}"),
+                                    ("moderator_id", "{moderator_id}"),
                                 ],
                                 None,
                                 false,
@@ -2116,7 +2116,7 @@ impl Engine {
                             "moderation/chat",
                             vec![
                                 ("broadcaster_id", "{broadcaster_id}"),
-                                ("moderator_id", "{broadcaster_id}"),
+                                ("moderator_id", "{moderator_id}"),
                             ],
                             None,
                             false,
@@ -2150,7 +2150,7 @@ impl Engine {
                                 "moderation/bans",
                                 vec![
                                     ("broadcaster_id", "{broadcaster_id}"),
-                                    ("moderator_id", "{broadcaster_id}"),
+                                    ("moderator_id", "{moderator_id}"),
                                 ],
                                 Some(json!({"data": {"user_id": uid, "reason": reason}})),
                                 false,
@@ -2187,7 +2187,7 @@ impl Engine {
                 ctx.args.insert(format!("{p}UserType"), "twitch".into());
                 let q = vec![
                     ("broadcaster_id", "{broadcaster_id}"),
-                    ("moderator_id", "{broadcaster_id}"),
+                    ("moderator_id", "{moderator_id}"),
                     ("user_id", uid.as_str()),
                 ];
                 match tw.helix("DELETE", "moderation/bans", q, None, false, true).await {
@@ -2202,7 +2202,7 @@ impl Engine {
                 let Some(tw) = self.twitch() else { return };
                 let who = vec![
                     ("broadcaster_id", "{broadcaster_id}"),
-                    ("moderator_id", "{broadcaster_id}"),
+                    ("moderator_id", "{moderator_id}"),
                     ("first", "1000"),
                 ];
                 match tw.helix("GET", "chat/chatters", who, None, false, true).await {
@@ -2308,7 +2308,7 @@ impl Engine {
                                 "moderation/warnings",
                                 vec![
                                     ("broadcaster_id", "{broadcaster_id}"),
-                                    ("moderator_id", "{broadcaster_id}"),
+                                    ("moderator_id", "{moderator_id}"),
                                 ],
                                 Some(json!({"data": {"user_id": uid, "reason": reason}})),
                                 false,
@@ -2332,7 +2332,7 @@ impl Engine {
                 let Some(tw) = self.twitch() else { return };
                 let who = vec![
                     ("broadcaster_id", "{broadcaster_id}"),
-                    ("moderator_id", "{broadcaster_id}"),
+                    ("moderator_id", "{moderator_id}"),
                 ];
                 let pinned = tw.helix("GET", "chat/pins", who.clone(), None, false, true).await;
                 let current = pinned
@@ -2419,7 +2419,7 @@ impl Engine {
                     let uid = tw.resolve_user_id(&login).await?;
                     let mut q = vec![
                         ("broadcaster_id", "{broadcaster_id}"),
-                        ("moderator_id", "{broadcaster_id}"),
+                        ("moderator_id", "{moderator_id}"),
                     ];
                     if kind == 579 {
                         // Monitored: messages show to mods; restricted needs mod approval.

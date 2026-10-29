@@ -981,7 +981,7 @@ impl Engine {
         tokio::task::spawn_local(async move {
             let who = vec![
                 ("broadcaster_id", "{broadcaster_id}"),
-                ("moderator_id", "{broadcaster_id}"),
+                ("moderator_id", "{moderator_id}"),
             ];
             let Ok(v) = tw.helix("GET", "chat/pins", who, None, false, false).await else {
                 return;
@@ -1012,6 +1012,7 @@ impl Engine {
                     .trim_start_matches('@')
                     .eq_ignore_ascii_case(&c.tiktok.channel)
             }),
+            "twitch" => !crate::twitch::other_channel(&c),
             _ => true,
         }
     }
@@ -1052,7 +1053,7 @@ impl Engine {
                     };
                     let mut query = vec![
                         ("broadcaster_id", "{broadcaster_id}"),
-                        ("moderator_id", "{broadcaster_id}"),
+                        ("moderator_id", "{moderator_id}"),
                     ];
                     query.extend(q.iter().map(|(k, v)| (*k, v.as_str())));
                     t.helix(method, path, query, body, false, true).await.map(drop)
