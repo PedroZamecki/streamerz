@@ -504,7 +504,7 @@ struct Row {
     p: P,
     status: Frame,
     /// Whose chat to read and moderate (empty: your own), and whose it is.
-    channel: Input,
+    channel: Button,
     whose: Frame,
     connect: Button,
     adv: Button,
@@ -576,9 +576,9 @@ impl Accounts {
             super::with_icon(&mut r.connect);
             // Reading your own channel shows an empty box (the same on every platform): the name is kept,
             // but it isn't something typed.
-            if !r.channel.has_focus() {
-                r.channel.set_value(r.p.typed_channel(&c));
-            }
+            let shown = r.p.typed_channel(&c);
+            r.channel
+                .set_label(&if shown.is_empty() { tr("accounts.channel_placeholder") } else { shown }.replace('@', "@@"));
             r.whose.set_label(
                 if r.p.channel(&c).is_empty() || r.p.raw_account_name(&c, false).is_none() {
                     ""
@@ -695,10 +695,11 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
             .with_align(Align::Right | Align::Inside);
         label.set_label_color(super::muted());
         mid.fixed(&label, 110);
-        let mut channel = Input::default();
-        super::placeholder(&mut channel, tr("accounts.channel_placeholder"));
+        // A button: it opens the search (the channel is picked there, not typed here).
+        let mut channel = Button::default().with_label(tr("accounts.channel_placeholder"));
         channel.set_tooltip(tr("accounts.channel_tooltip"));
-        channel.set_trigger(fltk::enums::CallbackTrigger::EnterKeyAlways | fltk::enums::CallbackTrigger::Release);
+        channel.set_image(super::icons::before_label("search", super::button_ink(), 14));
+        channel.set_align(Align::ImageNextToText | Align::Inside);
         mid.fixed(&channel, 220);
         let mut whose = Frame::default()
             .with_align(Align::Left | Align::Inside | Align::Clip)
@@ -771,10 +772,12 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
         });
         r.channel.set_callback({
             let (cfg, cmds, refresh) = (cfg.clone(), cmds.clone(), refresh.clone());
-            move |i| {
+            move |_| {
+                let Some(raw) = super::find::channel(&cmds, p.slug()) else {
+                    return;
+                };
                 let before = p.channel(&cfg.borrow()).to_string();
-                let mut kept = String::new();
-                save(&cfg, |c| kept = p.set_channel(c, &i.value()));
+                save(&cfg, |c| drop(p.set_channel(c, &raw)));
                 if p.channel(&cfg.borrow()) != before {
                     // What the old channel showed goes; its community stays, apart.
                     let slug = p.slug();
@@ -787,7 +790,6 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
                         p.connect(&cmds, true);
                     }
                 }
-                i.set_value(p.typed_channel(&cfg.borrow()));
                 refresh();
             }
         });

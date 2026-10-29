@@ -10,6 +10,7 @@ mod dev;
 pub(crate) mod dialogs;
 pub(crate) mod emotes;
 pub(crate) mod fit;
+mod find;
 pub(crate) mod forms;
 mod grid;
 pub(crate) mod icons;

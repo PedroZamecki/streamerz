@@ -25,6 +25,7 @@ mod notify;
 mod oauth;
 pub mod obs;
 pub mod remote;
+mod search;
 mod secrets;
 pub mod servers;
 mod slobs;

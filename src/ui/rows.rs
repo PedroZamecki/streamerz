@@ -24,6 +24,9 @@ struct State {
     empty: &'static str,
     /// The column holding a platform: drawn as its logo, named on hover.
     logo: Option<usize>,
+    /// The column holding a picture's address: the picture shows instead (once it's in `pics`).
+    pic: Option<usize>,
+    pics: std::collections::HashMap<String, fltk::image::RgbImage>,
     sel: i32,
     hover: i32,
     /// Pixels scrolled.
@@ -89,6 +92,22 @@ impl Rows {
     /// Column `c` holds a platform ("twitch"...): its logo shows instead of the text.
     pub fn set_logo_column(&mut self, c: usize) {
         self.st.borrow_mut().logo = Some(c);
+    }
+
+    /// Column `c` holds a picture's address: the picture shows instead, once given with `set_pic`.
+    pub fn set_pic_column(&mut self, c: usize) {
+        self.st.borrow_mut().pic = Some(c);
+    }
+
+    /// The picture for an address in the picture column.
+    pub fn set_pic(&mut self, url: &str, img: fltk::image::RgbImage) {
+        self.st.borrow_mut().pics.insert(url.to_string(), img);
+        self.area.redraw();
+    }
+
+    /// Whether the picture for `url` is in.
+    pub fn has_pic(&self, url: &str) -> bool {
+        self.st.borrow().pics.contains_key(url)
     }
 
     /// Runs on a click (`app::event_clicks()` tells a double click) and when the keys move the selection.
@@ -220,6 +239,12 @@ impl Rows {
                 };
                 match super::img::logo(super::img::platform_name(col), 16).filter(|_| st.logo == Some(c)) {
                     Some(mut i) => i.draw(cx, ly + (LINE - 16) / 2, 16, 16),
+                    None if st.pic == Some(c) => {
+                        if let Some(p) = st.pics.get(col) {
+                            let mut p = p.clone();
+                            p.draw(cx, ly + (LINE - p.h()) / 2, p.w(), p.h());
+                        }
+                    }
                     None => {
                         draw::push_clip(cx, ly, cw - 8, LINE);
                         draw::draw_text(col, cx, base);
