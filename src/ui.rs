@@ -18,6 +18,7 @@ mod lists;
 mod nav;
 pub mod picker;
 mod plugins;
+pub(crate) mod polls;
 pub(crate) mod popover;
 mod recovery;
 mod rows;
@@ -312,6 +313,14 @@ pub fn changed() {
     wake(Msg::Changed);
 }
 
+/// Polls and predictions changed somewhere (a platform's event): the Polls page reads them again.
+pub static POLLS_DIRTY: AtomicBool = AtomicBool::new(true);
+
+pub fn polls_changed() {
+    POLLS_DIRTY.store(true, Ordering::Relaxed);
+    changed();
+}
+
 /// New chat: refresh the chat tab, if the window is up.
 pub fn chat() {
     wake(Msg::Chat);
@@ -524,6 +533,11 @@ fn icon_for(label: &str) -> Option<&'static str> {
         "browse" => "folder-open",
         "user_info" => "user-round",
         "report_github" => "bug",
+        "start_poll" | "start_prediction" => "play",
+        "end_poll" => "square",
+        "lock" => "lock",
+        "resolve" => "trophy",
+        "cancel_prediction" => "x",
         "backup_now" => "archive",
         "restore" => "rotate-ccw",
         "change" => "folder-pen",

@@ -82,7 +82,7 @@ def main():
             sys.exit("can't reach the app")
         for p in ("twitch", "kick", "youtube", "tiktok"):
             ws.ask({"request": "InjectChat", "id": p, "platform": p, "user": "Ana", "text": f"hello from {p}"})
-        pages = ["Chat", "Accounts", "Community", "Actions", "Commands", "Timers", "Queues", "Groups", "Plugins",
+        pages = ["Chat", "Accounts", "Community", "Polls", "Actions", "Commands", "Timers", "Queues", "Groups", "Plugins",
                  "Servers", "Stream Apps", "Donations", "Globals", "History", "Settings", "Log", "Crashes", "Backups"]
         for page in pages:
             ws.ask({"request": "StreamerzUi", "id": "p", "do": f"page {page}"})

@@ -2800,6 +2800,7 @@ fn handle_notification(
             go(engine, code, name, "Twitch/Channel Points", ev, &args);
         }
         "channel.poll.begin" | "channel.poll.progress" | "channel.poll.end" => {
+            crate::ui::polls_changed();
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
             // EventSub has no duration: it's from the start to the end.
@@ -2847,6 +2848,7 @@ fn handle_notification(
         | "channel.prediction.progress"
         | "channel.prediction.lock"
         | "channel.prediction.end" => {
+            crate::ui::polls_changed();
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
             let mut p = event.clone();

@@ -165,6 +165,16 @@ thread_local! {
 /// How other threads reach the engine (for `save_on_crash`).
 static CMDS: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<UiCmd>> = std::sync::OnceLock::new();
 
+impl Engine {
+    /// Runs one sub-action of `kind` with the settings `o`, as an action would, and gives the variables
+    /// it set (the Polls page drives Twitch's and YouTube's poll and prediction sub-actions so).
+    pub async fn run_one(self: &Rc<Self>, kind: u64, o: Obj) -> Obj {
+        let mut ctx = Ctx { args: Obj::new() };
+        self.rest(&mut ctx, &o, kind).await;
+        ctx.args
+    }
+}
+
 /// Lets `save_on_crash` reach `e`. Call on the engine's thread.
 pub fn set_current(e: &Rc<Engine>, cmds: tokio::sync::mpsc::UnboundedSender<UiCmd>) {
     CURRENT.with(|c| *c.borrow_mut() = Rc::downgrade(e));

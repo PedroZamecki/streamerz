@@ -36,6 +36,7 @@ const NAV: &[Section] = &[
             ("Chat", "nav.page.chat", "message-square"),
             ("Accounts", "nav.page.accounts", "user-round"),
             ("Community", "nav.page.community", "users"),
+            ("Polls", "nav.page.polls", "vote"),
         ],
     ),
     (

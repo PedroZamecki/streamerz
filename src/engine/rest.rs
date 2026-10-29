@@ -203,6 +203,7 @@ pub(crate) fn prediction_args(p: &Value, args: &mut Obj) {
     for (k, f) in [
         ("Id", "id"),
         ("Title", "title"),
+        ("Status", "status"),
         ("CreatedAt", "created_at"),
         ("PredictionWindow", "prediction_window"),
     ] {

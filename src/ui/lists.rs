@@ -555,6 +555,7 @@ pub struct Views {
     pub chat: Rc<RefCell<super::chat::Chat>>,
     pub crashes: Rc<RefCell<super::recovery::Crashes>>,
     pub backups: Rc<RefCell<super::recovery::Backups>>,
+    pub polls: Rc<RefCell<super::polls::Polls>>,
 }
 
 impl Views {
@@ -629,6 +630,11 @@ impl Views {
             }
         }
         if let Ok(mut p) = self.plugins.try_borrow_mut() {
+            if is(&p.tab) {
+                p.refresh();
+            }
+        }
+        if let Ok(mut p) = self.polls.try_borrow_mut() {
             if is(&p.tab) {
                 p.refresh();
             }
@@ -718,6 +724,7 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
     col.end();
     let donations = donations_tab(tabs, cfg, cmds);
     let crashes = super::recovery::crashes_tab(tabs);
+    let polls = super::polls::tab(tabs, cmds);
     let backups = super::recovery::backups_tab(tabs, cfg, cmds);
 
     Views {
@@ -734,6 +741,7 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
         chat,
         crashes,
         backups,
+        polls,
     }
 }
 

@@ -1540,6 +1540,11 @@ fn poll_args(p: &Value) -> Obj {
     a
 }
 
+/// The poll on the live now (its poll.* arguments), if any.
+pub fn current_poll() -> Obj {
+    POLL.with_borrow(Clone::clone)
+}
+
 /// A message pinned at the top of the live chat (YouTube's banner): until it's taken down.
 fn yt_pin(banner: &Value) -> Option<crate::engine::chatlog::Pin> {
     let r = banner.pointer("/contents/liveChatTextMessageRenderer")?;
@@ -1762,6 +1767,7 @@ pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value]) {
             let mut args = BROADCAST.with_borrow(Clone::clone);
             args.extend(poll_args(p));
             POLL.with_borrow_mut(|x| *x = args.clone());
+            crate::ui::polls_changed();
             if shown.is_some() {
                 yt(engine, T_YT_POLL_STARTED, "YouTubePollStarted", "PollStarted", &args);
             } else {
@@ -1773,6 +1779,7 @@ pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value]) {
             if args.is_empty() {
                 continue;
             }
+            crate::ui::polls_changed();
             args.insert("panelId".into(), close["targetPanelId"].clone());
             yt(engine, T_YT_POLL_CLOSED, "YouTubePollClosed", "PollClosed", &args);
         }
