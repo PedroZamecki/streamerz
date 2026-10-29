@@ -32,6 +32,7 @@ mod scenario;
 mod search;
 mod secrets;
 pub mod servers;
+mod slash;
 mod slobs;
 mod templates;
 pub mod tiktok;

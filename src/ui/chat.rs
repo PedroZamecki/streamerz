@@ -344,6 +344,8 @@ enum It {
     Break,
     /// A line across the chat with words in its middle: where history ends and live messages begin.
     Rule(String),
+    /// An `@name` that tags one of our accounts: on a chip, so it stands out.
+    Mention(String),
 }
 
 impl It {
@@ -366,11 +368,20 @@ impl It {
             It::Gap(w) => (*w, 0),
             It::Break => (0, 0),
             It::Rule(_) => (0, TEXT + 12),
+            It::Mention(t) => {
+                draw::set_font(Font::Helvetica, TEXT);
+                (draw::width(t) as i32 + 2 * MENTION_PAD, TEXT + 4)
+            }
         }
     }
 }
 
+/// The room left and right of a mention's words on its chip.
+const MENTION_PAD: i32 = 5;
+
 thread_local! {
+    /// The names (lowercase) of the accounts logged in, on any platform: what an `@name` is checked against.
+    static ME: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     /// What lines show: (the time, the badges, emotes moving). Chat's options; all panes follow.
     static SHOW: Cell<(bool, bool, bool)> = const { Cell::new((true, true, true)) };
 }
@@ -499,8 +510,23 @@ fn words(cmds: &Cmds, l: &Line, v: &mut Vec<It>) {
         }
         return;
     }
+    // A `/me` line reads in italics, in the sender's colour (as Twitch shows it).
+    let (font, fg) = if l.action {
+        (Font::HelveticaItalic, name_color(l))
+    } else {
+        (Font::Helvetica, fg)
+    };
     for w in l.text.split(' ') {
         v.push(It::Space);
+        if mentions_me(w) {
+            // The chip is the name; a comma or "!" after it stays outside.
+            let name = w.trim_end_matches(|c: char| !c.is_alphanumeric());
+            v.push(It::Mention(name.to_string()));
+            if name.len() < w.len() {
+                v.push(It::Text(w[name.len()..].to_string(), font, fg));
+            }
+            continue;
+        }
         let known = l.emotes.iter().find(|e| e.0 == w).map(|e| e.1.clone());
         if let Some((p, u)) = known
             .or_else(|| emotes::third(&l.platform, w))
@@ -512,10 +538,48 @@ fn words(cmds: &Cmds, l: &Line, v: &mut Vec<It>) {
         for (part, url) in emotes::split(w) {
             match url.and_then(|u| pic(&u).map(|p| (p, u))) {
                 Some((p, u)) => v.push(It::Pic(p, Some(emote_tip(&l.platform, part, &u)))),
-                None => v.push(It::Text(part.to_string(), Font::Helvetica, fg)),
+                None => v.push(It::Text(part.to_string(), font, fg)),
             }
         }
     }
+}
+
+/// Whether `word` is an `@name` of one of our accounts ("@name," and "@name!" too).
+fn mentions_me(word: &str) -> bool {
+    let Some(name) = word.strip_prefix('@') else {
+        return false;
+    };
+    let name = name.trim_end_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+    !name.is_empty() && ME.with_borrow(|me| me.contains(&name))
+}
+
+/// The names of the accounts logged in (the ones `@name` tags are checked against).
+fn my_names(c: &crate::Config) -> Vec<String> {
+    let mut v: Vec<String> = [
+        c.twitch
+            .broadcaster
+            .as_ref()
+            .map(|a| (a.login.clone(), a.display_name.clone())),
+        c.twitch.bot.as_ref().map(|a| (a.login.clone(), a.display_name.clone())),
+        c.youtube.broadcaster.as_ref().map(|a| (a.name.clone(), String::new())),
+        c.youtube.bot.as_ref().map(|a| (a.name.clone(), String::new())),
+        c.kick.broadcaster.as_ref().map(|a| (a.username.clone(), String::new())),
+        c.kick.bot.as_ref().map(|a| (a.username.clone(), String::new())),
+        c.tiktok
+            .broadcaster
+            .as_ref()
+            .map(|a| (a.username.clone(), String::new())),
+        c.tiktok.bot.as_ref().map(|a| (a.username.clone(), String::new())),
+    ]
+    .into_iter()
+    .flatten()
+    .flat_map(|(a, b)| [a, b])
+    .map(|n| n.trim().trim_start_matches('@').to_lowercase())
+    .filter(|n| !n.is_empty())
+    .collect();
+    v.sort();
+    v.dedup();
+    v
 }
 
 /// A line's accent ("#RRGGBB") as a colour.
@@ -859,6 +923,15 @@ impl Pane {
                             draw::draw_line(left, y + rh / 2, mid - tw / 2 - 10, y + rh / 2);
                             draw::draw_line(mid + tw / 2 + 10, y + rh / 2, right, y + rh / 2);
                             draw::draw_text2(t, mid - tw / 2, y, tw, rh, Align::Center);
+                        }
+                        It::Mention(t) => {
+                            draw::set_font(Font::Helvetica, TEXT);
+                            let w = draw::width(t) as i32 + 2 * MENTION_PAD;
+                            // A tint of the text's own colour over the background: right in light and dark.
+                            draw::set_draw_color(Color::color_average(Color::Foreground, Color::Background2, 0.2));
+                            draw::draw_rounded_rectf(x, y + (rh - TEXT - 4) / 2, w, TEXT + 4, 4);
+                            draw::set_draw_color(Color::Foreground);
+                            draw::draw_text2(t, x + MENTION_PAD, y, 0, rh, Align::Left);
                         }
                         It::Space | It::Gap(_) | It::Break => {}
                     }
@@ -1379,6 +1452,8 @@ struct ChatColumn {
     /// The chat box and what it answers (hidden in the all-platforms view).
     bar: Flex,
     set_reply: SetReply,
+    /// Twitch's chat commands (only in Twitch's chat).
+    slash_btn: Button,
 }
 
 impl ChatColumn {
@@ -1416,6 +1491,12 @@ impl ChatColumn {
         bar.fixed(&acct_btn, 32);
 
         let mut input = Input::default();
+
+        let mut slash_btn = Button::default();
+        slash_btn.set_frame(FrameType::FlatBox);
+        slash_btn.set_image(icons::icon("square-slash", super::muted(), 18));
+        slash_btn.set_tooltip(tr("chat.commands_tooltip"));
+        bar.fixed(&slash_btn, 32);
 
         let mut emote_btn = Button::default();
         emote_btn.set_frame(FrameType::FlatBox);
@@ -1485,6 +1566,7 @@ impl ChatColumn {
             target_plat: target_plat.clone(),
             bar: bar.clone(),
             set_reply: set_reply.clone(),
+            slash_btn: slash_btn.clone(),
         };
 
         let do_send = {
@@ -1516,7 +1598,16 @@ impl ChatColumn {
         let reply_on = |r: &Rc<RefCell<Option<Line>>>| r.borrow().is_some();
         me.input.clone().handle({
             let s = do_send;
+            let (cfg, cmds, target_plat) = (cfg.clone(), cmds.clone(), target_plat.clone());
             move |i, ev| {
+                // TikTok's chat is written through a browser tab, which takes seconds to start: begin
+                // when the box is clicked, not when the message is sent.
+                if ev == Event::Focus && PLATFORMS[target_plat.get().min(3)] == "tiktok" {
+                    let bot = !cfg.borrow().window.chat_as_broadcaster.iter().any(|s| s == "tiktok");
+                    if crate::engine::can_send(&cfg.borrow(), "tiktok") {
+                        tell(&cmds, move |e| e.tiktok_start().warm(bot, true));
+                    }
+                }
                 if click(i, ev) {
                     return true;
                 }
@@ -1541,6 +1632,26 @@ impl ChatColumn {
             move |_| {
                 account_selector_popup(&cfg, &cmds, &me_c, go_accounts.clone());
                 me_c.refresh_sender(&cfg, &cmds);
+            }
+        });
+
+        slash_btn.set_callback({
+            let (cmds, mut input) = (cmds.clone(), me.input.clone());
+            move |_| {
+                let items: Vec<(&str, &str)> = crate::slash::PRESETS.iter().map(|(g, c)| (tr(g), *c)).collect();
+                let Some(text) = super::pick_grouped(&items).map(|i| crate::slash::PRESETS[i].1) else {
+                    return;
+                };
+                if text.ends_with(' ') {
+                    // Needs a name or words: typed in the box.
+                    input.set_value(text);
+                    let _ = input.take_focus();
+                    input.set_position(text.len() as i32).ok();
+                } else {
+                    tell(&cmds, move |e| {
+                        let _ = e.send_chat_list(&["twitch"], text, false, true, None);
+                    });
+                }
             }
         });
 
@@ -1595,6 +1706,16 @@ impl ChatColumn {
                 }
             }
         }
+        // Twitch's commands are for Twitch's chat.
+        let mut slash = self.slash_btn.clone();
+        if (plat_name == "Twitch") != slash.visible() {
+            if plat_name == "Twitch" {
+                slash.show();
+            } else {
+                slash.hide();
+            }
+            self.bar.clone().layout();
+        }
         let mut inp = self.input.clone();
         let placeholder_tip = match &sender_name {
             Some(name) => trf(
@@ -1633,6 +1754,14 @@ impl Chat {
     /// Sync new lines (or full history resync when pre-join history / badges updated) and refresh avatars.
     pub fn refresh(&mut self) {
         emotes::load_for_config(&self.cmds, &self.cfg);
+        let me = my_names(&self.cfg.borrow());
+        if ME.with_borrow(|m| *m != me) {
+            ME.set(me);
+            self.main.pane.remeasure();
+            for p in &self.side {
+                p.pane.remeasure();
+            }
+        }
         let plats = shown_platforms(&self.cmds);
         if *self.plats.borrow() != plats {
             *self.plats.borrow_mut() = plats;
@@ -2833,10 +2962,30 @@ fn shown_platforms(cmds: &Cmds) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tag_of_one_of_our_names_is_a_mention() {
+        let mut c = Config::default();
+        c.twitch.broadcaster = Some(crate::twitch::TwitchAccount {
+            login: "pedrozamecki".into(),
+            display_name: "PedroZamecki".into(),
+            ..Default::default()
+        });
+        ME.set(my_names(&c));
+        assert!(mentions_me("@PedroZamecki"));
+        assert!(mentions_me("@pedrozamecki,"));
+        assert!(mentions_me("@PedroZamecki!"));
+        assert!(!mentions_me("PedroZamecki"));
+        assert!(!mentions_me("@someoneelse"));
+        assert!(!mentions_me("@"));
+        ME.set(Vec::new());
+    }
+
     #[test]
     fn a_pins_time_left_reads_as_a_clock() {
-        assert_eq!(super::left(125_000), "2:05");
-        assert_eq!(super::left(1), "0:01");
-        assert_eq!(super::left(3_729_000), "1:02:09");
+        assert_eq!(left(125_000), "2:05");
+        assert_eq!(left(1), "0:01");
+        assert_eq!(left(3_729_000), "1:02:09");
     }
 }

@@ -110,6 +110,16 @@ pub struct Line {
     /// What's special about a message, said above it ("Highlighted", "First message").
     #[serde(skip_serializing_if = "String::is_empty")]
     pub tag: String,
+    /// A `/me` message: shown in italics, in the sender's colour.
+    #[serde(skip_serializing_if = "is_false")]
+    pub action: bool,
+}
+
+/// The words of a `/me` message sent as an action (`/me waves` or IRC's `\x01ACTION waves\x01`).
+pub fn action_of(text: &str) -> Option<&str> {
+    text.strip_prefix("\x01ACTION ")
+        .and_then(|s| s.strip_suffix('\x01'))
+        .or_else(|| text.strip_prefix("/me ").filter(|s| !s.is_empty()))
 }
 
 /// An event the chat shows: its platform, icon, colour, words (an i18n key, with the trigger's
@@ -578,7 +588,12 @@ impl Engine {
             for e in &c.emotes {
                 log.remember_emote(i, e.0.clone(), e.1.clone());
             }
-            let (text, emotes) = normalize_line_emotes(&c.platform, c.text.clone(), &c.emotes);
+            let was_action = c.args.get("isAction").and_then(Value::as_bool).unwrap_or(false);
+            let (plain, action) = match action_of(&c.text) {
+                Some(a) => (a.to_string(), true),
+                None => (c.text.clone(), was_action),
+            };
+            let (text, emotes) = normalize_line_emotes(&c.platform, plain, &c.emotes);
             let time = crate::fmt::shown_time(&crate::fmt::now());
             let key = (c.platform.clone(), c.user_id.clone());
             if !log.users.contains_key(&key) && log.users.len() == KEEP {
@@ -609,6 +624,7 @@ impl Engine {
                 user_id: c.user_id.clone(),
                 reply,
                 text,
+                action,
                 emotes,
                 broadcaster: c.broadcaster,
                 moderator: c.moderator,
@@ -1385,6 +1401,17 @@ impl Engine {
                 continue;
             }
             let e = self.clone();
+            // Twitch's chat commands (/commercial, /timeout...) are calls, not text.
+            if p == "twitch" && crate::slash::is_command(&text) {
+                tokio::task::spawn_local(async move {
+                    match crate::slash::run(&e, &text, bot, fallback).await {
+                        Ok(done) if !done.is_empty() => e.chat_note(p, done),
+                        Ok(_) => {}
+                        Err(err) => e.chat_note(p, format!("{text}: {}", plain_error(&err))),
+                    }
+                });
+                continue;
+            }
             tokio::task::spawn_local(async move {
                 let r = match p {
                     "twitch" => match e.twitch() {
@@ -1421,6 +1448,15 @@ pub fn can_send(c: &crate::Config, platform: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_me_message_is_an_action() {
+        assert_eq!(action_of("/me waves"), Some("waves"));
+        assert_eq!(action_of("\x01ACTION waves\x01"), Some("waves"));
+        assert_eq!(action_of("hello /me"), None);
+        assert_eq!(action_of("/me "), None);
+        assert_eq!(action_of("/mention"), None);
+    }
 
     #[test]
     fn a_chat_without_a_login_is_read_only() {
