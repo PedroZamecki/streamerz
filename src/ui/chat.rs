@@ -601,13 +601,13 @@ const ACT: i32 = 28;
 
 /// The actions `l` offers (with their icon and tooltip): moderation only where the platform has it,
 /// and not on the broadcaster.
-fn acts(l: &Line) -> Vec<(Act, &'static str, &'static str)> {
+fn acts(l: &Line, reply: bool) -> Vec<(Act, &'static str, &'static str)> {
     if l.note || l.deleted {
         return Vec::new();
     }
     let mut v = vec![(Act::Copy, "copy", tr("chat.act_copy"))];
-    // An event isn't a message to answer.
-    if l.event.is_empty() {
+    // An event isn't a message to answer, and a pane with no box under it has nowhere to answer.
+    if reply && l.event.is_empty() {
         v.insert(0, (Act::Reply, "corner-up-left", tr("chat.act_reply")));
     }
     let p = l.platform.as_str();
@@ -831,7 +831,7 @@ impl Pane {
             }
         }
         if let Some((l, bx, by)) = st.hover.and_then(|i| self.bar_at(f, &st, i)) {
-            let a = acts(l);
+            let a = acts(l, self.on_reply.borrow().is_some());
             let (fg, bg) = (Color::Foreground, Color::Background);
             let n = a.len() as i32;
             draw::set_draw_color(bg);
@@ -974,7 +974,7 @@ impl Pane {
     /// Line `i` and where its action bar goes: at the right of its first row, kept inside the view.
     fn bar_at<'a>(&self, f: &Frame, st: &'a State, i: usize) -> Option<(&'a Line, i32, i32)> {
         let l = st.lines.get(i)?;
-        let n = acts(l).len() as i32;
+        let n = acts(l, self.on_reply.borrow().is_some()).len() as i32;
         if n == 0 {
             return None;
         }
@@ -989,7 +989,7 @@ impl Pane {
         let (l, bx, by) = self.bar_at(f, st, st.hover?)?;
         let (ex, ey) = (app::event_x(), app::event_y());
         let k = (ex - bx).div_euclid(ACT);
-        ((by..by + ACT).contains(&ey) && (0..acts(l).len() as i32).contains(&k)).then_some(k as usize)
+        ((by..by + ACT).contains(&ey) && (0..acts(l, self.on_reply.borrow().is_some()).len() as i32).contains(&k)).then_some(k as usize)
     }
 
     /// The action under the pointer, on the hovered line: the line and its `acts` entry.
@@ -997,7 +997,7 @@ impl Pane {
         let st = self.st.borrow();
         let k = self.act_index(f, &st)?;
         let l = st.lines.get(st.hover?)?;
-        Some((l.clone(), acts(l)[k]))
+        Some((l.clone(), acts(l, self.on_reply.borrow().is_some())[k]))
     }
 
     fn run(&self, l: &Line, a: Act) {
@@ -1159,7 +1159,7 @@ impl Pane {
                 let Some(l) = l.filter(|l| !l.note) else { return true };
                 use fltk::menu::{MenuButton, MenuFlag};
                 let mut m = super::menu_at_pointer();
-                for (act, icon, name) in acts(&l) {
+                for (act, icon, name) in acts(&l, self.on_reply.borrow().is_some()) {
                     let (p, l) = (self.clone(), l.clone());
                     let i = m.add(name, fltk::enums::Shortcut::None, MenuFlag::Normal, move |_| {
                         p.run(&l, act)

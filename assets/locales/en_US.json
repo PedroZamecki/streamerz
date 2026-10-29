@@ -177,7 +177,6 @@
   "card.nothing": "nothing (not connected?)",
   "card.recent": "What they said",
   "card.recent_short": "Messages",
-  "card.send_placeholder": "Send in their chat...",
   "card.subscribed": "Subscribed",
   "chat.acct_keyring_locked": "Keyring locked. Unlock saved logins?",
   "chat.acct_note": "The emote picker shows what the chosen account can use.",

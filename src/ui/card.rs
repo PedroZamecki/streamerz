@@ -1,10 +1,10 @@
 //! A chatter's card, a popover: their banner, picture, name and account age on top, as the platforms'
 //! own cards show them; the badges they wear (named when pointed at); what their platform says
 //! (following, subscription) and what Streamerz has seen; and their messages, live, in the chat's own
-//! view, so they can be answered, deleted, timed out or banned from here. The technical values (as
+//! view (no box to write in), so they can be deleted, timed out or banned from here. The technical values (as
 //! the actions get them) are one button away.
 
-use super::chat::{draw_badge, Pane, SetReply};
+use super::chat::{draw_badge, Pane};
 use super::popover::Popover;
 use super::rows::Rows;
 use super::{icons, img, query, tell, Ellipsis};
@@ -13,11 +13,10 @@ use crate::engine::UiCmd;
 use crate::i18n::{tr, trf};
 use crate::model::Obj;
 use fltk::button::Button;
-use fltk::enums::{Align, Color, Event, Font, FrameType, Key};
+use fltk::enums::{Align, Color, Event, Font, FrameType};
 use fltk::frame::Frame;
 use fltk::group::{Flex, Group};
 use fltk::image::RgbImage;
-use fltk::input::Input;
 use fltk::prelude::*;
 use fltk::{app, draw};
 use std::cell::{Cell, RefCell};
@@ -355,29 +354,13 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
     title_row.end();
     body.fixed(&title_row, 24);
 
-    // Their messages, in the chat's view: hover one to answer, delete, time out or ban.
+    // Their messages, in the chat's view: hover one to delete, time out or ban.
     let (pane_group, pane) = Pane::new(cmds);
     pane.no_cards();
     let mut details = Rows::new("");
     details.set_column_widths(&[170]);
     details.hide();
 
-    // Answering here: what's being answered, then the box.
-    let mut replying = Frame::default().with_align(Align::Left | Align::Inside).ellipsis();
-    replying.set_label_size(12);
-    replying.set_label_color(super::muted());
-    replying.hide();
-    body.fixed(&replying, 0);
-    let mut send_row = Flex::default().row();
-    send_row.set_pad(6);
-    let mut input = Input::default();
-    super::placeholder(&mut input, tr("card.send_placeholder"));
-    let mut send = Button::default();
-    send.set_image(icons::icon("send-horizontal", super::button_ink(), 16));
-    send.set_tooltip(tr("chat.send_btn_tooltip"));
-    send_row.fixed(&send, 32);
-    send_row.end();
-    body.fixed(&send_row, 28);
     body.end();
     col.end();
     pop.finish();
@@ -441,90 +424,6 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
     close.set_callback({
         let done = pop.done.clone();
         move |_| done.set(true)
-    });
-
-    // Reply (from a message's actions) and send, on their platform, as the chat sends there.
-    let reply: Rc<RefCell<Option<Line>>> = Rc::default();
-    let set_reply: SetReply = {
-        let (reply, replying, body, input, win) = (
-            reply.clone(),
-            replying.clone(),
-            body.clone(),
-            input.clone(),
-            win.clone(),
-        );
-        Rc::new(move |l: Option<&Line>| {
-            let (mut replying, mut body, mut input, mut win) =
-                (replying.clone(), body.clone(), input.clone(), win.clone());
-            *reply.borrow_mut() = l.cloned();
-            match l {
-                Some(l) => {
-                    let said = l.text.replace('@', "@@");
-                    replying.set_label(&trf(
-                        "chat.replying_to",
-                        &[("user", &l.user.replace('@', "@@")), ("said", &said)],
-                    ));
-                    replying.show();
-                    body.fixed(&replying, 18);
-                    let _ = input.take_focus();
-                }
-                None => {
-                    replying.hide();
-                    body.fixed(&replying, 0);
-                }
-            }
-            body.layout();
-            win.redraw();
-        })
-    };
-    pane.on_reply.replace(Some({
-        let set_reply = set_reply.clone();
-        Rc::new(move |l: &Line| set_reply(Some(l)))
-    }));
-    let do_send = {
-        let (cmds, input, reply, set_reply, platform) = (
-            cmds.clone(),
-            input.clone(),
-            reply.clone(),
-            set_reply.clone(),
-            who.platform.clone(),
-        );
-        move || {
-            let text = input.value().trim().to_string();
-            if text.is_empty() {
-                return;
-            }
-            let to = reply.borrow_mut().take();
-            let platform = platform.clone();
-            tell(&cmds, move |e| {
-                let Some(p) = crate::engine::chatlog::PLATFORMS.into_iter().find(|x| *x == platform) else {
-                    return;
-                };
-                let bot = !e.sends_as_broadcaster(p);
-                let _ = e.send_chat_list(&[p], &text, bot, true, to.as_ref());
-            });
-            set_reply(None);
-            input.clone().set_value("");
-        }
-    };
-    send.set_callback({
-        let s = do_send.clone();
-        move |_| s()
-    });
-    input.handle({
-        let (s, reply, set_reply) = (do_send, reply.clone(), set_reply.clone());
-        move |_, ev| {
-            let enter = app::event_key() == Key::Enter || app::event_key().bits() == 0xff8d;
-            if ev == Event::KeyDown && enter {
-                s();
-                return true;
-            }
-            if ev == Event::KeyDown && app::event_key() == Key::Escape && reply.borrow().is_some() {
-                set_reply(None);
-                return true;
-            }
-            false
-        }
     });
 
     // The platform's own answer arrives later.
