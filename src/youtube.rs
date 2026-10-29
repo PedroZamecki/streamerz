@@ -53,6 +53,42 @@ pub const T_YT_USER_TIMEDOUT: u32 = 4031;
 pub const YOUTUBE_API_BASE: &str = "https://www.googleapis.com/youtube/v3";
 pub const YOUTUBE_INNERTUBE_URL: &str = "https://www.youtube.com/youtubei/v1/live_chat/get_live_chat";
 
+/// The text between the first `marker` in `page` and the next quote, with JSON's `\u0026` as `&`.
+fn quoted_after(page: &[u8], marker: &[u8]) -> Option<String> {
+    let at = page.windows(marker.len()).position(|w| w == marker)? + marker.len();
+    let end = page[at..].iter().position(|b| *b == b'"')?;
+    let text = std::str::from_utf8(&page[at..at + end]).ok()?;
+    Some(text.replace("\\u0026", "&")).filter(|t| t.starts_with("http"))
+}
+
+/// A channel's banner and picture, read from its public page (the API has no banner for other people's
+/// channels): what youtube.com's own channel card shows. None when it has none, or the page doesn't answer.
+pub async fn public_channel(channel_id: &str) -> (Option<String>, Option<String>) {
+    if !channel_id.starts_with("UC") || !channel_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        return (None, None);
+    }
+    // The cookie keeps the consent page out of the way.
+    let headers = [
+        ("Accept-Language".to_string(), "en".to_string()),
+        ("Cookie".to_string(), "SOCS=CAI; CONSENT=YES+1".to_string()),
+        (
+            "User-Agent".to_string(),
+            "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0".to_string(),
+        ),
+    ];
+    let url = format!("https://www.youtube.com/channel/{channel_id}");
+    let Ok(r) = crate::http::request("GET", &url, &headers, b"").await else {
+        return (None, None);
+    };
+    if r.status != 200 {
+        return (None, None);
+    }
+    (
+        quoted_after(&r.body, br#""imageBannerViewModel":{"image":{"sources":[{"url":""#),
+        quoted_after(&r.body, br#""avatar":{"thumbnails":[{"url":""#),
+    )
+}
+
 /// Strip URL prefixes and extract YouTube channel ID if present.
 pub fn clean_youtube_channel(input: &str) -> String {
     let s = input.trim();
@@ -1956,6 +1992,20 @@ async fn while_live(engine: Rc<Engine>, cfg: Arc<watch::Sender<Config>>, video: 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_banner_in_a_channel_page() {
+        let page = br#"x"banner":{"imageBannerViewModel":{"image":{"sources":[{"url":"https://yt3.example/b=w1060\u0026k","width":1}]}}},"avatar":{"thumbnails":[{"url":"https://yt3.example/a=s900","w":1}]}"#;
+        assert_eq!(
+            super::quoted_after(page, br#""imageBannerViewModel":{"image":{"sources":[{"url":""#).as_deref(),
+            Some("https://yt3.example/b=w1060&k")
+        );
+        assert_eq!(
+            super::quoted_after(page, br#""avatar":{"thumbnails":[{"url":""#).as_deref(),
+            Some("https://yt3.example/a=s900")
+        );
+        assert_eq!(super::quoted_after(page, b"nothing"), None);
+    }
+
     #[test]
     fn test_clean_youtube_urls() {
         assert_eq!(

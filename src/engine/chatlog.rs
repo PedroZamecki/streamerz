@@ -818,8 +818,8 @@ impl Engine {
             .cloned()
     }
 
-    /// What the platform says about a chatter (for the chat's user card): label and value. Twitch and
-    /// Kick are asked; YouTube and TikTok tell only what their chat messages carry.
+    /// What the platform says about a chatter (for the chat's user card): label and value. Twitch,
+    /// Kick and YouTube are asked; TikTok tells only what its chat messages carry.
     pub async fn chatter_lookup(
         self: &Rc<Self>,
         platform: &str,
@@ -933,7 +933,7 @@ impl Engine {
                         .find(|l| l.platform == "kick" && l.user_id == user_id)
                         .map(|l| kick_slug(&l.user))
                 };
-                if let Some(name) = name.filter(|n| !n.is_empty() && !channel.is_empty()) {
+                if let Some(name) = name.clone().filter(|n| !n.is_empty() && !channel.is_empty()) {
                     let url = format!("https://kick.com/api/v2/channels/{channel}/users/{name}");
                     let h = [("Accept".to_string(), "application/json".to_string())];
                     let card = crate::http::request("GET", &url, &h, b"")
@@ -960,6 +960,24 @@ impl Engine {
                         add("Banned", &"yes".into());
                     }
                 }
+                // Their own channel's page, which has the banner (the API only has it for the logged-in channel).
+                if let Some(name) = name.filter(|n| !n.is_empty()) {
+                    let url = format!("https://kick.com/api/v2/channels/{name}");
+                    let h = [("Accept".to_string(), "application/json".to_string())];
+                    let ch = crate::http::request("GET", &url, &h, b"")
+                        .await
+                        .ok()
+                        .filter(|r| r.status == 200)
+                        .and_then(|r| serde_json::from_slice::<Value>(&r.body).ok())
+                        .unwrap_or_default();
+                    add("Picture", &ch["user"]["profile_pic"]);
+                    add("Banner", &ch["banner_image"]["url"]);
+                    add("Banner", &ch["offline_banner_image"]["src"]);
+                    add("About", &ch["user"]["bio"]);
+                    if let Some(n) = ch["followers_count"].as_u64() {
+                        add("Followers", &n.to_string().into());
+                    }
+                }
                 let Some(k) = self.kick() else { return };
                 let (users, channels) = (
                     format!("/users?id={user_id}"),
@@ -976,6 +994,12 @@ impl Engine {
                 if c["stream"]["is_live"] == true {
                     add("Live now", &c["stream"]["viewer_count"]);
                 }
+            }
+            "youtube" => {
+                // What youtube.com's channel card shows: no login, no quota.
+                let (banner, picture) = crate::youtube::public_channel(user_id).await;
+                add("Picture", &picture.into());
+                add("Banner", &banner.into());
             }
             _ => {}
         }

@@ -171,6 +171,7 @@
   "card.created_on": "Account created on {date}",
   "card.details": "Details",
   "card.first_seen": "First seen",
+  "card.followers": "Followers",
   "card.following": "Following since",
   "card.last_seen": "Last seen",
   "card.messages": "Messages sent",

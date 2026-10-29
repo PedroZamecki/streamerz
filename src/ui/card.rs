@@ -451,7 +451,7 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
         .unwrap_or_else(|| pic_url(&pic_key));
     // What the platform said so far, and whether that is all of it.
     let answer: Arc<Mutex<(Facts, bool)>> = Arc::default();
-    let asks = matches!(who.platform.as_str(), "twitch" | "kick");
+    let asks = matches!(who.platform.as_str(), "twitch" | "kick" | "youtube");
     if asks {
         let (p, id, answer) = (who.platform.clone(), who.user_id.clone(), answer.clone());
         tell(cmds, move |e| {
@@ -489,6 +489,7 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
                 .map(|f| f.1.as_str())
                 .unwrap_or("")
         };
+        row(tr("card.followers"), known("Followers"));
         row(tr("card.following"), &when(known("Following since")));
         row(tr("card.subscribed"), known("Subscribed"));
         row(
