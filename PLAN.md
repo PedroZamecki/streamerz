@@ -379,6 +379,19 @@ platform handles through channels, never through shared locks held across awaits
 - [x] Scenarios (`scenario.rs`, `tests/scenarios`, [docs/SCENARIOS.md](docs/SCENARIOS.md)): actions tested
   on the engine alone, no window or login, from `cargo test`, `Streamerz --scenario` and the MCP
   `run_scenario` tool.
+- [x] Connections that survive a bad network: YouTube retries a failed read on the same page (growing
+  waits, a session is given up only after eight in a row) instead of calling the stream ended and joining
+  again; Kick pings after a silent minute and reconnects when nothing answers; Twitch EventSub notices a
+  socket that stopped sending keepalives; the anonymous IRC reader pings too. Reconnects wait longer each
+  time, and an outage logs one line, not one per try.
+- [x] YouTube finds the live by itself from a handle (`@name`) as well as a channel id (it only knew ids),
+  looks every 30 s, and reads again right after a message is sent from here. TikTok's sending tab opens
+  when its chat box gets the focus. TikTok's "stream started" line no longer repeats.
+- [x] Twitch chat commands (`slash.rs`, [docs/CHAT.md](docs/CHAT.md)): `/commercial`, `/timeout`, `/slow`,
+  `/followers`, `/raid`, `/announce`... typed in the chat box are the Helix calls they stand for, with a
+  menu of presets next to the emote button (Twitch's chat only).
+- [x] Chat: `/me` lines in italics in the sender's colour, and an `@name` of one of our accounts on a chip
+  (light and dark).
 
 ## Open points (decide when the phase starts, ask first)
 

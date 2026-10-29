@@ -220,10 +220,7 @@ fn check(e: &Rc<Engine>, want: &Value, sent: &[Value], log: &[String], failures:
     for w in want["log"].as_array().into_iter().flatten().filter_map(Value::as_str) {
         match log[from..].iter().position(|l| l.contains(w)) {
             Some(i) => from += i + 1,
-            None => failures.push(format!(
-                "the log never says {w:?} (in order); it said: {:?}",
-                tail(log)
-            )),
+            None => failures.push(format!("the log never says {w:?} (in order); it said: {:?}", tail(log))),
         }
     }
     for w in want["notLog"]

@@ -31,6 +31,8 @@ None set.
 - Pin message and Pin to stream end are kept with the action, but nothing pins the message yet.
 - The fallback applies when the bot account isn't set up or its login has expired. Without it, the message isn't sent and an error is logged.
 - In dev mode the message is recorded for testing instead of being sent.
+- This sub-action sends the text as it is. The chat box on the Chat page also understands Twitch's chat
+  commands (`/commercial`, `/timeout`...), see the Chat guide.
 
 ## Send Announcement to Channel
 

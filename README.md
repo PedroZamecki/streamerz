@@ -165,7 +165,7 @@ word in your language, a fix, a feature.
   [DEVELOPING.md](DEVELOPING.md) has how it works inside; [PLAN.md](PLAN.md) is what comes next.
 - **Found a security problem?** Please don't post it: [SECURITY.md](SECURITY.md).
 
-More guides: [Built-in chat commands](docs/COMMANDS.md), [Integrations](docs/INTEGRATIONS.md) (Streamlabs
+More guides: [Chat](docs/CHAT.md), [Built-in chat commands](docs/COMMANDS.md), [Integrations](docs/INTEGRATIONS.md) (Streamlabs
 Desktop, donations, webhooks, hotkeys, MIDI, Stream Deck, files), [Plugins](PLUGINS.md), [what each chat
 effect does](CHAT.md).
 
