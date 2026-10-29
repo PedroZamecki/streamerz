@@ -17,7 +17,20 @@ pub fn open_browser(url: &str) {
     #[cfg(target_os = "macos")]
     let _ = std::process::Command::new("open").arg(url).spawn();
     #[cfg(not(any(windows, target_os = "macos")))]
-    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    {
+        use std::os::fd::AsFd;
+        // What it prints goes where stderr goes (the log, crash.rs). A GDK_BACKEND forced on Streamerz's
+        // session isn't the opened app's: GTK apps warn about it.
+        let out = std::io::stderr().as_fd().try_clone_to_owned();
+        let mut cmd = std::process::Command::new("xdg-open");
+        cmd.arg(url)
+            .env_remove("GDK_BACKEND")
+            .stdin(std::process::Stdio::null());
+        if let Ok(out) = out {
+            cmd.stdout(out);
+        }
+        let _ = cmd.spawn();
+    }
 }
 
 /// A token answer: access token, refresh token (may be empty) and when it expires (Unix seconds).
