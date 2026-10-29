@@ -116,6 +116,21 @@ def main():
             time.sleep(0.4)
             check("sorting the community")
         ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/community_sorted.png"})
+        # The platform funnel (left of the titles) hides Twitch, the first in its menu, and shows it again.
+        shown = lambda: json.dumps(ws.ask({"request": "StreamerzUi", "id": "c", "do": "community"}))
+        before = shown()
+        for _ in range(2):
+            xdo("mousemove", "205", "68")
+            xdo("click", "1")
+            time.sleep(0.5)
+            xdo("mousemove", "240", "80")
+            xdo("click", "1")
+            time.sleep(0.5)
+            check("filtering the community by platform")
+            if _ == 0 and shown() == before:
+                failures.append(f"the platform filter hid nothing ({before})")
+        if shown() != before:
+            failures.append(f"the platform filter didn't show Twitch again ({shown()})")
         # The channel search opens from Accounts, finds something, and closes with Escape.
         ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Accounts"})
         xdo("mousemove", "415", "102")
