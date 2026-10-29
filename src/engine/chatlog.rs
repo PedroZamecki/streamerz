@@ -7,6 +7,7 @@ use crate::commands::Chat;
 use crate::model::Obj;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
@@ -277,6 +278,12 @@ fn now_ms() -> u64 {
 
 /// Label and value rows about a chatter.
 type Facts = Vec<(String, String)>;
+
+/// One thing a platform says about a chatter: what, and its value.
+pub type Fact = (String, String);
+
+/// How long a user card's lookup may take before it shows what it has.
+const ASK_FOR: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// How long a user card's lookup is reused.
 const CARD_FOR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
@@ -794,15 +801,25 @@ impl Engine {
 
     /// What the platform says about a chatter (for the chat's user card): label and value. Twitch and
     /// Kick are asked; YouTube and TikTok tell only what their chat messages carry.
-    pub async fn chatter_lookup(self: &Rc<Self>, platform: &str, user_id: &str) -> Vec<(String, String)> {
+    pub async fn chatter_lookup(
+        self: &Rc<Self>,
+        platform: &str,
+        user_id: &str,
+        progress: &dyn Fn(&[Fact]),
+    ) -> Vec<(String, String)> {
         let key = (platform.to_string(), user_id.to_string());
         if let Some((at, found)) = self.st.borrow().chat_log.cards.get(&key) {
             if at.elapsed() < CARD_FOR {
                 return found.clone();
             }
         }
-        let found = self.chatter_ask(platform, user_id).await;
-        if !found.is_empty() {
+        // Whatever it got is shown, even if a service never answers.
+        let out = RefCell::new(Vec::new());
+        let done = tokio::time::timeout(ASK_FOR, self.chatter_ask(platform, user_id, &out, progress))
+            .await
+            .is_ok();
+        let found = out.into_inner();
+        if done && !found.is_empty() {
             let cards = &mut self.st.borrow_mut().chat_log.cards;
             if cards.len() >= 200 {
                 cards.clear();
@@ -812,17 +829,24 @@ impl Engine {
         found
     }
 
-    async fn chatter_ask(self: &Rc<Self>, platform: &str, user_id: &str) -> Vec<(String, String)> {
-        let mut out = Vec::new();
-        let mut add = |k: &str, v: &Value| {
+    async fn chatter_ask(
+        self: &Rc<Self>,
+        platform: &str,
+        user_id: &str,
+        out: &RefCell<Vec<Fact>>,
+        progress: &dyn Fn(&[Fact]),
+    ) {
+        let add = |k: &str, v: &Value| {
             let v = match v {
                 Value::String(s) => s.clone(),
                 Value::Null => return,
                 v => v.to_string(),
             };
             // The first answer for a fact stands (kick.com's, then the API's).
+            let mut out = out.borrow_mut();
             if !v.is_empty() && !out.iter().any(|f: &(String, String)| f.0 == k) {
                 out.push((k.to_string(), v));
+                progress(&out);
             }
         };
         match platform {
@@ -833,7 +857,7 @@ impl Engine {
                     add("Account created", &u["createdAt"]);
                 }
                 let Some(tw) = self.twitch() else {
-                    return out;
+                    return;
                 };
                 let id = user_id;
                 let get = |path: &'static str, q: Vec<(&'static str, String)>| {
@@ -917,7 +941,7 @@ impl Engine {
                         add("Banned", &"yes".into());
                     }
                 }
-                let Some(k) = self.kick() else { return out };
+                let Some(k) = self.kick() else { return };
                 let (users, channels) = (
                     format!("/users?id={user_id}"),
                     format!("/channels?broadcaster_user_id={user_id}"),
@@ -936,7 +960,6 @@ impl Engine {
             }
             _ => {}
         }
-        out
     }
 
     /// The people who chatted on `platform` this session (newest first): name and id.
