@@ -622,30 +622,43 @@ enum Act {
 /// An action's square in the bar.
 const ACT: i32 = 28;
 
-/// The actions `l` offers (with their icon and tooltip): moderation only where the platform has it,
-/// and not on the broadcaster.
+/// The actions `l` offers (with their icon and tooltip): only what our role in that chat allows
+/// (roles.rs): nothing on the broadcaster, nothing but copy without a login.
 fn acts(l: &Line, reply: bool) -> Vec<(Act, &'static str, &'static str)> {
     if l.note || l.deleted {
         return Vec::new();
     }
+    let p = l.platform.as_str();
+    let (me, my_id) = crate::roles::get(p);
+    let may = crate::roles::allowed(
+        p,
+        me,
+        &my_id,
+        crate::roles::Target {
+            user_id: &l.user_id,
+            broadcaster: l.broadcaster,
+            moderator: l.moderator,
+        },
+    );
     let mut v = vec![(Act::Copy, "copy", tr("chat.act_copy"))];
     // An event isn't a message to answer, and a pane with no box under it has nowhere to answer.
-    if reply && l.event.is_empty() {
+    if reply && may.reply && l.event.is_empty() {
         v.insert(0, (Act::Reply, "corner-up-left", tr("chat.act_reply")));
     }
-    let p = l.platform.as_str();
-    if p == "twitch" && !l.msg_id.is_empty() {
+    if may.pin && !l.msg_id.is_empty() {
         v.push(if pinned(l) {
             (Act::Mod(Moderate::Unpin), "pin-off", tr("chat.act_unpin"))
         } else {
             (Act::Mod(Moderate::Pin(None)), "pin", tr("chat.act_pin"))
         });
     }
-    if matches!(p, "twitch" | "kick") && !l.msg_id.is_empty() {
+    if may.delete && !l.msg_id.is_empty() {
         v.push((Act::Mod(Moderate::Delete), "trash-2", tr("chat.act_delete_message")));
     }
-    if matches!(p, "twitch" | "kick" | "youtube") && !l.broadcaster && !l.user_id.is_empty() {
+    if may.timeout {
         v.push((Act::Mod(Moderate::Timeout(0)), "clock", tr("chat.act_timeout")));
+    }
+    if may.ban {
         v.push((Act::Mod(Moderate::Ban), "ban", tr("chat.act_ban")));
     }
     v
@@ -1572,6 +1585,16 @@ impl ChatColumn {
             None => trf("chat.nobody_logged_in_tip", &[("platform", plat_name)]),
         };
         btn.set_tooltip(&tip);
+        // Nobody logged in: the chat is read only, so the box and its buttons are off.
+        for i in 1..self.bar.children() {
+            if let Some(mut w) = self.bar.child(i) {
+                if sender_name.is_some() {
+                    w.activate();
+                } else {
+                    w.deactivate();
+                }
+            }
+        }
         let mut inp = self.input.clone();
         let placeholder_tip = match &sender_name {
             Some(name) => trf(
@@ -2166,15 +2189,9 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
         ]
     })
     .unwrap_or_default();
-    let set_up = {
-        let c = cfg.borrow();
-        [
-            c.twitch.broadcaster.is_some() || c.twitch.bot.is_some(),
-            c.youtube.broadcaster.is_some() || c.youtube.bot.is_some() || !c.youtube.channel_id.is_empty(),
-            c.kick.broadcaster.is_some() || c.kick.bot.is_some() || !c.kick.channel.is_empty(),
-            c.tiktok.broadcaster.is_some() || c.tiktok.bot.is_some() || !c.tiktok.channel.is_empty(),
-        ]
-    };
+    // Only where an account is logged in: a chat read without one can't be sent to.
+    let set_up = PLATFORMS.map(|p| crate::engine::can_send(&cfg.borrow(), p));
+    let conn_states: [bool; 4] = std::array::from_fn(|i| conn_states[i] && set_up[i]);
 
     let mut win = Window::default()
         .with_size(520, 210)
@@ -2209,7 +2226,7 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
             None if any_conn => conn_states[i],
             None => set_up[i],
         });
-        if !set_up[i] && !conn_states[i] {
+        if !set_up[i] {
             c.deactivate();
         }
         checks.push(c);

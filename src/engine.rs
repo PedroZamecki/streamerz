@@ -19,6 +19,7 @@ use tokio::sync::{oneshot, watch};
 
 pub mod builtins;
 pub mod chatlog;
+pub use chatlog::can_send;
 pub mod community;
 pub mod events;
 pub mod globals;
@@ -353,7 +354,8 @@ impl Engine {
         let (tw, obs_on, yt, kick, tt) = {
             let c = self.cfg.borrow();
             (
-                !c.twitch.manual_connect && c.twitch.broadcaster.is_some(),
+                // A channel with no login is read only (irc.rs).
+                !c.twitch.manual_connect && (c.twitch.broadcaster.is_some() || !c.twitch.channel.trim().is_empty()),
                 c.obs
                     .connections
                     .iter()
@@ -1438,11 +1440,11 @@ impl Engine {
         })
     }
 
-    /// Streamer.bot Started.
+    /// Streamerz started (Streamer.bot's Started trigger).
     pub fn started(self: &Rc<Self>) {
         self.fire(
             T_STARTED,
-            "Streamer.bot Started",
+            "Streamerz Started",
             "Core",
             "streamerbot",
             &Obj::new(),

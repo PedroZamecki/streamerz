@@ -700,7 +700,7 @@ pub fn parse_badges(badges: &[Value], is_broadcaster: bool) -> (u8, bool) {
         let set_id = b.get("set_id").and_then(Value::as_str).unwrap_or("");
         match set_id {
             "broadcaster" => role = 4,
-            "moderator" if role < 3 => role = 3,
+            "moderator" | "lead_moderator" if role < 3 => role = 3,
             "vip" if role < 2 => role = 2,
             "subscriber" | "founder" => sub = true,
             _ => {}
@@ -812,7 +812,11 @@ async fn refresh_accounts(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>,
 
 impl Runner {
     async fn run(mut self) {
-        if !self.cfg.borrow().twitch.manual_connect && self.cfg.borrow().twitch.broadcaster.is_some() {
+        let start = {
+            let t = &self.cfg.borrow().twitch;
+            !t.manual_connect && (t.broadcaster.is_some() || !t.channel.trim().is_empty())
+        };
+        if start {
             self.connect_eventsub().await;
         }
 
@@ -943,6 +947,7 @@ impl Runner {
                 self.engine.emit("Twitch", "BotChatDisconnected", || json!({}));
             }
             crate::say("Twitch: disconnected".into());
+            crate::roles::clear("twitch");
             crate::ui::changed();
         }
     }
@@ -951,12 +956,24 @@ impl Runner {
         if self.is_connected.load(Ordering::Relaxed) && self.read_task.as_ref().is_some_and(|t| !t.is_finished()) {
             return;
         }
-        if self.cfg.borrow().twitch.broadcaster.is_none() {
-            crate::error("Twitch: no broadcaster account configured".into());
+        let (anonymous, channel) = {
+            let c = self.cfg.borrow();
+            (c.twitch.broadcaster.is_none(), !c.twitch.channel.trim().is_empty())
+        };
+        if anonymous && !channel {
+            crate::error("Twitch: no account logged in and no channel set".into());
             return;
         }
         if let Some(t) = self.read_task.take() {
             t.abort();
+        }
+        // A channel and no login: its chat, read only.
+        if anonymous {
+            self.wanted.store(true, Ordering::Relaxed);
+            let (engine, cfg) = (self.engine.clone(), self.cfg.clone());
+            let (is_conn, wanted) = (self.is_connected.clone(), self.wanted.clone());
+            self.read_task = Some(tokio::task::spawn_local(crate::irc::read(engine, cfg, is_conn, wanted)));
+            return;
         }
         if let Some(t) = self.bot_read_task.take() {
             t.abort();
@@ -1131,6 +1148,12 @@ impl Runner {
         use_bot: bool,
         fallback: bool,
     ) -> Result<Value, String> {
+        // What our role can't do isn't tried (the bot only sends and reads, as anyone may).
+        if !use_bot {
+            if let Some(why) = crate::roles::twitch_refusal(method, path) {
+                return Err(why);
+            }
+        }
         let (token, broadcaster_id, sender_id) = self.pick_account(use_bot, fallback)?;
         // Who moderates: the logged-in account (on someone else's channel, a moderator there).
         let moderator_id = {
@@ -1499,7 +1522,10 @@ async fn run_eventsub_loop(
                             fetch_recent_messages(&login, &bid).await
                         }
                     };
-                    let subs = create_all_subscriptions(&sid, &token, &bid, &me, &refused);
+                    let subs = async {
+                        let role = channel_role(&token, &bid, &me, &login).await;
+                        create_all_subscriptions(&sid, &token, &bid, &me, role, &refused).await
+                    };
                     let welcome = async {
                         let mut hist = hist_fut.await;
                         SEEN.with_borrow(|s| {
@@ -1729,7 +1755,53 @@ async fn run_bot_eventsub_loop(
     engine.emit("Twitch", "BotChatDisconnected", || json!(args));
 }
 
-async fn create_all_subscriptions(sid: &str, token: &str, bid: &str, me: &str, auth_refused: &AtomicBool) {
+/// Our role in the channel read: its owner, else a moderator if Twitch lets us list its chatters (only
+/// moderators may), else a viewer. Said in the log, with what a viewer misses.
+async fn channel_role(token: &str, bid: &str, me: &str, login: &str) -> crate::roles::Role {
+    use crate::roles::Role;
+    let role = if bid == me {
+        Role::Broadcaster
+    } else {
+        let url = format!("{HELIX_URL}/chat/chatters?broadcaster_id={bid}&moderator_id={me}&first=1");
+        let headers = vec![
+            ("Client-Id".into(), CLIENT_ID.into()),
+            ("Authorization".into(), format!("Bearer {token}")),
+        ];
+        match crate::http::request("GET", &url, &headers, &[]).await {
+            Ok(r) if r.status == 200 => Role::Moderator,
+            _ => Role::Viewer,
+        }
+    };
+    // A lead moderator's badge (seen on our messages) says more than the probe.
+    let (known, _) = crate::roles::get("twitch");
+    let role = if role == Role::Moderator && known == Role::LeadModerator {
+        known
+    } else {
+        role
+    };
+    if crate::roles::set("twitch", role, me) {
+        crate::ui::changed();
+    }
+    match role {
+        Role::Broadcaster => {}
+        Role::Moderator | Role::LeadModerator => {
+            crate::say(format!("Twitch: reading #{login} as a {}", role.name()));
+        }
+        _ => crate::warn(format!(
+            "Twitch: this account isn't a moderator of #{login}: chat is read and sent, but moderation and the channel's events need a moderator (ask the channel to /mod you) or its owner's login"
+        )),
+    }
+    role
+}
+
+async fn create_all_subscriptions(
+    sid: &str,
+    token: &str,
+    bid: &str,
+    me: &str,
+    role: crate::roles::Role,
+    auth_refused: &AtomicBool,
+) {
     let subs = [
         (
             "channel.chat.message",
@@ -1938,25 +2010,15 @@ async fn create_all_subscriptions(sid: &str, token: &str, bid: &str, me: &str, a
         ("channel.shared_chat.end", "1", json!({"broadcaster_user_id": bid})),
     ];
 
-    // On someone else's channel, only what a moderator (or anyone) may read: the rest needs the owner's
-    // login, and would only be refused.
-    let own = bid == me;
-    for (stype, ver, cond) in subs.into_iter().filter(|s| own || moderator_can(s.0, &s.2)) {
+    // Only what our role may read (roles.rs): the rest would only be refused.
+    for (stype, ver, cond) in subs
+        .into_iter()
+        .filter(|s| crate::roles::twitch_can_subscribe(role, s.0, &s.2))
+    {
         if !create_sub(sid, token, stype, ver, cond, auth_refused).await {
             break;
         }
     }
-}
-
-/// Whether a moderator (not the channel's owner) can subscribe: chat and moderation (they name the
-/// moderator or the reader), and what's public.
-fn moderator_can(stype: &str, cond: &Value) -> bool {
-    cond.get("moderator_user_id").is_some()
-        || cond.get("user_id").is_some()
-        || matches!(
-            stype,
-            "stream.online" | "stream.offline" | "channel.update" | "channel.raid"
-        )
 }
 
 thread_local! {
@@ -2123,7 +2185,7 @@ pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate
         let Some((set, ver)) = b.split_once('/') else { continue };
         match set {
             "broadcaster" => broadcaster = true,
-            "moderator" => moderator = true,
+            "moderator" | "lead_moderator" => moderator = true,
             "vip" => vip = true,
             "subscriber" | "founder" => subscriber = true,
             _ => {}
@@ -2204,6 +2266,22 @@ async fn fetch_recent_messages(login: &str, broadcaster_id: &str) -> Vec<crate::
         .flatten()
         .filter_map(|m| parse_irc_recent_message(m.as_str()?, broadcaster_id))
         .collect()
+}
+
+/// An EventSub event from elsewhere (the anonymous chat reader, irc.rs), handled as if EventSub sent it.
+pub(crate) fn notify(
+    engine: &Rc<Engine>,
+    broadcaster: &TwitchAccount,
+    cfg: &Arc<watch::Sender<Config>>,
+    kind: &str,
+    event: &Value,
+) {
+    handle_notification(engine, broadcaster, cfg, kind, event);
+}
+
+/// The channel's last messages, from before we joined.
+pub(crate) async fn recent_messages(login: &str, broadcaster_id: &str) -> Vec<crate::engine::chatlog::Line> {
+    fetch_recent_messages(login, broadcaster_id).await
 }
 
 fn handle_notification(
@@ -4294,11 +4372,13 @@ pub(crate) mod tests {
         let chat = json!({"broadcaster_user_id": "1", "user_id": "2"});
         let modr = json!({"broadcaster_user_id": "1", "moderator_user_id": "2"});
         let owner = json!({"broadcaster_user_id": "1"});
-        assert!(moderator_can("channel.chat.message", &chat));
-        assert!(moderator_can("channel.follow", &modr));
-        assert!(moderator_can("stream.online", &owner));
-        assert!(!moderator_can("channel.bits.use", &owner));
-        assert!(!moderator_can("channel.poll.begin", &owner));
+        let can = |stype, cond| crate::roles::twitch_can_subscribe(crate::roles::Role::Moderator, stype, cond);
+        assert!(can("channel.chat.message", &chat));
+        assert!(can("channel.follow", &modr));
+        assert!(can("stream.online", &owner));
+        assert!(!can("channel.bits.use", &owner));
+        assert!(!can("channel.poll.begin", &owner));
+        assert!(!can("channel.guest_star_session.begin", &modr));
     }
 
     #[test]

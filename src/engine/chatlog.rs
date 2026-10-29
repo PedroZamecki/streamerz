@@ -557,6 +557,20 @@ impl Engine {
 
     /// Keep a chat message for the window (called by `chat`).
     pub(super) fn log_chat(&self, c: &Chat) {
+        // Our own message: its badges say our role now (modded or unmodded since we connected).
+        let lead = c.args.get("badges").and_then(Value::as_array).is_some_and(|b| {
+            b.iter().any(|b| {
+                b["name"]
+                    .as_str()
+                    .or(b["key"].as_str())
+                    .is_some_and(|n| n.contains("lead_moderator"))
+            })
+        });
+        let shown = crate::roles::Role::from_flags(c.broadcaster, lead, c.moderator, c.vip);
+        if crate::roles::seen_self(&c.platform, &c.user_id, shown) {
+            crate::say(format!("{}: this account is now a {} here", c.platform, shown.name()));
+            crate::ui::changed();
+        }
         {
             let mut st = self.st.borrow_mut();
             let log = &mut st.chat_log;
@@ -1054,7 +1068,7 @@ impl Engine {
             .into_iter()
             .filter(|p| {
                 if platform == "all" {
-                    self.chat_connected(p)
+                    self.chat_connected(p) && can_send(&self.cfg.borrow(), p)
                 } else {
                     *p == platform
                 }
@@ -1190,6 +1204,42 @@ impl Engine {
                 None => e.chat_unpinned("twitch", ""),
             }
         });
+    }
+
+    /// Our role when `platform`'s chat connects (Twitch asks instead, twitch.rs): not logged in, the owner on
+    /// our own channel, else a viewer until the badges on our messages say more (Kick and YouTube have no
+    /// call that tells).
+    pub fn settle_role(&self, platform: &str) {
+        use crate::roles::Role;
+        let me = {
+            let c = self.cfg.borrow();
+            match platform {
+                "kick" => c.kick.broadcaster.as_ref().map(|b| b.user_id.to_string()),
+                "youtube" => c.youtube.broadcaster.as_ref().map(|b| b.channel_id.clone()),
+                "tiktok" => c.tiktok.broadcaster.as_ref().map(|b| b.username.clone()),
+                _ => None,
+            }
+            .unwrap_or_default()
+        };
+        let role = if me.is_empty() {
+            Role::Anonymous
+        } else if self.own_channel(platform) {
+            Role::Broadcaster
+        } else {
+            Role::Viewer
+        };
+        let (known, id) = crate::roles::get(platform);
+        if role == Role::Viewer && id == me && known > Role::Viewer {
+            return;
+        }
+        if crate::roles::set(platform, role, &me) {
+            crate::ui::changed();
+            if role == Role::Viewer {
+                crate::warn(format!(
+                    "{platform}: this account doesn't own the channel read: moderation shows once it's seen as a moderator there (a message of its own says so)"
+                ));
+            }
+        }
     }
 
     /// Whether `platform`'s chat is the broadcaster's own channel (not another one set in Advanced).
@@ -1357,9 +1407,30 @@ impl Engine {
     }
 }
 
+/// Whether `platform` has an account logged in to send with (a chat read without one is read only).
+pub fn can_send(c: &crate::Config, platform: &str) -> bool {
+    match platform {
+        "twitch" => c.twitch.broadcaster.is_some() || c.twitch.bot.is_some(),
+        "youtube" => c.youtube.broadcaster.is_some() || c.youtube.bot.is_some(),
+        "kick" => c.kick.broadcaster.is_some() || c.kick.bot.is_some(),
+        "tiktok" => c.tiktok.broadcaster.is_some() || c.tiktok.bot.is_some(),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chat_without_a_login_is_read_only() {
+        let mut c = crate::Config::default();
+        c.kick.channel = "someone".into();
+        assert!(!can_send(&c, "kick"));
+        c.kick.bot = Some(Default::default());
+        assert!(can_send(&c, "kick"));
+        assert!(!can_send(&c, "twitch"));
+    }
 
     #[test]
     fn events_show_in_the_chat_once_and_in_words() {

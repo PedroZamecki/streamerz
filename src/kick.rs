@@ -897,6 +897,7 @@ pub async fn run_pusher_loop_url(
                 connected.store(true, Ordering::Relaxed);
                 crate::ui::changed();
                 crate::say(format!("Kick: connected (@{channel}, chatroom {cr_id})"));
+                engine.settle_role("kick");
                 if is_live_pusher {
                     let e_hist = engine.clone();
                     let ch_hist = channel.clone();

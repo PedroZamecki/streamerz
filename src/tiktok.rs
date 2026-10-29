@@ -665,6 +665,7 @@ async fn live(
 
     shared.set(TikTokStatus::Connected(format!("live @{channel}")));
     crate::say(format!("TikTok: connected to @{channel}'s live (room {room})"));
+    engine.settle_role("tiktok");
     let mut args = Obj::new();
     args.insert("channel".into(), channel.into());
     args.insert("roomId".into(), room.to_string().into());

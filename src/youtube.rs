@@ -1192,6 +1192,7 @@ pub async fn read_chat_with_standby(
         last_offline_note.clear();
         *live.borrow_mut() = (video.clone(), String::new());
         crate::say(format!("YouTube: connected to live chat ({label}, video {video})"));
+        engine.settle_role("youtube");
         let joined_usec = (crate::fmt::unix_now().as_millis() as i64) * 1000;
         let mut initial_hist: Vec<crate::engine::chatlog::Line> = if !run_once {
             extract_initial_actions(&page)

@@ -554,7 +554,9 @@ impl Accounts {
                 (H::Locked, tr("accounts.keyring_locked_above").to_string())
             } else {
                 let why = match r.p {
-                    P::Twitch if c.twitch.broadcaster.is_none() => tr("accounts.login_broadcaster_first").into(),
+                    P::Twitch if c.twitch.broadcaster.is_none() && c.twitch.channel.trim().is_empty() => {
+                        tr("accounts.login_broadcaster_first").into()
+                    }
                     P::Twitch => String::new(),
                     P::TikTok if !tiktok.is_empty() => tiktok.clone(),
                     p if p.channel(&c).is_empty() => tr("accounts.login_broadcaster_first").into(),
@@ -585,15 +587,20 @@ impl Accounts {
                 }
                 .replace('@', "@@"),
             );
-            r.whose.set_label(
-                if r.p.channel(&c).is_empty() || r.p.raw_account_name(&c, false).is_none() {
-                    ""
-                } else if r.p.own(&c) {
-                    tr("accounts.channel_yours")
-                } else {
-                    tr("accounts.channel_theirs")
-                },
-            );
+            // Someone else's channel: what we are there, once the platform says (roles.rs).
+            let (role, _) = crate::roles::get(&r.p.name().to_lowercase());
+            let whose = if r.p.channel(&c).is_empty() || r.p.raw_account_name(&c, false).is_none() {
+                String::new()
+            } else if r.p.own(&c) {
+                tr("accounts.channel_yours").into()
+            } else if role.moderates() {
+                trf("accounts.channel_moderator", &[("role", role.name())])
+            } else if role >= crate::roles::Role::Viewer {
+                tr("accounts.channel_viewer").into()
+            } else {
+                tr("accounts.channel_theirs").into()
+            };
+            r.whose.set_label(&whose);
             for (bot, (pic, name, b)) in r.who.iter_mut().enumerate() {
                 let account = r.p.account(&c, bot == 1);
                 match &account {
