@@ -232,21 +232,31 @@ impl P {
         v
     }
 
-    fn auto(self, c: &Config) -> bool {
+    fn slug(self) -> &'static str {
         match self {
-            P::Twitch => c.twitch.auto_connect,
-            P::YouTube => c.youtube.auto_connect,
-            P::Kick => c.kick.auto_connect,
-            P::TikTok => c.tiktok.auto_connect,
+            P::Twitch => "twitch",
+            P::YouTube => "youtube",
+            P::Kick => "kick",
+            P::TikTok => "tiktok",
         }
     }
 
-    fn auto_mut(self, c: &mut Config) -> &mut bool {
+    /// Whether it connects when Streamerz starts (it does, unless turned off).
+    fn auto(self, c: &Config) -> bool {
         match self {
-            P::Twitch => &mut c.twitch.auto_connect,
-            P::YouTube => &mut c.youtube.auto_connect,
-            P::Kick => &mut c.kick.auto_connect,
-            P::TikTok => &mut c.tiktok.auto_connect,
+            P::Twitch => !c.twitch.manual_connect,
+            P::YouTube => !c.youtube.manual_connect,
+            P::Kick => !c.kick.manual_connect,
+            P::TikTok => !c.tiktok.manual_connect,
+        }
+    }
+
+    fn manual_mut(self, c: &mut Config) -> &mut bool {
+        match self {
+            P::Twitch => &mut c.twitch.manual_connect,
+            P::YouTube => &mut c.youtube.manual_connect,
+            P::Kick => &mut c.kick.manual_connect,
+            P::TikTok => &mut c.tiktok.manual_connect,
         }
     }
 
@@ -486,13 +496,12 @@ struct Row {
     /// Whose chat to read and moderate (empty: your own), and whose it is.
     channel: Input,
     whose: Frame,
-    auto: CheckButton,
     connect: Button,
     adv: Button,
-    /// Broadcaster, then bot: profile picture, name and Login/Logout.
+    /// Account, then bot: profile picture, name and Login/Logout.
     who: [(Frame, Frame, Button); 2],
-    /// The row they sit in: Login and Logout have different words, so the button's width follows them.
-    bottom: Flex,
+    /// The rows they sit in: Login and Logout have different words, so the button's width follows them.
+    rows: [Flex; 2],
 }
 
 pub struct Accounts {
@@ -558,34 +567,33 @@ impl Accounts {
             if !r.channel.has_focus() {
                 r.channel.set_value(r.p.channel(&c));
             }
-            r.whose.set_label(if r.p.channel(&c).is_empty() {
-                ""
-            } else if r.p.own(&c) {
-                tr("accounts.channel_yours")
-            } else {
-                tr("accounts.channel_theirs")
-            });
-            r.auto.set_checked(r.p.auto(&c));
-            for (bot, (pic, name, b)) in r.who.iter_mut().enumerate() {
-                let who = if bot == 1 {
-                    tr("accounts.who_bot_optional")
+            r.whose.set_label(
+                if r.p.channel(&c).is_empty() || r.p.raw_account_name(&c, false).is_none() {
+                    ""
+                } else if r.p.own(&c) {
+                    tr("accounts.channel_yours")
                 } else {
-                    tr("accounts.who_broadcaster")
-                };
+                    tr("accounts.channel_theirs")
+                },
+            );
+            for (bot, (pic, name, b)) in r.who.iter_mut().enumerate() {
                 let account = r.p.account(&c, bot == 1);
                 match &account {
                     Some(n) => {
-                        name.set_label(&format!("{who}: {}", n.replace('@', "@@")));
+                        name.set_label(&n.replace('@', "@@"));
                         name.set_tooltip(&n.replace('@', "@@"));
+                        name.set_label_color(fltk::enums::Color::Foreground);
                         b.set_label(tr("btn.logout"));
                         super::with_icon(b);
-                        r.bottom.fixed(b, super::fit::grown(80, tr("btn.logout"), true));
+                        r.rows[bot].fixed(b, super::fit::grown(80, tr("btn.logout"), true));
                     }
                     None => {
-                        name.set_label(&trf("accounts.no_who", &[("who", who)]));
+                        name.set_label(tr("accounts.not_logged_in"));
+                        name.set_tooltip("");
+                        name.set_label_color(super::muted());
                         b.set_label(tr("btn.login"));
                         super::with_icon(b);
-                        r.bottom.fixed(b, super::fit::grown(80, tr("btn.login"), true));
+                        r.rows[bot].fixed(b, super::fit::grown(80, tr("btn.login"), true));
                     }
                 }
                 let raw_name = r.p.raw_account_name(&c, bot == 1);
@@ -625,33 +633,47 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
         let status = Frame::default()
             .with_align(Align::Left | Align::Inside | Align::Clip)
             .ellipsis();
-        let auto = CheckButton::default().with_label(tr("accounts.connect_on_start"));
-        top.fixed(&auto, 140);
         let connect = button(&mut top, tr("btn.connect"), 100);
         let mut adv = button(&mut top, &format!("{}…", tr("btn.advanced")), 100);
-        // TikTok has nothing more to set.
-        if p == P::TikTok {
-            adv.hide();
-            top.fixed(&adv, 0);
-        }
         top.end();
         col.fixed(&top, ROW);
-        // Narrow: the buttons keep their icons, and the checkbox its box (its words as a tooltip).
+        // Narrow: the buttons keep their icons.
         top.resize_callback({
-            let (mut auto, connect, adv) = (auto.clone(), connect.clone(), adv.clone());
+            let (connect, adv) = (connect.clone(), adv.clone());
             let connect_w = super::fit::grown(120, tr("btn.disconnect"), true);
             let adv_w = super::fit::grown(120, tr("btn.advanced"), true);
             move |t, _, _, w, _| {
-                let narrow = w < 640;
+                let narrow = w < 520;
                 t.fixed(&connect, if narrow { 36 } else { connect_w });
-                if p != P::TikTok {
-                    t.fixed(&adv, if narrow { 36 } else { adv_w });
-                }
-                auto.set_label(if narrow { "" } else { tr("accounts.connect_on_start") });
-                auto.set_tooltip(tr("accounts.connect_on_start"));
-                t.fixed(&auto, if narrow { 24 } else { 140 });
+                t.fixed(&adv, if narrow { 36 } else { adv_w });
             }
         });
+        adv.set_tooltip(tr("accounts.advanced_tooltip"));
+
+        // The account you log in with: it doesn't have to own the channel.
+        let mut who = Vec::new();
+        let mut people = Vec::new();
+        let account_row = |label: &str, who: &mut Vec<(Frame, Frame, Button)>, people: &mut Vec<Flex>| {
+            let mut row = Flex::default().row();
+            row.set_pad(8);
+            let mut l = Frame::default()
+                .with_label(label)
+                .with_align(Align::Right | Align::Inside);
+            l.set_label_color(super::muted());
+            row.fixed(&l, 110);
+            let pic = Frame::default();
+            row.fixed(&pic, ROW);
+            let f = Frame::default()
+                .with_align(Align::Left | Align::Inside | Align::Clip)
+                .ellipsis();
+            let b = button(&mut row, tr("btn.login"), 80);
+            row.end();
+            who.push((pic, f, b));
+            people.push(row.clone());
+            row
+        };
+        let row = account_row(tr("accounts.row_account"), &mut who, &mut people);
+        col.fixed(&row, ROW);
 
         // Whose chat: yours, or someone else's that you moderate with your account.
         let mut mid = Flex::default().row();
@@ -673,35 +695,21 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
         mid.end();
         col.fixed(&mid, ROW);
 
-        let mut bottom = Flex::default().row();
-        bottom.set_pad(8);
-        let gap = Frame::default();
-        bottom.fixed(&gap, 110);
-        let mut who = Vec::new();
-        for _ in 0..2 {
-            let pic = Frame::default();
-            bottom.fixed(&pic, ROW);
-            let f = Frame::default()
-                .with_align(Align::Left | Align::Inside | Align::Clip)
-                .ellipsis();
-            let b = button(&mut bottom, tr("btn.login"), 80);
-            who.push((pic, f, b));
-        }
-        bottom.end();
-        col.fixed(&bottom, ROW);
+        let row = account_row(tr("accounts.row_bot"), &mut who, &mut people);
+        col.fixed(&row, ROW);
         let sep = Frame::default();
-        col.fixed(&sep, 10);
+        col.fixed(&sep, 14);
         let who: [(Frame, Frame, Button); 2] = [who.remove(0), who.remove(0)];
+        let rows_of: [Flex; 2] = [people.remove(0), people.remove(0)];
         rows.push(Row {
             p,
             status,
             channel,
             whose,
             adv,
-            auto,
             connect,
             who,
-            bottom,
+            rows: rows_of,
         });
     }
     let guide = Frame::default()
@@ -756,6 +764,9 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
                 let mut kept = String::new();
                 save(&cfg, |c| kept = p.set_channel(c, &i.value()));
                 if p.channel(&cfg.borrow()) != before {
+                    // What the old channel showed goes; its community stays, apart.
+                    let slug = p.slug();
+                    tell(&cmds, move |e| e.channel_changed(slug));
                     // Read the new one now, if it was reading.
                     let (on, standby, _) = states(&cmds);
                     let i_p = ALL.iter().position(|x| *x == p).unwrap_or(0);
@@ -766,13 +777,6 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
                 }
                 i.set_value(p.channel(&cfg.borrow()));
                 refresh();
-            }
-        });
-        r.auto.set_callback({
-            let cfg = cfg.clone();
-            move |b| {
-                let on = b.is_checked();
-                save(&cfg, |c| *p.auto_mut(c) = on);
             }
         });
         r.connect.set_callback({
@@ -954,15 +958,21 @@ fn advanced(cfg: &Cfg, p: P) {
         P::Twitch => tr("accounts.twitch.sub_counter_help").into(),
         P::TikTok => String::new(),
     };
+    let auto = p.auto(&c);
     drop(c);
-    let h = 132 + fields.len() as i32 * (ROW + 6);
+    let note_h = if help.is_empty() { 0 } else { 76 };
+    let h = 80 + note_h + fields.len() as i32 * (ROW + 6);
     let (mut win, answer) = dialogs::window(620, h, &trf("accounts.advanced_title", &[("platform", p.name())]));
     let mut col = Flex::new(10, 10, 600, h - 20, None).column();
     col.set_pad(6);
     let f = Frame::default()
         .with_label(&help)
         .with_align(Align::Left | Align::Inside | Align::Wrap);
-    col.fixed(&f, 76);
+    col.fixed(&f, note_h);
+    let mut start = CheckButton::default().with_label(tr("accounts.connect_on_start"));
+    start.set_checked(auto);
+    start.set_tooltip(tr("accounts.connect_on_start_tooltip"));
+    col.fixed(&start, ROW);
     let mut inputs: Vec<Box<dyn Fn() -> String>> = Vec::new();
     for (label, value, secret) in &fields {
         let r = dialogs::row(label);
@@ -1000,6 +1010,8 @@ fn advanced(cfg: &Cfg, p: P) {
         return;
     }
     let v: Vec<String> = inputs.iter().map(|i| i().trim().to_string()).collect();
+    let on_start = start.is_checked();
+    save(cfg, |c| *p.manual_mut(c) = !on_start);
     save(cfg, |c| match p {
         P::Kick => {
             c.kick.client_id.clone_from(&v[0]);

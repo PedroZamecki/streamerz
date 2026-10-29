@@ -463,6 +463,16 @@ impl Engine {
 
     /// Merge `fetched` recent messages for `platform` (oldest-to-newest) with any cached historical
     /// lines, then a divider right before live session messages (kept in memory only).
+    /// Forget what `platform`'s chat showed (its channel changed): lines, pins and who was seen.
+    pub fn chat_forget(&self, platform: &str) {
+        let log = &mut self.st.borrow_mut().chat_log;
+        log.lines.retain(|l| l.platform != platform);
+        log.pins.retain(|p| p.platform != platform);
+        log.users.retain(|k, _| k.0 != platform);
+        log.cards.retain(|k, _| k.0 != platform);
+        log.reset_gen += 1;
+    }
+
     pub fn chat_welcome(&self, platform: &str, fetched: Vec<Line>) {
         let Some(p_idx) = index(platform) else { return };
         {

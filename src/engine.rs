@@ -353,15 +353,15 @@ impl Engine {
         let (tw, obs_on, yt, kick, tt) = {
             let c = self.cfg.borrow();
             (
-                c.twitch.auto_connect && c.twitch.broadcaster.is_some(),
+                !c.twitch.manual_connect && c.twitch.broadcaster.is_some(),
                 c.obs
                     .connections
                     .iter()
                     .any(|o| o.get("autoConnect").and_then(Value::as_bool).unwrap_or(false)),
-                c.youtube.auto_connect
+                !c.youtube.manual_connect
                     && (!c.youtube.video_id.trim().is_empty() || !c.youtube.channel_id.trim().is_empty()),
-                c.kick.auto_connect && !c.kick.channel.trim().is_empty(),
-                c.tiktok.auto_connect,
+                !c.kick.manual_connect && !c.kick.channel.trim().is_empty(),
+                !c.tiktok.manual_connect && !c.tiktok.channel.trim().is_empty(),
             )
         };
         if tw {

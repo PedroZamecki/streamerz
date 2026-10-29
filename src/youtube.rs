@@ -90,7 +90,8 @@ pub fn clean_youtube_video(input: &str) -> String {
 pub struct YouTubeConfig {
     pub channel_id: String,
     pub video_id: String,
-    pub auto_connect: bool,
+    /// Not connected at start (it is by default).
+    pub manual_connect: bool,
     pub client_id: String,
     pub client_secret: String,
     pub broadcaster: Option<YouTubeAccount>,
@@ -2005,7 +2006,7 @@ mod tests {
         let cfg = YouTubeConfig::default();
         assert_eq!(cfg.channel_id, "");
         assert_eq!(cfg.video_id, "");
-        assert!(!cfg.auto_connect);
+        assert!(!cfg.manual_connect);
     }
 
     #[test]

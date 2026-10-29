@@ -244,8 +244,58 @@ impl Engine {
         self.st.borrow().community.rev
     }
 
+    /// The Community tab's people: those of the channels read now.
     pub fn users(&self) -> Vec<Obj> {
-        self.st.borrow().community.users.clone()
+        let st = self.st.borrow();
+        let keys: Vec<(&str, String)> = super::chatlog::PLATFORMS
+            .iter()
+            .map(|p| (*p, self.broadcaster(p)))
+            .collect();
+        st.community
+            .users
+            .iter()
+            .filter(|u| {
+                let ch = s(u, "channel");
+                ch.is_empty() || keys.iter().any(|(p, k)| *p == s(u, "type") && k == ch)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Whose channel `platform` reads now (a lowercase login, handle or id; empty until one is set up):
+    /// what its community and chat belong to. Changing the channel switches to another set of people,
+    /// and coming back brings the first one back.
+    pub fn broadcaster(&self, platform: &str) -> String {
+        let c = self.cfg.borrow();
+        let own = |s: Option<&str>| s.unwrap_or("").trim().to_lowercase();
+        let (set, mine) = match platform {
+            "twitch" => (
+                c.twitch.channel.trim().trim_start_matches('@'),
+                c.twitch.broadcaster.as_ref().map(|b| b.login.as_str()),
+            ),
+            "kick" => (c.kick.channel.trim(), None),
+            "youtube" => (
+                c.youtube.channel_id.trim(),
+                c.youtube.broadcaster.as_ref().map(|b| b.channel_id.as_str()),
+            ),
+            "tiktok" => (
+                c.tiktok.channel.trim().trim_start_matches('@'),
+                c.tiktok.broadcaster.as_ref().map(|b| b.username.as_str()),
+            ),
+            _ => return String::new(),
+        };
+        if set.is_empty() {
+            own(mine)
+        } else {
+            set.to_lowercase()
+        }
+    }
+
+    /// Whether `u` is somebody of the channel `platform` reads now. Records from before channels were told
+    /// apart have none: they belong to the one being read.
+    fn of_channel(&self, u: &Obj, platform: &str) -> bool {
+        let ch = s(u, "channel");
+        ch.is_empty() || ch == self.broadcaster(platform)
     }
 
     /// One user of the Community tab.
@@ -254,8 +304,18 @@ impl Engine {
         st.community
             .users
             .iter()
-            .find(|u| s(u, "type") == platform && s(u, "id") == id)
+            .find(|u| s(u, "type") == platform && s(u, "id") == id && self.of_channel(u, platform))
             .cloned()
+    }
+
+    /// The channel of `platform` was changed: its chat lines, pins and who spoke are of the old one, so
+    /// they go (the community keeps them, apart, for when it comes back).
+    pub fn channel_changed(self: &Rc<Self>, platform: &str) {
+        self.chat_forget(platform);
+        self.reset_first_words(Some(platform));
+        self.community_changed();
+        crate::ui::chat();
+        crate::ui::changed();
     }
 
     /// Credits and users from a trigger that fired.
@@ -295,12 +355,14 @@ impl Engine {
         if l.user_id.is_empty() || l.note {
             return;
         }
+        let channel = self.broadcaster(&l.platform);
         let mut st = self.st.borrow_mut();
         let users = &mut st.community.users;
-        if users
-            .iter()
-            .any(|u| s(u, "type") == l.platform && s(u, "id") == l.user_id)
-        {
+        if users.iter().any(|u| {
+            s(u, "type") == l.platform
+                && s(u, "id") == l.user_id
+                && (s(u, "channel").is_empty() || s(u, "channel") == channel)
+        }) {
             return;
         }
         let role = if l.broadcaster {
@@ -314,8 +376,8 @@ impl Engine {
         };
         let now = super::globals::iso_now();
         let u = json!({"id": l.user_id, "name": l.user.to_lowercase(), "display": l.user, "role": role,
-            "subscribed": l.subscriber, "type": l.platform, "firstMessage": now, "present": false,
-            "previousActive": NEVER, "lastActive": now, "exempt": false, "color": l.color});
+            "subscribed": l.subscriber, "type": l.platform, "channel": channel, "firstMessage": now,
+            "present": false, "previousActive": NEVER, "lastActive": now, "exempt": false, "color": l.color});
         users.push(u.as_object().cloned().unwrap_or_default());
         drop(st);
         self.community_changed();
@@ -337,6 +399,7 @@ impl Engine {
             1
         };
         let now = super::globals::iso_now();
+        let channel = self.broadcaster(platform);
         {
             let mut st = self.st.borrow_mut();
             let cm = &mut st.community;
@@ -350,21 +413,24 @@ impl Engine {
                 cm.credits.add("subscribers", display, true);
             }
             cm.credits.last_write = unix();
-            let i = match cm
-                .users
-                .iter()
-                .position(|u| s(u, "type") == platform && s(u, "id") == id)
-            {
+            let i = match cm.users.iter().position(|u| {
+                s(u, "type") == platform
+                    && s(u, "id") == id
+                    && (s(u, "channel").is_empty() || s(u, "channel") == channel)
+            }) {
                 Some(i) => i,
                 None => {
                     let u = json!({"id": id, "name": "", "display": "", "role": 1, "subscribed": false,
-                        "type": platform, "firstMessage": now, "present": true, "previousActive": NEVER,
+                        "type": platform, "channel": channel, "firstMessage": now, "present": true, "previousActive": NEVER,
                         "lastActive": NEVER, "exempt": false});
                     cm.users.push(u.as_object().cloned().unwrap_or_default());
                     cm.users.len() - 1
                 }
             };
             let u = &mut cm.users[i];
+            if s(u, "channel").is_empty() {
+                u.insert("channel".into(), channel.clone().into());
+            }
             // A new visit (half an hour quiet): the last one becomes the previous.
             let last = s(u, "lastActive").to_string();
             let quiet = parse(&last).zip(parse(&now)).is_none_or(|(a, b)| {
@@ -564,6 +630,45 @@ mod tests {
             assert!(!e.first_words("twitch", "cy"));
             e.reset_first_words(None);
             assert!(e.first_words("twitch", "cy"));
+        });
+    }
+
+    /// The community and the chat belong to the channel read: another channel starts clean, and the
+    /// first comes back as it was.
+    #[test]
+    fn each_channel_keeps_its_own_community() {
+        let local = tokio::task::LocalSet::new();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        local.block_on(&rt, async {
+            let e = engine();
+            let say = |id: &str, name: &str| {
+                e.spoke(&Chat {
+                    platform: "kick".into(),
+                    user_id: id.into(),
+                    user: name.into(),
+                    ..Default::default()
+                })
+            };
+            e.cfg.send_modify(|c| c.kick.channel = "Ana".into());
+            say("1", "Zed");
+            assert_eq!(e.users().len(), 1);
+            assert_eq!(e.broadcaster("kick"), "ana");
+            // Another channel: nobody there yet, and the old chat is gone.
+            e.cfg.send_modify(|c| c.kick.channel = "bia".into());
+            e.channel_changed("kick");
+            assert!(e.users().is_empty() && e.community_user("kick", "1").is_none());
+            say("2", "Yan");
+            assert_eq!(e.users().len(), 1);
+            // Back to the first: its people, not the other's.
+            e.cfg.send_modify(|c| c.kick.channel = "ana".into());
+            let names: Vec<_> = e.users().iter().map(|u| s(u, "display").to_string()).collect();
+            assert_eq!(names, ["Zed"]);
+            // The same person in two channels is two records.
+            say("2", "Yan");
+            assert_eq!(e.users().len(), 2);
         });
     }
 

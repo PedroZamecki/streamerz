@@ -95,8 +95,8 @@ pub struct TikTokAccount {
 pub struct TikTokConfig {
     /// Channel name or @handle to watch.
     pub channel: String,
-    /// Whether to connect on startup.
-    pub auto_connect: bool,
+    /// Not connected at start (it is by default, once there is a channel).
+    pub manual_connect: bool,
     /// Broadcaster account credentials
     pub broadcaster: Option<TikTokAccount>,
     /// Bot account credentials
@@ -432,7 +432,7 @@ enum LiveEnd {
 
 impl Runner {
     async fn run(mut self) {
-        if self.cfg.borrow().tiktok.auto_connect {
+        if !self.cfg.borrow().tiktok.manual_connect && !self.cfg.borrow().tiktok.channel.trim().is_empty() {
             self.connect();
         }
         while let Some(cmd) = self.rx.recv().await {

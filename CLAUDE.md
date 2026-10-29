@@ -36,7 +36,8 @@
   faster, do it; never add a dependency, thread, timer or poll when the OS or existing code covers it.
   Budget: hidden window with Twitch + OBS connected under 25 MB RSS and ~0% idle CPU. Measure hidden RSS
   and idle CPU before and after every version and put the numbers in the PR description.
-- Integrations are opt-in: off by default, and a disabled one opens no socket, timer or task.
+- Integrations are opt-in: with no login or channel set, one opens no socket, timer or task. Once set up, it
+  connects at start by itself (Advanced has the switch to turn that off), and a disabled one opens nothing.
 - Windows-only code can be type-checked locally before pushing (official rustc with the Windows std,
   e.g. installed to /tmp/rt): `RUSTC=/tmp/rt/bin/rustc cargo check --target x86_64-pc-windows-msvc
   --features fltk/fltk-bundled --target-dir /tmp/wincheck`.

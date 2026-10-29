@@ -239,7 +239,8 @@ pub const T_SHARED_MODIVERSARY: u32 = 498;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct TwitchConfig {
-    pub auto_connect: bool,
+    /// Not connected at start (it is by default, once logged in).
+    pub manual_connect: bool,
     pub broadcaster: Option<TwitchAccount>,
     pub bot: Option<TwitchAccount>,
     pub first_words_auto_reset: bool,
@@ -811,7 +812,7 @@ async fn refresh_accounts(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>,
 
 impl Runner {
     async fn run(mut self) {
-        if self.cfg.borrow().twitch.auto_connect && self.cfg.borrow().twitch.broadcaster.is_some() {
+        if !self.cfg.borrow().twitch.manual_connect && self.cfg.borrow().twitch.broadcaster.is_some() {
             self.connect_eventsub().await;
         }
 

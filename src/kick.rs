@@ -74,7 +74,8 @@ pub struct KickConfig {
     pub channel: String,
     pub channel_id: Option<u64>,
     pub chatroom_id: Option<u64>,
-    pub auto_connect: bool,
+    /// Not connected at start (it is by default, once there is a channel).
+    pub manual_connect: bool,
     pub client_id: String,
     pub client_secret: String,
     pub broadcaster: Option<KickAccount>,
@@ -338,7 +339,7 @@ struct Runner {
 
 impl Runner {
     async fn run(mut self) {
-        if self.cfg.borrow().kick.auto_connect && !self.cfg.borrow().kick.channel.trim().is_empty() {
+        if !self.cfg.borrow().kick.manual_connect && !self.cfg.borrow().kick.channel.trim().is_empty() {
             self.connect_pusher();
         }
 
@@ -1872,7 +1873,7 @@ mod tests {
         let cfg = KickConfig::default();
         assert_eq!(cfg.channel, "");
         assert_eq!(cfg.client_id, "");
-        assert!(!cfg.auto_connect);
+        assert!(!cfg.manual_connect);
     }
 
     #[test]
