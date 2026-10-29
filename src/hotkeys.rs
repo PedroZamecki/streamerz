@@ -299,7 +299,7 @@ impl Engine {
 #[cfg(not(windows))]
 async fn portal(e: Rc<Engine>, combos: Vec<(i64, i64)>) {
     if let Err(err) = portal_run(&e, &combos).await {
-        crate::say(format!("Hotkeys: {err}"));
+        crate::error(format!("Hotkeys: {err}"));
     }
 }
 
@@ -324,7 +324,7 @@ async fn portal_run(e: &Rc<Engine>, combos: &[(i64, i64)]) -> Result<(), String>
             .call_method("Register", &("streamerz", HashMap::<&str, Value>::new()))
             .await
         {
-            crate::say(format!(
+            crate::warn(format!(
                 "Hotkeys: the portal didn't take the app id ({x}); {}",
                 entry.display()
             ));
@@ -510,7 +510,7 @@ mod win {
                     }
                 }
                 if RegisterHotKey(std::ptr::null_mut(), i as i32 + 1, mods, u32::from(key.vk)) == 0 {
-                    crate::say(format!("Hotkeys: {} is taken by another program", label(k, m)));
+                    crate::warn(format!("Hotkeys: {} is taken by another program", label(k, m)));
                 }
             }
             let hooked = mouse.then(|| {

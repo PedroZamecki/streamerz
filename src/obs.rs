@@ -486,7 +486,7 @@ async fn run_conn_loop(
                     let msg = match msg_res {
                         Ok(m) => m,
                         Err(e) => {
-                            crate::say(format!("OBS '{}': handshake error: {e}", info.name));
+                            crate::warn(format!("OBS '{}': handshake error: {e}", info.name));
                             break;
                         }
                     };
@@ -542,7 +542,7 @@ async fn run_conn_loop(
                 }
 
                 if !identified {
-                    crate::say(format!("OBS '{}': identification failed", info.name));
+                    crate::error(format!("OBS '{}': identification failed", info.name));
                 } else {
                     // Step 2: Active communication loop
                     loop {
@@ -602,7 +602,7 @@ async fn run_conn_loop(
                                         let _ = sink.send(Message::Pong(data)).await;
                                     }
                                     Some(Ok(Message::Close(_))) | Some(Err(_)) | None => {
-                                        crate::say(format!("OBS '{}': connection closed", info.name));
+                                        crate::warn(format!("OBS '{}': connection closed", info.name));
                                         break;
                                     }
                                     _ => {}
@@ -625,7 +625,7 @@ async fn run_conn_loop(
                 }
             }
             Err(e) => {
-                crate::say(format!("OBS '{}': failed to connect to {url}: {e}", info.name));
+                crate::warn(format!("OBS '{}': failed to connect to {url}: {e}", info.name));
             }
         }
 
@@ -866,7 +866,7 @@ fn handle_obs_message(
                         .and_then(Value::as_str)
                         .unwrap_or("OBS request returned error");
                     let what = d.get("requestType").and_then(Value::as_str).unwrap_or("request");
-                    crate::say(format!("OBS {what}: {comment}"));
+                    crate::error(format!("OBS {what}: {comment}"));
                     let _ = resp_tx.send(Err(comment.to_string()));
                 }
             }

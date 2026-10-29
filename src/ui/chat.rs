@@ -11,8 +11,9 @@ use super::accounts::{platform_accounts, unlock_logins_interactive};
 use super::emotes::{self, EmoteSection, Provider};
 use super::fit::Ellipsis;
 use super::img::{self, Pic};
+use super::tip::{self, Tip};
 use super::{button, icons, query, tell, ROW};
-use crate::engine::chatlog::{Line, Moderate, PLATFORMS};
+use crate::engine::chatlog::{Line, Moderate, Pin, PLATFORMS};
 use crate::i18n::{tr, trf};
 use crate::Config;
 use fltk::app;
@@ -159,7 +160,7 @@ const ICONS: &[(&str, &str)] = &[
 ];
 
 /// A badge, platform logo, or UI icon, scaled to `size` px and cached per thread.
-fn icon_sized(key: &str, size: i32) -> Option<SvgImage> {
+pub(super) fn icon_sized(key: &str, size: i32) -> Option<SvgImage> {
     thread_local!(static CACHE: RefCell<HashMap<(String, i32), Option<SvgImage>>> = RefCell::default());
     CACHE.with_borrow_mut(|m| {
         m.entry((key.to_string(), size))
@@ -178,8 +179,33 @@ fn svg(key: &str) -> Option<SvgImage> {
     icon_sized(key, BADGE)
 }
 
+/// Draws a badge `size` px tall at `(x, y)`: its picture, else its platform's drawing. Its width (0
+/// when there's nothing to draw yet).
+pub(super) fn draw_badge(cmds: &Cmds, platform: &str, key: &str, url: &str, x: i32, y: i32, size: i32) -> i32 {
+    if !url.is_empty() {
+        if let Some(p) = img::get(cmds, url, size, false) {
+            let mut i = p.first();
+            i.draw(x, y + (size - i.h()) / 2, i.w(), i.h());
+            return i.w();
+        }
+    }
+    match badge_fallback(platform, key, size) {
+        Some(mut s) => {
+            let (w, h) = (s.w(), s.h());
+            s.draw(x, y + (size - h) / 2, w, h);
+            w
+        }
+        None => 0,
+    }
+}
+
 /// Map a badge key on `platform` to its platform-specific vector SVG fallback when no image URL is set.
 fn badge_fallback_svg(platform: &str, raw_key: &str) -> Option<SvgImage> {
+    badge_fallback(platform, raw_key, BADGE)
+}
+
+fn badge_fallback(platform: &str, raw_key: &str, size: i32) -> Option<SvgImage> {
+    let svg = |k: &str| icon_sized(k, size);
     if raw_key.contains(':') {
         if let Some(s) = svg(raw_key) {
             return Some(s);
@@ -218,6 +244,11 @@ fn badge_fallback_svg(platform: &str, raw_key: &str) -> Option<SvgImage> {
 fn now_ms() -> u64 {
     thread_local!(static START: Instant = Instant::now());
     START.with(|s| s.elapsed().as_millis() as u64)
+}
+
+/// Milliseconds since the epoch, as pins' ends are.
+fn epoch_ms() -> u64 {
+    crate::fmt::unix_now().as_millis() as u64
 }
 
 /// The name's colour: comes directly from the platform (adjusted only when too dark to read on dark
@@ -292,7 +323,7 @@ fn name_color(l: &Line) -> Color {
 
 /// Pinned, and not run out yet.
 fn pinned(l: &Line) -> bool {
-    l.pinned.is_some_and(|until| until > now_ms())
+    l.pinned.is_some_and(|until| until > epoch_ms())
 }
 
 /// One thing on a line.
@@ -300,8 +331,11 @@ enum It {
     Text(String, Font, Color),
     /// Text struck through: a deleted message's.
     Struck(String),
-    Pic(Pic),
+    /// A picture, with what pointing at it says (emotes, badges).
+    Pic(Pic, Option<Rc<Tip>>),
     Svg(SvgImage),
+    /// A drawn badge, with what pointing at it says.
+    SvgTip(SvgImage, Rc<Tip>),
     /// A word's space: where the line may wrap.
     Space,
     /// A few pixels between pictures (no wrap).
@@ -323,8 +357,8 @@ impl It {
                 draw::set_font(Font::Helvetica, TEXT);
                 (draw::width(t) as i32, TEXT + 4)
             }
-            It::Pic(p) => (p.w(), p.h().max(1)),
-            It::Svg(s) => (s.w(), s.h()),
+            It::Pic(p, _) => (p.w(), p.h().max(1)),
+            It::Svg(s) | It::SvgTip(s, _) => (s.w(), s.h()),
             It::Space => {
                 draw::set_font(Font::Helvetica, TEXT);
                 (draw::width(" ") as i32, 0)
@@ -337,18 +371,39 @@ impl It {
 }
 
 thread_local! {
-    /// What lines show: (the time, the badges). Chat's options; all panes follow.
-    static SHOW: Cell<(bool, bool)> = const { Cell::new((true, true)) };
+    /// What lines show: (the time, the badges, emotes moving). Chat's options; all panes follow.
+    static SHOW: Cell<(bool, bool, bool)> = const { Cell::new((true, true, true)) };
+}
+
+fn emote_tip(platform: &str, name: &str, url: &str) -> Rc<Tip> {
+    Rc::new(Tip::Emote {
+        platform: platform.into(),
+        name: name.into(),
+        url: url.into(),
+    })
+}
+
+fn badge_tip(platform: &str, key: &str, url: &str) -> Rc<Tip> {
+    Rc::new(Tip::Badge {
+        platform: platform.into(),
+        key: key.into(),
+        url: url.into(),
+    })
 }
 
 /// A line's things, in order.
 fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
     let gray = Color::from_rgb(0x88, 0x88, 0x88);
-    let (time, badges) = SHOW.get();
+    let (time, badges, _) = SHOW.get();
     let mut v = Vec::new();
     // The history divider: a line across, no name, no time.
     if l.welcome {
         return vec![It::Rule(l.text.clone())];
+    }
+    // What sets the message apart (highlighted, a first message...), above it.
+    if !l.tag.is_empty() {
+        v.push(It::Text(l.tag.clone(), Font::HelveticaBold, accent(l).unwrap_or(gray)));
+        v.push(It::Break);
     }
     if let Some(r) = &l.reply {
         if let Some(s) = icons::icon("corner-up-left", gray, 14) {
@@ -387,6 +442,9 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
         v.push(It::Text(l.text.clone(), Font::HelveticaItalic, gray));
         return v;
     }
+    if !l.event.is_empty() {
+        return event_items(cmds, l, v);
+    }
     if badges {
         let before = v.len();
         if l.badges.is_empty() {
@@ -400,7 +458,7 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
             ] {
                 if on {
                     if let Some(s) = badge_fallback_svg(&l.platform, role) {
-                        v.push(It::Svg(s));
+                        v.push(It::SvgTip(s, badge_tip(&l.platform, role, "")));
                         v.push(It::Gap(GAP));
                     }
                 }
@@ -409,13 +467,13 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
             for (name, url) in &l.badges {
                 if !url.is_empty() {
                     if let Some(p) = img::get(cmds, url, BADGE, false) {
-                        v.push(It::Pic(p));
+                        v.push(It::Pic(p, Some(badge_tip(&l.platform, name, url))));
                         v.push(It::Gap(GAP));
                         continue;
                     }
                 }
                 if let Some(s) = badge_fallback_svg(&l.platform, name) {
-                    v.push(It::Svg(s));
+                    v.push(It::SvgTip(s, badge_tip(&l.platform, name, url)));
                     v.push(It::Gap(GAP));
                 }
             }
@@ -426,6 +484,12 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
         }
     }
     v.push(It::Text(format!("{}:", l.user), Font::HelveticaBold, name_color(l)));
+    words(cmds, l, &mut v);
+    v
+}
+
+/// What a line's sender wrote: its words, the emotes as pictures (struck through when deleted).
+fn words(cmds: &Cmds, l: &Line, v: &mut Vec<It>) {
     let fg = Color::Foreground;
     let pic = |url: &str| img::get(cmds, url, EMOTE, false);
     if l.deleted {
@@ -433,21 +497,51 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
             v.push(It::Space);
             v.push(It::Struck(w.to_string()));
         }
-        return v;
+        return;
     }
     for w in l.text.split(' ') {
         v.push(It::Space);
         let known = l.emotes.iter().find(|e| e.0 == w).map(|e| e.1.clone());
-        if let Some(p) = known.or_else(|| emotes::third(&l.platform, w)).and_then(|u| pic(&u)) {
-            v.push(It::Pic(p));
+        if let Some((p, u)) = known
+            .or_else(|| emotes::third(&l.platform, w))
+            .and_then(|u| pic(&u).map(|p| (p, u)))
+        {
+            v.push(It::Pic(p, Some(emote_tip(&l.platform, w, &u))));
             continue;
         }
         for (part, url) in emotes::split(w) {
-            match url.and_then(|u| pic(&u)) {
-                Some(p) => v.push(It::Pic(p)),
+            match url.and_then(|u| pic(&u).map(|p| (p, u))) {
+                Some((p, u)) => v.push(It::Pic(p, Some(emote_tip(&l.platform, part, &u)))),
                 None => v.push(It::Text(part.to_string(), Font::Helvetica, fg)),
             }
         }
+    }
+}
+
+/// A line's accent ("#RRGGBB") as a colour.
+fn accent(l: &Line) -> Option<Color> {
+    let hex = l.accent.trim_start_matches('#');
+    let v = u32::from_str_radix(hex, 16).ok().filter(|_| hex.len() == 6)?;
+    Some(Color::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8))
+}
+
+/// An event's line: its icon, who, what happened; under it, what they wrote with it.
+fn event_items(cmds: &Cmds, l: &Line, mut v: Vec<It>) -> Vec<It> {
+    let c = accent(l).unwrap_or(Color::Foreground);
+    if let Some(s) = icons::icon(&l.icon, c, 16) {
+        v.push(It::Svg(s));
+        v.push(It::Gap(6));
+    }
+    if !l.user.is_empty() {
+        v.push(It::Text(l.user.clone(), Font::HelveticaBold, name_color(l)));
+    }
+    for w in l.event.split(' ') {
+        v.push(It::Space);
+        v.push(It::Text(w.to_string(), Font::Helvetica, Color::Foreground));
+    }
+    if !l.text.is_empty() {
+        v.push(It::Break);
+        words(cmds, l, &mut v);
     }
     v
 }
@@ -497,6 +591,24 @@ struct State {
     /// The line under the pointer, which shows its actions, and the action under it.
     hover: Option<usize>,
     act: Option<usize>,
+    /// A name opens its user card (not inside a card: it's that user already).
+    cards: bool,
+    /// The messages pinned in the chats shown, drawn over the top; and a redraw due for their countdown.
+    pins: Vec<Pin>,
+    pin_tick: bool,
+}
+
+/// A pinned message's box at the top of the chat.
+const PIN_H: i32 = 46;
+
+/// "4:05", "1:02:09": what's left of a pin.
+fn left(ms: u64) -> String {
+    let s = ms.div_ceil(1000);
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+    } else {
+        format!("{}:{:02}", s / 60, s % 60)
+    }
 }
 
 /// A message's hover actions.
@@ -512,14 +624,15 @@ const ACT: i32 = 28;
 
 /// The actions `l` offers (with their icon and tooltip): moderation only where the platform has it,
 /// and not on the broadcaster.
-fn acts(l: &Line) -> Vec<(Act, &'static str, &'static str)> {
+fn acts(l: &Line, reply: bool) -> Vec<(Act, &'static str, &'static str)> {
     if l.note || l.deleted {
         return Vec::new();
     }
-    let mut v = vec![
-        (Act::Reply, "corner-up-left", tr("chat.act_reply")),
-        (Act::Copy, "copy", tr("chat.act_copy")),
-    ];
+    let mut v = vec![(Act::Copy, "copy", tr("chat.act_copy"))];
+    // An event isn't a message to answer, and a pane with no box under it has nowhere to answer.
+    if reply && l.event.is_empty() {
+        v.insert(0, (Act::Reply, "corner-up-left", tr("chat.act_reply")));
+    }
     let p = l.platform.as_str();
     if p == "twitch" && !l.msg_id.is_empty() {
         v.push(if pinned(l) {
@@ -541,20 +654,20 @@ fn acts(l: &Line) -> Vec<(Act, &'static str, &'static str)> {
 /// What Reply does: the chat box under the pane answers `l`.
 type OnReply = Rc<RefCell<Option<Rc<dyn Fn(&Line)>>>>;
 /// Answer a line in a chat box (None: stop answering).
-type SetReply = Rc<dyn Fn(Option<&Line>)>;
+pub(super) type SetReply = Rc<dyn Fn(Option<&Line>)>;
 
-/// One chat view: the lines, drawn, with a scrollbar.
+/// One chat view: the lines, drawn, with a scrollbar. The chat's columns have one, and so has a user card.
 #[derive(Clone)]
-struct Pane {
+pub(super) struct Pane {
     area: Frame,
     bar: Slider,
     st: Rc<RefCell<State>>,
     cmds: Cmds,
-    on_reply: OnReply,
+    pub(super) on_reply: OnReply,
 }
 
 impl Pane {
-    fn new(cmds: &Cmds) -> (Flex, Pane) {
+    pub(super) fn new(cmds: &Cmds) -> (Flex, Pane) {
         let mut group = Flex::default().row();
         group.set_pad(0);
         let mut area = Frame::default();
@@ -590,6 +703,9 @@ impl Pane {
                 ticking: false,
                 hover: None,
                 act: None,
+                cards: true,
+                pins: Vec::new(),
+                pin_tick: false,
             })),
             cmds: cmds.clone(),
             on_reply: Rc::default(),
@@ -616,7 +732,13 @@ impl Pane {
     }
 
     fn total(&self, st: &State) -> i32 {
-        st.laid.iter().map(|l| l.1).sum::<i32>() + 8
+        st.laid.iter().map(|l| l.1).sum::<i32>() + 8 + self.head(st)
+    }
+
+    /// The room the pins take at the top: the lines start under them.
+    fn head(&self, st: &State) -> i32 {
+        let ms = epoch_ms();
+        st.pins.iter().filter(|p| p.live(ms)).count() as i32 * (PIN_H + 4)
     }
 
     fn lay(&self, l: &Line, tag: bool, w: i32) -> (Rows, i32) {
@@ -661,8 +783,8 @@ impl Pane {
         self.settle(&mut st);
         draw::draw_box(f.frame(), f.x(), f.y(), f.w(), f.h(), f.color());
         draw::push_clip(f.x() + 2, f.y() + 2, f.w() - 4, f.h() - 4);
-        let (ms, mut moving) = (now_ms(), false);
-        let mut y = f.y() + 4 - st.top;
+        let (ms, mut moving, animate) = (now_ms(), false, SHOW.get().2);
+        let mut y = f.y() + 4 + self.head(&st) - st.top;
         for (i, (laid, h)) in st.laid.iter().enumerate() {
             if y + h < f.y() {
                 y += h;
@@ -670,6 +792,17 @@ impl Pane {
             }
             if y > f.y() + f.h() {
                 break;
+            }
+            // Events and set-apart messages: a tint of their colour, and a bar at the left.
+            if let Some(c) = st.lines.get(i).and_then(accent) {
+                draw::draw_rect_fill(
+                    f.x() + 2,
+                    y,
+                    f.w() - 4,
+                    *h,
+                    Color::color_average(c, Color::Background2, 0.14),
+                );
+                draw::draw_rect_fill(f.x() + 2, y, 3, *h, c);
             }
             if st.hover == Some(i) {
                 draw::draw_rect_fill(f.x() + 2, y, f.w() - 4, *h, Color::from_rgb(0x2c, 0x2e, 0x34));
@@ -684,12 +817,12 @@ impl Pane {
                             draw::set_draw_color(*color);
                             draw::draw_text2(t, x, y, 0, rh, Align::Left);
                         }
-                        It::Pic(p) => {
-                            moving |= p.animated();
-                            let mut i = p.at(ms).clone();
+                        It::Pic(p, _) => {
+                            moving |= animate && p.animated();
+                            let mut i = if animate { p.at(ms).clone() } else { p.first() };
                             i.draw(x, y + (rh - i.h()) / 2, i.w(), i.h());
                         }
-                        It::Svg(s) => {
+                        It::Svg(s) | It::SvgTip(s, _) => {
                             let (w, h) = (s.w(), s.h());
                             s.clone().draw(x, y + (rh - h) / 2, w, h);
                         }
@@ -721,7 +854,7 @@ impl Pane {
             }
         }
         if let Some((l, bx, by)) = st.hover.and_then(|i| self.bar_at(f, &st, i)) {
-            let a = acts(l);
+            let a = acts(l, self.on_reply.borrow().is_some());
             let (fg, bg) = (Color::Foreground, Color::Background);
             let n = a.len() as i32;
             draw::set_draw_color(bg);
@@ -744,7 +877,19 @@ impl Pane {
                 }
             }
         }
+        let counting = self.draw_pins(f, &st.pins, epoch_ms());
         draw::pop_clip();
+        // A pin's countdown: a redraw a second, only while one with an end is shown.
+        if counting && !st.pin_tick {
+            st.pin_tick = true;
+            let p = self.clone();
+            app::add_timeout3(1.0, move |_| {
+                p.st.borrow_mut().pin_tick = false;
+                if !p.area.was_deleted() {
+                    p.area.clone().redraw();
+                }
+            });
+        }
         // Animated emotes on screen: one redraw ~20 times a second, only while this is drawn.
         if moving && !st.ticking {
             st.ticking = true;
@@ -758,9 +903,88 @@ impl Pane {
         }
     }
 
+    /// The pins over the top of the chat: who pinned, what's left, and the message. Whether one counts down.
+    fn draw_pins(&self, f: &Frame, pins: &[Pin], ms: u64) -> bool {
+        let (fg, bg) = (Color::Foreground, Color::Background);
+        let mut counting = false;
+        for (k, p) in pins.iter().filter(|p| p.live(ms)).enumerate() {
+            let (x, y, w) = (f.x() + 6, f.y() + 6 + k as i32 * (PIN_H + 4), f.w() - 24);
+            draw::set_draw_color(bg);
+            draw::draw_rounded_rectf(x, y, w, PIN_H, 6);
+            draw::set_draw_color(Color::color_average(Color::Selection, bg, 0.6));
+            draw::draw_rounded_rect(x, y, w, PIN_H, 6);
+            if let Some(mut i) = icons::icon("pin", Color::Selection, 14) {
+                i.draw(x + 10, y + 6, 14, 14);
+            }
+            let tag = PLATFORMS.iter().position(|q| *q == p.platform).map(|i| NAMES[i]);
+            let mut tx = x + 30;
+            if let Some(mut s) = tag.and_then(|n| icon_sized(n, 14)) {
+                s.draw(tx, y + 6, 14, 14);
+                tx += 20;
+            }
+            let who = if p.by.is_empty() {
+                tr("chat.pinned").to_string()
+            } else {
+                trf("chat.pinned_by", &[("user", &p.by)])
+            };
+            let when = match p.until {
+                Some(u) => {
+                    counting = true;
+                    trf("chat.pin_left", &[("time", &left(u.saturating_sub(ms)))])
+                }
+                None if p.platform == "youtube" => tr("chat.pin_until_unpinned").to_string(),
+                None => tr("chat.pin_until_end").to_string(),
+            };
+            draw::set_font(Font::Helvetica, 12);
+            let muted = Color::color_average(fg, bg, 0.6);
+            draw::set_draw_color(muted);
+            let ww = draw::width(&when) as i32;
+            draw::draw_text2(&when, x + w - ww - 10, y + 2, ww, 22, Align::Left);
+            draw::draw_text2(
+                &who,
+                tx,
+                y + 2,
+                (x + w - ww - 20 - tx).max(0),
+                22,
+                Align::Left | Align::Clip,
+            );
+            draw::set_font(Font::HelveticaBold, TEXT);
+            draw::set_draw_color(fg);
+            let name = format!("{}:", p.user);
+            let nw = draw::width(&name) as i32;
+            draw::draw_text2(&name, x + 10, y + 22, nw, 22, Align::Left);
+            draw::set_font(Font::Helvetica, TEXT);
+            let room = (w - 20 - nw - 6).max(0);
+            let said = super::fit::ellipsize(&p.text, room, |t| draw::width(t) as i32);
+            draw::draw_text2(&said, x + 16 + nw, y + 22, room, 22, Align::Left | Align::Clip);
+        }
+        counting
+    }
+
+    /// The pin under the pointer, if any.
+    fn pin_at(&self, f: &Frame) -> Option<Pin> {
+        let st = self.st.borrow();
+        let ms = epoch_ms();
+        let dy = app::event_y() - f.y() - 6;
+        let k = dy.div_euclid(PIN_H + 4);
+        (dy >= 0 && dy % (PIN_H + 4) < PIN_H)
+            .then(|| st.pins.iter().filter(|p| p.live(ms)).nth(k as usize).cloned())
+            .flatten()
+    }
+
+    /// The pins of the chats this pane shows.
+    pub(super) fn set_pins(&self, pins: Vec<Pin>) {
+        let mut st = self.st.borrow_mut();
+        if st.pins != pins {
+            st.pins = pins;
+            drop(st);
+            self.area.clone().redraw();
+        }
+    }
+
     /// The line under the pointer's y.
     fn line_at(&self, f: &Frame, st: &State) -> Option<usize> {
-        let mut y = f.y() + 4 - st.top;
+        let mut y = f.y() + 4 + self.head(st) - st.top;
         for (i, (_, h)) in st.laid.iter().enumerate() {
             if (y..y + h).contains(&app::event_y()) {
                 return Some(i);
@@ -773,11 +997,11 @@ impl Pane {
     /// Line `i` and where its action bar goes: at the right of its first row, kept inside the view.
     fn bar_at<'a>(&self, f: &Frame, st: &'a State, i: usize) -> Option<(&'a Line, i32, i32)> {
         let l = st.lines.get(i)?;
-        let n = acts(l).len() as i32;
+        let n = acts(l, self.on_reply.borrow().is_some()).len() as i32;
         if n == 0 {
             return None;
         }
-        let y = f.y() + 4 - st.top + st.laid.iter().take(i).map(|l| l.1).sum::<i32>();
+        let y = f.y() + 4 + self.head(st) - st.top + st.laid.iter().take(i).map(|l| l.1).sum::<i32>();
         let first = st.laid.get(i)?.0.first().map_or(LINE, |r| r.1);
         let by = (y + (first - ACT) / 2).clamp(f.y() + 4, f.y() + f.h() - ACT - 4);
         Some((l, f.x() + f.w() - n * ACT - 8, by))
@@ -788,7 +1012,8 @@ impl Pane {
         let (l, bx, by) = self.bar_at(f, st, st.hover?)?;
         let (ex, ey) = (app::event_x(), app::event_y());
         let k = (ex - bx).div_euclid(ACT);
-        ((by..by + ACT).contains(&ey) && (0..acts(l).len() as i32).contains(&k)).then_some(k as usize)
+        ((by..by + ACT).contains(&ey) && (0..acts(l, self.on_reply.borrow().is_some()).len() as i32).contains(&k))
+            .then_some(k as usize)
     }
 
     /// The action under the pointer, on the hovered line: the line and its `acts` entry.
@@ -796,7 +1021,7 @@ impl Pane {
         let st = self.st.borrow();
         let k = self.act_index(f, &st)?;
         let l = st.lines.get(st.hover?)?;
-        Some((l.clone(), acts(l)[k]))
+        Some((l.clone(), acts(l, self.on_reply.borrow().is_some())[k]))
     }
 
     fn run(&self, l: &Line, a: Act) {
@@ -819,9 +1044,7 @@ impl Pane {
                     tr("chat.pin_30m"),
                     tr("chat.pin_stream_ends"),
                 ];
-                let menu = fltk::menu::MenuItem::new(&labels);
-                if let Some(item) = menu.popup(app::event_x(), app::event_y()) {
-                    let idx = item.value() as usize;
+                if let Some(idx) = super::pick(&labels) {
                     if let Some(&secs) = SECONDS.get(idx) {
                         let l = l.clone();
                         tell(&self.cmds, move |e| e.moderate(&l, Moderate::Pin(secs)));
@@ -838,9 +1061,7 @@ impl Pane {
                     tr("chat.timeout_1d"),
                     tr("chat.timeout_1w"),
                 ];
-                let menu = fltk::menu::MenuItem::new(&labels);
-                if let Some(item) = menu.popup(app::event_x(), app::event_y()) {
-                    let idx = item.value() as usize;
+                if let Some(idx) = super::pick(&labels) {
                     if let Some(&secs) = TIMEOUTS.get(idx) {
                         let l = l.clone();
                         tell(&self.cmds, move |e| e.moderate(&l, Moderate::Timeout(secs)));
@@ -865,7 +1086,10 @@ impl Pane {
     fn name_at(&self, f: &Frame) -> Option<Line> {
         let (ex, ey) = (app::event_x() - f.x() - 6, app::event_y());
         let st = self.st.borrow();
-        let mut y = f.y() + 4 - st.top;
+        if !st.cards {
+            return None;
+        }
+        let mut y = f.y() + 4 + self.head(&st) - st.top;
         for (l, (laid, h)) in st.lines.iter().zip(&st.laid) {
             if !(y..y + h).contains(&ey) {
                 y += h;
@@ -885,7 +1109,35 @@ impl Pane {
         None
     }
 
+    /// The emote or badge under the pointer.
+    fn tip_at(&self, f: &Frame) -> Option<Rc<Tip>> {
+        let (ex, ey) = (app::event_x() - f.x() - 6, app::event_y());
+        let st = self.st.borrow();
+        let mut y = f.y() + 4 + self.head(&st) - st.top;
+        for (laid, h) in &st.laid {
+            if !(y..y + h).contains(&ey) {
+                y += h;
+                continue;
+            }
+            for (row, rh) in laid {
+                if (y..y + rh).contains(&ey) {
+                    return row.iter().find_map(|(it, x)| match it {
+                        It::Pic(p, Some(t)) if (*x..x + p.w()).contains(&ex) => Some(t.clone()),
+                        It::SvgTip(s, t) if (*x..x + s.w()).contains(&ex) => Some(t.clone()),
+                        _ => None,
+                    });
+                }
+                y += rh;
+            }
+            return None;
+        }
+        None
+    }
+
     fn handle(&self, f: &mut Frame, ev: Event) -> bool {
+        if matches!(ev, Event::Push | Event::MouseWheel | Event::Leave | Event::Hide) {
+            tip::point(&self.cmds, f, None);
+        }
         match ev {
             Event::Enter => true,
             Event::Move => {
@@ -901,6 +1153,8 @@ impl Pane {
                 }
                 let act = self.act_at(f);
                 f.set_tooltip(act.as_ref().map_or("", |a| a.1 .2));
+                let over = if act.is_some() { None } else { self.tip_at(f) };
+                tip::point(&self.cmds, f, over);
                 let hand = act.is_some() || self.name_at(f).is_some();
                 if let Some(mut w) = f.window() {
                     w.set_cursor(if hand {
@@ -923,7 +1177,35 @@ impl Pane {
                 }
                 true
             }
-            Event::Push if app::event_mouse_button() == app::MouseButton::Right => {
+            // A pin: right click unpins it; a click on it does nothing else.
+            Event::Push if self.pin_at(f).is_some() => {
+                let pin = self.pin_at(f).expect("a pin");
+                if super::right_button() {
+                    use fltk::menu::{MenuButton, MenuFlag};
+                    let mut m = super::menu_at_pointer();
+                    let cmds = self.cmds.clone();
+                    let i = m.add(
+                        tr("chat.act_unpin"),
+                        fltk::enums::Shortcut::None,
+                        MenuFlag::Normal,
+                        move |_| {
+                            let l = Line {
+                                platform: pin.platform.clone(),
+                                msg_id: pin.msg_id.clone(),
+                                ..Default::default()
+                            };
+                            tell(&cmds, move |e| e.moderate(&l, Moderate::Unpin));
+                        },
+                    );
+                    if let Some(mut item) = m.at(i) {
+                        item.add_image(icons::before_label("pin-off", super::muted(), 14), true);
+                    }
+                    m.popup();
+                    MenuButton::delete(m);
+                }
+                true
+            }
+            Event::Push if super::right_button() => {
                 let l = {
                     let st = self.st.borrow();
                     self.line_at(f, &st).and_then(|i| st.lines.get(i).cloned())
@@ -931,7 +1213,7 @@ impl Pane {
                 let Some(l) = l.filter(|l| !l.note) else { return true };
                 use fltk::menu::{MenuButton, MenuFlag};
                 let mut m = super::menu_at_pointer();
-                for (act, icon, name) in acts(&l) {
+                for (act, icon, name) in acts(&l, self.on_reply.borrow().is_some()) {
                     let (p, l) = (self.clone(), l.clone());
                     let i = m.add(name, fltk::enums::Shortcut::None, MenuFlag::Normal, move |_| {
                         p.run(&l, act)
@@ -940,7 +1222,7 @@ impl Pane {
                         item.add_image(icons::before_label(icon, super::muted(), 14), true);
                     }
                 }
-                if !l.user_id.is_empty() {
+                if !l.user_id.is_empty() && self.st.borrow().cards {
                     let (cmds, l) = (self.cmds.clone(), l.clone());
                     m.add(
                         tr("chat.user_info"),
@@ -961,7 +1243,7 @@ impl Pane {
                 MenuButton::delete(m);
                 true
             }
-            Event::Push if app::event_mouse_button() == app::MouseButton::Left => {
+            Event::Push if super::left_button() => {
                 if let Some((l, a)) = self.act_at(f) {
                     self.run(&l, a.0);
                 } else if let Some(l) = self.name_at(f) {
@@ -992,7 +1274,12 @@ impl Pane {
         }
     }
 
-    fn add(&self, l: &Line) {
+    /// Names don't open user cards (the pane is in one).
+    pub(super) fn no_cards(&self) {
+        self.st.borrow_mut().cards = false;
+    }
+
+    pub(super) fn add(&self, l: &Line) {
         let mut st = self.st.borrow_mut();
         if st.lines.len() == KEEP {
             st.lines.pop_front();
@@ -1008,7 +1295,7 @@ impl Pane {
         self.area.clone().redraw();
     }
 
-    fn replace_all(&self, lines: impl Iterator<Item = Line>) {
+    pub(super) fn replace_all(&self, lines: impl Iterator<Item = Line>) {
         let mut st = self.st.borrow_mut();
         st.lines.clear();
         st.hover = None;
@@ -1139,7 +1426,7 @@ impl ChatColumn {
         });
         let target_plat = Rc::new(Cell::new(init_idx));
         let reply: Rc<RefCell<Option<Line>>> = Rc::default();
-        let click = emote_field(&mut input, cmds, target_plat.clone(), "Send a message");
+        let click = emote_field(&mut input, cmds, target_plat.clone(), tr("chat.send_placeholder"));
         // Answer `l` (None: stop); in the all-platforms box, to `l`'s platform.
         let set_reply: SetReply = {
             let (reply, col, replying, r_text) = (reply.clone(), col.clone(), replying.clone(), r_text.clone());
@@ -1316,6 +1603,9 @@ pub struct Chat {
     seen: u64,
 }
 
+/// The last chat line the page took in (its `seq`), for dev mode's `chat` command.
+pub static SHOWN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 impl Chat {
     /// Sync new lines (or full history resync when pre-join history / badges updated) and refresh avatars.
     pub fn refresh(&mut self) {
@@ -1333,7 +1623,11 @@ impl Chat {
             return;
         };
         self.client_gen = new_gen;
+        if let Some(l) = lines.last() {
+            SHOWN.store(l.seq, std::sync::atomic::Ordering::Relaxed);
+        }
         let v = self.view.value();
+        self.show_pins(v);
         if full {
             self.seen = lines.last().map_or(0, |l| l.seq);
             match v {
@@ -1365,6 +1659,23 @@ impl Chat {
                 _ => {}
             }
             self.seen = l.seq;
+        }
+    }
+
+    /// Each pane gets the pins of the chats it shows (Twitch is asked, now and then, for pins made on
+    /// its site).
+    fn show_pins(&self, v: i32) {
+        tell(&self.cmds, |e| e.twitch_check_pin());
+        let pins = query(&self.cmds, |e| e.chat_pins()).unwrap_or_default();
+        let of = |p: &str| pins.iter().filter(|x| x.platform == p).cloned().collect::<Vec<_>>();
+        match v {
+            1 => {
+                for (i, col) in self.side.iter().enumerate() {
+                    col.pane.set_pins(of(PLATFORMS[i]));
+                }
+            }
+            0 => self.main.pane.set_pins(pins.clone()),
+            _ => self.main.pane.set_pins(self.shown().map(of).unwrap_or_default()),
         }
     }
 
@@ -1493,18 +1804,34 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
     hint.set_label_color(super::muted());
 
     // Discrete "Message all" button with broadcast icon
-    let mut msg_all = Button::default()
-        .with_label(tr("chat.message_all_btn"))
-        .with_align(Align::Inside | Align::ImageNextToText);
-    msg_all.set_image(icons::icon("megaphone", Color::Foreground, 15));
+    let mut msg_all = Button::default().with_label(tr("chat.message_all_btn"));
+    msg_all.set_image(icons::before_label("megaphone", Color::Foreground, 14));
+    super::fit::adaptive(&mut msg_all);
     msg_all.set_tooltip(tr("chat.message_all_tooltip"));
-    top.fixed(&msg_all, 114);
+    let msg_all_w = super::fit::grown(114, tr("chat.message_all_btn"), true);
+    top.fixed(&msg_all, msg_all_w);
 
     let mut opts = fltk::menu::MenuButton::default().with_label(tr("chat.options"));
     top.fixed(&opts, 84);
     let mut clear = button(&mut top, tr("btn.clear"), 64);
     top.end();
     col.fixed(&top, ROW);
+    // Narrow: the buttons keep only their icons, and the hint goes.
+    top.resize_callback({
+        let (msg_all, clear, mut hint) = (msg_all.clone(), clear.clone(), hint.clone());
+        // As wide as `button` makes them.
+        let clear_w = super::fit::grown(84, tr("btn.clear"), true);
+        move |t, _, _, w, _| {
+            let narrow = w < 600;
+            t.fixed(&msg_all, if narrow { 36 } else { msg_all_w });
+            t.fixed(&clear, if narrow { 36 } else { clear_w });
+            if narrow {
+                hint.hide();
+            } else {
+                hint.show();
+            }
+        }
+    });
 
     let go_accounts: Rc<dyn Fn()> = {
         let tabs = tabs.clone();
@@ -1575,12 +1902,16 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
 
     {
         let w = &cfg.borrow().window;
-        SHOW.set((!w.chat_no_time, !w.chat_no_badges));
+        SHOW.set((!w.chat_no_time, !w.chat_no_badges, !w.chat_still_emotes));
     }
-    let (time, badges) = SHOW.get();
-    for (i, (label, on)) in [(tr("chat.opt_time"), time), (tr("chat.opt_badges"), badges)]
-        .into_iter()
-        .enumerate()
+    let (time, badges, moving) = SHOW.get();
+    for (i, (label, on)) in [
+        (tr("chat.opt_time"), time),
+        (tr("chat.opt_badges"), badges),
+        (tr("chat.opt_animated"), moving),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let flag = if on {
             fltk::menu::MenuFlag::Toggle | fltk::menu::MenuFlag::Value
@@ -1590,15 +1921,16 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
         let (me, cfg) = (me.clone(), cfg.clone());
         opts.add(label, fltk::enums::Shortcut::None, flag, move |m| {
             let on = m.at(i as i32).is_some_and(|x| x.value());
-            let (mut time, mut badges) = SHOW.get();
-            if i == 0 {
-                time = on;
-            } else {
-                badges = on;
+            let (mut time, mut badges, mut moving) = SHOW.get();
+            match i {
+                0 => time = on,
+                1 => badges = on,
+                _ => moving = on,
             }
-            SHOW.set((time, badges));
+            SHOW.set((time, badges, moving));
             cfg.send_if_modified(|c| {
-                (c.window.chat_no_time, c.window.chat_no_badges) = (!time, !badges);
+                let w = &mut c.window;
+                (w.chat_no_time, w.chat_no_badges, w.chat_still_emotes) = (!time, !badges, !moving);
                 false
             });
             me.borrow().images();
@@ -1816,7 +2148,7 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
     populate();
     win.show();
     while win.shown() && !done.get() {
-        let _ = app::wait_for(0.1);
+        super::nested_wait(Some(0.1));
     }
     win.hide();
     app::delete_widget(win);
@@ -1908,7 +2240,7 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
     let mut bar = Flex::default().row();
     bar.set_pad(4);
     let mut input = Input::default();
-    let click = emote_field(&mut input, cmds, Rc::new(Cell::new(0)), "Send a message");
+    let click = emote_field(&mut input, cmds, Rc::new(Cell::new(0)), tr("chat.send_placeholder"));
     let mut emote_btn = Button::default();
     emote_btn.set_frame(FrameType::FlatBox);
     emote_btn.set_image(icons::icon("smile", super::muted(), 18));
@@ -2002,7 +2334,7 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
     win.show();
     let _ = input.take_focus();
     while win.shown() && !done.get() {
-        let _ = app::wait_for(0.1);
+        super::nested_wait(Some(0.1));
     }
     win.hide();
     app::delete_widget(win);
@@ -2168,7 +2500,7 @@ fn emote_field(
     });
     // Clicks land between the pieces as drawn.
     move |i: &mut Input, ev: Event| {
-        if !matches!(ev, Event::Push | Event::Drag) || app::event_mouse_button() != app::MouseButton::Left {
+        if !matches!(ev, Event::Push | Event::Drag) || !super::left_button() {
             return false;
         }
         let Some(ps) = state(i) else { return false };
@@ -2418,7 +2750,7 @@ fn emote_picker_popup(
     let mut seen_rev = emotes::REV.load(std::sync::atomic::Ordering::Relaxed);
     let mut picked = false;
     while !done.get() && own_win.as_ref().is_none_or(|w| w.shown()) {
-        let _ = app::wait_for(0.25);
+        super::nested_wait(Some(0.25));
         let asked: Vec<super::grid::Asked> = grid.asked.borrow_mut().drain(..).collect();
         let mut refill = false;
         for a in asked {
@@ -2480,4 +2812,14 @@ fn shown_platforms(cmds: &Cmds) -> Vec<usize> {
             .collect()
     })
     .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_pins_time_left_reads_as_a_clock() {
+        assert_eq!(super::left(125_000), "2:05");
+        assert_eq!(super::left(1), "0:01");
+        assert_eq!(super::left(3_729_000), "1:02:09");
+    }
 }

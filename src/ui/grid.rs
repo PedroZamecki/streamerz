@@ -277,7 +277,7 @@ impl Grid {
                     self.drag(f);
                     return true;
                 }
-                let right = app::event_mouse_button() == app::MouseButton::Right;
+                let right = super::right_button();
                 let asked = match self.under(&st).and_then(|k| st.items.get(k)) {
                     Some(Item::Head { title, .. }) => Asked::Fold(title.clone()),
                     Some(Item::Emote { name, url, .. }) if right => Asked::Favorite(name.clone(), url.clone()),

@@ -13,8 +13,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Read only by default: only the release job writes (a fork's pull request never can).
 permissions:
-  contents: write
+  contents: read
   actions: read
 
 # A newer push to a pull request replaces its run; a run on main is never cancelled (it's a release).
@@ -160,7 +161,7 @@ jobs:
             libx11-dev libxext-dev libxft-dev libxinerama-dev libxcursor-dev libxrender-dev \
             libxfixes-dev libpango1.0-dev libgl1-mesa-dev libglu1-mesa-dev libwayland-dev \
             wayland-protocols libdbus-1-dev libxkbcommon-dev libegl-dev libopengl-dev \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libfuse2
+            libfuse2
           cp -n /var/cache/apt/archives/*.deb ~/.apt-cache/ 2>/dev/null || true
       - if: needs.version.outputs.reuse == ''
         uses: Swatinem/rust-cache@v2
@@ -184,19 +185,42 @@ jobs:
     needs: [version, windows, linux]
     if: needs.version.outputs.tag != '' && github.event_name == 'push'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           pattern: streamerz-*-${{ needs.version.outputs.tag }}-${{ needs.version.outputs.tree }}
           path: artifacts
           merge-multiple: true
+      # Notes list every commit since the last tag (GitHub's generator only lists pull requests).
+      - name: Write release notes
+        shell: bash
+        run: |
+          last=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          : > notes.md
+          section() {
+            lines=$(git log ${last:+"$last..HEAD"} --no-merges --format='- %s (%h)' -E --grep="$2" || true)
+            if [ -n "$lines" ]; then printf '## %s\n\n%s\n\n' "$1" "$lines" >> notes.md; fi
+          }
+          section "Breaking changes" '^[a-z]+(\([^)]*\))?!:'
+          section "Features" '^feat(\([^)]*\))?:'
+          section "Fixes" '^fix(\([^)]*\))?:'
+          section "Performance" '^perf(\([^)]*\))?:'
+          section "Other changes" '^(refactor|docs|test|build|ci|chore|style|revert)(\([^)]*\))?:'
+          if [ -n "$last" ]; then
+            printf '**Full changelog**: https://github.com/%s/compare/%s...%s\n' "${{ github.repository }}" "$last" "${{ needs.version.outputs.tag }}" >> notes.md
+          fi
       - name: Publish release
         run: >
           gh release create "${{ needs.version.outputs.tag }}"
           artifacts/*
           --repo "${{ github.repository }}"
           --target "${{ github.sha }}"
-          --generate-notes
+          --notes-file notes.md
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -226,8 +250,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libx11-dev libxext-dev libxft-dev libxinerama-dev libxcursor-dev libxrender-dev \
             libxfixes-dev libpango1.0-dev libgl1-mesa-dev libglu1-mesa-dev libwayland-dev \
-            wayland-protocols libdbus-1-dev libxkbcommon-dev libegl-dev libopengl-dev \
-            libwebkit2gtk-4.1-dev libgtk-3-dev
+            wayland-protocols libdbus-1-dev libxkbcommon-dev libegl-dev libopengl-dev
           cp -n /var/cache/apt/archives/*.deb ~/.apt-cache/ 2>/dev/null || true
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked

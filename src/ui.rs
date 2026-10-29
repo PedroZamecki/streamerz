@@ -9,6 +9,7 @@ mod conns;
 mod dev;
 pub(crate) mod dialogs;
 pub(crate) mod emotes;
+mod find;
 pub(crate) mod fit;
 pub(crate) mod forms;
 mod grid;
@@ -18,9 +19,12 @@ mod lists;
 mod nav;
 pub mod picker;
 mod plugins;
+pub(crate) mod polls;
 pub(crate) mod popover;
+mod recovery;
 mod rows;
 mod settings;
+mod tip;
 
 use self::fit::Ellipsis;
 use crate::brand;
@@ -64,6 +68,8 @@ pub enum Msg {
     Theme,
     /// A dev command for the window (see `dev`).
     Dev,
+    /// The tray's Quit: save what the window keeps, then quit.
+    Quit,
 }
 
 const ROW: i32 = 26;
@@ -173,6 +179,75 @@ pub(crate) fn pump_dev() {
     }
 }
 
+thread_local! {
+    /// Takes in the engine's news (chat, log, changes, pictures...); set once the window is built.
+    static NESTED: std::cell::RefCell<Option<Rc<dyn Fn()>>> = const { std::cell::RefCell::new(None) };
+    /// Messages taken in a dialog's loop that only the main loop may act on (opening a dialog or the window).
+    static DEFERRED: std::cell::RefCell<Vec<Msg>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// A pump is already due (see `pump_chat`).
+    static PUMP_DUE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The mouse button of the event in progress. The raw number: `app::event_mouse_button` turns it into an
+/// enum, which is undefined behaviour (a crash) for the odd values some compositors send.
+pub(crate) fn right_button() -> bool {
+    app::event_button() == 3
+}
+
+/// What the window is handling right now, for a crash report: the raw mouse button and key (never the
+/// enums, which can't hold every value), where, and what the pointer is over.
+fn event_probe() -> String {
+    let under = app::belowmouse::<fltk::widget::Widget>()
+        .map(|w| format!("\"{}\" {}x{}", w.label(), w.w(), w.h()))
+        .unwrap_or_else(|| "nothing".into());
+    format!(
+        "mouse button {}, key {:#x}, at {},{}, pointer over {under}",
+        app::event_button(),
+        app::event_key().bits(),
+        app::event_x(),
+        app::event_y()
+    )
+}
+
+pub(crate) fn left_button() -> bool {
+    app::event_button() == 1
+}
+
+/// Takes in what the engine reported (chat, log, changes, pictures) from inside a dialog or popover
+/// holding the window's loop: the main loop reads its messages only between its own waits, so without
+/// this the screen would freeze under them. At most 5 times a second (a dialog's loop turns on every mouse
+/// move); a turn skipped for that is made up by a timer, so the news never waits for the next event.
+pub(crate) fn pump_chat() {
+    thread_local!(static LAST: Cell<Option<std::time::Instant>> = const { Cell::new(None) });
+    const EVERY: std::time::Duration = std::time::Duration::from_millis(200);
+    if let Some(since) = LAST.get().map(|t| t.elapsed()).filter(|t| *t < EVERY) {
+        if !PUMP_DUE.replace(true) {
+            app::add_timeout3((EVERY - since).as_secs_f64(), |_| {
+                PUMP_DUE.set(false);
+                pump_chat();
+            });
+        }
+        return;
+    }
+    LAST.set(Some(std::time::Instant::now()));
+    if let Some(f) = NESTED.with(|p| p.borrow().clone()) {
+        f();
+    }
+}
+
+/// One turn of a dialog's or popover's own loop (they hold the window's): waits for an event, or `secs`
+/// at most when given, then does what the main loop would meanwhile (the chat keeps moving, dev
+/// commands are answered). False when the app is closing.
+pub(crate) fn nested_wait(secs: Option<f64>) -> bool {
+    let go = match secs {
+        Some(s) => app::wait_for(s).is_ok(),
+        None => app::wait(),
+    };
+    pump_dev();
+    pump_chat();
+    go
+}
+
 /// Yes/no questions from the engine: the text, the two buttons (no, yes), and where the answer goes.
 type Confirm = (String, &'static str, &'static str, oneshot::Sender<bool>);
 static CONFIRMS: Mutex<Vec<Confirm>> = Mutex::new(Vec::new());
@@ -236,7 +311,7 @@ fn ask(title: &str, prompt: &str, text: &str) -> Option<String> {
     });
     win.show();
     while win.shown() && answer.get().is_none() {
-        if !app::wait() {
+        if !nested_wait(None) {
             break;
         }
     }
@@ -272,6 +347,19 @@ fn wake(m: Msg) {
 /// The engine changed the config: redraw what shows it, if the window is up.
 pub fn changed() {
     wake(Msg::Changed);
+}
+
+/// Polls and predictions changed somewhere (a platform's event): the Polls page reads them again.
+pub static POLLS_DIRTY: AtomicBool = AtomicBool::new(true);
+
+pub fn polls_changed() {
+    POLLS_DIRTY.store(true, Ordering::Relaxed);
+    changed();
+}
+
+/// Something a popover waits for arrived (from any thread): its loop turns now, not at its next tick.
+pub(crate) fn wake_card() {
+    app::awake();
 }
 
 /// New chat: refresh the chat tab, if the window is up.
@@ -430,6 +518,66 @@ pub(crate) fn header(col: &mut Flex, widths: &'static [i32], titles: &[&'static 
     col.fixed(&f, 16);
 }
 
+/// Column titles that sort: click one to sort by it, again to turn it around. `sort` holds the column
+/// and whether it goes up; the frame's callback runs after every click (the list sorts itself there).
+pub(crate) fn sort_header(
+    col: &mut Flex,
+    widths: &'static [i32],
+    titles: &[&'static str],
+    sort: Rc<Cell<(usize, bool)>>,
+) -> Frame {
+    let titles = titles.to_vec();
+    let mut f = Frame::default();
+    f.draw({
+        let sort = sort.clone();
+        move |f| {
+            draw::set_font(Font::HelveticaBold, 12);
+            let mut x = f.x() + 12;
+            for (i, t) in titles.iter().enumerate() {
+                let w = widths.get(i).copied().unwrap_or(f.w());
+                let (on, up) = (sort.get().0 == i, sort.get().1);
+                draw::set_draw_color(if on { Color::Foreground } else { muted() });
+                draw::draw_text2(t, x, f.y(), w - 20, f.h(), Align::Left | Align::Clip);
+                if on {
+                    let tw = draw::width(t) as i32;
+                    let ink = Color::Foreground;
+                    if let Some(mut a) = icons::icon(if up { "arrow-up" } else { "arrow-down" }, ink, 12) {
+                        a.draw(x + tw.min(w - 34) + 4, f.y() + (f.h() - 12) / 2, 12, 12);
+                    }
+                }
+                x += w;
+            }
+        }
+    });
+    f.handle(move |f, ev| match ev {
+        Event::Enter | Event::Move => {
+            if let Some(mut w) = f.window() {
+                w.set_cursor(fltk::enums::Cursor::Hand);
+            }
+            true
+        }
+        Event::Push => {
+            // The titles start 12 px in, as the rows' text does.
+            let mut x = f.x() + 12;
+            let ex = app::event_x().max(x);
+            for (i, w) in widths.iter().enumerate() {
+                if (x..x + w).contains(&ex) {
+                    let (on, up) = sort.get();
+                    sort.set((i, on != i || !up));
+                    f.redraw();
+                    f.do_callback();
+                    break;
+                }
+                x += w;
+            }
+            true
+        }
+        _ => false,
+    });
+    col.fixed(&f, 16);
+    f
+}
+
 fn button(row: &mut Flex, label: &str, w: i32) -> Button {
     let mut b = Button::default().with_label(label);
     let wide = with_icon(&mut b);
@@ -481,19 +629,50 @@ fn icon_for(label: &str) -> Option<&'static str> {
         "advanced" => "sliders-horizontal",
         "settings" => "settings",
         "fill_with_test_names" => "users",
-        "open_folder" => "folder-open",
+        "open" | "open_folder" => "folder-open",
         "open_github" => "external-link",
         "browse" => "folder-open",
         "user_info" => "user-round",
-        "change" => "folder-open",
-        "open" | "open_file" | "open_profile" | "open_browser" => "external-link",
+        "report_github" => "bug",
+        "start_poll" | "start_prediction" => "play",
+        "end_poll" => "square",
+        "lock" => "lock",
+        "resolve" => "trophy",
+        "cancel_prediction" => "x",
+        "backup_now" => "archive",
+        "restore" => "rotate-ccw",
+        "change" => "folder-pen",
+        "open_file" | "open_profile" | "open_browser" => "external-link",
         _ => return None,
     })
 }
 
+/// `labels` as a menu at the pointer; the index of the one picked. (Not a menu item's `value()`: that's
+/// a toggle's state, so every pick used to be read as the first.)
+pub(crate) fn pick(labels: &[&str]) -> Option<usize> {
+    use fltk::menu::{MenuButton, MenuFlag};
+    let mut m = menu_at_pointer();
+    for l in labels {
+        m.add(&menu_text(l), Shortcut::None, MenuFlag::Normal, |_| {});
+    }
+    let chosen = m.popup().map(|_| m.value());
+    MenuButton::delete(m);
+    if let Some(l) = chosen.and_then(|i| usize::try_from(i).ok()).and_then(|i| labels.get(i)) {
+        crate::crash::step(&format!("menu item {l}"));
+    }
+    chosen
+        .and_then(|i| usize::try_from(i).ok())
+        .filter(|i| *i < labels.len())
+}
+
+/// A label as a menu shows it as written (`&` underlines and `/` makes a submenu otherwise).
+fn menu_text(l: &str) -> String {
+    l.replace('&', "&&").replace('/', "\\/")
+}
+
 /// A menu button at the pointer, in the window the pointer is in. Wayland places a popup relative to the
 /// window of the widget that opens it (a button with no window opens it in the corner), and refuses an
-/// empty box, so it is 1x1.
+/// empty box, so it is 1x1 (and invisible).
 pub(crate) fn menu_at_pointer() -> fltk::menu::MenuButton {
     let host: Option<Box<dyn WindowExt>> = app::belowmouse::<fltk::widget::Widget>()
         .and_then(|w| w.window())
@@ -501,7 +680,9 @@ pub(crate) fn menu_at_pointer() -> fltk::menu::MenuButton {
     if let Some(h) = &host {
         h.begin();
     }
-    let m = fltk::menu::MenuButton::new(app::event_x(), app::event_y(), 1, 1, None);
+    let mut m = fltk::menu::MenuButton::new(app::event_x(), app::event_y(), 1, 1, None);
+    // No box: a menu button draws one (and a marker) of its own, which left white dots on the window.
+    m.set_frame(FrameType::NoBox);
     if let Some(h) = host {
         h.end();
         // Not dropped: a window got this way owns its widget, and dropping it would delete the window.
@@ -527,8 +708,11 @@ pub(crate) fn context_menu(buttons: &[Button]) {
             MenuFlag::Inactive
         };
         let i = m.add(&l.replace('/', "\\/").replace('&', "&&"), Shortcut::None, flag, {
-            let mut b = b.clone();
-            move |_| b.do_callback()
+            let (mut b, l) = (b.clone(), l.clone());
+            move |_| {
+                crate::crash::step(&format!("menu item {l}"));
+                b.do_callback()
+            }
         });
         if let (Some(mut item), Some(name)) = (m.at(i), icon_for(&l)) {
             item.add_image(icons::before_label(name, button_ink(), 14), true);
@@ -591,6 +775,16 @@ fn grid(col: &mut Flex, labels: &[&str], rows: i32) -> Vec<Button> {
     out
 }
 
+/// A quiet line of help text in `col`, `h` tall, wrapped.
+pub(crate) fn hint(col: &mut Flex, text: &str, h: i32) -> Frame {
+    let mut f = Frame::default()
+        .with_label(&text.replace('@', "@@"))
+        .with_align(Align::Left | Align::Inside | Align::Wrap);
+    f.set_label_color(muted());
+    col.fixed(&f, h);
+    f
+}
+
 /// A page: `label` is its name in the sidebar.
 fn tab(tabs: &Wizard, label: &str) -> Flex {
     let mut col = Flex::new(tabs.x(), tabs.y(), tabs.w(), tabs.h(), None)
@@ -618,43 +812,113 @@ pub(crate) fn tab_scrolled(tabs: &Wizard, label: &str, content_h: i32) -> (fltk:
     (s, col)
 }
 
-/// The Log tab: appends only the new lines; rebuilds after a gap or when far behind.
+/// The Log tab: each line's time, its level in the level's colour, and its text, filtered by level and
+/// words. Appends only the new lines; rebuilds after a gap, when far behind, or when the filter changes.
 struct Log {
     view: TextDisplay,
     buf: TextBuffer,
+    /// One style letter per byte of `buf` (see `LOG_STYLES`).
+    styles: TextBuffer,
+    /// The lowest level shown: an index into `LOG_LEVELS`.
+    level: fltk::menu::Choice,
+    search: fltk::input::Input,
+    /// The filter changed: rebuild.
+    dirty: Rc<Cell<bool>>,
     seen: u64,
     shown: usize,
 }
 
+/// The level filter's choices: the lowest level each shows.
+const LOG_LEVELS: [crate::Level; 4] = [
+    crate::Level::Debug,
+    crate::Level::Info,
+    crate::Level::Warn,
+    crate::Level::Error,
+];
+
+/// The log's styles: A text, B time, then one per level (C debug ... G fatal).
+fn log_styles() -> Vec<fltk::text::StyleTableEntry> {
+    use fltk::text::StyleTableEntry as S;
+    let size = app::font_size();
+    let s = |color: Color, font: Font| S { color, font, size };
+    // The time and the level in a fixed-width font, so the texts after them line up.
+    vec![
+        s(Color::Foreground, Font::Helvetica),
+        s(muted(), Font::Courier),
+        s(muted(), Font::CourierBold),
+        s(Health::Standby.color(), Font::CourierBold),
+        s(Health::Busy.color(), Font::CourierBold),
+        s(Health::Down.color(), Font::CourierBold),
+        s(Health::Down.color(), Font::CourierBold),
+    ]
+}
+
+/// One line as shown, and its styles (a letter per byte).
+fn log_line(level: crate::Level, at: i64, text: &str) -> (String, String) {
+    let time = crate::fmt::shown_clock(at);
+    let tag = format!("{:<5}", level.tag());
+    let style = (b'C' + level as u8) as char;
+    let line = format!("{time}  {tag}  {text}");
+    let mut st = String::with_capacity(line.len());
+    st.extend(std::iter::repeat_n('B', time.len()));
+    st.push_str("AA");
+    st.extend(std::iter::repeat_n(style, tag.len()));
+    st.push_str("AA");
+    st.extend(std::iter::repeat_n('A', text.len()));
+    (line, st)
+}
+
 impl Log {
     fn refresh(&mut self) {
-        let (mut full, mut append) = (None, None);
+        if self.dirty.replace(false) {
+            self.seen = u64::MAX;
+        }
+        let min = LOG_LEVELS[self.level.value().clamp(0, 3) as usize];
+        let words = self.search.value().to_lowercase();
+        let keep =
+            |lv: crate::Level, text: &str| lv >= min && (words.is_empty() || text.to_lowercase().contains(&words));
+        let (mut text, mut styles, mut full) = (String::new(), String::new(), false);
+        let mut add = |lv: crate::Level, at: i64, l: &str| {
+            if keep(lv, l) {
+                let (line, st) = log_line(lv, at, l);
+                for (out, part) in [(&mut text, line), (&mut styles, st)] {
+                    if !out.is_empty() {
+                        out.push('\n');
+                    }
+                    out.push_str(&part);
+                }
+            }
+        };
         status(|s| {
             if s.logged == self.seen {
                 return;
             }
             let new = s.logged.wrapping_sub(self.seen) as usize;
-            if self.seen == u64::MAX || new > s.log.len() || self.shown + new > 2 * crate::LOG_LINES {
-                full = Some(s.log.iter().map(String::as_str).collect::<Vec<_>>().join("\n"));
+            let skip = if self.seen == u64::MAX || new > s.log.len() || self.shown + new > 2 * crate::LOG_LINES {
+                full = true;
                 self.shown = s.log.len();
+                0
             } else {
-                let skip = s.log.len() - new;
-                append = Some(s.log.iter().skip(skip).fold(String::new(), |a, l| a + "\n" + l));
                 self.shown += new;
+                s.log.len() - new
+            };
+            for (lv, at, l) in s.log.iter().skip(skip) {
+                add(*lv, *at, l);
             }
             self.seen = s.logged;
         });
-        if let Some(full) = &full {
-            self.buf.set_text(full);
-        }
-        if let Some(append) = &append {
+        if full {
+            self.buf.set_text(&text);
+            self.styles.set_text(&styles);
+        } else if !text.is_empty() {
             // The first line has no newline before it.
-            self.buf
-                .append(if self.buf.length() == 0 { &append[1..] } else { append });
+            let gap = if self.buf.length() == 0 { "" } else { "\n" };
+            self.buf.append(&format!("{gap}{text}"));
+            self.styles.append(&format!("{gap}{styles}"));
+        } else {
+            return;
         }
-        if full.is_some() || append.is_some() {
-            self.view.scroll(self.view.count_lines(0, self.buf.length(), true), 0);
-        }
+        self.view.scroll(self.view.count_lines(0, self.buf.length(), true), 0);
     }
 }
 
@@ -675,6 +939,7 @@ pub fn run(
         (is_dark(&c), c.start_hidden)
     };
     let _ = UI.set(tx);
+    crate::crash::probe(event_probe);
     if CONFIRMS.lock().is_ok_and(|q| !q.is_empty()) {
         tx.send(Msg::Input);
     }
@@ -699,19 +964,59 @@ pub fn run(
     settings::tab(&tabs, &cfg, &cmds);
 
     // Log
-    let col = tab(&tabs, "Log");
+    let mut col = tab(&tabs, "Log");
+    let mut top = Flex::default().row();
+    top.set_pad(6);
+    let l = Frame::default().with_label(tr("log.show"));
+    top.fixed(&l, 44);
+    let mut level = fit::choice();
+    level.add_choice(&format!(
+        "{}|{}|{}|{}",
+        tr("log.level.everything"),
+        tr("log.level.info"),
+        tr("log.level.warn"),
+        tr("log.level.error")
+    ));
+    level.set_value(1);
+    top.fixed(&level, 160);
+    let mut search = fltk::input::Input::default();
+    placeholder(&mut search, tr("log.search"));
+    search.set_trigger(fltk::enums::CallbackTrigger::Changed);
+    // The search takes what's left, so the row fits narrow windows.
+    let mut open_logs = button(&mut top, tr("btn.open_folder"), 120);
+    top.end();
+    col.fixed(&top, ROW);
     let mut view = TextDisplay::default();
-    let buf = TextBuffer::default();
+    let (buf, styles) = (TextBuffer::default(), TextBuffer::default());
     view.set_buffer(buf.clone());
+    view.set_highlight_data(styles.clone(), log_styles());
     col.end();
     tabs.end();
     let sidebar = nav::sidebar(H - 46, &tabs, &cfg);
-    let mut log = Log {
+    let dirty = Rc::new(Cell::new(false));
+    for w in [level.as_base_widget(), search.as_base_widget()] {
+        let dirty = dirty.clone();
+        w.clone().set_callback(move |_| {
+            dirty.set(true);
+            if let Some(ui) = UI.get() {
+                ui.send(Msg::Log);
+            }
+        });
+    }
+    open_logs.set_callback(|_| {
+        let dir = crate::config_path().with_file_name("logs");
+        crate::oauth::open_browser(&dir.display().to_string());
+    });
+    let log = Rc::new(std::cell::RefCell::new(Log {
         view,
         buf,
+        styles,
+        level,
+        search,
+        dirty,
         seen: u64::MAX,
         shown: 0,
-    };
+    }));
 
     let mut bar = Flex::new(10, H - 40, W - 20, 32, None).row();
     bar.set_pad(8);
@@ -760,6 +1065,19 @@ pub fn run(
         move || {
             let mut conns = conns.clone();
             let (label, all) = conns::summary(&cfg, &cmds);
+            crate::crash::fact("Connections", &label);
+            {
+                let c = cfg.borrow();
+                crate::crash::fact("Language", &c.locale);
+                crate::crash::fact(
+                    "Settings",
+                    &format!(
+                        "animated emotes {}, debug lines {}",
+                        if c.window.chat_still_emotes { "off" } else { "on" },
+                        if c.debug_log { "on" } else { "off" }
+                    ),
+                );
+            }
             conns.set_tooltip(tr("ui.conns_tooltip"));
             all.show(&mut conns, &label);
             conns.redraw();
@@ -781,6 +1099,8 @@ pub fn run(
         move |t| {
             sidebar.redraw();
             let tab = t.try_current_widget().map(|w| w.label()).unwrap_or_default();
+            crate::crash::step(&format!("opened page {tab}"));
+            crate::crash::fact("Page", &tab);
             cfg.send_if_modified(|c| {
                 c.window.tab = tab;
                 false
@@ -807,8 +1127,10 @@ pub fn run(
         }
     });
     let restart = remember.clone();
+    let quitting = remember.clone();
     let close = move |w: &mut Window| {
         remember(w);
+        crate::crash::step("window hidden");
         SHOWN.store(false, Ordering::Relaxed);
         w.hide();
         img::forget();
@@ -835,7 +1157,7 @@ pub fn run(
     let prompted_unlock = Rc::new(Cell::new(false));
     // The tabs are filled only when shown: filling a list measures its text, which opens the display
     // and loads the fonts (~14 MB) even with the window hidden.
-    let open = |win: &mut Window, log: &mut Log| {
+    let open = |win: &mut Window, log: &Rc<std::cell::RefCell<Log>>| {
         if !win.visible() {
             // Windows tells no one when its colours change: ask as the window opens.
             #[cfg(windows)]
@@ -843,12 +1165,13 @@ pub fn run(
                 system_dark(crate::tray::apps_dark());
                 system_accent(crate::tray::accent());
             }
+            crate::crash::step("window shown");
             SHOWN.store(true, Ordering::Relaxed);
             acts.borrow_mut().refresh();
             views.refresh(&tabs);
             status_bar();
             win.show();
-            log.refresh();
+            log.borrow_mut().refresh();
             if crate::secrets::is_locked() && !prompted_unlock.get() {
                 prompted_unlock.set(true);
                 let cmds = cmds.clone();
@@ -863,33 +1186,104 @@ pub fn run(
         }
     };
     if show {
-        open(&mut win, &mut log);
+        open(&mut win, &log);
     }
+    // What can be done at any moment, while a dialog or popover holds the loop too: the engine's news
+    // reaches the screen whatever is open. What may not run inside another loop is given back.
+    let pictures = Rc::new(Cell::new(false));
+    let live: Rc<dyn Fn(Msg) -> Option<Msg>> = {
+        let status_bar = status_bar.clone();
+        let (win, log, views, tabs, acts, cfg, pictures) = (
+            win.clone(),
+            log.clone(),
+            views.clone(),
+            tabs.clone(),
+            acts.clone(),
+            cfg.clone(),
+            pictures.clone(),
+        );
+        Rc::new(move |m| {
+            match m {
+                Msg::Log => {
+                    if let Ok(mut l) = log.try_borrow_mut() {
+                        l.refresh();
+                    }
+                }
+                Msg::Chat => views.chat_refresh(&tabs),
+                Msg::Image => pictures.set(true),
+                // Hidden: nothing to redraw (filling a list loads the fonts); opening refreshes.
+                Msg::Changed if win.visible() => {
+                    status_bar();
+                    if let Ok(mut a) = acts.try_borrow_mut() {
+                        a.refresh();
+                    }
+                    views.refresh(&tabs);
+                }
+                Msg::Changed => {}
+                Msg::Dev => pump_dev_with(&tabs),
+                Msg::Theme => {
+                    let dark = is_dark(&cfg.borrow());
+                    if cfg.borrow().dark != dark {
+                        cfg.send_modify(|c| c.dark = dark);
+                    }
+                    let accent = accent_of(&cfg.borrow());
+                    theme(dark, accent);
+                    window_icons(dark);
+                    for mut w in app::windows().unwrap_or_default() {
+                        w.redraw();
+                    }
+                }
+                Msg::Quit => {
+                    quitting(&win);
+                    crate::crash::quit(0);
+                }
+                Msg::Restart => {
+                    restart(&win);
+                    crate::update::restart();
+                }
+                m @ (Msg::Toggle | Msg::NoTray | Msg::Input) => return Some(m),
+            }
+            None
+        })
+    };
+    // Pictures come in bursts (the emoji picker asks for hundreds): redraw for them once.
+    let settle: Rc<dyn Fn()> = {
+        let (views, pictures) = (views.clone(), pictures.clone());
+        Rc::new(move || {
+            if pictures.replace(false) {
+                views.images();
+            }
+        })
+    };
+    NESTED.with(|n| {
+        let (live, settle) = (live.clone(), settle.clone());
+        *n.borrow_mut() = Some(Rc::new(move || {
+            while let Some(m) = rx.recv() {
+                if let Some(m) = live(m) {
+                    DEFERRED.with(|d| d.borrow_mut().push(m));
+                }
+            }
+            settle();
+        }));
+    });
     // Not app.run() or app.wait(): with no window shown they return at once (busy loop / exit).
     // wait_for blocks until a tray message or UI event arrives.
     loop {
         let _ = app::wait_for(1e9);
-        // Pictures come in bursts (the emoji picker asks for hundreds): redraw for them once.
-        let mut pictures = false;
+        let mut next: Vec<Msg> = DEFERRED.with(|d| std::mem::take(&mut *d.borrow_mut()));
         while let Some(m) = rx.recv() {
+            next.push(m);
+        }
+        for m in next {
+            let Some(m) = live(m) else { continue };
             match m {
                 Msg::Toggle if win.visible() => close(&mut win),
-                Msg::Toggle => open(&mut win, &mut log),
+                Msg::Toggle => open(&mut win, &log),
                 Msg::NoTray => {
                     tray_ok.set(false);
                     hide.deactivate();
-                    open(&mut win, &mut log);
+                    open(&mut win, &log);
                 }
-                Msg::Log => log.refresh(),
-                Msg::Chat => views.chat_refresh(&tabs),
-                Msg::Image => pictures = true,
-                // Hidden: nothing to redraw (filling a list loads the fonts); opening refreshes.
-                Msg::Changed if win.visible() => {
-                    status_bar();
-                    acts.borrow_mut().refresh();
-                    views.refresh(&tabs);
-                }
-                Msg::Changed => {}
                 Msg::Input => {
                     let asked = QUESTIONS
                         .lock()
@@ -903,32 +1297,38 @@ pub fn run(
                         let _ = answer.send(dialogs::choice(&text.replace('@', "@@"), no, yes));
                     }
                 }
-                Msg::Dev => {
-                    let asked = DEV.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
-                    for (cmd, answer) in asked {
-                        let _ = answer.send(dev::run(&cmd, Some(&tabs)));
-                    }
-                }
-                Msg::Theme => {
-                    let dark = is_dark(&cfg.borrow());
-                    if cfg.borrow().dark != dark {
-                        cfg.send_modify(|c| c.dark = dark);
-                    }
-                    let accent = accent_of(&cfg.borrow());
-                    theme(dark, accent);
-                    window_icons(dark);
-                    for mut w in app::windows().unwrap_or_default() {
-                        w.redraw();
-                    }
-                }
-                Msg::Restart => {
-                    restart(&win);
-                    crate::update::restart();
-                }
+                _ => {}
             }
         }
-        if pictures {
-            views.images();
-        }
+        settle();
+    }
+}
+
+fn pump_dev_with(tabs: &Wizard) {
+    let asked = DEV.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+    for (cmd, answer) in asked {
+        let _ = answer.send(dev::run(&cmd, Some(tabs)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Menu labels show as written: an outcome named "Yes/No" isn't a submenu.
+    #[test]
+    fn menu_labels_show_as_written() {
+        assert_eq!(menu_text("Yes/No & maybe"), "Yes\\/No && maybe");
+    }
+
+    /// The log's styles have one letter per byte (FLTK styles bytes), so colours stay on their words
+    /// even with accented text.
+    #[test]
+    fn log_line_styles_fit_the_text() {
+        let (line, st) = log_line(crate::Level::Warn, 0, "Conexão perdida");
+        assert_eq!(line.len(), st.len());
+        let at = line.find("WARN").unwrap();
+        assert_eq!(&st[at..at + 5], "EEEEE");
+        assert!(st.ends_with(&"A".repeat("Conexão perdida".len())));
     }
 }

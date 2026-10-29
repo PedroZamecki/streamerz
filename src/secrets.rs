@@ -86,6 +86,8 @@ fn b64() -> base64::engine::GeneralPurpose {
 }
 
 /// Random bytes from the OS.
+// On Windows, DPAPI seals without a key of ours: only the tests use it there.
+#[cfg_attr(windows, allow(dead_code))]
 pub fn random(n: usize) -> Vec<u8> {
     let mut b = vec![0u8; n];
     #[cfg(windows)]
@@ -151,7 +153,7 @@ pub fn seal(v: &mut Value) {
         }
         Err(e) => {
             if !WARNED_NO_KEYRING.swap(true, Ordering::Relaxed) {
-                crate::say(format!(
+                crate::warn(format!(
                     "Keyring unavailable ({e}): keeping new logins in streamerz.json (0600)"
                 ));
             }
@@ -187,7 +189,7 @@ pub fn open(v: &mut Value) {
             merge(v, &secrets);
         }
         Err(why) => {
-            crate::say(format!(
+            crate::warn(format!(
                 "Keyring: saved logins are locked ({why}); keeping them safe and retrying automatically"
             ));
             if let Ok(mut k) = KEPT.lock() {

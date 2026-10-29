@@ -10,3 +10,4 @@ community.json*
 /run*.log
 /sz.pid
 plugins/dice/target
+__pycache__/

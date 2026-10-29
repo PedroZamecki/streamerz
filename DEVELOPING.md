@@ -23,20 +23,18 @@ cargo build --release
 
 ### Fast builds and testing
 
-Full release builds compile `wry`/`tao`/WebKitGTK (`242` crates, LTO, single codegen unit). For rapid
-day-to-day iteration, `.cargo/config.toml` and `Cargo.toml` provide a `[profile.fast]` (`opt-level = 1`,
-incremental, line-table debug info) and make `tiktok-web` (`Streamerz-tiktok`) optional (`141` crates):
+Full release builds use LTO. For day-to-day iteration, `.cargo/config.toml` and `Cargo.toml` provide a
+`[profile.fast]` (`opt-level = 1`, incremental, line-table debug info):
 
 ```
-cargo fcheck                  # fast type-check (--no-default-features)
+cargo fcheck                  # fast type-check
 cargo fbuild                  # fast optimized dev binary -> target/fast/Streamerz
 cargo frun                    # build & run target/fast/Streamerz
-cargo ftest                   # run all tests without building wry/tao
+cargo ftest                   # run all tests
 cargo ftest twitch::tests     # run only matching unit tests
 ```
 
-`target/fast/Streamerz` automatically reuses `target/release/Streamerz-tiktok` (or `target/debug/`) if
-already built once. To share your existing release `streamerz.json` and `cache/` without copying files:
+To share your existing release `streamerz.json` and `cache/` without copying files:
 
 ```
 STREAMERZ_CONFIG=target/release/streamerz.json cargo frun
@@ -456,8 +454,8 @@ until the platforms are in, TestCredits (credits are a later phase), and the JSO
 ```python
 # Same requests to the real Streamer.bot (8080) and Streamerz (8090); report shape differences
 # (keys, key order, value types) and value differences for stable fields.
-import asyncio, json, base64, hashlib, websockets
-PW = json.load(open('/home/zamecki/Games/streamerbot/data/settings.json', encoding='utf-8-sig'))['websockets']['authPassword']
+import asyncio, json, base64, hashlib, os, websockets
+PW = json.load(open(os.path.expanduser('~/Games/streamerbot/data/settings.json'), encoding='utf-8-sig'))['websockets']['authPassword']
 REQS = [
  {"request":"GetInfo"}, {"request":"GetEvents"}, {"request":"GetActions"}, {"request":"GetBroadcaster"},
  {"request":"GetCredits"}, {"request":"ClearCredits"}, {"request":"GetActiveViewers"}, {"request":"GetCodeTriggers"},
@@ -511,6 +509,10 @@ otherwise, so a release never has them unless the variable is set):
 - `{"request": "InjectChat", "id": "1", "platform": "kick", "user": "bo", "role": "viewer", "text": "!hi"}`
   runs `text` through the commands as a chat message from that platform (`twitch`, `youtube`, `kick`,
   `tiktok`; role `broadcaster`, `moderator`, `vip`, `subscriber` or `viewer`), answering `{"ran": n}`.
+  An optional `userId` gives it a real account's id (the name stands for it otherwise), to try that
+  account's user card.
+- `{"request": "InjectPin", "id": "3", "platform": "kick", "user": "bo", "text": "hi", "by": "mod", "seconds": 120}`
+  pins a message at the top of that chat (`seconds` 0 or missing: no end); `"unpin": true` takes it down.
 - `{"request": "GetChatOut", "id": "2"}` returns and clears what would have been sent:
   `{"messages": [{"platform": "kick", "text": "hi bo", "bot": false}, ...]}` (the last 500).
 
@@ -532,13 +534,13 @@ every few seconds. Then run Streamerz with `"tiktok": {"channel": NAME, "autoCon
 to the TikTok events on its WebSocket. Chat on a quiet live can take minutes; joins and likes come at once.
 An emote-only comment has no text (its emotes are in field 13).
 
-Sending (src/tiktok_web.rs) types into the live page's chat. To test it without posting anywhere, point
-the window at a local copy of that page: `STREAMERZ_TIKTOK_URL=http://127.0.0.1:8765` loads
-`{url}/@{channel}/live`, so serve files `@NAME/live` holding a `contenteditable` element with
-`data-e2e="room-chat-input-field"` (add `disabled` and a `placeholder` for a room that refuses comments)
-and a `data-e2e="room-chat-send-btn"`, whose Enter or click handler records the text (e.g. fetches
-`/sent?text`). Run `Streamerz-tiktok send <profile dir> NAME` and write JSON strings to its stdin; each
-gets `{"ok":true}` or `{"error":...}`. `STREAMERZ_TIKTOK_SHOW=1` shows the window.
+Login and sending use the user's own browser over its DevTools port (src/cdp.rs: Chrome, Chromium, Edge,
+Brave or Vivaldi; `STREAMERZ_BROWSER` picks another, e.g. `/usr/lib/chromium/chromium` to skip a
+distribution's wrapper and its flags). Sending types into the live page's chat in a headless tab; the
+test `tiktok::tests::sends_by_typing_into_the_live_page` runs it against a local stand-in for the page
+(skipped when no such browser is installed). To try a real live page by hand without posting to TikTok,
+point it at a local copy: `STREAMERZ_TIKTOK_URL=http://127.0.0.1:8765` loads `{url}/@{channel}/live`.
+On a display without Wayland (the hidden `:99`), Chromium may need `--ozone-platform=x11`.
 
 ## OBS sub-actions against a real OBS
 
@@ -678,6 +680,10 @@ DISPLAY=:99 xdotool mousemove 130 108 click 1     # a click at window coordinate
 DISPLAY=:99 import -window root shot.png          # a screenshot
 ```
 
+The window opens 1 px right and 20 px down on that screen: a click at window coordinates (x, y) is
+`mousemove x+1 y+20`. A pointer press held over a dropdown (the Show choice, say) keeps its menu open and
+makes the app look hung until the button is released.
+
 Without a window manager keys go to the window under the pointer, and windows open at 0,0: move the pointer
 onto a dialog (and click its input) before typing. Type long text in chunks (one long burst stops FLTK's
 input until restart).
@@ -805,12 +811,29 @@ The CLI can't send chat messages or chat notifications (subs, gifts, incoming ra
 way); `twitch::tests::events_fire_once_with_their_variables` covers those. Whether Twitch takes each
 subscription needs a real login: run with the real config and look for `Create sub` lines.
 
+## Hover details, the channel search, sorting
+
+`ui/tip.rs` draws the panel for an emote or a badge: the chat's items carry a `Tip` (`It::Pic` with a
+tip, `It::SvgTip`), the pane finds the one under the pointer, and `tip::point` shows it after 0.3 s as a
+small window inside the app's own window (made when shown, deleted when the pointer leaves). The source's
+icon comes from the picture's host (`cdn.7tv.app`, `betterttv.net`, `frankerfacez.com`, the platforms').
+
+`search.rs` finds channels by name without a login: Twitch's web GraphQL `searchUsers`, kick.com's
+`/api/search`, and YouTube's results page filtered to channels (the data after `var ytInitialData = `).
+`ui/find.rs` is its window; the `search_channels` MCP tool calls the same. Banners come the same way:
+kick.com's `/api/v2/channels/<slug>` and the channel page's `imageBannerViewModel` for YouTube.
+
+`ui::sort_header` is a column-title row that sorts (the Community users use it); the list sorts itself in
+the header's callback.
+
 ## Crash reports
 
 `src/crash.rs` writes `logs/latest.log` (gzipped to `<time>.log.gz` at the next start, seven kept) and, on a
 panic, `logs/crash-<time>.txt` (version, system, message, backtrace, the last 60 log lines, home folder
 hidden). At the next start `crash::offer` asks whether to report it: either answer renames it to `.reported`.
-To try it: `STREAMERZ_CRASH_TEST=1 STREAMERZ_CONFIG=/tmp/x/s.json Streamerz`, then start it again.
+To try it: `STREAMERZ_CRASH_TEST=1 STREAMERZ_CONFIG=/tmp/x/s.json Streamerz`, then start it again. In dev
+mode, the `ui` tool's `panic` crashes a running window instead: the hook logs a `[FATAL]` line and has the
+engine write `community.json` before the process ends.
 
 ## Where the settings are
 

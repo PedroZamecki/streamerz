@@ -34,6 +34,13 @@ enum P {
 
 const ALL: [P; 4] = [P::Twitch, P::YouTube, P::Kick, P::TikTok];
 
+/// A Twitch channel from what was typed: its login, without a URL or @.
+fn clean_twitch_channel(raw: &str) -> String {
+    let s = raw.trim();
+    let s = s.rsplit("twitch.tv/").next().unwrap_or(s);
+    s.trim_start_matches('@').trim_end_matches('/').trim().to_lowercase()
+}
+
 impl P {
     fn from_slug(s: &str) -> Option<Self> {
         match s {
@@ -171,10 +178,10 @@ impl P {
         revoke
     }
 
-    /// The channel to read; Twitch reads the broadcaster's own.
+    /// The channel to read (empty: the logged-in account's own).
     fn channel(self, c: &Config) -> &str {
         match self {
-            P::Twitch => "",
+            P::Twitch => &c.twitch.channel,
             P::YouTube => &c.youtube.channel_id,
             P::Kick => &c.kick.channel,
             P::TikTok => &c.tiktok.channel,
@@ -186,7 +193,7 @@ impl P {
         let norm = |s: &str| s.trim_start_matches('@').replace(' ', "").to_lowercase();
         let ch = norm(self.channel(c));
         let mine = match self {
-            P::Twitch => return true,
+            P::Twitch => return !crate::twitch::other_channel(c),
             P::YouTube => c
                 .youtube
                 .broadcaster
@@ -202,40 +209,64 @@ impl P {
         ch.is_empty() || mine.is_some_and(|m| m.contains(&ch))
     }
 
+    /// What the channel box shows: nothing while the channel read is the broadcaster's own (the name is
+    /// kept, but it isn't something typed), the same on every platform.
+    fn typed_channel(self, c: &Config) -> &str {
+        if self.raw_account_name(c, false).is_some() && self.own(c) {
+            ""
+        } else {
+            self.channel(c)
+        }
+    }
+
     /// Set the channel from what was typed (a URL or @handle works); what was kept.
     fn set_channel(self, c: &mut Config, raw: &str) -> String {
         let (v, slot) = match self {
-            P::Twitch => return String::new(),
+            P::Twitch => (clean_twitch_channel(raw), &mut c.twitch.channel),
             P::YouTube => (crate::youtube::clean_youtube_channel(raw), &mut c.youtube.channel_id),
             P::Kick => (crate::kick::clean_kick_channel(raw), &mut c.kick.channel),
             P::TikTok => (crate::tiktok::clean_tiktok_channel(raw), &mut c.tiktok.channel),
         };
         if *slot != v {
             slot.clone_from(&v);
-            if self == P::Kick {
-                // The ids looked up for the old channel.
-                c.kick.channel_id = None;
-                c.kick.chatroom_id = None;
+            // The ids looked up for the old channel.
+            match self {
+                P::Kick => {
+                    c.kick.channel_id = None;
+                    c.kick.chatroom_id = None;
+                }
+                P::Twitch => c.twitch.channel_id.clear(),
+                _ => {}
             }
         }
         v
     }
 
-    fn auto(self, c: &Config) -> bool {
+    fn slug(self) -> &'static str {
         match self {
-            P::Twitch => c.twitch.auto_connect,
-            P::YouTube => c.youtube.auto_connect,
-            P::Kick => c.kick.auto_connect,
-            P::TikTok => c.tiktok.auto_connect,
+            P::Twitch => "twitch",
+            P::YouTube => "youtube",
+            P::Kick => "kick",
+            P::TikTok => "tiktok",
         }
     }
 
-    fn auto_mut(self, c: &mut Config) -> &mut bool {
+    /// Whether it connects when Streamerz starts (it does, unless turned off).
+    fn auto(self, c: &Config) -> bool {
         match self {
-            P::Twitch => &mut c.twitch.auto_connect,
-            P::YouTube => &mut c.youtube.auto_connect,
-            P::Kick => &mut c.kick.auto_connect,
-            P::TikTok => &mut c.tiktok.auto_connect,
+            P::Twitch => !c.twitch.manual_connect,
+            P::YouTube => !c.youtube.manual_connect,
+            P::Kick => !c.kick.manual_connect,
+            P::TikTok => !c.tiktok.manual_connect,
+        }
+    }
+
+    fn manual_mut(self, c: &mut Config) -> &mut bool {
+        match self {
+            P::Twitch => &mut c.twitch.manual_connect,
+            P::YouTube => &mut c.youtube.manual_connect,
+            P::Kick => &mut c.kick.manual_connect,
+            P::TikTok => &mut c.tiktok.manual_connect,
         }
     }
 
@@ -324,7 +355,7 @@ pub(super) fn unlock_logins_interactive(cmds: &Cmds) {
         if waited > 300 {
             break;
         }
-        let _ = fltk::app::wait_for(0.05);
+        super::nested_wait(Some(0.05));
     }
 }
 
@@ -472,14 +503,15 @@ pub(super) fn connect(cmds: &Cmds, i: usize) {
 struct Row {
     p: P,
     status: Frame,
-    channel: Frame,
-    auto: CheckButton,
+    /// Whose chat to read and moderate (empty: your own), and whose it is.
+    channel: Button,
+    whose: Frame,
     connect: Button,
     adv: Button,
-    /// Broadcaster, then bot: profile picture, name and Login/Logout.
+    /// Account, then bot: profile picture, name and Login/Logout.
     who: [(Frame, Frame, Button); 2],
-    /// The row they sit in: Login and Logout have different words, so the button's width follows them.
-    bottom: Flex,
+    /// The rows they sit in: Login and Logout have different words, so the button's width follows them.
+    rows: [Flex; 2],
 }
 
 pub struct Accounts {
@@ -542,35 +574,44 @@ impl Accounts {
                 tr("btn.connect")
             });
             super::with_icon(&mut r.connect);
-            r.channel.set_label(&if r.p.own(&c) {
-                tr("accounts.channel_yours").to_string()
-            } else {
-                trf(
-                    "accounts.channel_advanced",
-                    &[("channel", &r.p.channel(&c).replace('@', "@@"))],
-                )
-            });
-            r.auto.set_checked(r.p.auto(&c));
-            for (bot, (pic, name, b)) in r.who.iter_mut().enumerate() {
-                let who = if bot == 1 {
-                    tr("accounts.who_bot")
+            // Reading your own channel shows an empty box (the same on every platform): the name is kept,
+            // but it isn't something typed.
+            let shown = r.p.typed_channel(&c);
+            r.channel.set_label(
+                &if shown.is_empty() {
+                    tr("accounts.channel_placeholder")
                 } else {
-                    tr("accounts.who_broadcaster")
-                };
+                    shown
+                }
+                .replace('@', "@@"),
+            );
+            r.whose.set_label(
+                if r.p.channel(&c).is_empty() || r.p.raw_account_name(&c, false).is_none() {
+                    ""
+                } else if r.p.own(&c) {
+                    tr("accounts.channel_yours")
+                } else {
+                    tr("accounts.channel_theirs")
+                },
+            );
+            for (bot, (pic, name, b)) in r.who.iter_mut().enumerate() {
                 let account = r.p.account(&c, bot == 1);
                 match &account {
                     Some(n) => {
-                        name.set_label(&format!("{who}: {}", n.replace('@', "@@")));
+                        name.set_label(&n.replace('@', "@@"));
                         name.set_tooltip(&n.replace('@', "@@"));
+                        name.set_label_color(fltk::enums::Color::Foreground);
                         b.set_label(tr("btn.logout"));
                         super::with_icon(b);
-                        r.bottom.fixed(b, super::fit::grown(80, tr("btn.logout"), true));
+                        r.rows[bot].fixed(b, super::fit::grown(80, tr("btn.logout"), true));
                     }
                     None => {
-                        name.set_label(&trf("accounts.no_who", &[("who", &who.to_lowercase())]));
+                        name.set_label(tr("accounts.not_logged_in"));
+                        name.set_tooltip("");
+                        name.set_label_color(super::muted());
                         b.set_label(tr("btn.login"));
                         super::with_icon(b);
-                        r.bottom.fixed(b, super::fit::grown(80, tr("btn.login"), true));
+                        r.rows[bot].fixed(b, super::fit::grown(80, tr("btn.login"), true));
                     }
                 }
                 let raw_name = r.p.raw_account_name(&c, bot == 1);
@@ -584,7 +625,7 @@ impl Accounts {
 }
 
 pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
-    let (scroll, mut col) = super::tab_scrolled(tabs, "Accounts", 460);
+    let (scroll, mut col) = super::tab_scrolled(tabs, "Accounts", 600);
 
     let mut lock_bar = Flex::default().row();
     lock_bar.set_pad(8);
@@ -610,53 +651,91 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
         let status = Frame::default()
             .with_align(Align::Left | Align::Inside | Align::Clip)
             .ellipsis();
-        let auto = CheckButton::default().with_label(tr("accounts.connect_on_start"));
-        top.fixed(&auto, 140);
         let connect = button(&mut top, tr("btn.connect"), 100);
-        let adv = button(&mut top, &format!("{}…", tr("btn.advanced")), 100);
+        let mut adv = button(&mut top, &format!("{}…", tr("btn.advanced")), 100);
         top.end();
         col.fixed(&top, ROW);
+        // Narrow: the buttons keep their icons.
+        top.resize_callback({
+            let (connect, adv) = (connect.clone(), adv.clone());
+            let connect_w = super::fit::grown(120, tr("btn.disconnect"), true);
+            let adv_w = super::fit::grown(120, tr("btn.advanced"), true);
+            move |t, _, _, w, _| {
+                let narrow = w < 520;
+                t.fixed(&connect, if narrow { 36 } else { connect_w });
+                t.fixed(&adv, if narrow { 36 } else { adv_w });
+            }
+        });
+        adv.set_tooltip(tr("accounts.advanced_tooltip"));
 
-        let mut bottom = Flex::default().row();
-        bottom.set_pad(8);
-        let gap = Frame::default();
-        bottom.fixed(&gap, 110);
-        let mut channel = Frame::default()
-            .with_align(Align::Left | Align::Inside | Align::Clip)
-            .ellipsis();
-        channel.set_label_color(super::muted());
-        bottom.fixed(&channel, 120);
+        // The account you log in with: it doesn't have to own the channel.
         let mut who = Vec::new();
-        for _ in 0..2 {
+        let mut people = Vec::new();
+        let account_row = |label: &str, who: &mut Vec<(Frame, Frame, Button)>, people: &mut Vec<Flex>| {
+            let mut row = Flex::default().row();
+            row.set_pad(8);
+            let mut l = Frame::default()
+                .with_label(label)
+                .with_align(Align::Right | Align::Inside);
+            l.set_label_color(super::muted());
+            row.fixed(&l, 110);
             let pic = Frame::default();
-            bottom.fixed(&pic, ROW);
+            row.fixed(&pic, ROW);
             let f = Frame::default()
                 .with_align(Align::Left | Align::Inside | Align::Clip)
                 .ellipsis();
-            let b = button(&mut bottom, tr("btn.login"), 80);
+            let b = button(&mut row, tr("btn.login"), 80);
+            row.end();
             who.push((pic, f, b));
-        }
-        bottom.end();
-        col.fixed(&bottom, ROW);
+            people.push(row.clone());
+            row
+        };
+        let row = account_row(tr("accounts.row_account"), &mut who, &mut people);
+        col.fixed(&row, ROW);
+
+        // Whose chat: yours, or someone else's that you moderate with your account.
+        let mut mid = Flex::default().row();
+        mid.set_pad(8);
+        let mut label = Frame::default()
+            .with_label(tr("accounts.channel"))
+            .with_align(Align::Right | Align::Inside);
+        label.set_label_color(super::muted());
+        mid.fixed(&label, 110);
+        // A button: it opens the search (the channel is picked there, not typed here).
+        let mut channel = Button::default().with_label(tr("accounts.channel_placeholder"));
+        channel.set_tooltip(tr("accounts.channel_tooltip"));
+        channel.set_image(super::icons::before_label("search", super::button_ink(), 14));
+        channel.set_align(Align::ImageNextToText | Align::Inside);
+        mid.fixed(&channel, 220);
+        let mut whose = Frame::default()
+            .with_align(Align::Left | Align::Inside | Align::Clip)
+            .ellipsis();
+        whose.set_label_color(super::muted());
+        mid.end();
+        col.fixed(&mid, ROW);
+
+        let row = account_row(tr("accounts.row_bot"), &mut who, &mut people);
+        col.fixed(&row, ROW);
         let sep = Frame::default();
-        col.fixed(&sep, 10);
+        col.fixed(&sep, 14);
         let who: [(Frame, Frame, Button); 2] = [who.remove(0), who.remove(0)];
+        let rows_of: [Flex; 2] = [people.remove(0), people.remove(0)];
         rows.push(Row {
             p,
             status,
             channel,
+            whose,
             adv,
-            auto,
             connect,
             who,
-            bottom,
+            rows: rows_of,
         });
     }
     let guide = Frame::default()
         .with_label(tr("accounts.guide"))
         .with_align(Align::Left | Align::Inside | Align::Wrap);
     guide.clone().set_label_color(super::muted());
-    col.fixed(&guide, 72);
+    col.fixed(&guide, 110);
     Frame::default();
     col.end();
     scroll.end();
@@ -697,11 +776,27 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
                 refresh();
             }
         });
-        r.auto.set_callback({
-            let cfg = cfg.clone();
-            move |b| {
-                let on = b.is_checked();
-                save(&cfg, |c| *p.auto_mut(c) = on);
+        r.channel.set_callback({
+            let (cfg, cmds, refresh) = (cfg.clone(), cmds.clone(), refresh.clone());
+            move |_| {
+                let Some(raw) = super::find::channel(&cmds, p.slug()) else {
+                    return;
+                };
+                let before = p.channel(&cfg.borrow()).to_string();
+                save(&cfg, |c| drop(p.set_channel(c, &raw)));
+                if p.channel(&cfg.borrow()) != before {
+                    // What the old channel showed goes; its community stays, apart.
+                    let slug = p.slug();
+                    tell(&cmds, move |e| e.channel_changed(slug));
+                    // Read the new one now, if it was reading.
+                    let (on, standby, _) = states(&cmds);
+                    let i_p = ALL.iter().position(|x| *x == p).unwrap_or(0);
+                    if on[i_p] || standby[i_p] {
+                        p.connect(&cmds, false);
+                        p.connect(&cmds, true);
+                    }
+                }
+                refresh();
             }
         });
         r.connect.set_callback({
@@ -736,7 +831,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
                                 };
                                 let r = crate::http::request("POST", u, &h, q.as_bytes()).await;
                                 let ok = r.as_ref().is_ok_and(|r| (200..300).contains(&r.status));
-                                crate::say(format!(
+                                crate::warn(format!(
                                     "{}: login revoked{}",
                                     p.name(),
                                     if ok { "" } else { " (the server didn't confirm)" }
@@ -840,7 +935,7 @@ fn browser_login<T: Send + 'static>(
             }
             break;
         }
-        fltk::app::wait_for(0.1).ok();
+        super::nested_wait(Some(0.1));
     }
     win.hide();
     if out.is_none() {
@@ -856,7 +951,7 @@ fn browser_login<T: Send + 'static>(
 fn advanced(cfg: &Cfg, p: P) {
     let c = cfg.borrow();
     // (label, value, secret)
-    let mut fields: Vec<(&str, String, bool)> = match p {
+    let fields: Vec<(&str, String, bool)> = match p {
         P::TikTok => Vec::new(),
         P::Twitch => vec![(
             tr("accounts.twitch.sub_counter_rollover"),
@@ -883,25 +978,21 @@ fn advanced(cfg: &Cfg, p: P) {
         P::Twitch => tr("accounts.twitch.sub_counter_help").into(),
         P::TikTok => String::new(),
     };
-    // Twitch reads only the broadcaster's own channel.
-    let help = if p == P::Twitch {
-        help
-    } else {
-        let other = if p.own(&c) { "" } else { p.channel(&c) };
-        fields.insert(0, (tr("accounts.other_channel"), other.to_string(), false));
-        format!("{help}{}", tr("accounts.other_channel_help"))
-            .trim_start()
-            .to_string()
-    };
+    let auto = p.auto(&c);
     drop(c);
-    let h = 132 + fields.len() as i32 * (ROW + 6);
+    let note_h = if help.is_empty() { 0 } else { 76 };
+    let h = 80 + note_h + fields.len() as i32 * (ROW + 6);
     let (mut win, answer) = dialogs::window(620, h, &trf("accounts.advanced_title", &[("platform", p.name())]));
     let mut col = Flex::new(10, 10, 600, h - 20, None).column();
     col.set_pad(6);
     let f = Frame::default()
         .with_label(&help)
         .with_align(Align::Left | Align::Inside | Align::Wrap);
-    col.fixed(&f, 76);
+    col.fixed(&f, note_h);
+    let mut start = CheckButton::default().with_label(tr("accounts.connect_on_start"));
+    start.set_checked(auto);
+    start.set_tooltip(tr("accounts.connect_on_start_tooltip"));
+    col.fixed(&start, ROW);
     let mut inputs: Vec<Box<dyn Fn() -> String>> = Vec::new();
     for (label, value, secret) in &fields {
         let r = dialogs::row(label);
@@ -930,7 +1021,7 @@ fn advanced(cfg: &Cfg, p: P) {
     win.end();
     win.show();
     while win.shown() && answer.get().is_none() {
-        if !fltk::app::wait() {
+        if !super::nested_wait(None) {
             break;
         }
     }
@@ -938,25 +1029,21 @@ fn advanced(cfg: &Cfg, p: P) {
     if answer.get() != Some(true) {
         return;
     }
-    let mut v: Vec<String> = inputs.iter().map(|i| i().trim().to_string()).collect();
-    save(cfg, |c| {
-        if p != P::Twitch {
-            // Emptied: the save puts the broadcaster's back.
-            p.set_channel(c, &v.remove(0));
+    let v: Vec<String> = inputs.iter().map(|i| i().trim().to_string()).collect();
+    let on_start = start.is_checked();
+    save(cfg, |c| *p.manual_mut(c) = !on_start);
+    save(cfg, |c| match p {
+        P::Kick => {
+            c.kick.client_id.clone_from(&v[0]);
+            c.kick.client_secret.clone_from(&v[1]);
         }
-        match p {
-            P::Kick => {
-                c.kick.client_id.clone_from(&v[0]);
-                c.kick.client_secret.clone_from(&v[1]);
-            }
-            P::YouTube => {
-                c.youtube.video_id = crate::youtube::clean_youtube_video(&v[0]);
-                c.youtube.client_id.clone_from(&v[1]);
-                c.youtube.client_secret.clone_from(&v[2]);
-            }
-            P::Twitch => c.twitch.sub_counter_rollover = v[0].parse().unwrap_or(0),
-            P::TikTok => {}
+        P::YouTube => {
+            c.youtube.video_id = crate::youtube::clean_youtube_video(&v[0]);
+            c.youtube.client_id.clone_from(&v[1]);
+            c.youtube.client_secret.clone_from(&v[2]);
         }
+        P::Twitch => c.twitch.sub_counter_rollover = v[0].parse().unwrap_or(0),
+        P::TikTok => {}
     });
 }
 
@@ -993,7 +1080,7 @@ fn tiktok_login(cfg: &Cfg, bot: bool) {
             }
             break;
         }
-        fltk::app::wait_for(0.1).ok();
+        super::nested_wait(Some(0.1));
     }
     win.hide();
 }
@@ -1154,8 +1241,34 @@ fn device_login(cfg: &Cfg, cmds: &Cmds, as_bot: bool) {
                 }
             }
         }
-        fltk::app::wait();
+        super::nested_wait(None);
     }
     cancelled.store(true, Ordering::Relaxed);
     win.hide();
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_twitch_channel_from_what_was_typed() {
+        assert_eq!(super::clean_twitch_channel("https://www.twitch.tv/Umanana/"), "umanana");
+        assert_eq!(super::clean_twitch_channel(" @Umanana "), "umanana");
+        assert_eq!(super::clean_twitch_channel(""), "");
+    }
+
+    #[test]
+    fn the_channel_box_is_empty_on_your_own_channel() {
+        use super::P;
+        let mut c = crate::Config::default();
+        c.kick.broadcaster = Some(crate::kick::KickAccount {
+            username: "Ana".into(),
+            ..Default::default()
+        });
+        // The own channel is filled in after a save, yet the box stays empty (and can be emptied).
+        c.own_channels();
+        assert_eq!(c.kick.channel, "ana");
+        assert_eq!(P::Kick.typed_channel(&c), "");
+        c.kick.channel = "bia".into();
+        assert_eq!(P::Kick.typed_channel(&c), "bia");
+    }
 }

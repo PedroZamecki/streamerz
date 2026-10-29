@@ -7,8 +7,9 @@ use super::{button, icons, tell, ROW};
 use crate::i18n::{self, tr, trf};
 use crate::update::Updates;
 use crate::Config;
+use fltk::button::Button;
 use fltk::button::ToggleButton;
-use fltk::enums::{Align, Color, Font};
+use fltk::enums::{Align, Color, Event, Font, FrameType};
 use fltk::frame::Frame;
 use fltk::group::{Flex, Wizard};
 use fltk::prelude::*;
@@ -82,6 +83,105 @@ fn setting(col: &mut Flex, name: &str, about: &str, w: i32) -> Flex {
     right
 }
 
+/// A setting whose description is a file's path: pointing at it shows buttons to open the file and to
+/// copy the path, right after it. Returns the row, open for its control (`w` wide) on the right.
+fn path_setting(col: &mut Flex, name: &str, path: &std::path::Path, w: i32) -> Flex {
+    let shown = path.display().to_string();
+    let mut row = Flex::default().row();
+    row.set_pad(16);
+    let mut text = Flex::default().column();
+    text.set_pad(0);
+    let mut n = Frame::default()
+        .with_label(name)
+        .with_align(Align::Left | Align::Inside | Align::Bottom)
+        .ellipsis();
+    n.set_label_size(14);
+    let mut line = Flex::default().row();
+    line.set_pad(2);
+    let mut about = Frame::default()
+        .with_label(&shown.replace('@', "@@"))
+        .with_align(Align::Left | Align::Inside | Align::Top | Align::Clip)
+        .ellipsis();
+    about.set_label_size(12);
+    about.set_label_color(super::muted());
+    about.set_tooltip(&shown.replace('@', "@@"));
+    let small = |icon: &str, tip: &str| {
+        let mut b = Button::default();
+        b.set_frame(FrameType::NoBox);
+        b.set_image(super::icons::icon(icon, super::muted(), 14));
+        // Level with the path's text, which sits at the top of its line.
+        b.set_align(Align::Top | Align::Inside);
+        b.set_tooltip(tip);
+        b.clear_visible_focus();
+        b.hide();
+        b
+    };
+    let mut open = small("external-link", tr("btn.open_file"));
+    let mut copy = small("copy", tr("btn.copy_path"));
+    line.fixed(&open, 18);
+    line.fixed(&copy, 18);
+    Frame::default();
+    line.end();
+    text.end();
+    // The path as wide as its text (up to what's left), so the buttons sit right after it.
+    line.resize_callback({
+        let (about, open) = (about.clone(), open.clone());
+        move |l, _, _, w, _| {
+            let text = if super::SHOWN.load(std::sync::atomic::Ordering::Relaxed) {
+                draw::set_font(Font::Helvetica, 12);
+                draw::width(&shown) as i32 + 6
+            } else {
+                shown.len() as i32 * 7
+            };
+            l.fixed(&about, text.min(w - 2 * 20).max(0));
+            l.fixed(&open, 18);
+        }
+    });
+    // Shown while the pointer is on the setting's text (FLTK tells the group it left only when the
+    // pointer leaves all of it, buttons included).
+    text.handle({
+        let (open, copy, line) = (open.clone(), copy.clone(), line.clone());
+        move |t, ev| {
+            let on = match ev {
+                Event::Enter | Event::Move => true,
+                Event::Leave => false,
+                _ => return false,
+            };
+            if open.visible() != on {
+                for mut b in [open.clone(), copy.clone()] {
+                    if on {
+                        b.show();
+                    } else {
+                        b.hide();
+                    }
+                }
+                // A Flex leaves out hidden widgets: place them again.
+                line.layout();
+                t.redraw();
+            }
+            false
+        }
+    });
+    open.set_callback({
+        let p = path.display().to_string();
+        move |_| crate::oauth::open_browser(&p)
+    });
+    copy.set_callback({
+        let p = path.display().to_string();
+        move |_| {
+            app::copy(&p);
+            crate::say("Copied the settings file's path".into());
+        }
+    });
+    col.fixed(&row, 44);
+    let mut right = Flex::default().column();
+    Frame::default();
+    WidgetExt::set_size(&mut right, w, ROW);
+    row.fixed(&right, w);
+    right.set_pad(0);
+    right
+}
+
 /// Ends a setting's control column.
 fn done(mut right: Flex, control: &impl WidgetExt) {
     right.fixed(control, ROW);
@@ -132,11 +232,11 @@ fn items(names: &[String]) -> String {
 }
 
 pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
-    let (scroll, mut col) = super::tab_scrolled(tabs, "Settings", 620);
+    let (scroll, mut col) = super::tab_scrolled(tabs, "Settings", 840);
     col.set_pad(2);
     let c = cfg.borrow();
     let chosen = c.theme.unwrap_or(if c.dark { Theme::Dark } else { Theme::Light });
-    let (hidden, autostart, updates) = (c.start_hidden, c.autostart, c.updates);
+    let (hidden, autostart, updates, debug_log) = (c.start_hidden, c.autostart, c.updates, c.debug_log);
     let locale = c.locale.clone();
     let (date_f, time_f, instance) = (c.date_format.clone(), c.time_format.clone(), c.instance_name.clone());
     drop(c);
@@ -260,7 +360,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
             let on = b.value();
             put(&cfg, |c| c.autostart = on);
             if let Err(e) = crate::autostart(on) {
-                crate::say(format!("Start automatically: {e}"));
+                crate::error(format!("Start automatically: {e}"));
             }
         }
     });
@@ -359,23 +459,30 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
         }
     });
 
-    section(&mut col, tr("settings.files"), "folder");
-    let path = crate::config_path();
-    let r = setting(&mut col, tr("settings.settings_file"), &path.display().to_string(), 430);
-    let mut row = Flex::default().row();
-    row.set_pad(8);
-    let mut copy = button(&mut row, tr("btn.copy_path"), 110);
-    let mut open = button(&mut row, tr("btn.open_folder"), 120);
-    let mut change = button(&mut row, tr("btn.change"), 90);
-    row.end();
-    done(r, &row);
-    copy.set_callback({
-        let p = path.display().to_string();
-        move |_| {
-            app::copy(&p);
-            crate::say("Copied the settings file's path".into());
+    section(&mut col, tr("settings.log"), "scroll-text");
+    let r = setting(&mut col, tr("settings.debug_log"), tr("settings.debug_log.about"), 44);
+    let debug = switch(debug_log);
+    done(r, &debug);
+    debug.clone().set_callback({
+        let cfg = cfg.clone();
+        move |b| {
+            let on = b.value();
+            put(&cfg, |c| c.debug_log = on);
+            crate::set_debug_log(on);
         }
     });
+
+    section(&mut col, tr("settings.files"), "folder");
+    let path = crate::config_path();
+    let r = path_setting(&mut col, tr("settings.settings_file"), &path, 210);
+    let mut row = Flex::default().row();
+    row.set_pad(8);
+    // Right-aligned: the space before the buttons takes what they don't.
+    Frame::default();
+    let mut open = button(&mut row, tr("btn.open"), 90);
+    let mut change = button(&mut row, tr("btn.change"), 100);
+    row.end();
+    done(r, &row);
     change.set_callback(move |_| change_location());
     open.set_callback({
         let dir = path.parent().map(|d| d.display().to_string()).unwrap_or_default();

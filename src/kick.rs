@@ -74,7 +74,8 @@ pub struct KickConfig {
     pub channel: String,
     pub channel_id: Option<u64>,
     pub chatroom_id: Option<u64>,
-    pub auto_connect: bool,
+    /// Not connected at start (it is by default, once there is a channel).
+    pub manual_connect: bool,
     pub client_id: String,
     pub client_secret: String,
     pub broadcaster: Option<KickAccount>,
@@ -321,6 +322,11 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> KickHandle
     handle
 }
 
+/// A task that hasn't ended yet.
+fn running(task: &Option<tokio::task::JoinHandle<()>>) -> bool {
+    task.as_ref().is_some_and(|t| !t.is_finished())
+}
+
 struct Runner {
     engine: Rc<Engine>,
     cfg: Arc<watch::Sender<Config>>,
@@ -333,7 +339,7 @@ struct Runner {
 
 impl Runner {
     async fn run(mut self) {
-        if self.cfg.borrow().kick.auto_connect && !self.cfg.borrow().kick.channel.trim().is_empty() {
+        if !self.cfg.borrow().kick.manual_connect && !self.cfg.borrow().kick.channel.trim().is_empty() {
             self.connect_pusher();
         }
 
@@ -428,13 +434,15 @@ impl Runner {
     }
 
     fn connect_pusher(&mut self) {
-        if self.connected.load(Ordering::Relaxed) {
+        // Not just `connected`: that's false until the socket is up, and a second Connect meanwhile
+        // would start a second reader (every message twice).
+        if self.connected.load(Ordering::Relaxed) || running(&self.read_task) {
             return;
         }
 
         let channel = self.cfg.borrow().kick.channel.trim().to_string();
         if channel.is_empty() {
-            crate::say("Kick: channel name is empty".into());
+            crate::error("Kick: channel name is empty".into());
             return;
         }
 
@@ -870,7 +878,7 @@ pub async fn run_pusher_loop_url(
                                 break;
                             }
                             if val["event"].as_str() == Some("pusher:error") {
-                                crate::say(format!(
+                                crate::error(format!(
                                     "Kick: Pusher refused: {}",
                                     val["data"]["message"].as_str().unwrap_or("")
                                 ));
@@ -881,7 +889,7 @@ pub async fn run_pusher_loop_url(
                 }
 
                 if !established {
-                    crate::say("Kick: connection established handshake failed".into());
+                    crate::warn("Kick: connection established handshake failed".into());
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     continue;
                 }
@@ -893,8 +901,13 @@ pub async fn run_pusher_loop_url(
                     let e_hist = engine.clone();
                     let ch_hist = channel.clone();
                     tokio::task::spawn_local(async move {
-                        let hist = fetch_kick_recent_messages(c_id, &ch_hist).await;
+                        let (hist, pin) = fetch_kick_recent_messages(c_id, &ch_hist).await;
                         e_hist.chat_welcome("kick", hist);
+                        // What was pinned before Streamerz joined.
+                        match pin {
+                            Some(p) => e_hist.chat_pinned(p),
+                            None => e_hist.chat_unpinned("kick", ""),
+                        }
                     });
                 }
 
@@ -957,7 +970,7 @@ pub async fn run_pusher_loop_url(
                     let msg = match msg_res {
                         Ok(m) => m,
                         Err(e) => {
-                            crate::say(format!("Kick: websocket error: {e}"));
+                            crate::warn(format!("Kick: websocket error: {e}"));
                             break;
                         }
                     };
@@ -979,7 +992,7 @@ pub async fn run_pusher_loop_url(
                             let _ = sink.send(Message::Pong(data)).await;
                         }
                         Message::Close(_) => {
-                            crate::say("Kick: connection closed by server".into());
+                            crate::warn("Kick: connection closed by server".into());
                             break;
                         }
                         _ => {}
@@ -1000,7 +1013,7 @@ pub async fn run_pusher_loop_url(
                 engine.emit("Kick", "BroadcasterChatDisconnected", || json!(args));
             }
             Err(e) => {
-                crate::say(format!("Kick: connection error: {e}"));
+                crate::warn(format!("Kick: connection error: {e}"));
             }
         }
 
@@ -1182,33 +1195,75 @@ pub fn parse_kick_message_line(data: &Value, channel: &str) -> Option<crate::eng
     })
 }
 
-async fn fetch_kick_recent_messages(channel_id: u64, channel: &str) -> Vec<crate::engine::chatlog::Line> {
+/// The chat's recent messages, and the one pinned now.
+async fn fetch_kick_recent_messages(
+    channel_id: u64,
+    channel: &str,
+) -> (Vec<crate::engine::chatlog::Line>, Option<crate::engine::chatlog::Pin>) {
     if channel_id == 0 {
-        return Vec::new();
+        return (Vec::new(), None);
     }
     let url = format!("https://kick.com/api/v2/channels/{channel_id}/messages");
     let headers = [("Accept".to_string(), "application/json".to_string())];
     let Ok(res) = crate::http::request("GET", &url, &headers, b"").await else {
-        return Vec::new();
+        return (Vec::new(), None);
     };
     if res.status != 200 {
-        return Vec::new();
+        return (Vec::new(), None);
     }
     let Ok(val) = serde_json::from_slice::<Value>(&res.body) else {
-        return Vec::new();
+        return (Vec::new(), None);
     };
+    let pin = val.pointer("/data/pinned_message").and_then(kick_pin);
     let Some(arr) = val
         .pointer("/data/messages")
         .or_else(|| val.get("messages"))
         .and_then(Value::as_array)
     else {
-        return Vec::new();
+        return (Vec::new(), pin);
     };
     // Kick returns messages newest-first; reverse into chronological order.
-    arr.iter()
+    let lines = arr
+        .iter()
         .rev()
         .filter_map(|m| parse_kick_message_line(m, channel))
-        .collect()
+        .collect();
+    (lines, pin)
+}
+
+/// A pinned message, as Kick's PinnedMessageCreatedEvent and its history's `pinned_message` carry it:
+/// the message, who pinned it, and for how long (seconds, or when it ends).
+pub fn kick_pin(d: &Value) -> Option<crate::engine::chatlog::Pin> {
+    let m = &d["message"];
+    let id = m["id"].as_str().filter(|s| !s.is_empty())?;
+    let now = crate::fmt::unix_now().as_millis() as u64;
+    let secs = d["duration"]
+        .as_u64()
+        .or_else(|| d["duration"].as_str().and_then(|s| s.parse().ok()))
+        .filter(|s| *s > 0);
+    let ends = ["finish_at", "finishs_at", "expires_at"]
+        .iter()
+        .find_map(|k| d[*k].as_str())
+        .and_then(crate::engine::rest_parse_iso)
+        .map(|s| s as u64 * 1000);
+    let by = ["pinnedBy", "pinned_by"]
+        .iter()
+        .find_map(|k| d[*k]["username"].as_str())
+        .unwrap_or("");
+    let text = m["content"].as_str().unwrap_or("");
+    Some(crate::engine::chatlog::Pin {
+        platform: "kick".into(),
+        msg_id: id.into(),
+        user: m["sender"]["username"].as_str().unwrap_or("").into(),
+        // Emotes as their names.
+        text: text
+            .split(' ')
+            .map(crate::engine::chatlog::shown)
+            .collect::<Vec<_>>()
+            .join(" "),
+        by: by.into(),
+        until: ends.or_else(|| secs.map(|s| now + s * 1000)),
+    })
 }
 
 /// Fire a Kick trigger and its WebSocket event.
@@ -1400,6 +1455,7 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
             kick(engine, T_KICK_STREAM_ONLINE, "KickStreamOnline", "StreamOnline", &args);
         }
         "StopStreamBroadcast" | "LivestreamEnded" | "StreamOffline" => {
+            engine.chat_unpinned("kick", "");
             stream_args(&mut args);
             args.insert("endedAt".into(), now().into());
             args.insert("channel".into(), channel.into());
@@ -1516,6 +1572,12 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
                 );
             }
         }
+        "PinnedMessageCreatedEvent" => {
+            if let Some(p) = kick_pin(&data) {
+                engine.chat_pinned(p);
+            }
+        }
+        "PinnedMessageDeletedEvent" => engine.chat_unpinned("kick", ""),
         "MessageDeletedEvent" => {
             engine.chat_remove(
                 "kick",
@@ -1685,6 +1747,40 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn kick_pins_with_and_without_an_end() {
+        let d = json!({"message": {"id": "m1", "content": "hi [emote:37226:KEKW]", "sender": {"username": "Ana"}},
+            "duration": "120", "pinnedBy": {"username": "Mod"}});
+        let p = kick_pin(&d).unwrap();
+        assert_eq!(
+            (p.user.as_str(), p.text.as_str(), p.by.as_str()),
+            ("Ana", "hi KEKW", "Mod")
+        );
+        let left = p.until.unwrap() - crate::fmt::unix_now().as_millis() as u64;
+        assert!((110_000..=120_000).contains(&left));
+        let open = kick_pin(&json!({"message": {"id": "m2", "content": "x"}})).unwrap();
+        assert!(open.until.is_none());
+        assert!(kick_pin(&Value::Null).is_none());
+    }
+
+    /// A Connect while the first is still opening the socket must not start a second reader.
+    #[test]
+    fn a_reader_still_connecting_counts_as_running() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tokio::task::LocalSet::new().block_on(&rt, async {
+            assert!(!running(&None));
+            let task = Some(tokio::task::spawn_local(std::future::pending::<()>()));
+            assert!(running(&task));
+            task.as_ref().unwrap().abort();
+            tokio::task::yield_now().await;
+            assert!(!running(&task));
+        });
+    }
+
     #[test]
     fn test_mock_pusher_protocol() {
         let _g = crate::TEST_LOCK.lock().unwrap();
@@ -1777,7 +1873,7 @@ mod tests {
         let cfg = KickConfig::default();
         assert_eq!(cfg.channel, "");
         assert_eq!(cfg.client_id, "");
-        assert!(!cfg.auto_connect);
+        assert!(!cfg.manual_connect);
     }
 
     #[test]

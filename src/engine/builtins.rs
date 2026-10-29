@@ -195,10 +195,10 @@ impl Engine {
                             let q = vec![
                                 ("from_broadcaster_id", "{broadcaster_id}"),
                                 ("to_broadcaster_id", id.as_str()),
-                                ("moderator_id", "{broadcaster_id}"),
+                                ("moderator_id", "{moderator_id}"),
                             ];
                             if let Err(err) = tw.helix("POST", "chat/shoutouts", q, None, false, true).await {
-                                crate::say(format!("Twitch shoutout: {err}"));
+                                crate::error(format!("Twitch shoutout: {err}"));
                             }
                         }
                     }

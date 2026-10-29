@@ -88,7 +88,7 @@ pub fn tls_connector() -> Result<native_tls::TlsConnector, String> {
         .clone()
 }
 
-type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>;
+pub type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>;
 
 /// `tokio_tungstenite::connect_async` with the shared TLS setup (a URL, or a request with headers).
 #[allow(clippy::result_large_err)] // the same error type connect_async returns

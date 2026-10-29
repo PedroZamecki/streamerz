@@ -194,7 +194,7 @@ impl Engine {
         let retry = Duration::from_secs(num(&o, "retryInterval", 30));
         loop {
             if let Err(e) = self.slobs_session(&o, &url, &mut rx, &up).await {
-                crate::say(format!("Streamlabs Desktop {}: {e}", s(&o, "name")));
+                crate::warn(format!("Streamlabs Desktop {}: {e}", s(&o, "name")));
             }
             if up.replace(false) {
                 self.slobs_fire(&o, 22002, "Disconnected", "Disconnected", None);

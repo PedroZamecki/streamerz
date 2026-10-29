@@ -239,7 +239,8 @@ pub const T_SHARED_MODIVERSARY: u32 = 498;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct TwitchConfig {
-    pub auto_connect: bool,
+    /// Not connected at start (it is by default, once logged in).
+    pub manual_connect: bool,
     pub broadcaster: Option<TwitchAccount>,
     pub bot: Option<TwitchAccount>,
     pub first_words_auto_reset: bool,
@@ -248,8 +249,36 @@ pub struct TwitchConfig {
     pub ignore_bot_internal: bool,
     /// Overrides the EventSub WebSocket URL (for testing or proxying).
     pub eventsub_url: Option<String>,
+    /// The channel to read and moderate (its login); empty: the logged-in account's own. Someone else's
+    /// works for a moderator: what needs the owner's login (channel points, bits, polls...) is left out.
+    pub channel: String,
+    /// `channel`'s user id, looked up on connecting.
+    pub channel_id: String,
     #[serde(flatten)]
     pub rest: Map<String, Value>,
+}
+
+/// Whether `c` reads someone else's channel (set, and not the logged-in account's).
+pub fn other_channel(c: &Config) -> bool {
+    let ch = c.twitch.channel.trim();
+    !ch.is_empty()
+        && c.twitch
+            .broadcaster
+            .as_ref()
+            .is_none_or(|b| !b.login.eq_ignore_ascii_case(ch))
+}
+
+/// The id of the channel read: the one set, else the logged-in account's.
+pub fn channel_id(c: &Config) -> String {
+    if other_channel(c) {
+        c.twitch.channel_id.clone()
+    } else {
+        c.twitch
+            .broadcaster
+            .as_ref()
+            .map(|b| b.user_id.clone())
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -774,16 +803,16 @@ async fn refresh_accounts(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>,
                         a.token = TwitchToken::default();
                     }
                 });
-                crate::say(format!("Twitch: {who} login expired; log in again in Accounts"));
+                crate::error(format!("Twitch: {who} login expired; log in again in Accounts"));
             }
-            Err(e) => crate::say(format!("Twitch: token refresh failed for {who} ({e}); will retry")),
+            Err(e) => crate::warn(format!("Twitch: token refresh failed for {who} ({e}); will retry")),
         }
     }
 }
 
 impl Runner {
     async fn run(mut self) {
-        if self.cfg.borrow().twitch.auto_connect && self.cfg.borrow().twitch.broadcaster.is_some() {
+        if !self.cfg.borrow().twitch.manual_connect && self.cfg.borrow().twitch.broadcaster.is_some() {
             self.connect_eventsub().await;
         }
 
@@ -923,7 +952,7 @@ impl Runner {
             return;
         }
         if self.cfg.borrow().twitch.broadcaster.is_none() {
-            crate::say("Twitch: no broadcaster account configured".into());
+            crate::error("Twitch: no broadcaster account configured".into());
             return;
         }
         if let Some(t) = self.read_task.take() {
@@ -1038,7 +1067,7 @@ impl Runner {
             );
             Ok(true)
         } else {
-            crate::say(format!("Start raid failed: HTTP {} {}", res.status, res.text()));
+            crate::error(format!("Start raid failed: HTTP {} {}", res.status, res.text()));
             Ok(false)
         }
     }
@@ -1103,11 +1132,21 @@ impl Runner {
         fallback: bool,
     ) -> Result<Value, String> {
         let (token, broadcaster_id, sender_id) = self.pick_account(use_bot, fallback)?;
+        // Who moderates: the logged-in account (on someone else's channel, a moderator there).
+        let moderator_id = {
+            let c = self.cfg.borrow();
+            c.twitch
+                .broadcaster
+                .as_ref()
+                .map(|b| b.user_id.clone())
+                .unwrap_or_default()
+        };
         let mut qs = Vec::new();
         for (k, v) in query {
             let val = match v.as_str() {
                 "{broadcaster_id}" => broadcaster_id.as_str(),
                 "{sender_id}" => sender_id.as_str(),
+                "{moderator_id}" => moderator_id.as_str(),
                 _ => v.as_str(),
             };
             qs.push(format!("{}={}", commands::url_encode(k), commands::url_encode(val)));
@@ -1129,6 +1168,7 @@ impl Runner {
                 .unwrap_or_default()
                 .replace("\"{broadcaster_id}\"", &ids(&broadcaster_id))
                 .replace("\"{sender_id}\"", &ids(&sender_id))
+                .replace("\"{moderator_id}\"", &ids(&moderator_id))
                 .into_bytes()
         } else {
             Vec::new()
@@ -1152,6 +1192,8 @@ impl Runner {
     fn pick_account(&self, use_bot: bool, fallback: bool) -> Result<(String, String, String), String> {
         let c = self.cfg.borrow();
         let broadcaster = c.twitch.broadcaster.as_ref().ok_or("No broadcaster account")?;
+        // The channel acted on: the one read (someone else's for a moderator), else the account's own.
+        let chan = channel_id(&c);
         if broadcaster.token.access_token.is_empty() {
             if crate::secrets::is_locked() {
                 return Err("System keyring is locked; unlock it to use saved Twitch login".into());
@@ -1161,15 +1203,11 @@ impl Runner {
         if use_bot {
             if let Some(bot) = &c.twitch.bot {
                 if !bot.token.access_token.is_empty() {
-                    return Ok((
-                        bot.token.access_token.clone(),
-                        broadcaster.user_id.clone(),
-                        bot.user_id.clone(),
-                    ));
+                    return Ok((bot.token.access_token.clone(), chan.clone(), bot.user_id.clone()));
                 } else if fallback {
                     return Ok((
                         broadcaster.token.access_token.clone(),
-                        broadcaster.user_id.clone(),
+                        chan.clone(),
                         broadcaster.user_id.clone(),
                     ));
                 } else {
@@ -1178,7 +1216,7 @@ impl Runner {
             } else if fallback {
                 return Ok((
                     broadcaster.token.access_token.clone(),
-                    broadcaster.user_id.clone(),
+                    chan.clone(),
                     broadcaster.user_id.clone(),
                 ));
             } else {
@@ -1187,10 +1225,37 @@ impl Runner {
         }
         Ok((
             broadcaster.token.access_token.clone(),
-            broadcaster.user_id.clone(),
+            chan.clone(),
             broadcaster.user_id.clone(),
         ))
     }
+}
+
+/// The logged-in account as the channel read: itself, or (someone else's channel) the channel's id and
+/// names with this account's login.
+async fn channel_view(cfg: &Arc<watch::Sender<Config>>, me: TwitchAccount) -> Result<TwitchAccount, String> {
+    let (other, login, known) = {
+        let c = cfg.borrow();
+        let login = c.twitch.channel.trim().trim_start_matches('@').to_lowercase();
+        (other_channel(&c), login, c.twitch.channel_id.clone())
+    };
+    if !other {
+        return Ok(me);
+    }
+    let found = fetch_user(CLIENT_ID, &me.token.access_token, Some(&login))
+        .await
+        .map_err(|e| format!("no channel @{login} ({e})"))?;
+    if found.user_id != known {
+        let id = found.user_id.clone();
+        cfg.send_modify(|c| c.twitch.channel_id = id);
+        let _ = crate::save(&cfg.borrow());
+    }
+    Ok(TwitchAccount {
+        user_id: found.user_id,
+        login: found.login,
+        display_name: found.display_name,
+        token: me.token,
+    })
 }
 
 async fn supervise_eventsub(
@@ -1215,7 +1280,7 @@ async fn supervise_eventsub(
             if b.token.access_token.is_empty() {
                 if crate::secrets::is_locked() {
                     if !logged_locked {
-                        crate::say("Twitch: waiting for system keyring to unlock saved login...".into());
+                        crate::warn("Twitch: waiting for system keyring to unlock saved login...".into());
                         logged_locked = true;
                         crate::ui::changed();
                     }
@@ -1223,7 +1288,7 @@ async fn supervise_eventsub(
                     tokio::time::sleep(Duration::from_secs(3)).await;
                     continue;
                 }
-                crate::say(format!(
+                crate::error(format!(
                     "Twitch: @{} login missing or expired; log in again in Accounts",
                     b.login
                 ));
@@ -1246,6 +1311,17 @@ async fn supervise_eventsub(
             (b, bot, u, custom)
         };
 
+        // Someone else's channel (a moderator's use): the session is about that channel, with this
+        // account's login. Its id is looked up once.
+        let broadcaster = match channel_view(&cfg, broadcaster).await {
+            Ok(b) => b,
+            Err(e) => {
+                crate::error(format!("Twitch: {e}"));
+                wanted.store(false, Ordering::Relaxed);
+                crate::ui::changed();
+                break;
+            }
+        };
         SUBS_URL.with_borrow_mut(|s| *s = subs_url(&url));
         if first_connect_log {
             crate::say(format!("Twitch: connecting to EventSub (@{})...", broadcaster.login));
@@ -1254,7 +1330,7 @@ async fn supervise_eventsub(
         let ws = match crate::http::ws_connect(&url).await {
             Ok((ws, _)) => ws,
             Err(e) => {
-                crate::say(format!(
+                crate::warn(format!(
                     "Twitch: EventSub connect failed for @{} ({e}); retrying in {backoff_secs}s",
                     broadcaster.login
                 ));
@@ -1278,7 +1354,7 @@ async fn supervise_eventsub(
                         run_bot_eventsub_loop(bot_ws, bot_engine, bot_cfg, b_acct, bot_acct).await;
                     }
                     Err(e) => {
-                        crate::say(format!("Twitch: bot EventSub connect failed ({e})"));
+                        crate::warn(format!("Twitch: bot EventSub connect failed ({e})"));
                     }
                 }
             })
@@ -1343,6 +1419,7 @@ async fn run_eventsub_loop(
     let mut reconnecting = false;
     let mut poll_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut emote_task: Option<tokio::task::JoinHandle<()>> = None;
+    let mut setup_task: Option<tokio::task::JoinHandle<()>> = None;
 
     while let Some(msg) = ws.next().await {
         let raw = match msg {
@@ -1402,12 +1479,19 @@ async fn run_eventsub_loop(
                 // Create subscriptions via Helix, seed channel metadata + badges, and load pre-join history.
                 let token = broadcaster.token.access_token.clone();
                 let bid = broadcaster.user_id.clone();
+                // Who's logged in: the channel's owner, or a moderator of someone else's channel.
+                let me = cfg
+                    .borrow()
+                    .twitch
+                    .broadcaster
+                    .as_ref()
+                    .map_or_else(|| bid.clone(), |b| b.user_id.clone());
                 let login = broadcaster.login.clone();
                 let sid = sid.to_string();
                 let e = engine.clone();
                 let refused = auth_refused.clone();
                 // The welcome waits only for the history: the ~40 subscriptions take seconds.
-                tokio::task::spawn_local(async move {
+                let setup = tokio::task::spawn_local(async move {
                     let hist_fut = async {
                         if custom_eventsub || login.is_empty() {
                             Vec::new()
@@ -1415,7 +1499,7 @@ async fn run_eventsub_loop(
                             fetch_recent_messages(&login, &bid).await
                         }
                     };
-                    let subs = create_all_subscriptions(&sid, &token, &bid, &refused);
+                    let subs = create_all_subscriptions(&sid, &token, &bid, &me, &refused);
                     let welcome = async {
                         let mut hist = hist_fut.await;
                         SEEN.with_borrow(|s| {
@@ -1433,7 +1517,13 @@ async fn run_eventsub_loop(
                     };
                     tokio::join!(subs, seed(&e), welcome);
                     e.refresh_chat_badges("twitch", |k| SEEN.with_borrow(|s| s.badges.get(k).cloned()));
+                    e.twitch_check_pin();
                 });
+                // A channel change closes this session: its setup must not go on (nor its history land
+                // in the new channel's chat).
+                if let Some(t) = setup_task.replace(setup) {
+                    t.abort();
+                }
                 if let Some(t) = poll_task.replace(tokio::task::spawn_local(poll(engine.clone(), broadcaster.clone())))
                 {
                     t.abort();
@@ -1462,14 +1552,14 @@ async fn run_eventsub_loop(
                     .pointer("/payload/session/reconnect_url")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                crate::say(format!("Twitch: EventSub session handoff (@{})", broadcaster.login));
+                crate::debug(format!("Twitch: EventSub session handoff (@{})", broadcaster.login));
                 match crate::http::ws_connect(url).await {
                     Ok((new_ws, _)) => {
                         ws = new_ws;
                         reconnecting = true;
                     }
                     Err(e) => {
-                        crate::say(format!("Twitch: EventSub handoff failed ({e})"));
+                        crate::warn(format!("Twitch: EventSub handoff failed ({e})"));
                         break;
                     }
                 }
@@ -1479,19 +1569,19 @@ async fn run_eventsub_loop(
                     .pointer("/payload/subscription/type")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                crate::say(format!("Twitch: subscription revoked ({sub_type})"));
+                crate::warn(format!("Twitch: subscription revoked ({sub_type})"));
             }
             _ => {}
         }
     }
 
-    for t in [poll_task, emote_task].into_iter().flatten() {
+    for t in [poll_task, emote_task, setup_task].into_iter().flatten() {
         t.abort();
     }
     if !is_connected.swap(false, Ordering::Relaxed) {
         return;
     }
-    crate::say(format!("Twitch: EventSub connection lost (@{})", broadcaster.login));
+    crate::warn(format!("Twitch: EventSub connection lost (@{})", broadcaster.login));
     let mut args = Obj::new();
     populate_broadcaster_vars(&mut args, &broadcaster);
     engine.fire(
@@ -1608,7 +1698,7 @@ async fn run_bot_eventsub_loop(
                         reconnecting = true;
                     }
                     Err(e) => {
-                        crate::say(format!("Twitch: bot EventSub handoff failed ({e})"));
+                        crate::warn(format!("Twitch: bot EventSub handoff failed ({e})"));
                         break;
                     }
                 }
@@ -1618,7 +1708,7 @@ async fn run_bot_eventsub_loop(
                     .pointer("/payload/subscription/type")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                crate::say(format!("Twitch: bot subscription revoked ({sub_type})"));
+                crate::warn(format!("Twitch: bot subscription revoked ({sub_type})"));
             }
             _ => {}
         }
@@ -1639,79 +1729,79 @@ async fn run_bot_eventsub_loop(
     engine.emit("Twitch", "BotChatDisconnected", || json!(args));
 }
 
-async fn create_all_subscriptions(sid: &str, token: &str, bid: &str, auth_refused: &AtomicBool) {
+async fn create_all_subscriptions(sid: &str, token: &str, bid: &str, me: &str, auth_refused: &AtomicBool) {
     let subs = [
         (
             "channel.chat.message",
             "1",
-            json!({"broadcaster_user_id": bid, "user_id": bid}),
+            json!({"broadcaster_user_id": bid, "user_id": me}),
         ),
         (
             "channel.chat.notification",
             "1",
-            json!({"broadcaster_user_id": bid, "user_id": bid}),
+            json!({"broadcaster_user_id": bid, "user_id": me}),
         ),
         (
             "channel.follow",
             "2",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         ("channel.raid", "1", json!({"from_broadcaster_user_id": bid})),
         // Subs, resubs, gifts and incoming raids come as chat notifications; cheers with the message.
         (
             "channel.chat.message_delete",
             "1",
-            json!({"broadcaster_user_id": bid, "user_id": bid}),
+            json!({"broadcaster_user_id": bid, "user_id": me}),
         ),
         (
             "channel.moderate",
             "2",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "automod.message.hold",
             "2",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "automod.message.update",
             "2",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "automod.terms.update",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.unban_request.create",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.unban_request.resolve",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.warning.send",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.warning.acknowledge",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.suspicious_user.update",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.suspicious_user.message",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.channel_points_automatic_reward_redemption.add",
@@ -1721,7 +1811,7 @@ async fn create_all_subscriptions(sid: &str, token: &str, bid: &str, auth_refuse
         ("channel.bits.use", "1", json!({"broadcaster_user_id": bid})),
         ("stream.online", "1", json!({"broadcaster_user_id": bid})),
         ("stream.offline", "1", json!({"broadcaster_user_id": bid})),
-        ("user.whisper.message", "1", json!({"user_id": bid})),
+        ("user.whisper.message", "1", json!({"user_id": me})),
         (
             "channel.channel_points_custom_reward.add",
             "1",
@@ -1771,37 +1861,37 @@ async fn create_all_subscriptions(sid: &str, token: &str, bid: &str, auth_refuse
         (
             "channel.shield_mode.begin",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.shield_mode.end",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.shoutout.create",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.shoutout.receive",
             "1",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.chat.clear",
             "1",
-            json!({"broadcaster_user_id": bid, "user_id": bid}),
+            json!({"broadcaster_user_id": bid, "user_id": me}),
         ),
         (
             "channel.chat.clear_user_messages",
             "1",
-            json!({"broadcaster_user_id": bid, "user_id": bid}),
+            json!({"broadcaster_user_id": bid, "user_id": me}),
         ),
         (
             "channel.chat_settings.update",
             "1",
-            json!({"broadcaster_user_id": bid, "user_id": bid}),
+            json!({"broadcaster_user_id": bid, "user_id": me}),
         ),
         (
             "channel.charity_campaign.donate",
@@ -1826,33 +1916,47 @@ async fn create_all_subscriptions(sid: &str, token: &str, bid: &str, auth_refuse
         (
             "channel.guest_star_session.begin",
             "beta",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.guest_star_session.end",
             "beta",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.guest_star_guest.update",
             "beta",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         (
             "channel.guest_star_settings.update",
             "beta",
-            json!({"broadcaster_user_id": bid, "moderator_user_id": bid}),
+            json!({"broadcaster_user_id": bid, "moderator_user_id": me}),
         ),
         ("channel.shared_chat.begin", "1", json!({"broadcaster_user_id": bid})),
         ("channel.shared_chat.update", "1", json!({"broadcaster_user_id": bid})),
         ("channel.shared_chat.end", "1", json!({"broadcaster_user_id": bid})),
     ];
 
-    for (stype, ver, cond) in subs {
+    // On someone else's channel, only what a moderator (or anyone) may read: the rest needs the owner's
+    // login, and would only be refused.
+    let own = bid == me;
+    for (stype, ver, cond) in subs.into_iter().filter(|s| own || moderator_can(s.0, &s.2)) {
         if !create_sub(sid, token, stype, ver, cond, auth_refused).await {
             break;
         }
     }
+}
+
+/// Whether a moderator (not the channel's owner) can subscribe: chat and moderation (they name the
+/// moderator or the reader), and what's public.
+fn moderator_can(stype: &str, cond: &Value) -> bool {
+    cond.get("moderator_user_id").is_some()
+        || cond.get("user_id").is_some()
+        || matches!(
+            stype,
+            "stream.online" | "stream.offline" | "channel.update" | "channel.raid"
+        )
 }
 
 thread_local! {
@@ -1873,7 +1977,7 @@ fn subs_url(ws: &str) -> String {
     }
 }
 
-/// False when the token was refused: every other subscription would be too.
+/// False when the rest should not be tried: the token was refused (every other one would be too) or the session is gone.
 async fn create_sub(
     sid: &str,
     token: &str,
@@ -1901,17 +2005,22 @@ async fn create_sub(
     let res = match crate::http::request("POST", &url, &headers, &body).await {
         Ok(r) => r,
         Err(e) => {
-            crate::say(format!("Twitch: create sub {sub_type}: {e}"));
+            crate::error(format!("Twitch: create sub {sub_type}: {e}"));
             return true;
         }
     };
     if res.status == 401 {
         auth_refused.store(true, Ordering::Relaxed);
-        crate::say("Twitch: token rejected (HTTP 401); refreshing...".into());
+        crate::warn("Twitch: token rejected (HTTP 401); refreshing...".into());
+        return false;
+    }
+    // The session closed under us (a channel change, a drop): the rest would be refused the same way.
+    if res.status == 400 && res.text().contains("already disconnected") {
+        crate::debug(format!("Twitch: session closed before {sub_type}; setup stopped"));
         return false;
     }
     if res.status != 202 && res.status != 200 {
-        crate::say(format!(
+        crate::error(format!(
             "Twitch: create sub {sub_type} HTTP {}: {}",
             res.status,
             res.text()
@@ -2157,6 +2266,11 @@ fn handle_notification(
                     internal: false,
                 },
             );
+
+            // Highlighted with channel points, a first message, a power-up: the chat marks it.
+            let kind = event.pointer("/message_type").and_then(Value::as_str).unwrap_or("text");
+            args.insert("messageType".into(), kind.into());
+            args.insert("isHighlight".into(), (kind == "channel_points_highlighted").into());
 
             SEEN.with_borrow_mut(|s| {
                 if s.messages.len() == 200 {
@@ -2567,6 +2681,8 @@ fn handle_notification(
             engine.emit("Twitch", "StreamOnline", || json!(args));
         }
         "stream.offline" => {
+            // A pin "until the stream ends" ends here.
+            engine.chat_unpinned("twitch", "");
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
             args.insert("endedAt".into(), crate::engine::globals::iso_now().into());
@@ -2701,6 +2817,7 @@ fn handle_notification(
             go(engine, code, name, "Twitch/Channel Points", ev, &args);
         }
         "channel.poll.begin" | "channel.poll.progress" | "channel.poll.end" => {
+            crate::ui::polls_changed();
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
             // EventSub has no duration: it's from the start to the end.
@@ -2748,6 +2865,7 @@ fn handle_notification(
         | "channel.prediction.progress"
         | "channel.prediction.lock"
         | "channel.prediction.end" => {
+            crate::ui::polls_changed();
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
             let mut p = event.clone();
@@ -3908,6 +4026,8 @@ struct Seen {
     pending: HashMap<String, Bomb>,
     /// Badge pictures by "set/version" (the channel's over Twitch's global ones).
     badges: HashMap<String, String>,
+    /// Their names ("Moderator", "1-Year Subscriber"), by "set/version".
+    badge_titles: HashMap<String, String>,
 }
 
 /// A gift bomb waiting for its gifts: trigger, arguments, how many, recipients so far.
@@ -4008,6 +4128,32 @@ fn pyramid(user: (&str, &str, &str), text: &str) -> Option<(bool, Who, String, u
     })
 }
 
+/// A badge's name ("1-Year Subscriber") by its "set/version", once the badge sets are read.
+pub fn badge_title(key: &str) -> Option<String> {
+    SEEN.with_borrow(|s| s.badge_titles.get(key).cloned())
+}
+
+/// What twitch.tv's viewer card shows of a user, read without a login: their profile banner (the
+/// picture behind the card, which the Helix API doesn't have), picture and account age. From Twitch's
+/// public web API, asked anonymously with its web client id, as twitch.tv does.
+pub async fn public_profile(user_id: &str) -> Option<Value> {
+    if !user_id.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let headers = [
+        ("Client-Id".to_string(), "kimne78kx3ncx6brgo4mv6wki5h1ko".to_string()),
+        ("Content-Type".to_string(), "application/json".to_string()),
+    ];
+    let q = json!({
+        "query": format!("{{ user(id: \"{user_id}\") {{ bannerImageURL createdAt profileImageURL(width: 150) }} }}")
+    });
+    let r = crate::http::request("POST", "https://gql.twitch.tv/gql", &headers, q.to_string().as_bytes())
+        .await
+        .ok()?;
+    let v: Value = serde_json::from_slice(&r.body).ok()?;
+    Some(v["data"]["user"].clone()).filter(Value::is_object)
+}
+
 /// Remember what later events compare against (chat settings, title and game, the custom rewards).
 async fn seed(engine: &Rc<Engine>) {
     let Some(tw) = engine.twitch() else { return };
@@ -4025,14 +4171,15 @@ async fn seed(engine: &Rc<Engine>) {
                 for v in set["versions"].as_array().into_iter().flatten() {
                     // 72 px: sharp once shrunk, on any screen scale.
                     let url = v["image_url_4x"].as_str().or(v["image_url_1x"].as_str()).unwrap_or("");
-                    s.badges.insert(
-                        format!(
-                            "{}/{}",
-                            set["set_id"].as_str().unwrap_or(""),
-                            v["id"].as_str().unwrap_or("")
-                        ),
-                        url.into(),
+                    let key = format!(
+                        "{}/{}",
+                        set["set_id"].as_str().unwrap_or(""),
+                        v["id"].as_str().unwrap_or("")
                     );
+                    if let Some(t) = v["title"].as_str().filter(|t| !t.is_empty()) {
+                        s.badge_titles.insert(key.clone(), t.into());
+                    }
+                    s.badges.insert(key, url.into());
                 }
             }
         }
@@ -4141,6 +4288,36 @@ async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn a_moderator_subscribes_to_chat_and_moderation_only() {
+        use super::*;
+        let chat = json!({"broadcaster_user_id": "1", "user_id": "2"});
+        let modr = json!({"broadcaster_user_id": "1", "moderator_user_id": "2"});
+        let owner = json!({"broadcaster_user_id": "1"});
+        assert!(moderator_can("channel.chat.message", &chat));
+        assert!(moderator_can("channel.follow", &modr));
+        assert!(moderator_can("stream.online", &owner));
+        assert!(!moderator_can("channel.bits.use", &owner));
+        assert!(!moderator_can("channel.poll.begin", &owner));
+    }
+
+    #[test]
+    fn another_channel_is_read_by_id_once_known() {
+        use super::*;
+        let mut c = Config::default();
+        c.twitch.broadcaster = Some(TwitchAccount {
+            user_id: "10".into(),
+            login: "me".into(),
+            ..Default::default()
+        });
+        assert!(!other_channel(&c) && channel_id(&c) == "10");
+        c.twitch.channel = "Me".into();
+        assert!(!other_channel(&c), "your own name is your own channel");
+        c.twitch.channel = "someone".into();
+        c.twitch.channel_id = "20".into();
+        assert!(other_channel(&c) && channel_id(&c) == "20");
+    }
+
     #[test]
     fn recent_messages_of_one_word_have_no_colon() {
         let one = "@display-name=Ana;user-id=7;tmi-sent-ts=1793151375247 :ana!ana@ana.tmi.twitch.tv PRIVMSG #pedro opa";

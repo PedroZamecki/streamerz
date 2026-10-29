@@ -76,7 +76,7 @@ pub fn simulate_keyboard_press(key: &str, modifiers: u32) -> Result<(), String> 
     #[cfg(target_os = "windows")]
     {
         // On Windows, if a single ASCII char or known virtual key is given
-        crate::say(format!(
+        crate::debug(format!(
             "Keyboard Press: {} (modifiers {})",
             key,
             format_modifiers(modifiers)
@@ -86,9 +86,9 @@ pub fn simulate_keyboard_press(key: &str, modifiers: u32) -> Result<(), String> 
     {
         let mod_str = format_modifiers(modifiers);
         if mod_str.is_empty() {
-            crate::say(format!("Keyboard Press: {key}"));
+            crate::debug(format!("Keyboard Press: {key}"));
         } else {
-            crate::say(format!("Keyboard Press: {mod_str} + {key}"));
+            crate::debug(format!("Keyboard Press: {mod_str} + {key}"));
         }
     }
     Ok(())
@@ -97,7 +97,7 @@ pub fn simulate_keyboard_press(key: &str, modifiers: u32) -> Result<(), String> 
 /// Dispatch MIDI Note On message.
 pub fn midi_note_on(device: &str, channel: u8, note: u8, velocity: u8, send_note_off: bool, duration: u64) {
     let name = note_name(note);
-    crate::say(format!(
+    crate::debug(format!(
         "MIDI Out [{}]: Note On ch={} note={}({}) vel={}{}",
         if device.is_empty() { "default" } else { device },
         channel,
@@ -114,7 +114,7 @@ pub fn midi_note_on(device: &str, channel: u8, note: u8, velocity: u8, send_note
 
 /// Dispatch MIDI Control Change message.
 pub fn midi_control_change(device: &str, channel: u8, controller: u8, value: u8) {
-    crate::say(format!(
+    crate::debug(format!(
         "MIDI Out [{}]: CC ch={} cc={} val={}",
         if device.is_empty() { "default" } else { device },
         channel,
@@ -125,7 +125,7 @@ pub fn midi_control_change(device: &str, channel: u8, controller: u8, value: u8)
 
 /// Dispatch generic MIDI message.
 pub fn midi_generic(device: &str, command: &str, channel: u8, data1: u8, data2: u8) {
-    crate::say(format!(
+    crate::debug(format!(
         "MIDI Out [{}]: Generic cmd={} ch={} d1={} d2={}",
         if device.is_empty() { "default" } else { device },
         command,

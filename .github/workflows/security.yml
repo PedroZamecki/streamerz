@@ -1,0 +1,37 @@
+# Secrets and dependencies: nothing private in any commit, and no known-vulnerable crate.
+name: security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Every line of every commit (dev/scan_secrets.py): tokens, keys, cookies, a person's home folder.
+      - run: python3 dev/scan_secrets.py --history
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Cargo.lock against the RustSec advisory database (a ready-made binary, no build).
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit

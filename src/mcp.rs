@@ -34,11 +34,12 @@ fn url() -> String {
 const TOOLS: &[(&str, &str, &str, &[&str])] = &[
     ("status", "What's connected (Twitch, YouTube, Kick, TikTok, OBS, Streamlabs Desktop, StreamElements, Streamlabs), the version, and how many actions, commands and timers are set up.", "{}", &[]),
     ("log", "The last lines of streamerz's log.", r#"{"lines": {"type": "integer", "description": "How many (default 50)"}}"#, &[]),
+    ("search_channels", "Channels by name on Twitch, Kick or YouTube, as the Accounts page's search shows them: handle (what goes in the channel box), name, followers, live. No login.", r#"{"platform": {"type": "string", "enum": ["twitch", "kick", "youtube"]}, "query": {"type": "string"}}"#, &["platform", "query"]),
     ("list_actions", "Every action: id, name, group, enabled, trigger and sub-action counts.", "{}", &[]),
     ("run_action", "Run an action by name or id, with arguments, as its Test does.", r#"{"action": {"type": "string", "description": "Name or id"}, "args": {"type": "object"}}"#, &["action"]),
     ("list_triggers", "Trigger type codes and names (e.g. 101 TwitchFollow), filtered by a word.", r#"{"filter": {"type": "string"}}"#, &[]),
     ("fire_trigger", "Fire a trigger (code or name) with arguments as its platform would: every action using it runs. Returns how many ran. Needs STREAMERZ_DEV=1.", r#"{"trigger": {"type": ["integer", "string"]}, "args": {"type": "object", "description": "e.g. {\"user\": \"ana\", \"viewers\": 10}"}}"#, &["trigger"]),
-    ("inject_chat", "A fake chat message from a platform, run through the commands; returns how many ran and what streamerz would have sent back (nothing is sent). Needs STREAMERZ_DEV=1.", r#"{"platform": {"type": "string", "enum": ["twitch", "youtube", "kick", "tiktok"]}, "user": {"type": "string"}, "role": {"type": "string", "enum": ["viewer", "subscriber", "vip", "moderator", "broadcaster"]}, "text": {"type": "string"}, "badges": {"type": "array", "description": "As Streamer.bot's badges: [{\"name\": \"broadcaster\", \"version\": 1, \"imageUrl\": \"https://...\"}]"}}"#, &["platform", "text"]),
+    ("inject_chat", "A fake chat message from a platform, run through the commands; returns how many ran and what streamerz would have sent back (nothing is sent). Needs STREAMERZ_DEV=1.", r#"{"platform": {"type": "string", "enum": ["twitch", "youtube", "kick", "tiktok"]}, "user": {"type": "string"}, "userId": {"type": "string", "description": "A real account's id, so its user card can be tried; the name otherwise"}, "role": {"type": "string", "enum": ["viewer", "subscriber", "vip", "moderator", "broadcaster"]}, "text": {"type": "string"}, "badges": {"type": "array", "description": "As Streamer.bot's badges: [{\"name\": \"broadcaster\", \"version\": 1, \"imageUrl\": \"https://...\"}]"}}"#, &["platform", "text"]),
     ("chat_out", "The chat messages streamerz would have sent since the last call (dev mode keeps them instead of sending). Needs STREAMERZ_DEV=1.", "{}", &[]),
     ("list_subactions", "Sub-action type codes and names (e.g. 10 TwitchSendMessage), filtered by a word.", r#"{"filter": {"type": "string"}}"#, &[]),
     ("describe", "What a sub-action or trigger type does and its fields (JSON key, label, what it holds), plus a new one ready to fill in. Use before writing one.", r#"{"kind": {"type": "string", "enum": ["subaction", "trigger"]}, "code": {"type": "integer"}}"#, &["kind", "code"]),
@@ -122,6 +123,14 @@ impl Client {
                 self.ask(json!({"request": "GetLog", "lines": a["lines"].as_u64().unwrap_or(50)}))
                     .await
             }
+            "search_channels" => {
+                let found = crate::search::channels(&s("platform"), &s("query")).await;
+                let list: Vec<Value> = found
+                    .iter()
+                    .map(|f| json!({"handle": f.handle, "name": f.name, "detail": f.detail, "live": f.live}))
+                    .collect();
+                Ok(json!({"channels": list}))
+            }
             "list_actions" => self.ask(json!({"request": "GetActions"})).await,
             "run_action" => {
                 let key = if s("action").len() == 36 && s("action").contains('-') {
@@ -162,7 +171,7 @@ impl Client {
                     s("role")
                 };
                 let r = self
-                    .ask(json!({"request": "InjectChat", "platform": s("platform"), "user": user, "role": role, "text": s("text"), "badges": a["badges"]}))
+                    .ask(json!({"request": "InjectChat", "platform": s("platform"), "user": user, "userId": s("userId"), "role": role, "text": s("text"), "badges": a["badges"]}))
                     .await?;
                 tokio::time::sleep(Duration::from_millis(300)).await;
                 let out = self.ask(json!({"request": "GetChatOut"})).await?;

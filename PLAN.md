@@ -1,6 +1,6 @@
 # Streamerz plan
 
-Streamer.bot rebuilt in Rust, built like songrequestz and tikstream: one small exe, FLTK window + tray,
+Streamerz is a light stream automation app in Rust, built like songrequestz and tikstream: one small exe, FLTK window + tray,
 ~nothing idle. Same model as Streamer.bot (actions made of sub-actions, fired by triggers, with
 variables, commands, timers and queues), same data format (imports Streamer.bot exports, reads its
 `actions.json`), and the same WebSocket/HTTP/UDP servers, so songrequestz, tikstream and existing overlays
@@ -35,8 +35,8 @@ phase, following `CLAUDE.md`.
 | Integrations | Opt-in and off by default; a disabled one opens nothing. In scope: donations/shops (Ko-fi, StreamElements, Streamlabs, Patreon, Fourthwall, Throne, Tipeee, Treatstream, DonorDrive, Pally, Shopify, Streamloots) and webhooks/remote (Discord, IFTTT, pronouns, Streamer.bot remote instances). |
 | OS | Windows + Linux (Wayland, ksni tray). CI releases a Windows exe and the Linux AppImage on every release. |
 | Budget | Hidden window, Twitch + OBS connected: < 25 MB RSS and ~0% idle CPU, measured and written in every PR. Streamer.bot uses ~300 MB. |
-| Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, fltk, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only), **wry** + **tao** (the TikTok window, child process only). **image-webp** (WebP emotes and avatars; FLTK decodes the other formats itself). HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. **tokio-native-tls** (the crate tokio-tungstenite's native-tls feature uses, for HTTPS), **regex-lite** (If/Else, While, Switch and regex commands; .NET's backreferences and lookaround aren't supported). Anything else needs a question first. |
-| TikTok | Read natively, no bridge app: `webcast.rs` ports the part of piratetok-live-rs (0BSD) Streamerz uses (ttwid cookie, room lookup, WebSocket, ~10 protobuf messages) onto the HTTP/WebSocket code and flate2 already here, instead of vendoring it with reqwest, prost and tracing. Send through Streamerz's own TikTok window (OS webview via wry/tao, a child process: `Streamerz-tiktok` on Linux so Streamerz never loads WebKitGTK, `Streamerz.exe --tiktok` on Windows) typing into the logged-in live page's chat, since TikTok signs its chat requests; it runs only around sends (~1 GB while open, closes after 2 idle minutes). Its login replaces tikstream-login. Broadcaster + bot accounts like the other platforms. |
+| Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, fltk, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only). No webview (wry/tao were removed in 1.1.0: TikTok uses the user's own browser). **image-webp** (WebP emotes and avatars; FLTK decodes the other formats itself). HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. **tokio-native-tls** (the crate tokio-tungstenite's native-tls feature uses, for HTTPS), **regex-lite** (If/Else, While, Switch and regex commands; .NET's backreferences and lookaround aren't supported). Anything else needs a question first. |
+| TikTok | Read natively, no bridge app: `webcast.rs` ports the part of piratetok-live-rs (0BSD) Streamerz uses (ttwid cookie, room lookup, WebSocket, ~10 protobuf messages) onto the HTTP/WebSocket code and flate2 already here, instead of vendoring it with reqwest, prost and tracing. Send by typing into the logged-in live page's chat, since TikTok signs its chat requests (no API sends LIVE chat: Login Kit's scopes don't cover it). Since 1.1.0 that page is a headless tab of the user's own Chromium-based browser (Chrome, Chromium, Edge, Brave, Vivaldi), driven over its DevTools port (`cdp.rs`) with a profile of Streamerz's own: nothing bundled, no WebKitGTK, no helper binary. It runs only around sends and closes after 2 idle minutes. Login is the same browser, as a small window on TikTok's login page. Its login replaces tikstream-login. Broadcaster + bot accounts like the other platforms. |
 | Chat commands | Commands keep Streamer.bot's `sources` bitmask (Twitch 1/2/8, YouTube 1024, Kick 2097152, TikTok 4194304), so each command chooses its platforms. Built-in commands (`!commands`, `!command add/edit/remove`, `!command platforms`, `!so`, `!uptime`, `!title`) are normal commands created on first run, editable and disable-able. Replies go to the platform the command came from; a command can opt in to reply on all connected platforms. |
 | Not in scope | Meld, PolyPop, Elgato, VTube Studio/Voicemod/Speaker.bot/TITS/Crowd Control/HypeRate/Pulsoid/Lumia/Streamfog/mtion, the Streamer.bot website integration/cloud, C# and plugins. |
 | Later (own phases, after phase 14) | Quotes, credits, points, users/first words; sounds and TTS; file I/O, file tail, folder watcher, process triggers; hotkeys/inputs, MIDI, voice control; Decks, HTML overlay, multi-platform chat window. |
@@ -315,6 +315,42 @@ platform handles through channels, never through shared locks held across awaits
   Connections, Data, App) and a Lucide icon per page; lists drawn by hand with roomy rows, a hover highlight
   and a thin scrollbar; the chat scrollbar is flat, without arrows.
 - [ ] 45+. Later extras, one phase each, order chosen then (see Decisions).
+
+## Version 1.1.0
+
+- [x] Release notes list every commit since the last tag, grouped by type (not only the pull request).
+- [x] Bugs: the chat froze under a user card or any dialog; Community, Accounts and Donations didn't fill
+  in; Kick connected twice; the pin and timeout menus always used the first time; a logout, shutdown or
+  `kill` looked like a crash (and saved nothing); the Settings file buttons weren't aligned.
+- [x] Logs: DEBUG/INFO/WARN/ERROR/FATAL levels in the file and the Log page (colours, level filter, search,
+  Debug lines in Settings). A panic logs FATAL and saves the settings and Community before closing.
+- [x] Crashes page (read, report on GitHub, delete) and Backups page (a backup at a new version's first
+  start, the last 10 kept; back up now, restore, delete).
+- [x] User card: banner, account age and picture without a login (Twitch's public web API, kick.com's
+  card); badges as pictures, named when pointed at; the chatter's messages live in the chat's own view,
+  with its actions (no box to write in); animated emotes (and an option to keep them still). Banners
+  without a login for Twitch, Kick (kick.com's channel page) and YouTube (the channel's public page).
+- [x] Hover details: pointing at an emote or a badge in any chat shows its picture big, its name, where it
+  comes from (the source's icon: 7TV, BTTV, FFZ, the platform) and its id (`ui/tip.rs`).
+- [x] Pinned messages over the chat, with who pinned them and the time left (Twitch, Kick, YouTube).
+- [x] TikTok without a webview: login and sending through the user's own Chromium-based browser over its
+  DevTools port (`cdp.rs`); wry, tao, WebKitGTK and the helper binary are gone (390 crates down to 199).
+- [x] Accounts: the channel to read is on the page, for every platform; Twitch reads someone else's
+  channel too, as a moderator (the subscriptions a moderator can't have are left out).
+- [x] Accounts, simpler: a platform connects at start by itself once set up (Advanced turns that off);
+  the channel box is a button that opens a search (`search.rs`, `ui/find.rs`: Twitch, Kick and YouTube by
+  name with picture, followers and live, no login; a pasted link works too) and is empty while reading
+  your own channel; community data belongs to the channel it was seen in.
+- [x] Community: every column of the users table sorts (click a title, again to turn it around).
+- [x] Crash reports carry their context (steps, facts, the system, a trimmed GitHub issue).
+- [x] Security: secrets scan on every commit and PR (`dev/scan_secrets.py`), `cargo audit`, least-privilege
+  workflow tokens; see SECURITY.md.
+- [x] Fixes: switching the Twitch channel while its subscriptions were being made no longer logs a wall of
+  "websocket session has already disconnected" errors (the setup stops with its session).
+- [x] Faster dev builds: `debug = "line-tables-only"` in `[profile.dev]` (a 114 MB binary, not 150 MB).
+- [x] Polls page: Twitch and YouTube polls, Twitch predictions (Kick and TikTok have no API for them).
+- [x] Chat effects listed in [CHAT.md](CHAT.md): subs, gifts, raids, rewards, announcements, Kicks,
+  Super Chats, memberships and TikTok gifts as event lines; highlighted and first messages marked.
 
 ## Open points (decide when the phase starts, ask first)
 

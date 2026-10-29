@@ -53,6 +53,46 @@ pub const T_YT_USER_TIMEDOUT: u32 = 4031;
 pub const YOUTUBE_API_BASE: &str = "https://www.googleapis.com/youtube/v3";
 pub const YOUTUBE_INNERTUBE_URL: &str = "https://www.youtube.com/youtubei/v1/live_chat/get_live_chat";
 
+/// The text between the first `marker` in `page` and the next quote, with JSON's `\u0026` as `&`.
+fn quoted_after(page: &[u8], marker: &[u8]) -> Option<String> {
+    let at = page.windows(marker.len()).position(|w| w == marker)? + marker.len();
+    let end = page[at..].iter().position(|b| *b == b'"')?;
+    let text = std::str::from_utf8(&page[at..at + end]).ok()?;
+    Some(text.replace("\\u0026", "&")).filter(|t| t.starts_with("http"))
+}
+
+/// A channel's banner and picture, read from its public page (the API has no banner for other people's
+/// channels): what youtube.com's own channel card shows. None when it has none, or the page doesn't answer.
+pub async fn public_channel(channel_id: &str) -> (Option<String>, Option<String>) {
+    if !channel_id.starts_with("UC")
+        || !channel_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return (None, None);
+    }
+    // The cookie keeps the consent page out of the way.
+    let headers = [
+        ("Accept-Language".to_string(), "en".to_string()),
+        ("Cookie".to_string(), "SOCS=CAI; CONSENT=YES+1".to_string()),
+        (
+            "User-Agent".to_string(),
+            "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0".to_string(),
+        ),
+    ];
+    let url = format!("https://www.youtube.com/channel/{channel_id}");
+    let Ok(r) = crate::http::request("GET", &url, &headers, b"").await else {
+        return (None, None);
+    };
+    if r.status != 200 {
+        return (None, None);
+    }
+    (
+        quoted_after(&r.body, br#""imageBannerViewModel":{"image":{"sources":[{"url":""#),
+        quoted_after(&r.body, br#""avatar":{"thumbnails":[{"url":""#),
+    )
+}
+
 /// Strip URL prefixes and extract YouTube channel ID if present.
 pub fn clean_youtube_channel(input: &str) -> String {
     let s = input.trim();
@@ -90,7 +130,8 @@ pub fn clean_youtube_video(input: &str) -> String {
 pub struct YouTubeConfig {
     pub channel_id: String,
     pub video_id: String,
-    pub auto_connect: bool,
+    /// Not connected at start (it is by default).
+    pub manual_connect: bool,
     pub client_id: String,
     pub client_secret: String,
     pub broadcaster: Option<YouTubeAccount>,
@@ -1107,7 +1148,7 @@ pub async fn read_chat_with_standby(
                     format!("YouTube: {label}: {e}")
                 };
                 if last_offline_note != msg && !msg.is_empty() {
-                    crate::say(msg.clone());
+                    crate::warn(msg.clone());
                     last_offline_note = msg;
                 }
                 let now_unix = crate::fmt::unix_now().as_secs() as i64;
@@ -1179,11 +1220,11 @@ pub async fn read_chat_with_standby(
             let v: Value = match r {
                 Ok(r) if (200..300).contains(&r.status) => serde_json::from_slice(&r.body).unwrap_or_default(),
                 Ok(r) => {
-                    crate::say(format!("YouTube: chat read failed (HTTP {})", r.status));
+                    crate::warn(format!("YouTube: chat read failed (HTTP {})", r.status));
                     Value::Null
                 }
                 Err(e) => {
-                    crate::say(format!("YouTube: chat read failed ({e})"));
+                    crate::warn(format!("YouTube: chat read failed ({e})"));
                     Value::Null
                 }
             };
@@ -1540,8 +1581,36 @@ fn poll_args(p: &Value) -> Obj {
     a
 }
 
+/// The poll on the live now (its poll.* arguments), if any.
+pub fn current_poll() -> Obj {
+    POLL.with_borrow(Clone::clone)
+}
+
+/// A message pinned at the top of the live chat (YouTube's banner): until it's taken down.
+fn yt_pin(banner: &Value) -> Option<crate::engine::chatlog::Pin> {
+    let r = banner.pointer("/contents/liveChatTextMessageRenderer")?;
+    let (text, _) = runs_text(r.pointer("/message/runs"));
+    Some(crate::engine::chatlog::Pin {
+        platform: "youtube".into(),
+        msg_id: r["id"].as_str().unwrap_or("").into(),
+        user: text_of(&r["authorName"]).trim_start_matches('@').into(),
+        text,
+        by: String::new(),
+        until: None,
+    })
+}
+
 pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value]) {
     for act in actions {
+        if let Some(b) = act.pointer("/addBannerToLiveChatCommand/bannerRenderer/liveChatBannerRenderer") {
+            if let Some(p) = yt_pin(b) {
+                engine.chat_pinned(p);
+            }
+        }
+        // One pin at a time on YouTube: whichever it names, it's that one.
+        if act.get("removeBannerForLiveChatCommand").is_some() {
+            engine.chat_unpinned("youtube", "");
+        }
         let item = act.pointer("/addChatItemAction/item").cloned().unwrap_or_default();
         if let Some(msg) = item.get("liveChatTextMessageRenderer") {
             let (mut args, owner, moderator, member) = yt_base(engine, msg);
@@ -1739,6 +1808,7 @@ pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value]) {
             let mut args = BROADCAST.with_borrow(Clone::clone);
             args.extend(poll_args(p));
             POLL.with_borrow_mut(|x| *x = args.clone());
+            crate::ui::polls_changed();
             if shown.is_some() {
                 yt(engine, T_YT_POLL_STARTED, "YouTubePollStarted", "PollStarted", &args);
             } else {
@@ -1750,6 +1820,7 @@ pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value]) {
             if args.is_empty() {
                 continue;
             }
+            crate::ui::polls_changed();
             args.insert("panelId".into(), close["targetPanelId"].clone());
             yt(engine, T_YT_POLL_CLOSED, "YouTubePollClosed", "PollClosed", &args);
         }
@@ -1926,6 +1997,20 @@ async fn while_live(engine: Rc<Engine>, cfg: Arc<watch::Sender<Config>>, video: 
 #[cfg(test)]
 mod tests {
     #[test]
+    fn a_banner_in_a_channel_page() {
+        let page = br#"x"banner":{"imageBannerViewModel":{"image":{"sources":[{"url":"https://yt3.example/b=w1060\u0026k","width":1}]}}},"avatar":{"thumbnails":[{"url":"https://yt3.example/a=s900","w":1}]}"#;
+        assert_eq!(
+            super::quoted_after(page, br#""imageBannerViewModel":{"image":{"sources":[{"url":""#).as_deref(),
+            Some("https://yt3.example/b=w1060&k")
+        );
+        assert_eq!(
+            super::quoted_after(page, br#""avatar":{"thumbnails":[{"url":""#).as_deref(),
+            Some("https://yt3.example/a=s900")
+        );
+        assert_eq!(super::quoted_after(page, b"nothing"), None);
+    }
+
+    #[test]
     fn test_clean_youtube_urls() {
         assert_eq!(
             clean_youtube_video("https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
@@ -1948,11 +2033,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pinned_banners_come_and_go() {
+        use crate::engine::tests::{engine, run};
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        run(async {
+            let e = engine(json!({"actions": []}));
+            let msg = json!({"id": "m1", "authorName": {"simpleText": "@Ana"}, "message": {"runs": [{"text": "hi"}]}});
+            let banner = json!({"addBannerToLiveChatCommand": {"bannerRenderer": {"liveChatBannerRenderer":
+                {"actionId": "a1", "contents": {"liveChatTextMessageRenderer": msg}}}}});
+            handle_innertube_actions(&e, &[banner]);
+            let pins = e.chat_pins();
+            assert_eq!(
+                (pins.len(), pins[0].user.as_str(), pins[0].text.as_str()),
+                (1, "Ana", "hi")
+            );
+            handle_innertube_actions(
+                &e,
+                &[json!({"removeBannerForLiveChatCommand": {"targetActionId": "a1"}})],
+            );
+            assert!(e.chat_pins().is_empty());
+        });
+    }
+
+    #[test]
     fn youtube_config_defaults() {
         let cfg = YouTubeConfig::default();
         assert_eq!(cfg.channel_id, "");
         assert_eq!(cfg.video_id, "");
-        assert!(!cfg.auto_connect);
+        assert!(!cfg.manual_connect);
     }
 
     #[test]

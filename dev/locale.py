@@ -12,6 +12,7 @@ from pathlib import Path
 
 DIR = Path(__file__).resolve().parent.parent / "assets" / "locales"
 DEFAULT = "en_US"
+README = (DIR.parent.parent / "README.md").read_text(encoding="utf-8")
 
 
 def load(code):
@@ -45,6 +46,8 @@ def check(codes):
             problems += 1
             continue
         found = []
+        if f"`{code}`" not in README:
+            found.append("no row in the README's language table (add yours: language, code, who translated it)")
         if not re.fullmatch(r"[a-z]{2,3}_[A-Z]{2}", code):
             found.append("the file's name should look like es_ES.json")
         if not isinstance(tr, dict) or not all(isinstance(v, str) for v in tr.values()):

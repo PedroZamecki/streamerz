@@ -1,0 +1,11 @@
+name: Idea
+description: Something Streamerz could do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+      description: What you want to do, and why. If Streamer.bot does it, say how.
+    validations:
+      required: true

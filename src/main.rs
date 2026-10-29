@@ -1,7 +1,9 @@
-//! Streamer.bot rebuilt small: actions, triggers and Streamer.bot's servers for Twitch, Kick, YouTube,
+//! Streamerz: actions, triggers and the servers that tools already use, for Twitch, Kick, YouTube,
 //! OBS and Streamlabs Desktop, running on ~nothing.
 
+mod backup;
 mod brand;
+mod cdp;
 mod commands;
 mod crash;
 pub mod decks;
@@ -23,13 +25,12 @@ mod notify;
 mod oauth;
 pub mod obs;
 pub mod remote;
+mod search;
 mod secrets;
 pub mod servers;
 mod slobs;
 mod templates;
 pub mod tiktok;
-#[cfg(all(windows, feature = "tiktok-web"))]
-mod tiktok_web;
 mod tray;
 pub mod twitch;
 pub mod types;
@@ -59,6 +60,8 @@ pub struct Config {
     locale: String,
     start_hidden: bool,
     autostart: bool,
+    /// Keep [DEBUG] lines in the log.
+    debug_log: bool,
     /// Actions, groups and queues, in Streamer.bot's actions.json shape.
     actions: model::ActionsFile,
     /// Persisted globals, and persisted user globals by user ("platform:id", then name).
@@ -132,6 +135,7 @@ impl Default for Config {
             locale: String::new(),
             start_hidden: true,
             autostart: false,
+            debug_log: false,
             actions: model::ActionsFile::default(),
             globals: Map::new(),
             user_globals: Map::new(),
@@ -175,6 +179,8 @@ pub struct WindowState {
     /// Chat: hide the time, hide the badges.
     pub chat_no_time: bool,
     pub chat_no_badges: bool,
+    /// Emotes keep still (their first frame) in the chat and the user card.
+    pub chat_still_emotes: bool,
     /// Platforms where the individual chat box sends as broadcaster instead of bot-with-fallback.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chat_as_broadcaster: Vec<String>,
@@ -210,10 +216,42 @@ impl Config {
     }
 }
 
+/// How bad a log line is. Each has its tag in the log file and its colour on the Log page.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Level {
+    Debug,
+    Info,
+    Warn,
+    Error,
+    Fatal,
+}
+
+impl Level {
+    pub const ALL: [Level; 5] = [Level::Debug, Level::Info, Level::Warn, Level::Error, Level::Fatal];
+
+    pub fn tag(self) -> &'static str {
+        match self {
+            Level::Debug => "DEBUG",
+            Level::Info => "INFO",
+            Level::Warn => "WARN",
+            Level::Error => "ERROR",
+            Level::Fatal => "FATAL",
+        }
+    }
+}
+
+/// Debug lines are dropped unless Settings turns them on.
+static DEBUG_LOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_debug_log(on: bool) {
+    DEBUG_LOG.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// What the window and tray show. Shared by the tasks.
 struct Status {
-    /// The last LOG_LINES log lines, and how many were ever logged (so the window knows what's new).
-    log: VecDeque<String>,
+    /// The last LOG_LINES log lines (level, when in unix seconds, text), and how many were ever logged
+    /// (so the window knows what's new).
+    log: VecDeque<(Level, i64, String)>,
     logged: u64,
 }
 
@@ -226,10 +264,26 @@ pub fn log_count() -> u64 {
     n
 }
 
-/// The log's last `n` lines (the dev WebSocket's GetLog).
+/// The log's last `n` lines, without their levels.
 pub fn log_tail(n: usize) -> Vec<String> {
     let mut out = Vec::new();
-    status(|s| out = s.log.iter().rev().take(n).rev().cloned().collect());
+    status(|s| out = s.log.iter().rev().take(n).rev().map(|(_, _, l)| l.clone()).collect());
+    out
+}
+
+/// The log's last `n` lines with their levels: "[WARN] text" (the dev WebSocket's GetLog).
+pub fn log_tail_tagged(n: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    status(|s| {
+        out = s
+            .log
+            .iter()
+            .rev()
+            .take(n)
+            .rev()
+            .map(|(lv, _, l)| format!("[{}] {l}", lv.tag()))
+            .collect()
+    });
     out
 }
 
@@ -248,7 +302,15 @@ fn status(f: impl FnOnce(&mut Status)) {
 fn log_tail_try(n: usize) -> Vec<String> {
     STATUS
         .try_lock()
-        .map(|s| s.log.iter().rev().take(n).rev().cloned().collect())
+        .map(|s| {
+            s.log
+                .iter()
+                .rev()
+                .take(n)
+                .rev()
+                .map(|(lv, _, l)| format!("[{}] {l}", lv.tag()))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -300,18 +362,64 @@ fn redact(line: &str) -> String {
     out
 }
 
-fn say(line: String) {
+/// Logs `line` at `level`: printed, written to the log file, and kept for the Log page.
+fn log(level: Level, line: String) {
+    if level == Level::Debug && !DEBUG_LOG.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     let line = redact(&line);
-    let _ = writeln!(std::io::stdout(), "{line}");
-    crash::line(&line);
+    let _ = writeln!(std::io::stdout(), "[{}] {line}", level.tag());
+    crash::line(level, &line);
     status(|s| {
         if s.log.len() == LOG_LINES {
             s.log.pop_front();
         }
-        s.log.push_back(line);
+        s.log.push_back((level, fmt::unix_now().as_secs() as i64, line));
         s.logged += 1;
     });
     ui::logged();
+}
+
+/// Something that happened, worth knowing.
+fn say(line: String) {
+    log(Level::Info, line);
+}
+
+/// Detail for finding a problem; only kept when Settings turns debug lines on.
+fn debug(line: String) {
+    log(Level::Debug, line);
+}
+
+/// Something went wrong but Streamerz carries on (it retries, or uses a fallback).
+fn warn(line: String) {
+    log(Level::Warn, line);
+}
+
+/// Something failed: what was asked wasn't done.
+fn error(line: String) {
+    log(Level::Error, line);
+}
+
+/// Asked to end (logout, shutdown, `kill`, Ctrl+C): saves and quits like Quit does, so the next start
+/// doesn't take it for a crash.
+#[cfg(unix)]
+async fn ended(e: std::rc::Rc<engine::Engine>) {
+    use tokio::signal::unix::{signal, SignalKind};
+    let (Ok(mut term), Ok(mut hup), Ok(mut int)) = (
+        signal(SignalKind::terminate()),
+        signal(SignalKind::hangup()),
+        signal(SignalKind::interrupt()),
+    ) else {
+        return;
+    };
+    tokio::select! {
+        _ = term.recv() => {}
+        _ = hup.recv() => {}
+        _ = int.recv() => {}
+    }
+    say("Asked to close: saving and quitting".into());
+    e.save_all();
+    crash::quit(0)
 }
 
 fn version() -> String {
@@ -483,7 +591,7 @@ fn save_to(path: &Path, c: &Config) -> std::io::Result<()> {
 fn save(c: &Config) -> std::io::Result<()> {
     let r = save_to(&config_path(), c);
     if let Err(e) = &r {
-        say(format!("can't save streamerz.json ({e})"));
+        error(format!("can't save streamerz.json ({e})"));
     }
     r
 }
@@ -503,14 +611,14 @@ fn load_from(path: &Path) -> Config {
         Ok(Ok(c)) => c,
         Err(_) => Config::default(),
         Ok(Err(e)) => {
-            say(format!("{} is invalid ({e})", path.display()));
+            error(format!("{} is invalid ({e})", path.display()));
             return match read(&with(path, ".bak")) {
                 Ok(Ok(c)) => {
-                    say("using its .bak, the previous version".into());
+                    warn("using its .bak, the previous version".into());
                     c
                 }
                 _ => {
-                    say("using the defaults".into());
+                    warn("using the defaults".into());
                     Config::default()
                 }
             };
@@ -581,11 +689,6 @@ fn autostart(on: bool) -> std::io::Result<()> {
 }
 
 fn main() {
-    // The TikTok window (tiktok_web.rs), its own process; on Linux it's the streamerz-tiktok binary.
-    #[cfg(all(windows, feature = "tiktok-web"))]
-    if std::env::args_os().nth(1).is_some_and(|a| a == "--tiktok") {
-        tiktok_web::run(&std::env::args_os().skip(2).collect::<Vec<_>>());
-    }
     // An MCP server for AI assistants, driving the running instance (mcp.rs); no window.
     if std::env::args_os().any(|a| a == "--mcp") {
         mcp::run();
@@ -599,16 +702,18 @@ fn main() {
             eprintln!("can't remember where the settings are: {e}");
         }
     }
-    say(version());
     update::tidy();
     secrets::init(&config_path());
     crash::start();
+    say(version());
     // To try the crash report by hand (see DEVELOPING).
     if std::env::var_os("STREAMERZ_CRASH_TEST").is_some() {
         panic!("crash test");
     }
+    backup::on_start();
     let cfg = load_from(&config_path());
     i18n::set(&cfg.locale);
+    set_debug_log(cfg.debug_log);
     fmt::set_shown_as(&cfg.date_format, &cfg.time_format);
     say(format!("config: {}", config_path().display()));
     let (ui_tx, ui_rx) = fltk::app::channel();
@@ -621,12 +726,14 @@ fn main() {
     let cfg = Arc::new(watch::channel(cfg).0);
     let engine_cfg = cfg.clone();
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<engine::UiCmd>();
+    let crash_tx = cmd_tx.clone();
     // The engine isn't Send (one thread, no locks): it lives in a LocalSet on the runtime thread.
     std::thread::spawn(move || {
         tokio::task::LocalSet::new().block_on(&rt, async move {
             let e = engine::Engine::new(engine_cfg.clone(), |c| {
                 let _ = save(c);
             });
+            engine::set_current(&e, crash_tx);
             engine::Engine::forget_saved_chat_history();
             e.load_community();
             e.add_builtins();
@@ -640,6 +747,8 @@ fn main() {
             tokio::task::spawn_local(crash::offer());
             tokio::task::spawn_local(update::watch(engine_cfg.clone()));
             e.timers();
+            #[cfg(unix)]
+            tokio::task::spawn_local(ended(e.clone()));
             while let Some(f) = cmd_rx.recv().await {
                 f(&e);
             }

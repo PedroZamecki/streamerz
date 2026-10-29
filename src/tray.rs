@@ -54,7 +54,7 @@ impl ksni::Tray for Tray {
             .into(),
             StandardItem {
                 label: tr("tray.quit").into(),
-                activate: Box::new(|_| crate::crash::quit(0)),
+                activate: Box::new(|t: &mut Self| t.0.send(Msg::Quit)),
                 ..Default::default()
             }
             .into(),
@@ -189,7 +189,7 @@ pub async fn run(ui: Sender<Msg>) {
             std::future::pending().await
         }
         Err(e) => {
-            crate::say(format!("no tray icon ({e})"));
+            crate::warn(format!("no tray icon ({e})"));
             ui.send(Msg::NoTray);
         }
     }
@@ -257,7 +257,7 @@ pub async fn run(ui: Sender<Msg>) {
         let close = MenuItem::new(tr("tray.quit"), true, None);
         let menu = Menu::new();
         let fail = |e: String| {
-            crate::say(format!("no tray icon ({e})"));
+            crate::warn(format!("no tray icon ({e})"));
             ui.send(Msg::NoTray);
         };
         if let Err(e) = menu.append_items(&[&open, &close]) {
@@ -269,7 +269,7 @@ pub async fn run(ui: Sender<Msg>) {
             if e.id == open_id {
                 menu_ui.send(Msg::Toggle);
             } else if e.id == close_id {
-                crate::crash::quit(0);
+                menu_ui.send(Msg::Quit);
             }
         }));
         // Left click toggles the window; right click opens the menu.
@@ -296,6 +296,7 @@ pub async fn run(ui: Sender<Msg>) {
                     .build()
                     .map_err(|e| e.to_string())
             });
+        watch_session_end();
         // Kept alive by the message loop below.
         let _tray = match tray {
             Ok(t) => t,
@@ -311,6 +312,52 @@ pub async fn run(ui: Sender<Msg>) {
             }
         }
     });
+}
+
+/// Windows ends the session (logout, shutdown, restart) by telling each top-level window, then ends
+/// the process. FLTK doesn't listen, and its window may not exist yet (started hidden): a hidden window
+/// of this thread listens instead, saves and quits like Quit does, so the next start sees no crash.
+#[cfg(windows)]
+fn watch_session_end() {
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, RegisterClassW, WM_ENDSESSION, WNDCLASSW,
+    };
+    unsafe extern "system" fn listen(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+        if m == WM_ENDSESSION && w != 0 {
+            crate::say("Windows is ending the session: saving and quitting".into());
+            crate::engine::save_and_wait();
+            crate::crash::quit(0);
+        }
+        // SAFETY: the arguments Windows gave this procedure, passed on unchanged.
+        unsafe { DefWindowProcW(h, m, w, l) }
+    }
+    let name: Vec<u16> = "StreamerzSession".encode_utf16().chain([0]).collect();
+    // SAFETY: a window class and a never-shown window of this thread, whose message loop runs below;
+    // `name` outlives both calls (the class copies it).
+    unsafe {
+        let module = GetModuleHandleW(std::ptr::null());
+        let mut class: WNDCLASSW = std::mem::zeroed();
+        class.lpfnWndProc = Some(listen);
+        class.hInstance = module;
+        class.lpszClassName = name.as_ptr();
+        RegisterClassW(&class);
+        CreateWindowExW(
+            0,
+            name.as_ptr(),
+            name.as_ptr(),
+            0,
+            0,
+            0,
+            0,
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            module,
+            std::ptr::null(),
+        );
+    }
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]

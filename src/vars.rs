@@ -142,7 +142,7 @@ pub fn expand(s: &str, args: &Obj, globals: &Obj) -> String {
                     "math(" => {
                         let v = crate::math::eval(inner);
                         if v.is_nan() {
-                            crate::say(format!("$math({inner})$: not a valid expression"));
+                            crate::warn(format!("$math({inner})$: not a valid expression"));
                         }
                         fmt::general(v)
                     }

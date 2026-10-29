@@ -3,7 +3,7 @@ name: locales
 
 on:
   pull_request:
-    paths: ["assets/locales/**", "dev/locale.py"]
+    paths: ["assets/locales/**", "dev/locale.py", "README.md"]
   workflow_dispatch:
 
 jobs:

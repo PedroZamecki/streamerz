@@ -269,7 +269,7 @@ async fn ws_client(e: Rc<Engine>, c: Obj) {
                 }
             }
             Err(err) => {
-                crate::say(format!("WebSocket client {}: {url}: {err}", field(&c, "name")));
+                crate::warn(format!("WebSocket client {}: {url}: {err}", field(&c, "name")));
                 ws_event(&e, true, "Close", &c, Obj::new());
             }
         }
@@ -285,7 +285,7 @@ async fn custom_server(e: Rc<Engine>, s: Obj) {
     let name = field(&s, "name").to_string();
     let l = match TcpListener::bind((addr.as_str(), port)).await {
         Ok(l) => l,
-        Err(err) => return crate::say(format!("custom server {name}: can't listen on {addr}:{port} ({err})")),
+        Err(err) => return crate::error(format!("custom server {name}: can't listen on {addr}:{port} ({err})")),
     };
     crate::say(format!(
         "custom server {name} on ws://{addr}:{port}{}",
@@ -358,7 +358,7 @@ async fn accept(
         let status = if !endpoint.is_empty() && req.uri().path() != endpoint {
             StatusCode::NOT_FOUND
         } else if !origin_ok(h("origin"), h("sec-fetch-site"), &allowed) {
-            crate::say(format!(
+            crate::warn(format!(
                 "WebSocket: refused a browser page from {} (add it to Servers > WebSocket > allowed websites to let it in)",
                 h("origin").unwrap_or("another website")
             ));
@@ -623,6 +623,7 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
         "InjectChat" if e.dev() => match e.inject_chat(
             get("platform"),
             get("user"),
+            get("userId"),
             get("role"),
             get("text"),
             req.get("badges").cloned(),
@@ -630,6 +631,24 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
             Ok(ran) => ok(&id, json!({"ran": ran})),
             Err(m) => error(&id, &m),
         },
+        // Dev mode only: a message pinned in a chat ("seconds" 0: no end), or none ("unpin": true).
+        "InjectPin" if e.dev() => {
+            let platform = get("platform").to_string();
+            if req.get("unpin").and_then(Value::as_bool) == Some(true) {
+                e.chat_unpinned(&platform, "");
+            } else {
+                let secs = req.get("seconds").and_then(Value::as_u64).unwrap_or(0);
+                e.chat_pinned(crate::engine::chatlog::Pin {
+                    platform,
+                    msg_id: crate::engine::uuid(),
+                    user: get("user").into(),
+                    text: get("text").into(),
+                    by: get("by").into(),
+                    until: (secs > 0).then(|| crate::fmt::unix_now().as_millis() as u64 + secs * 1000),
+                });
+            }
+            ok(&id, json!({}))
+        }
         "GetChatOut" if e.dev() => ok(&id, json!({"messages": e.dev_take().unwrap_or_default()})),
         // Dev mode only: fire any trigger (code or name, e.g. 101 or "TwitchFollow") with these
         // arguments, as its platform would; how many actions ran.
@@ -650,7 +669,7 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
         // Dev mode only: the log's last lines (up to `lines`, default 50).
         "GetLog" if e.dev() => {
             let n = req.get("lines").and_then(Value::as_u64).unwrap_or(50) as usize;
-            ok(&id, json!({"lines": crate::log_tail(n)}))
+            ok(&id, json!({"lines": crate::log_tail_tagged(n)}))
         }
         // Dev mode only: what's connected, and how much is set up.
         "GetStatus" if e.dev() => {
@@ -780,7 +799,7 @@ async fn websocket(e: Rc<Engine>, s: WsSettings) {
     let l = match TcpListener::bind((s.address.as_str(), s.port)).await {
         Ok(l) => l,
         Err(err) => {
-            return crate::say(format!(
+            return crate::error(format!(
                 "WebSocket server: can't listen on {}:{} ({err})",
                 s.address, s.port
             ))
@@ -800,7 +819,7 @@ async fn websocket(e: Rc<Engine>, s: WsSettings) {
             let client_inst_name = format!("Client {id}");
             e.remote_connected(&client_inst_id, &client_inst_name);
             if let Err(err) = connection(&e, &s, tcp, id).await {
-                crate::say(format!("WebSocket client: {err}"));
+                crate::warn(format!("WebSocket client: {err}"));
             }
             e.remote_disconnected(&client_inst_id, &client_inst_name);
             e.listen(id, &events::Subs::new(), &tokio::sync::mpsc::unbounded_channel().0);
@@ -885,7 +904,7 @@ async fn connection(e: &Rc<Engine>, s: &WsSettings, tcp: TcpStream, conn: u64) -
 async fn http_server(e: Rc<Engine>, s: HttpSettings) {
     let l = match TcpListener::bind((s.address.as_str(), s.port)).await {
         Ok(l) => l,
-        Err(err) => return crate::say(format!("HTTP server: can't listen on {}:{} ({err})", s.address, s.port)),
+        Err(err) => return crate::error(format!("HTTP server: can't listen on {}:{} ({err})", s.address, s.port)),
     };
     crate::say(format!("HTTP server on http://{}:{}/", s.address, s.port));
     loop {
@@ -991,7 +1010,7 @@ async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
     let allowed = e.config().websockets.allowed_origins.clone();
     // Webhooks (donations, Kick) come from servers, which send no Origin; browsers are checked.
     if !origin_ok(h("origin"), h("sec-fetch-site"), &allowed) {
-        crate::say(format!(
+        crate::warn(format!(
             "HTTP server: refused a browser page from {}",
             h("origin").unwrap_or("another website")
         ));
@@ -1037,7 +1056,7 @@ async fn udp_server(e: Rc<Engine>, s: UdpSettings) {
     // All interfaces, like Streamer.bot (devices on the network send these).
     let sock = match UdpSocket::bind(("0.0.0.0", s.port)).await {
         Ok(x) => x,
-        Err(err) => return crate::say(format!("UDP server: can't listen on port {} ({err})", s.port)),
+        Err(err) => return crate::error(format!("UDP server: can't listen on port {} ({err})", s.port)),
     };
     crate::say(format!("UDP server on port {}", s.port));
     let mut buf = vec![0u8; 65536];
@@ -1054,7 +1073,7 @@ async fn udp_server(e: Rc<Engine>, s: UdpSettings) {
         let a = req.get("action").cloned().unwrap_or_default();
         let args = req.get("args").and_then(Value::as_object).cloned().unwrap_or_default();
         if find_action(&e, &a).and_then(|x| e.queue(&x, args)).is_none() {
-            crate::say(format!("UDP: no action {a}"));
+            crate::error(format!("UDP: no action {a}"));
         }
     }
 }

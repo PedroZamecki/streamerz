@@ -158,6 +158,51 @@ fn subs(o: &Obj) -> &[Value] {
 /// What the window asks of the engine: run this on the engine's thread.
 pub type UiCmd = Box<dyn FnOnce(&Rc<Engine>) + Send>;
 
+thread_local! {
+    /// The engine, on its own thread (for `save_on_crash`).
+    static CURRENT: RefCell<std::rc::Weak<Engine>> = const { RefCell::new(std::rc::Weak::new()) };
+}
+/// How other threads reach the engine (for `save_on_crash`).
+static CMDS: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<UiCmd>> = std::sync::OnceLock::new();
+
+impl Engine {
+    /// Runs one sub-action of `kind` with the settings `o`, as an action would, and gives the variables
+    /// it set (the Polls page drives Twitch's and YouTube's poll and prediction sub-actions so).
+    pub async fn run_one(self: &Rc<Self>, kind: u64, o: Obj) -> Obj {
+        let mut ctx = Ctx { args: Obj::new() };
+        self.rest(&mut ctx, &o, kind).await;
+        ctx.args
+    }
+}
+
+/// Lets `save_on_crash` reach `e`. Call on the engine's thread.
+pub fn set_current(e: &Rc<Engine>, cmds: tokio::sync::mpsc::UnboundedSender<UiCmd>) {
+    CURRENT.with(|c| *c.borrow_mut() = Rc::downgrade(e));
+    let _ = CMDS.set(cmds);
+}
+
+/// Before the process ends (a panic, the session ending): writes the settings and what isn't saved as
+/// it changes (Community's users and credits). On the engine's own thread directly, if its state isn't
+/// mid-change; from another thread, the engine is asked and given 2 seconds.
+pub fn save_and_wait() {
+    let here = CURRENT.try_with(|c| c.borrow().upgrade()).ok().flatten();
+    if let Some(e) = here {
+        if e.st.try_borrow_mut().is_ok() {
+            e.save_all();
+        }
+        return;
+    }
+    let Some(cmds) = CMDS.get() else { return };
+    let (done, wait) = std::sync::mpsc::channel();
+    let ask: UiCmd = Box::new(move |e| {
+        e.save_all();
+        let _ = done.send(());
+    });
+    if cmds.send(ask).is_ok() {
+        let _ = wait.recv_timeout(std::time::Duration::from_secs(2));
+    }
+}
+
 /// Whether the engine runs this sub-action type (the rest are kept, logged once and skipped).
 pub fn supported(kind: u32) -> bool {
     matches!(
@@ -215,7 +260,7 @@ pub fn regex(p: &str) -> Option<regex_lite::Regex> {
     match regex_lite::Regex::new(&p) {
         Ok(r) => Some(r),
         Err(e) => {
-            crate::say(format!("regex {p}: {e}"));
+            crate::error(format!("regex {p}: {e}"));
             None
         }
     }
@@ -261,6 +306,12 @@ pub fn match_args(r: &regex_lite::Regex, text: &str, args: &mut Obj) -> bool {
 }
 
 impl Engine {
+    /// Writes the settings and the Community data now.
+    pub fn save_all(&self) {
+        (self.save)(&self.cfg.borrow());
+        self.save_community();
+    }
+
     pub fn new(cfg: Arc<watch::Sender<Config>>, save: fn(&Config)) -> Rc<Self> {
         Rc::new(Engine {
             cfg,
@@ -302,15 +353,15 @@ impl Engine {
         let (tw, obs_on, yt, kick, tt) = {
             let c = self.cfg.borrow();
             (
-                c.twitch.auto_connect && c.twitch.broadcaster.is_some(),
+                !c.twitch.manual_connect && c.twitch.broadcaster.is_some(),
                 c.obs
                     .connections
                     .iter()
                     .any(|o| o.get("autoConnect").and_then(Value::as_bool).unwrap_or(false)),
-                c.youtube.auto_connect
+                !c.youtube.manual_connect
                     && (!c.youtube.video_id.trim().is_empty() || !c.youtube.channel_id.trim().is_empty()),
-                c.kick.auto_connect && !c.kick.channel.trim().is_empty(),
-                c.tiktok.auto_connect,
+                !c.kick.manual_connect && !c.kick.channel.trim().is_empty(),
+                !c.tiktok.manual_connect && !c.tiktok.channel.trim().is_empty(),
             )
         };
         if tw {
@@ -517,7 +568,7 @@ impl Engine {
         let reply_id = reply_id.map(String::from);
         tokio::task::spawn_local(async move {
             if let Err(e) = tw.send_message(text, reply_id, use_bot, fallback).await {
-                crate::say(e);
+                crate::error(e);
             }
         });
         Ok(())
@@ -936,7 +987,7 @@ impl Engine {
         let mut st = self.st.borrow_mut();
         let entry = st.file_tails.entry(tail_id.to_string()).or_insert(true);
         *entry = new_state(state, *entry);
-        crate::say(format!("File Tail [{}]: Set State {}", tail_id, *entry));
+        crate::debug(format!("File Tail [{}]: Set State {}", tail_id, *entry));
     }
 
     pub fn fire_stream_deck_action(
@@ -1087,7 +1138,7 @@ impl Engine {
         item.id = button_id.to_string();
         item.title = title.to_string();
         item.state = new_state(state, item.state);
-        crate::say(format!("StreamDeck [{}]: Set Title '{}'", button_id, title));
+        crate::debug(format!("StreamDeck [{}]: Set Title '{}'", button_id, title));
     }
 
     pub fn set_stream_deck_background(self: &Rc<Self>, button_id: &str, image: &str, color: &str, state: f64) {
@@ -1097,7 +1148,7 @@ impl Engine {
         item.background = image.to_string();
         item.color = color.to_string();
         item.state = new_state(state, item.state);
-        crate::say(format!(
+        crate::debug(format!(
             "StreamDeck [{}]: Set Background img='{}' col='{}'",
             button_id, image, color
         ));
@@ -1108,7 +1159,7 @@ impl Engine {
         let item = st.stream_deck_items.entry(button_id.to_string()).or_default();
         item.id = button_id.to_string();
         item.state = new_state(state, item.state);
-        crate::say(format!("StreamDeck [{}]: Set State {}", button_id, item.state));
+        crate::debug(format!("StreamDeck [{}]: Set State {}", button_id, item.state));
     }
 
     pub fn toggle_stream_deck_state(self: &Rc<Self>, button_id: &str) {
@@ -1116,15 +1167,15 @@ impl Engine {
         let item = st.stream_deck_items.entry(button_id.to_string()).or_default();
         item.id = button_id.to_string();
         item.state = !item.state;
-        crate::say(format!("StreamDeck [{}]: Toggle State -> {}", button_id, item.state));
+        crate::debug(format!("StreamDeck [{}]: Toggle State -> {}", button_id, item.state));
     }
 
     pub fn show_stream_deck_alert(self: &Rc<Self>, button_id: &str) {
-        crate::say(format!("StreamDeck [{}]: Show Alert", button_id));
+        crate::debug(format!("StreamDeck [{}]: Show Alert", button_id));
     }
 
     pub fn show_stream_deck_ok(self: &Rc<Self>, button_id: &str) {
-        crate::say(format!("StreamDeck [{}]: Show Ok", button_id));
+        crate::debug(format!("StreamDeck [{}]: Show Ok", button_id));
     }
 
     pub fn set_stream_deck_value(self: &Rc<Self>, button_id: &str, value: &str) {
@@ -1132,7 +1183,7 @@ impl Engine {
         let item = st.stream_deck_items.entry(button_id.to_string()).or_default();
         item.id = button_id.to_string();
         item.value = value.to_string();
-        crate::say(format!("StreamDeck [{}]: Set Value '{}'", button_id, value));
+        crate::debug(format!("StreamDeck [{}]: Set Value '{}'", button_id, value));
     }
 
     fn deck_key<'a>(deck_id: &'a str, deck_name: &'a str) -> String {
@@ -1156,7 +1207,7 @@ impl Engine {
         let deck = st.decks.entry(key.clone()).or_default();
         let item = deck.get_or_create(item_id, item_name);
         item.state = new_state(state, item.state);
-        crate::say(format!("Deck [{}]: Item [{}]: Set State {}", key, item_id, item.state));
+        crate::debug(format!("Deck [{}]: Item [{}]: Set State {}", key, item_id, item.state));
     }
 
     pub fn toggle_deck_item_state(self: &Rc<Self>, deck_id: &str, deck_name: &str, item_id: &str, item_name: &str) {
@@ -1165,7 +1216,7 @@ impl Engine {
         let deck = st.decks.entry(key.clone()).or_default();
         let item = deck.get_or_create(item_id, item_name);
         item.state = !item.state;
-        crate::say(format!(
+        crate::debug(format!(
             "Deck [{}]: Item [{}]: Toggle State -> {}",
             key, item_id, item.state
         ));
@@ -1189,7 +1240,7 @@ impl Engine {
         item.title = title.to_string();
         item.color = color.to_string();
         item.state = new_state(state, item.state);
-        crate::say(format!("Deck [{}]: Item [{}]: Set Title '{}'", key, item_id, title));
+        crate::debug(format!("Deck [{}]: Item [{}]: Set Title '{}'", key, item_id, title));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1211,7 +1262,7 @@ impl Engine {
         item.background = url.to_string();
         item.color = color.to_string();
         item.state = new_state(state, item.state);
-        crate::say(format!("Deck [{}]: Item [{}]: Set Background '{}'", key, item_id, url));
+        crate::debug(format!("Deck [{}]: Item [{}]: Set Background '{}'", key, item_id, url));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1238,7 +1289,7 @@ impl Engine {
         };
         item.color = color.to_string();
         item.state = new_state(state, item.state);
-        crate::say(format!("Deck [{}]: Item [{}]: Set Icon '{}'", key, item_id, item.icon));
+        crate::debug(format!("Deck [{}]: Item [{}]: Set Icon '{}'", key, item_id, item.icon));
     }
 
     pub fn set_deck_item_value(
@@ -1256,7 +1307,7 @@ impl Engine {
         let item = deck.get_or_create(item_id, item_name);
         item.value = value.to_string();
         item.state = new_state(state, item.state);
-        crate::say(format!("Deck [{}]: Item [{}]: Set Value '{}'", key, item_id, value));
+        crate::debug(format!("Deck [{}]: Item [{}]: Set Value '{}'", key, item_id, value));
     }
 
     pub fn deck_notify(
@@ -1269,7 +1320,7 @@ impl Engine {
         _sound_id: &str,
     ) {
         let key = Self::deck_key(deck_id, deck_name);
-        crate::say(format!(
+        crate::debug(format!(
             "Deck [{}]: Notification: '{}' - '{}' (color: {})",
             key, title, description, color
         ));
@@ -1280,7 +1331,7 @@ impl Engine {
         let mut st = self.st.borrow_mut();
         let deck = st.decks.entry(key.clone()).or_default();
         deck.page = page;
-        crate::say(format!("Deck [{}]: Set Page {}", key, page));
+        crate::debug(format!("Deck [{}]: Set Page {}", key, page));
     }
 
     pub fn next_deck_page(self: &Rc<Self>, deck_id: &str, deck_name: &str) {
@@ -1288,7 +1339,7 @@ impl Engine {
         let mut st = self.st.borrow_mut();
         let deck = st.decks.entry(key.clone()).or_default();
         deck.page += 1;
-        crate::say(format!("Deck [{}]: Next Page -> {}", key, deck.page));
+        crate::debug(format!("Deck [{}]: Next Page -> {}", key, deck.page));
     }
 
     pub fn prev_deck_page(self: &Rc<Self>, deck_id: &str, deck_name: &str) {
@@ -1296,7 +1347,7 @@ impl Engine {
         let mut st = self.st.borrow_mut();
         let deck = st.decks.entry(key.clone()).or_default();
         deck.page = (deck.page - 1).max(0);
-        crate::say(format!("Deck [{}]: Prev Page -> {}", key, deck.page));
+        crate::debug(format!("Deck [{}]: Prev Page -> {}", key, deck.page));
     }
 
     pub fn remote_disconnected(self: &Rc<Self>, instance_id: &str, instance_name: &str) {
@@ -1347,6 +1398,7 @@ impl Engine {
         matches: impl Fn(&Obj) -> bool,
     ) -> usize {
         self.record(kind, args);
+        self.chat_event(kind, args);
         if !self.plugins.borrow().is_empty() {
             self.plugins_hear(name(TRIGGERS, kind).unwrap_or(trigger_name), args);
         }
@@ -1691,7 +1743,7 @@ impl Engine {
                     match self.slobs_sub(kind, &x).await {
                         Ok(Some(scene)) => drop(ctx.args.insert("currentScene".into(), scene.into())),
                         Ok(None) => {}
-                        Err(e) => crate::say(format!("Streamlabs Desktop: {e}")),
+                        Err(e) => crate::error(format!("Streamlabs Desktop: {e}")),
                     }
                 }
                 // Set Argument
@@ -1966,7 +2018,7 @@ impl Engine {
                             ctx.args.insert("hasResult".into(), true.into());
                         }
                         None => {
-                            crate::say(format!("Wait For Local Signal: {name} timed out"));
+                            crate::warn(format!("Wait For Local Signal: {name} timed out"));
                             ctx.args.insert("signalTimeout".into(), true.into());
                         }
                     }
@@ -2015,7 +2067,7 @@ impl Engine {
             } else {
                 "not supported yet"
             };
-            crate::say(format!("sub-action {what} (type {kind}): {why}, skipped"));
+            crate::warn(format!("sub-action {what} (type {kind}): {why}, skipped"));
         }
     }
 
@@ -2214,7 +2266,12 @@ pub(crate) mod tests {
         tokio::task::LocalSet::new().block_on(&rt, f);
         let mut out = Vec::new();
         crate::status(|s| {
-            out = s.log.iter().filter(|x| x.starts_with("T ")).cloned().collect();
+            out = s
+                .log
+                .iter()
+                .filter(|x| x.2.starts_with("T "))
+                .map(|x| x.2.clone())
+                .collect();
             s.log.clear();
         });
         out

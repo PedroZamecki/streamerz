@@ -143,6 +143,12 @@ pub fn shown_iso(iso: &str, time: bool) -> String {
     }
 }
 
+/// Unix seconds as the user reads a date and a time.
+pub fn shown_when(secs: i64) -> String {
+    let t = crate::engine::civil_time(secs + i64::from(now().offset));
+    format!("{} {}", shown_date(&t), shown_time(&t))
+}
+
 /// Unix seconds as the user reads a time of day (chat lines).
 pub fn shown_clock(secs: i64) -> String {
     shown_time(&crate::engine::civil_time(secs + i64::from(now().offset)))

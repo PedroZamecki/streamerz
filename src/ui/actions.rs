@@ -830,7 +830,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
                 Ok(u) if u.is_empty() => crate::say(tr("actions.imported_toast").into()),
                 Ok(u) => {
                     let msg = trf("actions.imported_unsupported", &[("items", &u.join(", "))]);
-                    crate::say(msg.clone());
+                    crate::warn(msg.clone());
                     super::dialogs::message(&plain(&msg));
                 }
                 Err(e) => super::dialogs::alert(&plain(&e)),
@@ -1282,7 +1282,7 @@ fn drag(
     let mut start: Option<(TreeItem, i32)> = None;
     let mut dragging = false;
     t.handle(move |t, ev| match ev {
-        Event::Push if app::event_mouse_button() == app::MouseButton::Right => {
+        Event::Push if super::right_button() => {
             if let Some(item) = t.find_clicked(true) {
                 let _ = t.select_only(&item, true);
             }
@@ -1598,7 +1598,7 @@ fn pick_template() -> Option<&'static crate::templates::Template> {
     });
     win.show();
     while win.shown() && answer.get().is_none() {
-        if !fltk::app::wait() {
+        if !super::nested_wait(None) {
             break;
         }
     }
