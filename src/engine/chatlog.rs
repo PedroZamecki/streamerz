@@ -801,6 +801,15 @@ impl Engine {
             .collect()
     }
 
+    /// A badge's name as the user reads it ("1-Year Subscriber" where the platform says it).
+    pub fn badge_label(&self, platform: &str, key: &str) -> String {
+        match platform {
+            "twitch" => crate::twitch::badge_title(key),
+            _ => None,
+        }
+        .unwrap_or_else(|| badge_name(key))
+    }
+
     pub fn chatter(&self, platform: &str, user_id: &str) -> Option<Seen> {
         let st = self.st.borrow();
         st.chat_log

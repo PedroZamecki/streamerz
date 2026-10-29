@@ -11,6 +11,7 @@ use super::accounts::{platform_accounts, unlock_logins_interactive};
 use super::emotes::{self, EmoteSection, Provider};
 use super::fit::Ellipsis;
 use super::img::{self, Pic};
+use super::tip::{self, Tip};
 use super::{button, icons, query, tell, ROW};
 use crate::engine::chatlog::{Line, Moderate, Pin, PLATFORMS};
 use crate::i18n::{tr, trf};
@@ -159,7 +160,7 @@ const ICONS: &[(&str, &str)] = &[
 ];
 
 /// A badge, platform logo, or UI icon, scaled to `size` px and cached per thread.
-fn icon_sized(key: &str, size: i32) -> Option<SvgImage> {
+pub(super) fn icon_sized(key: &str, size: i32) -> Option<SvgImage> {
     thread_local!(static CACHE: RefCell<HashMap<(String, i32), Option<SvgImage>>> = RefCell::default());
     CACHE.with_borrow_mut(|m| {
         m.entry((key.to_string(), size))
@@ -330,8 +331,11 @@ enum It {
     Text(String, Font, Color),
     /// Text struck through: a deleted message's.
     Struck(String),
-    Pic(Pic),
+    /// A picture, with what pointing at it says (emotes, badges).
+    Pic(Pic, Option<Rc<Tip>>),
     Svg(SvgImage),
+    /// A drawn badge, with what pointing at it says.
+    SvgTip(SvgImage, Rc<Tip>),
     /// A word's space: where the line may wrap.
     Space,
     /// A few pixels between pictures (no wrap).
@@ -353,8 +357,8 @@ impl It {
                 draw::set_font(Font::Helvetica, TEXT);
                 (draw::width(t) as i32, TEXT + 4)
             }
-            It::Pic(p) => (p.w(), p.h().max(1)),
-            It::Svg(s) => (s.w(), s.h()),
+            It::Pic(p, _) => (p.w(), p.h().max(1)),
+            It::Svg(s) | It::SvgTip(s, _) => (s.w(), s.h()),
             It::Space => {
                 draw::set_font(Font::Helvetica, TEXT);
                 (draw::width(" ") as i32, 0)
@@ -369,6 +373,22 @@ impl It {
 thread_local! {
     /// What lines show: (the time, the badges, emotes moving). Chat's options; all panes follow.
     static SHOW: Cell<(bool, bool, bool)> = const { Cell::new((true, true, true)) };
+}
+
+fn emote_tip(platform: &str, name: &str, url: &str) -> Rc<Tip> {
+    Rc::new(Tip::Emote {
+        platform: platform.into(),
+        name: name.into(),
+        url: url.into(),
+    })
+}
+
+fn badge_tip(platform: &str, key: &str, url: &str) -> Rc<Tip> {
+    Rc::new(Tip::Badge {
+        platform: platform.into(),
+        key: key.into(),
+        url: url.into(),
+    })
 }
 
 /// A line's things, in order.
@@ -438,7 +458,7 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
             ] {
                 if on {
                     if let Some(s) = badge_fallback_svg(&l.platform, role) {
-                        v.push(It::Svg(s));
+                        v.push(It::SvgTip(s, badge_tip(&l.platform, role, "")));
                         v.push(It::Gap(GAP));
                     }
                 }
@@ -447,13 +467,13 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
             for (name, url) in &l.badges {
                 if !url.is_empty() {
                     if let Some(p) = img::get(cmds, url, BADGE, false) {
-                        v.push(It::Pic(p));
+                        v.push(It::Pic(p, Some(badge_tip(&l.platform, name, url))));
                         v.push(It::Gap(GAP));
                         continue;
                     }
                 }
                 if let Some(s) = badge_fallback_svg(&l.platform, name) {
-                    v.push(It::Svg(s));
+                    v.push(It::SvgTip(s, badge_tip(&l.platform, name, url)));
                     v.push(It::Gap(GAP));
                 }
             }
@@ -482,13 +502,16 @@ fn words(cmds: &Cmds, l: &Line, v: &mut Vec<It>) {
     for w in l.text.split(' ') {
         v.push(It::Space);
         let known = l.emotes.iter().find(|e| e.0 == w).map(|e| e.1.clone());
-        if let Some(p) = known.or_else(|| emotes::third(&l.platform, w)).and_then(|u| pic(&u)) {
-            v.push(It::Pic(p));
+        if let Some((p, u)) = known
+            .or_else(|| emotes::third(&l.platform, w))
+            .and_then(|u| pic(&u).map(|p| (p, u)))
+        {
+            v.push(It::Pic(p, Some(emote_tip(&l.platform, w, &u))));
             continue;
         }
         for (part, url) in emotes::split(w) {
-            match url.and_then(|u| pic(&u)) {
-                Some(p) => v.push(It::Pic(p)),
+            match url.and_then(|u| pic(&u).map(|p| (p, u))) {
+                Some((p, u)) => v.push(It::Pic(p, Some(emote_tip(&l.platform, part, &u)))),
                 None => v.push(It::Text(part.to_string(), Font::Helvetica, fg)),
             }
         }
@@ -794,12 +817,12 @@ impl Pane {
                             draw::set_draw_color(*color);
                             draw::draw_text2(t, x, y, 0, rh, Align::Left);
                         }
-                        It::Pic(p) => {
+                        It::Pic(p, _) => {
                             moving |= animate && p.animated();
                             let mut i = if animate { p.at(ms).clone() } else { p.first() };
                             i.draw(x, y + (rh - i.h()) / 2, i.w(), i.h());
                         }
-                        It::Svg(s) => {
+                        It::Svg(s) | It::SvgTip(s, _) => {
                             let (w, h) = (s.w(), s.h());
                             s.clone().draw(x, y + (rh - h) / 2, w, h);
                         }
@@ -1085,7 +1108,35 @@ impl Pane {
         None
     }
 
+    /// The emote or badge under the pointer.
+    fn tip_at(&self, f: &Frame) -> Option<Rc<Tip>> {
+        let (ex, ey) = (app::event_x() - f.x() - 6, app::event_y());
+        let st = self.st.borrow();
+        let mut y = f.y() + 4 + self.head(&st) - st.top;
+        for (laid, h) in &st.laid {
+            if !(y..y + h).contains(&ey) {
+                y += h;
+                continue;
+            }
+            for (row, rh) in laid {
+                if (y..y + rh).contains(&ey) {
+                    return row.iter().find_map(|(it, x)| match it {
+                        It::Pic(p, Some(t)) if (*x..x + p.w()).contains(&ex) => Some(t.clone()),
+                        It::SvgTip(s, t) if (*x..x + s.w()).contains(&ex) => Some(t.clone()),
+                        _ => None,
+                    });
+                }
+                y += rh;
+            }
+            return None;
+        }
+        None
+    }
+
     fn handle(&self, f: &mut Frame, ev: Event) -> bool {
+        if matches!(ev, Event::Push | Event::MouseWheel | Event::Leave | Event::Hide) {
+            tip::point(&self.cmds, f, None);
+        }
         match ev {
             Event::Enter => true,
             Event::Move => {
@@ -1101,6 +1152,8 @@ impl Pane {
                 }
                 let act = self.act_at(f);
                 f.set_tooltip(act.as_ref().map_or("", |a| a.1 .2));
+                let over = if act.is_some() { None } else { self.tip_at(f) };
+                tip::point(&self.cmds, f, over);
                 let hand = act.is_some() || self.name_at(f).is_some();
                 if let Some(mut w) = f.window() {
                     w.set_cursor(if hand {

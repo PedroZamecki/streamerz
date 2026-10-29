@@ -178,6 +178,7 @@
   "card.recent": "What they said",
   "card.recent_short": "Messages",
   "card.subscribed": "Subscribed",
+  "tip.animated": "Animated",
   "chat.acct_keyring_locked": "Keyring locked. Unlock saved logins?",
   "chat.acct_note": "The emote picker shows what the chosen account can use.",
   "chat.acct_win_title": "Sending Account",

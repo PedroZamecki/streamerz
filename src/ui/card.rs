@@ -6,6 +6,7 @@
 
 use super::chat::{draw_badge, Pane};
 use super::popover::Popover;
+use super::tip::Tip;
 use super::rows::Rows;
 use super::{icons, img, query, tell, Ellipsis};
 use crate::engine::chatlog::Line;
@@ -256,15 +257,29 @@ fn badge_row(cmds: &Cmds, platform: &str, badges: Rc<Vec<(String, String, String
             *at.borrow_mut() = spans;
         }
     });
-    f.handle(move |f, ev| match ev {
-        Event::Enter => true,
-        Event::Move => {
-            let ex = app::event_x();
-            let i = at.borrow().iter().position(|(x, w)| (*x..x + w).contains(&ex));
-            f.set_tooltip(i.and_then(|i| badges.get(i)).map_or("", |b| b.2.as_str()));
-            true
+    f.handle({
+        let (cmds, platform) = (cmds.clone(), platform.to_string());
+        move |f, ev| match ev {
+            Event::Enter => true,
+            Event::Move => {
+                let ex = app::event_x();
+                let i = at.borrow().iter().position(|(x, w)| (*x..x + w).contains(&ex));
+                let tip = i.and_then(|i| badges.get(i)).map(|b| {
+                    Rc::new(Tip::Badge {
+                        platform: platform.clone(),
+                        key: b.0.clone(),
+                        url: b.1.clone(),
+                    })
+                });
+                super::tip::point(&cmds, f, tip);
+                true
+            }
+            Event::Leave | Event::Push | Event::Hide => {
+                super::tip::point(&cmds, f, None);
+                false
+            }
+            _ => false,
         }
-        _ => false,
     });
     f
 }

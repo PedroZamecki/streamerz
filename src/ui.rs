@@ -23,6 +23,7 @@ pub(crate) mod popover;
 mod recovery;
 mod rows;
 mod settings;
+mod tip;
 
 use self::fit::Ellipsis;
 use crate::brand;
