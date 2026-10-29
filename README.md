@@ -133,10 +133,10 @@ Added once on first run, in the Built-in group: edit, turn off or re-alias them 
 - **Groups**: add and delete user groups (their Added/Removed triggers fire). Users join them from chat.
 - **Servers**: the WebSocket, HTTP and UDP servers, WebSocket clients and custom WebSocket servers.
 - **Accounts**: one row per platform (Twitch, YouTube, Kick, TikTok): connected or not (and why), the
-  channel read (the broadcaster's own), **Connect**, **Connect on start**, and **Login** for the broadcaster
-  and the bot, with their profile pictures. Chat is sent as the bot when one is logged in. **Advanced…**
-  has the rest, and for YouTube, Kick and TikTok an **Other channel** to read instead of the broadcaster's
-  (a URL or @handle works; empty: the broadcaster's again):
+  **Channel** to read and moderate (empty: your own; a URL or @name works, so a moderator can use their
+  own account on someone else's channel, with nothing of their own to stream), **Connect**,
+  **Connect on start**, and **Login** for your account and an optional bot, with their pictures. Chat is
+  sent as the bot when one is logged in. **Advanced…** has the rest:
   - Kick: sending needs your own Kick app (kick.com > Settings > Developer > Create app, redirect URL
     `http://127.0.0.1:45563/callback`, every scope; the bot account is only asked for chat). Paste its client ID and secret, then Login. Reading
     chat needs no login.
@@ -149,8 +149,15 @@ Added once on first run, in the Built-in group: edit, turn off or re-alias them 
     channel is offline). Login opens TikTok's own login page in your browser (Chrome, Chromium, Edge, Brave or Vivaldi,
     with a profile of Streamerz's own); sending types into the live page's chat in a hidden tab of it,
     which closes after 2 idle minutes. Nothing else to install: on Windows, Edge is always there.
+- **Polls**: start and end polls on Twitch and YouTube and follow their votes; start, lock, resolve and
+  cancel Twitch predictions.
 - **Stream Apps**: OBS Studio and Streamlabs Desktop connections.
 - **Settings**: window options and this instance's name (what GetInfo reports).
+- **Log**: every line with its level (debug, info, warning, error, fatal) in colour, a level filter and a
+  search.
+- **Crashes**: the crash reports, to read, send as a GitHub issue, or delete.
+- **Backups**: a backup of the settings and the Community data is made when a new version first starts
+  (the last 10 are kept); back up now, restore (Streamerz restarts) or delete.
 
 The window comes back as it was left: its size, its tab and the chat's view.
 

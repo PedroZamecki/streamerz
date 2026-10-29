@@ -6,11 +6,12 @@
 - `main` is protected: no direct pushes. Work on a branch, open a pull request; it's merged with a merge
   commit, NEVER squashed or rebased: the history of every commit is kept, so each commit follows the commit
   rule. No approvals required.
-- Work goes in versions: one branch and one PR per version, never stacked. A version holds every feature,
-  fix and refactor the user asks for while it's open (PLAN.md phases included: tick them as they're done).
-  Keep asking the user what else goes in; close it only when they say so, and at the end of every version
-  ask: "Now is a great time to finish, want to release a new version on GitHub?". Merging the PR is the
-  release.
+- Work goes in versions: one branch and one PR per version, never stacked, named for the version
+  (`release/1.1.0`). A version holds every feature, fix and refactor the user asks for while it's open
+  (PLAN.md phases included: tick them as they're done). Keep asking the user what else goes in, and before
+  opening the PR ask whether the version is complete. Then open the PR, wait for its CI, check it and fix
+  what fails (pushing again only for those fixes). At the end of every version ask: "Now is a great time
+  to finish, want to release a new version on GitHub?". Merging the PR is the release.
 - Test it here, by hand, before closing a version: CI runs only when the version's PR is pushed.
 - Branch names (suggested, not enforced): `type/short-description`, e.g. `feat/twitch-chat`,
   `fix/obs-reconnect`, using the same types as commits.
@@ -21,7 +22,7 @@
   (`.github/workflows/build.yml`). Keep that working: don't add steps that change the tree after the PR
   is built.
 - Releases are automatic: each merge to `main` bumps the version from the commit types
-  (`type!:` major, `feat` minor, `fix`/`perf` patch) and publishes the Windows exe and the Linux AppImage (the only Linux file: the TikTok helper lives inside it).
+  (`type!:` major, `feat` minor, `fix`/`perf` patch) and publishes the Windows exe and the Linux AppImage (the only Linux file).
   Don't tag by hand, and don't bump the version in `Cargo.toml` (it's unused).
 - The name is **Streamerz**, capitalized, everywhere a person or the system sees it: UI, docs, window and
   notification titles, desktop entries, the executable (`Streamerz`, `Streamerz.exe`) and the release files.

@@ -316,6 +316,28 @@ platform handles through channels, never through shared locks held across awaits
   and a thin scrollbar; the chat scrollbar is flat, without arrows.
 - [ ] 45+. Later extras, one phase each, order chosen then (see Decisions).
 
+## Version 1.1.0
+
+- [x] Release notes list every commit since the last tag, grouped by type (not only the pull request).
+- [x] Bugs: the chat froze under a user card or any dialog; Community, Accounts and Donations didn't fill
+  in; Kick connected twice; the pin and timeout menus always used the first time; a logout, shutdown or
+  `kill` looked like a crash (and saved nothing); the Settings file buttons weren't aligned.
+- [x] Logs: DEBUG/INFO/WARN/ERROR/FATAL levels in the file and the Log page (colours, level filter, search,
+  Debug lines in Settings). A panic logs FATAL and saves the settings and Community before closing.
+- [x] Crashes page (read, report on GitHub, delete) and Backups page (a backup at a new version's first
+  start, the last 10 kept; back up now, restore, delete).
+- [x] User card: banner, account age and picture without a login (Twitch's public web API, kick.com's
+  card); badges as pictures, named when pointed at; the chatter's messages live in the chat's own view,
+  with its actions and a reply box; animated emotes (and an option to keep them still).
+- [x] Pinned messages over the chat, with who pinned them and the time left (Twitch, Kick, YouTube).
+- [x] TikTok without a webview: login and sending through the user's own Chromium-based browser over its
+  DevTools port (`cdp.rs`); wry, tao, WebKitGTK and the helper binary are gone (390 crates down to 199).
+- [x] Accounts: the channel to read is on the page, for every platform; Twitch reads someone else's
+  channel too, as a moderator (the subscriptions a moderator can't have are left out).
+- [x] Polls page: Twitch and YouTube polls, Twitch predictions (Kick and TikTok have no API for them).
+- [x] Chat effects listed in [CHAT.md](CHAT.md): subs, gifts, raids, rewards, announcements, Kicks,
+  Super Chats, memberships and TikTok gifts as event lines; highlighted and first messages marked.
+
 ## Open points (decide when the phase starts, ask first)
 
 - Points: its sub-actions are new in Streamer.bot 1.1.0, unreleased (1.0.7 is the latest). When it's out,
