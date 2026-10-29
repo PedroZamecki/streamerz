@@ -192,6 +192,21 @@ pub(crate) fn right_button() -> bool {
     app::event_button() == 3
 }
 
+/// What the window is handling right now, for a crash report: the raw mouse button and key (never the
+/// enums, which can't hold every value), where, and what the pointer is over.
+fn event_probe() -> String {
+    let under = app::belowmouse::<fltk::widget::Widget>()
+        .map(|w| format!("\"{}\" {}x{}", w.label(), w.w(), w.h()))
+        .unwrap_or_else(|| "nothing".into());
+    format!(
+        "mouse button {}, key {:#x}, at {},{}, pointer over {under}",
+        app::event_button(),
+        app::event_key().bits(),
+        app::event_x(),
+        app::event_y()
+    )
+}
+
 pub(crate) fn left_button() -> bool {
     app::event_button() == 1
 }
@@ -580,6 +595,9 @@ pub(crate) fn pick(labels: &[&str]) -> Option<usize> {
     }
     let chosen = m.popup().map(|_| m.value());
     MenuButton::delete(m);
+    if let Some(l) = chosen.and_then(|i| usize::try_from(i).ok()).and_then(|i| labels.get(i)) {
+        crate::crash::step(&format!("menu item {l}"));
+    }
     chosen
         .and_then(|i| usize::try_from(i).ok())
         .filter(|i| *i < labels.len())
@@ -628,8 +646,11 @@ pub(crate) fn context_menu(buttons: &[Button]) {
             MenuFlag::Inactive
         };
         let i = m.add(&l.replace('/', "\\/").replace('&', "&&"), Shortcut::None, flag, {
-            let mut b = b.clone();
-            move |_| b.do_callback()
+            let (mut b, l) = (b.clone(), l.clone());
+            move |_| {
+                crate::crash::step(&format!("menu item {l}"));
+                b.do_callback()
+            }
         });
         if let (Some(mut item), Some(name)) = (m.at(i), icon_for(&l)) {
             item.add_image(icons::before_label(name, button_ink(), 14), true);
@@ -856,6 +877,7 @@ pub fn run(
         (is_dark(&c), c.start_hidden)
     };
     let _ = UI.set(tx);
+    crate::crash::probe(event_probe);
     if CONFIRMS.lock().is_ok_and(|q| !q.is_empty()) {
         tx.send(Msg::Input);
     }
@@ -981,6 +1003,19 @@ pub fn run(
         move || {
             let mut conns = conns.clone();
             let (label, all) = conns::summary(&cfg, &cmds);
+            crate::crash::fact("Connections", &label);
+            {
+                let c = cfg.borrow();
+                crate::crash::fact("Language", &c.locale);
+                crate::crash::fact(
+                    "Settings",
+                    &format!(
+                        "animated emotes {}, debug lines {}",
+                        if c.window.chat_still_emotes { "off" } else { "on" },
+                        if c.debug_log { "on" } else { "off" }
+                    ),
+                );
+            }
             conns.set_tooltip(tr("ui.conns_tooltip"));
             all.show(&mut conns, &label);
             conns.redraw();
@@ -1002,6 +1037,8 @@ pub fn run(
         move |t| {
             sidebar.redraw();
             let tab = t.try_current_widget().map(|w| w.label()).unwrap_or_default();
+            crate::crash::step(&format!("opened page {tab}"));
+            crate::crash::fact("Page", &tab);
             cfg.send_if_modified(|c| {
                 c.window.tab = tab;
                 false
@@ -1031,6 +1068,7 @@ pub fn run(
     let quitting = remember.clone();
     let close = move |w: &mut Window| {
         remember(w);
+        crate::crash::step("window hidden");
         SHOWN.store(false, Ordering::Relaxed);
         w.hide();
         img::forget();
@@ -1065,6 +1103,7 @@ pub fn run(
                 system_dark(crate::tray::apps_dark());
                 system_accent(crate::tray::accent());
             }
+            crate::crash::step("window shown");
             SHOWN.store(true, Ordering::Relaxed);
             acts.borrow_mut().refresh();
             views.refresh(&tabs);

@@ -2,6 +2,7 @@
 //! ones gzipped, and a report for every panic. A report nobody has dealt with is offered at the next
 //! start as a prefilled GitHub issue.
 
+use std::collections::{BTreeMap, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -11,8 +12,6 @@ const KEEP_LOGS: usize = 7;
 const KEEP_CRASHES: usize = 20;
 /// The current log stops growing here (a runaway loop shouldn't fill the disk).
 const LOG_MAX: u64 = 4 * 1024 * 1024;
-/// How much of a report goes into the issue's address (browsers and GitHub refuse long ones).
-const ISSUE_BODY: usize = 3500;
 
 fn dir() -> PathBuf {
     crate::config_path().with_file_name("logs")
@@ -20,8 +19,130 @@ fn dir() -> PathBuf {
 
 static LOG: Mutex<Option<(std::fs::File, u64)>> = Mutex::new(None);
 
+/// How many of the last things done are kept.
+const STEPS: usize = 40;
+
+/// What the user was doing: the last things done in the window and the state around them. Kept in
+/// `logs/context.txt` as it changes, so a run that dies without a panic (killed, the display ended it) is
+/// understood too.
+#[derive(Default)]
+struct Trail {
+    steps: VecDeque<(String, String)>,
+    facts: BTreeMap<&'static str, String>,
+}
+
+static TRAIL: Mutex<Option<Trail>> = Mutex::new(None);
+static STARTED: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+/// Describes the window's event in progress, for a panic inside a handler (set by the window).
+static PROBE: Mutex<Option<fn() -> String>> = Mutex::new(None);
+
+/// Notes something the user did ("opened page Chat"), newest last.
+pub fn step(text: &str) {
+    let body = {
+        let Ok(mut guard) = TRAIL.lock() else { return };
+        let t = guard.get_or_insert_with(Trail::default);
+        if t.steps.len() >= STEPS {
+            t.steps.pop_front();
+        }
+        t.steps
+            .push_back((crate::fmt::date(&crate::fmt::now(), "HH:mm:ss"), text.to_string()));
+        private(&trail_text(t))
+    };
+    // Only once the log runs (a test or a tool has no run to describe).
+    if LOG.lock().is_ok_and(|l| l.is_some()) {
+        let _ = std::fs::write(dir().join("context.txt"), body);
+    }
+}
+
+/// Notes how things stand ("page", "window"...): replaces the last value of `key`.
+pub fn fact(key: &'static str, value: &str) {
+    if let Ok(mut t) = TRAIL.lock() {
+        t.get_or_insert_with(Trail::default)
+            .facts
+            .insert(key, value.to_string());
+    }
+}
+
+/// How to describe the event being handled, when a panic comes from inside one.
+pub fn probe(f: fn() -> String) {
+    if let Ok(mut p) = PROBE.lock() {
+        *p = Some(f);
+    }
+}
+
+/// The system Streamerz runs on, in a line: what a bug may depend on.
+fn system() -> String {
+    let mut parts = vec![format!("{} {}", std::env::consts::OS, std::env::consts::ARCH)];
+    if let Some(name) = std::fs::read_to_string("/etc/os-release").ok().and_then(|t| {
+        t.lines()
+            .find_map(|l| l.strip_prefix("PRETTY_NAME=").map(str::to_string))
+    }) {
+        parts.push(name.trim_matches('"').to_string());
+    }
+    for (label, var) in [("desktop", "XDG_CURRENT_DESKTOP"), ("session", "XDG_SESSION_TYPE")] {
+        if let Ok(v) = std::env::var(var) {
+            parts.push(format!("{label} {v}"));
+        }
+    }
+    let shows = match (
+        std::env::var_os("WAYLAND_DISPLAY").is_some(),
+        std::env::var_os("DISPLAY").is_some(),
+    ) {
+        (true, true) => "Wayland and X11 available",
+        (true, false) => "Wayland",
+        (false, true) => "X11",
+        _ => "no display",
+    };
+    parts.push(shows.to_string());
+    if std::env::var_os("APPIMAGE").is_some() {
+        parts.push("AppImage".into());
+    }
+    parts.join(", ")
+}
+
+/// Resident memory in MB (Linux), for a report.
+fn memory_mb() -> Option<u64> {
+    let t = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let pages: u64 = t.split_whitespace().nth(1)?.parse().ok()?;
+    Some(pages * 4096 / 1_000_000)
+}
+
+/// The context of a report: system, how long it ran, the state, then the last steps.
+fn trail_text(t: &Trail) -> String {
+    let mut out = String::from("Context:\n");
+    out += &format!("  System: {}\n", system());
+    let up = STARTED.lock().ok().and_then(|s| s.map(|i| i.elapsed().as_secs()));
+    if let Some(s) = up {
+        out += &format!("  Running for: {}h {:02}m\n", s / 3600, s / 60 % 60);
+    }
+    if let Some(mb) = memory_mb() {
+        out += &format!("  Memory: {mb} MB\n");
+    }
+    for (k, v) in &t.facts {
+        out += &format!("  {k}: {v}\n");
+    }
+    out += "Last steps (newest last):\n";
+    if t.steps.is_empty() {
+        out += "  (none)\n";
+    }
+    for (at, what) in &t.steps {
+        out += &format!("  {at} {what}\n");
+    }
+    out
+}
+
+/// The context as it stands now.
+fn context() -> String {
+    let t = TRAIL.try_lock().ok();
+    let none = Trail::default();
+    trail_text(t.as_deref().and_then(Option::as_ref).unwrap_or(&none))
+}
+
 /// Starts this run's log: the last one is gzipped away, the oldest ones deleted. Call once, early.
 pub fn start() {
+    if let Ok(mut s) = STARTED.lock() {
+        *s = Some(std::time::Instant::now());
+    }
     let dir = dir();
     if std::fs::create_dir_all(&dir).is_err() {
         return;
@@ -35,7 +156,12 @@ pub fn start() {
             let lines: Vec<&str> = t.lines().collect();
             lines[lines.len().saturating_sub(n)..].join("\n")
         };
-        let body = private(&unclean_report(&tail("latest.log", 60), &tail("stderr.log", 20)));
+        let context = std::fs::read_to_string(dir.join("context.txt")).unwrap_or_default();
+        let body = private(&unclean_report(
+            &tail("latest.log", 60),
+            &tail("stderr.log", 20),
+            &context,
+        ));
         let stamp = crate::fmt::date(&crate::fmt::now(), "yyyyMMdd-HHmmss");
         let _ = std::fs::write(dir.join(format!("crash-{stamp}.txt")), body);
         keep(&dir, ".txt", KEEP_CRASHES);
@@ -93,9 +219,9 @@ fn keep_stderr(dir: &Path) {
 }
 
 /// A run that ended without a panic: no message, so the end of the log and of stderr.
-fn unclean_report(log: &str, stderr: &str) -> String {
+fn unclean_report(log: &str, stderr: &str, context: &str) -> String {
     format!(
-        "Streamerz {} on {} {}\nIt stopped without a crash message (killed, or the display or a library ended it).\n\nLast stderr lines:\n{stderr}\n\nLast log lines:\n{log}\n",
+        "Streamerz {} on {} {}\nIt stopped without a crash message (killed, or the display or a library ended it).\n\n{context}\nLast stderr lines:\n{stderr}\n\nLast log lines:\n{log}\n",
         crate::brand::VERSION,
         std::env::consts::OS,
         std::env::consts::ARCH,
@@ -157,11 +283,19 @@ fn text(info: &std::panic::PanicHookInfo<'_>, log: &[String]) -> String {
     let (what, at) = what_at(info);
     let thread = std::thread::current().name().unwrap_or("?").to_string();
     let trace = std::backtrace::Backtrace::force_capture();
+    // What the window was handling (a panic inside a click or a key): only the window's own thread knows.
+    let event = if thread == "main" {
+        PROBE.try_lock().ok().and_then(|p| *p).map(|f| f())
+    } else {
+        None
+    };
+    let event = event.map_or(String::new(), |e| format!("Event being handled: {e}\n"));
     let report = format!(
-        "Streamerz {} on {} {}\nPanic in thread '{thread}' at {at}:\n{what}\n\nBacktrace:\n{trace}\n\nLast log lines:\n{}\n",
+        "Streamerz {} on {} {}\nPanic in thread '{thread}' at {at}:\n{what}\n\n{event}{}\nBacktrace:\n{trace}\n\nLast log lines:\n{}\n",
         crate::brand::VERSION,
         std::env::consts::OS,
         std::env::consts::ARCH,
+        context(),
         log.join("\n"),
     );
     private(&report)
@@ -220,11 +354,46 @@ fn pending() -> Option<(PathBuf, String)> {
     Some((path, body))
 }
 
-/// The issue's address, with the report cut to fit.
+/// The first `n` chars of `text`.
+fn head(text: &str, n: usize) -> String {
+    text.chars().take(n).collect()
+}
+
+/// The last `n` chars of `text`.
+fn tail(text: &str, n: usize) -> String {
+    let skip = text.chars().count().saturating_sub(n);
+    text.chars().skip(skip).collect()
+}
+
+/// The issue's address: what happened first (the message, the system, what the user was doing), then the
+/// start of the backtrace and the end of the log, cut to fit (the full report stays in the logs folder).
 fn issue_url(report: &str) -> String {
-    let cut: String = report.chars().take(ISSUE_BODY).collect();
+    let (top, rest) = report.split_once("\nBacktrace:\n").unwrap_or((report, ""));
+    let (trace, log) = rest.split_once("\nLast log lines:\n").unwrap_or((rest, ""));
+    if rest.is_empty() {
+        // No panic message: the log tail is what there is.
+        let (top, log) = report.split_once("\nLast log lines:\n").unwrap_or((report, ""));
+        return issue_address(&head(top, 2000), "", &tail(log, 1200));
+    }
+    issue_address(&head(top, 2000), &head(trace, 900), &tail(log, 600))
+}
+
+fn issue_address(top: &str, trace: &str, log: &str) -> String {
+    let section = |name: &str, text: &str| {
+        if text.trim().is_empty() {
+            String::new()
+        } else {
+            format!(
+                "<details><summary>{name}</summary>\n\n```\n{}\n```\n</details>\n\n",
+                text.trim_end()
+            )
+        }
+    };
     let body = format!(
-        "**What were you doing when it closed?**\n\n\n\n<details><summary>Crash report</summary>\n\n```\n{cut}\n```\n</details>\n"
+        "**What were you doing when it closed?**\n\n\n\n**What did you expect to happen?**\n\n\n\n{}{}{}The full report is in the logs folder (Crashes page, Open folder): attach it if it helps.\n",
+        section("Crash report", top),
+        section("Backtrace (start)", trace),
+        section("Last log lines", log),
     );
     format!(
         "https://github.com/{}/issues/new?labels=crash&title={}&body={}",
@@ -350,7 +519,7 @@ mod tests {
         let panic =
             "Streamerz 1.0.0 on linux x86_64\nPanic in thread 'main' at src/ui.rs:9:\nInvalid box\n\nBacktrace:";
         assert_eq!(summary(panic), ("1.0.0".into(), "Invalid box".into()));
-        let quiet = unclean_report("", "");
+        let quiet = unclean_report("", "", "");
         let (v, what) = summary(&quiet);
         assert!(!v.is_empty() && what.starts_with("It stopped without a crash message"));
     }
@@ -366,8 +535,41 @@ mod tests {
 
     #[test]
     fn a_run_that_never_quit_is_reported_with_its_last_words() {
-        let r = unclean_report("12:00:01 connected", "[destroyed object]: error 0: Invalid box");
-        assert!(r.contains("without a crash message") && r.contains("Invalid box") && r.contains("12:00:01"));
+        let r = unclean_report(
+            "12:00:01 connected",
+            "[destroyed object]: error 0: Invalid box",
+            "Context:\n  page: Chat\n",
+        );
+        assert!(
+            r.contains("without a crash message")
+                && r.contains("Invalid box")
+                && r.contains("12:00:01")
+                && r.contains("page: Chat")
+        );
+    }
+
+    #[test]
+    fn the_context_says_the_last_steps_and_the_state() {
+        fact("Page", "Chat");
+        for i in 0..STEPS + 5 {
+            step(&format!("did {i}"));
+        }
+        let c = context();
+        assert!(c.contains("System:") && c.contains("Page: Chat"));
+        assert!(c.contains(&format!("did {}", STEPS + 4)) && !c.contains("did 0\n"));
+    }
+
+    #[test]
+    fn the_issue_leads_with_the_context_and_cuts_the_rest() {
+        let report = format!(
+            "Streamerz 1.1.0 on linux x86_64\nPanic in thread 'main' at a.rs:1:\nboom\n\nContext:\n  Page: Chat\n\nBacktrace:\n{}\nLast log lines:\n{}",
+            "frame\n".repeat(900),
+            "log line\n".repeat(900)
+        );
+        let url = issue_url(&report);
+        assert!(url.len() < 9000, "{}", url.len());
+        assert!(url.contains("Page") && url.contains("expect") && url.contains("Context"));
+        assert!(url.find("Context").unwrap() < url.find("frame").unwrap());
     }
 
     #[test]

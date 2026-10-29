@@ -24,6 +24,7 @@ pub type Answer = Rc<Cell<Option<bool>>>;
 
 /// A dialog window: centred, modal, closing it cancels.
 pub fn window(w: i32, h: i32, title: &str) -> (Window, Answer) {
+    crate::crash::step(&format!("dialog {title}"));
     let mut win = Window::default().with_size(w, h).with_label(title);
     win.set_xclass("streamerz");
     win.make_modal(true);
