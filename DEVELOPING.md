@@ -454,8 +454,8 @@ until the platforms are in, TestCredits (credits are a later phase), and the JSO
 ```python
 # Same requests to the real Streamer.bot (8080) and Streamerz (8090); report shape differences
 # (keys, key order, value types) and value differences for stable fields.
-import asyncio, json, base64, hashlib, websockets
-PW = json.load(open('/home/zamecki/Games/streamerbot/data/settings.json', encoding='utf-8-sig'))['websockets']['authPassword']
+import asyncio, json, base64, hashlib, os, websockets
+PW = json.load(open(os.path.expanduser('~/Games/streamerbot/data/settings.json'), encoding='utf-8-sig'))['websockets']['authPassword']
 REQS = [
  {"request":"GetInfo"}, {"request":"GetEvents"}, {"request":"GetActions"}, {"request":"GetBroadcaster"},
  {"request":"GetCredits"}, {"request":"ClearCredits"}, {"request":"GetActiveViewers"}, {"request":"GetCodeTriggers"},

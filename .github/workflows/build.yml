@@ -13,8 +13,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Read only by default: only the release job writes (a fork's pull request never can).
 permissions:
-  contents: write
+  contents: read
   actions: read
 
 # A newer push to a pull request replaces its run; a run on main is never cancelled (it's a release).
@@ -184,6 +185,8 @@ jobs:
     needs: [version, windows, linux]
     if: needs.version.outputs.tag != '' && github.event_name == 'push'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
