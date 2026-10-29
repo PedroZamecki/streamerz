@@ -594,7 +594,9 @@ impl Views {
         if let Ok(mut g) = self.groups.try_borrow_mut() {
             g.refresh();
         }
-        let is = |w: &Flex| up == Some(w.as_widget_ptr());
+        // A page, or the scroll a long page sits in (what the wizard shows then).
+        let is =
+            |w: &Flex| up.is_some() && (up == Some(w.as_widget_ptr()) || up == w.parent().map(|p| p.as_widget_ptr()));
         if let Ok(mut a) = self.accounts.try_borrow_mut() {
             if is(&a.tab) {
                 a.refresh();

@@ -95,6 +95,10 @@ def main():
             time.sleep(0.4)
             xdo("key", "Escape")
             check(f"page {page}")
+        # The Accounts page fills in (it's in a scroll: it once never did).
+        ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Accounts"})
+        if "Bot (optional)" not in json.dumps(ws.ask({"request": "StreamerzUi", "id": "f", "do": "find optional"})):
+            failures.append("the Accounts page didn't fill in its accounts")
         # New chatters show up on an open Community tab.
         ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Community"})
         before = json.dumps(ws.ask({"request": "StreamerzUi", "id": "c", "do": "community"}))
