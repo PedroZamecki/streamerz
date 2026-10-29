@@ -1419,6 +1419,7 @@ async fn run_eventsub_loop(
     let mut reconnecting = false;
     let mut poll_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut emote_task: Option<tokio::task::JoinHandle<()>> = None;
+    let mut setup_task: Option<tokio::task::JoinHandle<()>> = None;
 
     while let Some(msg) = ws.next().await {
         let raw = match msg {
@@ -1490,7 +1491,7 @@ async fn run_eventsub_loop(
                 let e = engine.clone();
                 let refused = auth_refused.clone();
                 // The welcome waits only for the history: the ~40 subscriptions take seconds.
-                tokio::task::spawn_local(async move {
+                let setup = tokio::task::spawn_local(async move {
                     let hist_fut = async {
                         if custom_eventsub || login.is_empty() {
                             Vec::new()
@@ -1518,6 +1519,11 @@ async fn run_eventsub_loop(
                     e.refresh_chat_badges("twitch", |k| SEEN.with_borrow(|s| s.badges.get(k).cloned()));
                     e.twitch_check_pin();
                 });
+                // A channel change closes this session: its setup must not go on (nor its history land
+                // in the new channel's chat).
+                if let Some(t) = setup_task.replace(setup) {
+                    t.abort();
+                }
                 if let Some(t) = poll_task.replace(tokio::task::spawn_local(poll(engine.clone(), broadcaster.clone())))
                 {
                     t.abort();
@@ -1569,7 +1575,7 @@ async fn run_eventsub_loop(
         }
     }
 
-    for t in [poll_task, emote_task].into_iter().flatten() {
+    for t in [poll_task, emote_task, setup_task].into_iter().flatten() {
         t.abort();
     }
     if !is_connected.swap(false, Ordering::Relaxed) {
@@ -1971,7 +1977,7 @@ fn subs_url(ws: &str) -> String {
     }
 }
 
-/// False when the token was refused: every other subscription would be too.
+/// False when the rest should not be tried: the token was refused (every other one would be too) or the session is gone.
 async fn create_sub(
     sid: &str,
     token: &str,
@@ -2006,6 +2012,11 @@ async fn create_sub(
     if res.status == 401 {
         auth_refused.store(true, Ordering::Relaxed);
         crate::warn("Twitch: token rejected (HTTP 401); refreshing...".into());
+        return false;
+    }
+    // The session closed under us (a channel change, a drop): the rest would be refused the same way.
+    if res.status == 400 && res.text().contains("already disconnected") {
+        crate::debug(format!("Twitch: session closed before {sub_type}; setup stopped"));
         return false;
     }
     if res.status != 202 && res.status != 200 {
