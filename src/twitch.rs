@@ -745,6 +745,15 @@ struct Runner {
 }
 
 /// A token is refreshed 5 minutes before it expires (or when its expiry is unknown).
+/// How long an EventSub socket may say nothing: its keepalive time (10 s unless it says) and a margin.
+fn stale_after(welcome: &Value) -> Duration {
+    let keep = welcome
+        .pointer("/payload/session/keepalive_timeout_seconds")
+        .and_then(Value::as_u64)
+        .unwrap_or(10);
+    Duration::from_secs(keep + 20)
+}
+
 pub fn needs_refresh(t: &TwitchToken, now: u64) -> bool {
     !t.refresh_token.is_empty() && (t.expires_at == 0 || now + 300 >= t.expires_at)
 }
@@ -1444,7 +1453,10 @@ async fn run_eventsub_loop(
     let mut emote_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut setup_task: Option<tokio::task::JoinHandle<()>> = None;
 
-    while let Some(msg) = ws.next().await {
+    // Twitch sends something every `keepalive_timeout_seconds` (10 by default): a socket that says nothing
+    // for a good while longer is dead, though nothing closed it, and is opened again.
+    let mut quiet = Duration::from_secs(30);
+    while let Ok(Some(msg)) = tokio::time::timeout(quiet, ws.next()).await {
         let raw = match msg {
             Ok(tokio_tungstenite::tungstenite::Message::Text(t)) => t,
             Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => break,
@@ -1463,6 +1475,7 @@ async fn run_eventsub_loop(
             .unwrap_or("");
         match mtype {
             "session_welcome" => {
+                quiet = stale_after(&val);
                 let sid = val.pointer("/payload/session/id").and_then(Value::as_str).unwrap_or("");
                 if std::mem::take(&mut reconnecting) {
                     crate::say(format!("Twitch: EventSub reconnected (@{}, {sid})", broadcaster.login));
@@ -1653,7 +1666,10 @@ async fn run_bot_eventsub_loop(
     use futures_util::StreamExt;
     let mut reconnecting = false;
 
-    while let Some(msg) = ws.next().await {
+    // Twitch sends something every `keepalive_timeout_seconds` (10 by default): a socket that says nothing
+    // for a good while longer is dead, though nothing closed it, and is opened again.
+    let mut quiet = Duration::from_secs(30);
+    while let Ok(Some(msg)) = tokio::time::timeout(quiet, ws.next()).await {
         let raw = match msg {
             Ok(tokio_tungstenite::tungstenite::Message::Text(t)) => t,
             Ok(tokio_tungstenite::tungstenite::Message::Close(_)) | Err(_) => break,
@@ -1669,6 +1685,7 @@ async fn run_bot_eventsub_loop(
             .unwrap_or("");
         match mtype {
             "session_welcome" => {
+                quiet = stale_after(&val);
                 let sid = val.pointer("/payload/session/id").and_then(Value::as_str).unwrap_or("");
                 if std::mem::take(&mut reconnecting) {
                     crate::say(format!("Twitch: bot EventSub reconnected (@{})", bot.login));
@@ -2348,6 +2365,9 @@ fn handle_notification(
             // Highlighted with channel points, a first message, a power-up: the chat marks it.
             let kind = event.pointer("/message_type").and_then(Value::as_str).unwrap_or("text");
             args.insert("messageType".into(), kind.into());
+            let action =
+                event["is_action"].as_bool().unwrap_or(false) || crate::engine::chatlog::action_of(text).is_some();
+            args.insert("isAction".into(), action.into());
             args.insert("isHighlight".into(), (kind == "channel_points_highlighted").into());
 
             SEEN.with_borrow_mut(|s| {

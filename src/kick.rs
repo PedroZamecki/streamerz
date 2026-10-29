@@ -814,6 +814,16 @@ pub async fn fetch_kick_user(token: &str) -> Result<(u64, String), String> {
     Err(format!("Kick API returned HTTP {}", resp.status))
 }
 
+/// Silence before the server is pinged, and how long its answer is waited for.
+#[cfg(not(test))]
+const IDLE_PROBE: Duration = Duration::from_secs(60);
+#[cfg(not(test))]
+const PONG_WAIT: Duration = Duration::from_secs(20);
+#[cfg(test)]
+const IDLE_PROBE: Duration = Duration::from_millis(300);
+#[cfg(test)]
+const PONG_WAIT: Duration = Duration::from_millis(300);
+
 pub async fn run_pusher_loop_url(
     engine: Rc<Engine>,
     cfg: Arc<watch::Sender<Config>>,
@@ -863,6 +873,7 @@ pub async fn run_pusher_loop_url(
         (channel_id.unwrap_or(1), chatroom_id.unwrap_or(1))
     };
 
+    let mut failures = 0u32;
     loop {
         match crate::http::ws_connect(pusher_url).await {
             Ok((ws, _)) => {
@@ -870,7 +881,7 @@ pub async fn run_pusher_loop_url(
 
                 // Wait for connection established
                 let mut established = false;
-                while let Some(Ok(msg)) = stream.next().await {
+                while let Ok(Some(Ok(msg))) = tokio::time::timeout(Duration::from_secs(15), stream.next()).await {
                     if let Message::Text(txt) = msg {
                         if let Ok(val) = serde_json::from_str::<Value>(&txt) {
                             if val["event"].as_str() == Some("pusher:connection_established") {
@@ -890,9 +901,11 @@ pub async fn run_pusher_loop_url(
 
                 if !established {
                     crate::warn("Kick: connection established handshake failed".into());
-                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    failures += 1;
+                    tokio::time::sleep(crate::http::backoff(failures)).await;
                     continue;
                 }
+                failures = 0;
 
                 connected.store(true, Ordering::Relaxed);
                 crate::ui::changed();
@@ -966,8 +979,29 @@ pub async fn run_pusher_loop_url(
                     uid,
                 )));
 
-                // Message processing loop
-                while let Some(msg_res) = stream.next().await {
+                // Message processing loop. A connection that dies without a close (a network change, a
+                // sleeping laptop) just goes quiet: after a silent minute ask the server, and when even
+                // that gets no answer the socket is dead, so reconnect.
+                let mut probed = false;
+                loop {
+                    let wait = if probed { PONG_WAIT } else { IDLE_PROBE };
+                    let msg_res = match tokio::time::timeout(wait, stream.next()).await {
+                        Ok(Some(m)) => m,
+                        Ok(None) => break,
+                        Err(_) if !probed => {
+                            probed = true;
+                            let ping = json!({ "event": "pusher:ping", "data": {} });
+                            if sink.send(Message::Text(ping.to_string().into())).await.is_err() {
+                                break;
+                            }
+                            continue;
+                        }
+                        Err(_) => {
+                            crate::warn("Kick: no answer from the server, reconnecting".into());
+                            break;
+                        }
+                    };
+                    probed = false;
                     let msg = match msg_res {
                         Ok(m) => m,
                         Err(e) => {
@@ -1014,14 +1048,18 @@ pub async fn run_pusher_loop_url(
                 engine.emit("Kick", "BroadcasterChatDisconnected", || json!(args));
             }
             Err(e) => {
-                crate::warn(format!("Kick: connection error: {e}"));
+                failures += 1;
+                // The same line for every try of an outage would fill the log.
+                if failures == 1 {
+                    crate::warn(format!("Kick: connection error: {e}, retrying"));
+                }
             }
         }
 
         if run_once {
             break;
         }
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        tokio::time::sleep(crate::http::backoff(failures.max(1))).await;
     }
 }
 
@@ -1867,6 +1905,43 @@ mod tests {
 
         assert!(!engine.first_words("kick", "1234"));
         assert!(!connected.load(Ordering::Relaxed));
+    }
+
+    /// A socket that goes quiet (no close, no pong) is dropped and opened again: chat didn't just stop.
+    #[test]
+    fn a_silent_socket_is_reconnected() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            tokio::spawn(async move {
+                let mut held = Vec::new();
+                for n in 1..=2 {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                    let est = json!({"event": "pusher:connection_established", "data": "{}"});
+                    ws.send(Message::Text(est.to_string().into())).await.unwrap();
+                    tx.send(n).unwrap();
+                    // Never answers: read and ignore, kept open.
+                    held.push(tokio::spawn(async move { while ws.next().await.is_some() {} }));
+                }
+            });
+            let mut config = Config::default();
+            config.kick.channel = "quiet".into();
+            config.kick.channel_id = Some(1);
+            config.kick.chatroom_id = Some(2);
+            let cfg = Arc::new(watch::channel(config).0);
+            let engine = Engine::new(cfg.clone(), |_| {});
+            let url = format!("ws://{addr}");
+            let task = tokio::task::spawn_local(async move {
+                run_pusher_loop_url(engine, cfg, Arc::new(AtomicBool::new(false)), &url, false).await;
+            });
+            assert_eq!(rx.recv().await, Some(1));
+            let second = tokio::time::timeout(Duration::from_secs(6), rx.recv()).await;
+            task.abort();
+            assert_eq!(second, Ok(Some(2)), "no second connection");
+        });
     }
 
     #[test]

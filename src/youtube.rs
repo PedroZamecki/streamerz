@@ -101,6 +101,11 @@ pub fn clean_youtube_channel(input: &str) -> String {
         let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
         return rest[..end].to_string();
     }
+    if let Some(idx) = s.find("/@") {
+        let rest = &s[idx + 2..];
+        let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        return rest[..end].to_string();
+    }
     s.trim_start_matches('@').trim_end_matches('/').trim().to_string()
 }
 
@@ -749,6 +754,12 @@ impl YouTubeRunner {
         let body = serde_json::to_vec(&payload).unwrap_or_default();
         let resp = crate::http::request("POST", &url, &headers, &body).await?;
         if (200..300).contains(&resp.status) {
+            // Read the chat again soon, so the message shows up where it was sent from.
+            let engine = self.engine.clone();
+            tokio::task::spawn_local(async move {
+                tokio::time::sleep(Duration::from_millis(700)).await;
+                engine.chat_poke.notify_one();
+            });
             Ok(())
         } else {
             Err(format!("YouTube send chat error {}: {}", resp.status, resp.text()))
@@ -969,13 +980,23 @@ fn find<'a>(page: &'a str, key: &str) -> Option<&'a str> {
     page[i..].split('"').next()
 }
 
-/// The channel's current live video (the page `/channel/<id>/live` redirects to it), if live.
+/// The channel's page path: `/channel/UC...` for an id, `/@name` for a handle (what people type).
+pub fn channel_path(channel: &str) -> String {
+    let c = channel.trim().trim_start_matches('@');
+    if c.starts_with("UC") && c.len() >= 20 && c.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        format!("/channel/{c}")
+    } else {
+        format!("/@{c}")
+    }
+}
+
+/// The channel's current live video (the page `<channel>/live` redirects to it), if live.
 async fn live_video(web: &str, channel: &str) -> Result<String, String> {
     let headers = [
         ("User-Agent".to_string(), UA.to_string()),
         ("Accept-Language".to_string(), "en".to_string()),
     ];
-    let r = crate::http::request("GET", &format!("{web}/channel/{channel}/live"), &headers, b"").await?;
+    let r = crate::http::request("GET", &format!("{web}{}/live", channel_path(channel)), &headers, b"").await?;
     let page = r.text();
     let canon = page
         .split("<link rel=\"canonical\" href=\"")
@@ -1057,6 +1078,9 @@ async fn oauth_broadcast_hint(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Confi
     }
     (None, nearest_sched)
 }
+
+/// Failed reads in a row before a chat session is given up and looked up again.
+const RETRIES: u32 = 8;
 
 pub async fn read_chat(
     engine: &Rc<Engine>,
@@ -1158,7 +1182,7 @@ pub async fn read_chat_with_standby(
                 } else if near_sched {
                     Duration::from_secs(15)
                 } else {
-                    Duration::from_secs(90)
+                    Duration::from_secs(30)
                 };
                 tokio::select! {
                     _ = tokio::time::sleep(wait) => {}
@@ -1208,6 +1232,9 @@ pub async fn read_chat_with_standby(
             (!run_once).then(|| tokio::task::spawn_local(while_live(engine.clone(), cfg.clone(), video.clone())));
         let json_headers = [("Content-Type".to_string(), "application/json".to_string())];
         let url = format!("{web}/youtubei/v1/live_chat/get_live_chat?prettyPrint=false");
+        // A read that fails (a network blip, a 5xx) is retried on the same continuation with a growing
+        // wait; only a long run of failures, or an answer that has no next page, ends the session.
+        let mut failures = 0u32;
         loop {
             let body =
                 json!({"context": {"client": {"clientName": "WEB", "clientVersion": version}}, "continuation": cont});
@@ -1220,15 +1247,26 @@ pub async fn read_chat_with_standby(
             .await;
             let v: Value = match r {
                 Ok(r) if (200..300).contains(&r.status) => serde_json::from_slice(&r.body).unwrap_or_default(),
-                Ok(r) => {
-                    crate::warn(format!("YouTube: chat read failed (HTTP {})", r.status));
-                    Value::Null
-                }
-                Err(e) => {
-                    crate::warn(format!("YouTube: chat read failed ({e})"));
-                    Value::Null
+                other => {
+                    let why = match other {
+                        Ok(r) => format!("HTTP {}", r.status),
+                        Err(e) => e,
+                    };
+                    failures += 1;
+                    if failures == 1 {
+                        crate::warn(format!("YouTube: chat read failed ({why}), retrying"));
+                    }
+                    if run_once || failures > RETRIES {
+                        break;
+                    }
+                    tokio::time::sleep(crate::http::backoff(failures)).await;
+                    continue;
                 }
             };
+            if failures > 0 {
+                crate::say("YouTube: chat reading again".into());
+                failures = 0;
+            }
             let c = &v["continuationContents"]["liveChatContinuation"];
             let next = c["continuations"][0]
                 .as_object()
@@ -1236,7 +1274,7 @@ pub async fn read_chat_with_standby(
                 .cloned()
                 .unwrap_or_default();
             let Some(n) = next["continuation"].as_str() else {
-                // The stream ended (or the read failed): look for a live again.
+                // The stream ended: look for a live again.
                 break;
             };
             set_state(true, false);
@@ -1270,8 +1308,11 @@ pub async fn read_chat_with_standby(
             if run_once {
                 return;
             }
-            let wait = next["timeoutMs"].as_u64().unwrap_or(5000).clamp(1000, 30000);
-            tokio::time::sleep(Duration::from_millis(wait)).await;
+            let wait = next["timeoutMs"].as_u64().unwrap_or(5000).clamp(1000, 5000);
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(wait)) => {}
+                _ = engine.chat_poke.notified() => {}
+            }
         }
         set_state(false, true);
         *live.borrow_mut() = Default::default();
@@ -2012,6 +2053,23 @@ mod tests {
     }
 
     #[test]
+    fn a_handle_or_an_id_finds_the_live_page() {
+        assert_eq!(channel_path("UmananaAI"), "/@UmananaAI");
+        assert_eq!(channel_path("@umananaai"), "/@umananaai");
+        assert_eq!(
+            channel_path("UCabcdefghijklmnopqrstuv"),
+            "/channel/UCabcdefghijklmnopqrstuv"
+        );
+        // A handle that starts with UC isn't an id unless it is as long as one.
+        assert_eq!(channel_path("UCLA"), "/@UCLA");
+        assert_eq!(
+            clean_youtube_channel("https://www.youtube.com/@umananaai/live"),
+            "umananaai"
+        );
+        assert_eq!(clean_youtube_channel("@umananaai"), "umananaai");
+    }
+
+    #[test]
     fn test_clean_youtube_urls() {
         assert_eq!(
             clean_youtube_video("https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
@@ -2278,7 +2336,7 @@ mod tests {
                     let mut buf = vec![0u8; 4096];
                     let n = sock.read(&mut buf).await.unwrap();
                     let head = String::from_utf8_lossy(&buf[..n]).to_string();
-                    let body = if head.starts_with("GET /channel/UCx/live") {
+                    let body = if head.starts_with("GET /channel/UCxxxxxxxxxxxxxxxxxxxxxx/live") {
                         r#"<link rel="canonical" href="https://www.youtube.com/watch?v=vid123"> "isLive":true"#.to_string()
                     } else if head.starts_with("GET /live_chat?is_popout=1&v=vid123") {
                         r#"x "INNERTUBE_CONTEXT_CLIENT_VERSION":"2.1" y "continuation":"first" z"#.to_string()
@@ -2299,7 +2357,7 @@ mod tests {
                 }
             });
             let mut config = Config::default();
-            config.youtube.channel_id = "UCx".into();
+            config.youtube.channel_id = "UCxxxxxxxxxxxxxxxxxxxxxx".into();
             let cfg = Arc::new(watch::channel(config).0);
             let engine = Engine::new(cfg.clone(), |_| {});
             let connected = Arc::new(AtomicBool::new(false));
@@ -2312,6 +2370,72 @@ mod tests {
             assert_eq!(lines[0].text, "hi 😀 :yt:");
             assert_eq!(lines[0].emotes[0].0, ":yt:");
             assert_eq!(lines[0].color, "#AAAAAA");
+        });
+    }
+
+    /// A read that fails once is retried on the same continuation: the session isn't dropped and found
+    /// again (which would announce the stream ended and started again).
+    #[test]
+    fn a_failed_read_is_retried_without_a_new_session() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let pages = Rc::new(std::cell::Cell::new(0));
+            let (served, reads) = (pages.clone(), Rc::new(std::cell::Cell::new(0)));
+            let reads_seen = reads.clone();
+            tokio::task::spawn_local(async move {
+                loop {
+                    let (mut sock, _) = listener.accept().await.unwrap();
+                    let mut buf = vec![0u8; 4096];
+                    let n = sock.read(&mut buf).await.unwrap();
+                    let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let (status, body) = if head.starts_with("GET /@someone/live") {
+                        (200, r#"<link rel="canonical" href="https://www.youtube.com/watch?v=vid9"> "isLive":true"#.to_string())
+                    } else if head.starts_with("GET /live_chat") {
+                        served.set(served.get() + 1);
+                        (200, r#"x "INNERTUBE_CONTEXT_CLIENT_VERSION":"2.1" y "continuation":"first" z"#.to_string())
+                    } else {
+                        reads.set(reads.get() + 1);
+                        if reads.get() == 1 {
+                            (500, "oops".to_string())
+                        } else {
+                            assert!(head.contains("\"continuation\":\"first\""), "{head}");
+                            (200, json!({"continuationContents": {"liveChatContinuation": {
+                                "continuations": [{"invalidationContinuationData": {"continuation": "next", "timeoutMs": 10000}}],
+                                "actions": [{"addChatItemAction": {"item": {"liveChatTextMessageRenderer": {
+                                    "id": "m2", "authorName": {"simpleText": "Late"}, "authorExternalChannelId": "UCLate",
+                                    "message": {"runs": [{"text": "still here"}]}
+                                }}}}]
+                            }}}).to_string())
+                        }
+                    };
+                    let r = format!("HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                    sock.write_all(r.as_bytes()).await.unwrap();
+                }
+            });
+            let mut config = Config::default();
+            // The handle people type, not an id.
+            config.youtube.channel_id = "someone".into();
+            let cfg = Arc::new(watch::channel(config).0);
+            let engine = Engine::new(cfg.clone(), |_| {});
+            let connected = Arc::new(AtomicBool::new(false));
+            let live = Rc::new(std::cell::RefCell::new((String::new(), String::new())));
+            let web = format!("http://{addr}");
+            let _ = tokio::time::timeout(
+                Duration::from_millis(3500),
+                read_chat(&engine, &cfg, &connected, &live, &web, false),
+            )
+            .await;
+            assert_eq!(pages.get(), 1, "one session");
+            assert!(reads_seen.get() >= 2);
+            let (_, _, lines) = engine.chat_sync(999, 0);
+            assert!(lines.iter().any(|l| l.text == "still here"));
         });
     }
 

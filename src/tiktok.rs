@@ -323,6 +323,11 @@ pub enum TikTokCmd {
         fallback: bool,
         resp: oneshot::Sender<Result<(), String>>,
     },
+    /// Open the sending tab now (someone is about to type).
+    Warm {
+        use_bot: bool,
+        fallback: bool,
+    },
 }
 
 /// What the reader shares with the handle (read from the UI's queries).
@@ -369,6 +374,11 @@ impl TikTokHandle {
 
     pub fn current_status(&self) -> TikTokStatus {
         self.shared.status.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    /// Opens the sending tab ahead of the first message.
+    pub fn warm(&self, use_bot: bool, fallback: bool) {
+        let _ = self.tx.send(TikTokCmd::Warm { use_bot, fallback });
     }
 
     pub async fn send_message(&self, text: &str, use_bot: bool, fallback: bool) -> Result<(), String> {
@@ -448,6 +458,10 @@ impl Runner {
                     self.shared.set(TikTokStatus::Disconnected);
                     crate::say("TikTok: disconnected".into());
                 }
+                TikTokCmd::Warm { use_bot, fallback } => {
+                    // Not worth a line if it fails: sending says why.
+                    let _ = self.tab(use_bot, fallback).await;
+                }
                 TikTokCmd::SendMessage {
                     text,
                     use_bot,
@@ -461,7 +475,9 @@ impl Runner {
         }
     }
 
-    async fn send_chat_message(&mut self, text: &str, use_bot: bool, fallback: bool) -> Result<(), String> {
+    /// The sender's tab, opened if it isn't (the browser takes seconds to start: done early, a message
+    /// leaves at once). Its slot, and the account's channel.
+    async fn tab(&mut self, use_bot: bool, fallback: bool) -> Result<usize, String> {
         let (bot, channel) = {
             let c = self.cfg.borrow();
             if crate::secrets::is_locked() {
@@ -495,10 +511,19 @@ impl Runner {
             acct.as_ref().map(|a| a.session_cookie.clone()).unwrap_or_default()
         };
         let slot = &mut self.senders[usize::from(bot)];
+        if slot
+            .as_ref()
+            .is_none_or(|s| s.channel != channel || s.tab.try_borrow().is_ok_and(|t| t.is_none()))
+        {
+            *slot = Some(Sender::spawn(bot, &channel, &cookies).await?);
+        }
+        Ok(usize::from(bot))
+    }
+
+    async fn send_chat_message(&mut self, text: &str, use_bot: bool, fallback: bool) -> Result<(), String> {
         for _ in 0..2 {
-            if slot.as_ref().is_none_or(|s| s.channel != channel) {
-                *slot = Some(Sender::spawn(bot, &channel, &cookies).await?);
-            }
+            let i = self.tab(use_bot, fallback).await?;
+            let slot = &mut self.senders[i];
             if let Some(r) = slot.as_mut().unwrap().send(text).await {
                 return r;
             }
@@ -585,7 +610,10 @@ impl Runner {
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_secs(wait)) => {}
                     _ = engine.live_wake.notified() => {
-                        crate::say(format!("TikTok: stream started, checking @{channel}"));
+                        // Only worth a line when it changes what happens (not while connected).
+                        if !shared.connected.load(Ordering::Relaxed) {
+                            crate::say(format!("TikTok: stream started, checking @{channel}"));
+                        }
                     }
                 }
             }

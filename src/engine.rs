@@ -124,6 +124,8 @@ pub struct Engine {
     pub(crate) donations: RefCell<crate::donations::Live>,
     pub(crate) hotkeys: RefCell<crate::hotkeys::Live>,
     pub(crate) live_wake: tokio::sync::Notify,
+    /// A message was just sent to YouTube: its chat is read now, not after the wait between reads.
+    pub(crate) chat_poke: tokio::sync::Notify,
     streaming_since: std::cell::Cell<Option<std::time::Instant>>,
     /// The plugins that are on.
     plugins: RefCell<Vec<plugins::Loaded>>,
@@ -331,6 +333,7 @@ impl Engine {
             donations: RefCell::default(),
             hotkeys: RefCell::default(),
             live_wake: tokio::sync::Notify::new(),
+            chat_poke: tokio::sync::Notify::new(),
             streaming_since: std::cell::Cell::new(None),
             plugins: RefCell::default(),
         })

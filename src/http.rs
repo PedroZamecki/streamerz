@@ -80,6 +80,11 @@ pub async fn request(method: &str, url: &str, headers: &[(String, String)], body
     Err(format!("{url}: too many redirects"))
 }
 
+/// The wait before retry `n` (1-based) of something that keeps failing: 1, 2, 4, 8, 15 seconds, then 15.
+pub fn backoff(n: u32) -> std::time::Duration {
+    std::time::Duration::from_secs((1u64 << n.saturating_sub(1).min(4)).min(15))
+}
+
 /// One TLS setup for every connection: building one loads and parses the system's CA bundle
 /// (OpenSSL), a few MB and a burst of CPU each time.
 pub fn tls_connector() -> Result<native_tls::TlsConnector, String> {
@@ -228,6 +233,13 @@ async fn dechunk(io: &mut Box<dyn Io>, mut buf: Vec<u8>) -> Result<Vec<u8>, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retries_wait_longer_up_to_a_cap() {
+        let secs: Vec<u64> = (1..=7).map(|n| backoff(n).as_secs()).collect();
+        assert_eq!(secs, [1, 2, 4, 8, 15, 15, 15]);
+        assert_eq!(backoff(0).as_secs(), 1);
+    }
 
     #[test]
     fn urls() {

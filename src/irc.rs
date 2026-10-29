@@ -137,8 +137,13 @@ pub fn event(m: &Irc, room_id: &str) -> Option<(&'static str, Value)> {
     match m.command.as_str() {
         "PRIVMSG" => {
             let mut text = m.text.clone();
-            if let Some(act) = text.strip_prefix("\x01ACTION ").and_then(|s| s.strip_suffix('\x01')) {
-                text = act.to_string();
+            let action = text
+                .strip_prefix("\x01ACTION ")
+                .and_then(|s| s.strip_suffix('\x01'))
+                .map(str::to_string);
+            let is_action = action.is_some();
+            if let Some(act) = action {
+                text = act;
             }
             let name = m.tag("display-name");
             let badges: Vec<Value> = m
@@ -155,6 +160,7 @@ pub fn event(m: &Irc, room_id: &str) -> Option<(&'static str, Value)> {
                 "message": {"text": text, "fragments": fragments(&text, m.tag("emotes"))},
                 "color": m.tag("color"),
                 "badges": badges,
+                "is_action": is_action,
                 "message_type": if m.tag("msg-id") == "highlighted-message" { "channel_points_highlighted" } else { "text" },
             }));
             if let Ok(bits) = m.tag("bits").parse::<u64>() {
@@ -221,6 +227,16 @@ pub async fn read(
     }
 }
 
+/// Silence before Twitch is pinged, and how long its answer is waited for.
+#[cfg(not(test))]
+const IDLE_PROBE: Duration = Duration::from_secs(120);
+#[cfg(not(test))]
+const PONG_WAIT: Duration = Duration::from_secs(20);
+#[cfg(test)]
+const IDLE_PROBE: Duration = Duration::from_millis(300);
+#[cfg(test)]
+const PONG_WAIT: Duration = Duration::from_millis(300);
+
 async fn session(
     engine: &Rc<Engine>,
     cfg: &Arc<watch::Sender<Config>>,
@@ -240,7 +256,23 @@ async fn session(
         ws.send(Message::Text(line.into())).await.map_err(|e| e.to_string())?;
     }
     let mut room: Option<TwitchAccount> = None;
-    while let Some(msg) = ws.next().await {
+    // A socket that goes quiet without closing is found by asking: Twitch answers a PING with a PONG.
+    let mut probed = false;
+    loop {
+        let wait = if probed { PONG_WAIT } else { IDLE_PROBE };
+        let msg = match tokio::time::timeout(wait, ws.next()).await {
+            Ok(Some(m)) => m,
+            Ok(None) => break,
+            Err(_) if !probed => {
+                probed = true;
+                ws.send(Message::Text("PING :tmi.twitch.tv".into()))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                continue;
+            }
+            Err(_) => return Err("no answer from Twitch's chat".into()),
+        };
+        probed = false;
         let text = match msg.map_err(|e| e.to_string())? {
             Message::Text(t) => t,
             Message::Close(_) => break,
@@ -317,8 +349,10 @@ mod tests {
     fn an_action_and_a_one_word_message() {
         let m = parse(":a!a@a PRIVMSG #c :\x01ACTION waves\x01").unwrap();
         assert_eq!(event(&m, "1").unwrap().1["message"]["text"], "waves");
+        assert_eq!(event(&m, "1").unwrap().1["is_action"], true);
         let m = parse(":a!a@a PRIVMSG #c :hi").unwrap();
         assert_eq!(event(&m, "1").unwrap().1["message"]["text"], "hi");
+        assert_eq!(event(&m, "1").unwrap().1["is_action"], false);
     }
 
     #[test]
