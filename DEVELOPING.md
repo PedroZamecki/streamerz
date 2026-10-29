@@ -835,6 +835,22 @@ To try it: `STREAMERZ_CRASH_TEST=1 STREAMERZ_CONFIG=/tmp/x/s.json Streamerz`, th
 mode, the `ui` tool's `panic` crashes a running window instead: the hook logs a `[FATAL]` line and has the
 engine write `community.json` before the process ends.
 
+Only `crash-*.txt` files are reports: the folder also holds the trail (`context.txt`) and `stderr.log`,
+where everything written to stderr is kept (a pipe replaces stderr at start; a thread copies each line to
+the file and to the log as a `stderr:` line, and what's left at exit is drained to the file).
+
+## Scenarios and the reference
+
+`tests/scenarios/*.json` describe actions, steps (fire a trigger, chat, run an action) and what must come of
+it; `cargo test scenarios` runs them on the engine alone (see [docs/SCENARIOS.md](docs/SCENARIOS.md)).
+`./target/fast/Streamerz --scenario tests/scenarios` runs them from a build; which triggers and sub-actions
+they cover: `cargo test --profile fast scenario_coverage -- --ignored` (writes
+`target/scenario-coverage.txt`). Every bug fixed in a trigger or sub-action gets a scenario where it can.
+
+`docs/reference` has a page per trigger and sub-action (format in its README). `cargo test docs` fails when
+one is missing, doubled, or breaks the writing rules. `cargo test --profile fast dump_types -- --ignored`
+writes `target/types.json`, every type with its category and fields, to write new pages from.
+
 ## Where the settings are
 
 In order: `--config`, `STREAMERZ_CONFIG`, the folder named in `location` (a file in the usual config

@@ -352,6 +352,34 @@ platform handles through channels, never through shared locks held across awaits
 - [x] Chat effects listed in [CHAT.md](CHAT.md): subs, gifts, raids, rewards, announcements, Kicks,
   Super Chats, memberships and TikTok gifts as event lines; highlighted and first messages marked.
 
+## Version 1.1.1
+
+- [x] Releases are titled with their version only (`v1.2.3`), not the merge commit's message.
+- [x] Crash reports: only `crash-*.txt` is offered (the trail file `context.txt` once was, again and again);
+  a second window starting doesn't take the first, still running, for a crash.
+- [x] Everything printed to stderr (by Streamerz, a library, or a program it starts: the file manager, the
+  browser) goes to the log (`stderr:` lines, levelled by what they say) and `logs/stderr.log`, not the
+  terminal. Opened folders and links don't inherit a forced `GDK_BACKEND`.
+- [x] Roles (`roles.rs`): our role in each chat (anonymous, viewer, VIP, moderator, lead moderator,
+  broadcaster). Twitch asks at connect (only a moderator may list the chatters), the others know the owner,
+  and our own messages' badges update it. EventSub subscriptions, Helix calls (a sub-action that needs the
+  owner or a moderator fails with a clear reason instead of a 403) and the chat's hover actions follow it:
+  nobody touches the broadcaster or themselves, moderators leave each other to the owner, viewers only
+  reply and copy. Accounts says what we are on someone else's channel, and how to get more.
+- [x] Chat without a login: a channel set and no account reads it (Twitch over anonymous IRC, `irc.rs`;
+  Kick and YouTube already could); the chat box is off, "Message all" leaves it out, no hover actions.
+- [x] Community: the platform column sorts and filters (a funnel lists the platforms in the list); both
+  only show with more than one platform. The sort header no longer leaves ghost arrows.
+- [x] Sub-action fixes found while documenting: OBS state choices in the order the engine reads them, Set
+  Channel Tags (it cleared every tag), Update Redemption Status, Kick reward states, Set Channel Game's
+  source, Suspicious Status; Ko-fi and Patreon webhooks are checked once their token or secret is set.
+- [x] Reference (`docs/reference`): a page for every trigger and sub-action, from what Streamerz does, built
+  in and served by the MCP server (`docs`, `docs_search`, `guide`, and in `describe`); a test fails when
+  one is missing.
+- [x] Scenarios (`scenario.rs`, `tests/scenarios`, [docs/SCENARIOS.md](docs/SCENARIOS.md)): actions tested
+  on the engine alone, no window or login, from `cargo test`, `Streamerz --scenario` and the MCP
+  `run_scenario` tool.
+
 ## Open points (decide when the phase starts, ask first)
 
 - Points: its sub-actions are new in Streamer.bot 1.1.0, unreleased (1.0.7 is the latest). When it's out,
