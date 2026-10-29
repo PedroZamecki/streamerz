@@ -532,6 +532,26 @@ fn icon_for(label: &str) -> Option<&'static str> {
     })
 }
 
+/// `labels` as a menu at the pointer; the index of the one picked. (Not a menu item's `value()`: that's
+/// a toggle's state, so every pick used to be read as the first.)
+pub(crate) fn pick(labels: &[&str]) -> Option<usize> {
+    use fltk::menu::{MenuButton, MenuFlag};
+    let mut m = menu_at_pointer();
+    for l in labels {
+        m.add(&menu_text(l), Shortcut::None, MenuFlag::Normal, |_| {});
+    }
+    let chosen = m.popup().map(|_| m.value());
+    MenuButton::delete(m);
+    chosen
+        .and_then(|i| usize::try_from(i).ok())
+        .filter(|i| *i < labels.len())
+}
+
+/// A label as a menu shows it as written (`&` underlines and `/` makes a submenu otherwise).
+fn menu_text(l: &str) -> String {
+    l.replace('&', "&&").replace('/', "\\/")
+}
+
 /// A menu button at the pointer, in the window the pointer is in. Wayland places a popup relative to the
 /// window of the widget that opens it (a button with no window opens it in the corner), and refuses an
 /// empty box, so it is 1x1.
@@ -1106,6 +1126,12 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Menu labels show as written: an outcome named "Yes/No" isn't a submenu.
+    #[test]
+    fn menu_labels_show_as_written() {
+        assert_eq!(menu_text("Yes/No & maybe"), "Yes\\/No && maybe");
+    }
 
     /// The log's styles have one letter per byte (FLTK styles bytes), so colours stay on their words
     /// even with accented text.

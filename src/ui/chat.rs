@@ -967,9 +967,7 @@ impl Pane {
                     tr("chat.pin_30m"),
                     tr("chat.pin_stream_ends"),
                 ];
-                let menu = fltk::menu::MenuItem::new(&labels);
-                if let Some(item) = menu.popup(app::event_x(), app::event_y()) {
-                    let idx = item.value() as usize;
+                if let Some(idx) = super::pick(&labels) {
                     if let Some(&secs) = SECONDS.get(idx) {
                         let l = l.clone();
                         tell(&self.cmds, move |e| e.moderate(&l, Moderate::Pin(secs)));
@@ -986,9 +984,7 @@ impl Pane {
                     tr("chat.timeout_1d"),
                     tr("chat.timeout_1w"),
                 ];
-                let menu = fltk::menu::MenuItem::new(&labels);
-                if let Some(item) = menu.popup(app::event_x(), app::event_y()) {
-                    let idx = item.value() as usize;
+                if let Some(idx) = super::pick(&labels) {
                     if let Some(&secs) = TIMEOUTS.get(idx) {
                         let l = l.clone();
                         tell(&self.cmds, move |e| e.moderate(&l, Moderate::Timeout(secs)));
