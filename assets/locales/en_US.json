@@ -576,7 +576,7 @@
   "polls.voting_time": "Voting time",
   "polls.where": "Where",
   "settings.about": "About",
-  "settings.about.tagline": "A light Streamer.bot replacement, made in Rust.",
+  "settings.about.tagline": "A light stream automation app, made in Rust.",
   "settings.about.version": "Version {version}",
   "settings.appearance": "Appearance",
   "settings.autostart": "Start automatically",

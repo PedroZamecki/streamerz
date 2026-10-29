@@ -1,6 +1,6 @@
 # Streamerz plan
 
-Streamer.bot rebuilt in Rust, built like songrequestz and tikstream: one small exe, FLTK window + tray,
+Streamerz is a light stream automation app in Rust, built like songrequestz and tikstream: one small exe, FLTK window + tray,
 ~nothing idle. Same model as Streamer.bot (actions made of sub-actions, fired by triggers, with
 variables, commands, timers and queues), same data format (imports Streamer.bot exports, reads its
 `actions.json`), and the same WebSocket/HTTP/UDP servers, so songrequestz, tikstream and existing overlays

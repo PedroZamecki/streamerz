@@ -576,7 +576,7 @@
   "polls.voting_time": "Tempo para votar",
   "polls.where": "Onde",
   "settings.about": "Sobre",
-  "settings.about.tagline": "Um substituto leve para o Streamer.bot, feito em Rust.",
+  "settings.about.tagline": "Um app leve de automação para lives, feito em Rust.",
   "settings.about.version": "Versão {version}",
   "settings.appearance": "Aparência",
   "settings.autostart": "Iniciar automaticamente",

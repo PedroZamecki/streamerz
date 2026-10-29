@@ -1,4 +1,4 @@
-//! Streamer.bot rebuilt small: actions, triggers and Streamer.bot's servers for Twitch, Kick, YouTube,
+//! Streamerz: actions, triggers and the servers that tools already use, for Twitch, Kick, YouTube,
 //! OBS and Streamlabs Desktop, running on ~nothing.
 
 mod backup;

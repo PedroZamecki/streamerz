@@ -8,7 +8,7 @@
 <h1 align="center">Streamerz</h1>
 
 <p align="center">
-  A light, fast Streamer.bot replacement in Rust.<br>
+  A light, fast stream automation app in Rust.<br>
   Twitch, Kick, YouTube and TikTok chat, OBS Studio, Streamlabs Desktop, and Streamer.bot's actions,
   triggers and servers, in one small window that lives in your tray.
 </p>
