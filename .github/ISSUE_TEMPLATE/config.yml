@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security problem
+    url: https://github.com/PedroZamecki/streamerz/security/advisories/new
+    about: Please report it privately.
+  - name: Translate Streamerz
+    url: https://github.com/PedroZamecki/streamerz/blob/main/LOCALIZATION.md
+    about: Add a language or fix a word, no code needed.

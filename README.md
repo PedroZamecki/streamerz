@@ -14,6 +14,30 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/PedroZamecki/streamerz/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/PedroZamecki/streamerz?label=release&color=2f6feb"></a>
+  <a href="https://github.com/PedroZamecki/streamerz/actions/workflows/build.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/PedroZamecki/streamerz/build.yml?branch=main&label=build"></a>
+  <a href="https://github.com/PedroZamecki/streamerz/actions/workflows/security.yml"><img alt="Security checks" src="https://img.shields.io/github/actions/workflow/status/PedroZamecki/streamerz/security.yml?branch=main&label=security"></a>
+  <a href="https://github.com/PedroZamecki/streamerz/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/PedroZamecki/streamerz/total?color=2da44e"></a>
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/github/license/PedroZamecki/streamerz"></a>
+  <img alt="Windows and Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-71717a">
+  <img alt="Rust" src="https://img.shields.io/badge/made%20with-Rust-dea584">
+  <a href="https://github.com/PedroZamecki/streamerz/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/PedroZamecki/streamerz"></a>
+  <a href="LOCALIZATION.md"><img alt="Translations welcome" src="https://img.shields.io/badge/translations-welcome-8957e5"></a>
+  <a href="CONTRIBUTING.md"><img alt="Pull requests welcome" src="https://img.shields.io/badge/PRs-welcome-2da44e"></a>
+</p>
+
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#why">Why</a> ·
+  <a href="#languages">Languages</a> ·
+  <a href="#contributing">Contributing</a> ·
+  <a href="docs/COMMANDS.md">Commands</a> ·
+  <a href="docs/INTEGRATIONS.md">Integrations</a> ·
+  <a href="PLUGINS.md">Plugins</a> ·
+  <a href="SECURITY.md">Security</a>
+</p>
+
+<p align="center">
   <img src="assets/screenshots/actions.png" alt="The Actions page" width="49%">
   <img src="assets/screenshots/settings.png" alt="The Settings page" width="49%">
 </p>
@@ -54,6 +78,9 @@ On first run Streamerz asks where to keep its settings, suggesting the folder yo
 later. Next to the settings file:
 
 - `logs/`: the current log (`latest.log`), the last seven gzipped, and a `crash-*.txt` for every crash.
+  A report says what the app was doing (the page, the last things you clicked, your system), so a bug can
+  be repeated. The **Crashes** page lists them, and **Backups** keeps a copy of your settings for every
+  update.
 - If the last run crashed, the next start offers to send the report as a prefilled GitHub issue (you read
   and edit it first; logins are never in it, and your home folder is hidden).
 
@@ -61,9 +88,16 @@ Chat history is never saved: it is read from Twitch, Kick and YouTube when you j
 
 ## Languages
 
-Each language is one file in `assets/locales`. To add one, run `dev/locale.py new es_ES "Español (España)"`,
-translate the values, and open a pull request: it is found by itself and shows up in Settings.
-`dev/locale.py check` lists what is missing.
+Streamerz speaks the languages below, picked in **Settings**. Each one is a single file in
+`assets/locales`, made by the people listed here. Yours is missing, or a word is off? It takes one file
+and no code: see [LOCALIZATION.md](LOCALIZATION.md).
+
+| Language | Code | Translated by |
+| --- | --- | --- |
+| English (United States) | `en_US` | [Pedro Zamecki](https://github.com/PedroZamecki) |
+| Português (Brasil) | `pt_BR` | [Pedro Zamecki](https://github.com/PedroZamecki) |
+
+*Add your language and your row in the same pull request: you get the credit here.*
 
 ## Streamer.bot's servers
 
@@ -112,132 +146,32 @@ The other tabs, as in Streamer.bot:
   work); it answers where it was typed, or everywhere with **Reply on every connected platform**. The
   platform boxes choose where a command works; new ones work everywhere.
 
-## Built-in chat commands
-
-Added once on first run, in the Built-in group: edit, turn off or re-alias them like any command
-(deleted ones stay deleted). They work on every platform, answering where they were typed.
-
-- `!commands`: the commands that work here and that the asker may use.
-- `!command add !name text`, `!command edit !name text`, `!command remove !name`,
-  `!command platforms !name twitch,kick,youtube,tiktok` (or `all`), `!command show !name` (moderators).
-- `!so user` (moderators): "Go check out user at …" with that platform's link; on Twitch also Twitch's
-  own shoutout.
-- `!uptime`: how long this platform's stream has been live (not on TikTok).
-- `!title`: this platform's stream title; moderators set it with `!title new title`.
-- **Queues**: your queues and Default, with what's running and waiting in each; add, edit, delete,
-  Blocking, pause/resume (one or all) and clear. **Pending** lists the waiting runs.
-- **History**: the last 100 runs (actions set to Exclude from History are left out), with their
-  variables when queued and after the run; **Run again** queues one with the same arguments.
-- **Globals**: every global and user global, persisted or not; add, edit and delete globals (these fire
-  the same triggers as Global (Set)). User globals are shown only.
-- **Groups**: add and delete user groups (their Added/Removed triggers fire). Users join them from chat.
-- **Servers**: the WebSocket, HTTP and UDP servers, WebSocket clients and custom WebSocket servers.
-- **Accounts**: one row per platform (Twitch, YouTube, Kick, TikTok): connected or not (and why), the
-  **Channel** to read and moderate (empty: your own; a URL or @name works, so a moderator can use their
-  own account on someone else's channel, with nothing of their own to stream), **Connect**,
-  **Connect on start**, and **Login** for your account and an optional bot, with their pictures. Chat is
-  sent as the bot when one is logged in. **Advanced…** has the rest:
-  - Kick: sending needs your own Kick app (kick.com > Settings > Developer > Create app, redirect URL
-    `http://127.0.0.1:45563/callback`, every scope; the bot account is only asked for chat). Paste its client ID and secret, then Login. Reading
-    chat needs no login.
-  - YouTube: the video ID (empty: the channel's live) and your Google OAuth client, needed to send:
-    console.cloud.google.com > New project > enable **YouTube Data API v3** > OAuth consent screen
-    (External, then **Publish app**; unpublished apps log you out every 7 days) > Credentials > Create
-    OAuth client ID, type **Desktop app**. Paste its ID and secret, then Login. Google warns that the app
-    is unverified: it's yours, so continue. Reading chat needs no login.
-  - TikTok: Streamerz reads the channel's live itself, with no login (it waits while the
-    channel is offline). Login opens TikTok's own login page in your browser (Chrome, Chromium, Edge, Brave or Vivaldi,
-    with a profile of Streamerz's own); sending types into the live page's chat in a hidden tab of it,
-    which closes after 2 idle minutes. Nothing else to install: on Windows, Edge is always there.
-- **Polls**: start and end polls on Twitch and YouTube and follow their votes; start, lock, resolve and
-  cancel Twitch predictions.
-- **Stream Apps**: OBS Studio and Streamlabs Desktop connections.
-- **Settings**: window options and this instance's name (what GetInfo reports).
-- **Log**: every line with its level (debug, info, warning, error, fatal) in colour, a level filter and a
-  search.
-- **Crashes**: the crash reports, to read, send as a GitHub issue, or delete.
-- **Backups**: a backup of the settings and the Community data is made when a new version first starts
-  (the last 10 are kept); back up now, restore (Streamerz restarts) or delete.
-
-The window comes back as it was left: its size, its tab and the chat's view.
-
-Downloads are kept in `cache/` next to the settings file: pictures (at most 50 MB; the least recently
-shown go first), the channels' BTTV/FFZ/7TV emote lists and the accounts' picture addresses (used at
-once, fetched again in the background after a day). Deleting the folder is safe.
-
-The bottom bar counts the connections that are set up (platforms, OBS and Streamlabs Desktop connections,
-StreamElements, Streamlabs, DonorDrive), e.g. "● 3/5 connected". Click it for each one's state (connected,
-connecting, or not and why), with **Retry** and **Settings** (its tab).
-
-## Streamlabs Desktop
-
-In Streamlabs Desktop, open Settings → Remote Control, click the QR code to show the details, and copy
-the token (the port is 59650 unless you changed it). In Streamerz, add a connection in the Stream Apps
-tab with that token. "Default connection" is the one sub-actions use when they don't name one. Every
-Streamlabs Desktop trigger and sub-action of Streamer.bot works, with the same arguments. Differences:
-Set Browser Source URL and Set GDI Text work (in Streamer.bot 1.0.7 they do nothing), and in a
-dual-output scene a source's horizontal and vertical copies both change unless "Display" picks one.
-
-## Donations: StreamElements, Streamlabs, DonorDrive
-
-In the Donations tab:
-
-- **StreamElements**: paste the JWT token (StreamElements dashboard → your account → Channels → Show
-  secrets). Streamer.bot logs in with OAuth instead; the token does the same. Tips and merch arrive
-  live, including the dashboard's Emulate buttons.
-- **Streamlabs**: paste Your Socket API Token (Dashboard → Settings → API Settings → API Tokens).
-  Donations, charity donations and merch arrive live, including test alerts.
-- **DonorDrive** (Extra Life and other charities on DonorDrive): the site and your participant ID.
-  Streamerz asks every 15 s whether your page changed (what DonorDrive asks for), so a donation
-  shows up within 15 s.
-
-Each one connects only when it's filled in, and reconnects a minute after it drops. Tip, Donation and
-Charity Donation triggers have Streamer.bot's Range (Min and Max amount).
-
-## Webhooks and remote integrations
-
-- **Discord Webhook**: post basic messages, embeds, custom username/avatar and TTS directly to Discord webhooks.
-- **IFTTT**: send basic and advanced notification triggers directly to IFTTT webhooks.
-- **Pronouns**: fetch and cache user pronouns using the alejo.io Twitch Chat Pronouns API, populating standard pronoun variables.
-- **Remote Instances**: connect multiple Streamerz or Streamer.bot instances via WebSocket clients or servers, sending and waiting for remote triggers and signals.
-
-## Hotkeys, inputs, MIDI and voice control
-
-- **Inputs & Hotkeys**: Key Press sub-actions (keyboard press simulation with modifiers), and the Key Press
-  and Mouse Click triggers, stored as Streamer.bot stores them (SharpHook's `keyCode` and `modifierMask`).
-  Set a trigger's keys by clicking **Keys** and pressing the combination. They work whichever program has
-  focus, and listen only while an enabled action uses them:
-  - Linux: through the desktop's Global Shortcuts portal (xdg-desktop-portal), with no root and no `input`
-    group. KDE and GNOME ask you to allow each shortcut; Hyprland binds them in its config, so the capture
-    window shows the line to add to hyprland.lua or hyprland.conf (**Copy line**). The portal needs an app
-    id, so a hidden `streamerz.desktop` is written to `~/.local/share/applications` the first time.
-    Mouse Click doesn't work on Linux: only reading every input device could see clicks, which also sees
-    every key typed.
-  - Windows: RegisterHotKey (a combination another program already holds can't be taken), and a mouse hook
-    only while a Mouse Click trigger is used (`mouse.button` 1 left, 2 right, 3 middle).
-- **MIDI**: MIDI Message triggers (note on/off, CC, pitch bend, sysex) with device, channel, and status filters, and Note On, Control Change, and Generic MIDI Out sub-actions.
-- **Voice Control**: Speech to Text Dictation and Speech to Text Command triggers, plus Set Voice Control Command, Set Command State, and Set Voice Input sub-actions.
-
-## Decks, Stream Deck, and Chat Window
-
-- **Streamer.bot Decks**: set item state, toggle state, title, background, icon, value, deck notifications, and page navigation (set, next, previous).
-- **Elgato Stream Deck**: set title, background, state, toggle state, value, show alert, and show OK sub-actions; Action, Connected, Disconnected, and Info triggers.
-- **Chat Window**: multi-platform chat window action trigger (`ChatWindowAction`) with platform, user, message, and action arguments.
-
-## File I/O, file tail, watcher and process triggers
-
-- **File Operations**: Write to File (append or overwrite), Read Lines, Read Specific Line, and Read Random Line sub-actions with variable expansion and auto-typing.
-- **File and Folder Checks**: File Exists and Folder Exists sub-actions for testing path presence and setting boolean arguments.
-- **File Tail**: Set File Tail State sub-action and File Tail Changed trigger for monitoring log and text file appends.
-- **File Watcher**: File Changed, File Created, File Deleted, and File Renamed triggers for monitoring filesystem directory modifications.
-- **Process Triggers**: Process Started and Process Stopped triggers to react to application launches and terminations.
-
 ## Chat
 
 - Twitch badges as Twitch's own pictures (the ones the chatter wears, as Twitch's chat shows them); other platforms' roles drawn. **Options** hides the time or the badges.
 - One view for every set-up platform's chat (together, side by side, or one platform), drawn with the platforms' logos, role badges and name colours. Click a name for what's known about that user.
 - Emotes as pictures: Twitch (animated ones too), Kick and YouTube's own, the channel's BTTV, FFZ and 7TV emotes (7TV on Kick too), animated ones moving while the chat is on screen; Unicode emoji as Twemoji pictures.
 - An emote picker with the emotes seen in chat, the channel's third-party emotes and every emoji by group. Right click a message to copy it.
+
+## Contributing
+
+Streamerz is made by one person and the people who help. Everything is welcome: a bug report, a better
+word in your language, a fix, a feature.
+
+- **Found a bug or want something?** [Open an issue](https://github.com/PedroZamecki/streamerz/issues/new/choose).
+  A crash? The Crashes page in Streamerz fills in the report for you.
+- **Translate it:** [LOCALIZATION.md](LOCALIZATION.md).
+- **Write code:** [CONTRIBUTING.md](CONTRIBUTING.md) has how to build, test and send a pull request;
+  [DEVELOPING.md](DEVELOPING.md) has how it works inside; [PLAN.md](PLAN.md) is what comes next.
+- **Found a security problem?** Please don't post it: [SECURITY.md](SECURITY.md).
+
+<a href="https://github.com/PedroZamecki/streamerz/graphs/contributors">
+  <img alt="Contributors" src="https://contrib.rocks/image?repo=PedroZamecki/streamerz">
+</a>
+
+More guides: [Built-in chat commands](docs/COMMANDS.md), [Integrations](docs/INTEGRATIONS.md) (Streamlabs
+Desktop, donations, webhooks, hotkeys, MIDI, Stream Deck, files), [Plugins](PLUGINS.md), [what each chat
+effect does](CHAT.md).
 
 ## Credits
 
