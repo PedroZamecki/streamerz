@@ -15,7 +15,7 @@ use fltk::frame::Frame;
 use fltk::group::{Flex, Wizard};
 use fltk::prelude::*;
 use serde_json::{json, Value};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::{mpsc::UnboundedSender, watch};
@@ -1230,6 +1230,8 @@ pub struct Community {
     search: fltk::input::Input,
     views: [Flex; 3],
     users: Rows,
+    /// The users' sort: the column and whether it goes up.
+    sort: Rc<Cell<(usize, bool)>>,
     /// The users in the list, as shown (the list's line n is `shown[n - 1]`).
     shown: Vec<Obj>,
     quotes: Rows,
@@ -1270,7 +1272,23 @@ impl Community {
                 let Some(mut users) = query(&self.cmds, |e| e.users()) else {
                     return;
                 };
-                users.sort_by(|a, b| s(b, "lastActive").cmp(s(a, "lastActive")));
+                let (column, up) = self.sort.get();
+                users.sort_by(|a, b| {
+                    let key = |u: &Obj| match column {
+                        0 => s(u, "type").to_string(),
+                        1 => s(u, "display").to_lowercase(),
+                        // Numbers sort as numbers, dates as the ISO text they are.
+                        2 => format!("{:03}", u["role"].as_u64().unwrap_or(1)),
+                        3 => s(u, "firstMessage").to_string(),
+                        _ => s(u, "lastActive").to_string(),
+                    };
+                    let by = key(a).cmp(&key(b)).then_with(|| s(a, "display").cmp(s(b, "display")));
+                    if up {
+                        by
+                    } else {
+                        by.reverse()
+                    }
+                });
                 let q = self.search.value().to_lowercase();
                 self.users.clear();
                 self.shown = users
@@ -1432,18 +1450,18 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
 
     let users_v = Flex::default().column();
     let mut users_v = users_v;
-    let mut users = browser(
-        &mut users_v,
-        &[36, 220, 110, 110, 110],
-        &[
-            "",
-            "lists.community.name",
-            "lists.community.role",
-            "lists.community.first_seen",
-            "lists.community.last_seen",
-        ],
-        "lists.community.users_empty",
-    );
+    // Newest activity first, until a title is clicked.
+    let sort = Rc::new(Cell::new((4, false)));
+    let titles = [
+        "",
+        tr("lists.community.name"),
+        tr("lists.community.role"),
+        tr("lists.community.first_seen"),
+        tr("lists.community.last_seen"),
+    ];
+    let mut users_header = super::sort_header(&mut users_v, &[36, 220, 110, 110, 110], &titles, sort.clone());
+    let mut users = Rows::new(tr("lists.community.users_empty"));
+    users.set_column_widths(&[36, 220, 110, 110, 110]);
     users.set_logo_column(0);
     users_v.end();
 
@@ -1478,6 +1496,7 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
         search: search.clone(),
         views: [users_v, quotes_v, credits_v],
         users,
+        sort,
         shown: Vec::new(),
         quotes: quotes.clone(),
         credits,
@@ -1485,6 +1504,14 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
     }));
     // Click a user for their card.
     users_click(&me);
+    users_header.set_callback({
+        let me = me.clone();
+        move |_| {
+            if let Ok(mut m) = me.try_borrow_mut() {
+                m.refresh();
+            }
+        }
+    });
     for (w, f) in [
         (
             show.as_base_widget(),

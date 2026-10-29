@@ -517,6 +517,72 @@ pub(crate) fn header(col: &mut Flex, widths: &'static [i32], titles: &[&'static 
     col.fixed(&f, 16);
 }
 
+/// Column titles that sort: click one to sort by it, again to turn it around. `sort` holds the column
+/// and whether it goes up; the frame's callback runs after every click (the list sorts itself there).
+pub(crate) fn sort_header(
+    col: &mut Flex,
+    widths: &'static [i32],
+    titles: &[&'static str],
+    sort: Rc<Cell<(usize, bool)>>,
+) -> Frame {
+    let titles = titles.to_vec();
+    let mut f = Frame::default();
+    f.draw({
+        let sort = sort.clone();
+        move |f| {
+            draw::set_font(Font::HelveticaBold, 12);
+            let mut x = f.x() + 12;
+            for (i, t) in titles.iter().enumerate() {
+                let w = widths.get(i).copied().unwrap_or(f.w());
+                let (on, up) = (sort.get().0 == i, sort.get().1);
+                draw::set_draw_color(if on { Color::Foreground } else { muted() });
+                draw::draw_text2(t, x, f.y(), w - 20, f.h(), Align::Left | Align::Clip);
+                if on {
+                    let tw = draw::width(t) as i32;
+                    let ink = Color::Foreground;
+                    if let Some(mut a) = icons::icon(if up { "arrow-up" } else { "arrow-down" }, ink, 12) {
+                        a.draw(x + tw.min(w - 34) + 4, f.y() + (f.h() - 12) / 2, 12, 12);
+                    }
+                }
+                x += w;
+            }
+        }
+    });
+    f.handle(move |f, ev| match ev {
+        Event::Enter | Event::Move => {
+            if let Some(mut w) = f.window() {
+                w.set_cursor(fltk::enums::Cursor::Hand);
+            }
+            true
+        }
+        Event::Leave => {
+            if let Some(mut w) = f.window() {
+                w.set_cursor(fltk::enums::Cursor::Default);
+            }
+            true
+        }
+        Event::Push => {
+            // The titles start 12 px in, as the rows' text does.
+            let mut x = f.x() + 12;
+            let ex = app::event_x().max(x);
+            for (i, w) in widths.iter().enumerate() {
+                if (x..x + w).contains(&ex) {
+                    let (on, up) = sort.get();
+                    sort.set((i, on != i || !up));
+                    f.redraw();
+                    f.do_callback();
+                    break;
+                }
+                x += w;
+            }
+            true
+        }
+        _ => false,
+    });
+    col.fixed(&f, 16);
+    f
+}
+
 fn button(row: &mut Flex, label: &str, w: i32) -> Button {
     let mut b = Button::default().with_label(label);
     let wide = with_icon(&mut b);
