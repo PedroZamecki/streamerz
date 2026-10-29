@@ -242,6 +242,44 @@ fn flatten(prefix: &str, v: &Value, args: &mut Obj) {
     }
 }
 
+/// Update Redemption Status's `status` as Twitch wants it: the form stores the choice's place (0
+/// Fulfilled, 1 Canceled); older or hand-written ones the word.
+fn redemption_status(v: Option<&Value>) -> &'static str {
+    let cancel = match v {
+        Some(Value::Number(n)) => n.as_i64() == Some(1),
+        Some(Value::String(t)) => t.trim().eq_ignore_ascii_case("canceled") || t.trim() == "1",
+        _ => false,
+    };
+    if cancel {
+        "CANCELED"
+    } else {
+        "FULFILLED"
+    }
+}
+
+/// Set Channel Tags's `tags`: a list (the form's lines) or text split at commas and new lines.
+fn tags_of(v: Option<&Value>) -> Vec<String> {
+    let split = |t: &str| -> Vec<String> {
+        t.split([',', '\n'])
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect()
+    };
+    match v {
+        Some(Value::Array(a)) => a.iter().flat_map(|x| split(&text(x))).collect(),
+        Some(Value::String(t)) => split(t),
+        _ => Vec::new(),
+    }
+}
+
+/// A state field that may be a checkbox: ticked is 0 (enable, pause), unticked 1, as `new_state` reads.
+fn state_of(o: &Obj) -> f64 {
+    match o.get("state") {
+        Some(Value::Bool(on)) => f64::from(u8::from(!on)),
+        _ => n(o, "state"),
+    }
+}
+
 impl Engine {
     /// A chat message: run the commands it matches. How many ran.
     pub fn chat(self: &Rc<Self>, chat: &Chat) -> usize {
@@ -343,6 +381,11 @@ impl Engine {
         }
         out.push(json!({"platform": platform, "text": text, "bot": bot}));
         true
+    }
+
+    /// Keeps chat instead of sending it, as dev mode does (scenarios).
+    pub fn dev_mode(&self) {
+        self.st.borrow_mut().dev_out.get_or_insert_with(Vec::new);
     }
 
     /// Dev mode: the chat lines kept since the last call. None outside dev mode.
@@ -689,7 +732,7 @@ impl Engine {
             }
             // Update Redemption Status (11)
             11 => {
-                let status = s(o, "status");
+                let status = redemption_status(o.get("status"));
                 let reward_id = self.expand(ctx, s(o, "rewardId"));
                 let reward_id = if reward_id.is_empty() {
                     ctx.args
@@ -760,8 +803,8 @@ impl Engine {
             16 => {
                 ctx.args.insert("gameSuccess".into(), false.into());
                 let Some(tw) = self.twitch() else { return };
-                // Source 0 (String): a game name; 1 (Specific Game): the id picked.
-                let (by_id, want) = if n(o, "source") as i64 == 1 && !s(o, "gameId").is_empty() {
+                // Source 0: a game name; 1: the id picked.
+                let (by_id, want) = if n(o, "source") as i64 >= 1 && !s(o, "gameId").is_empty() {
                     (true, self.expand(ctx, s(o, "gameId")))
                 } else {
                     (false, self.expand(ctx, s(o, "game")))
@@ -1059,8 +1102,11 @@ impl Engine {
             }
             // Set Channel Tags (252)
             252 => {
-                let tags = self.expand(ctx, s(o, "tags"));
-                let tag_list: Vec<&str> = tags.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+                let tag_list: Vec<String> = tags_of(o.get("tags"))
+                    .into_iter()
+                    .map(|t| self.expand(ctx, &t))
+                    .filter(|t| !t.is_empty())
+                    .collect();
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
                         .helix(
@@ -3711,7 +3757,7 @@ impl Engine {
                     let body = match kind {
                         35101 | 35102 => {
                             let key = if kind == 35101 { "is_enabled" } else { "is_paused" };
-                            let on = new_state(n(o, "state"), current().await?[key].as_bool().unwrap_or(false));
+                            let on = new_state(state_of(o), current().await?[key].as_bool().unwrap_or(false));
                             // Enabled: 0 enable; Paused: 0 pause (Streamer.bot's order).
                             json!({ key: on })
                         }
@@ -4429,6 +4475,43 @@ fn split_args(s: &str) -> Vec<String> {
 mod tests {
     use super::super::tests::{action, engine, log, run};
     use super::*;
+
+    #[test]
+    fn redemption_status_reads_the_forms_choice() {
+        assert_eq!(redemption_status(Some(&json!(0))), "FULFILLED");
+        assert_eq!(redemption_status(Some(&json!(1))), "CANCELED");
+        assert_eq!(redemption_status(Some(&json!("Canceled"))), "CANCELED");
+        assert_eq!(redemption_status(None), "FULFILLED");
+    }
+
+    #[test]
+    fn channel_tags_come_from_the_forms_lines() {
+        // The form stores a list: it once read as empty text and cleared every tag.
+        assert_eq!(tags_of(Some(&json!(["English", " Chill "]))), ["English", "Chill"]);
+        assert_eq!(tags_of(Some(&json!("a, b\nc"))), ["a", "b", "c"]);
+        assert!(tags_of(None).is_empty());
+    }
+
+    #[test]
+    fn a_ticked_state_box_enables() {
+        let o = |v: Value| json!({ "state": v }).as_object().cloned().unwrap();
+        assert!(new_state(state_of(&o(json!(true))), false), "ticked: on");
+        assert!(!new_state(state_of(&o(json!(false))), true), "unticked: off");
+        assert!(new_state(state_of(&o(json!(2))), false), "2 toggles");
+    }
+
+    #[test]
+    fn obs_state_lists_match_what_the_engine_reads() {
+        use crate::ui::forms::*;
+        // 0 shows, starts, enables, mutes, plays: new_state and the OBS arms read it so.
+        assert_eq!(STATE_HIDE_SHOW_TOGGLE[0], "Show");
+        assert_eq!(STREAM_STATE[..2], ["Start", "Stop"]);
+        assert_eq!(RECORD_STATE, ["Start", "Stop", "Pause", "Resume", "Toggle"]);
+        assert_eq!(REPLAY_STATE, ["Start", "Stop", "Save", "Toggle"]);
+        assert_eq!(FILTER_STATE[0], "Enable");
+        assert_eq!(MUTE_STATE[0], "Mute");
+        assert_eq!(MEDIA_STATE[2..4], ["Restart", "Stop"]);
+    }
     use serde_json::json;
 
     #[test]

@@ -917,7 +917,8 @@ async fn http_server(e: Rc<Engine>, s: HttpSettings) {
 }
 
 /// The answer to one HTTP request: status and JSON body (None: no body).
-fn http_answer(e: &Rc<Engine>, method: &str, path: &str, body: &[u8]) -> (u16, Option<Value>) {
+/// `signature`: a webhook's signature header (Patreon's), checked by the service's handler.
+fn http_answer(e: &Rc<Engine>, method: &str, path: &str, body: &[u8], signature: Option<&str>) -> (u16, Option<Value>) {
     let invalid = || {
         let msg = format!("'{method} {path}' is an invalid request");
         (418, Some(json!({"status": "error", "error": msg})))
@@ -970,7 +971,7 @@ fn http_answer(e: &Rc<Engine>, method: &str, path: &str, body: &[u8]) -> (u16, O
             match p {
                 "kofi" | "streamelements" | "streamlabs" | "patreon" | "fourthwall" | "throne" | "tipeeestream"
                 | "treatstream" | "donordrive" | "pallygg" | "pally" | "shopify" | "streamloots" => {
-                    match crate::donations::handle_webhook(e, p, body) {
+                    match crate::donations::handle_webhook(e, p, body, signature) {
                         Ok(()) => (200, Some(json!({"status": "ok"}))),
                         Err(err) => (400, Some(json!({"status": "error", "error": err}))),
                     }
@@ -1030,7 +1031,7 @@ async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
         }
         body.extend_from_slice(&chunk[..n]);
     }
-    let (status, json) = http_answer(e, method, path, &body);
+    let (status, json) = http_answer(e, method, path, &body, h("x-patreon-signature"));
     let reason = match status {
         200 => "OK",
         204 => "No Content",
@@ -1203,25 +1204,25 @@ mod tests {
             let e =
                 crate::engine::tests::engine(json!({"actions": [crate::engine::tests::action("a1", "hi", json!([]))]}));
             assert_eq!(
-                http_answer(&e, "POST", "/DoAction", br#"{"action":{"name":"hi"}}"#).0,
+                http_answer(&e, "POST", "/DoAction", br#"{"action":{"name":"hi"}}"#, None).0,
                 204
             );
-            let (st, v) = http_answer(&e, "POST", "/DoAction", br#"{"action":{"name":"nope"}}"#);
+            let (st, v) = http_answer(&e, "POST", "/DoAction", br#"{"action":{"name":"nope"}}"#, None);
             assert_eq!((st, v.unwrap()["error"].clone()), (400, json!("action not found")));
-            let (st, v) = http_answer(&e, "GET", "/GetActions", b"");
+            let (st, v) = http_answer(&e, "GET", "/GetActions", b"", None);
             assert_eq!((st, v.unwrap()["count"].clone()), (200, json!(1)));
-            let (st, v) = http_answer(&e, "OPTIONS", "/DoAction", b"");
+            let (st, v) = http_answer(&e, "OPTIONS", "/DoAction", b"", None);
             assert_eq!(
                 (st, v.unwrap()["error"].clone()),
                 (418, json!("'OPTIONS /DoAction' is an invalid request"))
             );
-            assert_eq!(http_answer(&e, "POST", "/DoAction", b"xx").0, 400);
+            assert_eq!(http_answer(&e, "POST", "/DoAction", b"xx", None).0, 400);
             assert_eq!(
-                http_answer(&e, "POST", "/api/kofi", br#"{"type":"Donation","amount":"5.00"}"#).0,
+                http_answer(&e, "POST", "/api/kofi", br#"{"type":"Donation","amount":"5.00"}"#, None).0,
                 200
             );
             assert_eq!(
-                http_answer(&e, "POST", "/streamelements", br#"{"type":"tip","amount":10.0}"#).0,
+                http_answer(&e, "POST", "/streamelements", br#"{"type":"tip","amount":10.0}"#, None).0,
                 200
             );
             let req = json!({"request": "DoAction", "id": "1", "action": {"name": "hi"}, "args": {"k": 1}});

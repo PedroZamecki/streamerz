@@ -88,10 +88,11 @@ impl W {
 /// (JSON field, label, kind).
 pub type F = (&'static str, &'static str, W);
 
-pub const STATE_HIDE_SHOW_TOGGLE: &[&str] = &["Hide", "Show", "Toggle"];
-pub const STREAM_STATE: &[&str] = &["Stop", "Start", "Toggle"];
-pub const RECORD_STATE: &[&str] = &["Stop", "Start", "Toggle", "Pause", "Resume"];
-pub const REPLAY_STATE: &[&str] = &["Stop", "Start", "Toggle", "Save"];
+// In the order the engine reads them (Streamer.bot's stored values): 0 shows, starts or enables.
+pub const STATE_HIDE_SHOW_TOGGLE: &[&str] = &["Show", "Hide", "Toggle"];
+pub const STREAM_STATE: &[&str] = &["Start", "Stop", "Toggle"];
+pub const RECORD_STATE: &[&str] = &["Start", "Stop", "Pause", "Resume", "Toggle"];
+pub const REPLAY_STATE: &[&str] = &["Start", "Stop", "Save", "Toggle"];
 // Streamlabs Desktop (checked against Streamer.bot): visibility/filters/mute 0 on, 1 off, 2 toggle;
 // Streaming 0 stop, 1 start; Recording 0 start, 1 stop (Pause/Resume do nothing in Streamlabs).
 const SD_SHOW: &[&str] = &["Visible", "Hidden", "Toggle"];
@@ -100,10 +101,10 @@ const SD_STREAM: &[&str] = &["Stop", "Start"];
 const SD_RECORD: &[&str] = &["Start", "Stop", "Pause", "Resume"];
 const SD_DISPLAY: &[&str] = &["Both", "Horizontal", "Vertical"];
 pub const FLIP_MODE: &[&str] = &["Horizontal", "Vertical", "Both"];
-pub const FILTER_STATE: &[&str] = &["Disable", "Enable", "Toggle"];
-pub const MUTE_STATE: &[&str] = &["Unmute", "Mute", "Toggle"];
-pub const TRACK_STATE: &[&str] = &["Disable", "Enable", "Toggle"];
-pub const MEDIA_STATE: &[&str] = &["Play", "Pause", "Stop", "Restart", "Next", "Previous"];
+pub const FILTER_STATE: &[&str] = &["Enable", "Disable", "Toggle"];
+pub const MUTE_STATE: &[&str] = &["Mute", "Unmute", "Toggle"];
+pub const TRACK_STATE: &[&str] = &["Enable", "Disable", "Toggle"];
+pub const MEDIA_STATE: &[&str] = &["Play", "Pause", "Restart", "Stop", "Next", "Previous"];
 
 pub const OPS: &[&str] = &[
     "Equals",
@@ -183,7 +184,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         14 => &[("status", "Slow mode", Bool), ("duration", "Duration (seconds)", Int)],
         15 => &[("title", "Title", Text)],
         16 => &[
-            ("source", "Source", Pick(&["Manual", "Variable", "Twitch Game ID"])),
+            ("source", "Source", Pick(&["Game name", "Game ID"])),
             ("game", "Game", Text),
             ("gameId", "Game ID", Text),
         ],
@@ -324,7 +325,10 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("duration", "Duration (seconds)", Int),
         ],
         577 => &[("duration", "Duration (seconds)", Int)],
-        579 => &[("userLogin", "User login", Text), ("status", "Status", Text)],
+        579 => &[
+            ("userLogin", "User login", Text),
+            ("status", "Status", Pick(&["Monitored", "Restricted"])),
+        ],
 
         120 => &[
             ("input", "Input", Text),
@@ -608,7 +612,11 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("connectionId", "Connection", ObsConnection),
             ("sceneName", "Scene", Text),
             ("sourceName", "Source", Text),
-            ("track", "Track (1-6)", Int),
+            (
+                "track",
+                "Track",
+                Pick(&["Track 1", "Track 2", "Track 3", "Track 4", "Track 5", "Track 6"]),
+            ),
             ("state", "State", Pick(TRACK_STATE)),
         ],
         45 => &[
