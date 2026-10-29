@@ -97,6 +97,107 @@ pub struct Line {
     /// Pinned from here, until when (ms since the epoch; u64::MAX: until the stream ends).
     #[serde(skip)]
     pub pinned: Option<u64>,
+    /// An event shown in the chat (a sub, a gift, a raid...): what happened, and its icon. `text` is
+    /// what its sender wrote with it, if anything.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub event: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub icon: String,
+    /// A colour that sets the line apart ("#RRGGBB"): events, highlighted and first messages.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub accent: String,
+    /// What's special about a message, said above it ("Highlighted", "First message").
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub tag: String,
+}
+
+/// An event the chat shows: its platform, icon, colour, words (an i18n key, with the trigger's
+/// %variables%), and the variable holding what its sender wrote (when the chat doesn't show it already).
+struct Ev {
+    platform: &'static str,
+    icon: &'static str,
+    accent: &'static str,
+    says: &'static str,
+    with: Option<&'static str>,
+}
+
+const TWITCH: &str = "#9146FF";
+const KICK: &str = "#53FC18";
+const YOUTUBE: &str = "#FF0033";
+const MEMBERS: &str = "#0F9D58";
+const TIKTOK: &str = "#FE2C55";
+const QUIET: &str = "#808080";
+
+/// What the chat shows for trigger `kind` (none for most triggers: only what the platforms' own chats
+/// show). Twitch's cheers, hype chats and power-ups are chat messages already: marked, not repeated.
+fn event_of(kind: u32, a: &Obj) -> Option<Ev> {
+    let yes = |k: &str| a.get(k).and_then(Value::as_bool) == Some(true);
+    let ev = |platform, icon, accent, says, with| Ev {
+        platform,
+        icon,
+        accent,
+        says,
+        with,
+    };
+    Some(match kind {
+        102 => ev("twitch", "gem", TWITCH, "chat.ev.cheer", None),
+        103 => ev("twitch", "star", TWITCH, "chat.ev.sub", None),
+        104 => ev("twitch", "star", TWITCH, "chat.ev.resub", Some("message")),
+        // A gift of a bomb: the bomb says it once.
+        105 if yes("fromGiftBomb") => return None,
+        105 => ev("twitch", "gift", TWITCH, "chat.ev.gift_sub", None),
+        106 => ev("twitch", "gift", TWITCH, "chat.ev.gift_bomb", None),
+        107 => ev("twitch", "swords", TWITCH, "chat.ev.raid", None),
+        112 => ev("twitch", "sparkles", TWITCH, "chat.ev.reward", Some("rawInput")),
+        138 => {
+            let accent = match a.get("announceColor").and_then(Value::as_str).unwrap_or("") {
+                "BLUE" => "#1E69FF",
+                "GREEN" => "#00C881",
+                "ORANGE" => "#FF9100",
+                _ => TWITCH,
+            };
+            ev("twitch", "megaphone", accent, "chat.ev.announcement", Some("message"))
+        }
+        136 => ev("twitch", "clock", QUIET, "chat.ev.timeout", None),
+        137 => ev("twitch", "ban", QUIET, "chat.ev.ban", None),
+        35014 => ev("kick", "star", KICK, "chat.ev.sub", None),
+        35015 => ev("kick", "star", KICK, "chat.ev.resub_kick", None),
+        35016 => ev("kick", "gift", KICK, "chat.ev.gift_sub_kick", None),
+        35017 => ev("kick", "gift", KICK, "chat.ev.gift_bomb_kick", None),
+        35018 => ev("kick", "clock", QUIET, "chat.ev.timeout", None),
+        35019 => ev("kick", "ban", QUIET, "chat.ev.ban", None),
+        35024 => ev("kick", "sparkles", KICK, "chat.ev.reward_kick", Some("rawInput")),
+        35025 => ev("kick", "gem", KICK, "chat.ev.kicks", Some("rawInput")),
+        4006 => ev(
+            "youtube",
+            "badge-dollar-sign",
+            YOUTUBE,
+            "chat.ev.superchat",
+            Some("message"),
+        ),
+        4007 => ev("youtube", "sticker", YOUTUBE, "chat.ev.supersticker", None),
+        4008 => ev("youtube", "star", MEMBERS, "chat.ev.member", None),
+        4009 => ev("youtube", "star", MEMBERS, "chat.ev.milestone", Some("message")),
+        4014 => ev("youtube", "gift", MEMBERS, "chat.ev.member_gift", None),
+        // A combo gift repeats while it grows: shown once, when it ends.
+        41002 if a.get("giftType").and_then(Value::as_u64) == Some(1) && !yes("repeatEnd") => return None,
+        41002 => ev("tiktok", "gift", TIKTOK, "chat.ev.tiktok_gift", None),
+        41004 => ev("tiktok", "user-plus", TIKTOK, "chat.ev.follow", None),
+        41005 => ev("tiktok", "share-2", TIKTOK, "chat.ev.share", None),
+        41006 => ev("tiktok", "star", TIKTOK, "chat.ev.sub", None),
+        _ => return None,
+    })
+}
+
+/// What sets a Twitch message apart (its EventSub `message_type`): the words above it and its colour.
+fn special(message_type: &str) -> Option<(&'static str, &'static str)> {
+    Some(match message_type {
+        "channel_points_highlighted" => (crate::i18n::tr("chat.tag.highlighted"), TWITCH),
+        "user_intro" => (crate::i18n::tr("chat.tag.first"), "#00C8AF"),
+        "power_ups_gigantified_emote" => (crate::i18n::tr("chat.tag.gigantified"), TWITCH),
+        "power_ups_message_effect" => (crate::i18n::tr("chat.tag.effect"), TWITCH),
+        _ => return None,
+    })
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -483,6 +584,12 @@ impl Engine {
                 vip: c.vip,
                 subscriber: c.subscriber,
                 color: c.args.get("color").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                tag: special(c.args.get("messageType").and_then(Value::as_str).unwrap_or(""))
+                    .map(|s| s.0.to_string())
+                    .unwrap_or_default(),
+                accent: special(c.args.get("messageType").and_then(Value::as_str).unwrap_or(""))
+                    .map(|s| s.1.to_string())
+                    .unwrap_or_default(),
                 badges: c
                     .args
                     .get("badges")
@@ -509,6 +616,32 @@ impl Engine {
             line.historical = false;
             log.push(line);
         }
+        crate::ui::chat();
+    }
+
+    /// What a trigger shows in the chat, if anything (see `event_of`).
+    pub(super) fn chat_event(&self, kind: u32, a: &Obj) {
+        let Some(ev) = event_of(kind, a) else { return };
+        let get = |k: &str| a.get(k).map(crate::vars::text).unwrap_or_default();
+        let says = crate::vars::simple(crate::i18n::tr(ev.says), a, &Obj::new());
+        let said = ev.with.map(get).unwrap_or_default();
+        let (text, emotes) = normalize_line_emotes(ev.platform, said, &[]);
+        let user = Some(get("user"))
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| get("userName"));
+        self.st.borrow_mut().chat_log.push(Line {
+            platform: ev.platform.into(),
+            time: crate::fmt::shown_time(&crate::fmt::now()),
+            ts: crate::fmt::unix_now().as_millis() as i64,
+            user,
+            user_id: get("userId"),
+            text,
+            emotes,
+            event: says,
+            icon: ev.icon.into(),
+            accent: ev.accent.into(),
+            ..Default::default()
+        });
         crate::ui::chat();
     }
 
@@ -1161,6 +1294,60 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn events_show_in_the_chat_once_and_in_words() {
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
+            let a = |v: Value| v.as_object().cloned().unwrap();
+            e.fire(
+                104,
+                "ReSub",
+                "",
+                "twitch",
+                &a(serde_json::json!({"user": "Caio", "cumulative": 14, "message": "hi"})),
+                |_| true,
+            );
+            // One gift of a bomb, and a combo gift still growing: the chat says neither.
+            e.fire(
+                105,
+                "GiftSub",
+                "",
+                "twitch",
+                &a(serde_json::json!({"user": "D", "fromGiftBomb": true})),
+                |_| true,
+            );
+            e.fire(
+                41002,
+                "Gift",
+                "",
+                "tiktok",
+                &a(serde_json::json!({"user": "T", "giftType": 1, "repeatEnd": false})),
+                |_| true,
+            );
+            // Not an event the chat shows.
+            e.fire(
+                101,
+                "Follow",
+                "",
+                "twitch",
+                &a(serde_json::json!({"user": "F"})),
+                |_| true,
+            );
+            let (_, _, lines) = e.chat_sync(u64::MAX, 0);
+            let events: Vec<&Line> = lines.iter().filter(|l| !l.event.is_empty()).collect();
+            assert_eq!(events.len(), 1);
+            assert_eq!((events[0].user.as_str(), events[0].text.as_str()), ("Caio", "hi"));
+            assert!(events[0].event.contains("14"), "{}", events[0].event);
+        });
+    }
+
+    #[test]
+    fn set_apart_twitch_messages_are_named() {
+        assert!(special("channel_points_highlighted").is_some());
+        assert!(special("user_intro").is_some());
+        assert!(special("text").is_none());
+    }
 
     #[test]
     fn twitch_pins_read_from_helix() {

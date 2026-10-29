@@ -380,6 +380,11 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
     if l.welcome {
         return vec![It::Rule(l.text.clone())];
     }
+    // What sets the message apart (highlighted, a first message...), above it.
+    if !l.tag.is_empty() {
+        v.push(It::Text(l.tag.clone(), Font::HelveticaBold, accent(l).unwrap_or(gray)));
+        v.push(It::Break);
+    }
     if let Some(r) = &l.reply {
         if let Some(s) = icons::icon("corner-up-left", gray, 14) {
             v.push(It::Svg(s));
@@ -416,6 +421,9 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
     if l.note {
         v.push(It::Text(l.text.clone(), Font::HelveticaItalic, gray));
         return v;
+    }
+    if !l.event.is_empty() {
+        return event_items(cmds, l, v);
     }
     if badges {
         let before = v.len();
@@ -456,6 +464,12 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
         }
     }
     v.push(It::Text(format!("{}:", l.user), Font::HelveticaBold, name_color(l)));
+    words(cmds, l, &mut v);
+    v
+}
+
+/// What a line's sender wrote: its words, the emotes as pictures (struck through when deleted).
+fn words(cmds: &Cmds, l: &Line, v: &mut Vec<It>) {
     let fg = Color::Foreground;
     let pic = |url: &str| img::get(cmds, url, EMOTE, false);
     if l.deleted {
@@ -463,7 +477,7 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
             v.push(It::Space);
             v.push(It::Struck(w.to_string()));
         }
-        return v;
+        return;
     }
     for w in l.text.split(' ') {
         v.push(It::Space);
@@ -478,6 +492,33 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
                 None => v.push(It::Text(part.to_string(), Font::Helvetica, fg)),
             }
         }
+    }
+}
+
+/// A line's accent ("#RRGGBB") as a colour.
+fn accent(l: &Line) -> Option<Color> {
+    let hex = l.accent.trim_start_matches('#');
+    let v = u32::from_str_radix(hex, 16).ok().filter(|_| hex.len() == 6)?;
+    Some(Color::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8))
+}
+
+/// An event's line: its icon, who, what happened; under it, what they wrote with it.
+fn event_items(cmds: &Cmds, l: &Line, mut v: Vec<It>) -> Vec<It> {
+    let c = accent(l).unwrap_or(Color::Foreground);
+    if let Some(s) = icons::icon(&l.icon, c, 16) {
+        v.push(It::Svg(s));
+        v.push(It::Gap(6));
+    }
+    if !l.user.is_empty() {
+        v.push(It::Text(l.user.clone(), Font::HelveticaBold, name_color(l)));
+    }
+    for w in l.event.split(' ') {
+        v.push(It::Space);
+        v.push(It::Text(w.to_string(), Font::Helvetica, Color::Foreground));
+    }
+    if !l.text.is_empty() {
+        v.push(It::Break);
+        words(cmds, l, &mut v);
     }
     v
 }
@@ -564,10 +605,11 @@ fn acts(l: &Line) -> Vec<(Act, &'static str, &'static str)> {
     if l.note || l.deleted {
         return Vec::new();
     }
-    let mut v = vec![
-        (Act::Reply, "corner-up-left", tr("chat.act_reply")),
-        (Act::Copy, "copy", tr("chat.act_copy")),
-    ];
+    let mut v = vec![(Act::Copy, "copy", tr("chat.act_copy"))];
+    // An event isn't a message to answer.
+    if l.event.is_empty() {
+        v.insert(0, (Act::Reply, "corner-up-left", tr("chat.act_reply")));
+    }
     let p = l.platform.as_str();
     if p == "twitch" && !l.msg_id.is_empty() {
         v.push(if pinned(l) {
@@ -727,6 +769,17 @@ impl Pane {
             }
             if y > f.y() + f.h() {
                 break;
+            }
+            // Events and set-apart messages: a tint of their colour, and a bar at the left.
+            if let Some(c) = st.lines.get(i).and_then(accent) {
+                draw::draw_rect_fill(
+                    f.x() + 2,
+                    y,
+                    f.w() - 4,
+                    *h,
+                    Color::color_average(c, Color::Background2, 0.14),
+                );
+                draw::draw_rect_fill(f.x() + 2, y, 3, *h, c);
             }
             if st.hover == Some(i) {
                 draw::draw_rect_fill(f.x() + 2, y, f.w() - 4, *h, Color::from_rgb(0x2c, 0x2e, 0x34));

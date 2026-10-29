@@ -1398,6 +1398,7 @@ impl Engine {
         matches: impl Fn(&Obj) -> bool,
     ) -> usize {
         self.record(kind, args);
+        self.chat_event(kind, args);
         if !self.plugins.borrow().is_empty() {
             self.plugins_hear(name(TRIGGERS, kind).unwrap_or(trigger_name), args);
         }

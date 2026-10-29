@@ -2255,6 +2255,11 @@ fn handle_notification(
                 },
             );
 
+            // Highlighted with channel points, a first message, a power-up: the chat marks it.
+            let kind = event.pointer("/message_type").and_then(Value::as_str).unwrap_or("text");
+            args.insert("messageType".into(), kind.into());
+            args.insert("isHighlight".into(), (kind == "channel_points_highlighted").into());
+
             SEEN.with_borrow_mut(|s| {
                 if s.messages.len() == 200 {
                     s.messages.pop_front();
