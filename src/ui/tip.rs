@@ -167,7 +167,10 @@ fn content(cmds: &Cmds, tip: &Tip) -> Content {
             let title = NAMES.with_borrow(|n| n.get(&k).cloned()).unwrap_or_else(|| {
                 let (p, key) = (platform.clone(), key.clone());
                 let t = query(cmds, move |e| e.badge_label(&p, &key)).unwrap_or_default();
-                NAMES.with_borrow_mut(|n| n.insert(k, t.clone()));
+                // Asked again next time when the engine didn't answer.
+                if !t.is_empty() {
+                    NAMES.with_borrow_mut(|n| n.insert(k, t.clone()));
+                }
                 t
             });
             let pic = img::get(cmds, url, PIC / 2, false).map(|p| p.first());

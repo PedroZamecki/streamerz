@@ -152,7 +152,7 @@ def main():
         time.sleep(1.5)
         r = ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/card.png"})
         if "saved" not in json.dumps(r):
-            failures.append("the user card: no screenshot")
+            failures.append(f"the user card: no screenshot ({r})")
         # The chat keeps going under the card.
         before = json.dumps(ws.ask({"request": "StreamerzUi", "id": "c", "do": "chat"}))
         ws.ask({"request": "InjectChat", "id": "n", "platform": "twitch", "user": "Bia", "text": "still here?"})

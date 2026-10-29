@@ -680,6 +680,10 @@ DISPLAY=:99 xdotool mousemove 130 108 click 1     # a click at window coordinate
 DISPLAY=:99 import -window root shot.png          # a screenshot
 ```
 
+The window opens 1 px right and 20 px down on that screen: a click at window coordinates (x, y) is
+`mousemove x+1 y+20`. A pointer press held over a dropdown (the Show choice, say) keeps its menu open and
+makes the app look hung until the button is released.
+
 Without a window manager keys go to the window under the pointer, and windows open at 0,0: move the pointer
 onto a dialog (and click its input) before typing. Type long text in chunks (one long burst stops FLTK's
 input until restart).
@@ -806,6 +810,21 @@ subscriptions there too when `twitch.eventsubUrl` points at it.
 The CLI can't send chat messages or chat notifications (subs, gifts, incoming raids, cheers come that
 way); `twitch::tests::events_fire_once_with_their_variables` covers those. Whether Twitch takes each
 subscription needs a real login: run with the real config and look for `Create sub` lines.
+
+## Hover details, the channel search, sorting
+
+`ui/tip.rs` draws the panel for an emote or a badge: the chat's items carry a `Tip` (`It::Pic` with a
+tip, `It::SvgTip`), the pane finds the one under the pointer, and `tip::point` shows it after 0.3 s as a
+small window inside the app's own window (made when shown, deleted when the pointer leaves). The source's
+icon comes from the picture's host (`cdn.7tv.app`, `betterttv.net`, `frankerfacez.com`, the platforms').
+
+`search.rs` finds channels by name without a login: Twitch's web GraphQL `searchUsers`, kick.com's
+`/api/search`, and YouTube's results page filtered to channels (the data after `var ytInitialData = `).
+`ui/find.rs` is its window; the `search_channels` MCP tool calls the same. Banners come the same way:
+kick.com's `/api/v2/channels/<slug>` and the channel page's `imageBannerViewModel` for YouTube.
+
+`ui::sort_header` is a column-title row that sorts (the Community users use it); the list sorts itself in
+the header's callback.
 
 ## Crash reports
 

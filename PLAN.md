@@ -328,12 +328,26 @@ platform handles through channels, never through shared locks held across awaits
   start, the last 10 kept; back up now, restore, delete).
 - [x] User card: banner, account age and picture without a login (Twitch's public web API, kick.com's
   card); badges as pictures, named when pointed at; the chatter's messages live in the chat's own view,
-  with its actions and a reply box; animated emotes (and an option to keep them still).
+  with its actions (no box to write in); animated emotes (and an option to keep them still). Banners
+  without a login for Twitch, Kick (kick.com's channel page) and YouTube (the channel's public page).
+- [x] Hover details: pointing at an emote or a badge in any chat shows its picture big, its name, where it
+  comes from (the source's icon: 7TV, BTTV, FFZ, the platform) and its id (`ui/tip.rs`).
 - [x] Pinned messages over the chat, with who pinned them and the time left (Twitch, Kick, YouTube).
 - [x] TikTok without a webview: login and sending through the user's own Chromium-based browser over its
   DevTools port (`cdp.rs`); wry, tao, WebKitGTK and the helper binary are gone (390 crates down to 199).
 - [x] Accounts: the channel to read is on the page, for every platform; Twitch reads someone else's
   channel too, as a moderator (the subscriptions a moderator can't have are left out).
+- [x] Accounts, simpler: a platform connects at start by itself once set up (Advanced turns that off);
+  the channel box is a button that opens a search (`search.rs`, `ui/find.rs`: Twitch, Kick and YouTube by
+  name with picture, followers and live, no login; a pasted link works too) and is empty while reading
+  your own channel; community data belongs to the channel it was seen in.
+- [x] Community: every column of the users table sorts (click a title, again to turn it around).
+- [x] Crash reports carry their context (steps, facts, the system, a trimmed GitHub issue).
+- [x] Security: secrets scan on every commit and PR (`dev/scan_secrets.py`), `cargo audit`, least-privilege
+  workflow tokens; see SECURITY.md.
+- [x] Fixes: switching the Twitch channel while its subscriptions were being made no longer logs a wall of
+  "websocket session has already disconnected" errors (the setup stops with its session).
+- [x] Faster dev builds: `debug = "line-tables-only"` in `[profile.dev]` (a 114 MB binary, not 150 MB).
 - [x] Polls page: Twitch and YouTube polls, Twitch predictions (Kick and TikTok have no API for them).
 - [x] Chat effects listed in [CHAT.md](CHAT.md): subs, gifts, raids, rewards, announcements, Kicks,
   Super Chats, memberships and TikTok gifts as event lines; highlighted and first messages marked.
