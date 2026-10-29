@@ -534,17 +534,27 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
         .find(|(k, v)| k.contains("rofile") && text_of(v).starts_with("http"))
         .map(|(_, v)| text_of(v))
         .unwrap_or_else(|| pic_url(&pic_key));
-    let answer: Arc<Mutex<Option<Facts>>> = Arc::default();
+    // What the platform said so far, and whether that is all of it.
+    let answer: Arc<Mutex<(Facts, bool)>> = Arc::default();
     let asks = matches!(who.platform.as_str(), "twitch" | "kick");
     if asks {
         let (p, id, answer) = (who.platform.clone(), who.user_id.clone(), answer.clone());
         tell(cmds, move |e| {
             let e = e.clone();
             tokio::task::spawn_local(async move {
-                let r = e.chatter_lookup(&p, &id).await;
+                let early = answer.clone();
+                let r = e
+                    .chatter_lookup(&p, &id, &move |part| {
+                        if let Ok(mut a) = early.lock() {
+                            a.0 = part.to_vec();
+                        }
+                        crate::ui::wake_card();
+                    })
+                    .await;
                 if let Ok(mut a) = answer.lock() {
-                    *a = Some(r);
+                    *a = (r, true);
                 }
+                crate::ui::wake_card();
             });
         });
     }
@@ -631,16 +641,17 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
     };
     sync();
 
-    let (mut facts_t, mut tries, mut body_t) = (facts.clone(), 0, body.clone());
-    let mut waiting = asks;
+    let (mut facts_t, mut body_t) = (facts.clone(), body.clone());
+    // Done once the platform said all of it (it always does within 20 s; the rest is for a dead engine).
+    let (mut finished, mut applied, started) = (!asks, 0usize, std::time::Instant::now());
     let (mut have_pic, mut banner_url) = (false, String::new());
     let mut top_t = top.clone();
     pop.run(|| {
-        tries += 1;
         sync();
-        if waiting {
-            if let Some(found) = answer.lock().ok().and_then(|mut a| a.take()) {
-                waiting = false;
+        if !finished {
+            let (found, done) = answer.lock().map(|a| a.clone()).unwrap_or_default();
+            if found.len() != applied || done {
+                applied = found.len();
                 if let Some((_, v)) = found.iter().find(|f| f.0 == "Picture") {
                     picture.clone_from(v);
                     remember_pic(&pic_key, v);
@@ -656,16 +667,31 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
                     top_t.redraw();
                 }
                 fill(&mut facts_t, &found);
-                if found.is_empty() {
+                // Still asking: the rest is on its way.
+                let (key, text) = match (done, found.is_empty()) {
+                    (true, true) => (true, tr("card.nothing")),
+                    (false, _) => (true, tr("chat.card_looking_up")),
+                    _ => (false, ""),
+                };
+                if key {
                     facts_t.add(&format!(
                         "{}\t{}",
                         trf("chat.card_platform_says", &[("platform", platform_name)]),
-                        tr("card.nothing")
+                        text
                     ));
                 }
                 fit(&mut body_t, &facts_t);
-            } else if tries > 75 {
-                waiting = false;
+            }
+            if done {
+                finished = true;
+            } else if started.elapsed() > std::time::Duration::from_secs(30) {
+                finished = true;
+                facts_t.add(&format!(
+                    "{}\t{}",
+                    trf("chat.card_platform_says", &[("platform", platform_name)]),
+                    tr("card.nothing")
+                ));
+                fit(&mut body_t, &facts_t);
             }
         }
         if !banner_url.is_empty() && head.borrow().banner.is_none() {

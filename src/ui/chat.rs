@@ -1126,7 +1126,7 @@ impl Pane {
             // A pin: right click unpins it; a click on it does nothing else.
             Event::Push if self.pin_at(f).is_some() => {
                 let pin = self.pin_at(f).expect("a pin");
-                if app::event_mouse_button() == app::MouseButton::Right {
+                if super::right_button() {
                     use fltk::menu::{MenuButton, MenuFlag};
                     let mut m = super::menu_at_pointer();
                     let cmds = self.cmds.clone();
@@ -1151,7 +1151,7 @@ impl Pane {
                 }
                 true
             }
-            Event::Push if app::event_mouse_button() == app::MouseButton::Right => {
+            Event::Push if super::right_button() => {
                 let l = {
                     let st = self.st.borrow();
                     self.line_at(f, &st).and_then(|i| st.lines.get(i).cloned())
@@ -1189,7 +1189,7 @@ impl Pane {
                 MenuButton::delete(m);
                 true
             }
-            Event::Push if app::event_mouse_button() == app::MouseButton::Left => {
+            Event::Push if super::left_button() => {
                 if let Some((l, a)) = self.act_at(f) {
                     self.run(&l, a.0);
                 } else if let Some(l) = self.name_at(f) {
@@ -2446,7 +2446,7 @@ fn emote_field(
     });
     // Clicks land between the pieces as drawn.
     move |i: &mut Input, ev: Event| {
-        if !matches!(ev, Event::Push | Event::Drag) || app::event_mouse_button() != app::MouseButton::Left {
+        if !matches!(ev, Event::Push | Event::Drag) || !super::left_button() {
             return false;
         }
         let Some(ps) = state(i) else { return false };

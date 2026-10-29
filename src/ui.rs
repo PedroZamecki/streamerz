@@ -178,23 +178,42 @@ pub(crate) fn pump_dev() {
 }
 
 thread_local! {
-    /// Refreshes the chat page; set once the window is built.
-    static CHAT_PUMP: std::cell::RefCell<Option<Rc<dyn Fn()>>> = const { std::cell::RefCell::new(None) };
+    /// Takes in the engine's news (chat, log, changes, pictures...); set once the window is built.
+    static NESTED: std::cell::RefCell<Option<Rc<dyn Fn()>>> = const { std::cell::RefCell::new(None) };
+    /// Messages taken in a dialog's loop that only the main loop may act on (opening a dialog or the window).
+    static DEFERRED: std::cell::RefCell<Vec<Msg>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// A pump is already due (see `pump_chat`).
+    static PUMP_DUE: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Shows the chat lines that arrived, from inside a dialog or popover holding the window's loop (the
-/// main loop drains `Msg::Chat` only between its own waits, so without this the chat would freeze under
-/// it). At most 5 times a second: a dialog's loop turns on every mouse move.
+/// The mouse button of the event in progress. The raw number: `app::event_mouse_button` turns it into an
+/// enum, which is undefined behaviour (a crash) for the odd values some compositors send.
+pub(crate) fn right_button() -> bool {
+    app::event_button() == 3
+}
+
+pub(crate) fn left_button() -> bool {
+    app::event_button() == 1
+}
+
+/// Takes in what the engine reported (chat, log, changes, pictures) from inside a dialog or popover
+/// holding the window's loop: the main loop reads its messages only between its own waits, so without
+/// this the screen would freeze under them. At most 5 times a second (a dialog's loop turns on every mouse
+/// move); a turn skipped for that is made up by a timer, so the news never waits for the next event.
 pub(crate) fn pump_chat() {
     thread_local!(static LAST: Cell<Option<std::time::Instant>> = const { Cell::new(None) });
-    if LAST
-        .get()
-        .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(200))
-    {
+    const EVERY: std::time::Duration = std::time::Duration::from_millis(200);
+    if let Some(since) = LAST.get().map(|t| t.elapsed()).filter(|t| *t < EVERY) {
+        if !PUMP_DUE.replace(true) {
+            app::add_timeout3((EVERY - since).as_secs_f64(), |_| {
+                PUMP_DUE.set(false);
+                pump_chat();
+            });
+        }
         return;
     }
     LAST.set(Some(std::time::Instant::now()));
-    if let Some(f) = CHAT_PUMP.with(|p| p.borrow().clone()) {
+    if let Some(f) = NESTED.with(|p| p.borrow().clone()) {
         f();
     }
 }
@@ -319,6 +338,11 @@ pub static POLLS_DIRTY: AtomicBool = AtomicBool::new(true);
 pub fn polls_changed() {
     POLLS_DIRTY.store(true, Ordering::Relaxed);
     changed();
+}
+
+/// Something a popover waits for arrived (from any thread): its loop turns now, not at its next tick.
+pub(crate) fn wake_card() {
+    app::awake();
 }
 
 /// New chat: refresh the chat tab, if the window is up.
@@ -568,7 +592,7 @@ fn menu_text(l: &str) -> String {
 
 /// A menu button at the pointer, in the window the pointer is in. Wayland places a popup relative to the
 /// window of the widget that opens it (a button with no window opens it in the corner), and refuses an
-/// empty box, so it is 1x1.
+/// empty box, so it is 1x1 (and invisible).
 pub(crate) fn menu_at_pointer() -> fltk::menu::MenuButton {
     let host: Option<Box<dyn WindowExt>> = app::belowmouse::<fltk::widget::Widget>()
         .and_then(|w| w.window())
@@ -576,7 +600,9 @@ pub(crate) fn menu_at_pointer() -> fltk::menu::MenuButton {
     if let Some(h) = &host {
         h.begin();
     }
-    let m = fltk::menu::MenuButton::new(app::event_x(), app::event_y(), 1, 1, None);
+    let mut m = fltk::menu::MenuButton::new(app::event_x(), app::event_y(), 1, 1, None);
+    // No box: a menu button draws one (and a marker) of its own, which left white dots on the window.
+    m.set_frame(FrameType::NoBox);
     if let Some(h) = host {
         h.end();
         // Not dropped: a window got this way owns its widget, and dropping it would delete the window.
@@ -897,7 +923,7 @@ pub fn run(
         let dir = crate::config_path().with_file_name("logs");
         crate::oauth::open_browser(&dir.display().to_string());
     });
-    let mut log = Log {
+    let log = Rc::new(std::cell::RefCell::new(Log {
         view,
         buf,
         styles,
@@ -906,7 +932,7 @@ pub fn run(
         dirty,
         seen: u64::MAX,
         shown: 0,
-    };
+    }));
 
     let mut bar = Flex::new(10, H - 40, W - 20, 32, None).row();
     bar.set_pad(8);
@@ -969,10 +995,6 @@ pub fn run(
         }
     });
     let views = Rc::new(views);
-    CHAT_PUMP.with(|p| {
-        let (views, tabs) = (views.clone(), tabs.clone());
-        *p.borrow_mut() = Some(Rc::new(move || views.chat_refresh(&tabs)));
-    });
     tabs.clone().set_callback({
         let views = views.clone();
         let cfg = cfg.clone();
@@ -1035,7 +1057,7 @@ pub fn run(
     let prompted_unlock = Rc::new(Cell::new(false));
     // The tabs are filled only when shown: filling a list measures its text, which opens the display
     // and loads the fonts (~14 MB) even with the window hidden.
-    let open = |win: &mut Window, log: &mut Log| {
+    let open = |win: &mut Window, log: &Rc<std::cell::RefCell<Log>>| {
         if !win.visible() {
             // Windows tells no one when its colours change: ask as the window opens.
             #[cfg(windows)]
@@ -1048,7 +1070,7 @@ pub fn run(
             views.refresh(&tabs);
             status_bar();
             win.show();
-            log.refresh();
+            log.borrow_mut().refresh();
             if crate::secrets::is_locked() && !prompted_unlock.get() {
                 prompted_unlock.set(true);
                 let cmds = cmds.clone();
@@ -1063,52 +1085,41 @@ pub fn run(
         }
     };
     if show {
-        open(&mut win, &mut log);
+        open(&mut win, &log);
     }
-    // Not app.run() or app.wait(): with no window shown they return at once (busy loop / exit).
-    // wait_for blocks until a tray message or UI event arrives.
-    loop {
-        let _ = app::wait_for(1e9);
-        // Pictures come in bursts (the emoji picker asks for hundreds): redraw for them once.
-        let mut pictures = false;
-        while let Some(m) = rx.recv() {
+    // What can be done at any moment, while a dialog or popover holds the loop too: the engine's news
+    // reaches the screen whatever is open. What may not run inside another loop is given back.
+    let pictures = Rc::new(Cell::new(false));
+    let live: Rc<dyn Fn(Msg) -> Option<Msg>> = {
+        let status_bar = status_bar.clone();
+        let (win, log, views, tabs, acts, cfg, pictures) = (
+            win.clone(),
+            log.clone(),
+            views.clone(),
+            tabs.clone(),
+            acts.clone(),
+            cfg.clone(),
+            pictures.clone(),
+        );
+        Rc::new(move |m| {
             match m {
-                Msg::Toggle if win.visible() => close(&mut win),
-                Msg::Toggle => open(&mut win, &mut log),
-                Msg::NoTray => {
-                    tray_ok.set(false);
-                    hide.deactivate();
-                    open(&mut win, &mut log);
+                Msg::Log => {
+                    if let Ok(mut l) = log.try_borrow_mut() {
+                        l.refresh();
+                    }
                 }
-                Msg::Log => log.refresh(),
                 Msg::Chat => views.chat_refresh(&tabs),
-                Msg::Image => pictures = true,
+                Msg::Image => pictures.set(true),
                 // Hidden: nothing to redraw (filling a list loads the fonts); opening refreshes.
                 Msg::Changed if win.visible() => {
                     status_bar();
-                    acts.borrow_mut().refresh();
+                    if let Ok(mut a) = acts.try_borrow_mut() {
+                        a.refresh();
+                    }
                     views.refresh(&tabs);
                 }
                 Msg::Changed => {}
-                Msg::Input => {
-                    let asked = QUESTIONS
-                        .lock()
-                        .map(|mut q| std::mem::take(&mut *q))
-                        .unwrap_or_default();
-                    for (title, prompt, text, answer) in asked {
-                        let _ = answer.send(ask(&title, &prompt, &text));
-                    }
-                    let confirms = CONFIRMS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
-                    for (text, no, yes, answer) in confirms {
-                        let _ = answer.send(dialogs::choice(&text.replace('@', "@@"), no, yes));
-                    }
-                }
-                Msg::Dev => {
-                    let asked = DEV.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
-                    for (cmd, answer) in asked {
-                        let _ = answer.send(dev::run(&cmd, Some(&tabs)));
-                    }
-                }
+                Msg::Dev => pump_dev_with(&tabs),
                 Msg::Theme => {
                     let dark = is_dark(&cfg.borrow());
                     if cfg.borrow().dark != dark {
@@ -1129,11 +1140,73 @@ pub fn run(
                     restart(&win);
                     crate::update::restart();
                 }
+                m @ (Msg::Toggle | Msg::NoTray | Msg::Input) => return Some(m),
+            }
+            None
+        })
+    };
+    // Pictures come in bursts (the emoji picker asks for hundreds): redraw for them once.
+    let settle: Rc<dyn Fn()> = {
+        let (views, pictures) = (views.clone(), pictures.clone());
+        Rc::new(move || {
+            if pictures.replace(false) {
+                views.images();
+            }
+        })
+    };
+    NESTED.with(|n| {
+        let (live, settle) = (live.clone(), settle.clone());
+        *n.borrow_mut() = Some(Rc::new(move || {
+            while let Some(m) = rx.recv() {
+                if let Some(m) = live(m) {
+                    DEFERRED.with(|d| d.borrow_mut().push(m));
+                }
+            }
+            settle();
+        }));
+    });
+    // Not app.run() or app.wait(): with no window shown they return at once (busy loop / exit).
+    // wait_for blocks until a tray message or UI event arrives.
+    loop {
+        let _ = app::wait_for(1e9);
+        let mut next: Vec<Msg> = DEFERRED.with(|d| std::mem::take(&mut *d.borrow_mut()));
+        while let Some(m) = rx.recv() {
+            next.push(m);
+        }
+        for m in next {
+            let Some(m) = live(m) else { continue };
+            match m {
+                Msg::Toggle if win.visible() => close(&mut win),
+                Msg::Toggle => open(&mut win, &log),
+                Msg::NoTray => {
+                    tray_ok.set(false);
+                    hide.deactivate();
+                    open(&mut win, &log);
+                }
+                Msg::Input => {
+                    let asked = QUESTIONS
+                        .lock()
+                        .map(|mut q| std::mem::take(&mut *q))
+                        .unwrap_or_default();
+                    for (title, prompt, text, answer) in asked {
+                        let _ = answer.send(ask(&title, &prompt, &text));
+                    }
+                    let confirms = CONFIRMS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+                    for (text, no, yes, answer) in confirms {
+                        let _ = answer.send(dialogs::choice(&text.replace('@', "@@"), no, yes));
+                    }
+                }
+                _ => {}
             }
         }
-        if pictures {
-            views.images();
-        }
+        settle();
+    }
+}
+
+fn pump_dev_with(tabs: &Wizard) {
+    let asked = DEV.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+    for (cmd, answer) in asked {
+        let _ = answer.send(dev::run(&cmd, Some(tabs)));
     }
 }
 

@@ -1282,7 +1282,7 @@ fn drag(
     let mut start: Option<(TreeItem, i32)> = None;
     let mut dragging = false;
     t.handle(move |t, ev| match ev {
-        Event::Push if app::event_mouse_button() == app::MouseButton::Right => {
+        Event::Push if super::right_button() => {
             if let Some(item) = t.find_clicked(true) {
                 let _ = t.select_only(&item, true);
             }

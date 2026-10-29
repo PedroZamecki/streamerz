@@ -307,7 +307,7 @@ impl Rows {
                     f.redraw();
                     self.fire();
                 }
-                if app::event_mouse_button() == app::MouseButton::Right {
+                if super::right_button() {
                     let menu = self.menu.borrow().clone();
                     super::context_menu(&menu);
                 }
