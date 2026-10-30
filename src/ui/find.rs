@@ -168,3 +168,22 @@ pub(super) fn channel(cmds: &Cmds, platform: &str) -> Option<String> {
     }
     chosen
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_find_line_formats() {
+        let f = Found {
+            name: "Cool Streamer".into(),
+            handle: "cool_streamer".into(),
+            detail: "10K followers".into(),
+            picture: "https://x/p.png".into(),
+            live: true,
+        };
+        let l = line(&f);
+        assert!(l.contains("Cool Streamer"));
+        assert!(l.contains("10K followers"));
+    }
+}
