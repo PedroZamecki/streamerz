@@ -203,6 +203,22 @@ def main():
             failures.append(f"the chat froze under the user card ({after})")
         xdo("key", "Escape")
         check("user card")
+        # The chat keeps at most 400 lines of a platform (the default) however many come, still shows them,
+        # and after the window is hidden and shown again it fills from the engine.
+        ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Chat"})
+        for i in range(450):
+            ws.ask({"request": "InjectChat", "id": f"m{i}", "platform": "kick", "user": f"u{i % 7}", "text": f"line {i}"})
+        time.sleep(1)
+        kept = lambda: int(ws.ask({"request": "StreamerzUi", "id": "c", "do": "chatlines"})["result"])
+        if not 100 < kept() <= 430:
+            failures.append(f"the chat kept {kept()} lines of 450 (400 of Kick, and the few lines of others)")
+        ws.ask({"request": "StreamerzUi", "id": "t", "do": "toggle"})
+        time.sleep(1)
+        ws.ask({"request": "StreamerzUi", "id": "t", "do": "toggle"})
+        time.sleep(1.5)
+        check("hiding and showing the chat")
+        if not 100 < kept() <= 430:
+            failures.append(f"the chat filled with {kept()} lines after being shown again")
     finally:
         app.terminate()
     # Asked to end (as a logout does), it saves and quits: the next start mustn't see a crash.

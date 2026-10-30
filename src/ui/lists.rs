@@ -575,6 +575,13 @@ impl Views {
         }
     }
 
+    /// The window was hidden: the chat keeps no lines.
+    pub fn chat_release(&self) {
+        if let Ok(mut c) = self.chat.try_borrow_mut() {
+            c.release();
+        }
+    }
+
     /// A picture arrived: redraw what shows pictures.
     pub fn images(&self) {
         if let Ok(mut a) = self.accounts.try_borrow_mut() {

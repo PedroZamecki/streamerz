@@ -15,6 +15,7 @@ use std::fmt::Write;
 ///   find TEXT [N]   where widgets with TEXT in their label are, as screen coordinates to click
 ///   page LABEL      goes to a page (Chat, Settings...)
 ///   chat            the last chat line the chat page took in (its seq)
+///   chatlines       how many lines the chat page holds
 ///   community       how many users the Community tab lists
 ///   panic           panics on the window's thread (to try crash reports and saving on a crash)
 pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
@@ -88,6 +89,7 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
         "chat" => super::chat::SHOWN
             .load(std::sync::atomic::Ordering::Relaxed)
             .to_string(),
+        "chatlines" => super::chat::KEPT.load(std::sync::atomic::Ordering::Relaxed).to_string(),
         "community" => super::lists::USERS_SHOWN
             .load(std::sync::atomic::Ordering::Relaxed)
             .to_string(),

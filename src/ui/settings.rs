@@ -330,6 +330,69 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
         }
     });
 
+    section(&mut col, tr("settings.chat"), "message-square");
+    // What the chat keeps and how it comes and goes: a number each, read and set in the limits.
+    type Limit = (
+        &'static str,
+        &'static str,
+        fn(&crate::ChatLimits) -> u64,
+        fn(&mut crate::ChatLimits, u64),
+    );
+    let numbers: [Limit; 5] = [
+        (
+            "settings.chat.per_platform",
+            "settings.chat.per_platform.about",
+            |l| l.per_platform as u64,
+            |l, v| l.per_platform = v as usize,
+        ),
+        (
+            "settings.chat.total",
+            "settings.chat.total.about",
+            |l| l.total as u64,
+            |l, v| l.total = v as usize,
+        ),
+        (
+            "settings.chat.lifetime",
+            "settings.chat.lifetime.about",
+            |l| l.lifetime,
+            |l, v| l.lifetime = v,
+        ),
+        (
+            "settings.chat.fade_in",
+            "settings.chat.fade_in.about",
+            |l| u64::from(l.fade_in),
+            |l, v| l.fade_in = v.min(u64::from(u32::MAX)) as u32,
+        ),
+        (
+            "settings.chat.fade_out",
+            "settings.chat.fade_out.about",
+            |l| u64::from(l.fade_out),
+            |l, v| l.fade_out = v.min(u64::from(u32::MAX)) as u32,
+        ),
+    ];
+    for (key, about, get, set) in numbers {
+        let r = setting(&mut col, tr(key), tr(about), 90);
+        let mut input = fltk::input::IntInput::default();
+        input.set_value(&get(&cfg.borrow().window.chat).to_string());
+        done(r, &input);
+        // Applied when it is left or Enter is pressed: not for each digit typed on the way to a number
+        // (a limit of 4 on the way to 400 would take the chat's lines away).
+        input.set_trigger(fltk::enums::CallbackTrigger::Release | fltk::enums::CallbackTrigger::EnterKey);
+        input.set_callback({
+            let (cfg, cmds) = (cfg.clone(), cmds.clone());
+            move |i| {
+                let mut limits = cfg.borrow().window.chat;
+                set(&mut limits, i.value().trim().parse().unwrap_or(0));
+                let limits = limits.clamped();
+                put(&cfg, |c| c.window.chat = limits);
+                // Out of range, it shows as it applies.
+                i.set_value(&get(&limits).to_string());
+                tell(&cmds, |e| e.chat_trim());
+                super::chat();
+            }
+        });
+    }
+
     section(&mut col, tr("settings.startup"), "power");
     let r = setting(
         &mut col,

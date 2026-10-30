@@ -202,6 +202,87 @@ pub struct WindowState {
     /// The sidebar shows only its icons.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub nav_collapsed: bool,
+    /// How many chat lines are kept, for how long, and how they come and go.
+    #[serde(skip_serializing_if = "ChatLimits::is_default")]
+    pub chat: ChatLimits,
+}
+
+/// What the chat keeps in memory: the oldest lines go first, and a line can go by its age. Applies to
+/// the engine's log and to every pane that shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ChatLimits {
+    /// Lines kept of each platform's chat.
+    pub per_platform: usize,
+    /// Lines kept of all of them together.
+    pub total: usize,
+    /// A line is taken out of the chat, and the memory, after this many seconds (0: it stays).
+    pub lifetime: u64,
+    /// How long a new line takes to appear, and an old one to go, in ms (0: at once).
+    pub fade_in: u32,
+    pub fade_out: u32,
+}
+
+impl Default for ChatLimits {
+    fn default() -> Self {
+        Self {
+            per_platform: 400,
+            total: 1000,
+            lifetime: 0,
+            fade_in: 200,
+            fade_out: 400,
+        }
+    }
+}
+
+impl ChatLimits {
+    /// The most lines a chat can keep.
+    pub const MOST: usize = 1000;
+    pub const LEAST: usize = 10;
+
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The limits as they apply: in range, whatever the file says.
+    pub fn clamped(self) -> Self {
+        Self {
+            per_platform: self.per_platform.clamp(Self::LEAST, Self::MOST),
+            total: self.total.clamp(Self::LEAST, Self::MOST),
+            lifetime: self.lifetime.min(30 * 24 * 3600),
+            fade_in: self.fade_in.min(3000),
+            fade_out: self.fade_out.min(10_000),
+        }
+    }
+
+    /// Which of the lines, oldest first (each is its platform's index, none for a line of no platform),
+    /// are over the limits and go: the oldest of a platform past its own, then the oldest of all past the
+    /// total. The positions, in order.
+    pub fn excess(&self, lines: impl Iterator<Item = Option<usize>>) -> Vec<usize> {
+        let l = self.clamped();
+        let lines: Vec<Option<usize>> = lines.collect();
+        let mut each = [0usize; 4];
+        let mut all = lines.len();
+        for p in lines.iter().flatten() {
+            each[*p] += 1;
+        }
+        let mut gone = vec![false; lines.len()];
+        // Each platform's own limit first, then the total over what is left.
+        for (i, p) in lines.iter().enumerate() {
+            if let Some(p) = p.filter(|p| each[*p] > l.per_platform) {
+                gone[i] = true;
+                each[p] -= 1;
+                all -= 1;
+            }
+        }
+        for g in gone.iter_mut().filter(|g| !**g) {
+            if all > l.total {
+                *g = true;
+                all -= 1;
+            }
+        }
+        (0..lines.len()).filter(|i| gone[*i]).collect()
+    }
 }
 
 impl Config {

@@ -1236,12 +1236,16 @@ pub fn run(
     });
     let restart = remember.clone();
     let quitting = remember.clone();
-    let close = move |w: &mut Window| {
-        remember(w);
-        crate::crash::step("window hidden");
-        SHOWN.store(false, Ordering::Relaxed);
-        w.hide();
-        img::forget();
+    let close = {
+        let views = views.clone();
+        move |w: &mut Window| {
+            remember(w);
+            crate::crash::step("window hidden");
+            SHOWN.store(false, Ordering::Relaxed);
+            w.hide();
+            img::forget();
+            views.chat_release();
+        }
     };
     hide.set_callback({
         let mut win = win.clone();
@@ -1299,6 +1303,8 @@ pub fn run(
     // What can be done at any moment, while a dialog or popover holds the loop too: the engine's news
     // reaches the screen whatever is open. What may not run inside another loop is given back.
     let pictures = Rc::new(Cell::new(false));
+    // New chat lines come many a second: the page takes them in at most ten times a second.
+    let chat_due = Rc::new(Cell::new(false));
     let live: Rc<dyn Fn(Msg) -> Option<Msg>> = {
         let status_bar = status_bar.clone();
         let (win, log, views, tabs, acts, cfg, pictures) = (
@@ -1317,7 +1323,15 @@ pub fn run(
                         l.refresh();
                     }
                 }
-                Msg::Chat => views.chat_refresh(&tabs),
+                Msg::Chat => {
+                    if !chat_due.replace(true) {
+                        let (views, tabs, chat_due) = (views.clone(), tabs.clone(), chat_due.clone());
+                        app::add_timeout3(0.1, move |_| {
+                            chat_due.set(false);
+                            views.chat_refresh(&tabs);
+                        });
+                    }
+                }
                 Msg::Image => pictures.set(true),
                 // Hidden: nothing to redraw (filling a list loads the fonts); opening refreshes.
                 Msg::Changed if win.visible() => {

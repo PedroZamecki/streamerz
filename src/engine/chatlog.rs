@@ -13,8 +13,6 @@ use std::rc::Rc;
 
 pub const PLATFORMS: [&str; 4] = ["twitch", "youtube", "kick", "tiktok"];
 
-/// Lines kept (all platforms together).
-const KEEP: usize = 500;
 /// Historical lines kept per platform across restarts / on room join.
 const KEEP_HISTORY: usize = 100;
 /// Emotes remembered per platform (the most recent).
@@ -336,6 +334,10 @@ impl Reply {
 #[derive(Default)]
 pub struct Log {
     lines: VecDeque<Line>,
+    /// How many lines are kept, and for how long (the config's, taken in as lines come).
+    limits: crate::ChatLimits,
+    /// A sweep for lines past their lifetime is waiting to run.
+    sweeping: bool,
     seq: u64,
     /// Incremented when room history / welcome lines are spliced in so UI panes resync cleanly.
     reset_gen: u64,
@@ -526,10 +528,26 @@ impl Log {
     fn push(&mut self, mut l: Line) {
         self.seq += 1;
         l.seq = self.seq;
-        if self.lines.len() == KEEP {
-            self.lines.pop_front();
-        }
         self.lines.push_back(l);
+        self.trim();
+    }
+
+    /// Lines over the limits go, the oldest first.
+    fn trim(&mut self) {
+        let gone = self.limits.excess(self.lines.iter().map(|l| index(&l.platform)));
+        for at in gone.into_iter().rev() {
+            self.lines.remove(at);
+        }
+    }
+
+    /// Lines older than their lifetime go (none when it's off). The age is of when each was said.
+    fn age_out(&mut self, now: u64) -> usize {
+        let life = self.limits.lifetime * 1000;
+        let before = self.lines.len();
+        if life > 0 {
+            self.lines.retain(|l| l.ts <= 0 || now < l.ts as u64 + life);
+        }
+        before - self.lines.len()
     }
 
     fn remember_emote(&mut self, i: usize, token: String, url: String) {
@@ -597,6 +615,50 @@ fn badge_name(key: &str) -> String {
 }
 
 impl Engine {
+    /// The chat log, with the config's limits in it, so what goes in is trimmed to them.
+    fn chat_log_mut(&self) -> std::cell::RefMut<'_, Log> {
+        let limits = self.config().window.chat.clamped();
+        let mut log = std::cell::RefMut::map(self.st.borrow_mut(), |s| &mut s.chat_log);
+        log.limits = limits;
+        log
+    }
+
+    /// A line came: when lines have a lifetime and no sweep waits, one is set.
+    fn chat_sweep_soon(self: &Rc<Self>) {
+        if self.config().window.chat.lifetime > 0 && !self.st.borrow().chat_log.sweeping {
+            self.chat_trim();
+        }
+    }
+
+    /// The limits changed (or lines came): lines over them go now, and the ones that will be past their
+    /// lifetime are taken out when it is up. Idle, with no lifetime, nothing is waiting.
+    pub fn chat_trim(self: &Rc<Self>) {
+        let (life, due) = {
+            let mut guard = self.chat_log_mut();
+            let log = &mut *guard;
+            log.trim();
+            let now = now_ms();
+            let gone = log.age_out(now);
+            let life = log.limits.lifetime * 1000;
+            let oldest = log.lines.iter().filter(|l| l.ts > 0).map(|l| l.ts as u64).min();
+            if gone > 0 {
+                log.reset_gen += 1;
+            }
+            // Sweeps come in batches (a tenth of the lifetime, at least a second), not for every line.
+            let due = oldest.map(|t| (t + life).saturating_sub(now).max((life / 10).max(1000)));
+            (life, due.filter(|_| life > 0 && !log.sweeping))
+        };
+        if let (true, Some(wait)) = (life > 0, due) {
+            self.chat_log_mut().sweeping = true;
+            let me = self.clone();
+            tokio::task::spawn_local(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+                me.chat_log_mut().sweeping = false;
+                me.chat_trim();
+            });
+        }
+    }
+
     /// Chat history is never kept on disk: the platforms give it back when we join. This removes the file
     /// older versions wrote.
     pub fn forget_saved_chat_history() {
@@ -615,12 +677,12 @@ impl Engine {
         log.reset_gen += 1;
     }
 
-    pub fn chat_welcome(&self, platform: &str, fetched: Vec<Line>) {
+    pub fn chat_welcome(self: &Rc<Self>, platform: &str, fetched: Vec<Line>) {
         let Some(p_idx) = index(platform) else { return };
         self.role_from_history(platform, &fetched);
         {
-            let mut st = self.st.borrow_mut();
-            let log = &mut st.chat_log;
+            let mut guard = self.chat_log_mut();
+            let log = &mut *guard;
 
             // What there is: history (of any platform) and live lines, in the order they came.
             let mut history: Vec<Line> = Vec::new();
@@ -690,16 +752,17 @@ impl Engine {
                 log.push(l);
             }
             log.reset_gen += 1;
-            drop(st);
+            drop(guard);
             for l in &seen {
                 self.seen_in_history(l);
             }
         }
+        self.chat_sweep_soon();
         crate::ui::chat();
     }
 
     /// Keep a chat message for the window (called by `chat`).
-    pub(super) fn log_chat(&self, c: &Chat) {
+    pub(super) fn log_chat(self: &Rc<Self>, c: &Chat) {
         // Our own message: its badges say our role now (modded or unmodded since we connected).
         let lead = c.args.get("badges").and_then(Value::as_array).is_some_and(|b| {
             b.iter().any(|b| {
@@ -715,8 +778,8 @@ impl Engine {
             crate::ui::changed();
         }
         {
-            let mut st = self.st.borrow_mut();
-            let log = &mut st.chat_log;
+            let mut guard = self.chat_log_mut();
+            let log = &mut *guard;
             let Some(i) = index(&c.platform) else { return };
             for e in &c.emotes {
                 log.remember_emote(i, e.0.clone(), e.1.clone());
@@ -729,7 +792,7 @@ impl Engine {
             let (text, emotes) = normalize_line_emotes(&c.platform, plain, &c.emotes);
             let time = crate::fmt::shown_time(&crate::fmt::now());
             let key = (c.platform.clone(), c.user_id.clone());
-            if !log.users.contains_key(&key) && log.users.len() == KEEP {
+            if !log.users.contains_key(&key) && log.users.len() >= log.limits.total {
                 if let Some(old) = log.users.iter().min_by_key(|u| u.1.last).map(|u| u.0.clone()) {
                     log.users.remove(&old);
                 }
@@ -812,7 +875,7 @@ impl Engine {
                 (mine.broadcaster, mine.moderator, mine.vip, mine.subscriber) =
                     (line.broadcaster, line.moderator, line.vip, line.subscriber);
                 log.reset_gen += 1;
-                drop(st);
+                drop(guard);
                 crate::ui::chat();
                 return;
             }
@@ -829,11 +892,12 @@ impl Engine {
             line.historical = false;
             log.push(line);
         }
+        self.chat_sweep_soon();
         crate::ui::chat();
     }
 
     /// What a trigger shows in the chat, if anything (see `event_of`).
-    pub(super) fn chat_event(&self, kind: u32, a: &Obj) {
+    pub(super) fn chat_event(self: &Rc<Self>, kind: u32, a: &Obj) {
         let Some(ev) = event_of(kind, a) else { return };
         let get = |k: &str| a.get(k).map(crate::vars::text).unwrap_or_default();
         let says = crate::vars::simple(crate::i18n::tr(ev.says), a, &Obj::new());
@@ -842,7 +906,7 @@ impl Engine {
         let user = Some(get("user"))
             .filter(|u| !u.is_empty())
             .unwrap_or_else(|| get("userName"));
-        self.st.borrow_mut().chat_log.push(Line {
+        self.chat_log_mut().push(Line {
             platform: ev.platform.into(),
             time: crate::fmt::shown_time(&crate::fmt::now()),
             ts: crate::fmt::unix_now().as_millis() as i64,
@@ -863,12 +927,13 @@ impl Engine {
                 .unwrap_or_else(|| ev.accent.into()),
             ..Default::default()
         });
+        self.chat_sweep_soon();
         crate::ui::chat();
     }
 
     /// A line from Streamerz itself (a failed send, a dev-mode send).
     fn chat_note(&self, platform: &str, text: String) {
-        self.st.borrow_mut().chat_log.push(Line {
+        self.chat_log_mut().push(Line {
             platform: platform.into(),
             time: crate::fmt::shown_time(&crate::fmt::now()),
             user: "Streamerz".into(),
@@ -1632,8 +1697,8 @@ impl Engine {
             None => (false, text.to_string()),
         };
         let (plain, emotes) = normalize_line_emotes(platform, plain, &[]);
-        let mut st = self.st.borrow_mut();
-        let log = &mut st.chat_log;
+        let mut guard = self.chat_log_mut();
+        let log = &mut *guard;
         // Our name's colour and badges as the chat showed them last, until the platform's own copy says.
         let (color, badges) = log
             .lines
@@ -1659,7 +1724,7 @@ impl Engine {
             ..Default::default()
         });
         let seq = log.seq;
-        drop(st);
+        drop(guard);
         crate::ui::chat();
         Some(seq)
     }
@@ -2237,5 +2302,111 @@ mod tests {
             .map(|u| u["display"].as_str().unwrap().to_string())
             .collect();
         assert_eq!(names, ["Ana", "Bo"]);
+    }
+
+    fn said(e: &Rc<Engine>, platform: &str, text: &str) {
+        e.log_chat(&crate::commands::Chat {
+            platform: platform.into(),
+            user_id: "1".into(),
+            user: "Ana".into(),
+            msg_id: format!("{platform}-{text}"),
+            text: text.into(),
+            ..Default::default()
+        });
+    }
+
+    fn engine_with(limits: crate::ChatLimits) -> Rc<Engine> {
+        let mut c = crate::Config::default();
+        c.window.chat = limits;
+        Engine::new(std::sync::Arc::new(tokio::sync::watch::channel(c).0), |_| {})
+    }
+
+    #[test]
+    fn the_oldest_lines_go_past_each_platforms_limit_and_the_total() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let e = engine_with(crate::ChatLimits {
+                per_platform: 10,
+                total: 15,
+                ..Default::default()
+            });
+            for n in 0..12 {
+                said(&e, "kick", &format!("k{n}"));
+            }
+            let texts = |p: &str| {
+                e.chat_sync(999, 0)
+                    .2
+                    .into_iter()
+                    .filter(|l| l.platform == p)
+                    .map(|l| l.text)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(texts("kick").len(), 10, "a platform keeps its limit");
+            assert_eq!(texts("kick")[0], "k2", "the oldest went");
+            for n in 0..12 {
+                said(&e, "twitch", &format!("t{n}"));
+            }
+            // 10 and 10 are 20: 5 over the total go, the oldest of all (Kick's).
+            assert_eq!((texts("kick").len(), texts("twitch").len()), (5, 10));
+            assert_eq!(texts("kick")[0], "k7");
+            assert_eq!(texts("twitch")[0], "t2");
+        });
+    }
+
+    #[test]
+    fn limits_in_a_file_out_of_range_are_brought_in() {
+        let l = crate::ChatLimits {
+            per_platform: 0,
+            total: 5000,
+            lifetime: u64::MAX,
+            fade_in: u32::MAX,
+            fade_out: 0,
+        }
+        .clamped();
+        assert_eq!(
+            (l.per_platform, l.total),
+            (crate::ChatLimits::LEAST, crate::ChatLimits::MOST)
+        );
+        assert!(l.lifetime < u64::MAX && l.fade_in <= 3000);
+        // Only what differs from the defaults is saved.
+        let json = serde_json::to_value(crate::WindowState::default()).unwrap();
+        assert!(json.get("chat").is_none());
+    }
+
+    #[test]
+    fn lines_past_their_lifetime_leave_the_memory() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let e = engine_with(crate::ChatLimits {
+                lifetime: 300,
+                ..Default::default()
+            });
+            said(&e, "kick", "old");
+            let at = e.chat_sync(999, 0).2[0].ts as u64;
+            // Not yet, then past it.
+            assert_eq!(e.chat_log_mut().age_out(at + 299_000), 0);
+            said(&e, "kick", "new");
+            assert_eq!(
+                e.chat_log_mut().age_out(at + 301_000),
+                2,
+                "both are older than five minutes by now"
+            );
+            assert!(e.chat_sync(999, 0).2.is_empty());
+            // The sweep itself, when a line is old by the clock.
+            let e = engine_with(crate::ChatLimits {
+                lifetime: 300,
+                ..Default::default()
+            });
+            said(&e, "kick", "old");
+            said(&e, "kick", "fresh");
+            e.chat_log_mut().lines[0].ts -= 301_000;
+            e.chat_trim();
+            let left: Vec<String> = e.chat_sync(999, 0).2.into_iter().map(|l| l.text).collect();
+            assert_eq!(left, ["fresh"]);
+            // With no lifetime, nothing ages out.
+            let e = engine_with(crate::ChatLimits::default());
+            said(&e, "kick", "stays");
+            assert_eq!(e.chat_log_mut().age_out(u64::MAX / 2), 0);
+        });
     }
 }

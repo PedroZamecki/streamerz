@@ -46,7 +46,6 @@ const EMOTE: i32 = 28;
 const HUGE: i32 = 72;
 const LINE: i32 = 22;
 /// Lines kept per view (the engine keeps as many).
-const KEEP: usize = 500;
 /// Badge height, and the gap after each badge.
 const BADGE: i32 = 18;
 const GAP: i32 = 3;
@@ -365,6 +364,16 @@ thread_local! {
     static ME: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     /// What lines show: (the time, the badges, emotes moving). Chat's options; all panes follow.
     static SHOW: Cell<(bool, bool, bool)> = const { Cell::new((true, true, true)) };
+    /// How many lines the panes keep, for how long, and how they fade (the config's).
+    static LIMITS: Cell<crate::ChatLimits> = const {
+        Cell::new(crate::ChatLimits {
+            per_platform: 400,
+            total: 1000,
+            lifetime: 0,
+            fade_in: 200,
+            fade_out: 400,
+        })
+    };
 }
 
 fn emote_tip(platform: &str, name: &str, url: &str) -> Rc<Tip> {
@@ -661,10 +670,13 @@ fn event_items(cmds: &Cmds, l: &Line, mut v: Vec<It>) -> Vec<It> {
 /// A line laid out: its rows (items with their x, and the row's height).
 type Rows = Vec<(Vec<(It, i32)>, i32)>;
 
-/// Lay a line out in `w` px.
+/// Lay a line out in `w` px. The words of a message that follow each other, in one style, are one piece
+/// of text on a row: drawing text is most of what drawing the chat costs, and it costs by the piece.
 fn rows(items: Vec<It>, w: i32) -> Rows {
     let mut out: Rows = vec![(Vec::new(), LINE)];
     let mut x = 0;
+    // Spaces since the last thing put on the row (one is just a space between words).
+    let mut spaces = 0;
     for it in items {
         let (iw, ih) = it.size();
         if matches!(it, It::Break) {
@@ -674,19 +686,65 @@ fn rows(items: Vec<It>, w: i32) -> Rows {
         }
         if matches!(it, It::Space | It::Gap(_)) {
             x += iw;
+            spaces += if matches!(it, It::Space) { 1 } else { 2 };
             continue;
         }
         let row = out.last_mut().expect("a row");
         if x + iw > w && !row.0.is_empty() {
             out.push((Vec::new(), LINE));
             x = 0;
+            spaces = 0;
         }
         let row = out.last_mut().expect("a row");
         row.1 = row.1.max(ih + 2);
+        if let (It::Text(t, font, color), 1, Some((It::Text(before, f, c), _))) = (&it, spaces, row.0.last_mut()) {
+            if f == font && c == color && *font != Font::HelveticaBold {
+                before.push(' ');
+                before.push_str(t);
+                x += iw;
+                spaces = 0;
+                continue;
+            }
+        }
+        spaces = 0;
         row.0.push((it, x));
         x += iw;
     }
     out
+}
+
+/// How much of a line shows, 0 to 1: coming in (from when it came to the pane, `born`), and going out
+/// as its lifetime ends.
+fn opacity(l: &Line, born: u64, now: u64, lim: &crate::ChatLimits) -> f32 {
+    let mut o = 1.0f32;
+    if lim.fade_in > 0 && born > 0 {
+        o = o.min((now.saturating_sub(born)) as f32 / lim.fade_in as f32);
+    }
+    if lim.lifetime > 0 && l.ts > 0 {
+        let left = (l.ts as u64 + lim.lifetime * 1000).saturating_sub(now);
+        o = o.min(if lim.fade_out > 0 {
+            left as f32 / lim.fade_out as f32
+        } else if left > 0 {
+            1.0
+        } else {
+            0.0
+        });
+    }
+    o.clamp(0.0, 1.0)
+}
+
+/// Whether a line is past its lifetime.
+fn st_ages_out(l: &Line, now: u64, lim: &crate::ChatLimits) -> bool {
+    lim.lifetime > 0 && l.ts > 0 && now >= l.ts as u64 + lim.lifetime * 1000
+}
+
+/// `c` at opacity `o` over the chat's background.
+fn dim(c: Color, o: f32) -> Color {
+    if o >= 0.99 {
+        c
+    } else {
+        Color::color_average(c, Color::Background2, o)
+    }
 }
 
 struct State {
@@ -702,6 +760,12 @@ struct State {
     ticking: bool,
     /// Where the emotes that move are drawn (in the pane), so a frame redraws only those.
     moving: Vec<(i32, i32, i32, i32)>,
+    /// When each line came to this pane (ms; 0: it was there already), for its fade in.
+    born: VecDeque<u64>,
+    /// This pane's lines age: they fade in, and go when their lifetime is up (a user card's don't).
+    ages: bool,
+    /// The next time lines are looked at for fading and aging (epoch ms), and its timer.
+    pulse: Option<(u64, app::TimeoutHandle)>,
     /// The line under the pointer, which shows its actions, and the action under it.
     hover: Option<usize>,
     act: Option<usize>,
@@ -861,6 +925,9 @@ impl Pane {
                 follow: true,
                 ticking: false,
                 moving: Vec::new(),
+                born: VecDeque::new(),
+                ages: false,
+                pulse: None,
                 hover: None,
                 act: None,
                 cards: true,
@@ -966,6 +1033,7 @@ impl Pane {
         // An animation frame redraws only the moving emotes (the text is most of the work): it damages
         // just their squares. Anything else damages it all, and finds the moving emotes again.
         let partial = f.damage_type() == Damage::User1;
+        let (lim, now) = (LIMITS.get().clamped(), epoch_ms());
         let mut found = Vec::new();
         let mut y = f.y() + 4 + self.head(&st) - st.top;
         for (i, (laid, h)) in st.laid.iter().enumerate() {
@@ -980,6 +1048,13 @@ impl Pane {
                 y += h;
                 continue;
             }
+            // A line coming or going is damaged whole (to its right edge): drawn whole, dimmed; the others
+            // in a partial draw are only their moving emotes.
+            let whole = !partial || draw::not_clipped(f.x() + f.w() - 8, y, 4, *h);
+            let o = match (st.lines.get(i), st.born.get(i)) {
+                (Some(l), Some(b)) => opacity(l, *b, now, &lim),
+                _ => 1.0,
+            };
             // Events and set-apart messages: a tint of their colour, and a bar at the left.
             if let Some(c) = st.lines.get(i).and_then(accent) {
                 draw::draw_rect_fill(
@@ -987,9 +1062,9 @@ impl Pane {
                     y,
                     f.w() - 4,
                     *h,
-                    Color::color_average(c, Color::Background2, 0.14),
+                    Color::color_average(c, Color::Background2, 0.14 * o),
                 );
-                draw::draw_rect_fill(f.x() + 2, y, 3, *h, c);
+                draw::draw_rect_fill(f.x() + 2, y, 3, *h, dim(c, o));
             }
             if st.hover == Some(i) {
                 draw::draw_rect_fill(f.x() + 2, y, f.w() - 4, *h, Color::from_rgb(0x2c, 0x2e, 0x34));
@@ -999,15 +1074,17 @@ impl Pane {
                 for (it, x) in row {
                     let x = f.x() + 6 + x;
                     // A frame of the animation only needs the moving emotes.
-                    if partial && !matches!(it, It::Pic(..)) {
+                    if !whole && !matches!(it, It::Pic(..)) {
                         continue;
                     }
                     match it {
                         It::Text(t, font, color) => {
                             draw::set_font(*font, TEXT);
-                            draw::set_draw_color(*color);
+                            draw::set_draw_color(dim(*color, o));
                             draw::draw_text2(t, x, y, 0, rh, Align::Left);
                         }
+                        // Pictures can't be dimmed: they come in once the line is half there.
+                        It::Pic(..) | It::Svg(_) | It::SvgTip(..) if o < 0.5 => {}
                         It::Pic(p, _) => {
                             let mut i = if animate { p.at(ms).clone() } else { p.first() };
                             let at = y + (rh - i.h()) / 2;
@@ -1022,7 +1099,7 @@ impl Pane {
                         }
                         It::Struck(t) => {
                             draw::set_font(Font::Helvetica, TEXT);
-                            draw::set_draw_color(Color::from_rgb(0x88, 0x88, 0x88));
+                            draw::set_draw_color(dim(Color::from_rgb(0x88, 0x88, 0x88), o));
                             draw::draw_text2(t, x, y, 0, rh, Align::Left);
                             let w = draw::width(t) as i32;
                             // Through the space before it too: one line across the message.
@@ -1587,17 +1664,33 @@ impl Pane {
         self.st.borrow_mut().cards = false;
     }
 
+    /// This pane's lines come and go over time (the chat's columns; a user card's lines stay).
+    pub(super) fn ages(&self) {
+        self.st.borrow_mut().ages = true;
+    }
+
+    /// The limits changed: what is over them goes now.
+    fn apply_limits(&self) {
+        let mut st = self.st.borrow_mut();
+        self.trim(&mut st);
+        self.pulse_soon(&mut st, 0);
+        drop(st);
+        self.area.clone().redraw();
+    }
+
     pub(super) fn add(&self, l: &Line) {
         let mut st = self.st.borrow_mut();
-        if st.lines.len() == KEEP {
-            st.lines.pop_front();
-            st.laid.pop_front();
-            st.hover = st.hover.and_then(|h| h.checked_sub(1));
-        }
         st.lines.push_back(l.clone());
+        let born = if st.ages { epoch_ms() } else { 0 };
+        st.born.push_back(born);
         if st.width > 0 && st.laid.len() + 1 == st.lines.len() {
             let laid = self.lay(l, st.tag, st.width);
             st.laid.push_back(laid);
+        }
+        self.trim(&mut st);
+        self.pulse_soon(&mut st, 0);
+        if st.ages {
+            KEPT.store(st.lines.len(), std::sync::atomic::Ordering::Relaxed);
         }
         drop(st);
         self.area.clone().redraw();
@@ -1606,15 +1699,16 @@ impl Pane {
     pub(super) fn replace_all(&self, lines: impl Iterator<Item = Line>) {
         let mut st = self.st.borrow_mut();
         st.lines.clear();
+        st.born.clear();
         st.hover = None;
         for l in lines {
-            if st.lines.len() == KEEP {
-                st.lines.pop_front();
-            }
             st.lines.push_back(l);
+            st.born.push_back(0);
         }
         st.laid.clear();
         st.width = -1;
+        self.trim(&mut st);
+        self.pulse_soon(&mut st, 0);
         drop(st);
         self.area.clone().redraw();
     }
@@ -1622,12 +1716,138 @@ impl Pane {
     fn clear(&self) {
         let mut st = self.st.borrow_mut();
         st.lines.clear();
+        st.born.clear();
         st.laid.clear();
         st.hover = None;
         st.top = 0;
         st.follow = true;
         drop(st);
         self.area.clone().redraw();
+    }
+
+    /// The window was hidden: nothing is kept here (the engine has the lines; the pane fills again when
+    /// the window is shown) and nothing ticks.
+    pub(super) fn release(&self) {
+        self.clear();
+        let mut st = self.st.borrow_mut();
+        if let Some((_, h)) = st.pulse.take() {
+            app::remove_timeout3(h);
+        }
+        st.moving = Vec::new();
+        st.lines.shrink_to_fit();
+        st.laid.shrink_to_fit();
+        st.born.shrink_to_fit();
+    }
+
+    /// Lines over the limits go (the oldest first), and those past their lifetime.
+    fn trim(&self, st: &mut State) {
+        let lim = LIMITS.get().clamped();
+        let now = epoch_ms();
+        let aged = |l: &Line| st_ages_out(l, now, &lim);
+        let by_age: Vec<bool> = if st.ages && lim.lifetime > 0 {
+            st.lines.iter().map(aged).collect()
+        } else {
+            Vec::new()
+        };
+        let mut gone = lim.excess(st.lines.iter().map(|l| PLATFORMS.iter().position(|p| *p == l.platform)));
+        gone.extend(by_age.iter().enumerate().filter(|(_, g)| **g).map(|(i, _)| i));
+        gone.sort_unstable();
+        gone.dedup();
+        if gone.is_empty() {
+            return;
+        }
+        let in_step = st.laid.len() == st.lines.len();
+        for at in gone.into_iter().rev() {
+            st.lines.remove(at);
+            st.born.remove(at);
+            if in_step {
+                st.laid.remove(at);
+            }
+            st.hover = match st.hover {
+                Some(h) if h == at => None,
+                Some(h) if h > at => Some(h - 1),
+                h => h,
+            };
+        }
+        if !in_step {
+            // Lines laid out for others than these now: laid out again when drawn.
+            st.laid.clear();
+        }
+    }
+
+    /// Looks at the lines again `after` ms from now (sooner than a look already due replaces it).
+    fn pulse_soon(&self, st: &mut State, after: u64) {
+        if !st.ages {
+            return;
+        }
+        let lim = LIMITS.get().clamped();
+        let now = epoch_ms();
+        // What is coming: a line fading in (now), or the first one to start leaving.
+        let fading = st
+            .lines
+            .iter()
+            .zip(&st.born)
+            .any(|(l, b)| opacity(l, *b, now, &lim) < 1.0);
+        let at = if fading {
+            now + after.max(50)
+        } else if lim.lifetime > 0 {
+            let first_out = st
+                .lines
+                .iter()
+                .filter(|l| l.ts > 0)
+                .map(|l| (l.ts as u64 + lim.lifetime * 1000).saturating_sub(u64::from(lim.fade_out)))
+                .min();
+            match first_out {
+                Some(t) => t.max(now + 50),
+                None => return,
+            }
+        } else {
+            return;
+        };
+        if st.pulse.is_some_and(|(due, _)| due <= at) {
+            return;
+        }
+        if let Some((_, h)) = st.pulse.take() {
+            app::remove_timeout3(h);
+        }
+        let p = self.clone();
+        let h = app::add_timeout3((at - now) as f64 / 1000.0, move |_| p.pulse());
+        st.pulse = Some((at, h));
+    }
+
+    /// A moment to look at the lines: those past their lifetime go, and those coming or going are redrawn.
+    fn pulse(&self) {
+        if self.area.was_deleted() {
+            return;
+        }
+        let mut st = self.st.borrow_mut();
+        st.pulse = None;
+        let before = st.lines.len();
+        self.trim(&mut st);
+        let lim = LIMITS.get().clamped();
+        let now = epoch_ms();
+        if st.lines.len() != before {
+            KEPT.store(st.lines.len(), std::sync::atomic::Ordering::Relaxed);
+            drop(st);
+            self.area.clone().redraw();
+            st = self.st.borrow_mut();
+        } else if st.width > 0 && st.laid.len() == st.lines.len() {
+            // Only the lines that are fading: each its whole width.
+            let mut a = self.area.clone();
+            let mut y = a.y() + 4 + self.head(&st) - st.top;
+            for (i, (_, h)) in st.laid.iter().enumerate() {
+                if y + h >= a.y() && y <= a.y() + a.h() {
+                    let o = opacity(&st.lines[i], st.born[i], now, &lim);
+                    if o < 1.0 {
+                        a.set_damage_area(Damage::User1, a.x(), y, a.w(), *h);
+                    }
+                } else if y > a.y() + a.h() {
+                    break;
+                }
+                y += h;
+            }
+        }
+        self.pulse_soon(&mut st, 0);
     }
 
     /// Pictures came in: lines may be taller.
@@ -1689,6 +1909,7 @@ impl ChatColumn {
         let mut col = Flex::default().column();
         col.set_pad(4);
         let (_pane_group, pane) = Pane::new(cmds);
+        pane.ages();
 
         // "Replying to @name: text" with an X, while answering one.
         let mut replying = Flex::default().row();
@@ -2057,10 +2278,21 @@ pub struct Chat {
 /// The last chat line the page took in (its `seq`), for dev mode's `chat` command.
 pub static SHOWN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// How many lines the chat's panes hold (the last to change), for dev mode's `chatlines` command.
+pub static KEPT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 impl Chat {
     /// Sync new lines (or full history resync when pre-join history / badges updated) and refresh avatars.
     pub fn refresh(&mut self) {
         emotes::load_for_config(&self.cmds, &self.cfg);
+        let limits = self.cfg.borrow().window.chat.clamped();
+        if LIMITS.get() != limits {
+            LIMITS.set(limits);
+            self.main.pane.apply_limits();
+            for p in &self.side {
+                p.pane.apply_limits();
+            }
+        }
         let me = my_names(&self.cfg.borrow());
         if ME.with_borrow(|m| *m != me) {
             ME.set(me);
@@ -2186,6 +2418,16 @@ impl Chat {
             self.main.target_plat.set(i);
             self.main.refresh_sender(&self.cfg, &self.cmds);
         }
+    }
+
+    /// The window was hidden: the panes keep nothing, and fill again from the engine when it is shown.
+    pub fn release(&mut self) {
+        self.main.pane.release();
+        for p in &self.side {
+            p.pane.release();
+        }
+        self.client_gen = 0;
+        self.seen = 0;
     }
 
     /// Pictures came in (emotes, badges, or sender avatars).
