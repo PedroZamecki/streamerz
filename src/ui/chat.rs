@@ -7,7 +7,7 @@
 //!   collapsible sections, and right-click `★` favorites
 //! - Platform-authentic badges & username colors, plus the platform's recent history (memory only) before a divider
 
-use super::accounts::{platform_accounts, unlock_logins_interactive};
+use super::accounts::{platform_accounts, room, unlock_logins_interactive};
 use super::emotes::{self, EmoteSection, Provider};
 use super::fit::Ellipsis;
 use super::img::{self, Pic};
@@ -1911,6 +1911,11 @@ fn effective_sender_role(
 #[derive(Clone)]
 struct ChatColumn {
     col: Flex,
+    /// Which chat this is: the platform's logo, the channel's picture and its name.
+    head: Flex,
+    head_logo: Frame,
+    head_pic: Frame,
+    head_name: Frame,
     pane: Pane,
     acct_btn: Button,
     input: Input,
@@ -1932,6 +1937,20 @@ impl ChatColumn {
     fn new(cfg: &Cfg, cmds: &Cmds, fixed_plat: Option<usize>, go_accounts: Rc<dyn Fn()>) -> Self {
         let mut col = Flex::default().column();
         col.set_pad(4);
+
+        let mut head = Flex::default().row();
+        head.set_pad(6);
+        let head_logo = Frame::default();
+        head.fixed(&head_logo, 20);
+        let head_pic = Frame::default();
+        head.fixed(&head_pic, 22);
+        let mut head_name = Frame::default()
+            .with_align(Align::Left | Align::Inside | Align::Clip)
+            .ellipsis();
+        head_name.set_label_font(Font::HelveticaBold);
+        head.end();
+        col.fixed(&head, 24);
+
         let (_pane_group, pane) = Pane::new(cmds);
         pane.ages();
 
@@ -2042,6 +2061,10 @@ impl ChatColumn {
 
         let me = Self {
             col,
+            head,
+            head_logo,
+            head_pic,
+            head_name,
             pane,
             acct_btn: acct_btn.clone(),
             input: input.clone(),
@@ -2235,6 +2258,16 @@ impl ChatColumn {
     fn refresh_sender(&self, cfg: &Cfg, cmds: &Cmds) {
         let p_idx = self.target_plat.get().min(3);
         let plat_name = NAMES[p_idx];
+        let (mut logo, mut face, mut name) = (self.head_logo.clone(), self.head_pic.clone(), self.head_name.clone());
+        let (room_name, room_pic) = room(cmds, cfg, PLATFORMS[p_idx], 22);
+        logo.set_image(img::logo(plat_name, 18));
+        face.set_image(room_pic);
+        let shown = if room_name.is_empty() {
+            plat_name.to_string()
+        } else {
+            format!("{plat_name}: {room_name}")
+        };
+        name.set_label(&shown.replace('@', "@@"));
         let (use_bot, sender_name, pic) = effective_sender_role(cfg, cmds, p_idx);
         let mut btn = self.acct_btn.clone();
         match pic {
@@ -2523,6 +2556,14 @@ impl Chat {
         // All together: no chat box (Message all sends); Reply opens it for that line.
         let together = self.view.value() == 0;
         let mut bar = self.main.bar.clone();
+        let mut head = self.main.head.clone();
+        if together {
+            head.hide();
+            self.main.col.fixed(&head, 0);
+        } else {
+            head.show();
+            self.main.col.fixed(&head, 24);
+        }
         if together {
             (self.main.set_reply)(None);
             bar.hide();
@@ -2609,11 +2650,8 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
     let main = ChatColumn::new(cfg, cmds, None, go_accounts.clone());
     main.pane.st.borrow_mut().tag = true;
     let mut side = Vec::new();
-    for (idx, name) in NAMES.into_iter().enumerate() {
+    for idx in 0..NAMES.len() {
         let mut p = ChatColumn::new(cfg, cmds, Some(idx), go_accounts.clone());
-        p.col.set_label(&format!("  {name}"));
-        p.col.set_image(img::logo(name, 16));
-        p.col.set_align(Align::Top | Align::ImageNextToText);
         p.col.hide();
         side.push(p);
     }
@@ -2642,11 +2680,9 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
             m.rebuild(false);
         }
     }
-    panes.set_margins(0, if view.value() == 1 { 20 } else { 0 }, 0, 0);
 
     view.set_callback({
         let me = me.clone();
-        let mut panes = panes.clone();
         let cfg = cfg.clone();
         move |v| {
             let view = v.choice().unwrap_or_default();
@@ -2654,7 +2690,6 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
                 c.window.chat_view = view;
                 false
             });
-            panes.set_margins(0, if v.value() == 1 { 20 } else { 0 }, 0, 0);
             me.borrow_mut().rebuild(true);
         }
     });

@@ -329,6 +329,32 @@ pub(super) fn platform_accounts(cmds: &Cmds, cfg: &Cfg, platform: &str, size: i3
     [build((0, b0)), build((1, b1))]
 }
 
+/// The chat room a platform's column shows: the channel's name (the logged-in broadcaster's own when no
+/// other is set) and, when the channel is the broadcaster's own, their round picture.
+pub(super) fn room(cmds: &Cmds, cfg: &Cfg, platform: &str, size: i32) -> (String, Option<fltk::image::RgbImage>) {
+    let Some(p) = P::from_slug(platform) else {
+        return (String::new(), None);
+    };
+    let (set, own, mine) = {
+        let c = cfg.borrow();
+        (
+            p.channel(&c).trim().trim_start_matches('@').to_string(),
+            p.own(&c),
+            p.raw_account_name(&c, false),
+        )
+    };
+    let name = if set.is_empty() {
+        mine.clone().unwrap_or_default()
+    } else {
+        set
+    };
+    let pic = match (own, mine) {
+        (true, Some(m)) => picture(cmds, cfg, p, false, &m, size),
+        _ => None,
+    };
+    (name, pic)
+}
+
 /// Trigger an interactive keyring unlock on the engine thread and alert only if it fails.
 pub(super) fn unlock_logins_interactive(cmds: &Cmds) {
     let (tx, rx) = std::sync::mpsc::channel();
