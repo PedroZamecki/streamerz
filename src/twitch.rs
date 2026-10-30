@@ -4608,15 +4608,16 @@ fn publish_rewards() {
 async fn seed(engine: &Rc<Engine>) {
     let Some(tw) = engine.twitch() else { return };
     let b = vec![("broadcaster_id", "{broadcaster_id}")];
+    let chan = channel_id(&engine.config());
     // The badge pictures first and without a login's help; Helix's below adds what it knows.
-    load_public_badges(&channel_id(&engine.config())).await;
+    load_public_badges(&chan).await;
     let settings = tw.helix("GET", "chat/settings", b.clone(), None, false, false).await;
     let channel = tw.helix("GET", "channels", b.clone(), None, false, false).await;
     let rewards = tw
         .helix("GET", "channel_points/custom_rewards", b.clone(), None, false, false)
         .await;
     // Affiliates and partners only can run commercials: the owner's account type says.
-    let owner = channel_id(&engine.config());
+    let owner = chan.clone();
     if !owner.is_empty() {
         if let Ok(v) = tw
             .helix("GET", "users", vec![("id", owner.as_str())], None, false, false)
@@ -4665,7 +4666,7 @@ async fn seed(engine: &Rc<Engine>) {
         }
     });
     publish_rewards();
-    load_public_rewards(&channel_id(&engine.config())).await;
+    load_public_rewards(&chan).await;
 }
 
 /// While connected: viewer count (every minute), present viewers (every 5) and the next ad (every
