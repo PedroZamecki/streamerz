@@ -1000,6 +1000,7 @@ fn browser_login<T: Send + 'static>(
         super::nested_wait(Some(0.1));
     }
     win.hide();
+    fltk::app::delete_widget(win);
     if out.is_none() {
         // Cancelled: stop listening, so the port is free for the next try.
         if let Ok(h) = hrx.try_recv() {
@@ -1088,11 +1089,17 @@ fn advanced(cfg: &Cfg, p: P) {
         }
     }
     win.hide();
-    if answer.get() != Some(true) {
+    let ok = answer.get() == Some(true);
+    let v: Vec<String> = if ok {
+        inputs.iter().map(|i| i().trim().to_string()).collect()
+    } else {
+        Vec::new()
+    };
+    let on_start = start.is_checked();
+    fltk::app::delete_widget(win);
+    if !ok {
         return;
     }
-    let v: Vec<String> = inputs.iter().map(|i| i().trim().to_string()).collect();
-    let on_start = start.is_checked();
     save(cfg, |c| *p.manual_mut(c) = !on_start);
     save(cfg, |c| match p {
         P::Kick => {
@@ -1145,6 +1152,7 @@ fn tiktok_login(cfg: &Cfg, bot: bool) {
         super::nested_wait(Some(0.1));
     }
     win.hide();
+    fltk::app::delete_widget(win);
 }
 
 fn device_login(cfg: &Cfg, cmds: &Cmds, as_bot: bool) {
@@ -1307,6 +1315,7 @@ fn device_login(cfg: &Cfg, cmds: &Cmds, as_bot: bool) {
     }
     cancelled.store(true, Ordering::Relaxed);
     win.hide();
+    fltk::app::delete_widget(win);
 }
 
 #[cfg(test)]

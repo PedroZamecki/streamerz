@@ -12,7 +12,7 @@ use fltk::input::Input;
 use fltk::prelude::*;
 use fltk::text::{TextBuffer, TextDisplay, WrapMode};
 use fltk::tree::{Tree, TreeItem, TreeReason, TreeSelect};
-use fltk::window::Window;
+use fltk::window::DoubleWindow;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -26,8 +26,8 @@ pub struct PickItem {
 }
 
 /// A dialog window: centred, modal, closing it cancels.
-fn window(w: i32, h: i32, title: &str) -> (Window, Rc<Cell<Option<bool>>>) {
-    let mut win = Window::default().with_size(w, h).with_label(title);
+fn window(w: i32, h: i32, title: &str) -> (DoubleWindow, Rc<Cell<Option<bool>>>) {
+    let mut win = DoubleWindow::default().with_size(w, h).with_label(title);
     win.set_xclass("streamerz");
     win.make_modal(true);
     let answer = Rc::new(Cell::new(None));
@@ -879,9 +879,7 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
     });
 
     let ok = super::dialogs::run(&mut win, &answer, || selected_id.get().is_some());
-    if ok {
-        selected_id.get()
-    } else {
-        None
-    }
+    let res = if ok { selected_id.get() } else { None };
+    app::delete_widget(win);
+    res
 }

@@ -39,7 +39,7 @@ use fltk::group::{Flex, Wizard};
 use fltk::image::RgbImage;
 use fltk::prelude::*;
 use fltk::text::{TextBuffer, TextDisplay};
-use fltk::window::{DoubleWindow, Window};
+use fltk::window::DoubleWindow;
 use fltk::{app, draw};
 use std::cell::Cell;
 use std::rc::Rc;
@@ -316,7 +316,7 @@ pub fn restart() {
 /// A modal text question. Not dialog::input: on Wayland it focuses its input before the window
 /// exists and crashes FLTK.
 fn ask(title: &str, prompt: &str, text: &str) -> Option<String> {
-    let mut win = Window::default().with_size(420, 130).with_label(title);
+    let mut win = DoubleWindow::default().with_size(420, 130).with_label(title);
     win.set_xclass("streamerz");
     let mut col = Flex::new(10, 10, 400, 110, None).column();
     col.set_pad(6);
@@ -357,7 +357,9 @@ fn ask(title: &str, prompt: &str, text: &str) -> Option<String> {
         }
     }
     win.hide();
-    answer.get().unwrap_or(false).then(|| input.value())
+    let val = answer.get().unwrap_or(false).then(|| input.value());
+    app::delete_widget(win);
+    val
 }
 
 /// Run `f` on the engine's thread.
@@ -385,21 +387,7 @@ fn query_for<T: Send + 'static>(
 ) -> Option<T> {
     let (tx, rx) = std::sync::mpsc::channel();
     tell(cmds, move |e| drop(tx.send(f(e))));
-    let start = std::time::Instant::now();
-    loop {
-        match rx.try_recv() {
-            Ok(v) => return Some(v),
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => return None,
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
-                if start.elapsed() >= wait {
-                    return None;
-                }
-                if !nested_wait(Some(0.01)) {
-                    return None;
-                }
-            }
-        }
-    }
+    rx.recv_timeout(wait).ok()
 }
 
 /// Wake the window with `m`, if it's up (no wakeups while hidden).
