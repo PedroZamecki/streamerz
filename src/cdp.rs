@@ -61,6 +61,46 @@ pub struct Browser {
     page: String,
 }
 
+/// What a browser's profile folder holds that is only downloaded again: its components (speech and
+/// spell-check models, the DRM module), crash and metrics files and caches. Together over 100 MB for a
+/// browser only used to read a chat; the login (`Default`) and settings stay.
+const DISPOSABLE: &[&str] = &[
+    "component_crx_cache",
+    "extensions_crx_cache",
+    "WidevineCdm",
+    "WasmTtsEngine",
+    "OnDeviceHeadSuggestModel",
+    "ZxcvbnData",
+    "hyphen-data",
+    "ActorSafetyLists",
+    "OptimizationHints",
+    "Subresource Filter",
+    "CertificateRevocation",
+    "GrShaderCache",
+    "GraphiteDawnCache",
+    "ShaderCache",
+    "GPUPersistentCache",
+    "BrowserMetrics",
+    "BrowserMetrics-spare.pma",
+    "Crashpad",
+    "SafetyTips",
+    "OriginTrials",
+    "PKIMetadata",
+    "MEIPreload",
+];
+
+/// Takes the disposable files out of `profile` (the browser isn't running on it).
+pub fn tidy(profile: &Path) {
+    for name in DISPOSABLE {
+        let p = profile.join(name);
+        let _ = if p.is_dir() {
+            std::fs::remove_dir_all(&p)
+        } else {
+            std::fs::remove_file(&p)
+        };
+    }
+}
+
 impl Browser {
     /// Starts the browser on `profile` showing `url`: hidden (`headless`), or as a small app window.
     pub async fn launch(profile: &Path, headless: bool, url: &str) -> Result<Browser, String> {
@@ -71,6 +111,7 @@ impl Browser {
         // Where the browser says which port it listens on: none yet, so a stale one isn't read.
         let port_file = profile.join("DevToolsActivePort");
         let _ = std::fs::remove_file(&port_file);
+        tidy(profile);
         let mut cmd = tokio::process::Command::new(&exe);
         cmd.arg(format!("--user-data-dir={}", profile.display()))
             .args([
@@ -80,6 +121,8 @@ impl Browser {
                 "--mute-audio",
                 "--disable-background-networking",
                 "--disable-sync",
+                // No components to download into the profile (speech models, the DRM module...).
+                "--disable-component-update",
             ])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -225,5 +268,26 @@ impl Browser {
     pub async fn close(mut self) {
         let _ = self.call(None, "Browser.close", json!({})).await;
         let _ = tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tidying_a_profile_keeps_the_login() {
+        let d = std::env::temp_dir().join(format!("sz-profile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("Default")).unwrap();
+        std::fs::write(d.join("Default/Cookies"), "login").unwrap();
+        std::fs::write(d.join("Local State"), "{}").unwrap();
+        std::fs::create_dir_all(d.join("component_crx_cache")).unwrap();
+        std::fs::write(d.join("component_crx_cache/big"), vec![0u8; 1000]).unwrap();
+        std::fs::write(d.join("BrowserMetrics-spare.pma"), "m").unwrap();
+        tidy(&d);
+        assert!(d.join("Default/Cookies").is_file() && d.join("Local State").is_file());
+        assert!(!d.join("component_crx_cache").exists() && !d.join("BrowserMetrics-spare.pma").exists());
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

@@ -1,9 +1,25 @@
 //! Backups of the settings and the Community data, in the `backups` folder next to the settings file.
-//! Each is a folder with copies of the files and an `info.json` saying what made it: the first start of
-//! a new version (the last `KEEP_AUTO` are kept) or the Backups page (kept until deleted there).
+//! Each is a folder with the files, gzipped (`streamerz.json.gz`), and an `info.json` saying what made it:
+//! the first start of a new version (the last `KEEP_AUTO` are kept) or the Backups page (kept until deleted
+//! there). Backups made as plain copies by older versions are read as they are, and gzipped at start.
 
 use serde::{Deserialize, Serialize};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+
+/// `bytes` gzipped.
+fn gzip(bytes: &[u8]) -> Vec<u8> {
+    let mut z = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let _ = z.write_all(bytes);
+    z.finish().unwrap_or_default()
+}
+
+/// What `gz` was before `gzip`.
+fn gunzip(gz: &[u8]) -> std::io::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(gz).read_to_end(&mut out)?;
+    Ok(out)
+}
 
 /// Automatic backups kept; the oldest go first.
 const KEEP_AUTO: usize = 10;
@@ -99,7 +115,9 @@ fn make_in(root: &Path, files: &[PathBuf], kind: Kind, version: &str, to: &str, 
     for f in files {
         let Some(name) = f.file_name() else { continue };
         if f.is_file() {
-            size += std::fs::copy(f, dir.join(name)).map_err(fail)?;
+            let gz = gzip(&std::fs::read(f).map_err(fail)?);
+            size += gz.len() as u64;
+            std::fs::write(dir.join(format!("{}.gz", name.to_string_lossy())), gz).map_err(fail)?;
         }
     }
     let info = Info {
@@ -172,22 +190,45 @@ pub fn restore(b: &Backup) -> Result<(), String> {
 fn restore_files(from: &Path, to: &[PathBuf]) -> Result<(), String> {
     for f in to {
         let Some(name) = f.file_name() else { continue };
-        let src = from.join(name);
-        if !src.is_file() {
+        let (plain, gz) = (from.join(name), from.join(format!("{}.gz", name.to_string_lossy())));
+        let bytes = if gz.is_file() {
+            std::fs::read(&gz).and_then(|b| gunzip(&b))
+        } else if plain.is_file() {
+            std::fs::read(&plain)
+        } else {
             continue;
-        }
-        // Copied beside it, then renamed over it: never half a file.
+        };
+        // Written beside it, then renamed over it: never half a file.
         let tmp = f.with_extension("restore.tmp");
-        std::fs::copy(&src, &tmp)
-            .and_then(|_| std::fs::rename(&tmp, f))
+        bytes
+            .and_then(|b| std::fs::write(&tmp, b))
+            .and_then(|()| std::fs::rename(&tmp, f))
             .map_err(|e| format!("{}: {e}", f.display()))?;
     }
     Ok(())
 }
 
+/// Backups made as plain copies are gzipped (what a restore reads either way).
+fn compact_old(root: &Path) {
+    for b in list_in(root) {
+        let Ok(rd) = std::fs::read_dir(&b.dir) else { continue };
+        for f in rd.flatten().map(|e| e.path()) {
+            let plain = f.extension().is_some_and(|e| e == "json") && f.file_name().is_some_and(|n| n != "info.json");
+            if !plain {
+                continue;
+            }
+            let gz = PathBuf::from(format!("{}.gz", f.display()));
+            if std::fs::read(&f).and_then(|b| std::fs::write(&gz, gzip(&b))).is_ok() {
+                let _ = std::fs::remove_file(&f);
+            }
+        }
+    }
+}
+
 /// At start, before anything is saved: the first run of a new version backs up the files the last
 /// version left. Dev builds don't.
 pub fn on_start() {
+    compact_old(&root());
     let marker = root().join("last-version");
     let last = std::fs::read_to_string(&marker).unwrap_or_default();
     let now = crate::brand::VERSION;
@@ -236,7 +277,7 @@ mod tests {
         let root = d.join("backups");
         let files = [cfg.clone(), com.clone()];
         let kept = make_in(&root, &files, Kind::Manual, "1.0.0", "", 100).unwrap();
-        assert_eq!(kept.size, 19);
+        assert!(kept.dir.join("streamerz.json.gz").is_file() && !kept.dir.join("streamerz.json").exists());
         for i in 0..12 {
             make_in(&root, &files, Kind::Update, "1.0.0", "1.1.0", 200 + i).unwrap();
         }
@@ -248,6 +289,34 @@ mod tests {
         std::fs::write(&cfg, "{\"v\":2}").unwrap();
         restore_files(&kept.dir, &files).unwrap();
         assert_eq!(std::fs::read_to_string(&cfg).unwrap(), "{\"v\":1}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn backups_are_gzipped_and_plain_ones_still_restore() {
+        let d = scratch("gz");
+        let cfg = d.join("streamerz.json");
+        let big = format!("{{\"users\":\"{}\"}}", "chatter ".repeat(2000));
+        std::fs::write(&cfg, &big).unwrap();
+        let root = d.join("backups");
+        let b = make_in(&root, std::slice::from_ref(&cfg), Kind::Manual, "1.0.0", "", 1).unwrap();
+        assert!(b.size < big.len() as u64 / 10, "{} of {}", b.size, big.len());
+        std::fs::write(&cfg, "{}").unwrap();
+        restore_files(&b.dir, std::slice::from_ref(&cfg)).unwrap();
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), big);
+        // An old backup: a plain copy. It restores, and is gzipped at start.
+        let old = root.join("20260101-000000-1.0.0");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("streamerz.json"), &big).unwrap();
+        std::fs::write(old.join("info.json"), "{\"kind\":\"update\",\"made\":5}").unwrap();
+        std::fs::write(&cfg, "{}").unwrap();
+        restore_files(&old, std::slice::from_ref(&cfg)).unwrap();
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), big);
+        compact_old(&root);
+        assert!(old.join("streamerz.json.gz").is_file() && !old.join("streamerz.json").exists());
+        std::fs::write(&cfg, "{}").unwrap();
+        restore_files(&old, std::slice::from_ref(&cfg)).unwrap();
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), big);
         let _ = std::fs::remove_dir_all(&d);
     }
 }
