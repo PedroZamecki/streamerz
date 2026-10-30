@@ -232,7 +232,7 @@ fn items(names: &[String]) -> String {
 }
 
 pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
-    let (scroll, mut col) = super::tab_scrolled(tabs, "Settings", 840);
+    let (scroll, mut col) = super::tab_scrolled(tabs, "Settings", 1250);
     col.set_pad(2);
     let c = cfg.borrow();
     let chosen = c.theme.unwrap_or(if c.dark { Theme::Dark } else { Theme::Light });

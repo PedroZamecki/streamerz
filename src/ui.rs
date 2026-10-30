@@ -497,6 +497,13 @@ fn theme(dark: bool, accent: Option<(u8, u8, u8)>) {
     ] {
         app::set_frame_type_cb(f, down, 2, 2, 4, 4);
     }
+    if let Ok(mut bars) = SCROLLBARS.lock() {
+        bars.retain(|sb| !sb.was_deleted());
+        for sb in bars.iter_mut() {
+            sb.set_color(Color::Background);
+            sb.set_selection_color(Color::color_average(Color::Foreground, Color::Background, 0.35));
+        }
+    }
 }
 
 /// Every window's icon, drawn for the theme.
@@ -929,19 +936,27 @@ fn tab(tabs: &Wizard, label: &str) -> Flex {
     col
 }
 
+static SCROLLBARS: Mutex<Vec<fltk::valuator::Scrollbar>> = Mutex::new(Vec::new());
+
 /// A scrollable page: wraps a vertical Flex inside a fltk::group::Scroll.
 pub(crate) fn tab_scrolled(tabs: &Wizard, label: &str, content_h: i32) -> (fltk::group::Scroll, Flex) {
     let mut s = fltk::group::Scroll::new(tabs.x(), tabs.y(), tabs.w(), tabs.h(), None).with_label(label);
     s.set_type(fltk::group::ScrollType::Vertical);
-    s.set_scrollbar_size(8);
+    s.set_scrollbar_size(10);
+    let mut sb = s.scrollbar();
+    sb.set_color(Color::Background);
+    sb.set_selection_color(Color::color_average(Color::Foreground, Color::Background, 0.35));
+    if let Ok(mut bars) = SCROLLBARS.lock() {
+        bars.push(sb.clone());
+    }
     let mut col = Flex::new(s.x(), s.y(), s.w() - 14, content_h.max(s.h()), None).column();
     col.set_margin(10);
     col.set_pad(4);
     s.resizable(&col);
     let mut col_c = col.clone();
-    s.resize_callback(move |_s, x, y, w, h| {
+    s.resize_callback(move |s, x, y, w, h| {
         let ch = content_h.max(h);
-        col_c.resize(x, y, (w - 14).max(50), ch);
+        col_c.resize(x - s.xposition(), y - s.yposition(), (w - 14).max(50), ch);
     });
     (s, col)
 }
