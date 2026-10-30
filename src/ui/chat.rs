@@ -371,7 +371,7 @@ thread_local! {
             per_platform: 400,
             total: 1000,
             lifetime: 0,
-            fade_in: 200,
+            fade_in: 0,
             fade_out: 400,
         })
     };
@@ -1034,6 +1034,13 @@ impl Pane {
 
     /// Scrollbar and position after the lines or the size changed.
     fn settle(&self, st: &mut State) {
+        let mut bar = self.bar.clone();
+        if !LIMITS.get().save_history {
+            bar.set_bounds(0.0, 0.0);
+            bar.set_slider_size(1.0);
+            bar.set_value(0.0);
+            return;
+        }
         self.measure(st);
         let (total, h) = (self.total(st), self.area.h());
         let max = (total - h).max(0);
@@ -1041,7 +1048,6 @@ impl Pane {
             st.top = max;
         }
         st.top = st.top.clamp(0, max);
-        let mut bar = self.bar.clone();
         bar.set_bounds(0.0, f64::from(max));
         bar.set_slider_size(if total > 0 {
             (h as f32 / total as f32).min(1.0)
@@ -1057,6 +1063,31 @@ impl Pane {
         self.settle(&mut st);
         draw::draw_box(f.frame(), f.x(), f.y(), f.w(), f.h(), f.color());
         draw::push_clip(f.x() + 2, f.y() + 2, f.w() - 4, f.h() - 4);
+        if !LIMITS.get().save_history {
+            let cx = f.x() + 20;
+            let cy = f.y() + (f.h() - 100) / 2;
+            let cw = (f.w() - 40).max(10);
+            if let Some(mut icon) = icons::icon("eye-off", super::muted(), 32) {
+                icon.draw(f.x() + (f.w() - 32) / 2, cy, 32, 32);
+            }
+            draw::set_font(Font::HelveticaBold, 15);
+            draw::set_draw_color(Color::Foreground);
+            let title = tr("chat.history_disabled_title");
+            draw::draw_text2(title, cx, cy + 40, cw, 22, Align::Center);
+            draw::set_font(Font::Helvetica, 13);
+            draw::set_draw_color(super::muted());
+            let desc = tr("chat.history_disabled_desc");
+            draw::draw_text2(
+                desc,
+                cx + 10,
+                cy + 66,
+                cw.saturating_sub(20),
+                60,
+                Align::Center | Align::Wrap,
+            );
+            draw::pop_clip();
+            return;
+        }
         let (ms, animate) = (now_ms(), SHOW.get().2);
         // An animation frame redraws only the moving emotes (the text is most of the work): it damages
         // just their squares. Anything else damages it all, and finds the moving emotes again.
@@ -1548,6 +1579,9 @@ impl Pane {
     }
 
     fn handle(&self, f: &mut Frame, ev: Event) -> bool {
+        if !LIMITS.get().save_history {
+            return false;
+        }
         if matches!(ev, Event::Push | Event::MouseWheel | Event::Leave | Event::Hide) {
             tip::point(&self.cmds, f, None);
         }

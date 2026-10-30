@@ -1361,7 +1361,7 @@ pub fn run(
                 Msg::Chat => {
                     if !chat_due.replace(true) {
                         let (views, tabs, chat_due) = (views.clone(), tabs.clone(), chat_due.clone());
-                        app::add_timeout3(0.1, move |_| {
+                        app::add_timeout3(0.016, move |_| {
                             chat_due.set(false);
                             views.chat_refresh(&tabs);
                         });

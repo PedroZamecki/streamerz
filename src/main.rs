@@ -233,7 +233,7 @@ impl Default for ChatLimits {
             per_platform: 400,
             total: 1000,
             lifetime: 0,
-            fade_in: 200,
+            fade_in: 0,
             fade_out: 400,
         }
     }

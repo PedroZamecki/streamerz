@@ -239,14 +239,22 @@ fn event_of(kind: u32, a: &Obj) -> Option<Ev> {
             }
         }
         472 => ev("twitch", "flame", TWITCH, "chat.ev.watch_streak", None),
-        138 => {
-            let accent = match a.get("announceColor").and_then(Value::as_str).unwrap_or("") {
-                "BLUE" => "#1E69FF",
-                "GREEN" => "#00C881",
-                "ORANGE" => "#FF9100",
+        138 | 481 => {
+            let color = match a.get("announceColor").and_then(Value::as_str).unwrap_or("PRIMARY") {
+                "BLUE" => "#00D6D6",
+                "GREEN" => "#00DB84",
+                "ORANGE" => "#FF8200",
+                "PURPLE" => TWITCH,
                 _ => TWITCH,
             };
-            ev("twitch", "megaphone", accent, "chat.ev.announcement", Some("message"))
+            let is_primary = a
+                .get("announceColor")
+                .and_then(Value::as_str)
+                .is_none_or(|c| c == "PRIMARY");
+            Ev {
+                color: if is_primary { Some("channelColor") } else { None },
+                ..ev("twitch", "megaphone", color, "chat.ev.announcement", Some("message"))
+            }
         }
         136 => ev("twitch", "clock", QUIET, "chat.ev.timeout", None),
         137 => ev("twitch", "ban", QUIET, "chat.ev.ban", None),
@@ -1551,13 +1559,19 @@ impl Engine {
             .collect()
     }
 
-    /// Asks Twitch what's pinned (it has no event for pins made on its site), at most once a minute:
-    /// on connecting, and when the chat is looked at.
+    /// Asks Twitch what's pinned (it has no event for pins made on its site): on connecting, when the
+    /// chat is looked at, and polled every 5s while a pin is active so unpinning reflects promptly.
     pub fn twitch_check_pin(self: &Rc<Self>) {
         {
             let mut st = self.st.borrow_mut();
+            let has_pin = st.chat_log.pins.iter().any(|p| p.platform == "twitch");
+            let throttle = if has_pin {
+                std::time::Duration::from_secs(5)
+            } else {
+                std::time::Duration::from_secs(30)
+            };
             let asked = &mut st.chat_log.twitch_pin_asked;
-            if asked.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(60)) {
+            if asked.is_some_and(|t| t.elapsed() < throttle) {
                 return;
             }
             *asked = Some(std::time::Instant::now());
@@ -1572,9 +1586,21 @@ impl Engine {
             let Ok(v) = tw.helix("GET", "chat/pins", who, None, false, false).await else {
                 return;
             };
+            let had_pin = e.chat_pins().iter().any(|p| p.platform == "twitch");
             match twitch_pin(&v["data"][0]) {
-                Some(p) => e.chat_pinned(p),
-                None => e.chat_unpinned("twitch", ""),
+                Some(p) => {
+                    e.chat_pinned(p);
+                    let e2 = e.clone();
+                    tokio::task::spawn_local(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        e2.twitch_check_pin();
+                    });
+                }
+                None => {
+                    if had_pin {
+                        e.chat_unpinned("twitch", "");
+                    }
+                }
             }
         });
     }
@@ -2104,6 +2130,40 @@ mod tests {
             });
             let (_, _, lines) = e.chat_sync(u64::MAX, 0);
             assert_eq!(lines.len(), 0);
+        });
+    }
+
+    #[test]
+    fn announcement_colors_follow_channel_and_palette() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
+            let fire = |color: &str, chan_color: &str| {
+                let mut args = crate::model::Obj::new();
+                args.insert("user".into(), "Mod".into());
+                args.insert("message".into(), "attention".into());
+                if !color.is_empty() {
+                    args.insert("announceColor".into(), color.into());
+                }
+                if !chan_color.is_empty() {
+                    args.insert("channelColor".into(), chan_color.into());
+                }
+                e.fire(138, "Announcement", "Twitch/General", "twitch", &args, |_| true);
+            };
+            fire("PRIMARY", "#FFB4CB");
+            fire("PURPLE", "#FFB4CB");
+            fire("BLUE", "");
+            fire("GREEN", "");
+            fire("ORANGE", "");
+            fire("", "");
+            let (_, _, lines) = e.chat_sync(u64::MAX, 0);
+            assert_eq!(lines.len(), 6);
+            assert_eq!(lines[0].accent, "#FFB4CB");
+            assert_eq!(lines[1].accent, TWITCH);
+            assert_eq!(lines[2].accent, "#00D6D6");
+            assert_eq!(lines[3].accent, "#00DB84");
+            assert_eq!(lines[4].accent, "#FF8200");
+            assert_eq!(lines[5].accent, TWITCH);
         });
     }
 

@@ -14,6 +14,8 @@ use fltk::frame::Frame;
 use fltk::group::{Flex, Wizard};
 use fltk::prelude::*;
 use fltk::{app, draw};
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::watch;
 
@@ -333,24 +335,13 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     section(&mut col, tr("settings.chat"), "message-square");
     let r = setting(
         &mut col,
-        tr("settings.chat.save_history"),
-        tr("settings.chat.save_history.about"),
+        tr("settings.chat.save_memory"),
+        tr("settings.chat.save_memory.about"),
         44,
     );
     let mut check = fltk::button::CheckButton::default();
-    check.set_value(cfg.borrow().window.chat.save_history);
+    check.set_value(!cfg.borrow().window.chat.save_history);
     done(r, &check);
-    check.set_callback({
-        let (cfg, cmds) = (cfg.clone(), cmds.clone());
-        move |b| {
-            let mut limits = cfg.borrow().window.chat;
-            limits.save_history = b.value();
-            let limits = limits.clamped();
-            put(&cfg, |c| c.window.chat = limits);
-            tell(&cmds, |e| e.chat_trim());
-            super::chat();
-        }
-    });
 
     // What the chat keeps and how it comes and goes: a number each, read and set in the limits.
     type Limit = (
@@ -391,10 +382,14 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
             |l, v| l.fade_out = v.min(u64::from(u32::MAX)) as u32,
         ),
     ];
+    let mut inputs = Vec::new();
     for (key, about, get, set) in numbers {
         let r = setting(&mut col, tr(key), tr(about), 90);
         let mut input = fltk::input::IntInput::default();
         input.set_value(&get(&cfg.borrow().window.chat).to_string());
+        if !cfg.borrow().window.chat.save_history {
+            input.deactivate();
+        }
         done(r, &input);
         // Applied when it is left or Enter is pressed: not for each digit typed on the way to a number
         // (a limit of 4 on the way to 400 would take the chat's lines away).
@@ -412,7 +407,28 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
                 super::chat();
             }
         });
+        inputs.push(input);
     }
+    let inputs = Rc::new(RefCell::new(inputs));
+    check.set_callback({
+        let (cfg, cmds, inputs) = (cfg.clone(), cmds.clone(), inputs.clone());
+        move |b| {
+            let save_memory = b.value();
+            for inp in inputs.borrow_mut().iter_mut() {
+                if save_memory {
+                    inp.deactivate();
+                } else {
+                    inp.activate();
+                }
+            }
+            let mut limits = cfg.borrow().window.chat;
+            limits.save_history = !save_memory;
+            let limits = limits.clamped();
+            put(&cfg, |c| c.window.chat = limits);
+            tell(&cmds, |e| e.chat_trim());
+            super::chat();
+        }
+    });
 
     section(&mut col, tr("settings.startup"), "power");
     let r = setting(

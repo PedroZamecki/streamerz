@@ -2654,7 +2654,12 @@ fn handle_notification(
                     );
                 }
                 "announcement" => {
-                    args.insert("announceColor".into(), d["color"].as_str().unwrap_or("PRIMARY").into());
+                    let color = d["color"].as_str().unwrap_or("PRIMARY");
+                    args.insert("announceColor".into(), color.into());
+                    let chan_col = SEEN.with_borrow(|s| s.primary_color.clone());
+                    if !chan_col.is_empty() {
+                        args.insert("channelColor".into(), chan_col.into());
+                    }
                     let (code, name) = (pick(T_ANNOUNCEMENT, T_SHARED_CHAT_ANNOUNCEMENT), "Announcement");
                     go(engine, code, name, "Twitch/General", "Announcement", &args);
                 }
@@ -4337,6 +4342,8 @@ struct Seen {
     title: String,
     game: (String, String),
     rewards: HashMap<String, Value>,
+    /// The channel's primary brand colour (#RRGGBB).
+    primary_color: String,
     /// The picture of the channel's points (each channel can name and draw its own).
     points_icon: String,
     /// When the channel's rewards were last asked for without a login (they change; not asked too often).
@@ -4563,6 +4570,19 @@ pub fn points_icon() -> String {
     SEEN.with_borrow(|s| s.points_icon.clone())
 }
 
+/// The primary brand colour of the channel, if known (#RRGGBB).
+pub fn channel_primary_color() -> String {
+    SEEN.with_borrow(|s| s.primary_color.clone())
+}
+
+/// Sets the channel's primary brand colour.
+pub fn set_channel_primary_color(hex: &str) {
+    let clean = hex.trim().trim_start_matches('#');
+    if clean.len() == 6 && clean.bytes().all(|b| b.is_ascii_hexdigit()) {
+        SEEN.with_borrow_mut(|s| s.primary_color = format!("#{clean}"));
+    }
+}
+
 /// The channel's rewards and its points' picture from Twitch's public web API (what twitch.tv's own
 /// chat reads, no login needed): a moderator or a viewer sees a reward's name, price and picture
 /// too. What the broadcaster's Helix list already gave is kept (it knows more).
@@ -4575,7 +4595,7 @@ pub async fn load_public_rewards(channel_id: &str) {
         ("Content-Type".to_string(), "application/json".to_string()),
     ];
     let q = format!(
-        "{{ channel(id: \"{channel_id}\") {{ communityPointsSettings {{ image {{ url }} customRewards {{ id title cost prompt backgroundColor isEnabled isUserInputRequired image {{ url }} defaultImage {{ url }} }} }} }} }}"
+        "{{ user(id: \"{channel_id}\") {{ primaryColorHex }} channel(id: \"{channel_id}\") {{ communityPointsSettings {{ image {{ url }} customRewards {{ id title cost prompt backgroundColor isEnabled isUserInputRequired image {{ url }} defaultImage {{ url }} }} }} }} }}"
     );
     let body = json!({ "query": q }).to_string();
     SEEN.with_borrow_mut(|s| s.rewards_asked = Some(std::time::Instant::now()));
@@ -4583,6 +4603,9 @@ pub async fn load_public_rewards(channel_id: &str) {
         return;
     };
     if let Ok(v) = serde_json::from_slice::<Value>(&r.body) {
+        if let Some(col) = v["data"]["user"]["primaryColorHex"].as_str() {
+            set_channel_primary_color(col);
+        }
         absorb_public_rewards(&v["data"]["channel"]["communityPointsSettings"]);
     }
 }
@@ -5206,6 +5229,8 @@ pub(crate) mod tests {
         });
         absorb_public_rewards(&json!({"customRewards": [{"id": "r7", "title": "Public", "cost": 2}]}));
         assert_eq!(reward_look("r7").unwrap().title, "Own");
+        set_channel_primary_color("FFB4CB");
+        assert_eq!(channel_primary_color(), "#FFB4CB");
     }
 
     #[test]
