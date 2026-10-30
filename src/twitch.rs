@@ -1485,6 +1485,8 @@ async fn run_eventsub_loop(
     let mut poll_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut emote_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut setup_task: Option<tokio::task::JoinHandle<()>> = None;
+    // A viewer isn't told of timeouts and bans: the chat's own lines are listened to for them (irc.rs).
+    let bans_task: Rc<RefCell<Option<tokio::task::JoinHandle<()>>>> = Rc::default();
 
     // Twitch sends something every `keepalive_timeout_seconds` (10 by default): a socket that says nothing
     // for a good while longer is dead, though nothing closed it, and is opened again.
@@ -1559,6 +1561,7 @@ async fn run_eventsub_loop(
                 let sid = sid.to_string();
                 let e = engine.clone();
                 let refused = auth_refused.clone();
+                let (bans, cfg_c, channel) = (bans_task.clone(), cfg.clone(), broadcaster.clone());
                 // The welcome waits only for the history: the ~40 subscriptions take seconds.
                 let setup = tokio::task::spawn_local(async move {
                     let hist_fut = async {
@@ -1570,6 +1573,13 @@ async fn run_eventsub_loop(
                     };
                     let subs = async {
                         let role = channel_role(&token, &bid, &me, &login).await;
+                        // Those who moderate are told of timeouts and bans; the rest listen for them.
+                        let watcher = (!role.moderates() && !custom_eventsub && !login.is_empty()).then(|| {
+                            tokio::task::spawn_local(crate::irc::watch_bans(e.clone(), cfg_c.clone(), channel))
+                        });
+                        if let Some(old) = std::mem::replace(&mut *bans.borrow_mut(), watcher) {
+                            old.abort();
+                        }
                         create_all_subscriptions(&sid, &token, &bid, &me, role, &refused).await
                     };
                     let welcome = async {
@@ -1647,7 +1657,10 @@ async fn run_eventsub_loop(
         }
     }
 
-    for t in [poll_task, emote_task, setup_task].into_iter().flatten() {
+    for t in [poll_task, emote_task, setup_task, bans_task.borrow_mut().take()]
+        .into_iter()
+        .flatten()
+    {
         t.abort();
     }
     if !is_connected.swap(false, Ordering::Relaxed) {
@@ -3306,6 +3319,10 @@ fn handle_notification(
                 args.insert("endsAt".into(), to.into());
                 if let (Some(a), Some(b)) = (crate::engine::rest_parse_iso(from), crate::engine::rest_parse_iso(to)) {
                     args.insert("duration".into(), (b - a).into());
+                }
+                // What the chat's own line said (a viewer hears no more than that).
+                if let Some(d) = event["duration"].as_i64() {
+                    args.insert("duration".into(), d.into());
                 }
                 go(
                     engine,
@@ -5250,6 +5267,36 @@ pub(crate) mod tests {
         });
         handle_notification(&engine, &broadcaster, &cfg, "channel.prediction.begin", &pred);
         handle_notification(&engine, &broadcaster, &cfg, "channel.prediction.end", &pred);
+    }
+
+    /// A viewer isn't told of timeouts by Twitch's events, but the chat's own line says it: it makes the
+    /// same trigger, with how long.
+    #[test]
+    fn a_timeout_heard_in_the_chat_fires_the_trigger() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let lines = crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": [{
+                "id": "a1", "name": "timeouts", "enabled": true, "queue": "00000000-0000-0000-0000-000000000000",
+                "triggers": [{"type": 136, "enabled": true}, {"type": 137, "enabled": true}],
+                "subActions": [crate::engine::tests::log("T %user% %isPermanent% %duration%")]
+            }]}));
+            let cfg = Arc::new(watch::channel(Config::default()).0);
+            let channel = TwitchAccount {
+                user_id: "7".into(),
+                login: "chan".into(),
+                ..Default::default()
+            };
+            for raw in [
+                "@ban-duration=600;target-user-id=9 :tmi.twitch.tv CLEARCHAT #chan :bob",
+                "@target-user-id=10 :tmi.twitch.tv CLEARCHAT #chan :eve",
+            ] {
+                let m = crate::irc::parse(raw).unwrap();
+                let e = crate::irc::ban_event(&m, &channel.user_id, 1_800_000_000).unwrap();
+                handle_notification(&engine, &channel, &cfg, "channel.ban", &e);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+        assert_eq!(lines, ["T bob False 600", "T eve True %duration%"], "{lines:?}");
     }
 
     #[test]

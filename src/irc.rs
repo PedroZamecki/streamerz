@@ -236,6 +236,103 @@ pub fn event(m: &Irc, room_id: &str) -> Option<(&'static str, Value)> {
     }
 }
 
+/// A timeout or a ban as EventSub's `channel.ban` tells it (who, for how long), from Twitch's CLEARCHAT.
+/// Twitch tells moderators and the owner that way, and everybody else only through the chat's own lines,
+/// without who did it.
+pub fn ban_event(m: &Irc, broadcaster_id: &str, now: i64) -> Option<Value> {
+    let user = m.tag("target-user-id");
+    if m.command != "CLEARCHAT" || user.is_empty() {
+        return None;
+    }
+    // A ban has no duration; a timeout is for so many seconds.
+    let secs = m.tag("ban-duration").parse::<i64>().ok();
+    let at = |t: i64| crate::fmt::date(&crate::engine::civil_time(t), "o");
+    Some(json!({
+        "broadcaster_user_id": broadcaster_id,
+        "user_id": user,
+        "user_login": m.text,
+        "user_name": m.text,
+        "moderator_user_id": "",
+        "moderator_user_login": "",
+        "moderator_user_name": "",
+        "reason": "",
+        "banned_at": at(now),
+        "ends_at": secs.map_or(String::new(), |d| at(now + d)),
+        "duration": secs,
+        "is_permanent": secs.is_none(),
+    }))
+}
+
+/// Lets a login that can't see moderation (a viewer's, not a moderator's) hear timeouts and bans: the
+/// chat's own lines carry them, and anyone may read those. Only while `wanted`; no messages are taken from
+/// here (the login's own connection brings those).
+pub async fn watch_bans(engine: Rc<Engine>, cfg: Arc<watch::Sender<Config>>, channel: TwitchAccount) {
+    let mut backoff = 2u64;
+    loop {
+        match bans_session(&engine, &cfg, &channel).await {
+            Ok(()) => backoff = 2,
+            Err(e) => crate::debug(format!("Twitch: timeouts and bans: {e}")),
+        }
+        tokio::time::sleep(Duration::from_secs(backoff)).await;
+        backoff = (backoff * 2).min(300);
+    }
+}
+
+async fn bans_session(
+    engine: &Rc<Engine>,
+    cfg: &Arc<watch::Sender<Config>>,
+    channel: &TwitchAccount,
+) -> Result<(), String> {
+    let (mut ws, _) = crate::http::ws_connect(URL).await.map_err(|e| e.to_string())?;
+    let nick = format!("justinfan{}", 10_000 + std::process::id() % 80_000);
+    for line in [
+        "CAP REQ :twitch.tv/tags twitch.tv/commands".to_string(),
+        "PASS SCHMOOPIIE".into(),
+        format!("NICK {nick}"),
+        format!("JOIN #{}", channel.login),
+    ] {
+        ws.send(Message::Text(line.into())).await.map_err(|e| e.to_string())?;
+    }
+    let mut probed = false;
+    loop {
+        let wait = if probed { PONG_WAIT } else { IDLE_PROBE };
+        let msg = match tokio::time::timeout(wait, ws.next()).await {
+            Ok(Some(m)) => m,
+            Ok(None) => return Ok(()),
+            Err(_) if !probed => {
+                probed = true;
+                ws.send(Message::Text("PING :tmi.twitch.tv".into()))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                continue;
+            }
+            Err(_) => return Err("no answer from Twitch's chat".into()),
+        };
+        probed = false;
+        let text = match msg.map_err(|e| e.to_string())? {
+            Message::Text(t) => t,
+            Message::Close(_) => return Ok(()),
+            _ => continue,
+        };
+        for raw in text.lines() {
+            let Some(m) = parse(raw) else { continue };
+            match m.command.as_str() {
+                "PING" => ws
+                    .send(Message::Text(format!("PONG :{}", m.text).into()))
+                    .await
+                    .map_err(|e| e.to_string())?,
+                "RECONNECT" => return Ok(()),
+                _ => {
+                    let now = crate::fmt::unix_now().as_secs() as i64;
+                    if let Some(e) = ban_event(&m, &channel.user_id, now) {
+                        crate::twitch::notify(engine, channel, cfg, "channel.ban", &e);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Reads `channel`'s chat without a login while `wanted`, reconnecting when dropped.
 pub async fn read(
     engine: Rc<Engine>,
@@ -444,6 +541,35 @@ mod tests {
         );
         let m = parse(":tmi.twitch.tv CLEARCHAT #c").unwrap();
         assert_eq!(event(&m, "1").unwrap().0, "channel.chat.clear");
+    }
+
+    #[test]
+    fn a_timeout_and_a_ban_are_the_eventsub_ban() {
+        let m = parse("@ban-duration=600;target-user-id=9 :tmi.twitch.tv CLEARCHAT #c :bob").unwrap();
+        let e = ban_event(&m, "7", 1_800_000_000).unwrap();
+        assert_eq!(
+            (e["user_id"].as_str(), e["user_login"].as_str()),
+            (Some("9"), Some("bob"))
+        );
+        assert_eq!(
+            (e["duration"].as_i64(), e["is_permanent"].as_bool()),
+            (Some(600), Some(false))
+        );
+        let (from, to) = (e["banned_at"].as_str().unwrap(), e["ends_at"].as_str().unwrap());
+        assert_eq!(
+            crate::engine::rest_parse_iso(to).unwrap() - crate::engine::rest_parse_iso(from).unwrap(),
+            600
+        );
+        // No duration: a ban, for good.
+        let m = parse("@target-user-id=9 :tmi.twitch.tv CLEARCHAT #c :bob").unwrap();
+        let e = ban_event(&m, "7", 1_800_000_000).unwrap();
+        assert_eq!(
+            (e["is_permanent"].as_bool(), e["ends_at"].as_str()),
+            (Some(true), Some(""))
+        );
+        // The whole chat cleared, and other lines, are none.
+        assert!(ban_event(&parse(":tmi.twitch.tv CLEARCHAT #c").unwrap(), "7", 0).is_none());
+        assert!(ban_event(&parse(":a!a@a PRIVMSG #c :hi").unwrap(), "7", 0).is_none());
     }
 
     #[test]
