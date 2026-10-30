@@ -343,6 +343,24 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     check.set_value(!cfg.borrow().window.chat.save_history);
     done(r, &check);
 
+    let r = setting(
+        &mut col,
+        tr("settings.chat.youtube_tag"),
+        tr("settings.chat.youtube_tag.about"),
+        44,
+    );
+    let mut yt_check = fltk::button::CheckButton::default();
+    yt_check.set_value(cfg.borrow().window.chat_youtube_tag);
+    done(r, &yt_check);
+    yt_check.set_callback({
+        let cfg = cfg.clone();
+        move |b| {
+            let on = b.value();
+            put(&cfg, |c| c.window.chat_youtube_tag = on);
+            super::chat();
+        }
+    });
+
     // What the chat keeps and how it comes and goes: a number each, read and set in the limits.
     type Limit = (
         &'static str,
@@ -391,20 +409,22 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
             input.deactivate();
         }
         done(r, &input);
-        // Applied when it is left or Enter is pressed: not for each digit typed on the way to a number
-        // (a limit of 4 on the way to 400 would take the chat's lines away).
-        input.set_trigger(fltk::enums::CallbackTrigger::Release | fltk::enums::CallbackTrigger::EnterKey);
+        // Applied as it changes or Enter is pressed.
+        input.set_trigger(fltk::enums::CallbackTrigger::Changed | fltk::enums::CallbackTrigger::EnterKey);
         input.set_callback({
             let (cfg, cmds) = (cfg.clone(), cmds.clone());
             move |i| {
-                let mut limits = cfg.borrow().window.chat;
-                set(&mut limits, i.value().trim().parse().unwrap_or(0));
-                let limits = limits.clamped();
-                put(&cfg, |c| c.window.chat = limits);
-                // Out of range, it shows as it applies.
-                i.set_value(&get(&limits).to_string());
-                tell(&cmds, |e| e.chat_trim());
-                super::chat();
+                if let Ok(val) = i.value().trim().parse::<u64>() {
+                    let mut limits = cfg.borrow().window.chat;
+                    set(&mut limits, val);
+                    let limits = limits.clamped();
+                    put(&cfg, |c| c.window.chat = limits);
+                    if fltk::app::event_key() == fltk::enums::Key::Enter {
+                        i.set_value(&get(&limits).to_string());
+                    }
+                    tell(&cmds, |e| e.chat_trim());
+                    super::chat();
+                }
             }
         });
         inputs.push(input);

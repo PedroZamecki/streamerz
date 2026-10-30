@@ -194,7 +194,7 @@ fn event_of(kind: u32, a: &Obj) -> Option<Ev> {
         112 if !text("rawInput").is_empty() => return None,
         112 => Ev {
             cost: Some("rewardCost"),
-            picture: None,
+            picture: Some("rewardImage"),
             color: Some("rewardColor"),
             ..ev("twitch", "", TWITCH, "chat.ev.reward", None)
         },
@@ -544,15 +544,18 @@ impl Log {
     }
 
     /// Lines over the limits go, the oldest first.
-    fn trim(&mut self) {
+    fn trim(&mut self) -> usize {
         if !self.limits.save_history {
+            let n = self.lines.len();
             self.lines.clear();
-            return;
+            return n;
         }
         let gone = self.limits.excess(self.lines.iter().map(|l| index(&l.platform)));
+        let n = gone.len();
         for at in gone.into_iter().rev() {
             self.lines.remove(at);
         }
+        n
     }
 
     /// Lines older than their lifetime go (none when it's off). The age is of when each was said.
@@ -651,18 +654,19 @@ impl Engine {
         let (life, due) = {
             let mut guard = self.chat_log_mut();
             let log = &mut *guard;
-            log.trim();
+            let trimmed = log.trim();
             let now = now_ms();
             let gone = log.age_out(now);
             let life = log.limits.lifetime * 1000;
             let oldest = log.lines.iter().filter(|l| l.ts > 0).map(|l| l.ts as u64).min();
-            if gone > 0 {
+            if trimmed > 0 || gone > 0 {
                 log.reset_gen += 1;
             }
             // Sweeps come in batches (a tenth of the lifetime, at least a second), not for every line.
             let due = oldest.map(|t| (t + life).saturating_sub(now).max((life / 10).max(1000)));
             (life, due.filter(|_| life > 0 && !log.sweeping))
         };
+        crate::ui::chat();
         if let (true, Some(wait)) = (life > 0, due) {
             self.chat_log_mut().sweeping = true;
             let me = self.clone();
@@ -879,10 +883,23 @@ impl Engine {
             // A gigantified emote is the message's last emote, drawn big.
             line.huge = arg("messageType") == "power_ups_gigantified_emote";
             // The platform's copy of what we sent from here: it takes the place of the line shown at send.
+            let norm_user = |s: &str| -> String {
+                s.chars()
+                    .filter(|c| !c.is_whitespace() && *c != '@')
+                    .collect::<String>()
+                    .to_lowercase()
+            };
             if let Some(mine) = log.lines.iter_mut().rev().take(30).find(|m| {
-                m.local && m.platform == line.platform && m.user.eq_ignore_ascii_case(&line.user) && m.text == line.text
+                m.local
+                    && m.platform == line.platform
+                    && m.text == line.text
+                    && ((!m.user_id.is_empty() && m.user_id == line.user_id)
+                        || m.user.eq_ignore_ascii_case(&line.user)
+                        || norm_user(&m.user) == norm_user(&line.user))
             }) {
                 mine.local = false;
+                mine.user = line.user;
+                mine.user_id = line.user_id;
                 mine.msg_id = line.msg_id;
                 mine.badges = line.badges;
                 mine.emotes = line.emotes;
@@ -1714,6 +1731,16 @@ impl Engine {
             let c = self.cfg.borrow();
             let acct = |b: bool| -> Option<(String, String)> {
                 match platform {
+                    "twitch" => (if b { &c.twitch.bot } else { &c.twitch.broadcaster })
+                        .as_ref()
+                        .map(|a| {
+                            let n = if !a.display_name.is_empty() {
+                                a.display_name.clone()
+                            } else {
+                                a.login.clone()
+                            };
+                            (n, a.user_id.clone())
+                        }),
                     "kick" => (if b { &c.kick.bot } else { &c.kick.broadcaster })
                         .as_ref()
                         .map(|a| (a.username.clone(), a.user_id.to_string())),
@@ -1925,9 +1952,7 @@ impl Engine {
             let e = self.clone();
             // Elsewhere than Twitch (whose copy comes back at once) the line shows as it is sent.
             let command = crate::slash::is_command(&text);
-            let local = (p != "twitch" && !(p == "kick" && command))
-                .then(|| self.chat_local(p, &text, bot))
-                .flatten();
+            let local = (!command).then(|| self.chat_local(p, &text, bot)).flatten();
             let started = std::time::Instant::now();
             // Twitch's chat commands (/commercial, /timeout...) are calls, not text.
             if p == "twitch" && crate::slash::is_command(&text) {
@@ -2034,6 +2059,82 @@ mod tests {
     }
 
     #[test]
+    fn youtube_and_twitch_local_echo_matches_and_line_limits_trim_instantly() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let mut c = crate::Config::default();
+            c.youtube.broadcaster = Some(crate::youtube::YouTubeAccount {
+                channel_id: "UC123".into(),
+                name: "Zamecki Code".into(),
+                ..Default::default()
+            });
+            c.twitch.broadcaster = Some(crate::twitch::TwitchAccount {
+                user_id: "T999".into(),
+                login: "pedrozamecki".into(),
+                display_name: "PedroZamecki".into(),
+                ..Default::default()
+            });
+            c.window.chat.total = 100;
+            let (tx, _rx) = tokio::sync::watch::channel(c);
+            let cfg = std::sync::Arc::new(tx);
+            let e = crate::engine::Engine::new(cfg.clone(), |_| {});
+
+            // YouTube optimistic local message
+            let _ = e.chat_local("youtube", "Como vamos?", false).unwrap();
+            let (_, _, lines) = e.chat_sync(999, 0);
+            assert_eq!(lines.len(), 1);
+            assert!(lines[0].local);
+
+            // YouTube sends confirmed message back with @handle or no spaces
+            e.log_chat(&crate::commands::Chat {
+                platform: "youtube".into(),
+                user_id: "UC123".into(),
+                user: "@ZameckiCode".into(),
+                msg_id: "yt-1".into(),
+                text: "Como vamos?".into(),
+                ..Default::default()
+            });
+            let (_, _, lines) = e.chat_sync(0, 0);
+            assert_eq!(lines.len(), 1, "optimistic echo was replaced without duplicate");
+            assert!(!lines[0].local);
+            assert_eq!(lines[0].msg_id, "yt-1");
+
+            // Twitch optimistic local message
+            let _ = e.chat_local("twitch", "oi?", false).unwrap();
+            let (_, _, lines) = e.chat_sync(999, 0);
+            assert_eq!(lines.len(), 2);
+            assert!(lines[1].local);
+            assert_eq!(lines[1].user, "PedroZamecki");
+
+            // Populate more messages to test instant trimming
+            for i in 0..15 {
+                e.log_chat(&crate::commands::Chat {
+                    platform: "twitch".into(),
+                    user_id: format!("U{i}"),
+                    user: format!("Viewer{i}"),
+                    msg_id: format!("m{i}"),
+                    text: format!("msg {i}"),
+                    ..Default::default()
+                });
+            }
+            let (gen1, _, lines) = e.chat_sync(0, 0);
+            assert!(lines.len() > 10);
+
+            // Change limit to 5: trims immediately down to 5 and bumps reset_gen
+            cfg.send_if_modified(|c| {
+                c.window.chat.total = 5;
+                true
+            });
+            e.chat_trim();
+
+            let (gen2, full2, lines2) = e.chat_sync(gen1, 0);
+            assert_eq!(lines2.len(), 5, "instant trim kept only last 5 lines");
+            assert!(gen2 > gen1, "reset_gen was bumped");
+            assert!(full2, "full sync indicated to UI");
+        });
+    }
+
+    #[test]
     fn rewards_and_power_ups_show_in_the_chat() {
         let a = |v: Value| v.as_object().cloned().unwrap();
         let line = |kind: u32, args: Value| {
@@ -2075,7 +2176,7 @@ mod tests {
         // A reward with words is a chat message with the reward over it: not shown twice.
         assert!(event_of(112, &a(serde_json::json!({"rawInput": "drink!"}))).is_none());
         let ev = event_of(112, &a(serde_json::json!({"rawInput": "", "rewardImage": "i"}))).unwrap();
-        assert_eq!((ev.picture, ev.color), (None, Some("rewardColor")));
+        assert_eq!((ev.picture, ev.color), (Some("rewardImage"), Some("rewardColor")));
     }
 
     #[test]

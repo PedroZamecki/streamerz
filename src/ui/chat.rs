@@ -362,8 +362,8 @@ const MENTION_PAD: i32 = 5;
 thread_local! {
     /// The names (lowercase) of the accounts logged in, on any platform: what an `@name` is checked against.
     static ME: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-    /// What lines show: (the time, the badges, emotes moving). Chat's options; all panes follow.
-    static SHOW: Cell<(bool, bool, bool)> = const { Cell::new((true, true, true)) };
+    /// What lines show: (the time, the badges, emotes moving, youtube @handle). Chat's options; all panes follow.
+    static SHOW: Cell<(bool, bool, bool, bool)> = const { Cell::new((true, true, true, true)) };
     /// How many lines the panes keep, for how long, and how they fade (the config's).
     static LIMITS: Cell<crate::ChatLimits> = const {
         Cell::new(crate::ChatLimits {
@@ -393,10 +393,26 @@ fn badge_tip(platform: &str, key: &str, url: &str) -> Rc<Tip> {
     })
 }
 
+fn display_user(l: &Line, yt_tag: bool) -> String {
+    if l.platform == "youtube" {
+        if yt_tag {
+            if l.user.starts_with('@') || l.user.contains(' ') {
+                l.user.clone()
+            } else {
+                format!("@{}", l.user)
+            }
+        } else {
+            l.user.trim_start_matches('@').to_string()
+        }
+    } else {
+        l.user.clone()
+    }
+}
+
 /// A line's things, in order.
 fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
     let gray = Color::from_rgb(0x88, 0x88, 0x88);
-    let (time, badges, _) = SHOW.get();
+    let (time, badges, _, yt_tag) = SHOW.get();
     let mut v = Vec::new();
     // The history divider: a line across, no name, no time.
     if l.welcome {
@@ -496,7 +512,8 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
             v.push(It::Space);
         }
     }
-    v.push(It::Text(format!("{}:", l.user), Font::HelveticaBold, name_color(l)));
+    let name = display_user(l, yt_tag);
+    v.push(It::Text(format!("{name}:"), Font::HelveticaBold, name_color(l)));
     words(cmds, l, &mut v);
     v
 }
@@ -648,7 +665,8 @@ fn event_items(cmds: &Cmds, l: &Line, mut v: Vec<It>) -> Vec<It> {
         v.push(It::Gap(6));
     }
     if !l.user.is_empty() {
-        v.push(It::Text(l.user.clone(), Font::HelveticaBold, name_color(l)));
+        let (_, _, _, yt_tag) = SHOW.get();
+        v.push(It::Text(display_user(l, yt_tag), Font::HelveticaBold, name_color(l)));
     }
     for w in l.event.split(' ') {
         v.push(It::Space);
@@ -744,7 +762,7 @@ fn rows(items: Vec<It>, w: i32) -> Rows {
 /// How much of a line shows, 0 to 1: coming in (from when it came to the pane, `born`), and going out
 /// as its lifetime ends.
 fn opacity(l: &Line, born: u64, now: u64, lim: &crate::ChatLimits) -> f32 {
-    let mut o = 1.0f32;
+    let mut o = if l.local { 0.55f32 } else { 1.0f32 };
     if lim.fade_in > 0 && born > 0 {
         o = o.min((now.saturating_sub(born)) as f32 / lim.fade_in as f32);
     }
@@ -1064,27 +1082,20 @@ impl Pane {
         draw::draw_box(f.frame(), f.x(), f.y(), f.w(), f.h(), f.color());
         draw::push_clip(f.x() + 2, f.y() + 2, f.w() - 4, f.h() - 4);
         if !LIMITS.get().save_history {
-            let cx = f.x() + 20;
-            let cy = f.y() + (f.h() - 100) / 2;
-            let cw = (f.w() - 40).max(10);
+            let cx = f.x() + 8;
+            let cw = (f.w() - 16).max(10);
+            let cy = f.y() + (f.h() - 160).max(10) / 2;
             if let Some(mut icon) = icons::icon("eye-off", super::muted(), 32) {
                 icon.draw(f.x() + (f.w() - 32) / 2, cy, 32, 32);
             }
-            draw::set_font(Font::HelveticaBold, 15);
+            draw::set_font(Font::HelveticaBold, 13);
             draw::set_draw_color(Color::Foreground);
             let title = tr("chat.history_disabled_title");
-            draw::draw_text2(title, cx, cy + 40, cw, 22, Align::Center);
-            draw::set_font(Font::Helvetica, 13);
+            draw::draw_text2(title, cx, cy + 40, cw, 36, Align::Center | Align::Wrap);
+            draw::set_font(Font::Helvetica, 11);
             draw::set_draw_color(super::muted());
             let desc = tr("chat.history_disabled_desc");
-            draw::draw_text2(
-                desc,
-                cx + 10,
-                cy + 66,
-                cw.saturating_sub(20),
-                60,
-                Align::Center | Align::Wrap,
-            );
+            draw::draw_text2(desc, cx, cy + 80, cw, 80, Align::Center | Align::Wrap);
             draw::pop_clip();
             return;
         }
@@ -1849,7 +1860,7 @@ impl Pane {
             .lines
             .iter()
             .zip(&st.born)
-            .any(|(l, b)| opacity(l, *b, now, &lim) < 1.0);
+            .any(|(l, b)| !l.local && opacity(l, *b, now, &lim) < 1.0);
         let at = if fading {
             now + after.max(50)
         } else if lim.lifetime > 0 {
@@ -1900,7 +1911,7 @@ impl Pane {
             for (i, (_, h)) in st.laid.iter().enumerate() {
                 if y + h >= a.y() && y <= a.y() + a.h() {
                     let o = opacity(&st.lines[i], st.born[i], now, &lim);
-                    if o < 1.0 {
+                    if !st.lines[i].local && o < 1.0 {
                         a.set_damage_area(Damage::User1, a.x(), y, a.w(), *h);
                     }
                 } else if y > a.y() + a.h() {
@@ -2739,13 +2750,19 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
 
     {
         let w = &cfg.borrow().window;
-        SHOW.set((!w.chat_no_time, !w.chat_no_badges, !w.chat_still_emotes));
+        SHOW.set((
+            !w.chat_no_time,
+            !w.chat_no_badges,
+            !w.chat_still_emotes,
+            w.chat_youtube_tag,
+        ));
     }
-    let (time, badges, moving) = SHOW.get();
+    let (time, badges, moving, yt_tag) = SHOW.get();
     for (i, (label, on)) in [
         (tr("chat.opt_time"), time),
         (tr("chat.opt_badges"), badges),
         (tr("chat.opt_animated"), moving),
+        (tr("chat.opt_yt_tag"), yt_tag),
     ]
     .into_iter()
     .enumerate()
@@ -2758,16 +2775,22 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
         let (me, cfg) = (me.clone(), cfg.clone());
         opts.add(label, fltk::enums::Shortcut::None, flag, move |m| {
             let on = m.at(i as i32).is_some_and(|x| x.value());
-            let (mut time, mut badges, mut moving) = SHOW.get();
+            let (mut time, mut badges, mut moving, mut yt_tag) = SHOW.get();
             match i {
                 0 => time = on,
                 1 => badges = on,
-                _ => moving = on,
+                2 => moving = on,
+                _ => yt_tag = on,
             }
-            SHOW.set((time, badges, moving));
+            SHOW.set((time, badges, moving, yt_tag));
             cfg.send_if_modified(|c| {
                 let w = &mut c.window;
-                (w.chat_no_time, w.chat_no_badges, w.chat_still_emotes) = (!time, !badges, !moving);
+                (
+                    w.chat_no_time,
+                    w.chat_no_badges,
+                    w.chat_still_emotes,
+                    w.chat_youtube_tag,
+                ) = (!time, !badges, !moving, yt_tag);
                 false
             });
             me.borrow().images();

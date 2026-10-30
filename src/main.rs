@@ -175,7 +175,7 @@ impl Default for Config {
 }
 
 /// The window as it was left: its tab, the chat's view and its size (0: the default).
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct WindowState {
     pub tab: String,
@@ -187,6 +187,9 @@ pub struct WindowState {
     pub chat_no_badges: bool,
     /// Emotes keep still (their first frame) in the chat and the user card.
     pub chat_still_emotes: bool,
+    /// YouTube chat: show user tag (@handle) instead of plain display name.
+    #[serde(default = "chat_youtube_tag_default")]
+    pub chat_youtube_tag: bool,
     /// Platforms where the individual chat box sends as broadcaster instead of bot-with-fallback.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chat_as_broadcaster: Vec<String>,
@@ -205,6 +208,31 @@ pub struct WindowState {
     /// How many chat lines are kept, for how long, and how they come and go.
     #[serde(skip_serializing_if = "ChatLimits::is_default")]
     pub chat: ChatLimits,
+}
+
+fn chat_youtube_tag_default() -> bool {
+    true
+}
+
+impl Default for WindowState {
+    fn default() -> Self {
+        Self {
+            tab: String::new(),
+            chat_view: String::new(),
+            w: 0,
+            h: 0,
+            chat_no_time: false,
+            chat_no_badges: false,
+            chat_still_emotes: false,
+            chat_youtube_tag: true,
+            chat_as_broadcaster: Vec::new(),
+            chat_hidden: Vec::new(),
+            chat_all_platform: String::new(),
+            favorite_emotes: Vec::new(),
+            nav_collapsed: false,
+            chat: ChatLimits::default(),
+        }
+    }
 }
 
 /// What the chat keeps in memory: the oldest lines go first, and a line can go by its age. Applies to
@@ -242,7 +270,7 @@ impl Default for ChatLimits {
 impl ChatLimits {
     /// The most lines a chat can keep.
     pub const MOST: usize = 1000;
-    pub const LEAST: usize = 10;
+    pub const LEAST: usize = 0;
 
     fn is_default(&self) -> bool {
         *self == Self::default()
