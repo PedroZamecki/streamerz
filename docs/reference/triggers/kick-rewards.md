@@ -14,7 +14,9 @@ Fires when someone redeems a channel reward on Kick.
 
 ### Fields
 
-None.
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Reward (none: any) | `rewardId` | The reward this is for: picked from the channel's rewards (found when connected), or typed, by name or id. Empty: any reward. |
 
 ### Arguments
 

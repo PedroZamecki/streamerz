@@ -694,6 +694,7 @@ async fn live(
     shared.set(TikTokStatus::Connected(format!("live @{channel}")));
     crate::say(format!("TikTok: connected to @{channel}'s live (room {room})"));
     engine.settle_role("tiktok");
+    engine.chat_stream("tiktok", true);
     let mut args = Obj::new();
     args.insert("channel".into(), channel.into());
     args.insert("roomId".into(), room.to_string().into());
@@ -881,6 +882,7 @@ fn tiktok_chat_line(channel: &str, d: &Value) -> Option<Line> {
 }
 
 fn disconnected(engine: &Rc<Engine>, channel: &str) {
+    engine.chat_stream("tiktok", false);
     let mut args = Obj::new();
     args.insert("channel".into(), clean_tiktok_channel(channel).into());
     engine.fire(

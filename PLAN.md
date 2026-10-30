@@ -393,6 +393,16 @@ platform handles through channels, never through shared locks held across awaits
 - [x] Chat: `/me` lines in italics in the sender's colour, and an `@name` of one of our accounts on a chip
   (light and dark).
 
+- [x] Chat page: no drawn stand-in badges on Twitch (the real pictures come from Twitch's public badge
+  service, so a chat read without a login has them too), tooltips that say what a badge or emote is, our
+  role known at connect (Kick asks, history says the rest), commands listed in the box as `/` is typed
+  (the button is gone), poll and prediction cards and a redone pin card, channel reward lines with their
+  price, sent messages shown at once, a notice when a stream ends or a chat is down with Reconnect and
+  Hide chat (Options puts a chat back).
+- [x] Detected lists (`catalog.rs`): a channel's rewards (Twitch, Kick) and OBS's scenes and sources are
+  offered in the editors, and a name can be typed when nothing was found. Reward triggers can name their
+  reward. Sub-actions take a reward by name or id.
+
 ## Open points (decide when the phase starts, ask first)
 
 - Points: its sub-actions are new in Streamer.bot 1.1.0, unreleased (1.0.7 is the latest). When it's out,

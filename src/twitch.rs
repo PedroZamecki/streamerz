@@ -2771,6 +2771,7 @@ fn handle_notification(
             args.insert("gameId".into(), 0.into());
             args.insert("tagCount".into(), 0.into());
             args.insert("tags".into(), Value::Array(vec![]));
+            engine.chat_stream("twitch", true);
             engine.fire(
                 T_STREAM_ONLINE,
                 "Stream Online",
@@ -2784,6 +2785,7 @@ fn handle_notification(
         "stream.offline" => {
             // A pin "until the stream ends" ends here.
             engine.chat_unpinned("twitch", "");
+            engine.chat_stream("twitch", false);
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
             args.insert("endedAt".into(), crate::engine::globals::iso_now().into());
@@ -2910,6 +2912,7 @@ fn handle_notification(
                     s.rewards.insert(id, event.clone());
                 }
             });
+            publish_rewards();
             let (code, name, ev) = match sub_type {
                 "channel.channel_points_custom_reward.add" => (T_REWARD_CREATED, "Reward Created", "RewardCreated"),
                 "channel.channel_points_custom_reward.update" => (T_REWARD_UPDATED, "Reward Updated", "RewardUpdated"),
@@ -3977,7 +3980,29 @@ fn es<'a>(e: &'a Value, p: &str) -> &'a str {
 
 /// Fire a Twitch trigger and send its WebSocket event, with the same arguments.
 fn go(engine: &Rc<Engine>, code: u32, name: &str, cat: &str, ev: &str, args: &Obj) {
-    engine.fire(code, name, cat, "twitch", args, |_| true);
+    // A reward trigger may name the one reward it is for (empty: any).
+    let reward = matches!(
+        code,
+        T_REWARD_REDEMPTION | T_REWARD_CREATED | T_REWARD_UPDATED | T_REWARD_DELETED | T_REWARD_REDEMPTION_UPDATED
+    );
+    let text = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let (id, title) = (
+        text("rewardId"),
+        if text("rewardTitle").is_empty() {
+            text("rewardName")
+        } else {
+            text("rewardTitle")
+        },
+    );
+    engine.fire(code, name, cat, "twitch", args, |t| {
+        !reward
+            || crate::catalog::matches(
+                "twitch.rewards",
+                t.get("rewardId").and_then(Value::as_str).unwrap_or(""),
+                &id,
+                &title,
+            )
+    });
     engine.emit("Twitch", ev, || json!(args));
 }
 
@@ -4334,6 +4359,17 @@ pub async fn public_profile(user_id: &str) -> Option<Value> {
     Some(v["data"]["user"].clone()).filter(Value::is_object)
 }
 
+/// Puts the channel's rewards (as known) where the editors offer them.
+fn publish_rewards() {
+    let list = SEEN.with_borrow(|s| {
+        s.rewards
+            .iter()
+            .filter_map(|(id, r)| Some((id.clone(), r["title"].as_str()?.to_string())))
+            .collect()
+    });
+    crate::catalog::set("twitch.rewards", list);
+}
+
 /// Remember what later events compare against (chat settings, title and game, the custom rewards).
 async fn seed(engine: &Rc<Engine>) {
     let Some(tw) = engine.twitch() else { return };
@@ -4382,6 +4418,7 @@ async fn seed(engine: &Rc<Engine>) {
             }
         }
     });
+    publish_rewards();
 }
 
 /// While connected: viewer count (every minute), present viewers (every 5) and the next ad (every
@@ -4777,6 +4814,45 @@ pub(crate) mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
         });
         assert_eq!(out, ["T send target 42"]);
+    }
+
+    /// A reward trigger may name its reward (by name or id): only that one starts it.
+    #[test]
+    fn a_reward_trigger_can_name_its_reward() {
+        use crate::engine::tests::{action, engine, log, run};
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::catalog::set(
+            "twitch.rewards",
+            vec![("r-1".into(), "Hydrate".into()), ("r-2".into(), "LED color".into())],
+        );
+        let mk = |id: &str, who: &str| {
+            let mut a = action(id, id, json!([log(&format!("T ran {who}"))]));
+            a["triggers"] = json!([{"id": id, "type": T_REWARD_REDEMPTION, "enabled": true, "rewardId": who}]);
+            a
+        };
+        let e = engine(json!({"actions": [mk("any", ""), mk("by_name", "hydrate"), mk("by_id", "r-2")]}));
+        let cfg = Arc::new(watch::channel(Config::default()).0);
+        let b = TwitchAccount {
+            user_id: "1".into(),
+            ..Default::default()
+        };
+        let out = run(async move {
+            let redeem = |rid: &str, title: &str| {
+                json!({"id": "x", "user_id": "9", "user_login": "bo", "user_name": "Bo", "user_input": "",
+                    "status": "unfulfilled", "reward": {"id": rid, "title": title, "cost": 100, "prompt": ""}})
+            };
+            handle_notification(
+                &e,
+                &b,
+                &cfg,
+                "channel.channel_points_custom_reward_redemption.add",
+                &redeem("r-1", "Hydrate"),
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+        let mut out = out;
+        out.sort();
+        assert_eq!(out, ["T ran ", "T ran hydrate"]);
     }
 
     #[test]

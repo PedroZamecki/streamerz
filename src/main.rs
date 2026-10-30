@@ -3,6 +3,7 @@
 
 mod backup;
 mod brand;
+mod catalog;
 mod cdp;
 mod commands;
 mod crash;
@@ -189,6 +190,9 @@ pub struct WindowState {
     /// Platforms where the individual chat box sends as broadcaster instead of bot-with-fallback.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chat_as_broadcaster: Vec<String>,
+    /// Platforms whose chat is taken out of the Chat page's views (put back from Options).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chat_hidden: Vec<String>,
     /// Selected target platform in "All together" chat view's input bar.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub chat_all_platform: String,

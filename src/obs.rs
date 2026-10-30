@@ -535,6 +535,7 @@ async fn run_conn_loop(
                                     field_matches(t, "connectionId", &info.id)
                                 });
                                 engine.emit("ObsStudio", "Connected", || json!(args));
+                                tokio::task::spawn_local(publish_catalog(engine.clone()));
                                 break;
                             }
                         }
@@ -670,6 +671,26 @@ fn obs_args(info: &ObsConnInfo) -> Obj {
     a
 }
 
+/// Reads OBS's scenes and inputs into the catalog (the editors' pickers).
+async fn publish_catalog(engine: Rc<Engine>) {
+    let Some(obs) = engine.obs() else { return };
+    let names = |v: &Value, list: &str, key: &str| -> Vec<(String, String)> {
+        v[list]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|x| x[key].as_str())
+            .map(|n| (n.to_string(), n.to_string()))
+            .collect()
+    };
+    if let Ok(v) = obs.send_request(None, "GetSceneList", json!({})).await {
+        crate::catalog::set("obs.scenes", names(&v, "scenes", "sceneName"));
+    }
+    if let Ok(v) = obs.send_request(None, "GetInputList", json!({})).await {
+        crate::catalog::set("obs.sources", names(&v, "inputs", "inputName"));
+    }
+}
+
 fn fire_disconnected(engine: &Rc<Engine>, info: &ObsConnInfo) {
     let args = obs_args(info);
     engine.fire(T_OBS_DISCONNECTED, "ObsDisconnected", "OBS Studio", "obs", &args, |t| {
@@ -747,6 +768,11 @@ fn handle_obs_message(
                         },
                     );
                     engine.emit("ObsStudio", "SceneChanged", || json!(scene_args));
+                }
+                // The scenes and sources the editors offer follow what OBS has.
+                "SceneListChanged" | "SceneCreated" | "SceneRemoved" | "SceneNameChanged" | "InputCreated"
+                | "InputRemoved" | "InputNameChanged" => {
+                    tokio::task::spawn_local(publish_catalog(engine.clone()));
                 }
                 "StreamStateChanged" => {
                     // Starting and stopping are their own states (outputActive false while starting).

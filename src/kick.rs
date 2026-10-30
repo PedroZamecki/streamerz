@@ -911,6 +911,21 @@ pub async fn run_pusher_loop_url(
                 crate::ui::changed();
                 crate::say(format!("Kick: connected (@{channel}, chatroom {cr_id})"));
                 engine.settle_role("kick");
+                // The channel's rewards, for the editors' pickers (only with the broadcaster logged in).
+                if is_live_pusher && cfg.borrow().kick.broadcaster.is_some() {
+                    let e = engine.clone();
+                    tokio::task::spawn_local(async move {
+                        if let Ok(v) = e.kick_start().api("GET", "/channels/rewards", None).await {
+                            let list = v["data"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|r| Some((r["id"].as_str()?.to_string(), r["title"].as_str()?.to_string())))
+                                .collect();
+                            crate::catalog::set("kick.rewards", list);
+                        }
+                    });
+                }
                 if is_live_pusher {
                     let e_hist = engine.clone();
                     let ch_hist = channel.clone();
@@ -1307,6 +1322,20 @@ pub fn kick_pin(d: &Value) -> Option<crate::engine::chatlog::Pin> {
 
 /// Fire a Kick trigger and its WebSocket event.
 fn kick(engine: &Rc<Engine>, code: u32, name: &str, ev: &str, args: &Obj) {
+    if code == T_KICK_REWARD_REDEMPTION {
+        let text = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        let (id, title) = (text("rewardId"), text("reward.title"));
+        engine.fire(code, name, "Kick", "kick", args, |t| {
+            crate::catalog::matches(
+                "kick.rewards",
+                t.get("rewardId").and_then(Value::as_str).unwrap_or(""),
+                &id,
+                &title,
+            )
+        });
+        engine.emit("Kick", ev, || json!(args));
+        return;
+    }
     engine.fire(code, name, "Kick", "kick", args, |_| true);
     engine.emit("Kick", ev, || json!(args));
 }
@@ -1491,10 +1520,12 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
             });
             stream_args(&mut args);
             args.insert("channel".into(), channel.into());
+            engine.chat_stream("kick", true);
             kick(engine, T_KICK_STREAM_ONLINE, "KickStreamOnline", "StreamOnline", &args);
         }
         "StopStreamBroadcast" | "LivestreamEnded" | "StreamOffline" => {
             engine.chat_unpinned("kick", "");
+            engine.chat_stream("kick", false);
             stream_args(&mut args);
             args.insert("endedAt".into(), now().into());
             args.insert("channel".into(), channel.into());

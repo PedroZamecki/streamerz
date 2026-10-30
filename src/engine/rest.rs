@@ -733,7 +733,7 @@ impl Engine {
             // Update Redemption Status (11)
             11 => {
                 let status = redemption_status(o.get("status"));
-                let reward_id = self.expand(ctx, s(o, "rewardId"));
+                let reward_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 let reward_id = if reward_id.is_empty() {
                     ctx.args
                         .get("rewardId")
@@ -933,7 +933,7 @@ impl Engine {
             }
             // Set Enabled State (200)
             200 => {
-                let reward_id = self.expand(ctx, s(o, "rewardId"));
+                let reward_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 let state = n(o, "state");
                 let is_enabled = state == 0.0;
                 if let Some(tw) = self.twitch() {
@@ -954,7 +954,7 @@ impl Engine {
             }
             // Set Paused State (201)
             201 => {
-                let reward_id = self.expand(ctx, s(o, "rewardId"));
+                let reward_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 let state = n(o, "state");
                 let is_paused = state == 1.0;
                 if let Some(tw) = self.twitch() {
@@ -975,7 +975,7 @@ impl Engine {
             }
             // Set Cost (202)
             202 => {
-                let reward_id = self.expand(ctx, s(o, "rewardId"));
+                let reward_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 let cost = n(o, "cost") as u64;
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
@@ -995,7 +995,7 @@ impl Engine {
             }
             // Set Title (205)
             205 => {
-                let reward_id = self.expand(ctx, s(o, "rewardId"));
+                let reward_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 let title = self.expand(ctx, s(o, "title"));
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
@@ -1015,7 +1015,7 @@ impl Engine {
             }
             // Set Prompt (206)
             206 => {
-                let reward_id = self.expand(ctx, s(o, "rewardId"));
+                let reward_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 let prompt = self.expand(ctx, s(o, "prompt"));
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
@@ -1035,7 +1035,7 @@ impl Engine {
             }
             // Get Reward Info (208)
             208 => {
-                let reward_id = self.expand(ctx, s(o, "rewardId"));
+                let reward_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 if let Some(tw) = self.twitch() {
                     if let Ok(val) = tw
                         .helix(
@@ -1927,7 +1927,7 @@ impl Engine {
 
             // Set Global Cooldown (204)
             204 => {
-                let rew_id = self.expand(ctx, s(o, "rewardId"));
+                let rew_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 let cd = n(o, "cooldown") as u64;
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
@@ -1947,7 +1947,7 @@ impl Engine {
             }
             // Update Reward (207)
             207 => {
-                let rew_id = self.expand(ctx, s(o, "rewardId"));
+                let rew_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 let title = self.expand(ctx, s(o, "title"));
                 let prompt = self.expand(ctx, s(o, "prompt"));
                 let cost = n(o, "cost") as u64;
@@ -1969,7 +1969,7 @@ impl Engine {
             }
             // Set Background Color (213)
             213 => {
-                let rew_id = self.expand(ctx, s(o, "rewardId"));
+                let rew_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 let color = self.expand(ctx, s(o, "backgroundColor"));
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
@@ -1989,7 +1989,7 @@ impl Engine {
             }
             // Set Max per User per Stream (214)
             214 => {
-                let rew_id = self.expand(ctx, s(o, "rewardId"));
+                let rew_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 let max = n(o, "redeems") as u64;
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
@@ -2011,7 +2011,7 @@ impl Engine {
             }
             // Set Max Per Stream (215)
             215 => {
-                let rew_id = self.expand(ctx, s(o, "rewardId"));
+                let rew_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 let max = n(o, "redeems") as u64;
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
@@ -3730,7 +3730,7 @@ impl Engine {
             // Kick channel rewards (official API; only rewards made by this app's Kick app can be
             // changed, as on Twitch).
             35101..=35103 | 35105..=35108 | 35113 => {
-                let id = self.expand(ctx, s(o, "rewardId"));
+                let id = crate::catalog::resolve("kick.rewards", &self.expand(ctx, s(o, "rewardId")));
                 ctx.args.insert("rewardId".into(), id.as_str().into());
                 let kick = self.kick_start();
                 let path = format!("/channels/rewards/{}", crate::commands::url_encode(&id));

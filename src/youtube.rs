@@ -1893,6 +1893,7 @@ pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value]) {
 
 /// The live video's broadcast.* (and broadcastId) for every YouTube trigger; Broadcast Started.
 async fn broadcast_started(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>, video: &str) {
+    engine.chat_stream("youtube", true);
     let mut b = Obj::new();
     b.insert("broadcastId".into(), video.into());
     b.insert("broadcast.id".into(), video.into());
@@ -1935,6 +1936,7 @@ async fn broadcast_started(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>
 }
 
 fn broadcast_ended(engine: &Rc<Engine>) {
+    engine.chat_stream("youtube", false);
     let b = BROADCAST.with_borrow_mut(std::mem::take);
     if !b.is_empty() {
         yt(

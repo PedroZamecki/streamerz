@@ -276,6 +276,8 @@ pub struct Log {
     pins: Vec<Pin>,
     /// The polls and predictions going on (and just over), per platform.
     polls: Vec<Poll>,
+    /// The platforms whose stream has ended (until it starts again).
+    ended: Vec<String>,
     /// When Twitch's pin was last asked for (it has no event for pins made elsewhere).
     twitch_pin_asked: Option<std::time::Instant>,
 }
@@ -294,6 +296,19 @@ pub struct Poll {
     pub ends: Option<u64>,
     /// When it ended or was locked (ms), if it has: the card stays a little, with the result.
     pub over: Option<u64>,
+}
+
+/// What a platform's chat is doing, for the notice over it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ChatState {
+    /// Connected, and the stream is on (or not said to be over).
+    Live,
+    /// The stream ended: the chat may still take messages.
+    Ended,
+    /// Watching for the stream to start.
+    Standby,
+    /// Not connected.
+    Down,
 }
 
 /// How long a finished poll's card stays.
@@ -1254,6 +1269,62 @@ impl Engine {
             }
         }
         crate::ui::chat();
+    }
+
+    /// A platform's stream started (`live`) or ended: the chat's notice follows. Ended streams take their
+    /// pins and polls with them.
+    pub fn chat_stream(&self, platform: &str, live: bool) {
+        let changed = {
+            let mut st = self.st.borrow_mut();
+            let ended = &mut st.chat_log.ended;
+            let has = ended.iter().any(|p| p == platform);
+            match (live, has) {
+                (true, true) => {
+                    ended.retain(|p| p != platform);
+                    true
+                }
+                (false, false) => {
+                    ended.push(platform.to_string());
+                    true
+                }
+                _ => false,
+            }
+        };
+        if !live {
+            self.chat_polls_clear(platform);
+        }
+        if changed {
+            crate::ui::changed();
+        }
+    }
+
+    /// What `platform`'s chat is doing now.
+    pub fn chat_state(&self, platform: &str) -> ChatState {
+        let ended = self.st.borrow().chat_log.ended.iter().any(|p| p == platform);
+        let standby = match platform {
+            "youtube" => self.youtube_standby(),
+            "tiktok" => self.tiktok_standby(),
+            _ => false,
+        };
+        if ended {
+            ChatState::Ended
+        } else if self.chat_connected(platform) {
+            ChatState::Live
+        } else if standby {
+            ChatState::Standby
+        } else {
+            ChatState::Down
+        }
+    }
+
+    /// Connects `platform`'s chat (the notice's Reconnect).
+    pub fn chat_reconnect(self: &Rc<Self>, platform: &str) {
+        match platform {
+            "twitch" => self.twitch_start().connect(),
+            "youtube" => self.youtube_start().connect(),
+            "kick" => self.kick_start().connect(),
+            _ => self.tiktok_start().send(crate::tiktok::TikTokCmd::Connect),
+        }
     }
 
     /// The polls and predictions to show now.

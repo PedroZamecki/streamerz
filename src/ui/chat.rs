@@ -13,7 +13,7 @@ use super::fit::Ellipsis;
 use super::img::{self, Pic};
 use super::tip::{self, Tip};
 use super::{button, icons, query, tell, ROW};
-use crate::engine::chatlog::{Line, Moderate, Pin, Poll, PLATFORMS};
+use crate::engine::chatlog::{ChatState, Line, Moderate, Pin, Poll, PLATFORMS};
 use crate::i18n::{tr, trf};
 use crate::Config;
 use fltk::app;
@@ -676,6 +676,9 @@ struct State {
     polls: Vec<Poll>,
     pin_tick: bool,
 }
+
+/// What a notice shows: the platform it is about and its state.
+type Shown = Option<(Option<&'static str>, ChatState)>;
 
 /// A card over the top of the chat: a pinned message, or a poll or prediction going on.
 enum Card<'a> {
@@ -1608,6 +1611,14 @@ struct ChatColumn {
     /// The chat box and what it answers (hidden in the all-platforms view).
     bar: Flex,
     set_reply: SetReply,
+    /// What is wrong with the chat (the stream ended, not connected), with what to do about it.
+    notice: Flex,
+    notice_icon: Frame,
+    notice_text: Frame,
+    reconnect_btn: Button,
+    notice_plat: Rc<Cell<Option<&'static str>>>,
+    /// What the notice shows now, so it is only laid out again when that changes.
+    notice_last: Rc<Cell<Shown>>,
 }
 
 impl ChatColumn {
@@ -1635,6 +1646,21 @@ impl ChatColumn {
         replying.end();
         col.fixed(&replying, 0);
         replying.hide();
+
+        // "Twitch: the stream ended", with what can be done: reconnect it, or take the chat away.
+        let mut notice = Flex::default().row();
+        notice.set_pad(6);
+        let notice_icon = Frame::default();
+        notice.fixed(&notice_icon, 20);
+        let mut notice_text = Frame::default()
+            .with_align(Align::Left | Align::Inside | Align::Clip)
+            .ellipsis();
+        notice_text.set_label_size(12);
+        let mut reconnect_btn = button(&mut notice, tr("chat.reconnect"), 92);
+        let mut hide_btn = button(&mut notice, tr("chat.hide_chat"), 92);
+        notice.end();
+        col.fixed(&notice, 0);
+        notice.hide();
 
         let mut bar = Flex::default().row();
         bar.set_pad(4);
@@ -1714,7 +1740,34 @@ impl ChatColumn {
             target_plat: target_plat.clone(),
             bar: bar.clone(),
             set_reply: set_reply.clone(),
+            notice: notice.clone(),
+            notice_icon: notice_icon.clone(),
+            notice_text: notice_text.clone(),
+            reconnect_btn: reconnect_btn.clone(),
+            notice_plat: Rc::default(),
+            notice_last: Rc::default(),
         };
+        reconnect_btn.set_callback({
+            let (cmds, at) = (cmds.clone(), me.notice_plat.clone());
+            move |_| {
+                if let Some(p) = at.get() {
+                    tell(&cmds, move |e| e.chat_reconnect(p));
+                }
+            }
+        });
+        hide_btn.set_callback({
+            let (cfg, at) = (cfg.clone(), me.notice_plat.clone());
+            move |_| {
+                if let Some(p) = at.get() {
+                    cfg.send_modify(|c| {
+                        if !c.window.chat_hidden.iter().any(|h| h == p) {
+                            c.window.chat_hidden.push(p.to_string());
+                        }
+                    });
+                    crate::ui::changed();
+                }
+            }
+        });
 
         let do_send = {
             let (cfg, cmds, input, target_plat) = (cfg.clone(), cmds.clone(), input.clone(), target_plat.clone());
@@ -1818,6 +1871,60 @@ impl ChatColumn {
         me
     }
 
+    /// Shows what is wrong with `platform`'s chat (`state`), or takes the notice away.
+    fn show_notice(&self, platform: Option<&'static str>, state: ChatState) {
+        let now = Some((platform.filter(|_| state != ChatState::Live), state));
+        if self.notice_last.get() == now
+            || (state == ChatState::Live && self.notice_last.get().is_none() && !self.notice.visible())
+        {
+            return;
+        }
+        self.notice_last.set(now);
+        let mut notice = self.notice.clone();
+        let mut col = self.col.clone();
+        self.notice_plat.set(platform.filter(|_| state != ChatState::Live));
+        let Some(p) = self.notice_plat.get() else {
+            if notice.visible() {
+                notice.hide();
+                col.fixed(&notice, 0);
+                col.layout();
+            }
+            return;
+        };
+        let name = NAMES[PLATFORMS.iter().position(|x| *x == p).unwrap_or(0)];
+        let (key, icon) = match state {
+            ChatState::Ended => ("chat.state_ended", "circle-alert"),
+            ChatState::Standby => ("chat.state_standby", "info"),
+            _ => ("chat.state_down", "triangle-alert"),
+        };
+        let mut text = self.notice_text.clone();
+        text.set_label(&trf(key, &[("platform", name)]));
+        text.set_label_color(Color::Foreground);
+        let mut ic = self.notice_icon.clone();
+        ic.set_image(icons::icon(
+            icon,
+            if state == ChatState::Down {
+                Color::from_rgb(0xf0, 0xb4, 0x29)
+            } else {
+                super::muted()
+            },
+            16,
+        ));
+        let mut re = self.reconnect_btn.clone();
+        // The stream ending isn't a lost connection: nothing to reconnect.
+        if state == ChatState::Ended {
+            re.hide();
+        } else {
+            re.show();
+        }
+        if !notice.visible() {
+            notice.show();
+        }
+        col.fixed(&notice, 28);
+        col.layout();
+        notice.redraw();
+    }
+
     fn refresh_sender(&self, cfg: &Cfg, cmds: &Cmds) {
         let p_idx = self.target_plat.get().min(3);
         let plat_name = NAMES[p_idx];
@@ -1918,6 +2025,8 @@ impl Chat {
         }
         let v = self.view.value();
         self.show_pins(v);
+        let hidden = self.cfg.borrow().window.chat_hidden.clone();
+        let lines: Vec<Line> = lines.into_iter().filter(|l| !hidden.contains(&l.platform)).collect();
         if full {
             self.seen = lines.last().map_or(0, |l| l.seq);
             match v {
@@ -1958,6 +2067,10 @@ impl Chat {
         tell(&self.cmds, |e| e.twitch_check_pin());
         let pins = query(&self.cmds, |e| e.chat_pins()).unwrap_or_default();
         let polls = query(&self.cmds, |e| e.chat_polls()).unwrap_or_default();
+        // Not a hidden chat's.
+        let hidden = self.cfg.borrow().window.chat_hidden.clone();
+        let pins: Vec<Pin> = pins.into_iter().filter(|p| !hidden.contains(&p.platform)).collect();
+        let polls: Vec<Poll> = polls.into_iter().filter(|p| !hidden.contains(&p.platform)).collect();
         let of = |p: &str| pins.iter().filter(|x| x.platform == p).cloned().collect::<Vec<_>>();
         let polls_of = |p: &str| polls.iter().filter(|x| x.platform == p).cloned().collect::<Vec<_>>();
         match v {
@@ -1978,7 +2091,31 @@ impl Chat {
         }
     }
 
+    /// Each column says what is wrong with the chat it shows (the stream ended, not connected).
+    fn refresh_notices(&self) {
+        let states: Vec<ChatState> =
+            query(&self.cmds, |e| PLATFORMS.map(|p| e.chat_state(p)).to_vec()).unwrap_or_default();
+        let state = |i: usize| states.get(i).copied().unwrap_or(ChatState::Live);
+        if self.view.value() == 1 {
+            for (i, col) in self.side.iter().enumerate() {
+                col.show_notice(Some(PLATFORMS[i]), state(i));
+            }
+            self.main.show_notice(None, ChatState::Live);
+            return;
+        }
+        let shown: Vec<usize> = match self.shown().and_then(|s| PLATFORMS.iter().position(|p| *p == s)) {
+            Some(i) => vec![i],
+            None => self.plats.borrow().clone(),
+        };
+        // The first one in trouble.
+        match shown.iter().copied().find(|i| state(*i) != ChatState::Live) {
+            Some(i) => self.main.show_notice(Some(PLATFORMS[i]), state(i)),
+            None => self.main.show_notice(None, ChatState::Live),
+        }
+    }
+
     fn refresh_senders(&self) {
+        self.refresh_notices();
         if self.view.value() == 1 {
             for col in &self.side {
                 col.refresh_sender(&self.cfg, &self.cmds);
@@ -2234,6 +2371,32 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
             });
             me.borrow().images();
         });
+    }
+    // Which chats the views show: each platform's, to put one back after Hide chat.
+    for (i, name) in NAMES.into_iter().enumerate() {
+        let hidden = cfg.borrow().window.chat_hidden.iter().any(|h| h == PLATFORMS[i]);
+        let flag = if hidden {
+            fltk::menu::MenuFlag::Toggle
+        } else {
+            fltk::menu::MenuFlag::Toggle | fltk::menu::MenuFlag::Value
+        };
+        let cfg = cfg.clone();
+        opts.add(
+            &trf("chat.opt_show_chat", &[("platform", name)]),
+            fltk::enums::Shortcut::None,
+            flag,
+            move |m| {
+                let on = m.at(3 + i as i32).is_some_and(|x| x.value());
+                cfg.send_modify(|c| {
+                    let h = &mut c.window.chat_hidden;
+                    h.retain(|x| x != PLATFORMS[i]);
+                    if !on {
+                        h.push(PLATFORMS[i].to_string());
+                    }
+                });
+                crate::ui::changed();
+            },
+        );
     }
     clear.set_callback({
         let me = me.clone();
@@ -3100,7 +3263,9 @@ fn emote_picker_popup(
 /// it drops), as indexes in PLATFORMS.
 fn shown_platforms(cmds: &Cmds) -> Vec<usize> {
     query(cmds, |e| {
+        let hidden = e.config().window.chat_hidden.clone();
         (0..4)
+            .filter(|&i| !hidden.iter().any(|h| h == PLATFORMS[i]))
             .filter(|&i| e.chat_connected(PLATFORMS[i]) || e.chat_has(PLATFORMS[i]))
             .collect()
     })

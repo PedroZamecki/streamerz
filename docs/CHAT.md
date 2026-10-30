@@ -10,14 +10,19 @@ How the chat page behaves. For what each trigger and sub-action does, see the re
   moderator, broadcaster): nobody can ban or time out the broadcaster or themselves, moderators leave
   each other to the owner, and a viewer only gets Reply and Copy.
 - A message from Twitch that starts with `/me` is shown in italics, in the sender's colour.
+- What you send to Kick, YouTube or TikTok shows at once and is replaced by the platform's own copy when it
+  comes back (a failed send takes the line away and says why). The log says how long each send took.
 - An `@name` that names one of our logged-in accounts sits on a chip, so it stands out. The chip follows
   the theme (light and dark).
 
 ## Twitch chat commands
 
-Twitch's chat API sends text as text, so Streamerz turns a command typed in the box (or picked from the
-menu next to the emote button, Twitch's chat only) into the call it stands for. A command that needs
-more than our role allows says so in the chat instead of failing with an error from Twitch.
+Twitch's chat API sends text as text, so Streamerz turns a command typed in the box into the call it
+stands for. Type `/` in Twitch's chat box and a list opens above it with each command, what it takes and
+what it does (arrows or Tab to pick, Enter to finish it, Escape to close). A command with common values
+lists them after its name: `/commercial ` offers 30, 60, 90, 120, 150 and 180. The list only shows what
+your role in that channel can do (the owner's commands are hidden from a moderator), and a command that
+needs more says so in the chat instead of failing with an error from Twitch.
 
 | Command | Does | Needs |
 | --- | --- | --- |
@@ -38,6 +43,28 @@ more than our role allows says so in the chat instead of failing with an error f
 
 A command Streamerz doesn't know isn't sent (it would show up as plain text in the chat). In dev mode
 nothing is sent: the chat shows what would have been.
+
+## At the top of a chat
+
+- A message pinned in a chat shows as a card with who pinned it and the time left.
+- A poll or prediction going on shows as a card with each choice's share (a prediction: the points on it),
+  the time left, and for a short while after it ends, the result.
+- A channel reward redeemed shows as a line with its price in channel points.
+- A badge's tooltip says what it means; an emote's, where it comes from (Twitch, 7TV, BetterTTV...).
+
+## When a stream stops
+
+Each chat tells when its platform is not live: "the stream ended" (Twitch, Kick, YouTube and TikTok tell
+when it does), "waiting for the stream to start" (YouTube and TikTok, which watch for it), or "not
+connected". The notice sits above the chat box with Reconnect (not for an ended stream: the chat stays
+connected and can still take messages) and Hide chat. A hidden chat leaves every view and its pins and
+polls go with it; Options > "Show ... chat" puts it back.
+
+## Our role
+
+Streamerz knows what the logged-in account is in each channel as it connects: Twitch is asked, Kick says
+it (moderator or owner) without any login, and for YouTube it comes from our own earlier messages in the
+chat's history, and from the next one we send.
 
 ## Connections that drop
 

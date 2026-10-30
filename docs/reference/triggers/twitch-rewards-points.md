@@ -15,7 +15,9 @@ Fires when a viewer redeems a custom Channel Points reward.
 
 ### Fields
 
-None.
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Reward (none: any) | `rewardId` | The reward this is for: picked from the channel's rewards (found when connected), or typed, by name or id. Empty: any reward. |
 
 ### Arguments
 
@@ -50,7 +52,9 @@ Fires when a custom Channel Points reward is created.
 
 ### Fields
 
-None.
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Reward (none: any) | `rewardId` | The reward this is for: picked from the channel's rewards (found when connected), or typed, by name or id. Empty: any reward. |
 
 ### Arguments
 
@@ -76,7 +80,9 @@ Fires when a custom Channel Points reward is changed.
 
 ### Fields
 
-None.
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Reward (none: any) | `rewardId` | The reward this is for: picked from the channel's rewards (found when connected), or typed, by name or id. Empty: any reward. |
 
 ### Arguments
 
@@ -98,7 +104,9 @@ Fires when the status of a redemption changes on Twitch.
 
 ### Fields
 
-None.
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Reward (none: any) | `rewardId` | The reward this is for: picked from the channel's rewards (found when connected), or typed, by name or id. Empty: any reward. |
 
 ### Arguments
 
