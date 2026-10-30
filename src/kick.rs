@@ -2194,6 +2194,7 @@ mod tests {
 
     #[test]
     fn a_kick_reward_shows_what_it_cost() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
         crate::engine::tests::run(async {
             let engine = crate::engine::tests::engine(json!({"actions": []}));
             known_rewards(&json!({"data": [

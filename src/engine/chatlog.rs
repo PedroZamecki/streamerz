@@ -1977,6 +1977,7 @@ mod tests {
 
     #[test]
     fn a_message_sent_with_a_reward_has_it_over_it() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
         crate::engine::tests::run(async {
             let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
             let args = |v: Value| v.as_object().cloned().unwrap();
@@ -2039,6 +2040,7 @@ mod tests {
 
     #[test]
     fn events_show_in_the_chat_once_and_in_words() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
         crate::engine::tests::run(async {
             let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
             let a = |v: Value| v.as_object().cloned().unwrap();

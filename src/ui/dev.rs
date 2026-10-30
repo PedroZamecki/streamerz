@@ -103,6 +103,11 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
             }
             None => "relogin Twitch|YouTube|Kick|TikTok [bot]".into(),
         },
+        // Hides or shows the window, as a click on the tray icon does.
+        "toggle" => {
+            crate::ui::toggle();
+            "ok".into()
+        }
         "panic" => panic!("dev panic"),
         _ => "commands: shot, windows, tree, find, page, chat, community, panic".into(),
     }

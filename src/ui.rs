@@ -266,6 +266,13 @@ pub fn confirm(text: String, no: &'static str, yes: &'static str) -> oneshot::Re
     rx
 }
 
+/// Hides the window when it's up, shows it when it's hidden (the tray icon's click).
+pub fn toggle() {
+    if let Some(ui) = UI.get() {
+        ui.send(Msg::Toggle);
+    }
+}
+
 /// Logins that ran out: the platform and whether it is the bot's.
 type Relogin = (&'static str, bool);
 static RELOGINS: Mutex<Vec<Relogin>> = Mutex::new(Vec::new());

@@ -689,6 +689,19 @@ pub fn populate_chat_vars(args: &mut Obj, ctx: &ChatContext) {
     }
 }
 
+/// The message this one replies to, if it is a reply (`"reply": null` on a message that isn't one).
+fn reply_of(event: &Value) -> Option<ReplyInfo> {
+    let r = event.get("reply").filter(|r| r.is_object())?;
+    let field = |k: &str| r.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    Some(ReplyInfo {
+        msg_id: field("parent_message_id"),
+        user_id: field("parent_user_id"),
+        user_login: field("parent_user_login"),
+        user_name: field("parent_user_name"),
+        msg_body: field("parent_message_body"),
+    })
+}
+
 /// Helper to parse role and subscriber status from Twitch badges array.
 pub fn parse_badges(badges: &[Value], is_broadcaster: bool) -> (u8, bool) {
     if is_broadcaster {
@@ -2391,20 +2404,7 @@ fn handle_notification(
             let (role, sub) = parse_badges(badges, chatter_id == broadcaster.user_id);
             let cheer_bits = event.pointer("/cheer/bits").and_then(Value::as_u64).unwrap_or(0);
 
-            let mut reply_info = None;
-            if let Some(r) = event.get("reply") {
-                reply_info = Some(ReplyInfo {
-                    msg_id: r.get("parent_message_id").and_then(Value::as_str).unwrap_or("").into(),
-                    user_id: r.get("parent_user_id").and_then(Value::as_str).unwrap_or("").into(),
-                    user_login: r.get("parent_user_login").and_then(Value::as_str).unwrap_or("").into(),
-                    user_name: r.get("parent_user_name").and_then(Value::as_str).unwrap_or("").into(),
-                    msg_body: r
-                        .get("parent_message_body")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .into(),
-                });
-            }
+            let reply_info = reply_of(event);
 
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
@@ -4738,9 +4738,19 @@ async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
 #[cfg(test)]
 pub(crate) mod tests {
     #[test]
+    fn a_message_with_a_null_reply_is_not_a_reply() {
+        use super::*;
+        assert!(reply_of(&json!({"message_id": "m", "reply": null})).is_none());
+        assert!(reply_of(&json!({"message_id": "m"})).is_none());
+        let r = reply_of(&json!({"reply": {"parent_message_id": "p", "parent_user_login": "ann"}})).unwrap();
+        assert_eq!((r.msg_id.as_str(), r.user_login.as_str()), ("p", "ann"));
+    }
+
+    #[test]
     fn two_refreshes_at_once_keep_the_login() {
         use super::*;
         use std::cell::Cell;
+        let _g = crate::TEST_LOCK.lock().unwrap();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
