@@ -157,83 +157,9 @@ pub fn allowed(platform: &str, me: Role, my_id: &str, t: Target<'_>) -> Allowed 
     }
 }
 
-/// The least role a Twitch Helix call needs (`path` as given to `helix`, without the leading slash):
-/// the owner's for the channel's own business, a moderator's for moderation, anyone's for the rest.
-pub fn twitch_needs(method: &str, path: &str) -> Role {
-    let path = path.trim_start_matches('/');
-    let under = |p: &str| path == p || path.starts_with(&format!("{p}/"));
-    const OWNER: &[&str] = &[
-        "channel_points",
-        "polls",
-        "predictions",
-        "raids",
-        "channels/commercial",
-        "channels/ads",
-        "channels/vips",
-        "moderation/moderators",
-        "subscriptions",
-        "charity",
-        "goals",
-        "hypetrain",
-        "bits",
-        "streams/markers",
-        "schedule",
-        "guest_star",
-        "channels/editors",
-    ];
-    const MODERATOR: &[&str] = &[
-        "moderation",
-        "chat/shoutouts",
-        "chat/announcements",
-        "chat/chatters",
-        "chat/pins",
-    ];
-    if OWNER.iter().any(|p| under(p)) || (path == "channels" && method != "GET") {
-        Role::Broadcaster
-    } else if MODERATOR.iter().any(|p| under(p)) || (path == "chat/settings" && method != "GET") {
-        Role::Moderator
-    } else {
-        Role::Viewer
-    }
-}
-
-/// Why a Twitch call isn't tried with our role, or None when it may be.
-pub fn twitch_refusal(method: &str, path: &str) -> Option<String> {
-    let (me, _) = get("twitch");
-    let needs = twitch_needs(method, path);
-    (me < needs).then(|| {
-        format!(
-            "needs the channel's {} (this account is a {} there)",
-            if needs == Role::Broadcaster {
-                "owner"
-            } else {
-                "moderator"
-            },
-            me.name()
-        )
-    })
-}
-
-/// Whether a Twitch EventSub subscription can be had with `me`'s role: everything for the owner; for a
-/// moderator what names a moderator or a reader (except Guest Star, which needs a scope only owners grant
-/// here); for anyone else only what names the reader, and the public events.
-pub fn twitch_can_subscribe(me: Role, stype: &str, cond: &serde_json::Value) -> bool {
-    if me == Role::Broadcaster {
-        return true;
-    }
-    let public = matches!(
-        stype,
-        "stream.online" | "stream.offline" | "channel.update" | "channel.raid"
-    );
-    let reader = cond.get("user_id").is_some();
-    let moderator = cond.get("moderator_user_id").is_some() && !stype.starts_with("channel.guest_star");
-    public || reader || (me.moderates() && moderator)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn t(user_id: &str, broadcaster: bool, moderator: bool) -> Target<'_> {
         Target {
@@ -308,42 +234,6 @@ mod tests {
         );
         let a = allowed("tiktok", Role::Broadcaster, "1", t("3", false, false));
         assert!(!a.ban && !a.timeout, "TikTok has no moderation API");
-    }
-
-    #[test]
-    fn helix_calls_need_the_right_role() {
-        assert_eq!(twitch_needs("POST", "polls"), Role::Broadcaster);
-        assert_eq!(twitch_needs("GET", "channel_points/custom_rewards"), Role::Broadcaster);
-        assert_eq!(twitch_needs("PATCH", "channels"), Role::Broadcaster);
-        assert_eq!(twitch_needs("GET", "channels"), Role::Viewer);
-        assert_eq!(twitch_needs("POST", "moderation/bans"), Role::Moderator);
-        assert_eq!(twitch_needs("PATCH", "chat/settings"), Role::Moderator);
-        assert_eq!(twitch_needs("GET", "chat/settings"), Role::Viewer);
-        assert_eq!(twitch_needs("GET", "moderation/moderators"), Role::Broadcaster);
-        assert_eq!(twitch_needs("POST", "chat/messages"), Role::Viewer);
-        assert_eq!(twitch_needs("GET", "users"), Role::Viewer);
-    }
-
-    #[test]
-    fn subscriptions_follow_the_role() {
-        let modr = json!({"broadcaster_user_id": "1", "moderator_user_id": "2"});
-        let reader = json!({"broadcaster_user_id": "1", "user_id": "2"});
-        let owner = json!({"broadcaster_user_id": "1"});
-        assert!(twitch_can_subscribe(
-            Role::Broadcaster,
-            "channel.guest_star_session.begin",
-            &modr
-        ));
-        assert!(!twitch_can_subscribe(
-            Role::Moderator,
-            "channel.guest_star_settings.update",
-            &modr
-        ));
-        assert!(twitch_can_subscribe(Role::Moderator, "channel.follow", &modr));
-        assert!(!twitch_can_subscribe(Role::Viewer, "channel.follow", &modr));
-        assert!(twitch_can_subscribe(Role::Viewer, "channel.chat.message", &reader));
-        assert!(twitch_can_subscribe(Role::Viewer, "stream.online", &owner));
-        assert!(!twitch_can_subscribe(Role::Moderator, "channel.poll.begin", &owner));
     }
 
     #[test]

@@ -8,7 +8,7 @@ Twitch predictions on the channel: read the one that is running, start one, canc
 - Code: 567
 - Type: TwitchGetActivePrediction
 - Category: Twitch/Predictions
-- Needs: the channel owner's Twitch login (see `src/roles.rs`)
+- Needs: a Twitch login. Twitch decides who may do it on a channel (its guide says moderators and editors can manage polls; the call's reference says the broadcaster); if it refuses, its answer is logged
 
 Reads the prediction that is running, if there is one.
 
@@ -35,7 +35,7 @@ When a prediction is running, also:
 - Code: 568
 - Type: TwitchCreatePrediction
 - Category: Twitch/Predictions
-- Needs: the channel owner's Twitch login (see `src/roles.rs`)
+- Needs: a Twitch login. Twitch decides who may do it on a channel (its guide says moderators and editors can manage polls; the call's reference says the broadcaster); if it refuses, its answer is logged
 
 Starts a prediction on the channel.
 
@@ -63,7 +63,7 @@ Starts a prediction on the channel.
 - Code: 569
 - Type: TwitchCancelActivePrediction
 - Category: Twitch/Predictions
-- Needs: the channel owner's Twitch login (see `src/roles.rs`)
+- Needs: a Twitch login. Twitch decides who may do it on a channel (its guide says moderators and editors can manage polls; the call's reference says the broadcaster); if it refuses, its answer is logged
 
 Cancels the prediction that is running.
 
@@ -87,7 +87,7 @@ None.
 - Code: 570
 - Type: TwitchLockActivePrediction
 - Category: Twitch/Predictions
-- Needs: the channel owner's Twitch login (see `src/roles.rs`)
+- Needs: a Twitch login. Twitch decides who may do it on a channel (its guide says moderators and editors can manage polls; the call's reference says the broadcaster); if it refuses, its answer is logged
 
 Locks the active prediction, so no more votes come in.
 
@@ -111,7 +111,7 @@ None.
 - Code: 571
 - Type: TwitchResolveLastPrediction
 - Category: Twitch/Predictions
-- Needs: the channel owner's Twitch login (see `src/roles.rs`)
+- Needs: a Twitch login. Twitch decides who may do it on a channel (its guide says moderators and editors can manage polls; the call's reference says the broadcaster); if it refuses, its answer is logged
 
 Resolves the prediction with the winning outcome, picked by its position.
 
@@ -140,7 +140,7 @@ Resolves the prediction with the winning outcome, picked by its position.
 - Code: 572
 - Type: TwitchResolveLastPredictionByTitle
 - Category: Twitch/Predictions
-- Needs: the channel owner's Twitch login (see `src/roles.rs`)
+- Needs: a Twitch login. Twitch decides who may do it on a channel (its guide says moderators and editors can manage polls; the call's reference says the broadcaster); if it refuses, its answer is logged
 
 Resolves the prediction with the winning outcome, picked by its title.
 

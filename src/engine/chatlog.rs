@@ -717,6 +717,9 @@ impl Engine {
                 mine.msg_id = line.msg_id;
                 mine.badges = line.badges;
                 mine.emotes = line.emotes;
+                mine.color = line.color;
+                (mine.broadcaster, mine.moderator, mine.vip, mine.subscriber) =
+                    (line.broadcaster, line.moderator, line.vip, line.subscriber);
                 log.reset_gen += 1;
                 drop(st);
                 crate::ui::chat();
@@ -894,12 +897,20 @@ impl Engine {
         badges
             .iter()
             .map(|(k, url)| {
+                // Twitch's pictures come from its badge sets, by set and version.
+                let url = if url.is_empty() && platform == "twitch" {
+                    crate::twitch::badge_url(k)
+                        .or_else(|| crate::twitch::badge_url(&format!("{k}/1")))
+                        .unwrap_or_default()
+                } else {
+                    url.clone()
+                };
                 let title = match platform {
                     "twitch" => crate::twitch::badge_title(k),
                     _ => None,
                 }
                 .unwrap_or_else(|| badge_name(k));
-                (k.clone(), url.clone(), title)
+                (k.clone(), url, title)
             })
             .collect()
     }
@@ -1525,6 +1536,14 @@ impl Engine {
         let (plain, emotes) = normalize_line_emotes(platform, plain, &[]);
         let mut st = self.st.borrow_mut();
         let log = &mut st.chat_log;
+        // Our name's colour and badges as the chat showed them last, until the platform's own copy says.
+        let (color, badges) = log
+            .lines
+            .iter()
+            .rev()
+            .find(|l| l.platform == platform && l.user_id == id && !l.note && !l.local)
+            .map(|l| (l.color.clone(), l.badges.clone()))
+            .unwrap_or_default();
         log.push(Line {
             platform: platform.into(),
             time: crate::fmt::shown_time(&crate::fmt::now()),
@@ -1534,6 +1553,8 @@ impl Engine {
             text: plain,
             emotes,
             action,
+            color,
+            badges,
             local: true,
             broadcaster: own && role == crate::roles::Role::Broadcaster,
             moderator: own && role.moderates(),
@@ -1702,7 +1723,10 @@ impl Engine {
             }
             let e = self.clone();
             // Elsewhere than Twitch (whose copy comes back at once) the line shows as it is sent.
-            let local = (p != "twitch").then(|| self.chat_local(p, &text, bot)).flatten();
+            let command = crate::slash::is_command(&text);
+            let local = (p != "twitch" && !(p == "kick" && command))
+                .then(|| self.chat_local(p, &text, bot))
+                .flatten();
             let started = std::time::Instant::now();
             // Twitch's chat commands (/commercial, /timeout...) are calls, not text.
             if p == "twitch" && crate::slash::is_command(&text) {
@@ -1710,6 +1734,15 @@ impl Engine {
                     match crate::slash::run(&e, &text, bot, fallback).await {
                         Ok(done) if !done.is_empty() => e.chat_note(p, done),
                         Ok(_) => {}
+                        Err(err) => e.chat_note(p, format!("{text}: {}", plain_error(&err))),
+                    }
+                });
+                continue;
+            }
+            if p == "kick" && crate::slash::is_command(&text) {
+                tokio::task::spawn_local(async move {
+                    match crate::slash::run_kick(&e, &text).await {
+                        Ok(done) => e.chat_note(p, done),
                         Err(err) => e.chat_note(p, format!("{text}: {}", plain_error(&err))),
                     }
                 });
@@ -1782,11 +1815,15 @@ mod tests {
                 user: "umanana".into(),
                 msg_id: "k-1".into(),
                 text: "hello there".into(),
+                args: [("color".to_string(), serde_json::json!("#B27CFF"))]
+                    .into_iter()
+                    .collect(),
                 ..Default::default()
             });
             let (_, _, lines) = e.chat_sync(999, 0);
             assert_eq!(lines.len(), 1, "no second line");
             assert_eq!((lines[0].local, lines[0].msg_id.as_str()), (false, "k-1"));
+            assert_eq!(lines[0].color, "#B27CFF", "Kick's colour, not a guess");
             // A failed send takes its line away.
             let seq2 = e.chat_local("kick", "never arrives", false).unwrap();
             e.chat_unlocal(seq2);

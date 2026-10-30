@@ -1157,12 +1157,6 @@ impl Runner {
         use_bot: bool,
         fallback: bool,
     ) -> Result<Value, String> {
-        // What our role can't do isn't tried (the bot only sends and reads, as anyone may).
-        if !use_bot {
-            if let Some(why) = crate::roles::twitch_refusal(method, path) {
-                return Err(why);
-            }
-        }
         let (token, broadcaster_id, sender_id) = self.pick_account(use_bot, fallback)?;
         // Who moderates: the logged-in account (on someone else's channel, a moderator there).
         let moderator_id = {
@@ -1779,14 +1773,29 @@ async fn channel_role(token: &str, bid: &str, me: &str, login: &str) -> crate::r
     let role = if bid == me {
         Role::Broadcaster
     } else {
-        let url = format!("{HELIX_URL}/chat/chatters?broadcaster_id={bid}&moderator_id={me}&first=1");
         let headers = vec![
             ("Client-Id".into(), CLIENT_ID.into()),
             ("Authorization".into(), format!("Bearer {token}")),
         ];
-        match crate::http::request("GET", &url, &headers, &[]).await {
-            Ok(r) if r.status == 200 => Role::Moderator,
-            _ => Role::Viewer,
+        // Twitch's own list of the channel's moderators, asked for us: a yes or no from Twitch.
+        let url = format!("{HELIX_URL}/moderation/moderators?broadcaster_id={bid}&user_id={me}");
+        let listed = match crate::http::request("GET", &url, &headers, &[]).await {
+            Ok(r) if r.status == 200 => serde_json::from_slice::<Value>(&r.body)
+                .ok()
+                .map(|v| v["data"].as_array().is_some_and(|d| !d.is_empty())),
+            _ => None,
+        };
+        match listed {
+            Some(true) => Role::Moderator,
+            Some(false) => Role::Viewer,
+            // The list refused us (a scope the login lacks): only moderators may list the chatters.
+            None => {
+                let url = format!("{HELIX_URL}/chat/chatters?broadcaster_id={bid}&moderator_id={me}&first=1");
+                match crate::http::request("GET", &url, &headers, &[]).await {
+                    Ok(r) if r.status == 200 => Role::Moderator,
+                    _ => Role::Viewer,
+                }
+            }
         }
     };
     // A lead moderator's badge (seen on our messages) says more than the probe.
@@ -2027,15 +2036,32 @@ async fn create_all_subscriptions(
         ("channel.shared_chat.end", "1", json!({"broadcaster_user_id": bid})),
     ];
 
-    // Only what our role may read (roles.rs): the rest would only be refused.
-    for (stype, ver, cond) in subs
-        .into_iter()
-        .filter(|s| crate::roles::twitch_can_subscribe(role, s.0, &s.2))
-    {
-        if !create_sub(sid, token, stype, ver, cond, auth_refused).await {
-            break;
+    // Twitch says what this account may have: nothing is assumed. What it refuses is told once, below.
+    let mut refused = Vec::new();
+    for (stype, ver, cond) in subs {
+        match create_sub(sid, token, stype, ver, cond, auth_refused).await {
+            Sub::Made => {}
+            Sub::Refused => refused.push(stype),
+            Sub::Stop => break,
         }
     }
+    if !refused.is_empty() {
+        crate::say(format!(
+            "Twitch: {} of this channel's events aren't open to this account (as {}), so Twitch refused them: {}",
+            refused.len(),
+            role.name(),
+            refused.join(", ")
+        ));
+    }
+}
+
+/// How a subscription went.
+enum Sub {
+    Made,
+    /// Twitch said this account can't have it.
+    Refused,
+    /// The rest shouldn't be tried (the token or the session is gone).
+    Stop,
 }
 
 thread_local! {
@@ -2056,7 +2082,8 @@ fn subs_url(ws: &str) -> String {
     }
 }
 
-/// False when the rest should not be tried: the token was refused (every other one would be too) or the session is gone.
+/// Makes one subscription. `Stop` when the rest should not be tried: the token was refused (every other one
+/// would be too) or the session is gone.
 async fn create_sub(
     sid: &str,
     token: &str,
@@ -2064,7 +2091,7 @@ async fn create_sub(
     version: &str,
     condition: Value,
     auth_refused: &AtomicBool,
-) -> bool {
+) -> Sub {
     let url = SUBS_URL.with_borrow(Clone::clone);
     let headers = vec![
         ("Client-Id".into(), CLIENT_ID.into()),
@@ -2085,18 +2112,23 @@ async fn create_sub(
         Ok(r) => r,
         Err(e) => {
             crate::error(format!("Twitch: create sub {sub_type}: {e}"));
-            return true;
+            return Sub::Made;
         }
     };
     if res.status == 401 {
         auth_refused.store(true, Ordering::Relaxed);
         crate::warn("Twitch: token rejected (HTTP 401); refreshing...".into());
-        return false;
+        return Sub::Stop;
     }
     // The session closed under us (a channel change, a drop): the rest would be refused the same way.
     if res.status == 400 && res.text().contains("already disconnected") {
         crate::debug(format!("Twitch: session closed before {sub_type}; setup stopped"));
-        return false;
+        return Sub::Stop;
+    }
+    // 403: this account isn't allowed that one (a moderator asking for the owner's).
+    if res.status == 403 {
+        crate::debug(format!("Twitch: {sub_type} refused: {}", res.text()));
+        return Sub::Refused;
     }
     if res.status != 202 && res.status != 200 {
         crate::error(format!(
@@ -2105,7 +2137,7 @@ async fn create_sub(
             res.text()
         ));
     }
-    true
+    Sub::Made
 }
 
 fn unescape_irc_tag(v: &str) -> String {
@@ -4295,33 +4327,41 @@ fn pyramid(user: (&str, &str, &str), text: &str) -> Option<(bool, Who, String, u
     })
 }
 
-/// The badge sets (global, and the channel's when `channel_id` is given) from Twitch's public badge
-/// service: no login needed, so a chat read anonymously has its badge pictures too.
+/// The badge sets (global, and the channel's when `channel_id` is given) from Twitch's public web API (the
+/// one twitch.tv's own chat asks): no login needed, so a chat read anonymously has its badge pictures too.
 pub async fn load_public_badges(channel_id: &str) {
-    let mut urls = vec!["https://badges.twitch.tv/v1/badges/global/display".to_string()];
-    if channel_id.bytes().all(|b| b.is_ascii_digit()) && !channel_id.is_empty() {
-        urls.push(format!(
-            "https://badges.twitch.tv/v1/badges/channels/{channel_id}/display"
+    let headers = [
+        ("Client-Id".to_string(), "kimne78kx3ncx6brgo4mv6wki5h1ko".to_string()),
+        ("Content-Type".to_string(), "application/json".to_string()),
+    ];
+    let fields = "imageURL(size: QUADRUPLE) setID title version";
+    let mut queries = vec![(format!("{{ badges {{ {fields} }} }}"), "/data/badges")];
+    if !channel_id.is_empty() && channel_id.bytes().all(|b| b.is_ascii_digit()) {
+        queries.push((
+            format!("{{ user(id: \"{channel_id}\") {{ broadcastBadges {{ {fields} }} }} }}"),
+            "/data/user/broadcastBadges",
         ));
     }
-    for url in urls {
-        let Ok(r) = crate::http::request("GET", &url, &[], b"").await else {
+    for (q, at) in queries {
+        let body = json!({ "query": q }).to_string();
+        let Ok(r) = crate::http::request("POST", "https://gql.twitch.tv/gql", &headers, body.as_bytes()).await else {
             continue;
         };
         let Ok(v) = serde_json::from_slice::<Value>(&r.body) else {
             continue;
         };
         SEEN.with_borrow_mut(|s| {
-            for (set, body) in v["badge_sets"].as_object().into_iter().flatten() {
-                for (ver, b) in body["versions"].as_object().into_iter().flatten() {
-                    let key = format!("{set}/{ver}");
-                    let url = b["image_url_4x"].as_str().or(b["image_url_1x"].as_str()).unwrap_or("");
-                    if !url.is_empty() {
-                        s.badges.insert(key.clone(), url.into());
-                    }
-                    if let Some(t) = b["title"].as_str().filter(|t| !t.is_empty()) {
-                        s.badge_titles.insert(key, t.into());
-                    }
+            for b in v.pointer(at).and_then(Value::as_array).into_iter().flatten() {
+                let key = format!(
+                    "{}/{}",
+                    b["setID"].as_str().unwrap_or(""),
+                    b["version"].as_str().unwrap_or("")
+                );
+                if let Some(url) = b["imageURL"].as_str().filter(|u| !u.is_empty()) {
+                    s.badges.insert(key.clone(), url.into());
+                }
+                if let Some(t) = b["title"].as_str().filter(|t| !t.is_empty()) {
+                    s.badge_titles.insert(key, t.into());
                 }
             }
         });
@@ -4359,6 +4399,18 @@ pub async fn public_profile(user_id: &str) -> Option<Value> {
     Some(v["data"]["user"].clone()).filter(Value::is_object)
 }
 
+/// What the channel's owner is on Twitch: "partner", "affiliate" or "" (neither). Read at connect.
+static CHANNEL_TYPE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Whether the channel may run commercials (only affiliates and partners can); true when not known yet.
+pub fn commercials_possible() -> bool {
+    CHANNEL_TYPE
+        .lock()
+        .ok()
+        .and_then(|t| t.clone())
+        .is_none_or(|t| t == "partner" || t == "affiliate")
+}
+
 /// Puts the channel's rewards (as known) where the editors offer them.
 fn publish_rewards() {
     let list = SEEN.with_borrow(|s| {
@@ -4381,6 +4433,18 @@ async fn seed(engine: &Rc<Engine>) {
     let rewards = tw
         .helix("GET", "channel_points/custom_rewards", b.clone(), None, false, false)
         .await;
+    // Affiliates and partners only can run commercials: the owner's account type says.
+    let owner = channel_id(&engine.config());
+    if !owner.is_empty() {
+        if let Ok(v) = tw
+            .helix("GET", "users", vec![("id", owner.as_str())], None, false, false)
+            .await
+        {
+            if let Ok(mut t) = CHANNEL_TYPE.lock() {
+                *t = v["data"][0]["broadcaster_type"].as_str().map(String::from);
+            }
+        }
+    }
     let global = tw.helix("GET", "chat/badges/global", vec![], None, false, false).await;
     let own = tw.helix("GET", "chat/badges", b, None, false, false).await;
     SEEN.with_borrow_mut(|s| {
@@ -4507,21 +4571,6 @@ async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    #[test]
-    fn a_moderator_subscribes_to_chat_and_moderation_only() {
-        use super::*;
-        let chat = json!({"broadcaster_user_id": "1", "user_id": "2"});
-        let modr = json!({"broadcaster_user_id": "1", "moderator_user_id": "2"});
-        let owner = json!({"broadcaster_user_id": "1"});
-        let can = |stype, cond| crate::roles::twitch_can_subscribe(crate::roles::Role::Moderator, stype, cond);
-        assert!(can("channel.chat.message", &chat));
-        assert!(can("channel.follow", &modr));
-        assert!(can("stream.online", &owner));
-        assert!(!can("channel.bits.use", &owner));
-        assert!(!can("channel.poll.begin", &owner));
-        assert!(!can("channel.guest_star_session.begin", &modr));
-    }
-
     #[test]
     fn another_channel_is_read_by_id_once_known() {
         use super::*;

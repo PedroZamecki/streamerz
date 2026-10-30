@@ -37,9 +37,9 @@ impl Suggest {
         self.rows.borrow_mut().clear();
     }
 
-    /// Shows what `input` holds fits (or takes the list away when nothing does), for our role `me`.
-    pub fn update(&self, input: &Input, me: crate::roles::Role) {
-        let mut rows = suggestions(&input.value(), me);
+    /// Shows what `input` holds fits (or takes the list away when nothing does), for `platform`'s commands.
+    pub fn update(&self, input: &Input, platform: &str) {
+        let mut rows = suggestions(&input.value(), platform, crate::twitch::commercials_possible());
         rows.truncate(MOST);
         if rows.is_empty() {
             return self.hide();
@@ -152,7 +152,7 @@ impl Suggest {
 
     /// A key in the box while the list is up: true when the list took it (the arrows, Tab, Escape, and
     /// Enter when it finishes a command instead of sending).
-    pub fn key(&self, input: &mut Input, me: crate::roles::Role) -> bool {
+    pub fn key(&self, input: &mut Input, platform: &str) -> bool {
         if !self.is_open() {
             return false;
         }
@@ -160,7 +160,7 @@ impl Suggest {
         let key = app::event_key();
         let done = |s: &Self, input: &mut Input| {
             s.complete(input);
-            s.update(input, me);
+            s.update(input, platform);
             true
         };
         match key {

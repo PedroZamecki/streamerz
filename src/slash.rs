@@ -36,8 +36,6 @@ pub enum Cmd {
     Say(String),
 }
 
-use crate::roles::Role;
-
 /// One command as the box suggests it.
 pub struct Info {
     pub name: &'static str,
@@ -45,24 +43,15 @@ pub struct Info {
     pub args: &'static str,
     /// The i18n key of what it does.
     pub about: &'static str,
-    /// What it takes to use it (the box hides what our role can't).
-    pub needs: Role,
     /// Values worth one click after the name: `/commercial 30`.
     pub presets: &'static [&'static str],
 }
 
-const fn info(
-    name: &'static str,
-    args: &'static str,
-    about: &'static str,
-    needs: Role,
-    presets: &'static [&'static str],
-) -> Info {
+const fn info(name: &'static str, args: &'static str, about: &'static str, presets: &'static [&'static str]) -> Info {
     Info {
         name,
         args,
         about,
-        needs,
         presets,
     }
 }
@@ -73,74 +62,47 @@ pub const COMMANDS: &[Info] = &[
         "commercial",
         "[length]",
         "slash.commercial",
-        Role::Broadcaster,
         &["30", "60", "90", "120", "150", "180"],
     ),
-    info("clear", "", "slash.clear", Role::Moderator, &[]),
-    info("delete", "<message id>", "slash.delete", Role::Moderator, &[]),
+    info("clear", "", "slash.clear", &[]),
+    info("delete", "<message id>", "slash.delete", &[]),
     info(
         "timeout",
         "<user> [length] [reason]",
         "slash.timeout",
-        Role::Moderator,
         &["10m", "1h", "1d", "1w"],
     ),
-    info("ban", "<user> [reason]", "slash.ban", Role::Moderator, &[]),
-    info("unban", "<user>", "slash.unban", Role::Moderator, &[]),
-    info(
-        "slow",
-        "[seconds]",
-        "slash.slow",
-        Role::Moderator,
-        &["10", "30", "60", "120"],
-    ),
-    info("slowoff", "", "slash.slowoff", Role::Moderator, &[]),
+    info("ban", "<user> [reason]", "slash.ban", &[]),
+    info("unban", "<user>", "slash.unban", &[]),
+    info("slow", "[seconds]", "slash.slow", &["10", "30", "60", "120"]),
+    info("slowoff", "", "slash.slowoff", &[]),
     info(
         "followers",
         "[length]",
         "slash.followers",
-        Role::Moderator,
         &["0", "10m", "1h", "1d", "1w"],
     ),
-    info("followersoff", "", "slash.followersoff", Role::Moderator, &[]),
-    info("subscribers", "", "slash.subscribers", Role::Moderator, &[]),
-    info("subscribersoff", "", "slash.subscribersoff", Role::Moderator, &[]),
-    info("emoteonly", "", "slash.emoteonly", Role::Moderator, &[]),
-    info("emoteonlyoff", "", "slash.emoteonlyoff", Role::Moderator, &[]),
-    info("uniquechat", "", "slash.uniquechat", Role::Moderator, &[]),
-    info("uniquechatoff", "", "slash.uniquechatoff", Role::Moderator, &[]),
-    info("shoutout", "<channel>", "slash.shoutout", Role::Moderator, &[]),
-    info("announce", "<message>", "slash.announce", Role::Moderator, &[]),
-    info("announceblue", "<message>", "slash.announceblue", Role::Moderator, &[]),
-    info(
-        "announcegreen",
-        "<message>",
-        "slash.announcegreen",
-        Role::Moderator,
-        &[],
-    ),
-    info(
-        "announceorange",
-        "<message>",
-        "slash.announceorange",
-        Role::Moderator,
-        &[],
-    ),
-    info(
-        "announcepurple",
-        "<message>",
-        "slash.announcepurple",
-        Role::Moderator,
-        &[],
-    ),
-    info("raid", "<channel>", "slash.raid", Role::Broadcaster, &[]),
-    info("unraid", "", "slash.unraid", Role::Broadcaster, &[]),
-    info("mod", "<user>", "slash.mod", Role::Broadcaster, &[]),
-    info("unmod", "<user>", "slash.unmod", Role::Broadcaster, &[]),
-    info("vip", "<user>", "slash.vip", Role::Broadcaster, &[]),
-    info("unvip", "<user>", "slash.unvip", Role::Broadcaster, &[]),
-    info("marker", "[description]", "slash.marker", Role::Broadcaster, &[]),
-    info("me", "<message>", "slash.me", Role::Anonymous, &[]),
+    info("followersoff", "", "slash.followersoff", &[]),
+    info("subscribers", "", "slash.subscribers", &[]),
+    info("subscribersoff", "", "slash.subscribersoff", &[]),
+    info("emoteonly", "", "slash.emoteonly", &[]),
+    info("emoteonlyoff", "", "slash.emoteonlyoff", &[]),
+    info("uniquechat", "", "slash.uniquechat", &[]),
+    info("uniquechatoff", "", "slash.uniquechatoff", &[]),
+    info("shoutout", "<channel>", "slash.shoutout", &[]),
+    info("announce", "<message>", "slash.announce", &[]),
+    info("announceblue", "<message>", "slash.announceblue", &[]),
+    info("announcegreen", "<message>", "slash.announcegreen", &[]),
+    info("announceorange", "<message>", "slash.announceorange", &[]),
+    info("announcepurple", "<message>", "slash.announcepurple", &[]),
+    info("raid", "<channel>", "slash.raid", &[]),
+    info("unraid", "", "slash.unraid", &[]),
+    info("mod", "<user>", "slash.mod", &[]),
+    info("unmod", "<user>", "slash.unmod", &[]),
+    info("vip", "<user>", "slash.vip", &[]),
+    info("unvip", "<user>", "slash.unvip", &[]),
+    info("marker", "[description]", "slash.marker", &[]),
+    info("me", "<message>", "slash.me", &[]),
 ];
 
 /// One line of the box's list.
@@ -156,16 +118,35 @@ pub struct Suggestion {
     pub more: bool,
 }
 
-/// The commands to suggest for what is typed so far (`typed` as in the box), for an account that is `me`:
-/// those whose name starts with what follows the `/`, or, once a command with presets is typed in full
-/// and a space after it, its presets.
-pub fn suggestions(typed: &str, me: Role) -> Vec<Suggestion> {
+/// Kick's chat commands that its API can do (kick.com's help lists more: its chat modes have no API).
+pub const KICK_COMMANDS: &[Info] = &[
+    info("ban", "<user> [reason]", "slash.ban", &[]),
+    info("unban", "<user>", "slash.unban_kick", &[]),
+    info(
+        "timeout",
+        "<user> [seconds]",
+        "slash.timeout_kick",
+        &["60", "600", "3600", "86400"],
+    ),
+    info("title", "<new title>", "slash.title", &[]),
+];
+
+/// The commands to suggest for what is typed so far in `platform`'s box, those whose name starts with what
+/// follows the `/`, or, once a command with presets is typed in full and a space after it, its presets.
+/// Nothing is hidden for what our role may not do (Twitch and Kick answer that when it's tried), only
+/// what is known to be impossible: `commercials` is false for a channel that isn't an affiliate or partner.
+pub fn suggestions(typed: &str, platform: &str, commercials: bool) -> Vec<Suggestion> {
     let Some(body) = typed.strip_prefix('/').filter(|b| !b.starts_with('/')) else {
         return Vec::new();
     };
-    let usable = |c: &&Info| me >= c.needs || c.needs == Role::Anonymous;
+    let list = match platform {
+        "twitch" => COMMANDS,
+        "kick" => KICK_COMMANDS,
+        _ => return Vec::new(),
+    };
+    let usable = |c: &&Info| commercials || c.name != "commercial";
     match body.split_once(char::is_whitespace) {
-        None => COMMANDS
+        None => list
             .iter()
             .filter(usable)
             .filter(|c| c.name.starts_with(&body.to_lowercase()))
@@ -178,7 +159,7 @@ pub fn suggestions(typed: &str, me: Role) -> Vec<Suggestion> {
             })
             .collect(),
         Some((name, rest)) => {
-            let Some(c) = COMMANDS.iter().filter(usable).find(|c| c.name == name.to_lowercase()) else {
+            let Some(c) = list.iter().filter(usable).find(|c| c.name == name.to_lowercase()) else {
                 return Vec::new();
             };
             let rest = rest.trim_start();
@@ -484,9 +465,90 @@ pub fn parse(text: &str) -> Result<Cmd, String> {
     })
 }
 
+/// A Kick command as a call.
+#[derive(Debug, PartialEq)]
+pub enum KickCmd {
+    Ban { user: String, reason: String },
+    Unban(String),
+    Timeout { user: String, secs: u64, reason: String },
+    Title(String),
+}
+
+/// What a command typed in Kick's chat box stands for, or why it can't be.
+pub fn parse_kick(text: &str) -> Result<KickCmd, String> {
+    let text = text.trim();
+    let (name, rest) = text
+        .strip_prefix('/')
+        .unwrap_or(text)
+        .split_once(char::is_whitespace)
+        .unwrap_or((text.trim_start_matches('/'), ""));
+    let (name, rest) = (name.to_lowercase(), rest.trim());
+    let words: Vec<&str> = rest.split_whitespace().collect();
+    let user = || {
+        words
+            .first()
+            .map(|w| login(w))
+            .ok_or_else(|| format!("usage: /{name} <user>"))
+    };
+    Ok(match name.as_str() {
+        "ban" => KickCmd::Ban {
+            user: user()?,
+            reason: words[1..].join(" "),
+        },
+        "unban" | "untimeout" => KickCmd::Unban(user()?),
+        "timeout" => {
+            let user = user()?;
+            let (secs, reason) = match words.get(1).and_then(|w| seconds(w, 1)) {
+                Some(s) => (s, words[2..].join(" ")),
+                None => (600, words.get(1..).unwrap_or(&[]).join(" ")),
+            };
+            // Kick takes minutes, from 1 minute to 7 days.
+            if !(60..=604_800).contains(&secs) {
+                return Err("a timeout on Kick is from 1 minute (60) to 7 days".into());
+            }
+            KickCmd::Timeout { user, secs, reason }
+        }
+        "title" => {
+            if rest.is_empty() {
+                return Err("usage: /title <new title>".into());
+            }
+            KickCmd::Title(rest.to_string())
+        }
+        _ => {
+            return Err(format!(
+                "/{name} can't be run from here: Kick's own site does it, its API has no call for it"
+            ))
+        }
+    })
+}
+
+/// Runs a command typed in Kick's chat box: says what happened.
+pub async fn run_kick(e: &Rc<Engine>, text: &str) -> Result<String, String> {
+    let k = e.kick_start();
+    match parse_kick(text)? {
+        KickCmd::Ban { user, reason } => k.ban_user(&user, &reason).await.map(|()| format!("banned {user}")),
+        KickCmd::Unban(user) => k.unban_user(&user).await.map(|()| format!("{user} can chat again")),
+        KickCmd::Timeout { user, secs, reason } => k
+            .timeout_user(&user, secs, &reason)
+            .await
+            .map(|()| format!("timed out {user}")),
+        KickCmd::Title(t) => k.set_channel_title(&t).await.map(|()| "title changed".into()),
+    }
+}
+
 /// Runs a command typed for Twitch's chat: says in the chat what happened.
 pub async fn run(e: &Rc<Engine>, text: &str, bot: bool, fallback: bool) -> Result<String, String> {
     let cmd = parse(text)?;
+    if matches!(
+        &cmd,
+        Cmd::Helix {
+            path: "channels/commercial",
+            ..
+        }
+    ) && !crate::twitch::commercials_possible()
+    {
+        return Err("this channel isn't a Twitch affiliate or partner, so it can't run commercials".into());
+    }
     let Some(t) = e.twitch() else {
         return Err("Twitch isn't connected".into());
     };
@@ -645,24 +707,53 @@ mod tests {
     }
 
     #[test]
-    fn the_box_suggests_by_prefix_and_role() {
-        let names = |t: &str, me| suggestions(t, me).into_iter().map(|s| s.title).collect::<Vec<_>>();
-        assert_eq!(names("/comm", Role::Broadcaster), ["/commercial"]);
-        // A moderator isn't offered the owner's commercial.
-        assert!(names("/comm", Role::Moderator).is_empty());
-        assert!(names("/", Role::Viewer) == ["/me"]);
-        assert!(names("hello", Role::Broadcaster).is_empty());
-        assert!(names("//x", Role::Broadcaster).is_empty());
-        assert_eq!(names("/commercial ", Role::Broadcaster).len(), 6);
+    fn the_box_suggests_by_prefix() {
+        let names = |t: &str, p, c| suggestions(t, p, c).into_iter().map(|s| s.title).collect::<Vec<_>>();
+        assert_eq!(names("/comm", "twitch", true), ["/commercial"]);
+        // A channel that isn't an affiliate or partner can't run commercials: not offered.
+        assert!(names("/comm", "twitch", false).is_empty());
+        assert!(names("/co", "twitch", false).iter().all(|n| n != "/commercial"));
+        // Nothing is hidden for a role: Twitch answers that when it's tried.
+        assert!(names("/ban", "twitch", true).contains(&"/ban".to_string()));
+        assert!(names("hello", "twitch", true).is_empty());
+        assert!(names("//x", "twitch", true).is_empty());
+        assert!(names("/", "youtube", true).is_empty());
+        assert_eq!(names("/commercial ", "twitch", true).len(), 6);
         assert_eq!(
-            names("/commercial 1", Role::Broadcaster),
+            names("/commercial 1", "twitch", true),
             ["/commercial 120", "/commercial 150", "/commercial 180"]
         );
-        // Past the first word, the usage stays as a hint.
-        assert_eq!(names("/timeout bob 10m", Role::Moderator), ["/timeout"]);
-        assert_eq!(names("/timeout ", Role::Moderator).len(), 4);
-        let s = &suggestions("/ban", Role::Moderator)[0];
+        assert_eq!(names("/timeout bob 10m", "twitch", true), ["/timeout"]);
+        assert_eq!(names("/timeout ", "twitch", true).len(), 4);
+        let s = &suggestions("/ban", "twitch", true)[0];
         assert!(s.more && s.fill == "/ban");
+        // Kick's own commands.
+        assert_eq!(names("/ti", "kick", true), ["/timeout", "/title"]);
+        assert_eq!(names("/timeout ", "kick", true).len(), 4);
+    }
+
+    #[test]
+    fn kick_commands() {
+        assert_eq!(
+            parse_kick("/timeout @Troll 300 spam").unwrap(),
+            KickCmd::Timeout {
+                user: "troll".into(),
+                secs: 300,
+                reason: "spam".into()
+            }
+        );
+        assert!(matches!(
+            parse_kick("/timeout troll").unwrap(),
+            KickCmd::Timeout { secs: 600, .. }
+        ));
+        assert!(parse_kick("/timeout troll 5").is_err());
+        assert_eq!(parse_kick("/unban troll").unwrap(), KickCmd::Unban("troll".into()));
+        assert_eq!(
+            parse_kick("/title Hello there").unwrap(),
+            KickCmd::Title("Hello there".into())
+        );
+        assert!(parse_kick("/slow on 5").unwrap_err().contains("can't be run from here"));
+        assert!(parse_kick("/ban").unwrap_err().starts_with("usage"));
     }
 
     #[test]
@@ -673,20 +764,5 @@ mod tests {
         assert_eq!(seconds("5", 60), Some(300));
         assert_eq!(seconds("abc", 1), None);
         assert_eq!(seconds("5x", 1), None);
-    }
-
-    #[test]
-    fn the_roles_they_need_are_known() {
-        use crate::roles::{twitch_needs, Role};
-        for (m, p, want) in [
-            ("POST", "channels/commercial", Role::Broadcaster),
-            ("POST", "moderation/bans", Role::Moderator),
-            ("PATCH", "chat/settings", Role::Moderator),
-            ("POST", "raids", Role::Broadcaster),
-            ("POST", "chat/shoutouts", Role::Moderator),
-            ("POST", "streams/markers", Role::Broadcaster),
-        ] {
-            assert_eq!(twitch_needs(m, p), want, "{m} {p}");
-        }
     }
 }

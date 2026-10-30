@@ -403,6 +403,12 @@ platform handles through channels, never through shared locks held across awaits
   offered in the editors, and a name can be typed when nothing was found. Reward triggers can name their
   reward. Sub-actions take a reward by name or id.
 
+- [x] No assumed permissions: the role tables that decided which Twitch calls and events were tried are gone;
+  Twitch answers, and its answer is shown (refused events are told once). Our role is asked at connect
+  (Twitch's moderator list, Kick's user endpoint). Commercials are only offered to affiliates and partners
+  (read from the channel). Kick's chat box lists the commands its API can do. Twitch badge pictures come
+  from Twitch's public web API and nothing is drawn in their place.
+
 ## Open points (decide when the phase starts, ask first)
 
 - Points: its sub-actions are new in Streamer.bot 1.1.0, unreleased (1.0.7 is the latest). When it's out,

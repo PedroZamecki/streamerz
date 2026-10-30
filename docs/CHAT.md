@@ -20,9 +20,12 @@ How the chat page behaves. For what each trigger and sub-action does, see the re
 Twitch's chat API sends text as text, so Streamerz turns a command typed in the box into the call it
 stands for. Type `/` in Twitch's chat box and a list opens above it with each command, what it takes and
 what it does (arrows or Tab to pick, Enter to finish it, Escape to close). A command with common values
-lists them after its name: `/commercial ` offers 30, 60, 90, 120, 150 and 180. The list only shows what
-your role in that channel can do (the owner's commands are hidden from a moderator), and a command that
-needs more says so in the chat instead of failing with an error from Twitch.
+lists them after its name: `/commercial ` offers 30, 60, 90, 120, 150 and 180. Streamerz does not guess
+what your role may do: every command is listed, it is tried, and the chat shows Twitch's own answer if
+it refuses. The one thing known beforehand is that a channel that is not a Twitch affiliate or partner
+cannot run commercials (read from the channel when connecting), so `/commercial` is not offered there.
+Twitch documents `/commercial` as the broadcaster's only (Helix, "Start Commercial"); twitch.tv's own
+site may let others do it, but through a call Streamerz's login cannot make.
 
 | Command | Does | Needs |
 | --- | --- | --- |
@@ -40,6 +43,10 @@ needs more says so in the chat instead of failing with an error from Twitch.
 | `/announce TEXT` (`blue`, `green`, `orange`, `purple` after it for a color) | Posts an announcement. | a moderator |
 | `/marker [description]` | Adds a stream marker. | the owner |
 | `/me TEXT` | An action message: sent as is. | anyone |
+
+Kick's box lists the commands Kick's API can do (from its help page "KICK chat commands"): `/ban`,
+`/unban`, `/timeout <user> [seconds]` and `/title`. The others (slow mode, followers-only, `/clear`...) have
+no call in Kick's API, so they are not offered.
 
 A command Streamerz doesn't know isn't sent (it would show up as plain text in the chat). In dev mode
 nothing is sent: the chat shows what would have been.
@@ -62,9 +69,12 @@ polls go with it; Options > "Show ... chat" puts it back.
 
 ## Our role
 
-Streamerz knows what the logged-in account is in each channel as it connects: Twitch is asked, Kick says
-it (moderator or owner) without any login, and for YouTube it comes from our own earlier messages in the
-chat's history, and from the next one we send.
+Streamerz asks for what the logged-in account is in each channel as it connects: Twitch's list of the
+channel's moderators, Kick's own user endpoint (moderator or owner, no login needed); for YouTube it comes
+from our own earlier messages in the chat's history, and from the next one we send. Nothing a role "may"
+do is assumed beyond what the platforms document: calls are made and the platform's answer is shown. The
+events Twitch won't give an account (a moderator asking for the owner's) are refused by Twitch and told
+once in the log.
 
 ## Connections that drop
 

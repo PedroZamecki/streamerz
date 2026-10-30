@@ -52,23 +52,6 @@ const GAP: i32 = 3;
 /// Platform-specific vector badges (each platform has its own visual language; never cross-applied)
 /// plus crisp UI icons for buttons and provider tabs.
 const ICONS: &[(&str, &str)] = &[
-    // Twitch fallback SVGs (used only while Twitch Helix badge PNGs are still downloading)
-    (
-        "twitch:broadcaster",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 18"><rect width="18" height="18" rx="3" fill="#E91916"/><path d="M3.5 6h7.5v6H3.5zM11 8.2l3.5-2.2v6l-3.5-2.2z" fill="#fff"/></svg>"##,
-    ),
-    (
-        "twitch:moderator",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 18"><rect width="18" height="18" rx="3" fill="#00AD03"/><path d="M13.5 3.5 7 10l1 1 6.5-6.5zM5 10.5l2.5 2.5-1 1-1-1-1.5 1.5-1-1L4.5 12l-1-1z" fill="#fff"/></svg>"##,
-    ),
-    (
-        "twitch:vip",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 18"><rect width="18" height="18" rx="3" fill="#E005B9"/><path d="M9 3.5 14 8l-5 6.5L4 8z" fill="#fff"/></svg>"##,
-    ),
-    (
-        "twitch:subscriber",
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 18"><rect width="18" height="18" rx="3" fill="#8205B4"/><path d="m9 3.2 1.7 3.6 3.9.4-2.9 2.7.8 3.9L9 11.8l-3.5 2 .8-3.9-2.9-2.7 3.9-.4z" fill="#fff"/></svg>"##,
-    ),
     // Kick's own badges, from kick.com's chat.
     (
         "kick:broadcaster",
@@ -213,10 +196,6 @@ fn badge_fallback(platform: &str, raw_key: &str, size: i32) -> Option<SvgImage> 
     }
     let base = raw_key.split('/').next().unwrap_or(raw_key).to_lowercase();
     let mapped = match (platform, base.as_str()) {
-        ("twitch", "broadcaster") => "twitch:broadcaster",
-        ("twitch", "moderator" | "lead_moderator") => "twitch:moderator",
-        ("twitch", "vip") => "twitch:vip",
-        ("twitch", "subscriber" | "founder") => "twitch:subscriber",
         ("kick", "broadcaster") => "kick:broadcaster",
         ("kick", "moderator") => "kick:moderator",
         ("kick", "vip") => "kick:vip",
@@ -1810,18 +1789,17 @@ impl ChatColumn {
                         tell(&cmds, move |e| e.tiktok_start().warm(bot, true));
                     }
                 }
-                // Twitch's chat commands, listed as they are typed.
-                if plat == "twitch" {
-                    let me = crate::roles::get("twitch").0;
+                // Twitch's and Kick's chat commands, listed as they are typed.
+                if matches!(plat, "twitch" | "kick") {
                     match ev {
-                        Event::KeyDown if suggest.key(i, me) => return true,
+                        Event::KeyDown if suggest.key(i, plat) => return true,
                         Event::KeyUp
                             if !matches!(
                                 app::event_key(),
                                 Key::Escape | Key::Tab | Key::Up | Key::Down | Key::Enter | Key::ShiftL | Key::ShiftR
                             ) =>
                         {
-                            suggest.update(i, me);
+                            suggest.update(i, plat);
                         }
                         Event::Unfocus => suggest.hide(),
                         _ => {}

@@ -8,7 +8,7 @@ Twitch polls on the channel: start one, end it, archive it, or read the one that
 - Code: 561
 - Type: TwitchCreatePoll
 - Category: Twitch/Polls
-- Needs: the channel owner's Twitch login (see `src/roles.rs`)
+- Needs: a Twitch login. Twitch decides who may do it on a channel (its guide says moderators and editors can manage polls; the call's reference says the broadcaster); if it refuses, its answer is logged
 
 Starts a poll on the channel.
 
@@ -38,7 +38,7 @@ Starts a poll on the channel.
 - Code: 562
 - Type: TwitchTerminateActivePoll
 - Category: Twitch/Polls
-- Needs: the channel owner's Twitch login (see `src/roles.rs`)
+- Needs: a Twitch login. Twitch decides who may do it on a channel (its guide says moderators and editors can manage polls; the call's reference says the broadcaster); if it refuses, its answer is logged
 
 Ends the active poll early.
 
@@ -60,7 +60,7 @@ None set.
 - Code: 563
 - Type: TwitchArchiveActivePoll
 - Category: Twitch/Polls
-- Needs: the channel owner's Twitch login (see `src/roles.rs`)
+- Needs: a Twitch login. Twitch decides who may do it on a channel (its guide says moderators and editors can manage polls; the call's reference says the broadcaster); if it refuses, its answer is logged
 
 Sets the active poll to archived on Twitch.
 
@@ -82,7 +82,7 @@ None set.
 - Code: 566
 - Type: TwitchGetActivePoll
 - Category: Twitch/Polls
-- Needs: the channel owner's Twitch login (see `src/roles.rs`)
+- Needs: a Twitch login. Twitch decides who may do it on a channel (its guide says moderators and editors can manage polls; the call's reference says the broadcaster); if it refuses, its answer is logged
 
 Reads the poll that is running, if there is one.
 

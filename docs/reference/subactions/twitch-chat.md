@@ -83,7 +83,7 @@ None.
 ### Notes
 
 - It always runs as the broadcaster account. The bot account isn't used.
-- If the account isn't a moderator of the channel, Streamerz doesn't try the call and logs an error.
+- Streamerz tries the call and logs what Twitch answers if it refuses.
 
 ## Reply To Message
 

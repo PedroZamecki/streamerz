@@ -41,7 +41,7 @@ None set.
 
 - `Kind` is `sub-action` or `trigger`; `Code` is the type code in `src/types.rs`; `Type` its name there.
 - `Needs`: the login, role, connection or app it needs (`nothing` when it needs nothing). A moderator can do
-  some things on someone else's channel, only the owner others: say which (see `src/roles.rs`).
+  some things on someone else's channel, only the owner others: say what Twitch's or Kick's own documentation says, and that the platform has the last word.
 - For a trigger, `### Arguments` lists what the actions it starts get (`user`, `message`...), and a `### When`
   section says exactly when it fires.
 - For a sub-action, `### Arguments` lists what it adds for the sub-actions after it, or "None set.".
