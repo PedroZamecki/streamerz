@@ -764,8 +764,30 @@ fn now_secs() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+thread_local! {
+    /// One refresh at a time: a refresh token is good once, so two at once make the second one fail and
+    /// wipe the login the first just renewed.
+    static REFRESHING: Rc<tokio::sync::Mutex<()>> = Rc::default();
+}
+
 /// Refresh broadcaster and/or bot tokens when about to expire (or unconditionally if `force`).
 async fn refresh_accounts(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>, force: bool) {
+    refresh_with(
+        engine,
+        cfg,
+        force,
+        |rt| async move { refresh_token(CLIENT_ID, &rt).await },
+    )
+    .await;
+}
+
+async fn refresh_with<F, Fut>(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>, force: bool, ask: F)
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Result<TokenResp, String>>,
+{
+    let lock = REFRESHING.with(Rc::clone);
+    let _one_at_a_time = lock.lock().await;
     let now = now_secs();
     for bot in [false, true] {
         let rt = {
@@ -779,7 +801,7 @@ async fn refresh_accounts(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>,
             }
         };
         let who = if bot { "bot" } else { "broadcaster" };
-        match refresh_token(CLIENT_ID, &rt).await {
+        match ask(rt.clone()).await {
             Ok(t) => {
                 let token = TwitchToken {
                     access_token: t.access_token,
@@ -800,7 +822,7 @@ async fn refresh_accounts(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>,
                 crate::say(format!("Twitch: refreshed {who} token"));
             }
             // A refresh token is good once: refused, it never works again. Forget it so nothing
-            // retries it and Accounts shows that re-login is needed.
+            // retries it and Accounts shows that re-login is needed (unless the account got a newer one).
             Err(e) if e.contains("Invalid refresh token") => {
                 engine.change(move |c| {
                     let a = if bot {
@@ -808,7 +830,7 @@ async fn refresh_accounts(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>,
                     } else {
                         &mut c.twitch.broadcaster
                     };
-                    if let Some(a) = a {
+                    if let Some(a) = a.as_mut().filter(|a| a.token.refresh_token == rt) {
                         a.token = TwitchToken::default();
                     }
                 });
@@ -4711,6 +4733,59 @@ async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn two_refreshes_at_once_keep_the_login() {
+        use super::*;
+        use std::cell::Cell;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tokio::task::LocalSet::new().block_on(&rt, async {
+            let mut c = Config::default();
+            c.twitch.broadcaster = Some(TwitchAccount {
+                user_id: "10".into(),
+                token: TwitchToken {
+                    access_token: "old".into(),
+                    refresh_token: "r0".into(),
+                    expires_at: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            let cfg = Arc::new(watch::channel(c).0);
+            let e = Engine::new(cfg.clone(), |_| {});
+            // Twitch's rule: a refresh token works once.
+            let used = Rc::new(Cell::new(0u32));
+            let ask = |u: Rc<Cell<u32>>| {
+                move |rt: String| {
+                    let u = u.clone();
+                    async move {
+                        tokio::task::yield_now().await;
+                        if rt != format!("r{}", u.get()) {
+                            return Err("Refresh token failed: HTTP 400 Invalid refresh token".to_string());
+                        }
+                        u.set(u.get() + 1);
+                        Ok(TokenResp {
+                            access_token: "new".into(),
+                            refresh_token: format!("r{}", u.get()),
+                            expires_in: 3600,
+                            scope: vec![],
+                            token_type: "bearer".into(),
+                        })
+                    }
+                }
+            };
+            tokio::join!(
+                refresh_with(&e, &cfg, false, ask(used.clone())),
+                refresh_with(&e, &cfg, false, ask(used.clone()))
+            );
+            let t = cfg.borrow().twitch.broadcaster.clone().unwrap().token;
+            assert_eq!((t.access_token.as_str(), t.refresh_token.as_str()), ("new", "r1"));
+            assert_eq!(used.get(), 1, "the second one found it fresh and left it alone");
+        });
+    }
+
     #[test]
     fn another_channel_is_read_by_id_once_known() {
         use super::*;
