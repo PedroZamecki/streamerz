@@ -42,7 +42,9 @@ Fires when a channel points custom reward is deleted.
 
 ### Fields
 
-None.
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Reward (none: any) | `rewardId` | The reward this is for: picked from the channel's rewards, or typed, by name or id. Empty: any reward. |
 
 ### Arguments
 
