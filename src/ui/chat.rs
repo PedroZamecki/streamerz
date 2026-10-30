@@ -19,7 +19,7 @@ use crate::Config;
 use fltk::app;
 use fltk::button::{Button, CheckButton};
 use fltk::draw;
-use fltk::enums::{Align, CallbackTrigger, Color, Event, Font, FrameType, Key};
+use fltk::enums::{Align, CallbackTrigger, Color, Damage, Event, Font, FrameType, Key};
 use fltk::frame::Frame;
 use fltk::group::{Flex, Wizard};
 use fltk::image::SvgImage;
@@ -700,6 +700,8 @@ struct State {
     follow: bool,
     /// An animation frame is due.
     ticking: bool,
+    /// Where the emotes that move are drawn (in the pane), so a frame redraws only those.
+    moving: Vec<(i32, i32, i32, i32)>,
     /// The line under the pointer, which shows its actions, and the action under it.
     hover: Option<usize>,
     act: Option<usize>,
@@ -858,6 +860,7 @@ impl Pane {
                 top: 0,
                 follow: true,
                 ticking: false,
+                moving: Vec::new(),
                 hover: None,
                 act: None,
                 cards: true,
@@ -959,7 +962,11 @@ impl Pane {
         self.settle(&mut st);
         draw::draw_box(f.frame(), f.x(), f.y(), f.w(), f.h(), f.color());
         draw::push_clip(f.x() + 2, f.y() + 2, f.w() - 4, f.h() - 4);
-        let (ms, mut moving, animate) = (now_ms(), false, SHOW.get().2);
+        let (ms, animate) = (now_ms(), SHOW.get().2);
+        // An animation frame redraws only the moving emotes (the text is most of the work): it damages
+        // just their squares. Anything else damages it all, and finds the moving emotes again.
+        let partial = f.damage_type() == Damage::User1;
+        let mut found = Vec::new();
         let mut y = f.y() + 4 + self.head(&st) - st.top;
         for (i, (laid, h)) in st.laid.iter().enumerate() {
             if y + h < f.y() {
@@ -968,6 +975,10 @@ impl Pane {
             }
             if y > f.y() + f.h() {
                 break;
+            }
+            if partial && !draw::not_clipped(f.x(), y, f.w(), *h) {
+                y += h;
+                continue;
             }
             // Events and set-apart messages: a tint of their colour, and a bar at the left.
             if let Some(c) = st.lines.get(i).and_then(accent) {
@@ -987,6 +998,10 @@ impl Pane {
                 let rh = *rh;
                 for (it, x) in row {
                     let x = f.x() + 6 + x;
+                    // A frame of the animation only needs the moving emotes.
+                    if partial && !matches!(it, It::Pic(..)) {
+                        continue;
+                    }
                     match it {
                         It::Text(t, font, color) => {
                             draw::set_font(*font, TEXT);
@@ -994,9 +1009,12 @@ impl Pane {
                             draw::draw_text2(t, x, y, 0, rh, Align::Left);
                         }
                         It::Pic(p, _) => {
-                            moving |= animate && p.animated();
                             let mut i = if animate { p.at(ms).clone() } else { p.first() };
-                            i.draw(x, y + (rh - i.h()) / 2, i.w(), i.h());
+                            let at = y + (rh - i.h()) / 2;
+                            if animate && p.animated() {
+                                found.push((x - f.x(), at - f.y(), i.w(), i.h()));
+                            }
+                            i.draw(x, at, i.w(), i.h());
                         }
                         It::Svg(s) | It::SvgTip(s, _) => {
                             let (w, h) = (s.w(), s.h());
@@ -1075,14 +1093,24 @@ impl Pane {
                 }
             });
         }
-        // Animated emotes on screen: one redraw ~20 times a second, only while this is drawn.
-        if moving && !st.ticking {
+        // Animated emotes on screen: their squares redrawn ~20 times a second, only while this is drawn.
+        if !partial {
+            st.moving = found;
+        }
+        if !st.moving.is_empty() && !st.ticking {
             st.ticking = true;
             let p = self.clone();
             app::add_timeout3(0.05, move |_| {
-                p.st.borrow_mut().ticking = false;
+                let moving = {
+                    let mut st = p.st.borrow_mut();
+                    st.ticking = false;
+                    st.moving.clone()
+                };
                 if !p.area.was_deleted() {
-                    p.area.clone().redraw();
+                    let mut a = p.area.clone();
+                    for (x, y, w, h) in moving {
+                        a.set_damage_area(Damage::User1, a.x() + x, a.y() + y, w, h);
+                    }
                 }
             });
         }
