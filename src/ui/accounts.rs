@@ -4,6 +4,7 @@
 use super::fit::Ellipsis;
 use super::lists::save;
 use super::{button, dialogs, query, tell, ROW};
+use crate::engine::community::Leftover;
 use crate::engine::Engine;
 use crate::i18n::{button_id, tr, trf};
 use crate::model::Obj;
@@ -789,12 +790,32 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
                 let Some(raw) = super::find::channel(&cmds, p.slug()) else {
                     return;
                 };
-                let before = p.channel(&cfg.borrow()).to_string();
+                let (before, slug) = (p.channel(&cfg.borrow()).to_string(), p.slug());
+                // The channel read until now, as the community knows it, and how many people it saved.
+                let old = query(&cmds, move |e| {
+                    let ch = e.broadcaster(slug);
+                    (e.community_of(slug, &ch), ch)
+                });
                 save(&cfg, |c| drop(p.set_channel(c, &raw)));
                 if p.channel(&cfg.borrow()) != before {
-                    // What the old channel showed goes; its community stays, apart.
-                    let slug = p.slug();
-                    tell(&cmds, move |e| e.channel_changed(slug));
+                    // What the old channel showed goes; what to do with its people is asked.
+                    let (saved, old) = old.unwrap_or_default();
+                    let what = if saved == 0 {
+                        Leftover::Keep
+                    } else {
+                        match dialogs::pick_one(
+                            &trf(
+                                "room.ask",
+                                &[("platform", p.name()), ("channel", &old), ("count", &saved.to_string())],
+                            ),
+                            &[tr("room.keep"), tr("room.move"), tr("room.delete")],
+                        ) {
+                            Some(1) => Leftover::Move,
+                            Some(2) => Leftover::Delete,
+                            _ => Leftover::Keep,
+                        }
+                    };
+                    tell(&cmds, move |e| e.channel_changed(slug, &old, what));
                     // Read the new one now, if it was reading.
                     let (on, standby, _) = states(&cmds);
                     let i_p = ALL.iter().position(|x| *x == p).unwrap_or(0);

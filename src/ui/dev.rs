@@ -16,6 +16,7 @@ use std::fmt::Write;
 ///   page LABEL      goes to a page (Chat, Settings...)
 ///   chat            the last chat line the chat page took in (its seq)
 ///   chatlines       how many lines the chat page holds
+///   room            opens the question asked when a channel is changed
 ///   community       how many users the Community tab lists
 ///   panic           panics on the window's thread (to try crash reports and saving on a crash)
 pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
@@ -105,6 +106,18 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
             }
             None => "relogin Twitch|YouTube|Kick|TikTok [bot]".into(),
         },
+        // The question asked when a channel is changed (it waits for an answer, so it opens a moment later).
+        "room" => {
+            app::add_timeout3(0.05, |_| {
+                let text = crate::i18n::trf(
+                    "room.ask",
+                    &[("platform", "Kick"), ("channel", "ana"), ("count", "171")],
+                );
+                let tr = crate::i18n::tr;
+                let _ = super::dialogs::pick_one(&text, &[tr("room.keep"), tr("room.move"), tr("room.delete")]);
+            });
+            "ok".into()
+        }
         // Hides or shows the window, as a click on the tray icon does.
         "toggle" => {
             crate::ui::toggle();

@@ -108,6 +108,14 @@ def main():
         ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/relogin.png"})
         xdo("key", "Escape")
         check("relogin popup")
+        # Changing a channel asks what to do with the people saved from the old one.
+        ws.ask({"request": "StreamerzUi", "id": "rm", "do": "room"})
+        time.sleep(1)
+        if "Delete them" not in json.dumps(ws.ask({"request": "StreamerzUi", "id": "f", "do": "find Delete them"})):
+            failures.append("the question about the old channel's people didn't open")
+        ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/room.png"})
+        xdo("key", "Escape")
+        check("room question")
         pages = ["Chat", "Accounts", "Community", "Polls", "Actions", "Commands", "Timers", "Queues", "Groups", "Plugins",
                  "Servers", "Stream Apps", "Donations", "Globals", "History", "Settings", "Log", "Crashes", "Backups"]
         for page in pages:

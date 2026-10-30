@@ -126,12 +126,25 @@ fn wrap(text: &str, room: i32, width: impl Fn(&str) -> i32) -> Vec<String> {
 /// A small modal message: an icon in the app's colours, the text wrapped to fit, and its buttons (`no`
 /// is None for a plain notice). True when `yes` was pressed.
 fn notice(icon: &'static str, tint: Color, text: &str, no: Option<&str>, yes: &str) -> bool {
+    let buttons: Vec<&str> = no.into_iter().chain([yes]).collect();
+    notice_of(icon, tint, text, &buttons, buttons.len() - 1, no.is_some()) == Some(buttons.len() - 1)
+}
+
+/// `notice` with any number of buttons: the one picked, or None when it is closed (or Escape, when
+/// `escapable`). Enter picks `default`.
+fn notice_of(
+    icon: &'static str,
+    tint: Color,
+    text: &str,
+    buttons: &[&str],
+    default: usize,
+    escapable: bool,
+) -> Option<usize> {
     const PAD: i32 = 22;
     const PIC: i32 = 40;
     const GAP: i32 = 16;
     const LINE: i32 = 19;
     draw::set_font(Font::Helvetica, 14);
-    let buttons: Vec<&str> = no.into_iter().chain([yes]).collect();
     let button_w = |b: &str| (draw::width(b) as i32 + 56).max(90);
     let bar_w: i32 = buttons.iter().map(|b| button_w(b) + 8).sum();
     // The window is as wide as its longest line wants (within reason), and wide enough for its buttons.
@@ -164,25 +177,33 @@ fn notice(icon: &'static str, tint: Color, text: &str, no: Option<&str>, yes: &s
     let mut bar = Flex::default().row();
     bar.set_pad(8);
     Frame::default();
-    if let Some(no) = no {
-        let mut b = button(&mut bar, no, button_w(no));
-        b.set_shortcut(Shortcut::from_key(Key::Escape));
+    let picked: Rc<Cell<usize>> = Rc::default();
+    for (i, label) in buttons.iter().enumerate() {
+        let mut b = button(&mut bar, label, button_w(label));
+        if i == default {
+            b.set_shortcut(Shortcut::from_key(Key::Enter));
+        } else if escapable && i == 0 {
+            b.set_shortcut(Shortcut::from_key(Key::Escape));
+        }
         b.set_callback({
-            let a = answer.clone();
-            move |_| a.set(Some(false))
+            let (a, picked) = (answer.clone(), picked.clone());
+            move |_| {
+                picked.set(i);
+                a.set(Some(true));
+            }
         });
     }
-    let mut b = button(&mut bar, yes, button_w(yes));
-    b.set_shortcut(Shortcut::from_key(Key::Enter));
-    b.set_callback({
-        let a = answer.clone();
-        move |_| a.set(Some(true))
-    });
     bar.end();
     col.fixed(&bar, ROW);
     col.end();
     win.end();
-    run(&mut win, &answer, || true)
+    run(&mut win, &answer, || true).then(|| picked.get())
+}
+
+/// Asks what to do among `choices` (each a button): the index picked, or None when it is closed. The
+/// first is the one Escape picks.
+pub fn pick_one(text: &str, choices: &[&str]) -> Option<usize> {
+    notice_of("circle-help", Color::Selection, text, choices, 0, true)
 }
 
 /// First run: where to keep the settings. Starts at the usual folder (the suggestion); the answer is the
