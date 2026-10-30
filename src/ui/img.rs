@@ -254,7 +254,10 @@ pub fn get(cmds: &UnboundedSender<UiCmd>, url: &str, h: i32, round: bool) -> Opt
     if !file.is_file() {
         // The first download of a run, then every 200th, keeps the folder in size.
         if ASKED.with_borrow(HashSet::is_empty) {
-            prune(&dir(), KEEP_BYTES);
+            std::thread::Builder::new()
+                .name("prune-cache".into())
+                .spawn(|| prune(&dir(), KEEP_BYTES))
+                .ok();
         }
         if ASKED.with_borrow_mut(|a| a.insert(url.to_string())) {
             let url = url.to_string();

@@ -385,7 +385,21 @@ fn query_for<T: Send + 'static>(
 ) -> Option<T> {
     let (tx, rx) = std::sync::mpsc::channel();
     tell(cmds, move |e| drop(tx.send(f(e))));
-    rx.recv_timeout(wait).ok()
+    let start = std::time::Instant::now();
+    loop {
+        match rx.try_recv() {
+            Ok(v) => return Some(v),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => return None,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                if start.elapsed() >= wait {
+                    return None;
+                }
+                if !nested_wait(Some(0.01)) {
+                    return None;
+                }
+            }
+        }
+    }
 }
 
 /// Wake the window with `m`, if it's up (no wakeups while hidden).

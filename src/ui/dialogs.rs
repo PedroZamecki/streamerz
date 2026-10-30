@@ -197,7 +197,9 @@ fn notice_of(
     col.fixed(&bar, ROW);
     col.end();
     win.end();
-    run(&mut win, &answer, || true).then(|| picked.get())
+    let picked = run(&mut win, &answer, || true).then(|| picked.get());
+    app::delete_widget(win);
+    picked
 }
 
 /// Asks what to do among `choices` (each a button): the index picked, or None when it is closed. The

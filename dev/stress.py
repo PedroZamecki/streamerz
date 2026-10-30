@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Reads the busiest public chats for a while and compares what Streamerz delivers with what the platforms say.
 
-  dev/stress.py [seconds] [path to the Streamerz binary]     (defaults: 300, target/fast/Streamerz)
+  ONLY=kick,twitch HIDDEN=1 dev/stress.py [seconds] [path to the Streamerz binary]     (defaults: 300, target/fast/Streamerz)
 
 Streamerz reads Twitch, Kick, YouTube and TikTok without a login. Meanwhile two independent readers count the
 same chats straight from Twitch (anonymous IRC) and Kick (the pusher socket): the truth. Streamerz's count is
 what its WebSocket server sends as ChatMessage events (what triggers and clients get) and the lines its chat
 page took in. Its memory and CPU are sampled all along. It prints a table; nothing is written to the repo.
-Needs the hidden display (:99) like dev/smoke.py.
+HIDDEN=1 starts it hidden (the memory budget is for that). Needs the hidden display (:99) like dev/smoke.py.
 """
 import base64, json, os, socket, ssl, struct, subprocess, sys, tempfile, threading, time
 
@@ -15,6 +15,9 @@ SECS = int(sys.argv[1]) if len(sys.argv) > 1 else 300
 BIN = sys.argv[2] if len(sys.argv) > 2 else "target/fast/Streamerz"
 PORT = 8096
 ROOMS = {"twitch": "pgl", "kick": "cry", "youtube": "Gg6mV8Fv4og", "tiktok": "@.z_o_n_g_a"}
+ONLY = [p for p in os.environ.get("ONLY", "").split(",") if p]
+if ONLY:
+    ROOMS = {p: r for p, r in ROOMS.items() if p in ONLY}
 env = dict(os.environ, DISPLAY=":99", STREAMERZ_DEV="1")
 env.pop("WAYLAND_DISPLAY", None)
 
@@ -121,10 +124,12 @@ def main():
     tmp = tempfile.mkdtemp()
     cfg = os.path.join(tmp, "s.json")
     json.dump({
-        "start_hidden": False, "locale": "en_US", "websockets": {"port": PORT},
-        "twitch": {"channel": ROOMS["twitch"]}, "kick": {"channel": ROOMS["kick"]},
-        "youtube": {"channelId": "@InstitutoConhecimentoLiberta", "videoId": ROOMS["youtube"]},
-        "tiktok": {"channel": ROOMS["tiktok"]},
+        "start_hidden": bool(os.environ.get("HIDDEN")), "locale": "en_US", "websockets": {"port": PORT},
+        "twitch": {"channel": ROOMS.get("twitch", ""), "manualConnect": "twitch" not in ROOMS},
+        "kick": {"channel": ROOMS.get("kick", ""), "manualConnect": "kick" not in ROOMS},
+        "youtube": {"channelId": "@InstitutoConhecimentoLiberta", "videoId": ROOMS.get("youtube", ""),
+                    "manualConnect": "youtube" not in ROOMS},
+        "tiktok": {"channel": ROOMS.get("tiktok", ""), "manualConnect": "tiktok" not in ROOMS},
     }, open(cfg, "w"))
     env["STREAMERZ_CONFIG"] = cfg
     app = subprocess.Popen([BIN], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -154,10 +159,11 @@ def main():
                     got[src] += 1
 
         threading.Thread(target=count, daemon=True).start()
-        threading.Thread(target=twitch_truth, daemon=True).start()
+        if "twitch" in ROOMS:
+            threading.Thread(target=twitch_truth, daemon=True).start()
         # Kick's reader needs the chatroom id Streamerz looks up (it is saved in its config).
         chatroom = None
-        for _ in range(60):
+        for _ in range(60 if "kick" in ROOMS else 0):
             try:
                 chatroom = json.load(open(cfg)).get("kick", {}).get("chatroomId")
             except (OSError, ValueError):

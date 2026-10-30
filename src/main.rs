@@ -897,7 +897,7 @@ fn main() {
     std::thread::spawn(move || {
         tokio::task::LocalSet::new().block_on(&rt, async move {
             let e = engine::Engine::new(engine_cfg.clone(), |c| {
-                let _ = save(c);
+                save_later(c);
             });
             engine::set_current(&e, crash_tx);
             engine::Engine::forget_saved_chat_history();

@@ -244,12 +244,17 @@ impl Engine {
             serde_json::to_string(&json!({"users": users, "credits": c.credits})).unwrap_or_default()
         };
         let (path, tmp) = (file(), file().with_extension("json.tmp"));
-        if std::fs::write(&tmp, text)
-            .and_then(|()| std::fs::rename(&tmp, &path))
-            .is_err()
-        {
-            crate::error(format!("can't save {}", path.display()));
-        }
+        std::thread::Builder::new()
+            .name("save-community".into())
+            .spawn(move || {
+                if std::fs::write(&tmp, text)
+                    .and_then(|()| std::fs::rename(&tmp, &path))
+                    .is_err()
+                {
+                    crate::error(format!("can't save {}", path.display()));
+                }
+            })
+            .ok();
     }
 
     /// Saved every 50 changes, on the first change a minute after the last save, on quit, and on a

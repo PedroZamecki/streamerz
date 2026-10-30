@@ -149,6 +149,7 @@ pub(super) fn channel(cmds: &Cmds, platform: &str) -> Option<String> {
     }
     let ok = answer.get() == Some(true);
     win.hide();
+    app::delete_widget(win);
     if !ok {
         return None;
     }
