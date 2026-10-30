@@ -27,7 +27,7 @@ use fltk::input::Input;
 use fltk::menu::Choice;
 use fltk::prelude::*;
 use fltk::valuator::Slider;
-use fltk::window::Window;
+use fltk::window::DoubleWindow;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
@@ -2780,7 +2780,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
 /// (and in `"All together"` mode, pick which platform the single input sends to).
 fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accounts: Rc<dyn Fn()>) {
     let h = 236 + i32::from(crate::secrets::is_locked()) * 34;
-    let mut win = Window::default()
+    let mut win = DoubleWindow::default()
         .with_size(430, h)
         .with_label(tr("chat.acct_win_title"));
     win.set_xclass("streamerz");
@@ -2995,7 +2995,7 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
     let set_up = PLATFORMS.map(|p| crate::engine::can_send(&cfg.borrow(), p));
     let conn_states: [bool; 4] = std::array::from_fn(|i| conn_states[i] && set_up[i]);
 
-    let mut win = Window::default()
+    let mut win = DoubleWindow::default()
         .with_size(520, 210)
         .with_label(tr("chat.msg_all_title"));
     win.set_xclass("streamerz");
@@ -3319,6 +3319,10 @@ fn emote_field(
     });
     // Clicks land between the pieces as drawn.
     move |i: &mut Input, ev: Event| {
+        if matches!(ev, Event::Focus | Event::Unfocus) {
+            i.redraw();
+            return false;
+        }
         if !matches!(ev, Event::Push | Event::Drag) || !super::left_button() {
             return false;
         }
@@ -3398,7 +3402,7 @@ fn emote_picker_popup(
     };
     let own = parent.h() < 520;
     let mut own_win = own.then(|| {
-        let mut w = Window::default().with_size(380, 480).with_label("Streamerz");
+        let mut w = DoubleWindow::default().with_size(380, 480).with_label("Streamerz");
         w.set_xclass("streamerz");
         w.make_modal(true);
         w

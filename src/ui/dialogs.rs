@@ -13,7 +13,7 @@ use fltk::input::{Input, MultilineInput};
 use fltk::misc::InputChoice;
 use fltk::prelude::*;
 use fltk::text::{TextBuffer, TextEditor};
-use fltk::window::Window;
+use fltk::window::{DoubleWindow, Window};
 use fltk::{app, dialog, draw};
 use serde_json::Value;
 use std::cell::Cell;
@@ -23,9 +23,9 @@ use std::rc::Rc;
 pub type Answer = Rc<Cell<Option<bool>>>;
 
 /// A dialog window: centred, modal, closing it cancels.
-pub fn window(w: i32, h: i32, title: &str) -> (Window, Answer) {
+pub fn window(w: i32, h: i32, title: &str) -> (DoubleWindow, Answer) {
     crate::crash::step(&format!("dialog {title}"));
-    let mut win = Window::default().with_size(w, h).with_label(title);
+    let mut win = DoubleWindow::default().with_size(w, h).with_label(title);
     win.set_xclass("streamerz");
     win.make_modal(true);
     let answer: Answer = Rc::new(Cell::new(None));

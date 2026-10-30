@@ -39,7 +39,7 @@ use fltk::group::{Flex, Wizard};
 use fltk::image::RgbImage;
 use fltk::prelude::*;
 use fltk::text::{TextBuffer, TextDisplay};
-use fltk::window::Window;
+use fltk::window::{DoubleWindow, Window};
 use fltk::{app, draw};
 use std::cell::Cell;
 use std::rc::Rc;
@@ -573,6 +573,12 @@ fn placeholder(i: &mut fltk::input::Input, text: &'static str) {
             draw::draw_text2(&shown, i.x() + 6, i.y(), i.w() - 12, i.h(), Align::Left | Align::Clip);
         }
     });
+    i.handle(|i, ev| {
+        if matches!(ev, Event::Focus | Event::Unfocus) {
+            i.redraw();
+        }
+        false
+    });
 }
 
 /// Column titles over a list with these column `widths`.
@@ -1097,7 +1103,7 @@ pub fn run(
     // Pictures drawn bigger than they are come out smooth, not blocky.
     RgbImage::set_scaling_algorithm(fltk::image::RgbScaling::Bilinear);
     fltk::image::Image::set_scaling_algorithm(fltk::image::RgbScaling::Bilinear);
-    let mut win = Window::default().with_size(W, H).with_label(&crate::version());
+    let mut win = DoubleWindow::default().with_size(W, H).with_label(&crate::version());
     win.set_xclass("streamerz");
     if let Ok(icon) = RgbImage::new(brand::app(c_dark), brand::SIZE, brand::SIZE, ColorDepth::Rgba8) {
         win.set_icon(Some(icon));
@@ -1195,7 +1201,7 @@ pub fn run(
     let remember = {
         let cfg = cfg.clone();
         let cmds = cmds.clone();
-        move |w: &Window| {
+        move |w: &DoubleWindow| {
             cfg.send_if_modified(|c| {
                 (c.window.w, c.window.h) = (w.w(), w.h());
                 false
@@ -1279,7 +1285,7 @@ pub fn run(
     let quitting = remember.clone();
     let close = {
         let views = views.clone();
-        move |w: &mut Window| {
+        move |w: &mut DoubleWindow| {
             remember(w);
             crate::crash::step("window hidden");
             SHOWN.store(false, Ordering::Relaxed);
@@ -1310,7 +1316,7 @@ pub fn run(
     let prompted_unlock = Rc::new(Cell::new(false));
     // The tabs are filled only when shown: filling a list measures its text, which opens the display
     // and loads the fonts (~14 MB) even with the window hidden.
-    let open = |win: &mut Window, log: &Rc<std::cell::RefCell<Log>>| {
+    let open = |win: &mut DoubleWindow, log: &Rc<std::cell::RefCell<Log>>| {
         if !win.visible() {
             // Windows tells no one when its colours change: ask as the window opens.
             #[cfg(windows)]
