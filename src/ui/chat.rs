@@ -367,6 +367,7 @@ thread_local! {
     /// How many lines the panes keep, for how long, and how they fade (the config's).
     static LIMITS: Cell<crate::ChatLimits> = const {
         Cell::new(crate::ChatLimits {
+            save_history: true,
             per_platform: 400,
             total: 1000,
             lifetime: 0,
@@ -409,6 +410,7 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
             v.push(It::Gap(6));
         }
         v.push(It::Text(l.tag.clone(), Font::HelveticaBold, ink));
+        v.push(It::Gap(8));
         price(cmds, l, ink, &mut v);
         v.push(It::Break);
     }
@@ -615,7 +617,6 @@ fn price(cmds: &Cmds, l: &Line, ink: Color, v: &mut Vec<It>) {
     if l.cost == 0 {
         return;
     }
-    v.push(It::Gap(8));
     if l.cost_icon.starts_with("http") {
         if let Some(p) = img::get(cmds, &l.cost_icon, 16, false) {
             v.push(It::Pic(p, None));
@@ -653,7 +654,10 @@ fn event_items(cmds: &Cmds, l: &Line, mut v: Vec<It>) -> Vec<It> {
         v.push(It::Space);
         v.push(It::Text(w.to_string(), Font::Helvetica, Color::Foreground));
     }
-    price(cmds, l, c, &mut v);
+    if l.cost > 0 {
+        v.push(It::Break);
+        price(cmds, l, Color::Foreground, &mut v);
+    }
     if l.huge {
         if let Some(p) = img::get(cmds, &l.picture, HUGE, false) {
             v.push(It::Break);

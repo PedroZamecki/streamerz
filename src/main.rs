@@ -212,6 +212,9 @@ pub struct WindowState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ChatLimits {
+    /// Keep chat messages in memory. When off, messages are read and processed (commands, triggers,
+    /// facts) but not saved in memory.
+    pub save_history: bool,
     /// Lines kept of each platform's chat.
     pub per_platform: usize,
     /// Lines kept of all of them together.
@@ -226,6 +229,7 @@ pub struct ChatLimits {
 impl Default for ChatLimits {
     fn default() -> Self {
         Self {
+            save_history: true,
             per_platform: 400,
             total: 1000,
             lifetime: 0,
@@ -247,8 +251,17 @@ impl ChatLimits {
     /// The limits as they apply: in range, whatever the file says.
     pub fn clamped(self) -> Self {
         Self {
-            per_platform: self.per_platform.clamp(Self::LEAST, Self::MOST),
-            total: self.total.clamp(Self::LEAST, Self::MOST),
+            save_history: self.save_history,
+            per_platform: if self.save_history {
+                self.per_platform.clamp(Self::LEAST, Self::MOST)
+            } else {
+                0
+            },
+            total: if self.save_history {
+                self.total.clamp(Self::LEAST, Self::MOST)
+            } else {
+                0
+            },
             lifetime: self.lifetime.min(30 * 24 * 3600),
             fade_in: self.fade_in.min(3000),
             fade_out: self.fade_out.min(10_000),
@@ -261,6 +274,9 @@ impl ChatLimits {
     pub fn excess(&self, lines: impl Iterator<Item = Option<usize>>) -> Vec<usize> {
         let l = self.clamped();
         let lines: Vec<Option<usize>> = lines.collect();
+        if !l.save_history {
+            return (0..lines.len()).collect();
+        }
         let mut each = [0usize; 4];
         let mut all = lines.len();
         for p in lines.iter().flatten() {

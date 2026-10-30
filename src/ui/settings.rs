@@ -331,6 +331,27 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     });
 
     section(&mut col, tr("settings.chat"), "message-square");
+    let r = setting(
+        &mut col,
+        tr("settings.chat.save_history"),
+        tr("settings.chat.save_history.about"),
+        44,
+    );
+    let mut check = fltk::button::CheckButton::default();
+    check.set_value(cfg.borrow().window.chat.save_history);
+    done(r, &check);
+    check.set_callback({
+        let (cfg, cmds) = (cfg.clone(), cmds.clone());
+        move |b| {
+            let mut limits = cfg.borrow().window.chat;
+            limits.save_history = b.value();
+            let limits = limits.clamped();
+            put(&cfg, |c| c.window.chat = limits);
+            tell(&cmds, |e| e.chat_trim());
+            super::chat();
+        }
+    });
+
     // What the chat keeps and how it comes and goes: a number each, read and set in the limits.
     type Limit = (
         &'static str,

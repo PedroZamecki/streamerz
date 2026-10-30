@@ -661,6 +661,8 @@
   "settings.autostart.about_linux": "Run Streamerz when you log in.",
   "settings.autostart.about_windows": "Run Streamerz when Windows starts.",
   "settings.chat": "Chat",
+  "settings.chat.save_history": "Save chat in memory",
+  "settings.chat.save_history.about": "Keep recent chat messages in memory. When off, commands and triggers still run, but no history is stored.",
   "settings.chat.fade_in": "Fade in (ms)",
   "settings.chat.fade_in.about": "How long a new line takes to appear. 0 shows it at once.",
   "settings.chat.fade_out": "Fade out (ms)",

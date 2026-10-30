@@ -2970,10 +2970,39 @@ fn handle_notification(
                     args.insert(k.into(), v);
                 }
             }
-            // How the chat shows it: the reward's picture and colour.
-            if let Some(r) = reward_look(rid) {
-                args.insert("rewardImage".into(), r.image.into());
-                args.insert("rewardColor".into(), r.color.into());
+            // How the chat shows it: the reward's picture, colour and channel points coin.
+            let (img, col) = match reward_look(rid) {
+                Some(r) => (r.image, r.color),
+                None => {
+                    let image = [
+                        "/image/url_4x",
+                        "/default_image/url_4x",
+                        "/image/url_2x",
+                        "/default_image/url_2x",
+                        "/image/url_1x",
+                        "/default_image/url_1x",
+                    ]
+                    .iter()
+                    .find_map(|p| {
+                        event["reward"]
+                            .pointer(p)
+                            .and_then(Value::as_str)
+                            .filter(|u| !u.is_empty())
+                    })
+                    .unwrap_or("");
+                    let color = event["reward"]["background_color"].as_str().unwrap_or("");
+                    (image.to_string(), color.to_string())
+                }
+            };
+            if !img.is_empty() {
+                args.insert("rewardImage".into(), img.into());
+            }
+            if !col.is_empty() {
+                args.insert("rewardColor".into(), col.into());
+            }
+            let points = points_icon();
+            if !points.is_empty() {
+                args.insert("rewardPoints".into(), points.into());
             }
             if sub_type.ends_with(".add") {
                 go(

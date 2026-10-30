@@ -194,9 +194,9 @@ fn event_of(kind: u32, a: &Obj) -> Option<Ev> {
         112 if !text("rawInput").is_empty() => return None,
         112 => Ev {
             cost: Some("rewardCost"),
-            picture: Some("rewardImage"),
+            picture: None,
             color: Some("rewardColor"),
-            ..ev("twitch", "sparkles", TWITCH, "chat.ev.reward", None)
+            ..ev("twitch", "", TWITCH, "chat.ev.reward", None)
         },
         // The rewards every channel has (highlight a message, unlock an emote...) and the power-ups.
         194 => {
@@ -526,6 +526,9 @@ fn same_msg(a: &Line, b: &Line) -> bool {
 
 impl Log {
     fn push(&mut self, mut l: Line) {
+        if !self.limits.save_history {
+            return;
+        }
         self.seq += 1;
         l.seq = self.seq;
         self.lines.push_back(l);
@@ -534,6 +537,10 @@ impl Log {
 
     /// Lines over the limits go, the oldest first.
     fn trim(&mut self) {
+        if !self.limits.save_history {
+            self.lines.clear();
+            return;
+        }
         let gone = self.limits.excess(self.lines.iter().map(|l| index(&l.platform)));
         for at in gone.into_iter().rev() {
             self.lines.remove(at);
@@ -906,6 +913,11 @@ impl Engine {
         let user = Some(get("user"))
             .filter(|u| !u.is_empty())
             .unwrap_or_else(|| get("userName"));
+        let cost_icon = if !ev.cost_icon.is_empty() {
+            ev.cost_icon.to_string()
+        } else {
+            get("rewardPoints")
+        };
         self.chat_log_mut().push(Line {
             platform: ev.platform.into(),
             time: crate::fmt::shown_time(&crate::fmt::now()),
@@ -916,7 +928,7 @@ impl Engine {
             emotes,
             event: says,
             cost: ev.cost.and_then(|k| a.get(k)).and_then(Value::as_u64).unwrap_or(0),
-            cost_icon: ev.cost_icon.into(),
+            cost_icon,
             picture: ev.picture.map(get).unwrap_or_default(),
             huge: ev.huge,
             icon: ev.icon.into(),
@@ -2037,7 +2049,190 @@ mod tests {
         // A reward with words is a chat message with the reward over it: not shown twice.
         assert!(event_of(112, &a(serde_json::json!({"rawInput": "drink!"}))).is_none());
         let ev = event_of(112, &a(serde_json::json!({"rawInput": "", "rewardImage": "i"}))).unwrap();
-        assert_eq!((ev.picture, ev.color), (Some("rewardImage"), Some("rewardColor")));
+        assert_eq!((ev.picture, ev.color), (None, Some("rewardColor")));
+    }
+
+    #[test]
+    fn a_reward_redemption_without_text_shows_in_chat() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
+            let mut args = crate::model::Obj::new();
+            args.insert("user".into(), "PedroZamecki".into());
+            args.insert("userName".into(), "pedrozamecki".into());
+            args.insert("userId".into(), "123".into());
+            args.insert("rewardTitle".into(), "Alongameeeeeento".into());
+            args.insert("rewardName".into(), "Alongameeeeeento".into());
+            args.insert("rewardCost".into(), 350.into());
+            args.insert("rewardPoints".into(), "https://x/coin.png".into());
+            args.insert("rewardColor".into(), "#00E5FF".into());
+            args.insert("rawInput".into(), "".into());
+            e.fire(
+                crate::twitch::T_REWARD_REDEMPTION,
+                "Reward Redemption",
+                "Twitch/Channel Points",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            let (_, _, lines) = e.chat_sync(u64::MAX, 0);
+            assert_eq!(lines.len(), 1);
+            let l = &lines[0];
+            assert_eq!(l.user, "PedroZamecki");
+            assert_eq!(l.event, "redeemed Alongameeeeeento");
+            assert_eq!(l.cost, 350);
+            assert_eq!(l.cost_icon, "https://x/coin.png");
+            assert_eq!(l.accent, "#00E5FF");
+            assert_eq!(l.icon, "");
+            assert_eq!(l.picture, "");
+        });
+    }
+
+    #[test]
+    fn chat_with_save_history_disabled_does_not_keep_lines() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
+            e.change(|c| c.window.chat.save_history = false);
+            e.chat(&crate::commands::Chat {
+                platform: "twitch".into(),
+                user: "Viewer".into(),
+                user_id: "1".into(),
+                text: "hello".into(),
+                msg_id: "m-1".into(),
+                ..Default::default()
+            });
+            let (_, _, lines) = e.chat_sync(u64::MAX, 0);
+            assert_eq!(lines.len(), 0);
+        });
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_chat_performance() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        crate::engine::tests::run(async {
+            fn get_rss_kb() -> usize {
+                std::fs::read_to_string("/proc/self/statm")
+                    .ok()
+                    .and_then(|s| {
+                        let pages: usize = s.split_whitespace().nth(1)?.parse().ok()?;
+                        Some(pages * 4)
+                    })
+                    .unwrap_or(0)
+            }
+
+            println!("\n=================== CHAT PERFORMANCE BENCHMARK ===================");
+            {
+                println!("\n>>> Raw In-Memory Chat Retention (100, 1,000, 10,000 lines stored without clamp)");
+                for &count in &[100, 1_000, 10_000] {
+                    let rss_before = get_rss_kb();
+                    let t0 = std::time::Instant::now();
+                    let mut lines: std::collections::VecDeque<Line> = std::collections::VecDeque::with_capacity(count);
+
+                    for i in 0..count {
+                        lines.push_back(Line {
+                            platform: "twitch".into(),
+                            time: "12:34:56".into(),
+                            ts: 1730000000000 + (i as i64),
+                            user: format!("ChatterUser{}", i % 200),
+                            user_id: format!("id_{}", i % 200),
+                            text: format!(
+                                "Hello world! This is chat message number {} testing heap usage PogChamp Kappa",
+                                i
+                            ),
+                            emotes: vec![
+                                (
+                                    "PogChamp".into(),
+                                    "https://static-cdn.jtvnw.net/emotes/v1/305954156/1.0".into(),
+                                ),
+                                ("Kappa".into(), "https://static-cdn.jtvnw.net/emotes/v1/25/1.0".into()),
+                            ],
+                            badges: vec![
+                                (
+                                    "subscriber".into(),
+                                    "https://static-cdn.jtvnw.net/badges/v1/sub.png".into(),
+                                ),
+                                ("vip".into(), "https://static-cdn.jtvnw.net/badges/v1/vip.png".into()),
+                            ],
+                            msg_id: format!("msg_id_{}", i),
+                            color: "#1E90FF".into(),
+                            ..Default::default()
+                        });
+                    }
+
+                    let elapsed = t0.elapsed();
+                    let rss_after = get_rss_kb();
+                    let rss_diff = (rss_after as isize) - (rss_before as isize);
+                    let bytes_est = lines.len() * std::mem::size_of::<Line>();
+
+                    println!(
+                        "Stored: {:>5} lines | Time: {:>7.2?} | Stack size: {:>6.2} KB | RSS delta: {:>+6.2} MB ({:.1} KB/msg)",
+                        count,
+                        elapsed,
+                        (bytes_est as f64) / 1024.0,
+                        (rss_diff as f64) / 1024.0,
+                        (rss_diff as f64) / (count as f64)
+                    );
+                }
+            }
+            for &save_history in &[true, false] {
+                println!("\n>>> Mode: save_history = {}", save_history);
+                for &count in &[100, 1_000, 10_000] {
+                    let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
+                    e.change(|c| {
+                        c.window.chat.save_history = save_history;
+                    });
+
+                    let rss_before = get_rss_kb();
+                    let t0 = std::time::Instant::now();
+
+                    for i in 0..count {
+                        let user_id = format!("user_{}", i % 50);
+                        let msg_id = format!("msg_{}_{}", count, i);
+                        let mut args = crate::model::Obj::new();
+                        args.insert("color".into(), "#1E90FF".into());
+                        args.insert(
+                            "badges".into(),
+                            serde_json::json!([{"name": "subscriber", "imageUrl": "https://static-cdn.jtvnw.net/badges/v1/sub.png"}]),
+                        );
+                        e.chat(&crate::commands::Chat {
+                            platform: "twitch".into(),
+                            user: format!("User{}", i % 50),
+                            user_id,
+                            text: format!("Message #{} PogChamp Kappa testing chat throughput!", i),
+                            msg_id,
+                            emotes: vec![
+                                (
+                                    "PogChamp".into(),
+                                    "https://static-cdn.jtvnw.net/emotes/v1/305954156/1.0".into(),
+                                ),
+                                ("Kappa".into(), "https://static-cdn.jtvnw.net/emotes/v1/25/1.0".into()),
+                            ],
+                            args,
+                            ..Default::default()
+                        });
+                    }
+
+                    let elapsed = t0.elapsed();
+                    let rss_after = get_rss_kb();
+                    let rss_diff = (rss_after as isize) - (rss_before as isize);
+                    let msgs_per_sec = (count as f64) / elapsed.as_secs_f64();
+                    let (_, _, lines) = e.chat_sync(u64::MAX, 0);
+
+                    println!(
+                        "Count: {:>5} | Time: {:>7.2?} | Speed: {:>8.1} msg/s | RSS: {:>6.2} MB ({:>+6.2} MB) | Retained lines: {}",
+                        count,
+                        elapsed,
+                        msgs_per_sec,
+                        (rss_after as f64) / 1024.0,
+                        (rss_diff as f64) / 1024.0,
+                        lines.len()
+                    );
+                }
+            }
+            println!("==================================================================\n");
+        });
     }
 
     #[test]
@@ -2356,6 +2551,7 @@ mod tests {
     #[test]
     fn limits_in_a_file_out_of_range_are_brought_in() {
         let l = crate::ChatLimits {
+            save_history: true,
             per_platform: 0,
             total: 5000,
             lifetime: u64::MAX,
