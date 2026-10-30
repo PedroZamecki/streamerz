@@ -365,15 +365,27 @@ fn tell(cmds: &UnboundedSender<UiCmd>, f: impl FnOnce(&Rc<Engine>) + Send + 'sta
     let _ = cmds.send(Box::new(f));
 }
 
-/// Run `f` on the engine's thread and wait for its answer. The engine never waits on the window,
-/// so this can't deadlock.
+/// How long the window waits for the engine's answer before it goes on without it.
+const QUERY_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Run `f` on the engine's thread and wait for its answer: None when it takes too long (the engine is
+/// busy with something slow, a locked keyring or a big file), so the window never freezes with it. `f`
+/// still runs when the engine gets to it. The engine never waits on the window, so this can't deadlock.
 fn query<T: Send + 'static>(
     cmds: &UnboundedSender<UiCmd>,
     f: impl FnOnce(&Rc<Engine>) -> T + Send + 'static,
 ) -> Option<T> {
+    query_for(cmds, QUERY_WAIT, f)
+}
+
+fn query_for<T: Send + 'static>(
+    cmds: &UnboundedSender<UiCmd>,
+    wait: std::time::Duration,
+    f: impl FnOnce(&Rc<Engine>) -> T + Send + 'static,
+) -> Option<T> {
     let (tx, rx) = std::sync::mpsc::channel();
     tell(cmds, move |e| drop(tx.send(f(e))));
-    rx.recv().ok()
+    rx.recv_timeout(wait).ok()
 }
 
 /// Wake the window with `m`, if it's up (no wakeups while hidden).
@@ -1455,6 +1467,15 @@ mod tests {
         assert!(relogin("TestPlatform", true), "the bot's is another login");
         relogin_done("TestPlatform", false);
         assert!(relogin("TestPlatform", false));
+    }
+
+    /// A busy engine doesn't freeze the window: a question it doesn't answer in time gets no answer.
+    #[test]
+    fn a_busy_engine_is_not_waited_for_forever() {
+        let (tx, _engine_busy) = tokio::sync::mpsc::unbounded_channel();
+        let t = std::time::Instant::now();
+        let got = query_for(&tx, std::time::Duration::from_millis(50), |_| 1);
+        assert!(got.is_none() && t.elapsed() < std::time::Duration::from_secs(2));
     }
 
     /// Menu labels show as written: an outcome named "Yes/No" isn't a submenu.
