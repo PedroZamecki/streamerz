@@ -72,6 +72,14 @@ impl Pic {
         self.frames.len() > 1
     }
 
+    /// What its frames take in memory.
+    fn bytes(&self) -> usize {
+        self.frames
+            .iter()
+            .map(|f| (f.0.data_w() * f.0.data_h() * f.0.depth() as i32).max(0) as usize)
+            .sum()
+    }
+
     pub fn w(&self) -> i32 {
         self.frames[0].0.w()
     }
@@ -81,12 +89,79 @@ impl Pic {
     }
 }
 
+/// A picture's cache key: its URL, height and whether it is cut round.
+type Key = (String, i32, bool);
+
+/// The decoded pictures kept at most, in bytes (animations are a full picture per frame); past it the
+/// least recently used go, and are decoded again when something asks.
+const SHOWN_BYTES: usize = 24 * 1024 * 1024;
+
+/// Decoded pictures, the least recently used going when they take too much.
+#[derive(Default)]
+struct Shown {
+    /// By key: the picture (None when the file isn't one), when it was last asked for, and its size.
+    pics: HashMap<Key, (Option<Pic>, u64, usize)>,
+    clock: u64,
+    bytes: usize,
+}
+
+impl Shown {
+    fn get(&mut self, key: &Key) -> Option<Option<Pic>> {
+        self.clock += 1;
+        let e = self.pics.get_mut(key)?;
+        e.1 = self.clock;
+        Some(e.0.clone())
+    }
+
+    fn put(&mut self, key: Key, pic: Option<Pic>) {
+        self.clock += 1;
+        let size = pic.as_ref().map_or(0, Pic::bytes);
+        self.bytes += size;
+        if let Some(old) = self.pics.insert(key, (pic, self.clock, size)) {
+            self.bytes -= old.2;
+        }
+        while self.bytes > SHOWN_BYTES && self.pics.len() > 1 {
+            let Some(oldest) = self.pics.iter().min_by_key(|e| e.1 .1).map(|e| e.0.clone()) else {
+                break;
+            };
+            if let Some(gone) = self.pics.remove(&oldest) {
+                self.bytes -= gone.2;
+            }
+        }
+    }
+}
+
 thread_local! {
-    /// Decoded pictures by (url, height, round); None when the file isn't a picture.
-    static SHOWN: RefCell<HashMap<(String, i32, bool), Option<Pic>>> = RefCell::default();
+    static SHOWN: RefCell<Shown> = RefCell::default();
     /// URLs being fetched (or that failed this run: not asked again).
     static ASKED: RefCell<HashSet<String>> = RefCell::default();
+    /// Pictures being decoded on another thread.
+    static DECODING: RefCell<HashSet<Key>> = RefCell::default();
 }
+
+/// What the decoding thread made of a file: the frames as plain pixels (FLTK's images belong to the
+/// window's thread), or the bytes of one it leaves to the window's thread (an SVG).
+enum Prepared {
+    Frames(Vec<Raw>),
+    Svg(Vec<u8>),
+}
+
+/// A frame as pixels: the data's size and depth, the size it shows at, and how long it shows (ms).
+struct Raw {
+    px: Vec<u8>,
+    size: (i32, i32),
+    depth: ColorDepth,
+    shown: (i32, i32),
+    ms: u32,
+}
+
+/// Pictures decoded and waiting for the window's thread to take them in.
+static READY: std::sync::Mutex<Vec<(Key, Prepared)>> = std::sync::Mutex::new(Vec::new());
+/// A wakeup for the window is already on its way (they come in bursts: one per 150 ms is plenty).
+static WAKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Decodes at a time: a burst of new pictures mustn't fill the machine.
+static DECODERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 /// Pictures downloaded this run (the emote picker refills when it changes).
 pub static ARRIVED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -160,18 +235,23 @@ fn prune(dir: &std::path::Path, keep: u64) {
     }
 }
 
-/// The picture at `url`, `h` px high (round for profile pictures). None until it's on disk: then
-/// it's fetched, and the window gets `Msg::Image` when it's there.
+/// The picture at `url`, `h` px high (round for profile pictures). None until it's on disk and decoded:
+/// downloading and decoding happen off the window's thread, and the window gets `Msg::Image` when it's
+/// there.
 pub fn get(cmds: &UnboundedSender<UiCmd>, url: &str, h: i32, round: bool) -> Option<Pic> {
     if url.is_empty() {
         return None;
     }
+    take_ready();
     let key = (url.to_string(), h, round);
-    if let Some(i) = SHOWN.with_borrow(|m| m.get(&key).cloned()) {
+    if let Some(i) = SHOWN.with_borrow_mut(|m| m.get(&key)) {
         return i;
     }
+    if DECODING.with_borrow(|d| d.contains(&key)) {
+        return None;
+    }
     let file = path(url);
-    let Ok(bytes) = std::fs::read(&file) else {
+    if !file.is_file() {
         // The first download of a run, then every 200th, keeps the folder in size.
         if ASKED.with_borrow(HashSet::is_empty) {
             prune(&dir(), KEEP_BYTES);
@@ -194,7 +274,7 @@ pub fn get(cmds: &UnboundedSender<UiCmd>, url: &str, h: i32, round: bool) -> Opt
                                 if n % 200 == 199 {
                                     prune(&dir(), KEEP_BYTES);
                                 }
-                                super::wake(Msg::Image);
+                                arrived();
                             }
                         }
                         _ => {}
@@ -203,24 +283,91 @@ pub fn get(cmds: &UnboundedSender<UiCmd>, url: &str, h: i32, round: bool) -> Opt
             });
         }
         return None;
-    };
-    // Shown: recently used, so pruning keeps it.
-    let _ = std::fs::File::options()
-        .write(true)
-        .open(&file)
-        .and_then(|f| f.set_modified(std::time::SystemTime::now()));
-    let frames: Vec<_> = decode(&bytes).into_iter().map(|(i, d)| (fit(i, h, round), d)).collect();
-    let pic = (!frames.is_empty()).then(|| Pic {
-        total: frames.iter().map(|f| f.1).sum(),
-        frames,
+    }
+    DECODING.with_borrow_mut(|d| d.insert(key.clone()));
+    let scale = fltk::app::screen_scale(0);
+    tell(cmds, move |_| {
+        tokio::task::spawn_local(async move {
+            let _one = DECODERS.acquire().await;
+            let made = tokio::task::spawn_blocking(move || {
+                let bytes = std::fs::read(&file).ok()?;
+                // Shown: recently used, so pruning keeps it.
+                let _ = std::fs::File::options()
+                    .write(true)
+                    .open(&file)
+                    .and_then(|f| f.set_modified(std::time::SystemTime::now()));
+                Some(prepare(&bytes, h, round, scale))
+            })
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(Prepared::Frames(Vec::new()));
+            if let Ok(mut r) = READY.lock() {
+                r.push((key, made));
+            }
+            arrived();
+        });
     });
-    SHOWN.with_borrow_mut(|m| m.insert(key, pic.clone()));
-    pic
+    None
+}
+
+/// Something came in for the window (a picture downloaded or decoded): it is told, once for a burst.
+fn arrived() {
+    if !WAKING.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tokio::task::spawn_local(async {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            WAKING.store(false, std::sync::atomic::Ordering::Relaxed);
+            super::wake(Msg::Image);
+        });
+    }
+}
+
+/// The window's thread takes in the pictures decoded for it.
+fn take_ready() {
+    let Some(done) = READY
+        .lock()
+        .ok()
+        .filter(|r| !r.is_empty())
+        .map(|mut r| std::mem::take(&mut *r))
+    else {
+        return;
+    };
+    for (key, made) in done {
+        let frames: Vec<(RgbImage, u32)> = match made {
+            Prepared::Frames(raws) => raws.into_iter().filter_map(|r| build(&r).map(|i| (i, r.ms))).collect(),
+            Prepared::Svg(bytes) => decode(&bytes)
+                .into_iter()
+                .map(|(i, ms)| (fit(i, key.1, key.2), ms))
+                .collect(),
+        };
+        let pic = (!frames.is_empty()).then(|| Pic {
+            total: frames.iter().map(|f| f.1).sum(),
+            frames,
+        });
+        DECODING.with_borrow_mut(|d| d.remove(&key));
+        SHOWN.with_borrow_mut(|m| m.put(key, pic));
+    }
 }
 
 /// The window was hidden: free the decoded pictures (the files stay).
 pub fn forget() {
-    SHOWN.with_borrow_mut(HashMap::clear);
+    SHOWN.with_borrow_mut(|m| *m = Shown::default());
+    DECODING.with_borrow_mut(HashSet::clear);
+    if let Ok(mut r) = READY.lock() {
+        r.clear();
+    }
+}
+
+/// What a file is as frames of pixels, fitted to `h` (on another thread than the window's).
+fn prepare(b: &[u8], h: i32, round: bool, scale: f32) -> Prepared {
+    let drawn =
+        b.starts_with(b"\x89PNG") || b.starts_with(&[0xff, 0xd8]) || b.starts_with(b"GIF") || b.starts_with(b"RIFF");
+    if !drawn && std::str::from_utf8(b).is_ok_and(|s| s.contains("<svg")) {
+        return Prepared::Svg(b.to_vec());
+    }
+    let mut out = Vec::new();
+    decode_each(b, &mut |i, ms| out.push(fit_raw(&i, h, round, scale, ms)));
+    Prepared::Frames(out)
 }
 
 /// The PNG without its colour profile: libpng warns on stderr about many emotes' broken one, and
@@ -247,21 +394,32 @@ const MAX_FRAMES: usize = 150;
 /// PNG, JPEG, GIF and WebP (animated too) or SVG, as RGB(A) frames with their time in ms; none when
 /// it isn't a picture.
 pub fn decode(b: &[u8]) -> Vec<(RgbImage, u32)> {
-    let still = |i: Option<RgbImage>| i.map(|i| (i, 1000)).into_iter().collect();
+    let mut out = Vec::new();
+    decode_each(b, &mut |i, ms| out.push((i, ms)));
+    out
+}
+
+/// `decode`, one frame at a time: an animation's frames needn't all be there at full size at once.
+fn decode_each(b: &[u8], each: &mut dyn FnMut(RgbImage, u32)) {
+    let mut still = |i: Option<RgbImage>| {
+        if let Some(i) = i {
+            each(i, 1000);
+        }
+    };
     if b.starts_with(b"\x89PNG") {
         still(PngImage::from_data(&no_iccp(b)).ok().and_then(|i| i.to_rgb().ok()))
     } else if b.starts_with(&[0xff, 0xd8]) {
         still(JpegImage::from_data(b).ok().and_then(|i| i.to_rgb().ok()))
     } else if b.starts_with(b"GIF") {
-        gif(b).unwrap_or_default()
+        gif(b, each);
     } else if b.starts_with(b"RIFF") && b.get(8..12) == Some(b"WEBP") {
-        webp(b).unwrap_or_default()
+        webp(b, each);
     } else {
         let Some(s) = std::str::from_utf8(b).ok().filter(|s| s.contains("<svg")) else {
-            return Vec::new();
+            return;
         };
         let Ok(mut i) = SvgImage::from_data(s) else {
-            return Vec::new();
+            return;
         };
         // Rasterized at a size that stays sharp once fitted.
         i.scale(128, 128, true, true);
@@ -272,13 +430,13 @@ pub fn decode(b: &[u8]) -> Vec<(RgbImage, u32)> {
 }
 
 /// A GIF's frames, each painted on the canvas as the previous ones left it.
-fn gif(b: &[u8]) -> Option<Vec<(RgbImage, u32)>> {
+fn gif(b: &[u8], each: &mut dyn FnMut(RgbImage, u32)) -> Option<()> {
     let mut o = gif::DecodeOptions::new();
     o.set_color_output(gif::ColorOutput::RGBA);
     let mut d = o.read_info(b).ok()?;
     let (w, h) = (usize::from(d.width()), usize::from(d.height()));
     let mut canvas = vec![0u8; w * h * 4];
-    let mut out = Vec::new();
+    let mut n = 0;
     while let Ok(Some(f)) = d.read_next_frame() {
         let before = (f.dispose == gif::DisposalMethod::Previous).then(|| canvas.clone());
         let (fx, fy, fw) = (usize::from(f.left), usize::from(f.top), usize::from(f.width));
@@ -291,9 +449,10 @@ fn gif(b: &[u8]) -> Option<Vec<(RgbImage, u32)>> {
         if let Ok(i) = RgbImage::new(&canvas, w as i32, h as i32, ColorDepth::Rgba8) {
             // In 10 ms; browsers show 0 and 1 as 100 ms.
             let ms = u32::from(f.delay) * 10;
-            out.push((i, if ms < 20 { 100 } else { ms }));
+            each(i, if ms < 20 { 100 } else { ms });
+            n += 1;
         }
-        if out.len() == MAX_FRAMES {
+        if n == MAX_FRAMES {
             break;
         }
         match (f.dispose, before) {
@@ -308,10 +467,10 @@ fn gif(b: &[u8]) -> Option<Vec<(RgbImage, u32)>> {
             _ => {}
         }
     }
-    Some(out)
+    Some(())
 }
 
-fn webp(b: &[u8]) -> Option<Vec<(RgbImage, u32)>> {
+fn webp(b: &[u8], each: &mut dyn FnMut(RgbImage, u32)) -> Option<()> {
     let mut d = image_webp::WebPDecoder::new(std::io::Cursor::new(b)).ok()?;
     let (w, h) = d.dimensions();
     let depth = if d.has_alpha() {
@@ -322,18 +481,18 @@ fn webp(b: &[u8]) -> Option<Vec<(RgbImage, u32)>> {
     let mut px = vec![0; d.output_buffer_size()?];
     if !d.is_animated() {
         d.read_image(&mut px).ok()?;
-        return Some(vec![(RgbImage::new(&px, w as i32, h as i32, depth).ok()?, 1000)]);
+        each(RgbImage::new(&px, w as i32, h as i32, depth).ok()?, 1000);
+        return Some(());
     }
     // Frames come painted on the animation's background colour, often opaque black.
     d.set_background_color([0, 0, 0, 0]).ok()?;
-    let mut out = Vec::new();
     for _ in 0..d.num_frames().min(MAX_FRAMES as u32) {
         let Ok(ms) = d.read_frame(&mut px) else { break };
         if let Ok(f) = RgbImage::new(&px, w as i32, h as i32, depth) {
-            out.push((f, if ms < 20 { 100 } else { ms }));
+            each(f, if ms < 20 { 100 } else { ms });
         }
     }
-    Some(out)
+    Some(())
 }
 
 /// `i` at `w`x`h`. Shrinking averages every pixel each one covers (alpha-weighted, so no dark
@@ -390,11 +549,16 @@ fn fit(i: RgbImage, h: i32, round: bool) -> RgbImage {
 
 /// `fit` for a screen scaled by `scale`.
 fn fit_at(i: RgbImage, h: i32, round: bool, scale: f32) -> RgbImage {
+    build(&fit_raw(&i, h, round, scale, 0)).unwrap_or(i)
+}
+
+/// `fit` as plain pixels, that can go between threads: the image to show is made from it by `build`.
+fn fit_raw(i: &RgbImage, h: i32, round: bool, scale: f32, ms: u32) -> Raw {
     let scale = scale.max(1.0);
     let ph = (h as f32 * scale).ceil() as i32;
     let pw = (i.data_w() * ph / i.data_h().max(1)).max(1);
     let w = (pw as f32 / scale).round() as i32;
-    let mut i = shrink(&i, pw, ph);
+    let mut i = shrink(i, pw, ph);
     if round {
         if let Ok(rgba) = i.convert(ColorDepth::Rgba8) {
             let mut d = rgba.to_rgb_data();
@@ -413,8 +577,20 @@ fn fit_at(i: RgbImage, h: i32, round: bool, scale: f32) -> RgbImage {
             }
         }
     }
-    i.scale(w, h, false, true);
-    i
+    Raw {
+        px: i.to_rgb_data(),
+        size: (i.data_w(), i.data_h()),
+        depth: i.depth(),
+        shown: (w, h),
+        ms,
+    }
+}
+
+/// The image `r` describes, at the size it shows at.
+fn build(r: &Raw) -> Option<RgbImage> {
+    let mut i = RgbImage::new(&r.px, r.size.0, r.size.1, r.depth).ok()?;
+    i.scale(r.shown.0, r.shown.1, false, true);
+    Some(i)
 }
 
 #[cfg(test)]
@@ -504,5 +680,46 @@ mod tests {
         let d = r.to_rgb_data();
         assert_eq!(d[3], 0, "corner cut away");
         assert!(decode(b"not a picture").is_empty());
+    }
+
+    #[test]
+    fn decoded_pictures_past_the_budget_free_the_least_recently_used() {
+        let key = |n: i32| (format!("u{n}"), 20, false);
+        let big = || {
+            let px = vec![0u8; 1024 * 1024 * 4];
+            let i = RgbImage::new(&px, 1024, 1024, ColorDepth::Rgba8).unwrap();
+            Some(Pic {
+                frames: vec![(i, 1000)],
+                total: 1000,
+            })
+        };
+        let mut shown = Shown::default();
+        // 4 MB each: the 7th goes past 24 MB.
+        for n in 0..6 {
+            shown.put(key(n), big());
+        }
+        // Asking for the first makes it the newest.
+        assert!(shown.get(&key(0)).is_some());
+        shown.put(key(6), big());
+        assert!(shown.get(&key(1)).is_none(), "the least recently used is gone");
+        assert!(shown.get(&key(0)).is_some() && shown.get(&key(6)).is_some());
+        assert!(shown.bytes <= SHOWN_BYTES);
+    }
+
+    #[test]
+    fn a_file_is_made_into_frames_of_pixels_off_the_window_thread() {
+        let svg = include_bytes!("../../assets/icons/kick.svg");
+        assert!(matches!(prepare(svg, 8, false, 1.0), Prepared::Svg(_)));
+        assert!(matches!(prepare(b"not a picture", 8, false, 1.0), Prepared::Frames(f) if f.is_empty()));
+        let webp = [
+            0x52, 0x49, 0x46, 0x46, 0x1c, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x4c, 0x0f, 0x00,
+            0x00, 0x00, 0x2f, 0x00, 0x00, 0x00, 0x00, 0x07, 0x10, 0xfd, 0x8f, 0xfe, 0x07, 0x22, 0xa2, 0xff, 0x01, 0x00,
+        ];
+        let Prepared::Frames(f) = prepare(&webp, 8, false, 2.0) else {
+            panic!("frames")
+        };
+        // 1x1 grown to 8 logical px, 16 on a screen scaled 2: pixels and the size they show at.
+        assert_eq!((f.len(), f[0].shown), (1, (8, 8)));
+        assert!(build(&f[0]).is_some());
     }
 }
