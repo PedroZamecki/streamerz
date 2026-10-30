@@ -548,12 +548,18 @@ impl Log {
         if !self.limits.save_history {
             let n = self.lines.len();
             self.lines.clear();
+            self.lines.shrink_to_fit();
+            crate::trim_memory();
             return n;
         }
         let gone = self.limits.excess(self.lines.iter().map(|l| index(&l.platform)));
         let n = gone.len();
         for at in gone.into_iter().rev() {
             self.lines.remove(at);
+        }
+        if n > 0 && self.lines.capacity() > 2 * self.lines.len().max(16) {
+            self.lines.shrink_to_fit();
+            crate::trim_memory();
         }
         n
     }
@@ -565,7 +571,12 @@ impl Log {
         if life > 0 {
             self.lines.retain(|l| l.ts <= 0 || now < l.ts as u64 + life);
         }
-        before - self.lines.len()
+        let removed = before - self.lines.len();
+        if removed > 0 && self.lines.capacity() > 2 * self.lines.len().max(16) {
+            self.lines.shrink_to_fit();
+            crate::trim_memory();
+        }
+        removed
     }
 
     fn remember_emote(&mut self, i: usize, token: String, url: String) {

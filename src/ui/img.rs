@@ -94,7 +94,7 @@ type Key = (String, i32, bool);
 
 /// The decoded pictures kept at most, in bytes (animations are a full picture per frame); past it the
 /// least recently used go, and are decoded again when something asks.
-const SHOWN_BYTES: usize = 24 * 1024 * 1024;
+const SHOWN_BYTES: usize = 8 * 1024 * 1024;
 
 /// Decoded pictures, the least recently used going when they take too much.
 #[derive(Default)]
@@ -129,6 +129,25 @@ impl Shown {
             }
         }
     }
+
+    fn trim(&mut self) {
+        const TARGET: usize = 2 * 1024 * 1024;
+        while self.bytes > TARGET && self.pics.len() > 1 {
+            let Some(oldest) = self.pics.iter().min_by_key(|e| e.1 .1).map(|e| e.0.clone()) else {
+                break;
+            };
+            if let Some(gone) = self.pics.remove(&oldest) {
+                self.bytes -= gone.2;
+            }
+        }
+        self.pics.shrink_to_fit();
+    }
+}
+
+/// Evict decoded pictures down to idle target and trim heap memory.
+pub fn trim() {
+    SHOWN.with_borrow_mut(|s| s.trim());
+    crate::trim_memory();
 }
 
 thread_local! {
@@ -359,6 +378,7 @@ pub fn forget() {
     if let Ok(mut r) = READY.lock() {
         r.clear();
     }
+    crate::trim_memory();
 }
 
 /// What a file is as frames of pixels, fitted to `h` (on another thread than the window's).
@@ -697,15 +717,14 @@ mod tests {
             })
         };
         let mut shown = Shown::default();
-        // 4 MB each: the 7th goes past 24 MB.
-        for n in 0..6 {
-            shown.put(key(n), big());
-        }
+        // 4 MB each: past 8 MB, the least recently used go.
+        shown.put(key(0), big());
+        shown.put(key(1), big());
         // Asking for the first makes it the newest.
         assert!(shown.get(&key(0)).is_some());
-        shown.put(key(6), big());
+        shown.put(key(2), big());
         assert!(shown.get(&key(1)).is_none(), "the least recently used is gone");
-        assert!(shown.get(&key(0)).is_some() && shown.get(&key(6)).is_some());
+        assert!(shown.get(&key(0)).is_some() && shown.get(&key(2)).is_some());
         assert!(shown.bytes <= SHOWN_BYTES);
     }
 

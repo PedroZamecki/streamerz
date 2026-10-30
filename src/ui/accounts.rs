@@ -330,7 +330,7 @@ pub(super) fn platform_accounts(cmds: &Cmds, cfg: &Cfg, platform: &str, size: i3
 }
 
 /// The chat room a platform's column shows: the channel's name (the logged-in broadcaster's own when no
-/// other is set) and, when the channel is the broadcaster's own, their round picture.
+/// other is set) and their round picture (whether their own account or an outside channel).
 pub(super) fn room(cmds: &Cmds, cfg: &Cfg, platform: &str, size: i32) -> (String, Option<fltk::image::RgbImage>) {
     let Some(p) = P::from_slug(platform) else {
         return (String::new(), None);
@@ -348,9 +348,20 @@ pub(super) fn room(cmds: &Cmds, cfg: &Cfg, platform: &str, size: i32) -> (String
     } else {
         set
     };
-    let pic = match (own, mine) {
-        (true, Some(m)) => picture(cmds, cfg, p, false, &m, size),
-        _ => None,
+    let pic = if own {
+        mine.as_ref()
+            .and_then(|m| picture(cmds, cfg, p, false, m, size))
+            .or_else(|| {
+                if !name.is_empty() {
+                    channel_picture(cmds, cfg, p, &name, size)
+                } else {
+                    None
+                }
+            })
+    } else if !name.is_empty() {
+        channel_picture(cmds, cfg, p, &name, size)
+    } else {
+        None
     };
     (name, pic)
 }
@@ -474,6 +485,130 @@ async fn avatar(e: &Rc<Engine>, cfg: &Cfg, p: P, bot: bool) -> Option<String> {
         }
     };
     v?.as_str().filter(|u| u.starts_with("http")).map(str::to_string)
+}
+
+/// A channel's profile picture URL, read from public APIs or GQL (works for outside channels).
+async fn channel_avatar(cfg: &Cfg, p: P, channel: &str) -> Option<String> {
+    let clean = channel.trim().trim_start_matches('@');
+    if clean.is_empty() {
+        return None;
+    }
+    match p {
+        P::Twitch => {
+            let (cid, tok) = {
+                let c = cfg.borrow();
+                let a = c.twitch.broadcaster.as_ref().or(c.twitch.bot.as_ref()).cloned();
+                (
+                    crate::twitch::CLIENT_ID.to_string(),
+                    a.map(|x| x.token.access_token).unwrap_or_default(),
+                )
+            };
+            if !tok.is_empty() {
+                let h = vec![
+                    ("Client-Id".into(), cid),
+                    ("Authorization".into(), format!("Bearer {tok}")),
+                ];
+                let url = format!(
+                    "{}/users?login={}",
+                    crate::twitch::HELIX_URL,
+                    crate::commands::url_encode(clean)
+                );
+                if let Ok(r) = crate::http::request("GET", &url, &h, b"").await {
+                    if let Ok(v) = serde_json::from_slice::<Value>(&r.body) {
+                        if let Some(u) = v.pointer("/data/0/profile_image_url").and_then(Value::as_str) {
+                            if u.starts_with("http") {
+                                return Some(u.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            let headers = [
+                ("Client-Id".to_string(), "kimne78kx3ncx6brgo4mv6wki5h1ko".to_string()),
+                ("Content-Type".to_string(), "application/json".to_string()),
+            ];
+            let q = serde_json::json!({
+                "query": format!("{{ user(login: \"{clean}\") {{ profileImageURL(width: 150) }} }}")
+            });
+            if let Ok(r) =
+                crate::http::request("POST", "https://gql.twitch.tv/gql", &headers, q.to_string().as_bytes()).await
+            {
+                if let Ok(v) = serde_json::from_slice::<Value>(&r.body) {
+                    if let Some(u) = v.pointer("/data/user/profileImageURL").and_then(Value::as_str) {
+                        if u.starts_with("http") {
+                            return Some(u.to_string());
+                        }
+                    }
+                }
+            }
+            None
+        }
+        P::YouTube => crate::youtube::public_channel(clean).await.1,
+        P::Kick => {
+            let h = [("Accept".to_string(), "application/json".to_string())];
+            let url = format!("https://kick.com/api/v2/channels/{clean}");
+            let r = crate::http::request("GET", &url, &h, b"").await.ok()?;
+            let v = serde_json::from_slice::<Value>(&r.body).ok()?;
+            v.pointer("/user/profile_pic")
+                .or_else(|| v.pointer("/user/profile_picture"))
+                .and_then(Value::as_str)
+                .filter(|u| u.starts_with("http"))
+                .map(str::to_string)
+        }
+        P::TikTok => crate::webcast::avatar(clean).await,
+    }
+}
+
+/// The channel's profile picture, `size` px and round. Its URL is cached for 24h.
+fn channel_picture(cmds: &Cmds, cfg: &Cfg, p: P, name: &str, size: i32) -> Option<fltk::image::RgbImage> {
+    const FRESH: u64 = 24 * 60 * 60;
+    let norm = name.trim().trim_start_matches('@').to_lowercase();
+    if norm.is_empty() {
+        return None;
+    }
+    let key = format!("{}:chan:{}", p.slug(), norm);
+    let mut a = AVATARS.lock().ok()?;
+    let url = match a.iter().find(|(k, _)| *k == key) {
+        Some((_, url)) => url.clone(),
+        None => {
+            let now = crate::fmt::unix_now().as_secs();
+            let saved = super::img::saved("avatars").map(|v| v.1).unwrap_or_default();
+            let (url, at) = (
+                saved[&key][0].as_str().unwrap_or("").to_string(),
+                saved[&key][1].as_u64().unwrap_or(0),
+            );
+            a.push((key.clone(), url.clone()));
+            if now.saturating_sub(at) >= FRESH {
+                let cfg = cfg.clone();
+                let channel = norm.clone();
+                tell(cmds, move |_| {
+                    tokio::task::spawn_local(async move {
+                        let Some(url) = channel_avatar(&cfg, p, &channel).await else {
+                            return;
+                        };
+                        if let Ok(mut a) = AVATARS.lock() {
+                            if let Some(slot) = a.iter_mut().find(|(k, _)| *k == key) {
+                                slot.1.clone_from(&url);
+                            }
+                        }
+                        let mut all = super::img::saved("avatars").map(|v| v.1).unwrap_or_default();
+                        if !all.is_object() {
+                            all = serde_json::json!({});
+                        }
+                        all[&key] = serde_json::json!([url, crate::fmt::unix_now().as_secs()]);
+                        super::img::save("avatars", &all);
+                        super::wake(super::Msg::Image);
+                    });
+                });
+            }
+            url
+        }
+    };
+    drop(a);
+    if url.is_empty() {
+        return None;
+    }
+    super::img::get(cmds, &url, size, true).map(|p| p.first())
 }
 
 /// The account's profile picture, `size` px and round. Its URL is kept in the cache: used at once,

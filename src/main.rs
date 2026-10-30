@@ -46,6 +46,20 @@ mod vars;
 mod webcast;
 pub mod youtube;
 
+/// Trims heap memory and returns unused virtual memory pages back to the operating system.
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
+pub fn trim_memory() {
+    unsafe {
+        extern "C" {
+            fn malloc_trim(pad: usize) -> std::ffi::c_int;
+        }
+        malloc_trim(0);
+    }
+}
+
+#[cfg(not(all(target_os = "linux", not(target_env = "musl"))))]
+pub fn trim_memory() {}
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::VecDeque;

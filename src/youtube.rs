@@ -53,6 +53,9 @@ pub const T_YT_USER_TIMEDOUT: u32 = 4031;
 pub const YOUTUBE_API_BASE: &str = "https://www.googleapis.com/youtube/v3";
 pub const YOUTUBE_INNERTUBE_URL: &str = "https://www.youtube.com/youtubei/v1/live_chat/get_live_chat";
 
+pub const UA: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
+
 /// The text between the first `marker` in `page` and the next quote, with JSON's `\u0026` as `&`.
 fn quoted_after(page: &[u8], marker: &[u8]) -> Option<String> {
     let at = page.windows(marker.len()).position(|w| w == marker)? + marker.len();
@@ -63,33 +66,30 @@ fn quoted_after(page: &[u8], marker: &[u8]) -> Option<String> {
 
 /// A channel's banner and picture, read from its public page (the API has no banner for other people's
 /// channels): what youtube.com's own channel card shows. None when it has none, or the page doesn't answer.
-pub async fn public_channel(channel_id: &str) -> (Option<String>, Option<String>) {
-    if !channel_id.starts_with("UC")
-        || !channel_id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    {
+pub async fn public_channel(channel: &str) -> (Option<String>, Option<String>) {
+    let clean = channel.trim();
+    if clean.is_empty() {
         return (None, None);
     }
+    let path = channel_path(clean);
     // The cookie keeps the consent page out of the way.
     let headers = [
         ("Accept-Language".to_string(), "en".to_string()),
         ("Cookie".to_string(), "SOCS=CAI; CONSENT=YES+1".to_string()),
-        (
-            "User-Agent".to_string(),
-            "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0".to_string(),
-        ),
+        ("User-Agent".to_string(), UA.to_string()),
     ];
-    let url = format!("https://www.youtube.com/channel/{channel_id}");
+    let url = format!("https://www.youtube.com{path}");
     let Ok(r) = crate::http::request("GET", &url, &headers, b"").await else {
         return (None, None);
     };
     if r.status != 200 {
         return (None, None);
     }
+    let avatar = quoted_after(&r.body, br#""avatar":{"thumbnails":[{"url":""#)
+        .or_else(|| quoted_after(&r.body, br#""avatar":{"image":{"sources":[{"url":""#));
     (
         quoted_after(&r.body, br#""imageBannerViewModel":{"image":{"sources":[{"url":""#),
-        quoted_after(&r.body, br#""avatar":{"thumbnails":[{"url":""#),
+        avatar,
     )
 }
 
@@ -980,9 +980,6 @@ impl YouTubeRunner {
 
 pub const YOUTUBE_WEB: &str = "https://www.youtube.com";
 
-const UA: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
-
 /// The first `"key":"value"` in a page.
 fn find<'a>(page: &'a str, key: &str) -> Option<&'a str> {
     let pat = format!("\"{key}\":\"");
@@ -1019,21 +1016,132 @@ async fn live_video(web: &str, channel: &str) -> Result<String, String> {
     }
 }
 
-/// Extract `ytInitialData`'s initial `actions` array from a `/live_chat` popout HTML page, if present.
-pub fn extract_initial_actions(page: &str) -> Vec<Value> {
+/// Extract `ytInitialData` object from an HTML page, if present.
+pub fn extract_initial_data(page: &str) -> Option<Value> {
     for marker in ["window[\"ytInitialData\"] = ", "var ytInitialData = "] {
         if let Some(idx) = page.find(marker) {
             let rest = page[idx + marker.len()..].trim_start();
             if let Some(end) = rest.find(";</script>") {
                 if let Ok(v) = serde_json::from_str::<Value>(&rest[..end]) {
-                    if let Some(arr) = v
-                        .pointer("/contents/liveChatRenderer/actions")
-                        .and_then(Value::as_array)
-                    {
-                        return arr.clone();
-                    }
+                    return Some(v);
                 }
             }
+        }
+    }
+    None
+}
+
+/// Recursively scan `ytInitialData` for videos marked as LIVE.
+pub fn extract_live_streams_from_data(val: &Value, out: &mut Vec<(String, String)>) {
+    fn scan(v: &Value, out: &mut Vec<(String, String)>) {
+        match v {
+            Value::Object(map) => {
+                if let Some(vid) = map.get("videoId").and_then(Value::as_str) {
+                    if vid.len() == 11 {
+                        let is_live = map.get("badges").and_then(Value::as_array).is_some_and(|b| {
+                            b.iter().any(|item| {
+                                item.pointer("/metadataBadgeRenderer/style")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|s| s == "BADGE_STYLE_TYPE_LIVE_NOW")
+                                    || item
+                                        .pointer("/metadataBadgeRenderer/label")
+                                        .and_then(Value::as_str)
+                                        .is_some_and(|l| l.eq_ignore_ascii_case("live"))
+                            })
+                        }) || v.pointer("/thumbnailOverlays").and_then(Value::as_array).is_some_and(
+                            |arr| {
+                                arr.iter().any(|ov| {
+                                    ov.pointer("/thumbnailOverlayTimeStatusRenderer/style")
+                                        .and_then(Value::as_str)
+                                        .is_some_and(|s| s == "LIVE")
+                                })
+                            },
+                        ) || map.get("isLive").and_then(Value::as_bool).unwrap_or(false);
+
+                        if is_live && !out.iter().any(|(id, _)| id == vid) {
+                            let title = v
+                                .pointer("/title/runs/0/text")
+                                .or_else(|| v.pointer("/title/simpleText"))
+                                .or_else(|| v.pointer("/headline/simpleText"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("Livestream")
+                                .to_string();
+                            out.push((vid.to_string(), title));
+                        }
+                    }
+                }
+                for child in map.values() {
+                    scan(child, out);
+                }
+            }
+            Value::Array(arr) => {
+                for item in arr {
+                    scan(item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    scan(val, out);
+}
+
+/// Discover active livestreams on a YouTube channel.
+/// Returns a list of `(video_id, title)`.
+pub async fn discover_channel_lives(
+    engine: &Rc<Engine>,
+    cfg: &Arc<watch::Sender<Config>>,
+    web: &str,
+    channel: &str,
+    run_once: bool,
+) -> Vec<(String, String)> {
+    let mut lives: Vec<(String, String)> = Vec::new();
+    if run_once || web != YOUTUBE_WEB {
+        if let Ok(canon_id) = live_video(web, channel).await {
+            lives.push((canon_id, "YouTube Live".to_string()));
+        }
+        return lives;
+    }
+    let headers = [
+        ("User-Agent".to_string(), UA.to_string()),
+        ("Accept-Language".to_string(), "en".to_string()),
+        ("Cookie".to_string(), "SOCS=CAI; CONSENT=YES+1".to_string()),
+    ];
+
+    // 1. Fetch channel's /streams page (where YouTube lists live and upcoming streams)
+    let streams_url = format!("{web}{}/streams", channel_path(channel));
+    if let Ok(r) = crate::http::request("GET", &streams_url, &headers, b"").await {
+        let text = r.text();
+        if let Some(val) = extract_initial_data(&text) {
+            extract_live_streams_from_data(&val, &mut lives);
+        }
+    }
+
+    // 2. Fetch channel's /live page to ensure canonical live is present
+    if let Ok(canon_id) = live_video(web, channel).await {
+        if !lives.iter().any(|(id, _)| id == &canon_id) {
+            lives.push((canon_id, "YouTube Live".to_string()));
+        }
+    }
+
+    // 3. If logged in via OAuth, check broadcaster's liveBroadcasts
+    let (live_id, _) = oauth_broadcast_hint(engine, cfg).await;
+    if let Some(id) = live_id {
+        if !lives.iter().any(|(v, _)| v == &id) {
+            lives.push((id, "Live Broadcast".to_string()));
+        }
+    }
+
+    lives
+}
+
+/// Extract `ytInitialData`'s initial `actions` array from a `/live_chat` popout HTML page, if present.
+pub fn extract_initial_actions(page: &str) -> Vec<Value> {
+    if let Some(v) = extract_initial_data(page) {
+        if let Some(arr) = v
+            .pointer("/contents/liveChatRenderer/actions")
+            .and_then(Value::as_array)
+        {
+            return arr.clone();
         }
     }
     Vec::new()
@@ -1143,10 +1251,21 @@ pub async fn read_chat_with_standby(
                 channel_label(&c.youtube),
             )
         };
-        let mut video = if !video_cfg.is_empty() {
+        let video = if !video_cfg.is_empty() {
             Ok(video_cfg)
         } else if !channel.is_empty() {
-            live_video(web, &channel).await
+            let lives = discover_channel_lives(engine, cfg, web, &channel, run_once).await;
+            if lives.len() > 1 {
+                let rx = crate::ui::ask_youtube_stream(lives.clone());
+                match rx.await {
+                    Ok(Some(chosen)) => Ok(chosen),
+                    _ => Ok(lives[0].0.clone()),
+                }
+            } else if let Some((id, _)) = lives.into_iter().next() {
+                Ok(id)
+            } else {
+                Err("not live".into())
+            }
         } else {
             Err("no channel or video configured".into())
         };
@@ -1154,11 +1273,8 @@ pub async fn read_chat_with_standby(
             let due = last_oauth_check.is_none_or(|t| t.elapsed() >= Duration::from_secs(300));
             if due {
                 last_oauth_check = Some(std::time::Instant::now());
-                let (live_id, sched) = oauth_broadcast_hint(engine, cfg).await;
+                let (_, sched) = oauth_broadcast_hint(engine, cfg).await;
                 scheduled_at = sched;
-                if let Some(id) = live_id {
-                    video = Ok(id);
-                }
             }
         }
         let start = match video {
@@ -2121,6 +2237,41 @@ mod tests {
             "UC1234567890"
         );
         assert_eq!(clean_youtube_channel("@MyCreatorHandle"), "MyCreatorHandle");
+    }
+
+    #[test]
+    fn multiple_livestreams_detection() {
+        let html = r#"
+            <html><body>
+            <script>var ytInitialData = {
+                "contents": {
+                    "items": [
+                        {
+                            "videoId": "stream11111",
+                            "title": {"runs": [{"text": "Stream 1 Title"}]},
+                            "badges": [{"metadataBadgeRenderer": {"style": "BADGE_STYLE_TYPE_LIVE_NOW"}}]
+                        },
+                        {
+                            "videoId": "stream22222",
+                            "headline": {"simpleText": "Stream 2 Headline"},
+                            "thumbnailOverlays": [{"thumbnailOverlayTimeStatusRenderer": {"style": "LIVE"}}]
+                        },
+                        {
+                            "videoId": "offline1234",
+                            "title": {"simpleText": "Past Video"},
+                            "badges": []
+                        }
+                    ]
+                }
+            };</script>
+            </body></html>
+        "#;
+        let val = extract_initial_data(html).expect("initial data extracted");
+        let mut lives = Vec::new();
+        extract_live_streams_from_data(&val, &mut lives);
+        assert_eq!(lives.len(), 2);
+        assert_eq!(lives[0], ("stream11111".to_string(), "Stream 1 Title".to_string()));
+        assert_eq!(lives[1], ("stream22222".to_string(), "Stream 2 Headline".to_string()));
     }
 
     use super::*;

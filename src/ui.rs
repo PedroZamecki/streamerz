@@ -306,6 +306,21 @@ pub fn relogin_done(platform: &'static str, bot: bool) {
     }
 }
 
+type YtPrompt = (Vec<(String, String)>, oneshot::Sender<Option<String>>);
+static YOUTUBE_STREAMS: Mutex<Vec<YtPrompt>> = Mutex::new(Vec::new());
+
+/// Prompt the user to select which YouTube livestream to focus on when multiple are live.
+pub fn ask_youtube_stream(streams: Vec<(String, String)>) -> oneshot::Receiver<Option<String>> {
+    let (tx, rx) = oneshot::channel();
+    if let Ok(mut q) = YOUTUBE_STREAMS.lock() {
+        q.push((streams, tx));
+    }
+    if let Some(ui) = UI.get() {
+        ui.send(Msg::Input);
+    }
+    rx
+}
+
 /// Saves what the window keeps, starts the new build and quits (after an update).
 pub fn restart() {
     if let Some(ui) = UI.get() {
@@ -1280,6 +1295,7 @@ pub fn run(
             w.hide();
             img::forget();
             views.chat_release();
+            img::trim();
         }
     };
     hide.set_callback({
@@ -1462,6 +1478,17 @@ pub fn run(
                         if dialogs::choice(&text, tr("relogin.later"), tr("relogin.now")) {
                             accounts::login_again(&cfg, &cmds, platform, bot);
                         }
+                    }
+                    let yt_prompts = YOUTUBE_STREAMS
+                        .lock()
+                        .map(|mut q| std::mem::take(&mut *q))
+                        .unwrap_or_default();
+                    for (streams, answer) in yt_prompts {
+                        let choices: Vec<String> =
+                            streams.iter().map(|(id, title)| format!("{title} ({id})")).collect();
+                        let picked = dialogs::pick(tr("youtube.choose_stream_title"), &choices);
+                        let chosen = picked.and_then(|idx| streams.get(idx).map(|s| s.0.clone()));
+                        let _ = answer.send(chosen);
                     }
                 }
                 _ => {}

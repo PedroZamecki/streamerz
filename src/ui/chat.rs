@@ -1975,7 +1975,8 @@ struct ChatColumn {
     /// What is wrong with the chat (the stream ended, not connected), with what to do about it.
     notice: Flex,
     notice_icon: Frame,
-    notice_text: Frame,
+    notice_title: Frame,
+    notice_desc: Frame,
     reconnect_btn: Button,
     notice_plat: Rc<Cell<Option<&'static str>>>,
     /// What the notice shows now, so it is only laid out again when that changes.
@@ -2023,17 +2024,33 @@ impl ChatColumn {
         col.fixed(&replying, 0);
         replying.hide();
 
-        // "Twitch: the stream ended", with what can be done: reconnect it, or take the chat away.
+        // Prominent notice card for stream ended or disconnection.
         let mut notice = Flex::default().row();
-        notice.set_pad(6);
+        notice.set_pad(10);
+        notice.set_frame(FrameType::RFlatBox);
+        notice.set_color(Color::Background2);
         let notice_icon = Frame::default();
-        notice.fixed(&notice_icon, 20);
-        let mut notice_text = Frame::default()
+        notice.fixed(&notice_icon, 28);
+        let mut text_col = Flex::default().column();
+        text_col.set_pad(2);
+        let mut notice_title = Frame::default()
             .with_align(Align::Left | Align::Inside | Align::Clip)
             .ellipsis();
-        notice_text.set_label_size(12);
-        let mut reconnect_btn = button(&mut notice, tr("chat.reconnect"), 92);
-        let mut hide_btn = button(&mut notice, tr("chat.hide_chat"), 92);
+        notice_title.set_label_font(Font::HelveticaBold);
+        notice_title.set_label_size(13);
+        let mut notice_desc = Frame::default()
+            .with_align(Align::Left | Align::Inside | Align::Clip)
+            .ellipsis();
+        notice_desc.set_label_font(Font::Helvetica);
+        notice_desc.set_label_size(11);
+        notice_desc.set_label_color(super::muted());
+        text_col.end();
+        let mut btn_col = Flex::default().column();
+        btn_col.set_pad(4);
+        let mut reconnect_btn = button(&mut btn_col, tr("chat.reconnect"), 88);
+        let mut hide_btn = button(&mut btn_col, tr("chat.hide_chat"), 88);
+        btn_col.end();
+        notice.fixed(&btn_col, 92);
         notice.end();
         col.fixed(&notice, 0);
         notice.hide();
@@ -2122,7 +2139,8 @@ impl ChatColumn {
             set_reply: set_reply.clone(),
             notice: notice.clone(),
             notice_icon: notice_icon.clone(),
-            notice_text: notice_text.clone(),
+            notice_title: notice_title.clone(),
+            notice_desc: notice_desc.clone(),
             reconnect_btn: reconnect_btn.clone(),
             notice_plat: Rc::default(),
             notice_last: Rc::default(),
@@ -2271,14 +2289,16 @@ impl ChatColumn {
             return;
         };
         let name = NAMES[PLATFORMS.iter().position(|x| *x == p).unwrap_or(0)];
-        let (key, icon) = match state {
-            ChatState::Ended => ("chat.state_ended", "circle-alert"),
-            ChatState::Standby => ("chat.state_standby", "info"),
-            _ => ("chat.state_down", "triangle-alert"),
+        let (title_key, desc_key, icon) = match state {
+            ChatState::Ended => ("chat.state_ended_title", "chat.state_ended_desc", "circle-alert"),
+            ChatState::Standby => ("chat.state_standby_title", "chat.state_standby_desc", "info"),
+            _ => ("chat.state_down_title", "chat.state_down_desc", "triangle-alert"),
         };
-        let mut text = self.notice_text.clone();
-        text.set_label(&trf(key, &[("platform", name)]));
-        text.set_label_color(Color::Foreground);
+        let mut title = self.notice_title.clone();
+        title.set_label(&trf(title_key, &[("platform", name)]));
+        title.set_label_color(Color::Foreground);
+        let mut desc = self.notice_desc.clone();
+        desc.set_label(&trf(desc_key, &[("platform", name)]));
         let mut ic = self.notice_icon.clone();
         ic.set_image(icons::icon(
             icon,
@@ -2287,7 +2307,7 @@ impl ChatColumn {
             } else {
                 super::muted()
             },
-            16,
+            24,
         ));
         let mut re = self.reconnect_btn.clone();
         // The stream ending isn't a lost connection: nothing to reconnect.
@@ -2299,7 +2319,7 @@ impl ChatColumn {
         if !notice.visible() {
             notice.show();
         }
-        col.fixed(&notice, 28);
+        col.fixed(&notice, 54);
         col.layout();
         notice.redraw();
     }
@@ -3331,8 +3351,7 @@ fn emote_field(
         let (cmds, platform) = (cmds.clone(), platform.clone());
         move |i: &Input| {
             let v = i.value();
-            let ps = pieces(&cmds, PLATFORMS[platform.get().min(3)], &v, i.h() - 10);
-            ps.iter().any(|p| p.1.is_some()).then_some(ps)
+            pieces(&cmds, PLATFORMS[platform.get().min(3)], &v, i.h() - 10)
         }
     };
     // Scrolled so the cursor shows: the text's start, left of the box.
@@ -3340,14 +3359,15 @@ fn emote_field(
     input.draw({
         let state = state.clone();
         move |i| {
-            let Some(ps) = state(i) else {
-                if i.value().is_empty() && !i.has_focus() {
-                    draw::set_font(Font::Helvetica, i.text_size());
-                    draw::set_draw_color(super::muted());
-                    draw::draw_text2(empty, i.x() + 6, i.y(), i.w() - 12, i.h(), Align::Left | Align::Clip);
-                }
+            draw::draw_box(i.frame(), i.x(), i.y(), i.w(), i.h(), i.color());
+            let v = i.value();
+            if v.is_empty() && !i.has_focus() {
+                draw::set_font(Font::Helvetica, i.text_size());
+                draw::set_draw_color(super::muted());
+                draw::draw_text2(empty, i.x() + 6, i.y(), i.w() - 12, i.h(), Align::Left | Align::Clip);
                 return;
-            };
+            }
+            let ps = state(i);
             let (xs, total) = layout(i, &ps);
             let (pos, mark) = (i.position() as usize, i.mark() as usize);
             let cur = x_of(i, &ps, &xs, pos);
@@ -3360,7 +3380,6 @@ fn emote_field(
             }
             draw::set_font(i.text_font(), i.text_size());
             draw::set_draw_color(i.text_color());
-            let v = i.value();
             let base = i.y() + (i.h() + draw::height()) / 2 - draw::descent();
             for ((r, p), x) in ps.iter().zip(&xs) {
                 match p {
@@ -3378,16 +3397,62 @@ fn emote_field(
             draw::pop_clip();
         }
     });
-    // Clicks land between the pieces as drawn.
+    // Clicks and key presses
     move |i: &mut Input, ev: Event| {
         if matches!(ev, Event::Focus | Event::Unfocus) {
             i.redraw();
             return false;
         }
+        if ev == Event::KeyDown {
+            let key = app::event_key();
+            if key == fltk::enums::Key::BackSpace {
+                let pos = i.position() as usize;
+                let mark = i.mark() as usize;
+                if pos == mark && pos > 0 {
+                    let v = i.value();
+                    let ps = state(i);
+                    if let Some((start, end)) = ps.iter().find_map(|(r, p)| {
+                        if p.is_some() && pos > r.start && pos <= r.end {
+                            Some((r.start, r.end))
+                        } else {
+                            None
+                        }
+                    }) {
+                        let new_v = format!("{}{}", &v[..start], &v[end..]);
+                        i.set_value(&new_v);
+                        let _ = i.set_position(start as i32);
+                        let _ = i.set_mark(start as i32);
+                        i.redraw();
+                        return true;
+                    }
+                }
+            } else if key == fltk::enums::Key::Delete {
+                let pos = i.position() as usize;
+                let mark = i.mark() as usize;
+                if pos == mark {
+                    let v = i.value();
+                    let ps = state(i);
+                    if let Some((start, end)) = ps.iter().find_map(|(r, p)| {
+                        if p.is_some() && pos >= r.start && pos < r.end {
+                            Some((r.start, r.end))
+                        } else {
+                            None
+                        }
+                    }) {
+                        let new_v = format!("{}{}", &v[..start], &v[end..]);
+                        i.set_value(&new_v);
+                        let _ = i.set_position(start as i32);
+                        let _ = i.set_mark(start as i32);
+                        i.redraw();
+                        return true;
+                    }
+                }
+            }
+        }
         if !matches!(ev, Event::Push | Event::Drag) || !super::left_button() {
             return false;
         }
-        let Some(ps) = state(i) else { return false };
+        let ps = state(i);
         let (xs, total) = layout(i, &ps);
         let cur = x_of(i, &ps, &xs, i.position() as usize);
         let ex = app::event_x() - (i.x() + 6 - shift(i, cur, total));
@@ -3727,5 +3792,15 @@ mod tests {
         assert_eq!(left(125_000), "2:05");
         assert_eq!(left(1), "0:01");
         assert_eq!(left(3_729_000), "1:02:09");
+    }
+
+    #[test]
+    fn emote_backspace_removes_whole_token() {
+        let text = "look at this test testEmote";
+        let emote_range = 18..27;
+        let pos = 27;
+        assert!(pos > emote_range.start && pos <= emote_range.end);
+        let new_text = format!("{}{}", &text[..emote_range.start], &text[emote_range.end..]);
+        assert_eq!(new_text, "look at this test ");
     }
 }
