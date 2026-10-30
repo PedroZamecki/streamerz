@@ -626,7 +626,7 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
             get("userId"),
             get("role"),
             get("text"),
-            req.get("badges").cloned(),
+            req,
         ) {
             Ok(ran) => ok(&id, json!({"ran": ran})),
             Err(m) => error(&id, &m),

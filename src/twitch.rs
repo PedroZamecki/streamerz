@@ -2404,6 +2404,21 @@ fn handle_notification(
                 event["is_action"].as_bool().unwrap_or(false) || crate::engine::chatlog::action_of(text).is_some();
             args.insert("isAction".into(), action.into());
             args.insert("isHighlight".into(), (kind == "channel_points_highlighted").into());
+            // A message sent with a channel reward: the chat shows the reward above it.
+            let reward = es(event, "/channel_points_custom_reward_id");
+            if !reward.is_empty() {
+                args.insert("messageRewardId".into(), reward.into());
+                match reward_look(reward) {
+                    Some(r) => {
+                        args.insert("messageRewardTitle".into(), r.title.into());
+                        args.insert("messageRewardCost".into(), r.cost.into());
+                        args.insert("messageRewardImage".into(), r.image.into());
+                        args.insert("messageRewardColor".into(), r.color.into());
+                        args.insert("messageRewardPoints".into(), points_icon().into());
+                    }
+                    None => reward_unknown(channel_id(&engine.config())),
+                }
+            }
 
             SEEN.with_borrow_mut(|s| {
                 if s.messages.len() == 200 {
@@ -2586,6 +2601,19 @@ fn handle_notification(
                 args.insert("multiMonthTenure".into(), 0.into());
             };
             match kind {
+                "watch_streak" => {
+                    let w = &event["watch_streak"];
+                    args.insert("streak".into(), w["streak_count"].clone());
+                    args.insert("pointsAwarded".into(), w["channel_points_awarded"].clone());
+                    go(
+                        engine,
+                        T_WATCH_STREAK,
+                        "Watch Streak",
+                        "Twitch/Community",
+                        "WatchStreak",
+                        &args,
+                    );
+                }
                 "announcement" => {
                     args.insert("announceColor".into(), d["color"].as_str().unwrap_or("PRIMARY").into());
                     let (code, name) = (pick(T_ANNOUNCEMENT, T_SHARED_CHAT_ANNOUNCEMENT), "Announcement");
@@ -2902,6 +2930,11 @@ fn handle_notification(
                 ] {
                     args.insert(k.into(), v);
                 }
+            }
+            // How the chat shows it: the reward's picture and colour.
+            if let Some(r) = reward_look(rid) {
+                args.insert("rewardImage".into(), r.image.into());
+                args.insert("rewardColor".into(), r.color.into());
             }
             if sub_type.ends_with(".add") {
                 go(
@@ -3967,6 +4000,8 @@ fn handle_notification(
             } else if !id.is_empty() {
                 args.insert("unlockedEmoteId".into(), id.into());
                 args.insert("unlockedEmoteName".into(), name.into());
+                let url = format!("https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/2.0");
+                args.insert("unlockedEmoteUrl".into(), url.into());
             }
             go(
                 engine,
@@ -3979,7 +4014,8 @@ fn handle_notification(
         }
         "channel.bits.use" => {
             // Cheers come with the chat message; this is for power-ups.
-            if es(event, "/type") != "power_up" {
+            let custom = es(event, "/type") == "custom_power_up";
+            if es(event, "/type") != "power_up" && !custom {
                 return;
             }
             let mut args = Obj::new();
@@ -3990,16 +4026,27 @@ fn handle_notification(
             args.insert("powerUpType".into(), p["type"].clone());
             args.insert("emoteId".into(), p["emote"]["id"].clone());
             args.insert("emoteName".into(), p["emote"]["name"].clone());
+            if let Some(id) = p["emote"]["id"].as_str().filter(|i| !i.is_empty()) {
+                let url = format!("https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/3.0");
+                args.insert("emoteUrl".into(), url.into());
+            }
             args.insert("messageEffectId".into(), p["message_effect_id"].clone());
             args.insert("message".into(), event["message"]["text"].clone());
-            go(
-                engine,
-                T_POWER_UP_REDEMPTION,
-                "Power Up Redemption",
-                "Twitch/Channel Points",
-                "PowerUpRedemption",
-                &args,
-            );
+            if custom {
+                let c = &event["custom_power_up"];
+                args.insert("powerUpTitle".into(), c["title"].clone());
+                args.insert("rewardId".into(), c["reward_id"].clone());
+            }
+            let (code, name, id) = if custom {
+                (
+                    T_CUSTOM_POWER_UP_REDEMPTION,
+                    "Custom Power Up Redemption",
+                    "CustomPowerUpRedemption",
+                )
+            } else {
+                (T_POWER_UP_REDEMPTION, "Power Up Redemption", "PowerUpRedemption")
+            };
+            go(engine, code, name, "Twitch/Channel Points", id, &args);
         }
         _ => {}
     }
@@ -4218,6 +4265,10 @@ struct Seen {
     title: String,
     game: (String, String),
     rewards: HashMap<String, Value>,
+    /// The picture of the channel's points (each channel can name and draw its own).
+    points_icon: String,
+    /// When the channel's rewards were last asked for without a login (they change; not asked too often).
+    rewards_asked: Option<std::time::Instant>,
     messages: std::collections::VecDeque<(String, String)>,
     pyramid: Pyramid,
     pyramids: HashMap<String, (u64, u64)>,
@@ -4411,6 +4462,94 @@ pub fn commercials_possible() -> bool {
         .is_none_or(|t| t == "partner" || t == "affiliate")
 }
 
+/// How a custom reward is drawn in the chat.
+pub struct RewardLook {
+    pub title: String,
+    pub cost: u64,
+    pub image: String,
+    pub color: String,
+}
+
+/// A custom reward's look by its id, once the channel's rewards are known.
+pub fn reward_look(id: &str) -> Option<RewardLook> {
+    SEEN.with_borrow(|s| {
+        let r = s.rewards.get(id)?;
+        let image = ["/image/url_4x", "/default_image/url_4x"]
+            .iter()
+            .find_map(|p| r.pointer(p).and_then(Value::as_str).filter(|u| !u.is_empty()));
+        Some(RewardLook {
+            title: r["title"].as_str().unwrap_or("").into(),
+            cost: r["cost"].as_u64().unwrap_or(0),
+            image: image.unwrap_or("").into(),
+            color: r["background_color"].as_str().unwrap_or("").into(),
+        })
+    })
+}
+
+/// The picture of the channel's points, if known.
+pub fn points_icon() -> String {
+    SEEN.with_borrow(|s| s.points_icon.clone())
+}
+
+/// The channel's rewards and its points' picture from Twitch's public web API (what twitch.tv's own
+/// chat reads, no login needed): a moderator or a viewer sees a reward's name, price and picture
+/// too. What the broadcaster's Helix list already gave is kept (it knows more).
+pub async fn load_public_rewards(channel_id: &str) {
+    if channel_id.is_empty() || !channel_id.bytes().all(|b| b.is_ascii_digit()) {
+        return;
+    }
+    let headers = [
+        ("Client-Id".to_string(), "kimne78kx3ncx6brgo4mv6wki5h1ko".to_string()),
+        ("Content-Type".to_string(), "application/json".to_string()),
+    ];
+    let q = format!(
+        "{{ channel(id: \"{channel_id}\") {{ communityPointsSettings {{ image {{ url }} customRewards {{ id title cost prompt backgroundColor isEnabled isUserInputRequired image {{ url }} defaultImage {{ url }} }} }} }} }}"
+    );
+    let body = json!({ "query": q }).to_string();
+    SEEN.with_borrow_mut(|s| s.rewards_asked = Some(std::time::Instant::now()));
+    let Ok(r) = crate::http::request("POST", "https://gql.twitch.tv/gql", &headers, body.as_bytes()).await else {
+        return;
+    };
+    if let Ok(v) = serde_json::from_slice::<Value>(&r.body) {
+        absorb_public_rewards(&v["data"]["channel"]["communityPointsSettings"]);
+    }
+}
+
+/// Takes what the public web API said of a channel's points (see `load_public_rewards`).
+fn absorb_public_rewards(settings: &Value) {
+    SEEN.with_borrow_mut(|s| {
+        if let Some(u) = settings["image"]["url"].as_str() {
+            s.points_icon = u.into();
+        }
+        for r in settings["customRewards"].as_array().into_iter().flatten() {
+            let Some(id) = r["id"].as_str() else { continue };
+            let pic = |k: &str| json!({ "url_4x": r[k]["url"] });
+            s.rewards.entry(id.into()).or_insert_with(|| {
+                json!({
+                    "id": id,
+                    "title": r["title"],
+                    "cost": r["cost"],
+                    "prompt": r["prompt"],
+                    "background_color": r["backgroundColor"],
+                    "is_enabled": r["isEnabled"],
+                    "is_user_input_required": r["isUserInputRequired"],
+                    "image": if r["image"].is_object() { pic("image") } else { Value::Null },
+                    "default_image": if r["defaultImage"].is_object() { pic("defaultImage") } else { Value::Null },
+                })
+            });
+        }
+    });
+    publish_rewards();
+}
+
+/// Asks for the channel's rewards again when a reward nobody knows shows up (at most once a minute).
+fn reward_unknown(channel_id: String) {
+    let due = SEEN.with_borrow(|s| s.rewards_asked.is_none_or(|t| t.elapsed() > Duration::from_secs(60)));
+    if due && !channel_id.is_empty() {
+        tokio::task::spawn_local(async move { load_public_rewards(&channel_id).await });
+    }
+}
+
 /// Puts the channel's rewards (as known) where the editors offer them.
 fn publish_rewards() {
     let list = SEEN.with_borrow(|s| {
@@ -4483,6 +4622,7 @@ async fn seed(engine: &Rc<Engine>) {
         }
     });
     publish_rewards();
+    load_public_rewards(&channel_id(&engine.config())).await;
 }
 
 /// While connected: viewer count (every minute), present viewers (every 5) and the next ad (every
@@ -4902,6 +5042,34 @@ pub(crate) mod tests {
         let mut out = out;
         out.sort();
         assert_eq!(out, ["T ran ", "T ran hydrate"]);
+    }
+
+    #[test]
+    fn a_reward_is_known_from_the_public_list() {
+        absorb_public_rewards(&json!({
+            "image": {"url": "https://x/points.png"},
+            "customRewards": [
+                {"id": "r9", "title": "Hydrate", "cost": 500, "backgroundColor": "#112233", "image": null,
+                 "defaultImage": {"url": "https://x/default.png"}},
+                {"id": "r8", "title": "Mine", "cost": 7, "backgroundColor": "#FFFFFF",
+                 "image": {"url": "https://x/mine.png"}, "defaultImage": {"url": "https://x/default.png"}}
+            ]
+        }));
+        let r = reward_look("r9").expect("known");
+        assert_eq!(
+            (r.title.as_str(), r.cost, r.color.as_str()),
+            ("Hydrate", 500, "#112233")
+        );
+        assert_eq!(r.image, "https://x/default.png");
+        assert_eq!(reward_look("r8").unwrap().image, "https://x/mine.png");
+        assert_eq!(points_icon(), "https://x/points.png");
+        assert!(reward_look("nope").is_none());
+        // What the broadcaster's own list said stays.
+        SEEN.with_borrow_mut(|s| {
+            s.rewards.insert("r7".into(), json!({"title": "Own", "cost": 1}));
+        });
+        absorb_public_rewards(&json!({"customRewards": [{"id": "r7", "title": "Public", "cost": 2}]}));
+        assert_eq!(reward_look("r7").unwrap().title, "Own");
     }
 
     #[test]

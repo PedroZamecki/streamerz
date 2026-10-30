@@ -409,6 +409,14 @@ platform handles through channels, never through shared locks held across awaits
   (read from the channel). Kick's chat box lists the commands its API can do. Twitch badge pictures come
   from Twitch's public web API and nothing is drawn in their place.
 
+- [x] Rewards and power-ups in the chat ([CHAT.md](docs/CHAT.md)): a message sent with a custom reward has
+  it over it (picture, name, price in the channel's own points picture), without a login too (the reward
+  list comes from Twitch's public web API, the reward id from the message); automatic rewards and Bits
+  power-ups (custom ones fire now) are lines with their picture and price, a gigantified emote is drawn
+  big, watch streaks fire and show (EventSub and the anonymous reader's notice), Kick rewards show their
+  price (kick.com's reward list) and colour, TikTok gifts their picture and coins. The anonymous reader
+  marks highlighted, sub-only, gigantified and animated messages.
+
 ## Open points (decide when the phase starts, ask first)
 
 - Points: its sub-actions are new in Streamer.bot 1.1.0, unreleased (1.0.7 is the latest). When it's out,

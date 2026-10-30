@@ -9,9 +9,10 @@ power-ups.
 - Code: 112
 - Type: TwitchRewardRedemption
 - Category: Twitch/Rewards & Points
-- Needs: a Twitch login that is the channel's owner or a moderator of it
+- Needs: a Twitch login with the `channel:read:redemptions` scope (Twitch says whether the account may listen)
 
-Fires when a viewer redeems a custom Channel Points reward.
+Fires when a viewer redeems a custom Channel Points reward. A redemption with no text shows in the chat as a line
+(the reward's picture, name and price); one with text comes as a chat message, which shows the reward over it.
 
 ### Fields
 
@@ -30,6 +31,7 @@ Fires when a viewer redeems a custom Channel Points reward.
 - `status`, `rewardStatus`, `redeemedAt`: the redemption's status and time.
 - `skipsQueue`, `requiresUserInput`, `maxPerStream`, `maxPerUserPerStream`, `globalCooldown`,
   `backgroundColor`: the reward's settings.
+- `rewardImage`, `rewardColor`: the reward's picture and colour, when known.
 
 ### When
 
@@ -122,9 +124,11 @@ When Twitch sends a redemption updated event for the channel.
 - Code: 194
 - Type: TwitchAutomaticRewardRedemption
 - Category: Twitch/Rewards & Points
-- Needs: a Twitch login that is the channel's owner or a moderator of it
+- Needs: a Twitch login with the `channel:read:redemptions` scope (Twitch says whether the account may listen)
 
-Fires when a viewer redeems one of Twitch's automatic rewards, such as unlocking an emote or gigantifying one.
+Fires when a viewer redeems one of Twitch's automatic rewards, such as highlighting a message, unlocking an emote
+or gigantifying one. The chat shows it as a line with the reward's name, its price and, for an emote, its picture
+(a gigantified one is drawn big).
 
 ### Fields
 
@@ -138,7 +142,7 @@ None.
 - `rewardType`: the kind of automatic reward.
 - `rewardCost`: the cost, in Channel Points.
 - `userInput`: the text the viewer sent with it.
-- `unlockedEmoteId`, `unlockedEmoteName`: the emote unlocked, when the reward unlocks one.
+- `unlockedEmoteId`, `unlockedEmoteName`, `unlockedEmoteUrl`: the emote unlocked, when the reward unlocks one.
 - `gigantifiedEmoteId`, `gigantifiedEmoteName`, `gigantifiedEmoteUrl`: the emote, when the reward gigantifies
   one. The URL is the emote's large image.
 
@@ -152,9 +156,10 @@ When Twitch sends an automatic reward redemption added event for the channel.
 - Code: 196
 - Type: TwitchPowerUpRedemption
 - Category: Twitch/Rewards & Points
-- Needs: a Twitch login that is the channel's owner or a moderator of it
+- Needs: a Twitch login with the `bits:read` scope (Twitch says whether the account may listen)
 
-Fires when a viewer uses a Bits power-up.
+Fires when a viewer uses a Bits power-up (a message effect, a gigantified emote or an on-screen celebration). The
+chat shows it as a line with what was used and the Bits it cost.
 
 ### Fields
 
@@ -166,7 +171,7 @@ None.
 - `user`, `userName`, `userId`, `userType`: the viewer who used the power-up.
 - `bits`: the Bits spent.
 - `powerUpType`: the kind of power-up.
-- `emoteId`, `emoteName`: the emote, when the power-up is an emote.
+- `emoteId`, `emoteName`, `emoteUrl`: the emote, when the power-up is an emote.
 - `messageEffectId`: the message effect, when the power-up is one.
 - `message`: the message the viewer sent with it.
 
@@ -180,9 +185,10 @@ When Twitch sends a Bits used event that is a power-up. Cheers sent in a chat me
 - Code: 496
 - Type: TwitchCustomPowerUpRedemption
 - Category: Twitch/Rewards & Points
-- Needs: nothing yet (Streamerz doesn't fire it)
+- Needs: a Twitch login with the `bits:read` scope (Twitch says whether the account may listen)
 
-Streamerz doesn't fire this yet.
+Fires when a viewer uses one of the channel's own Bits power-ups. The chat shows it as a line with its title and the
+Bits it cost.
 
 ### Fields
 
@@ -190,12 +196,13 @@ None.
 
 ### Arguments
 
-None.
+- `broadcastUser`, `broadcastUserName`, `broadcastUserId`: the channel.
+- `user`, `userName`, `userId`, `userType`: the viewer who used the power-up.
+- `bits`: the Bits spent.
+- `powerUpTitle`: the power-up's title.
+- `rewardId`: the power-up's reward id.
+- `message`: the message the viewer sent with it.
 
 ### When
 
-Never, for now.
-
-### Notes
-
-- Streamerz doesn't fire this yet.
+When Twitch sends a Bits used event that is a custom power-up.

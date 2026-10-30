@@ -56,8 +56,26 @@ nothing is sent: the chat shows what would have been.
 - A message pinned in a chat shows as a card with who pinned it and the time left.
 - A poll or prediction going on shows as a card with each choice's share (a prediction: the points on it),
   the time left, and for a short while after it ends, the result.
-- A channel reward redeemed shows as a line with its price in channel points.
+- Rewards and power-ups (see "Rewards, power-ups and gifts" below).
 - A badge's tooltip says what it means; an emote's, where it comes from (Twitch, 7TV, BetterTTV...).
+
+## Rewards, power-ups and gifts
+
+Each shows in the chat as TikTok's gifts do: an icon, who, what, a picture when there is one, and the price.
+
+| What | Shown as | Needs |
+| --- | --- | --- |
+| A custom reward with words (Twitch) | A header over the message: the reward's picture, name and price in the channel's own points picture | Nothing: the chat message says which reward it came with (the name, price and picture come from Twitch's public web API) |
+| A custom reward with no words (Twitch) | A line with the same | A login with the redemptions scope (the owner's; Twitch decides if a moderator's may). Without one nothing tells of it: Twitch's public socket refuses the redemptions topic |
+| An automatic reward (Highlight My Message, unlock an emote, Message Effects, Gigantify an Emote, On-Screen Celebration) | A line with its name, price and for an emote its picture (gigantified: big) | Same. The message of a highlight, a sub-only bypass, an effect or a gigantified emote is also marked, with or without a login |
+| A Bits power-up, custom ones too | A line with what was used and the Bits | A login with the `bits:read` scope (Twitch decides who may) |
+| A watch streak (Twitch) | A line with the streak | Nothing |
+| A gigantified message | The last emote drawn big | Nothing |
+| A reward (Kick) | A line with the reward's name, price and colour | Nothing: kick.com's own reward list gives the price |
+| A gift (TikTok) | A line with its picture and coins | Nothing |
+
+Twitch decides who gets which event: a moderator's login may be refused some of them, and Streamerz says so
+once in the log.
 
 ## When a stream stops
 

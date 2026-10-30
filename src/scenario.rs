@@ -182,14 +182,7 @@ fn step_once(e: &Rc<Engine>, step: &Value) -> Result<Option<usize>, String> {
             g("role")
         };
         return e
-            .inject_chat(
-                &g("platform"),
-                &user,
-                &g("userId"),
-                &role,
-                &g("text"),
-                c.get("badges").cloned(),
-            )
+            .inject_chat(&g("platform"), &user, &g("userId"), &role, &g("text"), c)
             .map(Some);
     }
     if let Some(a) = step.get("run").and_then(Value::as_str) {

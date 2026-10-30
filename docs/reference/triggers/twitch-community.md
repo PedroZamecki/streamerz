@@ -586,9 +586,9 @@ When Twitch sends an automod terms update with the add permitted action.
 - Code: 472
 - Type: TwitchWatchStreak
 - Category: Twitch/Community/Ads & Milestones
-- Needs: nothing yet (Streamerz doesn't fire it)
+- Needs: nothing more than the chat (a viewer's watch streak milestone is a chat notice, read with or without a login)
 
-Streamerz doesn't fire this yet.
+Fires when a viewer shares a watch streak milestone in the chat. The chat shows it as a line with the streak.
 
 ### Fields
 
@@ -596,12 +596,13 @@ None.
 
 ### Arguments
 
-None.
+- `broadcastUser`, `broadcastUserName`, `broadcastUserId`: the channel.
+- `user`, `userName`, `userId`, `userType`: the viewer.
+- `streak`: how many streams in a row they have watched.
+- `pointsAwarded`: the Channel Points it gave them.
+- `systemMessage`: Twitch's own words for it.
 
 ### When
 
-Never, for now.
-
-### Notes
-
-- Streamerz doesn't fire this yet.
+When Twitch sends a chat notification of the watch streak kind (EventSub), or its `viewermilestone` notice
+(anonymous chat).

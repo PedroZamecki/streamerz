@@ -82,6 +82,23 @@ def main():
             sys.exit("can't reach the app")
         for p in ("twitch", "kick", "youtube", "tiktok"):
             ws.ask({"request": "InjectChat", "id": p, "platform": p, "user": "Ana", "text": f"hello from {p}"})
+        # Rewards, power-ups and gifts are lines of the chat (each takes a line), and a message sent with a
+        # reward has it over it.
+        ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Chat"})
+        seen = lambda: int(ws.ask({"request": "StreamerzUi", "id": "c", "do": "chat"})["result"])
+        time.sleep(1)
+        before = seen()
+        ws.ask({"request": "InjectChat", "id": "rw", "platform": "twitch", "user": "Bia", "text": "drink water",
+                "args": {"messageRewardId": "r1", "messageRewardTitle": "Hydrate", "messageRewardCost": 500}})
+        for trig, args in (("TwitchAutomaticRewardRedemption", {"rewardType": "send_highlighted_message", "rewardCost": 40}),
+                           ("TwitchPowerUpRedemption", {"powerUpType": "celebration", "bits": 50}),
+                           ("TwitchWatchStreak", {"streak": 7}),
+                           ("KickRewardRedemption", {"reward.title": "Hydrate", "rewardCost": 500})):
+            ws.ask({"request": "FireTrigger", "id": "ft", "trigger": trig, "args": dict(args, user="Fabi")})
+        time.sleep(1)
+        if seen() - before < 5:
+            failures.append(f"rewards and power-ups didn't all reach the chat ({before} to {seen()})")
+        ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/chat_rewards.png"})
         pages = ["Chat", "Accounts", "Community", "Polls", "Actions", "Commands", "Timers", "Queues", "Groups", "Plugins",
                  "Servers", "Stream Apps", "Donations", "Globals", "History", "Settings", "Log", "Crashes", "Backups"]
         for page in pages:

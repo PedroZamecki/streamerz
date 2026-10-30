@@ -108,9 +108,18 @@ pub struct Line {
     pub event: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub icon: String,
-    /// What a channel reward cost, in points (0: not a reward).
+    /// What a reward or a power-up cost (0: nothing said), and the icon of what it was paid in
+    /// (empty: channel points).
     #[serde(skip_serializing_if = "is_zero")]
     pub cost: u64,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub cost_icon: String,
+    /// A picture that goes with an event (a reward's icon, an emote it unlocked, a gift), as a URL, and
+    /// whether it is drawn big (a gigantified emote).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub picture: String,
+    #[serde(skip_serializing_if = "is_false")]
+    pub huge: bool,
     /// A colour that sets the line apart ("#RRGGBB"): events, highlighted and first messages.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub accent: String,
@@ -140,8 +149,14 @@ struct Ev {
     accent: &'static str,
     says: &'static str,
     with: Option<&'static str>,
-    /// The argument holding what it cost, in channel points.
+    /// The argument holding what it cost, and what it was paid in (an icon; "" for channel points).
     cost: Option<&'static str>,
+    cost_icon: &'static str,
+    /// The argument holding a picture for it, and whether that picture is drawn big.
+    picture: Option<&'static str>,
+    huge: bool,
+    /// The argument holding a colour of its own ("#RRGGBB", a reward's), over `accent`.
+    color: Option<&'static str>,
 }
 
 const TWITCH: &str = "#9146FF";
@@ -162,7 +177,12 @@ fn event_of(kind: u32, a: &Obj) -> Option<Ev> {
         says,
         with,
         cost: None,
+        cost_icon: "",
+        picture: None,
+        huge: false,
+        color: None,
     };
+    let text = |k: &str| a.get(k).and_then(Value::as_str).unwrap_or("");
     Some(match kind {
         102 => ev("twitch", "gem", TWITCH, "chat.ev.cheer", None),
         103 => ev("twitch", "star", TWITCH, "chat.ev.sub", None),
@@ -172,10 +192,55 @@ fn event_of(kind: u32, a: &Obj) -> Option<Ev> {
         105 => ev("twitch", "gift", TWITCH, "chat.ev.gift_sub", None),
         106 => ev("twitch", "gift", TWITCH, "chat.ev.gift_bomb", None),
         107 => ev("twitch", "swords", TWITCH, "chat.ev.raid", None),
+        // One with words comes as a chat message too (marked with the reward): shown there.
+        112 if !text("rawInput").is_empty() => return None,
         112 => Ev {
             cost: Some("rewardCost"),
-            ..ev("twitch", "sparkles", TWITCH, "chat.ev.reward", Some("rawInput"))
+            picture: Some("rewardImage"),
+            color: Some("rewardColor"),
+            ..ev("twitch", "sparkles", TWITCH, "chat.ev.reward", None)
         },
+        // The rewards every channel has (highlight a message, unlock an emote...) and the power-ups.
+        194 => {
+            let (says, icon) = match text("rewardType") {
+                "send_highlighted_message" => ("chat.ev.auto.highlight", "highlighter"),
+                "single_message_bypass_sub_mode" => ("chat.ev.auto.bypass", "message-square"),
+                "random_sub_emote_unlock" => ("chat.ev.auto.random_emote", "smile"),
+                "chosen_sub_emote_unlock" => ("chat.ev.auto.chosen_emote", "smile"),
+                "chosen_modified_sub_emote_unlock" => ("chat.ev.auto.modified_emote", "smile"),
+                "message_effect" => ("chat.ev.auto.effect", "sparkles"),
+                "gigantify_an_emote" => ("chat.ev.auto.gigantify", "maximize"),
+                "celebration" => ("chat.ev.auto.celebration", "party-popper"),
+                _ => ("chat.ev.reward_other", "sparkles"),
+            };
+            Ev {
+                cost: Some("rewardCost"),
+                picture: Some(if a.contains_key("gigantifiedEmoteUrl") {
+                    "gigantifiedEmoteUrl"
+                } else {
+                    "unlockedEmoteUrl"
+                }),
+                huge: text("rewardType") == "gigantify_an_emote",
+                ..ev("twitch", icon, TWITCH, says, None)
+            }
+        }
+        196 | 496 => {
+            let says = match text("powerUpType") {
+                "message_effect" => "chat.ev.power.effect",
+                "celebration" => "chat.ev.power.celebration",
+                "gigantify_an_emote" => "chat.ev.power.gigantify",
+                _ if kind == 496 => "chat.ev.power.custom",
+                _ => "chat.ev.power.other",
+            };
+            Ev {
+                cost: Some("bits"),
+                cost_icon: "gem",
+                picture: Some("emoteUrl"),
+                huge: text("powerUpType") == "gigantify_an_emote",
+                ..ev("twitch", "zap", TWITCH, says, None)
+            }
+        }
+        472 => ev("twitch", "flame", TWITCH, "chat.ev.watch_streak", None),
         138 => {
             let accent = match a.get("announceColor").and_then(Value::as_str).unwrap_or("") {
                 "BLUE" => "#1E69FF",
@@ -193,7 +258,11 @@ fn event_of(kind: u32, a: &Obj) -> Option<Ev> {
         35017 => ev("kick", "gift", KICK, "chat.ev.gift_bomb_kick", None),
         35018 => ev("kick", "clock", QUIET, "chat.ev.timeout", None),
         35019 => ev("kick", "ban", QUIET, "chat.ev.ban", None),
-        35024 => ev("kick", "sparkles", KICK, "chat.ev.reward_kick", Some("rawInput")),
+        35024 => Ev {
+            cost: Some("rewardCost"),
+            color: Some("reward.backgroundColor"),
+            ..ev("kick", "sparkles", KICK, "chat.ev.reward_kick", Some("rawInput"))
+        },
         35025 => ev("kick", "gem", KICK, "chat.ev.kicks", Some("rawInput")),
         4006 => ev(
             "youtube",
@@ -208,7 +277,11 @@ fn event_of(kind: u32, a: &Obj) -> Option<Ev> {
         4014 => ev("youtube", "gift", MEMBERS, "chat.ev.member_gift", None),
         // A combo gift repeats while it grows: shown once, when it ends.
         41002 if a.get("giftType").and_then(Value::as_u64) == Some(1) && !yes("repeatEnd") => return None,
-        41002 => ev("tiktok", "gift", TIKTOK, "chat.ev.tiktok_gift", None),
+        41002 => Ev {
+            cost: Some("coins"),
+            picture: Some("giftPictureUrl"),
+            ..ev("tiktok", "gift", TIKTOK, "chat.ev.tiktok_gift", None)
+        },
         41004 => ev("tiktok", "user-plus", TIKTOK, "chat.ev.follow", None),
         41005 => ev("tiktok", "share-2", TIKTOK, "chat.ev.share", None),
         41006 => ev("tiktok", "star", TIKTOK, "chat.ev.sub", None),
@@ -221,6 +294,7 @@ fn special(message_type: &str) -> Option<(&'static str, &'static str)> {
     Some(match message_type {
         "channel_points_highlighted" => (crate::i18n::tr("chat.tag.highlighted"), TWITCH),
         "user_intro" => (crate::i18n::tr("chat.tag.first"), "#00C8AF"),
+        "channel_points_sub_only" => (crate::i18n::tr("chat.tag.sub_only"), TWITCH),
         "power_ups_gigantified_emote" => (crate::i18n::tr("chat.tag.gigantified"), TWITCH),
         "power_ups_message_effect" => (crate::i18n::tr("chat.tag.effect"), TWITCH),
         _ => return None,
@@ -709,6 +783,23 @@ impl Engine {
                     .collect(),
                 ..Default::default()
             };
+            // A message sent with a channel reward: the reward over it, with its picture and price.
+            let arg = |k: &str| c.args.get(k).and_then(Value::as_str).unwrap_or("");
+            if !arg("messageRewardId").is_empty() {
+                line.tag = match arg("messageRewardTitle") {
+                    "" => crate::i18n::tr("chat.tag.reward_other").to_string(),
+                    title => crate::i18n::tr("chat.tag.reward").replace("%title%", title),
+                };
+                line.cost = c.args.get("messageRewardCost").and_then(Value::as_u64).unwrap_or(0);
+                line.cost_icon = arg("messageRewardPoints").into();
+                line.picture = arg("messageRewardImage").into();
+                line.accent = Some(arg("messageRewardColor"))
+                    .filter(|c| c.len() == 7 && c.starts_with('#'))
+                    .unwrap_or(TWITCH)
+                    .into();
+            }
+            // A gigantified emote is the message's last emote, drawn big.
+            line.huge = arg("messageType") == "power_ups_gigantified_emote";
             // The platform's copy of what we sent from here: it takes the place of the line shown at send.
             if let Some(mine) = log.lines.iter_mut().rev().take(30).find(|m| {
                 m.local && m.platform == line.platform && m.user.eq_ignore_ascii_case(&line.user) && m.text == line.text
@@ -761,8 +852,15 @@ impl Engine {
             emotes,
             event: says,
             cost: ev.cost.and_then(|k| a.get(k)).and_then(Value::as_u64).unwrap_or(0),
+            cost_icon: ev.cost_icon.into(),
+            picture: ev.picture.map(get).unwrap_or_default(),
+            huge: ev.huge,
             icon: ev.icon.into(),
-            accent: ev.accent.into(),
+            accent: ev
+                .color
+                .map(get)
+                .filter(|c| c.len() == 7 && c.starts_with('#'))
+                .unwrap_or_else(|| ev.accent.into()),
             ..Default::default()
         });
         crate::ui::chat();
@@ -1829,6 +1927,94 @@ mod tests {
             e.chat_unlocal(seq2);
             assert_eq!(e.chat_sync(999, 0).2.len(), 1);
             let _ = seq;
+        });
+    }
+
+    #[test]
+    fn rewards_and_power_ups_show_in_the_chat() {
+        let a = |v: Value| v.as_object().cloned().unwrap();
+        let line = |kind: u32, args: Value| {
+            let args = a(args);
+            let ev = event_of(kind, &args)?;
+            Some((
+                crate::i18n::tr(ev.says),
+                ev.cost.and_then(|k| args.get(k)).and_then(Value::as_u64),
+                ev.huge,
+            ))
+        };
+        // The rewards every channel has, by what they do.
+        let (says, cost, huge) = line(
+            194,
+            serde_json::json!({"rewardType": "send_highlighted_message", "rewardCost": 40000}),
+        )
+        .unwrap();
+        assert_eq!(
+            (says, cost, huge),
+            ("redeemed Highlight My Message", Some(40000), false)
+        );
+        let (says, _, huge) = line(
+            194,
+            serde_json::json!({"rewardType": "gigantify_an_emote", "gigantifiedEmoteUrl": "u"}),
+        )
+        .unwrap();
+        assert!(says.contains("Gigantify") && huge);
+        assert!(line(194, serde_json::json!({"rewardType": "chosen_sub_emote_unlock"}))
+            .unwrap()
+            .0
+            .contains("Unlock"));
+        // A power-up is paid in Bits.
+        let ev = event_of(196, &a(serde_json::json!({"powerUpType": "celebration", "bits": 50}))).unwrap();
+        assert_eq!((ev.cost, ev.cost_icon), (Some("bits"), "gem"));
+        assert!(crate::i18n::tr(ev.says).contains("Celebration"));
+        let ev = event_of(496, &a(serde_json::json!({"powerUpTitle": "Dance"}))).unwrap();
+        assert!(crate::i18n::tr(ev.says).contains("%powerUpTitle%"));
+        assert!(event_of(472, &a(serde_json::json!({"streak": 3}))).is_some());
+        // A reward with words is a chat message with the reward over it: not shown twice.
+        assert!(event_of(112, &a(serde_json::json!({"rawInput": "drink!"}))).is_none());
+        let ev = event_of(112, &a(serde_json::json!({"rawInput": "", "rewardImage": "i"}))).unwrap();
+        assert_eq!((ev.picture, ev.color), (Some("rewardImage"), Some("rewardColor")));
+    }
+
+    #[test]
+    fn a_message_sent_with_a_reward_has_it_over_it() {
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
+            let args = |v: Value| v.as_object().cloned().unwrap();
+            let chat = |id: &str, extra: Value| {
+                let mut a = args(serde_json::json!({"messageRewardId": id, "messageType": "text"}));
+                a.extend(args(extra));
+                crate::commands::Chat {
+                    platform: "twitch".into(),
+                    user: "Ana".into(),
+                    user_id: "9".into(),
+                    text: "drink water".into(),
+                    msg_id: id.into(),
+                    args: a,
+                    ..Default::default()
+                }
+            };
+            e.chat(&chat(
+                "m1",
+                serde_json::json!({"messageRewardTitle": "Hydrate", "messageRewardCost": 500,
+                    "messageRewardImage": "https://x/i.png", "messageRewardColor": "#112233",
+                    "messageRewardPoints": "https://x/p.png"}),
+            ));
+            // The reward is not known (not read yet): still marked as one.
+            e.chat(&chat("m2", serde_json::json!({})));
+            let mut big = chat("m3", serde_json::json!({"messageType": "power_ups_gigantified_emote"}));
+            big.args.remove("messageRewardId");
+            e.chat(&big);
+            let (_, _, lines) = e.chat_sync(u64::MAX, 0);
+            let by = |id: &str| lines.iter().find(|l| l.msg_id == id).unwrap();
+            let (one, two, three) = (by("m1"), by("m2"), by("m3"));
+            assert_eq!(one.tag, "Redeemed Hydrate");
+            assert_eq!(
+                (one.cost, one.picture.as_str(), one.accent.as_str()),
+                (500, "https://x/i.png", "#112233")
+            );
+            assert_eq!(one.cost_icon, "https://x/p.png");
+            assert_eq!((two.tag.as_str(), two.cost), ("Redeemed a reward", 0));
+            assert!(three.huge && three.tag.contains("Gigantified"));
         });
     }
 

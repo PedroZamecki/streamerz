@@ -119,6 +119,17 @@ fn fragments(text: &str, emotes: &str) -> Vec<Value> {
     out
 }
 
+/// What sets a message apart, as EventSub says it: from IRC's `msg-id` tag ("text" for a plain one).
+fn message_type(msg_id: &str) -> &'static str {
+    match msg_id {
+        "highlighted-message" => "channel_points_highlighted",
+        "skip-subs-mode-message" => "channel_points_sub_only",
+        "gigantified-emote-message" => "power_ups_gigantified_emote",
+        "animated-message" => "power_ups_message_effect",
+        _ => "text",
+    }
+}
+
 /// The EventSub event an IRC line stands for: its type and its payload. None for what isn't one.
 pub fn event(m: &Irc, room_id: &str) -> Option<(&'static str, Value)> {
     let channel = m.target.trim_start_matches('#');
@@ -161,7 +172,8 @@ pub fn event(m: &Irc, room_id: &str) -> Option<(&'static str, Value)> {
                 "color": m.tag("color"),
                 "badges": badges,
                 "is_action": is_action,
-                "message_type": if m.tag("msg-id") == "highlighted-message" { "channel_points_highlighted" } else { "text" },
+                "message_type": message_type(m.tag("msg-id")),
+                "channel_points_custom_reward_id": m.tag("custom-reward-id"),
             }));
             if let Ok(bits) = m.tag("bits").parse::<u64>() {
                 e["cheer"] = json!({ "bits": bits });
@@ -176,6 +188,31 @@ pub fn event(m: &Irc, room_id: &str) -> Option<(&'static str, Value)> {
                 });
             }
             Some(("channel.chat.message", e))
+        }
+        // A viewer's watch streak (the one notice that is a reward: it gives channel points).
+        "USERNOTICE" if m.tag("msg-id") == "viewermilestone" && m.tag("msg-param-category") == "watch-streak" => {
+            let name = m.tag("display-name");
+            let name = if name.is_empty() { m.login.as_str() } else { name };
+            let count = |k: &str| m.tag(k).parse::<u64>().unwrap_or(0);
+            Some((
+                "channel.chat.notification",
+                with(json!({
+                    "chatter_user_id": m.tag("user-id"),
+                    "chatter_user_login": m.login,
+                    "chatter_user_name": name,
+                    "chatter_is_anonymous": false,
+                    "color": m.tag("color"),
+                    "badges": [],
+                    "message_id": m.tag("id"),
+                    "system_message": m.tag("system-msg"),
+                    "notice_type": "watch_streak",
+                    "message": {"text": m.text, "fragments": fragments(&m.text, m.tag("emotes"))},
+                    "watch_streak": {
+                        "streak_count": count("msg-param-value"),
+                        "channel_points_awarded": count("msg-param-copoReward"),
+                    },
+                })),
+            ))
         }
         "CLEARMSG" => Some((
             "channel.chat.message_delete",
@@ -304,6 +341,7 @@ async fn session(
                         cfg.send_modify(|c| c.twitch.channel_id.clone_from(&id));
                     }
                     crate::twitch::load_public_badges(&id).await;
+                    crate::twitch::load_public_rewards(&id).await;
                     let hist = crate::twitch::recent_messages(channel, &id).await;
                     engine.chat_welcome("twitch", hist);
                     engine.refresh_chat_badges("twitch", crate::twitch::badge_url);
@@ -345,6 +383,39 @@ mod tests {
         assert_eq!(e["message"]["fragments"][1]["text"], " hi there");
         assert_eq!(e["badges"][0]["set_id"], "moderator");
         assert_eq!(e["cheer"]["bits"], 100);
+    }
+
+    #[test]
+    fn rewards_and_power_ups_ride_on_the_message_tags() {
+        let kind = |tags: &str| {
+            let raw = format!("@{tags};id=abc;user-id=42 :ana!ana@ana.tmi.twitch.tv PRIVMSG #chan :hi");
+            event(&parse(&raw).unwrap(), "7").unwrap().1
+        };
+        for (id, want) in [
+            ("highlighted-message", "channel_points_highlighted"),
+            ("skip-subs-mode-message", "channel_points_sub_only"),
+            ("gigantified-emote-message", "power_ups_gigantified_emote"),
+            ("animated-message", "power_ups_message_effect"),
+        ] {
+            assert_eq!(kind(&format!("msg-id={id}"))["message_type"], want);
+        }
+        assert_eq!(kind("badges=")["message_type"], "text");
+        let e = kind("custom-reward-id=r-1");
+        assert_eq!(e["channel_points_custom_reward_id"], "r-1");
+    }
+
+    #[test]
+    fn a_watch_streak_is_a_notification() {
+        let raw = "@display-name=Vlad;id=n1;login=vlad;msg-id=viewermilestone;msg-param-category=watch-streak;msg-param-copoReward=350;msg-param-value=3;system-msg=Vlad\\swatched\\s3\\sconsecutive\\sstreams;user-id=69 :tmi.twitch.tv USERNOTICE #xqc :ty";
+        let (kind, e) = event(&parse(raw).unwrap(), "71").unwrap();
+        assert_eq!(kind, "channel.chat.notification");
+        assert_eq!(e["notice_type"], "watch_streak");
+        assert_eq!(e["watch_streak"]["streak_count"], 3);
+        assert_eq!(e["watch_streak"]["channel_points_awarded"], 350);
+        assert_eq!(e["chatter_user_name"], "Vlad");
+        // Other milestones are not this one.
+        let other = raw.replace("watch-streak", "other");
+        assert!(event(&parse(&other).unwrap(), "71").is_none());
     }
 
     #[test]

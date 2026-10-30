@@ -42,6 +42,27 @@ pub const T_KICK_VIEWER_COUNT_UPDATE: u32 = 35023;
 pub const T_KICK_REWARD_REDEMPTION: u32 = 35024;
 pub const T_KICK_KICKS_GIFTED: u32 = 35025;
 
+thread_local! {
+    /// The channel's rewards by id (Kick's own shape), as last read.
+    static REWARDS: std::cell::RefCell<std::collections::HashMap<String, Value>> = std::cell::RefCell::default();
+}
+
+/// Takes a list of the channel's rewards (`{"data": [...]}`): what the editors offer, and what the chat
+/// shows of a redemption.
+fn known_rewards(v: &Value) {
+    let list: Vec<(String, String)> = REWARDS.with_borrow_mut(|m| {
+        for r in v["data"].as_array().into_iter().flatten() {
+            if let Some(id) = r["id"].as_str() {
+                m.insert(id.into(), r.clone());
+            }
+        }
+        m.iter()
+            .filter_map(|(id, r)| Some((id.clone(), r["title"].as_str()?.to_string())))
+            .collect()
+    });
+    crate::catalog::set("kick.rewards", list);
+}
+
 /// Public Pusher app key used by kick.com (rotated 2026-10; a dead key answers `pusher:error` 4001).
 // ponytail: hardcoded; ask web.kick.com/api/v1/realtime/connection if it keeps rotating.
 pub const KICK_PUSHER_KEY: &str = "34bf7a0ff419a2a775b9";
@@ -911,18 +932,25 @@ pub async fn run_pusher_loop_url(
                 crate::ui::changed();
                 crate::say(format!("Kick: connected (@{channel}, chatroom {cr_id})"));
                 engine.settle_role("kick");
-                // The channel's rewards, for the editors' pickers (only with the broadcaster logged in).
-                if is_live_pusher && cfg.borrow().kick.broadcaster.is_some() {
-                    let e = engine.clone();
+                // The channel's rewards, for the editors' pickers and the price in the chat: kick.com's own
+                // list (no login needed), then the broadcaster's through the API when logged in.
+                if is_live_pusher {
+                    let (e, channel) = (engine.clone(), channel.clone());
+                    let broadcaster = cfg.borrow().kick.broadcaster.is_some();
                     tokio::task::spawn_local(async move {
-                        if let Ok(v) = e.kick_start().api("GET", "/channels/rewards", None).await {
-                            let list = v["data"]
-                                .as_array()
-                                .into_iter()
-                                .flatten()
-                                .filter_map(|r| Some((r["id"].as_str()?.to_string(), r["title"].as_str()?.to_string())))
-                                .collect();
-                            crate::catalog::set("kick.rewards", list);
+                        let h = [("Accept".to_string(), "application/json".to_string())];
+                        let url = format!("https://kick.com/api/v2/channels/{channel}/rewards");
+                        if let Some(r) = crate::http::request("GET", &url, &h, b"")
+                            .await
+                            .ok()
+                            .filter(|r| r.status == 200)
+                        {
+                            known_rewards(&serde_json::from_slice(&r.body).unwrap_or_default());
+                        }
+                        if broadcaster {
+                            if let Ok(v) = e.kick_start().api("GET", "/channels/rewards", None).await {
+                                known_rewards(&v);
+                            }
                         }
                     });
                 }
@@ -1702,6 +1730,11 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
         "RewardRedeemedEvent" => {
             kick_user(&mut args, &json!({"username": data["username"], "id": data["user_id"]}));
             let input = data["user_input"].as_str().unwrap_or("");
+            // What the redemption cost, from the channel's list.
+            let known = REWARDS.with_borrow(|m| data["reward_id"].as_str().and_then(|id| m.get(id).cloned()));
+            if let Some(r) = known {
+                args.insert("rewardCost".into(), r["cost"].clone());
+            }
             for (k, v) in [
                 ("reward.id", data["reward_id"].clone()),
                 ("reward.title", data["reward_title"].clone()),
@@ -2147,6 +2180,27 @@ mod tests {
         // Viewer count
         let vc = json!({ "viewers": 1500 });
         handle_kick_event(&engine, "chan", "App\\Events\\ViewerCountUpdated", &vc);
+    }
+
+    #[test]
+    fn a_kick_reward_shows_what_it_cost() {
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            known_rewards(&json!({"data": [
+                {"id": "r1", "title": "Hydrate", "cost": 500, "background_color": "#00a3ff"}
+            ]}));
+            let ids = crate::catalog::get("kick.rewards");
+            assert!(ids.iter().any(|(id, t)| id == "r1" && t == "Hydrate"));
+            let redeemed = json!({
+                "reward_id": "r1", "reward_title": "Hydrate", "username": "viewer", "user_id": 5,
+                "user_input": "", "reward_background_color": "#00a3ff"
+            });
+            handle_kick_event(&engine, "chan", "App\\Events\\RewardRedeemedEvent", &redeemed);
+            let (_, _, lines) = engine.chat_sync(u64::MAX, 0);
+            let l = lines.iter().find(|l| !l.event.is_empty()).expect("a line");
+            assert_eq!((l.cost, l.accent.as_str()), (500, "#00a3ff"));
+            assert!(l.event.contains("Hydrate"), "{}", l.event);
+        });
     }
 
     #[test]

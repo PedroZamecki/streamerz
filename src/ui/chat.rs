@@ -42,6 +42,8 @@ const NAMES: [&str; 4] = ["Twitch", "YouTube", "Kick", "TikTok"];
 /// Text size, emote height, and a line's least height.
 const TEXT: i32 = 14;
 const EMOTE: i32 = 28;
+/// A gigantified emote.
+const HUGE: i32 = 72;
 const LINE: i32 = 22;
 /// Lines kept per view (the engine keeps as many).
 const KEEP: usize = 500;
@@ -392,7 +394,13 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
     }
     // What sets the message apart (highlighted, a first message...), above it.
     if !l.tag.is_empty() {
-        v.push(It::Text(l.tag.clone(), Font::HelveticaBold, accent(l).unwrap_or(gray)));
+        let ink = accent(l).unwrap_or(gray);
+        if let Some(p) = img::get(cmds, &l.picture, BADGE + 4, false) {
+            v.push(It::Pic(p, None));
+            v.push(It::Gap(6));
+        }
+        v.push(It::Text(l.tag.clone(), Font::HelveticaBold, ink));
+        price(cmds, l, ink, &mut v);
         v.push(It::Break);
     }
     if let Some(r) = &l.reply {
@@ -499,8 +507,28 @@ fn words(cmds: &Cmds, l: &Line, v: &mut Vec<It>) {
     } else {
         (Font::Helvetica, fg)
     };
-    for w in l.text.split(' ') {
+    // A gigantified message: its last emote is drawn big.
+    let big = |w: &str| l.emotes.iter().any(|e| e.0 == w);
+    let last = if l.huge {
+        l.text
+            .split(' ')
+            .enumerate()
+            .filter(|(_, w)| big(w))
+            .map(|(i, _)| i)
+            .last()
+    } else {
+        None
+    };
+    for (i, w) in l.text.split(' ').enumerate() {
         v.push(It::Space);
+        if last == Some(i) {
+            if let Some((_, u)) = l.emotes.iter().find(|e| e.0 == w) {
+                if let Some(p) = img::get(cmds, u, HUGE, false) {
+                    v.push(It::Pic(p, Some(emote_tip(&l.platform, w, u))));
+                    continue;
+                }
+            }
+        }
         if mentions_me(w) {
             // The chip is the name; a comma or "!" after it stays outside.
             let name = w.trim_end_matches(|c: char| !c.is_alphanumeric());
@@ -572,11 +600,41 @@ fn accent(l: &Line) -> Option<Color> {
     Some(Color::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8))
 }
 
+/// What a reward or a power-up cost, as Twitch's chat shows it: the coin (the channel's own picture of
+/// its points when known, else a drawn one) and the number.
+fn price(cmds: &Cmds, l: &Line, ink: Color, v: &mut Vec<It>) {
+    if l.cost == 0 {
+        return;
+    }
+    v.push(It::Gap(8));
+    if l.cost_icon.starts_with("http") {
+        if let Some(p) = img::get(cmds, &l.cost_icon, 16, false) {
+            v.push(It::Pic(p, None));
+            v.push(It::Gap(3));
+        }
+    } else {
+        let coin = if l.cost_icon.is_empty() { "coins" } else { &l.cost_icon };
+        if let Some(s) = icons::icon(coin, ink, 14) {
+            v.push(It::Svg(s));
+            v.push(It::Gap(3));
+        }
+    }
+    v.push(It::Text(l.cost.to_string(), Font::HelveticaBold, ink));
+}
+
 /// An event's line: its icon, who, what happened; under it, what they wrote with it.
 fn event_items(cmds: &Cmds, l: &Line, mut v: Vec<It>) -> Vec<It> {
     let c = accent(l).unwrap_or(Color::Foreground);
     if let Some(s) = icons::icon(&l.icon, c, 16) {
         v.push(It::Svg(s));
+        v.push(It::Gap(6));
+    }
+    // What it was for, in a picture: a reward's icon, the emote it unlocked (big when gigantified).
+    let pic = (!l.picture.is_empty() && !l.huge)
+        .then(|| img::get(cmds, &l.picture, EMOTE, false))
+        .flatten();
+    if let Some(p) = pic {
+        v.push(It::Pic(p, None));
         v.push(It::Gap(6));
     }
     if !l.user.is_empty() {
@@ -586,14 +644,12 @@ fn event_items(cmds: &Cmds, l: &Line, mut v: Vec<It>) -> Vec<It> {
         v.push(It::Space);
         v.push(It::Text(w.to_string(), Font::Helvetica, Color::Foreground));
     }
-    // A channel reward's price, as Twitch's chat shows it: the points' coin and the number.
-    if l.cost > 0 {
-        v.push(It::Gap(8));
-        if let Some(s) = icons::icon("coins", c, 14) {
-            v.push(It::Svg(s));
-            v.push(It::Gap(3));
+    price(cmds, l, c, &mut v);
+    if l.huge {
+        if let Some(p) = img::get(cmds, &l.picture, HUGE, false) {
+            v.push(It::Break);
+            v.push(It::Pic(p, None));
         }
-        v.push(It::Text(l.cost.to_string(), Font::HelveticaBold, c));
     }
     if !l.text.is_empty() {
         v.push(It::Break);
