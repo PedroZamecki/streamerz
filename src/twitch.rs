@@ -835,6 +835,7 @@ where
                     }
                 });
                 crate::error(format!("Twitch: {who} login expired; log in again in Accounts"));
+                crate::notify::login_needed("Twitch", bot);
             }
             Err(e) => crate::warn(format!("Twitch: token refresh failed for {who} ({e}); will retry")),
         }
@@ -1246,6 +1247,7 @@ impl Runner {
             if crate::secrets::is_locked() {
                 return Err("System keyring is locked; unlock it to use saved Twitch login".into());
             }
+            crate::notify::login_needed("Twitch", false);
             return Err("Twitch broadcaster login expired; log in again in Accounts".into());
         }
         if use_bot {
@@ -1259,6 +1261,7 @@ impl Runner {
                         broadcaster.user_id.clone(),
                     ));
                 } else {
+                    crate::notify::login_needed("Twitch", true);
                     return Err("Twitch bot login expired and fallback disabled".into());
                 }
             } else if fallback {
@@ -1340,6 +1343,7 @@ async fn supervise_eventsub(
                     "Twitch: @{} login missing or expired; log in again in Accounts",
                     b.login
                 ));
+                crate::notify::login_needed("Twitch", false);
                 wanted.store(false, Ordering::Relaxed);
                 crate::ui::changed();
                 break;

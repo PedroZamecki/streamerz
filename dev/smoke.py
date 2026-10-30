@@ -99,6 +99,15 @@ def main():
         if seen() - before < 5:
             failures.append(f"rewards and power-ups didn't all reach the chat ({before} to {seen()})")
         ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/chat_rewards.png"})
+        # A login that ran out asks for a new one in a popup, once.
+        ws.ask({"request": "StreamerzUi", "id": "rl", "do": "relogin Kick"})
+        time.sleep(1.5)
+        popup = json.dumps(ws.ask({"request": "StreamerzUi", "id": "w", "do": "windows"}))
+        if "Log in" not in json.dumps(ws.ask({"request": "StreamerzUi", "id": "f", "do": "find Log in"})):
+            failures.append(f"the login popup didn't open ({popup})")
+        ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/relogin.png"})
+        xdo("key", "Escape")
+        check("relogin popup")
         pages = ["Chat", "Accounts", "Community", "Polls", "Actions", "Commands", "Timers", "Queues", "Groups", "Plugins",
                  "Servers", "Stream Apps", "Donations", "Globals", "History", "Settings", "Log", "Crashes", "Backups"]
         for page in pages:

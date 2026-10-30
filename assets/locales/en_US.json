@@ -725,5 +725,9 @@
   "update.out.title": "Streamerz {version} is out",
   "update.ready.body": "It was downloaded and goes in place the next time Streamerz starts.",
   "update.ready.title": "Streamerz {version} is ready",
-  "update.restart": "Restart now"
+  "update.restart": "Restart now",
+  "relogin.ask": "Your {platform} login ran out. Log in again to keep it connected.",
+  "relogin.ask_bot": "Your {platform} bot login ran out. Log in again to keep it connected.",
+  "relogin.later": "Later",
+  "relogin.now": "Log in"
 }

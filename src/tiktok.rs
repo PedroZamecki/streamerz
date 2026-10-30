@@ -174,6 +174,12 @@ const SEND: &str = r#"(async text => {
   return { ok: true };
 })"#;
 
+/// Whether a send error from the page says the account isn't logged in any more.
+fn session_ended(error: &str) -> bool {
+    let e = error.to_lowercase();
+    e.contains("log in to") || e.contains("login to")
+}
+
 /// The live page keeps its video still (it costs CPU, and nobody watches it).
 const STILL: &str = "setInterval(() => document.querySelectorAll('video').forEach(v => v.paused || v.pause()), 2000)";
 
@@ -525,6 +531,10 @@ impl Runner {
             let i = self.tab(use_bot, fallback).await?;
             let slot = &mut self.senders[i];
             if let Some(r) = slot.as_mut().unwrap().send(text).await {
+                // The page itself says the session is logged out (TikTok has no other sign of it).
+                if r.as_ref().is_err_and(|e| session_ended(e)) {
+                    crate::notify::login_needed("TikTok", i == 1);
+                }
                 return r;
             }
             *slot = None;
@@ -980,6 +990,13 @@ pub fn handle_tiktok_event(engine: &Rc<Engine>, channel: &str, event: &str, d: &
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    #[test]
+    fn a_logged_out_page_asks_for_a_login_but_an_offline_one_does_not() {
+        assert!(session_ended("TikTok: Log in to chat"));
+        assert!(!session_ended("the live page has no chat (not live, or not logged in)"));
+        assert!(!session_ended("TikTok didn't take the message"));
+    }
 
     /// A stand-in for TikTok's live page: `@open/live` takes comments (each Enter fetches `/sent?text`),
     /// `@closed/live` has its box disabled. What was sent, as the server saw it.

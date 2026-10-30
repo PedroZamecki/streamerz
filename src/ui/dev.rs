@@ -91,6 +91,18 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
         "community" => super::lists::USERS_SHOWN
             .load(std::sync::atomic::Ordering::Relaxed)
             .to_string(),
+        // `relogin Twitch [bot]`: the popup that asks to log in again.
+        "relogin" => match ["Twitch", "YouTube", "Kick", "TikTok"]
+            .into_iter()
+            .find(|p| Some(*p) == a)
+        {
+            Some(p) => {
+                crate::ui::relogin_done(p, b == Some("bot"));
+                crate::ui::relogin(p, b == Some("bot"));
+                "ok".into()
+            }
+            None => "relogin Twitch|YouTube|Kick|TikTok [bot]".into(),
+        },
         "panic" => panic!("dev panic"),
         _ => "commands: shot, windows, tree, find, page, chat, community, panic".into(),
     }

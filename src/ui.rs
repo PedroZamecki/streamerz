@@ -266,6 +266,39 @@ pub fn confirm(text: String, no: &'static str, yes: &'static str) -> oneshot::Re
     rx
 }
 
+/// Logins that ran out: the platform and whether it is the bot's.
+type Relogin = (&'static str, bool);
+static RELOGINS: Mutex<Vec<Relogin>> = Mutex::new(Vec::new());
+/// Those already asked about, so a retry loop doesn't open the popup again and again.
+static RELOGIN_ASKED: Mutex<Vec<Relogin>> = Mutex::new(Vec::new());
+
+/// Asks, in a popup shown even while the window hides, to log in again (once per login until it's done).
+/// True when it asked.
+pub fn relogin(platform: &'static str, bot: bool) -> bool {
+    let Ok(mut asked) = RELOGIN_ASKED.lock() else {
+        return false;
+    };
+    if asked.contains(&(platform, bot)) {
+        return false;
+    }
+    asked.push((platform, bot));
+    if let Ok(mut q) = RELOGINS.lock() {
+        q.push((platform, bot));
+    }
+    // Before the window is made, it asks when it is.
+    if let Some(ui) = UI.get() {
+        ui.send(Msg::Input);
+    }
+    true
+}
+
+/// The login was done (or tried) again: the next time it runs out, ask again.
+pub fn relogin_done(platform: &'static str, bot: bool) {
+    if let Ok(mut asked) = RELOGIN_ASKED.lock() {
+        asked.retain(|a| *a != (platform, bot));
+    }
+}
+
 /// Saves what the window keeps, starts the new build and quits (after an update).
 pub fn restart() {
     if let Some(ui) = UI.get() {
@@ -1008,7 +1041,7 @@ pub fn run(
     };
     let _ = UI.set(tx);
     crate::crash::probe(event_probe);
-    if CONFIRMS.lock().is_ok_and(|q| !q.is_empty()) {
+    if CONFIRMS.lock().is_ok_and(|q| !q.is_empty()) || RELOGINS.lock().is_ok_and(|q| !q.is_empty()) {
         tx.send(Msg::Input);
     }
     let c_accent = accent_of(&cfg.borrow());
@@ -1364,6 +1397,16 @@ pub fn run(
                     for (text, no, yes, answer) in confirms {
                         let _ = answer.send(dialogs::choice(&text.replace('@', "@@"), no, yes));
                     }
+                    let relogins = RELOGINS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+                    for (platform, bot) in relogins {
+                        let text = trf(
+                            if bot { "relogin.ask_bot" } else { "relogin.ask" },
+                            &[("platform", platform)],
+                        );
+                        if dialogs::choice(&text, tr("relogin.later"), tr("relogin.now")) {
+                            accounts::login_again(&cfg, &cmds, platform, bot);
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -1382,6 +1425,16 @@ fn pump_dev_with(tabs: &Wizard) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A login that ran out is asked about once, and again only after it was done again.
+    #[test]
+    fn a_login_is_asked_about_once() {
+        assert!(relogin("TestPlatform", false));
+        assert!(!relogin("TestPlatform", false), "a retry loop doesn't open it again");
+        assert!(relogin("TestPlatform", true), "the bot's is another login");
+        relogin_done("TestPlatform", false);
+        assert!(relogin("TestPlatform", false));
+    }
 
     /// Menu labels show as written: an outcome named "Yes/No" isn't a submenu.
     #[test]

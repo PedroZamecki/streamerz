@@ -860,7 +860,15 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
     me
 }
 
+/// The login popup's "Log in": the same as the button in Accounts.
+pub(super) fn login_again(cfg: &Cfg, cmds: &Cmds, platform: &str, bot: bool) {
+    if let Some(p) = ALL.into_iter().find(|p| p.name() == platform) {
+        login(cfg, cmds, p, bot);
+    }
+}
+
 fn login(cfg: &Cfg, cmds: &Cmds, p: P, bot: bool) {
+    crate::ui::relogin_done(p.name(), bot);
     match p {
         P::Twitch => device_login(cfg, cmds, bot),
         P::TikTok => tiktok_login(cfg, bot),

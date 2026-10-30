@@ -587,6 +587,10 @@ pub async fn token(
                 if crate::secrets::is_locked() {
                     return Err("System keyring is locked; unlock it to use saved YouTube login".into());
                 }
+                // An account that's there but has lost its login (not one never made).
+                if (if bot { &c.youtube.bot } else { &c.youtube.broadcaster }).is_some() {
+                    crate::notify::login_needed("YouTube", bot);
+                }
                 return Err(format!(
                     "YouTube {} isn't logged in",
                     if bot { "bot" } else { "broadcaster" }
@@ -608,7 +612,13 @@ pub async fn token(
         ],
     )
     .await
-    .map_err(|e| format!("YouTube token refresh: {e}"))?;
+    .map_err(|e| {
+        // The server turned the refresh token down (not a network failure): it needs a new login.
+        if e.contains("HTTP 400") || e.contains("HTTP 401") {
+            crate::notify::login_needed("YouTube", bot);
+        }
+        format!("YouTube token refresh: {e}")
+    })?;
     let (access, expires_at) = (t.access.clone(), t.expires_at);
     engine.change(|c| {
         if let Some(a) = if bot {

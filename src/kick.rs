@@ -670,6 +670,10 @@ pub async fn token(
                 if crate::secrets::is_locked() {
                     return Err("System keyring is locked; unlock it to use saved Kick login".into());
                 }
+                // An account that's there but has lost its login (not one never made).
+                if (if bot { &c.kick.bot } else { &c.kick.broadcaster }).is_some() {
+                    crate::notify::login_needed("Kick", bot);
+                }
                 return Err(format!(
                     "Kick {} isn't logged in",
                     if bot { "bot" } else { "broadcaster" }
@@ -694,7 +698,13 @@ pub async fn token(
         ],
     )
     .await
-    .map_err(|e| format!("Kick token refresh: {e}"))?;
+    .map_err(|e| {
+        // The server turned the refresh token down (not a network failure): it needs a new login.
+        if e.contains("HTTP 400") || e.contains("HTTP 401") {
+            crate::notify::login_needed("Kick", bot);
+        }
+        format!("Kick token refresh: {e}")
+    })?;
     let new = KickToken {
         access_token: t.access.clone(),
         refresh_token: if t.refresh.is_empty() {

@@ -725,5 +725,9 @@
   "update.out.title": "O Streamerz {version} foi lançado",
   "update.ready.body": "Ele foi baixado e será aplicado na próxima vez que o Streamerz iniciar.",
   "update.ready.title": "O Streamerz {version} está pronto",
-  "update.restart": "Reiniciar agora"
+  "update.restart": "Reiniciar agora",
+  "relogin.ask": "O seu login da {platform} expirou. Entre de novo para manter a conexão.",
+  "relogin.ask_bot": "O login do bot da {platform} expirou. Entre de novo para manter a conexão.",
+  "relogin.later": "Depois",
+  "relogin.now": "Entrar"
 }
