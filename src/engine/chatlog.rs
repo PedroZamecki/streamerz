@@ -24,6 +24,10 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
 /// What a chat message's actions do.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Moderate {
@@ -104,12 +108,18 @@ pub struct Line {
     pub event: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub icon: String,
+    /// What a channel reward cost, in points (0: not a reward).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub cost: u64,
     /// A colour that sets the line apart ("#RRGGBB"): events, highlighted and first messages.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub accent: String,
     /// What's special about a message, said above it ("Highlighted", "First message").
     #[serde(skip_serializing_if = "String::is_empty")]
     pub tag: String,
+    /// Ours, shown the moment it was sent: the platform's own copy (with its id) replaces it when it comes.
+    #[serde(skip)]
+    pub local: bool,
     /// A `/me` message: shown in italics, in the sender's colour.
     #[serde(skip_serializing_if = "is_false")]
     pub action: bool,
@@ -130,6 +140,8 @@ struct Ev {
     accent: &'static str,
     says: &'static str,
     with: Option<&'static str>,
+    /// The argument holding what it cost, in channel points.
+    cost: Option<&'static str>,
 }
 
 const TWITCH: &str = "#9146FF";
@@ -149,6 +161,7 @@ fn event_of(kind: u32, a: &Obj) -> Option<Ev> {
         accent,
         says,
         with,
+        cost: None,
     };
     Some(match kind {
         102 => ev("twitch", "gem", TWITCH, "chat.ev.cheer", None),
@@ -159,7 +172,10 @@ fn event_of(kind: u32, a: &Obj) -> Option<Ev> {
         105 => ev("twitch", "gift", TWITCH, "chat.ev.gift_sub", None),
         106 => ev("twitch", "gift", TWITCH, "chat.ev.gift_bomb", None),
         107 => ev("twitch", "swords", TWITCH, "chat.ev.raid", None),
-        112 => ev("twitch", "sparkles", TWITCH, "chat.ev.reward", Some("rawInput")),
+        112 => Ev {
+            cost: Some("rewardCost"),
+            ..ev("twitch", "sparkles", TWITCH, "chat.ev.reward", Some("rawInput"))
+        },
         138 => {
             let accent = match a.get("announceColor").and_then(Value::as_str).unwrap_or("") {
                 "BLUE" => "#1E69FF",
@@ -258,8 +274,35 @@ pub struct Log {
     cards: HashMap<(String, String), (std::time::Instant, Facts)>,
     /// The message pinned in each platform's chat, if any (one each).
     pins: Vec<Pin>,
+    /// The polls and predictions going on (and just over), per platform.
+    polls: Vec<Poll>,
     /// When Twitch's pin was last asked for (it has no event for pins made elsewhere).
     twitch_pin_asked: Option<std::time::Instant>,
+}
+
+/// A poll or a prediction at the top of a chat: what is asked, and how the choices stand.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Poll {
+    pub platform: String,
+    pub id: String,
+    pub title: String,
+    /// A prediction (points on an outcome), not a poll (votes).
+    pub prediction: bool,
+    /// Each choice and its votes (a prediction's: the points put on it).
+    pub choices: Vec<(String, u64)>,
+    /// When voting closes (ms since the epoch), if said.
+    pub ends: Option<u64>,
+    /// When it ended or was locked (ms), if it has: the card stays a little, with the result.
+    pub over: Option<u64>,
+}
+
+/// How long a finished poll's card stays.
+const POLL_AFTER: u64 = 20_000;
+
+impl Poll {
+    pub fn live(&self, now_ms: u64) -> bool {
+        self.over.is_none_or(|o| now_ms < o + POLL_AFTER)
+    }
 }
 
 /// A message pinned at the top of a chat.
@@ -485,6 +528,7 @@ impl Engine {
 
     pub fn chat_welcome(&self, platform: &str, fetched: Vec<Line>) {
         let Some(p_idx) = index(platform) else { return };
+        self.role_from_history(platform, &fetched);
         {
             let mut st = self.st.borrow_mut();
             let log = &mut st.chat_log;
@@ -650,6 +694,19 @@ impl Engine {
                     .collect(),
                 ..Default::default()
             };
+            // The platform's copy of what we sent from here: it takes the place of the line shown at send.
+            if let Some(mine) = log.lines.iter_mut().rev().take(30).find(|m| {
+                m.local && m.platform == line.platform && m.user.eq_ignore_ascii_case(&line.user) && m.text == line.text
+            }) {
+                mine.local = false;
+                mine.msg_id = line.msg_id;
+                mine.badges = line.badges;
+                mine.emotes = line.emotes;
+                log.reset_gen += 1;
+                drop(st);
+                crate::ui::chat();
+                return;
+            }
             // Deduplicate if a message arrived both in pre-join history and right as the live socket opened.
             if log
                 .lines
@@ -685,6 +742,7 @@ impl Engine {
             text,
             emotes,
             event: says,
+            cost: ev.cost.and_then(|k| a.get(k)).and_then(Value::as_u64).unwrap_or(0),
             icon: ev.icon.into(),
             accent: ev.accent.into(),
             ..Default::default()
@@ -1182,6 +1240,48 @@ impl Engine {
     }
 
     /// The messages pinned now, one per platform at most.
+    /// A poll or prediction started, moved or ended (one per platform and id).
+    pub fn chat_poll(&self, p: Poll) {
+        {
+            let mut st = self.st.borrow_mut();
+            let polls = &mut st.chat_log.polls;
+            let now = now_ms();
+            polls.retain(|x| x.live(now));
+            match polls.iter_mut().find(|x| x.platform == p.platform && x.id == p.id) {
+                Some(x) if *x == p => return,
+                Some(x) => *x = p,
+                None => polls.push(p),
+            }
+        }
+        crate::ui::chat();
+    }
+
+    /// The polls and predictions to show now.
+    pub fn chat_polls(&self) -> Vec<Poll> {
+        let now = now_ms();
+        self.st
+            .borrow()
+            .chat_log
+            .polls
+            .iter()
+            .filter(|p| p.live(now))
+            .cloned()
+            .collect()
+    }
+
+    /// A platform's chat ended or left (a stream over): its polls go with it.
+    pub fn chat_polls_clear(&self, platform: &str) {
+        let before = {
+            let mut st = self.st.borrow_mut();
+            let n = st.chat_log.polls.len();
+            st.chat_log.polls.retain(|p| p.platform != platform);
+            n != st.chat_log.polls.len()
+        };
+        if before {
+            crate::ui::chat();
+        }
+    }
+
     pub fn chat_pins(&self) -> Vec<Pin> {
         let now = now_ms();
         self.st
@@ -1225,18 +1325,9 @@ impl Engine {
     /// Our role when `platform`'s chat connects (Twitch asks instead, twitch.rs): not logged in, the owner on
     /// our own channel, else a viewer until the badges on our messages say more (Kick and YouTube have no
     /// call that tells).
-    pub fn settle_role(&self, platform: &str) {
+    pub fn settle_role(self: &Rc<Self>, platform: &str) {
         use crate::roles::Role;
-        let me = {
-            let c = self.cfg.borrow();
-            match platform {
-                "kick" => c.kick.broadcaster.as_ref().map(|b| b.user_id.to_string()),
-                "youtube" => c.youtube.broadcaster.as_ref().map(|b| b.channel_id.clone()),
-                "tiktok" => c.tiktok.broadcaster.as_ref().map(|b| b.username.clone()),
-                _ => None,
-            }
-            .unwrap_or_default()
-        };
+        let me = self.my_id(platform);
         let role = if me.is_empty() {
             Role::Anonymous
         } else if self.own_channel(platform) {
@@ -1250,11 +1341,149 @@ impl Engine {
         }
         if crate::roles::set(platform, role, &me) {
             crate::ui::changed();
-            if role == Role::Viewer {
-                crate::warn(format!(
-                    "{platform}: this account doesn't own the channel read: moderation shows once it's seen as a moderator there (a message of its own says so)"
-                ));
+        }
+        // Not the owner: Kick says what we are in a channel; elsewhere our earlier messages in the history
+        // do (see `chat_welcome`), and our next message.
+        if role == Role::Viewer && platform == "kick" {
+            let e = self.clone();
+            tokio::task::spawn_local(async move { e.kick_role().await });
+        }
+    }
+
+    /// Our user id on `platform` ("" when not logged in as the broadcaster there).
+    fn my_id(&self, platform: &str) -> String {
+        let c = self.cfg.borrow();
+        match platform {
+            "kick" => c.kick.broadcaster.as_ref().map(|b| b.user_id.to_string()),
+            "youtube" => c.youtube.broadcaster.as_ref().map(|b| b.channel_id.clone()),
+            "tiktok" => c.tiktok.broadcaster.as_ref().map(|b| b.username.clone()),
+            _ => None,
+        }
+        .unwrap_or_default()
+    }
+
+    /// Kick's own answer to "what is this account in this channel" (what kick.com's chat uses; no login).
+    async fn kick_role(self: &Rc<Self>) {
+        use crate::roles::Role;
+        let (channel, name, me) = {
+            let c = self.cfg.borrow();
+            (
+                c.kick.channel.trim().to_lowercase(),
+                c.kick
+                    .broadcaster
+                    .as_ref()
+                    .map(|b| kick_slug(&b.username))
+                    .unwrap_or_default(),
+                self.my_id("kick"),
+            )
+        };
+        if channel.is_empty() || name.is_empty() {
+            return;
+        }
+        let url = format!("https://kick.com/api/v2/channels/{channel}/users/{name}");
+        let h = [("Accept".to_string(), "application/json".to_string())];
+        let Some(card) = crate::http::request("GET", &url, &h, b"")
+            .await
+            .ok()
+            .filter(|r| r.status == 200)
+            .and_then(|r| serde_json::from_slice::<Value>(&r.body).ok())
+        else {
+            return;
+        };
+        let role = if card["is_channel_owner"].as_bool() == Some(true) {
+            Role::Broadcaster
+        } else if card["is_moderator"].as_bool() == Some(true) {
+            Role::Moderator
+        } else {
+            Role::Viewer
+        };
+        if crate::roles::get("kick").1 == me && crate::roles::set("kick", role, &me) {
+            if role.moderates() {
+                crate::say(format!("kick: this account is a {} here", role.name()));
             }
+            crate::ui::changed();
+        }
+    }
+
+    /// Our own earlier messages in a chat's history say what we are there: a moderator's badge on one
+    /// is known now, not at our next message.
+    fn role_from_history(&self, platform: &str, lines: &[Line]) {
+        let me = self.my_id(platform);
+        if me.is_empty() {
+            return;
+        }
+        // The newest of ours.
+        let Some(l) = lines.iter().rev().find(|l| l.user_id == me && !l.note) else {
+            return;
+        };
+        let lead = l.badges.iter().any(|b| b.0.contains("lead_moderator"));
+        let role = crate::roles::Role::from_flags(l.broadcaster, lead, l.moderator, l.vip);
+        if crate::roles::seen_self(platform, &me, role) {
+            crate::say(format!("{platform}: this account is a {} here", role.name()));
+            crate::ui::changed();
+        }
+    }
+
+    /// A line for what we are sending, shown at once (before the platform has taken it, and its own copy
+    /// has come back); `chat_unlocal` takes it away if the send fails. The sequence number to ask that with.
+    fn chat_local(&self, platform: &str, text: &str, bot: bool) -> Option<u64> {
+        let (name, id) = {
+            let c = self.cfg.borrow();
+            let acct = |b: bool| -> Option<(String, String)> {
+                match platform {
+                    "kick" => (if b { &c.kick.bot } else { &c.kick.broadcaster })
+                        .as_ref()
+                        .map(|a| (a.username.clone(), a.user_id.to_string())),
+                    "youtube" => (if b { &c.youtube.bot } else { &c.youtube.broadcaster })
+                        .as_ref()
+                        .map(|a| (a.name.clone(), a.channel_id.clone())),
+                    "tiktok" => (if b { &c.tiktok.bot } else { &c.tiktok.broadcaster })
+                        .as_ref()
+                        .map(|a| (a.username.trim_start_matches('@').to_string(), a.username.clone())),
+                    _ => None,
+                }
+            };
+            acct(bot).or_else(|| acct(!bot))?
+        };
+        let (role, mine) = crate::roles::get(platform);
+        let own = mine == id;
+        let (action, plain) = match action_of(text) {
+            Some(a) => (true, a.to_string()),
+            None => (false, text.to_string()),
+        };
+        let (plain, emotes) = normalize_line_emotes(platform, plain, &[]);
+        let mut st = self.st.borrow_mut();
+        let log = &mut st.chat_log;
+        log.push(Line {
+            platform: platform.into(),
+            time: crate::fmt::shown_time(&crate::fmt::now()),
+            ts: crate::fmt::unix_now().as_millis() as i64,
+            user: name,
+            user_id: id,
+            text: plain,
+            emotes,
+            action,
+            local: true,
+            broadcaster: own && role == crate::roles::Role::Broadcaster,
+            moderator: own && role.moderates(),
+            ..Default::default()
+        });
+        let seq = log.seq;
+        drop(st);
+        crate::ui::chat();
+        Some(seq)
+    }
+
+    /// Takes away the line `chat_local` showed, if it is still waiting for the platform's copy.
+    fn chat_unlocal(&self, seq: u64) {
+        let mut st = self.st.borrow_mut();
+        let log = &mut st.chat_log;
+        let before = log.lines.len();
+        log.lines.retain(|l| !(l.seq == seq && l.local));
+        if log.lines.len() != before {
+            log.reset_gen += 1;
+            drop(st);
+            crate::ui::chat();
         }
     }
 
@@ -1401,6 +1630,9 @@ impl Engine {
                 continue;
             }
             let e = self.clone();
+            // Elsewhere than Twitch (whose copy comes back at once) the line shows as it is sent.
+            let local = (p != "twitch").then(|| self.chat_local(p, &text, bot)).flatten();
+            let started = std::time::Instant::now();
             // Twitch's chat commands (/commercial, /timeout...) are calls, not text.
             if p == "twitch" && crate::slash::is_command(&text) {
                 tokio::task::spawn_local(async move {
@@ -1425,8 +1657,14 @@ impl Engine {
                     },
                     _ => e.tiktok_start().send_message(&text, bot, fallback).await,
                 };
-                if let Err(err) = r {
-                    e.chat_note(p, format!("not sent: {err}"));
+                match r {
+                    Ok(()) => crate::debug(format!("{p}: message sent in {} ms", started.elapsed().as_millis())),
+                    Err(err) => {
+                        if let Some(seq) = local {
+                            e.chat_unlocal(seq);
+                        }
+                        e.chat_note(p, format!("not sent: {err}"));
+                    }
                 }
             });
         }
@@ -1448,6 +1686,43 @@ pub fn can_send(c: &crate::Config, platform: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_we_send_shows_at_once_and_its_copy_takes_its_place() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let mut c = crate::Config::default();
+            c.kick.broadcaster = Some(crate::kick::KickAccount {
+                user_id: 7,
+                username: "Umanana".into(),
+                ..Default::default()
+            });
+            let e = crate::engine::Engine::new(std::sync::Arc::new(tokio::sync::watch::channel(c).0), |_| {});
+            let seq = e.chat_local("kick", "hello there", false).unwrap();
+            let (_, _, lines) = e.chat_sync(999, 0);
+            assert_eq!(
+                (lines.len(), lines[0].local, lines[0].user.as_str()),
+                (1, true, "Umanana")
+            );
+            // Kick's copy: same words, its id.
+            e.log_chat(&crate::commands::Chat {
+                platform: "kick".into(),
+                user_id: "7".into(),
+                user: "umanana".into(),
+                msg_id: "k-1".into(),
+                text: "hello there".into(),
+                ..Default::default()
+            });
+            let (_, _, lines) = e.chat_sync(999, 0);
+            assert_eq!(lines.len(), 1, "no second line");
+            assert_eq!((lines[0].local, lines[0].msg_id.as_str()), (false, "k-1"));
+            // A failed send takes its line away.
+            let seq2 = e.chat_local("kick", "never arrives", false).unwrap();
+            e.chat_unlocal(seq2);
+            assert_eq!(e.chat_sync(999, 0).2.len(), 1);
+            let _ = seq;
+        });
+    }
 
     #[test]
     fn a_me_message_is_an_action() {

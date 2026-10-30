@@ -13,7 +13,7 @@ use super::fit::Ellipsis;
 use super::img::{self, Pic};
 use super::tip::{self, Tip};
 use super::{button, icons, query, tell, ROW};
-use crate::engine::chatlog::{Line, Moderate, Pin, PLATFORMS};
+use crate::engine::chatlog::{Line, Moderate, Pin, Poll, PLATFORMS};
 use crate::i18n::{tr, trf};
 use crate::Config;
 use fltk::app;
@@ -459,7 +459,8 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
     if badges {
         let before = v.len();
         if l.badges.is_empty() {
-            // Role fallback using strictly this platform's own badge design.
+            // Role fallback using strictly this platform's own badge design. Twitch has real pictures only:
+            // a drawn stand-in beside the real ones looked wrong.
             let mods = l.moderator && !l.broadcaster;
             for (role, on) in [
                 ("broadcaster", l.broadcaster),
@@ -467,7 +468,7 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
                 ("vip", l.vip),
                 ("subscriber", l.subscriber),
             ] {
-                if on {
+                if on && l.platform != "twitch" {
                     if let Some(s) = badge_fallback_svg(&l.platform, role) {
                         v.push(It::SvgTip(s, badge_tip(&l.platform, role, "")));
                         v.push(It::Gap(GAP));
@@ -482,6 +483,9 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
                         v.push(It::Gap(GAP));
                         continue;
                     }
+                }
+                if l.platform == "twitch" {
+                    continue;
                 }
                 if let Some(s) = badge_fallback_svg(&l.platform, name) {
                     v.push(It::SvgTip(s, badge_tip(&l.platform, name, url)));
@@ -603,6 +607,15 @@ fn event_items(cmds: &Cmds, l: &Line, mut v: Vec<It>) -> Vec<It> {
         v.push(It::Space);
         v.push(It::Text(w.to_string(), Font::Helvetica, Color::Foreground));
     }
+    // A channel reward's price, as Twitch's chat shows it: the points' coin and the number.
+    if l.cost > 0 {
+        v.push(It::Gap(8));
+        if let Some(s) = icons::icon("coins", c, 14) {
+            v.push(It::Svg(s));
+            v.push(It::Gap(3));
+        }
+        v.push(It::Text(l.cost.to_string(), Font::HelveticaBold, c));
+    }
     if !l.text.is_empty() {
         v.push(It::Break);
         words(cmds, l, &mut v);
@@ -659,11 +672,40 @@ struct State {
     cards: bool,
     /// The messages pinned in the chats shown, drawn over the top; and a redraw due for their countdown.
     pins: Vec<Pin>,
+    /// The polls and predictions going on, over the top too.
+    polls: Vec<Poll>,
     pin_tick: bool,
 }
 
-/// A pinned message's box at the top of the chat.
-const PIN_H: i32 = 46;
+/// A card over the top of the chat: a pinned message, or a poll or prediction going on.
+enum Card<'a> {
+    Pin(&'a Pin),
+    Poll(&'a Poll),
+}
+
+/// Space around the cards, and inside them.
+const CARD_GAP: i32 = 8;
+const CARD_PAD: i32 = 12;
+const CHOICE_H: i32 = 26;
+
+impl Card<'_> {
+    fn height(&self) -> i32 {
+        match self {
+            Card::Pin(_) => 70,
+            Card::Poll(p) => CARD_PAD * 2 + 22 + 24 + p.choices.len() as i32 * (CHOICE_H + 4),
+        }
+    }
+}
+
+/// The platform's brand colour: a card's bar.
+fn brand(platform: &str) -> Color {
+    match platform {
+        "youtube" => Color::from_rgb(0xff, 0x00, 0x33),
+        "kick" => Color::from_rgb(0x53, 0xfc, 0x18),
+        "tiktok" => Color::from_rgb(0xfe, 0x2c, 0x55),
+        _ => Color::from_rgb(0x91, 0x46, 0xff),
+    }
+}
 
 /// "4:05", "1:02:09": what's left of a pin.
 fn left(ms: u64) -> String {
@@ -782,6 +824,7 @@ impl Pane {
                 act: None,
                 cards: true,
                 pins: Vec::new(),
+                polls: Vec::new(),
                 pin_tick: false,
             })),
             cmds: cmds.clone(),
@@ -812,10 +855,28 @@ impl Pane {
         st.laid.iter().map(|l| l.1).sum::<i32>() + 8 + self.head(st)
     }
 
-    /// The room the pins take at the top: the lines start under them.
-    fn head(&self, st: &State) -> i32 {
+    /// The cards at the top (polls, then pins), each with its distance from the top.
+    fn cards<'a>(&self, st: &'a State) -> Vec<(Card<'a>, i32)> {
         let ms = epoch_ms();
-        st.pins.iter().filter(|p| p.live(ms)).count() as i32 * (PIN_H + 4)
+        let mut y = CARD_GAP;
+        let mut out = Vec::new();
+        for c in st
+            .polls
+            .iter()
+            .filter(|p| p.live(ms))
+            .map(Card::Poll)
+            .chain(st.pins.iter().filter(|p| p.live(ms)).map(Card::Pin))
+        {
+            let h = c.height();
+            out.push((c, y));
+            y += h + CARD_GAP;
+        }
+        out
+    }
+
+    /// The room the cards take at the top: the lines start under them.
+    fn head(&self, st: &State) -> i32 {
+        self.cards(st).last().map_or(0, |(c, y)| y + c.height() + CARD_GAP)
     }
 
     fn lay(&self, l: &Line, tag: bool, w: i32) -> (Rows, i32) {
@@ -963,7 +1024,7 @@ impl Pane {
                 }
             }
         }
-        let counting = self.draw_pins(f, &st.pins, epoch_ms());
+        let counting = self.draw_cards(f, &st);
         draw::pop_clip();
         // A pin's countdown: a redraw a second, only while one with an end is shown.
         if counting && !st.pin_tick {
@@ -989,60 +1050,146 @@ impl Pane {
         }
     }
 
-    /// The pins over the top of the chat: who pinned, what's left, and the message. Whether one counts down.
-    fn draw_pins(&self, f: &Frame, pins: &[Pin], ms: u64) -> bool {
+    /// The cards over the top of the chat. Whether one counts down (a redraw a second).
+    fn draw_cards(&self, f: &Frame, st: &State) -> bool {
         let (fg, bg) = (Color::Foreground, Color::Background);
+        let muted = Color::color_average(fg, bg, 0.6);
+        let ms = epoch_ms();
         let mut counting = false;
-        for (k, p) in pins.iter().filter(|p| p.live(ms)).enumerate() {
-            let (x, y, w) = (f.x() + 6, f.y() + 6 + k as i32 * (PIN_H + 4), f.w() - 24);
-            draw::set_draw_color(bg);
-            draw::draw_rounded_rectf(x, y, w, PIN_H, 6);
-            draw::set_draw_color(Color::color_average(Color::Selection, bg, 0.6));
-            draw::draw_rounded_rect(x, y, w, PIN_H, 6);
-            if let Some(mut i) = icons::icon("pin", Color::Selection, 14) {
-                i.draw(x + 10, y + 6, 14, 14);
-            }
-            let tag = PLATFORMS.iter().position(|q| *q == p.platform).map(|i| NAMES[i]);
-            let mut tx = x + 30;
-            if let Some(mut s) = tag.and_then(|n| icon_sized(n, 14)) {
-                s.draw(tx, y + 6, 14, 14);
-                tx += 20;
-            }
-            let who = if p.by.is_empty() {
-                tr("chat.pinned").to_string()
-            } else {
-                trf("chat.pinned_by", &[("user", &p.by)])
+        for (card, top) in self.cards(st) {
+            let (x, y, w, h) = (f.x() + 8, f.y() + top, f.w() - 28, card.height());
+            let platform = match &card {
+                Card::Pin(p) => p.platform.as_str(),
+                Card::Poll(p) => p.platform.as_str(),
             };
-            let when = match p.until {
-                Some(u) => {
-                    counting = true;
-                    trf("chat.pin_left", &[("time", &left(u.saturating_sub(ms)))])
+            draw::set_draw_color(Color::color_average(fg, bg, 0.07));
+            draw::draw_rounded_rectf(x, y, w, h, 8);
+            draw::set_draw_color(brand(platform));
+            draw::draw_rounded_rectf(x, y + 8, 3, h - 16, 1);
+            let ix = x + CARD_PAD + 4;
+            let room = w - CARD_PAD * 2 - 4;
+            match card {
+                Card::Pin(p) => {
+                    if let Some(mut i) = icons::icon("pin", muted, 14) {
+                        i.draw(ix, y + CARD_PAD + 1, 14, 14);
+                    }
+                    let who = if p.by.is_empty() {
+                        tr("chat.pinned").to_string()
+                    } else {
+                        trf("chat.pinned_by", &[("user", &p.by)])
+                    };
+                    let when = match p.until {
+                        Some(u) => {
+                            counting = true;
+                            trf("chat.pin_left", &[("time", &left(u.saturating_sub(ms)))])
+                        }
+                        None if p.platform == "youtube" => tr("chat.pin_until_unpinned").to_string(),
+                        None => tr("chat.pin_until_end").to_string(),
+                    };
+                    draw::set_font(Font::Helvetica, 12);
+                    draw::set_draw_color(muted);
+                    let ww = draw::width(&when) as i32;
+                    draw::draw_text2(&when, x + w - ww - CARD_PAD, y + CARD_PAD, ww, 16, Align::Left);
+                    draw::draw_text2(
+                        &who,
+                        ix + 20,
+                        y + CARD_PAD,
+                        (room - ww - 28).max(0),
+                        16,
+                        Align::Left | Align::Clip,
+                    );
+                    draw::set_font(Font::HelveticaBold, TEXT);
+                    draw::set_draw_color(fg);
+                    let name = format!("{}:", p.user);
+                    let nw = draw::width(&name) as i32;
+                    draw::draw_text2(&name, ix, y + CARD_PAD + 26, nw, 22, Align::Left);
+                    draw::set_font(Font::Helvetica, TEXT);
+                    let left_room = (room - nw - 6).max(0);
+                    let said = super::fit::ellipsize(&p.text, left_room, |t| draw::width(t) as i32);
+                    draw::draw_text2(
+                        &said,
+                        ix + nw + 6,
+                        y + CARD_PAD + 26,
+                        left_room,
+                        22,
+                        Align::Left | Align::Clip,
+                    );
                 }
-                None if p.platform == "youtube" => tr("chat.pin_until_unpinned").to_string(),
-                None => tr("chat.pin_until_end").to_string(),
-            };
-            draw::set_font(Font::Helvetica, 12);
-            let muted = Color::color_average(fg, bg, 0.6);
-            draw::set_draw_color(muted);
-            let ww = draw::width(&when) as i32;
-            draw::draw_text2(&when, x + w - ww - 10, y + 2, ww, 22, Align::Left);
-            draw::draw_text2(
-                &who,
-                tx,
-                y + 2,
-                (x + w - ww - 20 - tx).max(0),
-                22,
-                Align::Left | Align::Clip,
-            );
-            draw::set_font(Font::HelveticaBold, TEXT);
-            draw::set_draw_color(fg);
-            let name = format!("{}:", p.user);
-            let nw = draw::width(&name) as i32;
-            draw::draw_text2(&name, x + 10, y + 22, nw, 22, Align::Left);
-            draw::set_font(Font::Helvetica, TEXT);
-            let room = (w - 20 - nw - 6).max(0);
-            let said = super::fit::ellipsize(&p.text, room, |t| draw::width(t) as i32);
-            draw::draw_text2(&said, x + 16 + nw, y + 22, room, 22, Align::Left | Align::Clip);
+                Card::Poll(p) => {
+                    if let Some(mut i) = icons::icon(if p.prediction { "trending-up" } else { "vote" }, muted, 14) {
+                        i.draw(ix, y + CARD_PAD + 1, 14, 14);
+                    }
+                    let kind = if p.prediction {
+                        tr("chat.prediction")
+                    } else {
+                        tr("chat.poll")
+                    };
+                    let when = match (p.over, p.ends) {
+                        (Some(_), _) if p.prediction => tr("chat.poll_locked").to_string(),
+                        (Some(_), _) => tr("chat.poll_ended").to_string(),
+                        (None, Some(e)) => {
+                            counting = true;
+                            trf("chat.pin_left", &[("time", &left(e.saturating_sub(ms)))])
+                        }
+                        _ => String::new(),
+                    };
+                    if p.over.is_some() {
+                        counting = true;
+                    }
+                    draw::set_font(Font::Helvetica, 12);
+                    draw::set_draw_color(muted);
+                    let ww = draw::width(&when) as i32;
+                    draw::draw_text2(&when, x + w - ww - CARD_PAD, y + CARD_PAD, ww, 16, Align::Left);
+                    draw::draw_text2(
+                        kind,
+                        ix + 20,
+                        y + CARD_PAD,
+                        (room - ww - 28).max(0),
+                        16,
+                        Align::Left | Align::Clip,
+                    );
+                    draw::set_font(Font::HelveticaBold, TEXT);
+                    draw::set_draw_color(fg);
+                    let title = super::fit::ellipsize(&p.title, room, |t| draw::width(t) as i32);
+                    draw::draw_text2(&title, ix, y + CARD_PAD + 22, room, 22, Align::Left | Align::Clip);
+                    let total: u64 = p.choices.iter().map(|c| c.1).sum();
+                    let best = p.choices.iter().map(|c| c.1).max().unwrap_or(0);
+                    for (i, (label, n)) in p.choices.iter().enumerate() {
+                        let cy = y + CARD_PAD + 22 + 28 + i as i32 * (CHOICE_H + 4);
+                        draw::set_draw_color(Color::color_average(fg, bg, 0.07));
+                        draw::draw_rounded_rectf(ix, cy, room, CHOICE_H, 6);
+                        let share = if total == 0 { 0.0 } else { *n as f32 / total as f32 };
+                        let fill = (room as f32 * share) as i32;
+                        if fill > 0 {
+                            draw::set_draw_color(Color::color_average(brand(&p.platform), bg, 0.35));
+                            draw::draw_rounded_rectf(ix, cy, fill.max(8), CHOICE_H, 6);
+                        }
+                        let stat = if p.prediction {
+                            n.to_string()
+                        } else {
+                            format!("{}% ({n})", (share * 100.0).round() as u64)
+                        };
+                        let font = if *n == best && best > 0 {
+                            Font::HelveticaBold
+                        } else {
+                            Font::Helvetica
+                        };
+                        draw::set_font(font, 13);
+                        draw::set_draw_color(fg);
+                        let sw = draw::width(&stat) as i32;
+                        draw::draw_text2(&stat, ix + room - sw - 8, cy, sw, CHOICE_H, Align::Left);
+                        let lab = super::fit::ellipsize(label, (room - sw - 28).max(0), |t| draw::width(t) as i32);
+                        draw::draw_text2(
+                            &lab,
+                            ix + 8,
+                            cy,
+                            (room - sw - 24).max(0),
+                            CHOICE_H,
+                            Align::Left | Align::Clip,
+                        );
+                    }
+                }
+            }
         }
         counting
     }
@@ -1050,12 +1197,21 @@ impl Pane {
     /// The pin under the pointer, if any.
     fn pin_at(&self, f: &Frame) -> Option<Pin> {
         let st = self.st.borrow();
-        let ms = epoch_ms();
-        let dy = app::event_y() - f.y() - 6;
-        let k = dy.div_euclid(PIN_H + 4);
-        (dy >= 0 && dy % (PIN_H + 4) < PIN_H)
-            .then(|| st.pins.iter().filter(|p| p.live(ms)).nth(k as usize).cloned())
-            .flatten()
+        let dy = app::event_y() - f.y();
+        self.cards(&st).into_iter().find_map(|(c, top)| match c {
+            Card::Pin(p) if dy >= top && dy < top + c.height() => Some(p.clone()),
+            _ => None,
+        })
+    }
+
+    /// The polls and predictions of the chats this pane shows.
+    pub(super) fn set_polls(&self, polls: Vec<Poll>) {
+        let mut st = self.st.borrow_mut();
+        if st.polls != polls {
+            st.polls = polls;
+            drop(st);
+            self.area.clone().redraw();
+        }
     }
 
     /// The pins of the chats this pane shows.
@@ -1452,8 +1608,6 @@ struct ChatColumn {
     /// The chat box and what it answers (hidden in the all-platforms view).
     bar: Flex,
     set_reply: SetReply,
-    /// Twitch's chat commands (only in Twitch's chat).
-    slash_btn: Button,
 }
 
 impl ChatColumn {
@@ -1491,12 +1645,6 @@ impl ChatColumn {
         bar.fixed(&acct_btn, 32);
 
         let mut input = Input::default();
-
-        let mut slash_btn = Button::default();
-        slash_btn.set_frame(FrameType::FlatBox);
-        slash_btn.set_image(icons::icon("square-slash", super::muted(), 18));
-        slash_btn.set_tooltip(tr("chat.commands_tooltip"));
-        bar.fixed(&slash_btn, 32);
 
         let mut emote_btn = Button::default();
         emote_btn.set_frame(FrameType::FlatBox);
@@ -1566,7 +1714,6 @@ impl ChatColumn {
             target_plat: target_plat.clone(),
             bar: bar.clone(),
             set_reply: set_reply.clone(),
-            slash_btn: slash_btn.clone(),
         };
 
         let do_send = {
@@ -1596,17 +1743,38 @@ impl ChatColumn {
         });
         let (me_reply, set_reply_esc) = (reply.clone(), set_reply.clone());
         let reply_on = |r: &Rc<RefCell<Option<Line>>>| r.borrow().is_some();
+        let suggest = super::suggest::Suggest::default();
         me.input.clone().handle({
             let s = do_send;
             let (cfg, cmds, target_plat) = (cfg.clone(), cmds.clone(), target_plat.clone());
             move |i, ev| {
+                let plat = PLATFORMS[target_plat.get().min(3)];
                 // TikTok's chat is written through a browser tab, which takes seconds to start: begin
                 // when the box is clicked, not when the message is sent.
-                if ev == Event::Focus && PLATFORMS[target_plat.get().min(3)] == "tiktok" {
+                if ev == Event::Focus && plat == "tiktok" {
                     let bot = !cfg.borrow().window.chat_as_broadcaster.iter().any(|s| s == "tiktok");
                     if crate::engine::can_send(&cfg.borrow(), "tiktok") {
                         tell(&cmds, move |e| e.tiktok_start().warm(bot, true));
                     }
+                }
+                // Twitch's chat commands, listed as they are typed.
+                if plat == "twitch" {
+                    let me = crate::roles::get("twitch").0;
+                    match ev {
+                        Event::KeyDown if suggest.key(i, me) => return true,
+                        Event::KeyUp
+                            if !matches!(
+                                app::event_key(),
+                                Key::Escape | Key::Tab | Key::Up | Key::Down | Key::Enter | Key::ShiftL | Key::ShiftR
+                            ) =>
+                        {
+                            suggest.update(i, me);
+                        }
+                        Event::Unfocus => suggest.hide(),
+                        _ => {}
+                    }
+                } else if suggest.is_open() {
+                    suggest.hide();
                 }
                 if click(i, ev) {
                     return true;
@@ -1632,26 +1800,6 @@ impl ChatColumn {
             move |_| {
                 account_selector_popup(&cfg, &cmds, &me_c, go_accounts.clone());
                 me_c.refresh_sender(&cfg, &cmds);
-            }
-        });
-
-        slash_btn.set_callback({
-            let (cmds, mut input) = (cmds.clone(), me.input.clone());
-            move |_| {
-                let items: Vec<(&str, &str)> = crate::slash::PRESETS.iter().map(|(g, c)| (tr(g), *c)).collect();
-                let Some(text) = super::pick_grouped(&items).map(|i| crate::slash::PRESETS[i].1) else {
-                    return;
-                };
-                if text.ends_with(' ') {
-                    // Needs a name or words: typed in the box.
-                    input.set_value(text);
-                    let _ = input.take_focus();
-                    input.set_position(text.len() as i32).ok();
-                } else {
-                    tell(&cmds, move |e| {
-                        let _ = e.send_chat_list(&["twitch"], text, false, true, None);
-                    });
-                }
             }
         });
 
@@ -1705,16 +1853,6 @@ impl ChatColumn {
                     w.deactivate();
                 }
             }
-        }
-        // Twitch's commands are for Twitch's chat.
-        let mut slash = self.slash_btn.clone();
-        if (plat_name == "Twitch") != slash.visible() {
-            if plat_name == "Twitch" {
-                slash.show();
-            } else {
-                slash.hide();
-            }
-            self.bar.clone().layout();
         }
         let mut inp = self.input.clone();
         let placeholder_tip = match &sender_name {
@@ -1819,15 +1957,24 @@ impl Chat {
     fn show_pins(&self, v: i32) {
         tell(&self.cmds, |e| e.twitch_check_pin());
         let pins = query(&self.cmds, |e| e.chat_pins()).unwrap_or_default();
+        let polls = query(&self.cmds, |e| e.chat_polls()).unwrap_or_default();
         let of = |p: &str| pins.iter().filter(|x| x.platform == p).cloned().collect::<Vec<_>>();
+        let polls_of = |p: &str| polls.iter().filter(|x| x.platform == p).cloned().collect::<Vec<_>>();
         match v {
             1 => {
                 for (i, col) in self.side.iter().enumerate() {
                     col.pane.set_pins(of(PLATFORMS[i]));
+                    col.pane.set_polls(polls_of(PLATFORMS[i]));
                 }
             }
-            0 => self.main.pane.set_pins(pins.clone()),
-            _ => self.main.pane.set_pins(self.shown().map(of).unwrap_or_default()),
+            0 => {
+                self.main.pane.set_pins(pins.clone());
+                self.main.pane.set_polls(polls.clone());
+            }
+            _ => {
+                self.main.pane.set_pins(self.shown().map(of).unwrap_or_default());
+                self.main.pane.set_polls(self.shown().map(polls_of).unwrap_or_default());
+            }
         }
     }
 

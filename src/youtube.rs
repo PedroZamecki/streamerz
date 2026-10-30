@@ -1850,6 +1850,27 @@ pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value]) {
             let mut args = BROADCAST.with_borrow(Clone::clone);
             args.extend(poll_args(p));
             POLL.with_borrow_mut(|x| *x = args.clone());
+            engine.chat_poll(crate::engine::chatlog::Poll {
+                platform: "youtube".into(),
+                id: "youtube".into(),
+                title: args.get("poll.question").and_then(Value::as_str).unwrap_or("").into(),
+                prediction: false,
+                choices: (0..args.get("poll.options.count").and_then(Value::as_u64).unwrap_or(0))
+                    .map(|i| {
+                        (
+                            args.get(&format!("poll.option{i}.text"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string(),
+                            args.get(&format!("poll.option{i}.votes"))
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0),
+                        )
+                    })
+                    .collect(),
+                ends: None,
+                over: None,
+            });
             crate::ui::polls_changed();
             if shown.is_some() {
                 yt(engine, T_YT_POLL_STARTED, "YouTubePollStarted", "PollStarted", &args);
@@ -1863,6 +1884,7 @@ pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value]) {
                 continue;
             }
             crate::ui::polls_changed();
+            engine.chat_polls_clear("youtube");
             args.insert("panelId".into(), close["targetPanelId"].clone());
             yt(engine, T_YT_POLL_CLOSED, "YouTubePollClosed", "PollClosed", &args);
         }

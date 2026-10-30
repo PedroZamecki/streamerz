@@ -352,7 +352,7 @@ platform handles through channels, never through shared locks held across awaits
 - [x] Chat effects listed in [CHAT.md](CHAT.md): subs, gifts, raids, rewards, announcements, Kicks,
   Super Chats, memberships and TikTok gifts as event lines; highlighted and first messages marked.
 
-## Version 1.1.1
+## Version 1.2.0
 
 - [x] Releases are titled with their version only (`v1.2.3`), not the merge commit's message.
 - [x] Crash reports: only `crash-*.txt` is offered (the trail file `context.txt` once was, again and again);

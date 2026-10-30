@@ -24,6 +24,7 @@ pub(crate) mod popover;
 mod recovery;
 mod rows;
 mod settings;
+mod suggest;
 mod tip;
 
 use self::fit::Ellipsis;
@@ -730,26 +731,6 @@ pub(crate) fn pick(labels: &[&str]) -> Option<usize> {
     chosen
         .and_then(|i| usize::try_from(i).ok())
         .filter(|i| *i < labels.len())
-}
-
-/// A menu of `(group, label)` entries, the groups as submenus: the index of the one picked.
-pub(crate) fn pick_grouped(items: &[(&str, &str)]) -> Option<usize> {
-    use fltk::menu::{MenuButton, MenuFlag};
-    let mut m = menu_at_pointer();
-    for (g, l) in items {
-        m.add(
-            &format!("{}/{}", menu_text(g), menu_text(l)),
-            Shortcut::None,
-            MenuFlag::Normal,
-            |_| {},
-        );
-    }
-    let chosen = m.popup().map(|_| m.value());
-    MenuButton::delete(m);
-    chosen
-        .and_then(|i| usize::try_from(i).ok())
-        .filter(|i| *i < items.len())
-        .inspect(|i| crate::crash::step(&format!("menu item {}", items[*i].1)))
 }
 
 /// A label as a menu shows it as written (`&` underlines and `/` makes a submenu otherwise).

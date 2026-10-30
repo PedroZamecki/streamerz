@@ -36,44 +36,177 @@ pub enum Cmd {
     Say(String),
 }
 
-/// What the preset menu offers, by group (an i18n key) and the command as typed. One ending in a space
-/// needs more (a name), so it goes into the chat box instead of running.
-pub const PRESETS: &[(&str, &str)] = &[
-    ("chat.cmd_commercial", "/commercial 30"),
-    ("chat.cmd_commercial", "/commercial 60"),
-    ("chat.cmd_commercial", "/commercial 90"),
-    ("chat.cmd_commercial", "/commercial 120"),
-    ("chat.cmd_commercial", "/commercial 150"),
-    ("chat.cmd_commercial", "/commercial 180"),
-    ("chat.cmd_modes", "/slow 30"),
-    ("chat.cmd_modes", "/slow 60"),
-    ("chat.cmd_modes", "/slow 120"),
-    ("chat.cmd_modes", "/slowoff"),
-    ("chat.cmd_modes", "/followers 0"),
-    ("chat.cmd_modes", "/followers 10m"),
-    ("chat.cmd_modes", "/followers 1h"),
-    ("chat.cmd_modes", "/followers 1d"),
-    ("chat.cmd_modes", "/followersoff"),
-    ("chat.cmd_modes", "/subscribers"),
-    ("chat.cmd_modes", "/subscribersoff"),
-    ("chat.cmd_modes", "/emoteonly"),
-    ("chat.cmd_modes", "/emoteonlyoff"),
-    ("chat.cmd_modes", "/uniquechat"),
-    ("chat.cmd_modes", "/uniquechatoff"),
-    ("chat.cmd_people", "/timeout "),
-    ("chat.cmd_people", "/ban "),
-    ("chat.cmd_people", "/unban "),
-    ("chat.cmd_people", "/mod "),
-    ("chat.cmd_people", "/unmod "),
-    ("chat.cmd_people", "/vip "),
-    ("chat.cmd_people", "/unvip "),
-    ("chat.cmd_channel", "/clear"),
-    ("chat.cmd_channel", "/raid "),
-    ("chat.cmd_channel", "/unraid"),
-    ("chat.cmd_channel", "/shoutout "),
-    ("chat.cmd_channel", "/announce "),
-    ("chat.cmd_channel", "/marker"),
+use crate::roles::Role;
+
+/// One command as the box suggests it.
+pub struct Info {
+    pub name: &'static str,
+    /// What follows the name, as Twitch's own hint writes it: `[length]`, `<user>`.
+    pub args: &'static str,
+    /// The i18n key of what it does.
+    pub about: &'static str,
+    /// What it takes to use it (the box hides what our role can't).
+    pub needs: Role,
+    /// Values worth one click after the name: `/commercial 30`.
+    pub presets: &'static [&'static str],
+}
+
+const fn info(
+    name: &'static str,
+    args: &'static str,
+    about: &'static str,
+    needs: Role,
+    presets: &'static [&'static str],
+) -> Info {
+    Info {
+        name,
+        args,
+        about,
+        needs,
+        presets,
+    }
+}
+
+/// Every command, as the chat box lists them while a `/` is typed.
+pub const COMMANDS: &[Info] = &[
+    info(
+        "commercial",
+        "[length]",
+        "slash.commercial",
+        Role::Broadcaster,
+        &["30", "60", "90", "120", "150", "180"],
+    ),
+    info("clear", "", "slash.clear", Role::Moderator, &[]),
+    info("delete", "<message id>", "slash.delete", Role::Moderator, &[]),
+    info(
+        "timeout",
+        "<user> [length] [reason]",
+        "slash.timeout",
+        Role::Moderator,
+        &["10m", "1h", "1d", "1w"],
+    ),
+    info("ban", "<user> [reason]", "slash.ban", Role::Moderator, &[]),
+    info("unban", "<user>", "slash.unban", Role::Moderator, &[]),
+    info(
+        "slow",
+        "[seconds]",
+        "slash.slow",
+        Role::Moderator,
+        &["10", "30", "60", "120"],
+    ),
+    info("slowoff", "", "slash.slowoff", Role::Moderator, &[]),
+    info(
+        "followers",
+        "[length]",
+        "slash.followers",
+        Role::Moderator,
+        &["0", "10m", "1h", "1d", "1w"],
+    ),
+    info("followersoff", "", "slash.followersoff", Role::Moderator, &[]),
+    info("subscribers", "", "slash.subscribers", Role::Moderator, &[]),
+    info("subscribersoff", "", "slash.subscribersoff", Role::Moderator, &[]),
+    info("emoteonly", "", "slash.emoteonly", Role::Moderator, &[]),
+    info("emoteonlyoff", "", "slash.emoteonlyoff", Role::Moderator, &[]),
+    info("uniquechat", "", "slash.uniquechat", Role::Moderator, &[]),
+    info("uniquechatoff", "", "slash.uniquechatoff", Role::Moderator, &[]),
+    info("shoutout", "<channel>", "slash.shoutout", Role::Moderator, &[]),
+    info("announce", "<message>", "slash.announce", Role::Moderator, &[]),
+    info("announceblue", "<message>", "slash.announceblue", Role::Moderator, &[]),
+    info(
+        "announcegreen",
+        "<message>",
+        "slash.announcegreen",
+        Role::Moderator,
+        &[],
+    ),
+    info(
+        "announceorange",
+        "<message>",
+        "slash.announceorange",
+        Role::Moderator,
+        &[],
+    ),
+    info(
+        "announcepurple",
+        "<message>",
+        "slash.announcepurple",
+        Role::Moderator,
+        &[],
+    ),
+    info("raid", "<channel>", "slash.raid", Role::Broadcaster, &[]),
+    info("unraid", "", "slash.unraid", Role::Broadcaster, &[]),
+    info("mod", "<user>", "slash.mod", Role::Broadcaster, &[]),
+    info("unmod", "<user>", "slash.unmod", Role::Broadcaster, &[]),
+    info("vip", "<user>", "slash.vip", Role::Broadcaster, &[]),
+    info("unvip", "<user>", "slash.unvip", Role::Broadcaster, &[]),
+    info("marker", "[description]", "slash.marker", Role::Broadcaster, &[]),
+    info("me", "<message>", "slash.me", Role::Anonymous, &[]),
 ];
+
+/// One line of the box's list.
+#[derive(Debug, PartialEq, Clone)]
+pub struct Suggestion {
+    /// What the box holds once it's picked.
+    pub fill: String,
+    /// `/commercial`, or `/commercial 30` for a preset.
+    pub title: String,
+    pub args: &'static str,
+    pub about: &'static str,
+    /// Typing on completes it (a space follows): it takes more words, or has presets.
+    pub more: bool,
+}
+
+/// The commands to suggest for what is typed so far (`typed` as in the box), for an account that is `me`:
+/// those whose name starts with what follows the `/`, or, once a command with presets is typed in full
+/// and a space after it, its presets.
+pub fn suggestions(typed: &str, me: Role) -> Vec<Suggestion> {
+    let Some(body) = typed.strip_prefix('/').filter(|b| !b.starts_with('/')) else {
+        return Vec::new();
+    };
+    let usable = |c: &&Info| me >= c.needs || c.needs == Role::Anonymous;
+    match body.split_once(char::is_whitespace) {
+        None => COMMANDS
+            .iter()
+            .filter(usable)
+            .filter(|c| c.name.starts_with(&body.to_lowercase()))
+            .map(|c| Suggestion {
+                fill: format!("/{}", c.name),
+                title: format!("/{}", c.name),
+                args: c.args,
+                about: c.about,
+                more: !c.args.is_empty(),
+            })
+            .collect(),
+        Some((name, rest)) => {
+            let Some(c) = COMMANDS.iter().filter(usable).find(|c| c.name == name.to_lowercase()) else {
+                return Vec::new();
+            };
+            let rest = rest.trim_start();
+            // Presets are for the first word only.
+            let typing_first = !rest.contains(char::is_whitespace);
+            if c.presets.is_empty() || !typing_first {
+                return vec![Suggestion {
+                    fill: typed.to_string(),
+                    title: format!("/{}", c.name),
+                    args: c.args,
+                    about: c.about,
+                    more: false,
+                }];
+            }
+            c.presets
+                .iter()
+                .filter(|p| p.starts_with(rest))
+                .map(|p| Suggestion {
+                    fill: format!("/{} {p}", c.name),
+                    title: format!("/{} {p}", c.name),
+                    args: "",
+                    about: c.about,
+                    more: false,
+                })
+                .collect()
+        }
+    }
+}
 
 /// Whether `text` is a command this module handles (not a plain message, and not `/me`).
 pub fn is_command(text: &str) -> bool {
@@ -495,15 +628,41 @@ mod tests {
     }
 
     #[test]
-    fn every_preset_parses_or_asks_for_more() {
-        for (_, p) in PRESETS {
-            if p.ends_with(' ') {
-                // Needs a name or text: complete, it must parse.
-                assert!(parse(&format!("{p}x y")).is_ok(), "{p}");
-            } else {
-                assert!(parse(p).is_ok(), "{p}");
+    fn every_listed_command_parses_with_its_arguments() {
+        for c in COMMANDS.iter().filter(|c| c.name != "me") {
+            // Those that take a number first, and those that take a name first.
+            let numeric = matches!(c.name, "commercial" | "slow" | "followers");
+            let lead = if numeric { "" } else { "someone " };
+            for p in c.presets {
+                let text = format!("/{} {lead}{p}", c.name);
+                assert!(parse(&text).is_ok(), "{text}: {:?}", parse(&text));
+            }
+            if c.presets.is_empty() {
+                let text = format!("/{} x", c.name);
+                assert!(parse(&text).is_ok(), "{text}: {:?}", parse(&text));
             }
         }
+    }
+
+    #[test]
+    fn the_box_suggests_by_prefix_and_role() {
+        let names = |t: &str, me| suggestions(t, me).into_iter().map(|s| s.title).collect::<Vec<_>>();
+        assert_eq!(names("/comm", Role::Broadcaster), ["/commercial"]);
+        // A moderator isn't offered the owner's commercial.
+        assert!(names("/comm", Role::Moderator).is_empty());
+        assert!(names("/", Role::Viewer) == ["/me"]);
+        assert!(names("hello", Role::Broadcaster).is_empty());
+        assert!(names("//x", Role::Broadcaster).is_empty());
+        assert_eq!(names("/commercial ", Role::Broadcaster).len(), 6);
+        assert_eq!(
+            names("/commercial 1", Role::Broadcaster),
+            ["/commercial 120", "/commercial 150", "/commercial 180"]
+        );
+        // Past the first word, the usage stays as a hint.
+        assert_eq!(names("/timeout bob 10m", Role::Moderator), ["/timeout"]);
+        assert_eq!(names("/timeout ", Role::Moderator).len(), 4);
+        let s = &suggestions("/ban", Role::Moderator)[0];
+        assert!(s.more && s.fill == "/ban");
     }
 
     #[test]

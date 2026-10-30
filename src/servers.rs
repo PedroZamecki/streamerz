@@ -649,6 +649,29 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
             }
             ok(&id, json!({}))
         }
+        // Dev mode only: a poll or prediction at the top of a chat: "title", "choices" as [[name, votes]],
+        // "seconds" left (0: none), "prediction" and "over" as booleans.
+        "InjectPoll" if e.dev() => {
+            let flag = |k: &str| req.get(k).and_then(Value::as_bool) == Some(true);
+            let now = crate::fmt::unix_now().as_millis() as u64;
+            let secs = req.get("seconds").and_then(Value::as_u64).unwrap_or(0);
+            e.chat_poll(crate::engine::chatlog::Poll {
+                platform: get("platform").into(),
+                id: get("id").into(),
+                title: get("title").into(),
+                prediction: flag("prediction"),
+                choices: req
+                    .get("choices")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(|c| (c[0].as_str().unwrap_or("").to_string(), c[1].as_u64().unwrap_or(0)))
+                    .collect(),
+                ends: (secs > 0).then(|| now + secs * 1000),
+                over: flag("over").then_some(now),
+            });
+            ok(&id, json!({}))
+        }
         "GetChatOut" if e.dev() => ok(&id, json!({"messages": e.dev_take().unwrap_or_default()})),
         // Dev mode only: fire any trigger (code or name, e.g. 101 or "TwitchFollow") with these
         // arguments, as its platform would; how many actions ran.

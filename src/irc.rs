@@ -303,8 +303,10 @@ async fn session(
                     if cfg.borrow().twitch.channel_id != id {
                         cfg.send_modify(|c| c.twitch.channel_id.clone_from(&id));
                     }
+                    crate::twitch::load_public_badges(&id).await;
                     let hist = crate::twitch::recent_messages(channel, &id).await;
                     engine.chat_welcome("twitch", hist);
+                    engine.refresh_chat_badges("twitch", crate::twitch::badge_url);
                     room = Some(b);
                 }
                 _ => {

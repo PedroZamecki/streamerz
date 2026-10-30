@@ -2149,8 +2149,10 @@ pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate
     // The text follows ` :`, except a one-word message, which IRC sends without the colon.
     let (_, trailing) = after_cmd.split_once(" :").or_else(|| after_cmd.split_once(' '))?;
     let mut text = trailing.to_string();
+    let mut action = false;
     if let Some(act) = text.strip_prefix("\x01ACTION ").and_then(|s| s.strip_suffix('\x01')) {
         text = act.to_string();
+        action = true;
     }
 
     let mut msg_id = String::new();
@@ -2240,6 +2242,7 @@ pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate
     let text = reply.as_ref().map_or(text.clone(), |r| r.strip(&text));
     Some(crate::engine::chatlog::Line {
         platform: "twitch".into(),
+        action,
         reply,
         msg_id,
         time,
@@ -2927,6 +2930,25 @@ fn handle_notification(
                 p["duration"] = (b - a).into();
             }
             crate::engine::poll_args(&p, &mut args);
+            engine.chat_poll(crate::engine::chatlog::Poll {
+                platform: "twitch".into(),
+                id: es(event, "/id").into(),
+                title: es(event, "/title").into(),
+                prediction: false,
+                choices: event["choices"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|c| {
+                        (
+                            c["title"].as_str().unwrap_or("").to_string(),
+                            c["votes"].as_u64().unwrap_or(0),
+                        )
+                    })
+                    .collect(),
+                ends: end.map(|e| e as u64 * 1000).filter(|_| sub_type != "channel.poll.end"),
+                over: (sub_type == "channel.poll.end").then(|| crate::fmt::unix_now().as_millis() as u64),
+            });
             args.insert("pollId".into(), event["id"].clone());
             args.insert("pollTitle".into(), event["title"].clone());
             let status = es(event, "/status");
@@ -2977,6 +2999,28 @@ fn handle_notification(
             let status = es(event, "/status");
             p["status"] = if status.is_empty() { "ACTIVE" } else { status }.into();
             crate::engine::prediction_args(&p, &mut args);
+            engine.chat_poll(crate::engine::chatlog::Poll {
+                platform: "twitch".into(),
+                id: es(event, "/id").into(),
+                title: es(event, "/title").into(),
+                prediction: true,
+                choices: event["outcomes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|o| {
+                        (
+                            o["title"].as_str().unwrap_or("").to_string(),
+                            o["channel_points"].as_u64().unwrap_or(0),
+                        )
+                    })
+                    .collect(),
+                ends: crate::engine::rest_parse_iso(es(event, "/locks_at"))
+                    .map(|e| e as u64 * 1000)
+                    .filter(|_| sub_type != "channel.prediction.end" && sub_type != "channel.prediction.lock"),
+                over: matches!(sub_type, "channel.prediction.end" | "channel.prediction.lock")
+                    .then(|| crate::fmt::unix_now().as_millis() as u64),
+            });
             args.insert("prediction.LockedAt".into(), event["locked_at"].clone());
             args.insert("prediction.EndedAt".into(), event["ended_at"].clone());
             args.insert("predictionId".into(), event["id"].clone());
@@ -4226,6 +4270,44 @@ fn pyramid(user: (&str, &str, &str), text: &str) -> Option<(bool, Who, String, u
     })
 }
 
+/// The badge sets (global, and the channel's when `channel_id` is given) from Twitch's public badge
+/// service: no login needed, so a chat read anonymously has its badge pictures too.
+pub async fn load_public_badges(channel_id: &str) {
+    let mut urls = vec!["https://badges.twitch.tv/v1/badges/global/display".to_string()];
+    if channel_id.bytes().all(|b| b.is_ascii_digit()) && !channel_id.is_empty() {
+        urls.push(format!(
+            "https://badges.twitch.tv/v1/badges/channels/{channel_id}/display"
+        ));
+    }
+    for url in urls {
+        let Ok(r) = crate::http::request("GET", &url, &[], b"").await else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_slice::<Value>(&r.body) else {
+            continue;
+        };
+        SEEN.with_borrow_mut(|s| {
+            for (set, body) in v["badge_sets"].as_object().into_iter().flatten() {
+                for (ver, b) in body["versions"].as_object().into_iter().flatten() {
+                    let key = format!("{set}/{ver}");
+                    let url = b["image_url_4x"].as_str().or(b["image_url_1x"].as_str()).unwrap_or("");
+                    if !url.is_empty() {
+                        s.badges.insert(key.clone(), url.into());
+                    }
+                    if let Some(t) = b["title"].as_str().filter(|t| !t.is_empty()) {
+                        s.badge_titles.insert(key, t.into());
+                    }
+                }
+            }
+        });
+    }
+}
+
+/// A badge's picture by its "set/version", once the badge sets are read.
+pub fn badge_url(key: &str) -> Option<String> {
+    SEEN.with_borrow(|s| s.badges.get(key).filter(|u| !u.is_empty()).cloned())
+}
+
 /// A badge's name ("1-Year Subscriber") by its "set/version", once the badge sets are read.
 pub fn badge_title(key: &str) -> Option<String> {
     SEEN.with_borrow(|s| s.badge_titles.get(key).cloned())
@@ -4256,6 +4338,8 @@ pub async fn public_profile(user_id: &str) -> Option<Value> {
 async fn seed(engine: &Rc<Engine>) {
     let Some(tw) = engine.twitch() else { return };
     let b = vec![("broadcaster_id", "{broadcaster_id}")];
+    // The badge pictures first and without a login's help; Helix's below adds what it knows.
+    load_public_badges(&channel_id(&engine.config())).await;
     let settings = tw.helix("GET", "chat/settings", b.clone(), None, false, false).await;
     let channel = tw.helix("GET", "channels", b.clone(), None, false, false).await;
     let rewards = tw

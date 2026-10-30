@@ -287,8 +287,12 @@ const ICONS: &[(&str, &str)] = &[
         r#"<circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><circle cx="9" cy="9" r=".5"/><circle cx="15" cy="9" r=".5"/>"#,
     ),
     (
-        "square-slash",
-        r#"<rect width="18" height="18" x="3" y="3" rx="2"/><line x1="9" x2="15" y1="15" y2="9"/>"#,
+        "coins",
+        r#"<circle cx="8" cy="8" r="6"/><path d="M18.09 10.37A6 6 0 1 1 10.34 18"/><path d="M7 6h1v4"/><path d="m16.71 13.88.7.71-2.82 2.82"/>"#,
+    ),
+    (
+        "trending-up",
+        r#"<polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/>"#,
     ),
     (
         "star",
