@@ -37,7 +37,7 @@ const UPDATES: [Updates; 3] = [Updates::Ask, Updates::Background, Updates::Ignor
 /// Changes the config and saves it.
 fn put(cfg: &Cfg, f: impl FnOnce(&mut Config)) {
     cfg.send_modify(f);
-    let _ = crate::save(&cfg.borrow());
+    crate::save_later(&cfg.borrow());
 }
 
 /// A section's title, with its icon.

@@ -676,6 +676,11 @@ fn with(path: &Path, ext: &str) -> PathBuf {
 /// Written to a temp file and renamed over the old one, so a crash never leaves half a file; the
 /// previous version is kept as `.bak`.
 fn save_to(path: &Path, c: &Config) -> std::io::Result<()> {
+    write_value(path, serde_json::to_value(c).unwrap_or_default())
+}
+
+/// `save_to`, from the config already as JSON (sealing its secrets happens here).
+fn write_value(path: &Path, mut v: serde_json::Value) -> std::io::Result<()> {
     // The window and the engine both save: one at a time.
     static SAVING: Mutex<()> = Mutex::new(());
     let _one = SAVING.lock();
@@ -683,7 +688,6 @@ fn save_to(path: &Path, c: &Config) -> std::io::Result<()> {
         let _ = std::fs::create_dir_all(parent);
     }
     let tmp = with(path, ".tmp");
-    let mut v = serde_json::to_value(c).unwrap_or_default();
     secrets::seal(&mut v);
     let mut o = std::fs::OpenOptions::new();
     o.write(true).create(true).truncate(true);
@@ -703,11 +707,49 @@ fn save_to(path: &Path, c: &Config) -> std::io::Result<()> {
 }
 
 fn save(c: &Config) -> std::io::Result<()> {
-    let r = save_to(&config_path(), c);
+    save_value(serde_json::to_value(c).unwrap_or_default())
+}
+
+fn save_value(v: serde_json::Value) -> std::io::Result<()> {
+    let r = write_value(&config_path(), v);
     if let Err(e) = &r {
         error(format!("can't save streamerz.json ({e})"));
     }
     r
+}
+
+/// Saves `c` without making the caller wait: the window's thread must never sit on the disk, the keyring
+/// or the save lock (the engine may hold it). One short thread writes the latest config, and the next
+/// one asked for meanwhile replaces a pending one, so a burst of changes is one write.
+fn save_later(c: &Config) {
+    static PENDING: Mutex<Option<serde_json::Value>> = Mutex::new(None);
+    static BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if let Ok(mut p) = PENDING.lock() {
+        *p = Some(serde_json::to_value(c).unwrap_or_default());
+    }
+    if BUSY.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
+    let spawned = std::thread::Builder::new().name("save".into()).spawn(|| loop {
+        let next = PENDING.lock().ok().and_then(|mut p| p.take());
+        match next {
+            Some(v) => drop(save_value(v)),
+            None => {
+                BUSY.store(false, std::sync::atomic::Ordering::Release);
+                // Something arrived between the last look and the flag going down.
+                let more = PENDING.lock().is_ok_and(|p| p.is_some());
+                if !more || BUSY.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                    return;
+                }
+            }
+        }
+    });
+    if spawned.is_err() {
+        BUSY.store(false, std::sync::atomic::Ordering::Release);
+        if let Some(v) = PENDING.lock().ok().and_then(|mut p| p.take()) {
+            drop(save_value(v));
+        }
+    }
 }
 
 /// The config, else its `.bak`, else the defaults. Written back, so new settings show up in the

@@ -212,7 +212,7 @@ impl Actions {
     /// Change the config, save it, and redraw.
     fn edit(&mut self, f: impl FnOnce(&mut Config)) {
         self.cfg.send_modify(f);
-        let _ = crate::save(&self.cfg.borrow());
+        crate::save_later(&self.cfg.borrow());
         self.refresh();
     }
 

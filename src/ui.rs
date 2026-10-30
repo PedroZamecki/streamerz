@@ -1171,7 +1171,7 @@ pub fn run(
                 (c.window.w, c.window.h) = (w.w(), w.h());
                 false
             });
-            let _ = crate::save(&cfg.borrow());
+            crate::save_later(&cfg.borrow());
             // Waited for: Quit exits right after.
             let _ = query(&cmds, |e| {
                 e.save_community();

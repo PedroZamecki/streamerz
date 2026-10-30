@@ -54,7 +54,7 @@ pub(super) fn save(cfg: &Cfg, f: impl FnOnce(&mut Config)) {
         // A login (or a channel emptied in Advanced) reads the broadcaster's own channel.
         c.own_channels();
     });
-    let _ = crate::save(&cfg.borrow());
+    crate::save_later(&cfg.borrow());
 }
 
 /// A section title, with the platform's or app's logo when there's one.

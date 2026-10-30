@@ -670,6 +670,30 @@ fn event_items(cmds: &Cmds, l: &Line, mut v: Vec<It>) -> Vec<It> {
 /// A line laid out: its rows (items with their x, and the row's height).
 type Rows = Vec<(Vec<(It, i32)>, i32)>;
 
+/// A piece of text wider than `w` (a long name in a narrow column) cut into pieces that fit, each on its
+/// own row: left whole, the end of it is out of sight.
+fn fitted(it: It, w: i32) -> Vec<It> {
+    let It::Text(t, font, color) = &it else { return vec![it] };
+    // Letters are never narrower than 3 px: short text needn't be measured.
+    if w < 20 || (t.chars().count() as i32) * 3 <= w || it.size().0 <= w {
+        return vec![it];
+    }
+    draw::set_font(*font, TEXT);
+    let mut out = Vec::new();
+    let mut piece = String::new();
+    for c in t.chars() {
+        piece.push(c);
+        if draw::width(&piece) as i32 > w && piece.chars().count() > 1 {
+            piece.pop();
+            out.push(It::Text(std::mem::take(&mut piece), *font, *color));
+            out.push(It::Break);
+            piece.push(c);
+        }
+    }
+    out.push(It::Text(piece, *font, *color));
+    out
+}
+
 /// Lay a line out in `w` px. The words of a message that follow each other, in one style, are one piece
 /// of text on a row: drawing text is most of what drawing the chat costs, and it costs by the piece.
 fn rows(items: Vec<It>, w: i32) -> Rows {
@@ -677,7 +701,7 @@ fn rows(items: Vec<It>, w: i32) -> Rows {
     let mut x = 0;
     // Spaces since the last thing put on the row (one is just a space between words).
     let mut spaces = 0;
-    for it in items {
+    for it in items.into_iter().flat_map(|it| fitted(it, w)) {
         let (iw, ih) = it.size();
         if matches!(it, It::Break) {
             out.push((Vec::new(), LINE));
@@ -2890,7 +2914,7 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
                     c.window.chat_as_broadcaster.push(slug.to_string());
                 }
             });
-            let _ = crate::save(&cfg.borrow());
+            crate::save_later(&cfg.borrow());
             done.set(true);
         });
     }
@@ -3531,7 +3555,7 @@ fn emote_picker_popup(
                             None => list.push((name, url)),
                         }
                     });
-                    let _ = crate::save(&cfg.borrow());
+                    crate::save_later(&cfg.borrow());
                     refill = true;
                 }
                 super::grid::Asked::Fold(title) => {

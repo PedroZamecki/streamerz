@@ -410,13 +410,18 @@ impl Engine {
                 Leftover::Move => {
                     let moved: Vec<Obj> = c.users.iter().filter(|u| of_old(u)).cloned().collect();
                     c.users.retain(|u| !of_old(u));
+                    // Who is already in the new channel, by id: a lookup, not a scan per person.
+                    let at: std::collections::HashMap<String, usize> = c
+                        .users
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, x)| s(x, "type") == platform && s(x, "channel") == new)
+                        .map(|(i, x)| (s(x, "id").to_string(), i))
+                        .collect();
                     for mut u in moved {
                         // Somebody already there in the new channel: their numbers add up.
                         let id = s(&u, "id").to_string();
-                        let there = c
-                            .users
-                            .iter_mut()
-                            .find(|x| s(x, "type") == platform && s(x, "channel") == new && s(x, "id") == id);
+                        let there = at.get(&id).map(|i| &mut c.users[*i]);
                         match there {
                             Some(x) => {
                                 for k in ["messages", "activeSecs"] {
