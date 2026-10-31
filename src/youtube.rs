@@ -453,6 +453,13 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
                     }
                 }
                 YouTubeCmd::Disconnect => {
+                    clear_poll();
+                    runner.live.borrow_mut().0.clear();
+                    runner.live.borrow_mut().1.clear();
+                    runner.engine.chat_stream("youtube", false);
+                    runner.engine.chat_polls_clear("youtube");
+                    runner.engine.chat_unpinned("youtube", "");
+                    crate::ui::polls_changed();
                     if active {
                         active = false;
                         connected.store(false, Ordering::Relaxed);
@@ -1288,6 +1295,14 @@ pub async fn read_chat_with_standby(
             Err(e) => {
                 let is_offline = e == "not live";
                 set_state(false, is_offline);
+                if !live.borrow().0.is_empty() {
+                    *live.borrow_mut() = Default::default();
+                    clear_poll();
+                    engine.chat_stream("youtube", false);
+                    engine.chat_polls_clear("youtube");
+                    engine.chat_unpinned("youtube", "");
+                    crate::ui::polls_changed();
+                }
                 if run_once {
                     return;
                 }
@@ -1341,6 +1356,10 @@ pub async fn read_chat_with_standby(
         };
         last_offline_note.clear();
         *live.borrow_mut() = (video.clone(), String::new());
+        clear_poll();
+        engine.chat_polls_clear("youtube");
+        engine.chat_unpinned("youtube", "");
+        crate::ui::polls_changed();
         crate::say(format!("YouTube: connected to live chat ({label}, video {video})"));
         engine.settle_role("youtube");
         let joined_usec = (crate::fmt::unix_now().as_millis() as i64) * 1000;
@@ -1442,6 +1461,10 @@ pub async fn read_chat_with_standby(
         }
         set_state(false, true);
         *live.borrow_mut() = Default::default();
+        clear_poll();
+        engine.chat_polls_clear("youtube");
+        engine.chat_unpinned("youtube", "");
+        crate::ui::polls_changed();
         if let Some(t) = extras {
             t.abort();
         }
@@ -1699,11 +1722,19 @@ fn yt_base(engine: &Rc<Engine>, r: &Value) -> (Obj, bool, bool, bool) {
     (a, owner, moderator, member)
 }
 
+static POLL: std::sync::LazyLock<std::sync::Mutex<Obj>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(serde_json::Map::new()));
+
+/// Clear the active YouTube poll from memory.
+pub fn clear_poll() {
+    if let Ok(mut p) = POLL.lock() {
+        p.clear();
+    }
+}
+
 thread_local! {
     /// The live broadcast's variables (broadcastId, broadcast.*), set when its chat is read.
     static BROADCAST: std::cell::RefCell<Obj> = Default::default();
-    /// The poll on screen (for Poll Updated/Closed): its arguments.
-    static POLL: std::cell::RefCell<Obj> = Default::default();
     /// Who chatted, and when (Present Viewers: those in the last 10 minutes).
     static ACTIVE: std::cell::RefCell<std::collections::HashMap<String, (Value, std::time::Instant)>> = Default::default();
 }
@@ -1751,7 +1782,7 @@ fn poll_args(p: &Value) -> Obj {
 
 /// The poll on the live now (its poll.* arguments), if any.
 pub fn current_poll() -> Obj {
-    POLL.with_borrow(Clone::clone)
+    POLL.lock().map(|p| p.clone()).unwrap_or_default()
 }
 
 /// A message pinned at the top of the live chat (YouTube's banner): until it's taken down.
@@ -1975,7 +2006,9 @@ pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value]) {
         if let Some(p) = shown.or(updated) {
             let mut args = BROADCAST.with_borrow(Clone::clone);
             args.extend(poll_args(p));
-            POLL.with_borrow_mut(|x| *x = args.clone());
+            if let Ok(mut lock) = POLL.lock() {
+                *lock = args.clone();
+            }
             engine.chat_poll(crate::engine::chatlog::Poll {
                 platform: "youtube".into(),
                 id: "youtube".into(),
@@ -2005,7 +2038,7 @@ pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value]) {
             }
         }
         if let Some(close) = act.get("closeLiveChatActionPanelAction") {
-            let mut args = POLL.with_borrow_mut(std::mem::take);
+            let mut args = POLL.lock().map(|mut p| std::mem::take(&mut *p)).unwrap_or_default();
             if args.is_empty() {
                 continue;
             }
@@ -2063,6 +2096,10 @@ async fn broadcast_started(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>
 
 fn broadcast_ended(engine: &Rc<Engine>) {
     engine.chat_stream("youtube", false);
+    clear_poll();
+    engine.chat_polls_clear("youtube");
+    engine.chat_unpinned("youtube", "");
+    crate::ui::polls_changed();
     let b = BROADCAST.with_borrow_mut(std::mem::take);
     if !b.is_empty() {
         yt(

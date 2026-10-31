@@ -482,6 +482,9 @@ impl Runner {
         if let Some(task) = self.read_task.take() {
             task.abort();
         }
+        self.engine.chat_polls_clear("kick");
+        self.engine.chat_unpinned("kick", "");
+        crate::ui::polls_changed();
         if self.connected.swap(false, Ordering::Relaxed) {
             crate::say("Kick: disconnected".into());
             let args = Obj::new();

@@ -958,6 +958,9 @@ impl Runner {
             t.abort();
         }
         self.session_id = None;
+        self.engine.chat_polls_clear("twitch");
+        self.engine.chat_unpinned("twitch", "");
+        crate::ui::polls_changed();
         if self.is_connected.swap(false, Ordering::Relaxed) {
             crate::ui::changed();
             self.engine.fire(

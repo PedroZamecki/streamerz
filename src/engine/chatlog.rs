@@ -697,14 +697,22 @@ impl Engine {
 
     /// Merge `fetched` recent messages for `platform` (oldest-to-newest) with any cached historical
     /// lines, then a divider right before live session messages (kept in memory only).
-    /// Forget what `platform`'s chat showed (its channel changed): lines, pins and who was seen.
+    /// Forget what `platform`'s chat showed (its channel changed): lines, pins, polls and who was seen.
     pub fn chat_forget(&self, platform: &str) {
-        let log = &mut self.st.borrow_mut().chat_log;
-        log.lines.retain(|l| l.platform != platform);
-        log.pins.retain(|p| p.platform != platform);
-        log.users.retain(|k, _| k.0 != platform);
-        log.cards.retain(|k, _| k.0 != platform);
-        log.reset_gen += 1;
+        {
+            let log = &mut self.st.borrow_mut().chat_log;
+            log.lines.retain(|l| l.platform != platform);
+            log.pins.retain(|p| p.platform != platform);
+            log.polls.retain(|p| p.platform != platform);
+            log.users.retain(|k, _| k.0 != platform);
+            log.cards.retain(|k, _| k.0 != platform);
+            log.reset_gen += 1;
+        }
+        if platform == "youtube" {
+            crate::youtube::clear_poll();
+        }
+        crate::ui::polls_changed();
+        crate::ui::chat();
     }
 
     pub fn chat_welcome(self: &Rc<Self>, platform: &str, fetched: Vec<Line>) {
@@ -1512,9 +1520,9 @@ impl Engine {
                 _ => false,
             }
         };
-        if !live {
-            self.chat_polls_clear(platform);
-        }
+        // A stream ended or a new one started: drop previous stream polls and pins.
+        self.chat_polls_clear(platform);
+        self.chat_unpinned(platform, "");
         if changed {
             crate::ui::changed();
         }
@@ -1564,13 +1572,22 @@ impl Engine {
 
     /// A platform's chat ended or left (a stream over): its polls go with it.
     pub fn chat_polls_clear(&self, platform: &str) {
+        if platform == "youtube" {
+            crate::youtube::clear_poll();
+        }
         let before = {
             let mut st = self.st.borrow_mut();
             let n = st.chat_log.polls.len();
             st.chat_log.polls.retain(|p| p.platform != platform);
-            n != st.chat_log.polls.len()
+            if n != st.chat_log.polls.len() {
+                st.chat_log.reset_gen += 1;
+                true
+            } else {
+                false
+            }
         };
-        if before {
+        if before || platform == "youtube" {
+            crate::ui::polls_changed();
             crate::ui::chat();
         }
     }
@@ -2775,6 +2792,63 @@ mod tests {
             let e = engine_with(crate::ChatLimits::default());
             said(&e, "kick", "stays");
             assert_eq!(e.chat_log_mut().age_out(u64::MAX / 2), 0);
+        });
+    }
+
+    #[test]
+    fn polls_and_pins_clear_on_channel_change_and_stream_end() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let e = engine_with(crate::ChatLimits::default());
+            e.chat_poll(Poll {
+                platform: "youtube".into(),
+                id: "yt1".into(),
+                title: "YouTube Poll".into(),
+                prediction: false,
+                choices: vec![("A".into(), 1)],
+                ends: None,
+                over: None,
+            });
+            e.chat_poll(Poll {
+                platform: "twitch".into(),
+                id: "tw1".into(),
+                title: "Twitch Poll".into(),
+                prediction: false,
+                choices: vec![("B".into(), 2)],
+                ends: None,
+                over: None,
+            });
+            e.chat_pinned(Pin {
+                platform: "youtube".into(),
+                msg_id: "m1".into(),
+                user: "alice".into(),
+                text: "hello".into(),
+                by: "".into(),
+                until: None,
+            });
+            e.chat_pinned(Pin {
+                platform: "twitch".into(),
+                msg_id: "m2".into(),
+                user: "bob".into(),
+                text: "pinned".into(),
+                by: "".into(),
+                until: None,
+            });
+
+            assert_eq!(e.chat_polls().len(), 2);
+            assert_eq!(e.chat_pins().len(), 2);
+
+            // Channel changed for YouTube: forget drops its poll and pin, twitch stays
+            e.chat_forget("youtube");
+            assert_eq!(e.chat_polls().len(), 1);
+            assert_eq!(e.chat_polls()[0].platform, "twitch");
+            assert_eq!(e.chat_pins().len(), 1);
+            assert_eq!(e.chat_pins()[0].platform, "twitch");
+
+            // Stream ended for Twitch: drops its poll and pin
+            e.chat_stream("twitch", false);
+            assert!(e.chat_polls().is_empty());
+            assert!(e.chat_pins().is_empty());
         });
     }
 }

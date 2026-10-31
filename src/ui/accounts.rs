@@ -976,7 +976,12 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
                             _ => Leftover::Keep,
                         }
                     };
-                    tell(&cmds, move |e| e.channel_changed(slug, &old, what));
+                    tell(&cmds, move |e| {
+                        e.channel_changed(slug, &old, what);
+                        e.chat_forget(slug);
+                        e.chat_polls_clear(slug);
+                        e.chat_unpinned(slug, "");
+                    });
                     // Read the new one now, if it was reading.
                     let (on, standby, _) = states(&cmds);
                     let i_p = ALL.iter().position(|x| *x == p).unwrap_or(0);

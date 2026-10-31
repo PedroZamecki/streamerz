@@ -461,6 +461,9 @@ impl Runner {
                             disconnected(&self.engine, &self.cfg.borrow().tiktok.channel);
                         }
                     }
+                    self.engine.chat_polls_clear("tiktok");
+                    self.engine.chat_unpinned("tiktok", "");
+                    crate::ui::polls_changed();
                     self.shared.set(TikTokStatus::Disconnected);
                     crate::say("TikTok: disconnected".into());
                 }
