@@ -159,25 +159,89 @@ const WHO: &str = r#"(() => { try {
 /// account can't comment. Called with the text; gives {ok:true} or {error}.
 const SEND: &str = r#"(async text => {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
-  let box;
-  for (let i = 0; i < 40 && !(box = document.querySelector('[data-e2e="room-chat-input-field"]')); i++) await sleep(500);
-  if (!box) return { error: "the live page has no chat (not live, or not logged in)" };
-  if (box.hasAttribute('disabled')) return { error: 'TikTok: ' + (box.getAttribute('placeholder') || "can't comment") };
-  const clear = () => { box.focus(); document.execCommand('selectAll'); document.execCommand('delete'); };
+  const findBox = () =>
+    document.querySelector('[data-e2e="room-chat-input-field"]') ||
+    document.querySelector('[data-e2e="chat-room-input"]') ||
+    document.querySelector('div[contenteditable="true"][data-e2e*="chat"]') ||
+    document.querySelector('div[contenteditable="true"]');
+
+  let box = null;
+  for (let i = 0; i < 40; i++) {
+    box = findBox();
+    if (box) {
+      const ph = (box.getAttribute('placeholder') || '').toLowerCase();
+      const isLoading = box.hasAttribute('disabled') &&
+        (ph.includes('load') || ph.includes('carreg') || ph.includes('cargando') || ph === '');
+      if (!isLoading) break;
+    }
+    await sleep(500);
+  }
+
+  if (!box) {
+    const textAll = document.body ? document.body.innerText : '';
+    if (textAll.includes('LIVE has ended') || textAll.includes('transmissão ao vivo terminou')) {
+      return { error: 'TikTok: the stream has ended' };
+    }
+    return { error: 'the live page has no chat (not live, or not logged in)' };
+  }
+
+  if (box.hasAttribute('disabled')) {
+    const ph = box.getAttribute('placeholder') || "can't comment";
+    return { error: 'TikTok: ' + ph };
+  }
+
+  const clear = () => {
+    box.focus();
+    document.execCommand('selectAll');
+    document.execCommand('delete');
+  };
   clear();
-  document.execCommand('insertText', false, text.slice(0, 150));
-  for (const t of ['keydown', 'keypress', 'keyup'])
+
+  const slice = text.slice(0, 150);
+  document.execCommand('insertText', false, slice);
+  box.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: slice }));
+
+  const findSendBtn = () =>
+    document.querySelector('[data-e2e="room-chat-send-btn"]') ||
+    document.querySelector('[data-e2e="chat-room-send-btn"]') ||
+    document.querySelector('button[aria-label*="send" i]');
+
+  for (const t of ['keydown', 'keypress', 'keyup']) {
     box.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
-  await sleep(1500);
-  if (box.textContent) { document.querySelector('[data-e2e="room-chat-send-btn"]')?.click(); await sleep(1500); }
-  if (box.textContent) { clear(); return { error: "TikTok didn't take the message" }; }
+  }
+  await sleep(1000);
+
+  if (box.textContent && box.textContent.trim()) {
+    const btn = findSendBtn();
+    if (btn && !btn.hasAttribute('disabled')) {
+      btn.click();
+      btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    }
+    await sleep(1500);
+  }
+
+  const toast = document.querySelector('[data-e2e*="toast"]') ||
+                document.querySelector('div[class*="toast"]') ||
+                document.querySelector('div[role="alert"]');
+  if (toast && toast.innerText && toast.innerText.trim()) {
+    const msg = toast.innerText.trim();
+    if (box.textContent && box.textContent.trim()) {
+      clear();
+      return { error: 'TikTok: ' + msg };
+    }
+  }
+
+  if (box.textContent && box.textContent.trim()) {
+    clear();
+    return { error: "TikTok didn't take the message" };
+  }
   return { ok: true };
 })"#;
 
 /// Whether a send error from the page says the account isn't logged in any more.
 fn session_ended(error: &str) -> bool {
     let e = error.to_lowercase();
-    e.contains("log in to") || e.contains("login to")
+    e.contains("log in to") || e.contains("login to") || e.contains("faça login")
 }
 
 /// The live page keeps its video still (it costs CPU, and nobody watches it).

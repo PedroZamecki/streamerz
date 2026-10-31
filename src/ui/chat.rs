@@ -2353,23 +2353,19 @@ impl ChatColumn {
         };
         let plat = PLATFORMS[p_idx];
         let can_send_plat = crate::engine::can_send(&cfg.borrow(), plat);
-        let tip = if plat == "tiktok" {
-            tr("chat.tiktok_read_only_tip").to_string()
-        } else {
-            match &sender_name {
-                Some(name) => trf(
-                    "chat.sending_as_tip",
-                    &[
-                        ("platform", plat_name),
-                        ("name", &name.replace('@', "@@")),
-                        ("role", role_str),
-                    ],
-                ),
-                None => trf("chat.nobody_logged_in_tip", &[("platform", plat_name)]),
-            }
+        let tip = match &sender_name {
+            Some(name) => trf(
+                "chat.sending_as_tip",
+                &[
+                    ("platform", plat_name),
+                    ("name", &name.replace('@', "@@")),
+                    ("role", role_str),
+                ],
+            ),
+            None => trf("chat.nobody_logged_in_tip", &[("platform", plat_name)]),
         };
         btn.set_tooltip(&tip);
-        // Nobody logged in or platform is read-only: the box and its buttons are off.
+        // Nobody logged in: the box and its buttons are off.
         for i in 1..self.bar.children() {
             if let Some(mut w) = self.bar.child(i) {
                 if can_send_plat && sender_name.is_some() {
@@ -2380,20 +2376,16 @@ impl ChatColumn {
             }
         }
         let mut inp = self.input.clone();
-        let placeholder_tip = if plat == "tiktok" {
-            tr("chat.tiktok_read_only_tip").to_string()
-        } else {
-            match &sender_name {
-                Some(name) => trf(
-                    "chat.message_as_tip",
-                    &[
-                        ("platform", plat_name),
-                        ("name", &name.replace('@', "@@")),
-                        ("role", role_str),
-                    ],
-                ),
-                None => trf("chat.message_plat_tip", &[("platform", plat_name)]),
-            }
+        let placeholder_tip = match &sender_name {
+            Some(name) => trf(
+                "chat.message_as_tip",
+                &[
+                    ("platform", plat_name),
+                    ("name", &name.replace('@', "@@")),
+                    ("role", role_str),
+                ],
+            ),
+            None => trf("chat.message_plat_tip", &[("platform", plat_name)]),
         };
         inp.set_tooltip(&placeholder_tip);
         btn.redraw();
@@ -2977,11 +2969,7 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
             };
             h.show(&mut head_title, &format!("{pname}: {st_txt}"));
             head_title.set_label_font(Font::HelveticaBold);
-            if slug == "tiktok" {
-                note.set_label(tr("chat.tiktok_read_only_note"));
-            } else {
-                note.set_label(tr("chat.acct_note"));
-            }
+            note.set_label(tr("chat.acct_note"));
 
             let want_broadcaster = cfg.borrow().window.chat_as_broadcaster.iter().any(|s| s == slug);
             let slots = platform_accounts(&cmds, &cfg, slug, 32);
@@ -3018,9 +3006,6 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
                             btn.set_label(tr("chat.btn_use_account"));
                             btn.set_image(None::<SvgImage>);
                             btn.set_color(Color::Background);
-                        }
-                        if slug == "tiktok" {
-                            btn.deactivate();
                         }
                     }
                     None => {
@@ -3387,20 +3372,7 @@ fn emote_field(
             if v.is_empty() && !i.has_focus() {
                 draw::set_font(Font::Helvetica, i.text_size());
                 draw::set_draw_color(super::muted());
-                let p = PLATFORMS[platform.get().min(3)];
-                let placeholder_text = if p == "tiktok" {
-                    crate::i18n::tr("chat.tiktok_read_only")
-                } else {
-                    empty
-                };
-                draw::draw_text2(
-                    placeholder_text,
-                    i.x() + 6,
-                    i.y(),
-                    i.w() - 12,
-                    i.h(),
-                    Align::Left | Align::Clip,
-                );
+                draw::draw_text2(empty, i.x() + 6, i.y(), i.w() - 12, i.h(), Align::Left | Align::Clip);
                 return;
             }
             let ps = state(i);

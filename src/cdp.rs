@@ -123,13 +123,14 @@ impl Browser {
                 "--disable-sync",
                 // No components to download into the profile (speech models, the DRM module...).
                 "--disable-component-update",
+                "--disable-blink-features=AutomationControlled",
             ])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
         if headless {
-            cmd.args(["--headless=new", url]);
+            cmd.args(["--headless=new", "--window-size=1280,800", url]);
         } else {
             cmd.args(["--window-size=520,760", &format!("--app={url}")]);
         }
@@ -171,6 +172,14 @@ impl Browser {
             .call(None, "Target.attachToTarget", json!({"targetId": tab, "flatten": true}))
             .await?;
         b.page = attached["sessionId"].as_str().unwrap_or("").to_string();
+        let _ = b
+            .tab(
+                "Page.addScriptToEvaluateOnNewDocument",
+                json!({
+                    "source": "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
+                }),
+            )
+            .await;
         Ok(b)
     }
 
