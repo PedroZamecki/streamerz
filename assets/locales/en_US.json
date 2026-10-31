@@ -295,6 +295,8 @@
   "chat.msg_all_title": "Message All Platforms",
   "chat.nobody_logged_in_tip": "{platform}: nobody logged in. Click for options",
   "chat.offline_suffix": " (offline)",
+  "chat.tiktok_read_only": "TikTok chat is read-only",
+  "chat.tiktok_read_only_tip": "TikTok: read-only (TikTok does not support sending spectator comments)",
   "chat.opt_animated": "Animated emotes",
   "chat.opt_badges": "Badges",
   "chat.opt_time": "Time",

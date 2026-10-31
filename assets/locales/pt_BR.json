@@ -295,6 +295,8 @@
   "chat.msg_all_title": "Mensagem para todas as plataformas",
   "chat.nobody_logged_in_tip": "{platform}: ninguém conectado. Clique para opções",
   "chat.offline_suffix": " (offline)",
+  "chat.tiktok_read_only": "O chat do TikTok é apenas leitura",
+  "chat.tiktok_read_only_tip": "TikTok: apenas leitura (o TikTok não oferece suporte ao envio de comentários de espectadores)",
   "chat.opt_animated": "Emotes animados",
   "chat.opt_badges": "Emblemas",
   "chat.opt_time": "Hora",

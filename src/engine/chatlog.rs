@@ -2063,14 +2063,7 @@ impl Engine {
                         Some(r) => e.kick_start().reply_message(&text, r, bot, fallback).await,
                         None => e.kick_start().send_message(&text, bot, fallback).await,
                     },
-                    _ => {
-                        let ch = crate::tiktok::clean_tiktok_channel(&e.cfg.borrow().tiktok.channel);
-                        if e.tiktok_start().is_standby() {
-                            Err(format!("TikTok: @{ch} is offline"))
-                        } else {
-                            e.tiktok_start().send_message(&text, bot, fallback).await
-                        }
-                    }
+                    _ => Err("TikTok chat is read-only".into()),
                 };
                 match r {
                     Ok(()) => {
@@ -2109,7 +2102,7 @@ pub fn can_send(c: &crate::Config, platform: &str) -> bool {
         "twitch" => c.twitch.broadcaster.is_some() || c.twitch.bot.is_some(),
         "youtube" => c.youtube.broadcaster.is_some() || c.youtube.bot.is_some(),
         "kick" => c.kick.broadcaster.is_some() || c.kick.bot.is_some(),
-        "tiktok" => c.tiktok.broadcaster.is_some() || c.tiktok.bot.is_some(),
+        "tiktok" => false,
         _ => false,
     }
 }
@@ -2659,7 +2652,7 @@ mod tests {
         assert!(!can_send(&c, "twitch"));
         assert!(!can_send(&c, "tiktok"));
         c.tiktok.broadcaster = Some(Default::default());
-        assert!(can_send(&c, "tiktok"));
+        assert!(!can_send(&c, "tiktok"));
     }
 
     #[test]

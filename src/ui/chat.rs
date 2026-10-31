@@ -1789,6 +1789,8 @@ impl Pane {
     fn clear(&self) {
         let mut st = self.st.borrow_mut();
         st.lines.clear();
+        st.pins.clear();
+        st.polls.clear();
         st.born.clear();
         st.laid.clear();
         st.hover = None;
@@ -2200,17 +2202,9 @@ impl ChatColumn {
         let suggest = super::suggest::Suggest::default();
         me.input.clone().handle({
             let s = do_send;
-            let (cfg, cmds, target_plat) = (cfg.clone(), cmds.clone(), target_plat.clone());
+            let target_plat = target_plat.clone();
             move |i, ev| {
                 let plat = PLATFORMS[target_plat.get().min(3)];
-                // TikTok's chat is written through a browser tab, which takes seconds to start: begin
-                // when the box is clicked, not when the message is sent.
-                if ev == Event::Focus && plat == "tiktok" {
-                    let bot = !cfg.borrow().window.chat_as_broadcaster.iter().any(|s| s == "tiktok");
-                    if crate::engine::can_send(&cfg.borrow(), "tiktok") {
-                        tell(&cmds, move |e| e.tiktok_start().warm(bot, true));
-                    }
-                }
                 // Twitch's and Kick's chat commands, listed as they are typed.
                 if matches!(plat, "twitch" | "kick") {
                     match ev {
@@ -2353,19 +2347,23 @@ impl ChatColumn {
         };
         let plat = PLATFORMS[p_idx];
         let can_send_plat = crate::engine::can_send(&cfg.borrow(), plat);
-        let tip = match &sender_name {
-            Some(name) => trf(
-                "chat.sending_as_tip",
-                &[
-                    ("platform", plat_name),
-                    ("name", &name.replace('@', "@@")),
-                    ("role", role_str),
-                ],
-            ),
-            None => trf("chat.nobody_logged_in_tip", &[("platform", plat_name)]),
+        let tip = if plat == "tiktok" {
+            tr("chat.tiktok_read_only_tip").to_string()
+        } else {
+            match &sender_name {
+                Some(name) => trf(
+                    "chat.sending_as_tip",
+                    &[
+                        ("platform", plat_name),
+                        ("name", &name.replace('@', "@@")),
+                        ("role", role_str),
+                    ],
+                ),
+                None => trf("chat.nobody_logged_in_tip", &[("platform", plat_name)]),
+            }
         };
         btn.set_tooltip(&tip);
-        // Nobody logged in: the box and its buttons are off.
+        // Nobody logged in or platform read-only: the box and its buttons are off.
         for i in 1..self.bar.children() {
             if let Some(mut w) = self.bar.child(i) {
                 if can_send_plat && sender_name.is_some() {
@@ -2376,16 +2374,20 @@ impl ChatColumn {
             }
         }
         let mut inp = self.input.clone();
-        let placeholder_tip = match &sender_name {
-            Some(name) => trf(
-                "chat.message_as_tip",
-                &[
-                    ("platform", plat_name),
-                    ("name", &name.replace('@', "@@")),
-                    ("role", role_str),
-                ],
-            ),
-            None => trf("chat.message_plat_tip", &[("platform", plat_name)]),
+        let placeholder_tip = if plat == "tiktok" {
+            tr("chat.tiktok_read_only").to_string()
+        } else {
+            match &sender_name {
+                Some(name) => trf(
+                    "chat.message_as_tip",
+                    &[
+                        ("platform", plat_name),
+                        ("name", &name.replace('@', "@@")),
+                        ("role", role_str),
+                    ],
+                ),
+                None => trf("chat.message_plat_tip", &[("platform", plat_name)]),
+            }
         };
         inp.set_tooltip(&placeholder_tip);
         btn.redraw();
@@ -3413,15 +3415,42 @@ fn emote_field(
         }
         if ev == Event::KeyDown {
             let key = app::event_key();
-            if key == fltk::enums::Key::BackSpace {
+            let is_backspace = key == fltk::enums::Key::BackSpace
+                || key.bits() == 0xff08
+                || key.bits() == 8
+                || app::event_text() == "\x08";
+            let is_delete = key == fltk::enums::Key::Delete || key.bits() == 0xffff || app::event_text() == "\x7f";
+
+            if is_backspace {
                 let pos = i.position() as usize;
                 let mark = i.mark() as usize;
-                if pos == mark && pos > 0 {
-                    let v = i.value();
-                    let ps = state(i);
+                let v = i.value();
+                let ps = state(i);
+                if pos != mark {
+                    let (mut start, mut end) = (pos.min(mark), pos.max(mark));
+                    for (r, p) in &ps {
+                        if p.is_some() && start < r.end && end > r.start {
+                            start = start.min(r.start);
+                            end = end.max(r.end);
+                        }
+                    }
+                    let new_v = format!("{}{}", &v[..start], &v[end..]);
+                    i.set_value(&new_v);
+                    let _ = i.set_position(start as i32);
+                    let _ = i.set_mark(start as i32);
+                    i.redraw();
+                    return true;
+                } else if pos > 0 {
+                    // Check if directly after an emote or after an emote's trailing space
                     if let Some((start, end)) = ps.iter().find_map(|(r, p)| {
-                        if p.is_some() && pos > r.start && pos <= r.end {
-                            Some((r.start, r.end))
+                        if p.is_none() {
+                            return None;
+                        }
+                        if pos > r.start && pos <= r.end {
+                            let trail = usize::from(v[r.end..].starts_with(' '));
+                            Some((r.start, r.end + trail))
+                        } else if pos == r.end + 1 && v.as_bytes().get(r.end) == Some(&b' ') {
+                            Some((r.start, pos))
                         } else {
                             None
                         }
@@ -3434,15 +3463,30 @@ fn emote_field(
                         return true;
                     }
                 }
-            } else if key == fltk::enums::Key::Delete {
+            } else if is_delete {
                 let pos = i.position() as usize;
                 let mark = i.mark() as usize;
-                if pos == mark {
-                    let v = i.value();
-                    let ps = state(i);
+                let v = i.value();
+                let ps = state(i);
+                if pos != mark {
+                    let (mut start, mut end) = (pos.min(mark), pos.max(mark));
+                    for (r, p) in &ps {
+                        if p.is_some() && start < r.end && end > r.start {
+                            start = start.min(r.start);
+                            end = end.max(r.end);
+                        }
+                    }
+                    let new_v = format!("{}{}", &v[..start], &v[end..]);
+                    i.set_value(&new_v);
+                    let _ = i.set_position(start as i32);
+                    let _ = i.set_mark(start as i32);
+                    i.redraw();
+                    return true;
+                } else {
                     if let Some((start, end)) = ps.iter().find_map(|(r, p)| {
                         if p.is_some() && pos >= r.start && pos < r.end {
-                            Some((r.start, r.end))
+                            let trail = usize::from(v[r.end..].starts_with(' '));
+                            Some((r.start, r.end + trail))
                         } else {
                             None
                         }

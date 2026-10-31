@@ -1259,7 +1259,7 @@ pub async fn read_chat_with_standby(
             )
         };
         let video = if !video_cfg.is_empty() {
-            Ok(video_cfg)
+            Ok(video_cfg.clone())
         } else if !channel.is_empty() {
             let lives = discover_channel_lives(engine, cfg, web, &channel, run_once).await;
             if lives.len() > 1 {
@@ -1457,6 +1457,17 @@ pub async fn read_chat_with_standby(
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_millis(wait)) => {}
                 _ = engine.chat_poke.notified() => {}
+                _ = engine.live_wake.notified() => {}
+            }
+            let (cur_video, cur_ch) = {
+                let c = cfg.borrow();
+                (
+                    c.youtube.video_id.trim().to_string(),
+                    c.youtube.channel_id.trim().to_string(),
+                )
+            };
+            if cur_video != video_cfg || cur_ch != channel {
+                break;
             }
         }
         set_state(false, true);

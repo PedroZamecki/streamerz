@@ -113,6 +113,9 @@ pub fn reclaim_profile(profile: &Path) {
                     if let Ok(pid) = pid_str.parse::<u32>() {
                         if Path::new(&format!("/proc/{pid}")).exists() {
                             let _ = std::process::Command::new("kill")
+                                .args(["-9", &format!("-{pid}")])
+                                .status();
+                            let _ = std::process::Command::new("kill")
                                 .args(["-9", &pid.to_string()])
                                 .status();
                             std::thread::sleep(Duration::from_millis(50));
@@ -293,6 +296,7 @@ impl Browser {
     }
 
     /// Sets `cookies` ("a=1; b=2") for `domain` (".tiktok.com").
+    #[allow(dead_code)]
     pub async fn set_cookies(&mut self, cookies: &str, domain: &str) -> Result<(), String> {
         let list: Vec<Value> = cookies
             .split(';')
@@ -302,20 +306,41 @@ impl Browser {
         self.tab("Network.setCookies", json!({"cookies": list})).await.map(drop)
     }
 
-    /// The browser is gone (closed by the user, or crashed).
-    pub fn gone(&mut self) -> bool {
-        self.child.try_wait().ok().flatten().is_some()
+    /// Terminate the browser process and any child zygotes or renderers in its process tree.
+    pub fn force_kill(&mut self) {
+        #[cfg(unix)]
+        if let Some(pid) = self.child.id() {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &format!("-{pid}")])
+                .status();
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .status();
+        }
+        #[cfg(windows)]
+        if let Some(pid) = self.child.id() {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &pid.to_string()])
+                .status();
+        }
+        let _ = self.child.start_kill();
     }
 
-    /// Closes the browser.
+    /// The browser is gone (closed by the user, or crashed).
+    pub fn gone(&mut self) -> bool {
+        if self.child.try_wait().ok().flatten().is_some() {
+            self.force_kill();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Closes the browser and terminates all related helper processes.
     pub async fn close(mut self) {
         let _ = self.call(None, "Browser.close", json!({})).await;
-        if tokio::time::timeout(Duration::from_secs(3), self.child.wait())
-            .await
-            .is_err()
-        {
-            let _ = self.child.start_kill();
-        }
+        let _ = tokio::time::timeout(Duration::from_millis(600), self.child.wait()).await;
+        self.force_kill();
     }
 }
 
