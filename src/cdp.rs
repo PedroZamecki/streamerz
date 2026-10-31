@@ -101,6 +101,36 @@ pub fn tidy(profile: &Path) {
     }
 }
 
+/// Cleans up any stale singleton locks or orphaned processes left on `profile` from a previous
+/// run or crash, ensuring the browser can launch cleanly without instantly exiting or forwarding.
+pub fn reclaim_profile(profile: &Path) {
+    #[cfg(unix)]
+    {
+        let lock = profile.join("SingletonLock");
+        if let Ok(target) = std::fs::read_link(&lock) {
+            if let Some(target_str) = target.to_str() {
+                if let Some(pid_str) = target_str.rsplit('-').next() {
+                    if let Ok(pid) = pid_str.parse::<u32>() {
+                        if Path::new(&format!("/proc/{pid}")).exists() {
+                            let _ = std::process::Command::new("kill")
+                                .args(["-9", &pid.to_string()])
+                                .status();
+                            std::thread::sleep(Duration::from_millis(50));
+                        }
+                    }
+                }
+            }
+        }
+        let _ = std::fs::remove_file(profile.join("SingletonLock"));
+        let _ = std::fs::remove_file(profile.join("SingletonCookie"));
+        let _ = std::fs::remove_file(profile.join("SingletonSocket"));
+    }
+    #[cfg(windows)]
+    {
+        let _ = std::fs::remove_file(profile.join("lockfile"));
+    }
+}
+
 impl Browser {
     /// Starts the browser on `profile` showing `url`: hidden (`headless`), or as a small app window.
     pub async fn launch(profile: &Path, headless: bool, url: &str) -> Result<Browser, String> {
@@ -108,11 +138,14 @@ impl Browser {
             "no Chrome, Chromium, Edge, Brave or Vivaldi found (or set STREAMERZ_BROWSER to the browser's path)",
         )?;
         std::fs::create_dir_all(profile).map_err(|e| format!("{}: {e}", profile.display()))?;
+        reclaim_profile(profile);
         // Where the browser says which port it listens on: none yet, so a stale one isn't read.
         let port_file = profile.join("DevToolsActivePort");
         let _ = std::fs::remove_file(&port_file);
         tidy(profile);
         let mut cmd = tokio::process::Command::new(&exe);
+        #[cfg(unix)]
+        cmd.process_group(0);
         cmd.arg(format!("--user-data-dir={}", profile.display()))
             .args([
                 "--remote-debugging-port=0",
@@ -276,7 +309,12 @@ impl Browser {
     /// Closes the browser.
     pub async fn close(mut self) {
         let _ = self.call(None, "Browser.close", json!({})).await;
-        let _ = tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await;
+        if tokio::time::timeout(Duration::from_secs(3), self.child.wait())
+            .await
+            .is_err()
+        {
+            let _ = self.child.start_kill();
+        }
     }
 }
 
@@ -297,6 +335,32 @@ mod tests {
         tidy(&d);
         assert!(d.join("Default/Cookies").is_file() && d.join("Local State").is_file());
         assert!(!d.join("component_crx_cache").exists() && !d.join("BrowserMetrics-spare.pma").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn reclaim_profile_removes_stale_singleton_locks() {
+        let d = std::env::temp_dir().join(format!("sz-reclaim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        #[cfg(unix)]
+        {
+            let _ = std::os::unix::fs::symlink("test-host-99999999", d.join("SingletonLock"));
+            std::fs::write(d.join("SingletonCookie"), "123").unwrap();
+            std::fs::write(d.join("SingletonSocket"), "sock").unwrap();
+            assert!(d.join("SingletonLock").is_symlink());
+            reclaim_profile(&d);
+            assert!(!d.join("SingletonLock").exists());
+            assert!(!d.join("SingletonCookie").exists());
+            assert!(!d.join("SingletonSocket").exists());
+        }
+        #[cfg(windows)]
+        {
+            std::fs::write(d.join("lockfile"), "1").unwrap();
+            assert!(d.join("lockfile").is_file());
+            reclaim_profile(&d);
+            assert!(!d.join("lockfile").exists());
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 }
