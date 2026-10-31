@@ -2036,7 +2036,8 @@ pub fn can_send(c: &crate::Config, platform: &str) -> bool {
         "twitch" => c.twitch.broadcaster.is_some() || c.twitch.bot.is_some(),
         "youtube" => c.youtube.broadcaster.is_some() || c.youtube.bot.is_some(),
         "kick" => c.kick.broadcaster.is_some() || c.kick.bot.is_some(),
-        "tiktok" => c.tiktok.broadcaster.is_some() || c.tiktok.bot.is_some(),
+        // TikTok has no public API to send live chat messages; chat is read-only.
+        "tiktok" => false,
         _ => false,
     }
 }
@@ -2485,6 +2486,7 @@ mod tests {
         c.kick.bot = Some(Default::default());
         assert!(can_send(&c, "kick"));
         assert!(!can_send(&c, "twitch"));
+        assert!(!can_send(&c, "tiktok"));
     }
 
     #[test]

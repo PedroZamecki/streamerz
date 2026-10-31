@@ -2177,6 +2177,9 @@ impl ChatColumn {
                 }
                 let p_idx = target_plat.get().min(3);
                 let plat = PLATFORMS[p_idx];
+                if !crate::engine::can_send(&cfg.borrow(), plat) {
+                    return;
+                }
                 let want_broadcaster = cfg.borrow().window.chat_as_broadcaster.iter().any(|s| s == plat);
                 let use_bot = !want_broadcaster;
                 let to = reply.borrow_mut().take();
@@ -2348,22 +2351,28 @@ impl ChatColumn {
         } else {
             tr("chat.role_broadcaster")
         };
-        let tip = match &sender_name {
-            Some(name) => trf(
-                "chat.sending_as_tip",
-                &[
-                    ("platform", plat_name),
-                    ("name", &name.replace('@', "@@")),
-                    ("role", role_str),
-                ],
-            ),
-            None => trf("chat.nobody_logged_in_tip", &[("platform", plat_name)]),
+        let plat = PLATFORMS[p_idx];
+        let can_send_plat = crate::engine::can_send(&cfg.borrow(), plat);
+        let tip = if plat == "tiktok" {
+            tr("chat.tiktok_read_only_tip").to_string()
+        } else {
+            match &sender_name {
+                Some(name) => trf(
+                    "chat.sending_as_tip",
+                    &[
+                        ("platform", plat_name),
+                        ("name", &name.replace('@', "@@")),
+                        ("role", role_str),
+                    ],
+                ),
+                None => trf("chat.nobody_logged_in_tip", &[("platform", plat_name)]),
+            }
         };
         btn.set_tooltip(&tip);
-        // Nobody logged in: the chat is read only, so the box and its buttons are off.
+        // Nobody logged in or platform is read-only: the box and its buttons are off.
         for i in 1..self.bar.children() {
             if let Some(mut w) = self.bar.child(i) {
-                if sender_name.is_some() {
+                if can_send_plat && sender_name.is_some() {
                     w.activate();
                 } else {
                     w.deactivate();
@@ -2371,19 +2380,24 @@ impl ChatColumn {
             }
         }
         let mut inp = self.input.clone();
-        let placeholder_tip = match &sender_name {
-            Some(name) => trf(
-                "chat.message_as_tip",
-                &[
-                    ("platform", plat_name),
-                    ("name", &name.replace('@', "@@")),
-                    ("role", role_str),
-                ],
-            ),
-            None => trf("chat.message_plat_tip", &[("platform", plat_name)]),
+        let placeholder_tip = if plat == "tiktok" {
+            tr("chat.tiktok_read_only_tip").to_string()
+        } else {
+            match &sender_name {
+                Some(name) => trf(
+                    "chat.message_as_tip",
+                    &[
+                        ("platform", plat_name),
+                        ("name", &name.replace('@', "@@")),
+                        ("role", role_str),
+                    ],
+                ),
+                None => trf("chat.message_plat_tip", &[("platform", plat_name)]),
+            }
         };
         inp.set_tooltip(&placeholder_tip);
         btn.redraw();
+        inp.redraw();
     }
 }
 
@@ -2935,6 +2949,7 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
         let (cfg, cmds) = (cfg.clone(), cmds.clone());
         let mut head_logo = head_logo.clone();
         let mut head_title = head_title.clone();
+        let mut note = note.clone();
         let slot_uis: Vec<_> = slot_uis.clone();
         let target_plat = col_ui.target_plat.clone();
         move || {
@@ -2962,6 +2977,11 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
             };
             h.show(&mut head_title, &format!("{pname}: {st_txt}"));
             head_title.set_label_font(Font::HelveticaBold);
+            if slug == "tiktok" {
+                note.set_label(tr("chat.tiktok_read_only_note"));
+            } else {
+                note.set_label(tr("chat.acct_note"));
+            }
 
             let want_broadcaster = cfg.borrow().window.chat_as_broadcaster.iter().any(|s| s == slug);
             let slots = platform_accounts(&cmds, &cfg, slug, 32);
@@ -2998,6 +3018,9 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
                             btn.set_label(tr("chat.btn_use_account"));
                             btn.set_image(None::<SvgImage>);
                             btn.set_color(Color::Background);
+                        }
+                        if slug == "tiktok" {
+                            btn.deactivate();
                         }
                     }
                     None => {
@@ -3364,7 +3387,20 @@ fn emote_field(
             if v.is_empty() && !i.has_focus() {
                 draw::set_font(Font::Helvetica, i.text_size());
                 draw::set_draw_color(super::muted());
-                draw::draw_text2(empty, i.x() + 6, i.y(), i.w() - 12, i.h(), Align::Left | Align::Clip);
+                let p = PLATFORMS[platform.get().min(3)];
+                let placeholder_text = if p == "tiktok" {
+                    crate::i18n::tr("chat.tiktok_read_only")
+                } else {
+                    empty
+                };
+                draw::draw_text2(
+                    placeholder_text,
+                    i.x() + 6,
+                    i.y(),
+                    i.w() - 12,
+                    i.h(),
+                    Align::Left | Align::Clip,
+                );
                 return;
             }
             let ps = state(i);
