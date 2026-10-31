@@ -1259,16 +1259,25 @@ pub fn parse_kick_message_line(data: &Value, channel: &str) -> Option<crate::eng
     };
     let reply = meta["original_sender"]["username"]
         .as_str()
+        .or_else(|| meta["original_sender"]["slug"].as_str())
+        .or_else(|| meta["original_sender"]["user_name"].as_str())
+        .filter(|s| !s.is_empty())
         .map(|u| crate::engine::chatlog::Reply {
             user: u.to_string(),
             text: meta["original_message"]["content"]
                 .as_str()
+                .or_else(|| meta["original_message"]["body"].as_str())
+                .or_else(|| meta["original_message"]["text"].as_str())
                 .unwrap_or("")
                 .split(' ')
                 .map(crate::engine::chatlog::shown)
                 .collect::<Vec<_>>()
                 .join(" "),
         });
+    let text = match reply.as_ref() {
+        Some(r) => r.strip(&text),
+        None => text,
+    };
     Some(crate::engine::chatlog::Line {
         platform: "kick".into(),
         ts: secs.unwrap_or(0) * 1000,
@@ -1504,16 +1513,38 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
             ] {
                 args.insert(k.into(), v);
             }
-            if data["type"] == "reply" {
+            let meta = match &data["metadata"] {
+                Value::String(m) => serde_json::from_str(m).unwrap_or(Value::Null),
+                m => m.clone(),
+            };
+            let orig_sender = meta["original_sender"]["username"]
+                .as_str()
+                .or_else(|| meta["original_sender"]["slug"].as_str())
+                .or_else(|| meta["original_sender"]["user_name"].as_str())
+                .filter(|s| !s.is_empty());
+            let orig_msg = meta["original_message"]["content"]
+                .as_str()
+                .or_else(|| meta["original_message"]["body"].as_str())
+                .or_else(|| meta["original_message"]["text"].as_str())
+                .unwrap_or("");
+            let is_reply = data["type"] == "reply" || orig_sender.is_some();
+            if is_reply {
                 args.insert("isReply".into(), true.into());
-                args.insert(
-                    "replyTo".into(),
-                    data["metadata"]["original_sender"]["username"].clone(),
-                );
-                args.insert(
-                    "replyToMessage".into(),
-                    data["metadata"]["original_message"]["content"].clone(),
-                );
+                if let Some(orig_user) = orig_sender {
+                    args.insert("replyTo".into(), orig_user.into());
+                    args.insert("reply.userName".into(), orig_user.into());
+                    args.insert("reply.userLogin".into(), orig_user.into());
+                }
+                args.insert("replyToMessage".into(), orig_msg.into());
+                args.insert("reply.msgBody".into(), orig_msg.into());
+                if let Some(orig_id) = meta["original_message"]["id"].as_str() {
+                    args.insert("reply.msgId".into(), orig_id.into());
+                }
+                if let Some(orig_uid) = meta["original_sender"]["id"].as_u64() {
+                    args.insert("reply.userId".into(), orig_uid.to_string().into());
+                }
+            } else {
+                args.insert("isReply".into(), false.into());
             }
             ACTIVE.with_borrow_mut(|m| {
                 let who = json!({"userId": user_id, "userName": args["userName"], "user": username});
@@ -2133,6 +2164,53 @@ mod tests {
 
         handle_kick_event(&engine, "gamer123", event, &payload);
         assert!(!engine.first_words("kick", "100"));
+    }
+
+    #[test]
+    fn parse_kick_reply_chat_message() {
+        let (tx, _rx) = watch::channel(Config::default());
+        let engine = Engine::new(Arc::new(tx), |_| {});
+
+        let event = "App\\Events\\ChatMessageEvent";
+        // Stringified metadata (standard Kick Pusher wire format)
+        let payload = json!({
+            "id": "msg-reply-1",
+            "chatroom_id": 42,
+            "content": "@pedrozamecki This is my reply!",
+            "type": "reply",
+            "metadata": serde_json::to_string(&json!({
+                "original_sender": {
+                    "id": 200,
+                    "username": "PedroZamecki",
+                    "slug": "pedrozamecki"
+                },
+                "original_message": {
+                    "id": "msg-orig-1",
+                    "content": "Original message content"
+                }
+            })).unwrap(),
+            "sender": {
+                "id": 101,
+                "username": "chatter1",
+                "slug": "chatter1",
+                "identity": {
+                    "color": "#00FF00",
+                    "badges": []
+                }
+            }
+        });
+
+        handle_kick_event(&engine, "gamer123", event, &payload);
+        let (_, _, lines) = engine.chat_sync(999, 0);
+        let line = lines
+            .iter()
+            .find(|l| l.msg_id == "msg-reply-1")
+            .expect("reply line found");
+        assert_eq!(line.user, "chatter1");
+        assert_eq!(line.text, "This is my reply!");
+        let reply = line.reply.as_ref().expect("reply details present");
+        assert_eq!(reply.user, "PedroZamecki");
+        assert_eq!(reply.text, "Original message content");
     }
 
     #[test]

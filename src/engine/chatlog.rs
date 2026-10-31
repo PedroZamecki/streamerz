@@ -317,10 +317,13 @@ impl Reply {
     /// From a chat's args: Twitch's `reply.*` or Kick's `replyTo`/`replyToMessage`.
     pub fn from_args(args: &crate::model::Obj) -> Option<Reply> {
         let s = |k: &str| args.get(k).and_then(Value::as_str).filter(|v| !v.is_empty());
-        let (user, text) = match (s("reply.userName"), s("reply.msgBody")) {
-            (Some(u), Some(t)) => (u, t.replace(r"\s", " ")),
-            _ => (s("replyTo")?, s("replyToMessage").unwrap_or("").to_string()),
-        };
+        let user = s("reply.userName")
+            .or_else(|| s("reply.userLogin"))
+            .or_else(|| s("replyTo"))?;
+        let text = s("reply.msgBody")
+            .map(|t| t.replace(r"\s", " "))
+            .or_else(|| s("replyToMessage").map(String::from))
+            .unwrap_or_default();
         // Kick's emotes as their names.
         let text = text.split(' ').map(shown).collect::<Vec<_>>().join(" ");
         Some(Reply {
@@ -332,10 +335,16 @@ impl Reply {
     /// Twitch starts a reply with "@parent ": shown above it instead.
     pub fn strip(&self, text: &str) -> String {
         let t = text.trim_start();
-        match t.strip_prefix('@').and_then(|r| r.split_once(' ')) {
-            Some((who, rest)) if who.eq_ignore_ascii_case(&self.user) => rest.to_string(),
-            _ => text.to_string(),
+        if let Some(r) = t.strip_prefix('@') {
+            if let Some((who, rest)) = r.split_once(' ') {
+                if who.eq_ignore_ascii_case(&self.user) {
+                    return rest.to_string();
+                }
+            } else if r.eq_ignore_ascii_case(&self.user) {
+                return String::new();
+            }
         }
+        text.to_string()
     }
 }
 
@@ -923,6 +932,9 @@ impl Engine {
                 mine.badges = line.badges;
                 mine.emotes = line.emotes;
                 mine.color = line.color;
+                if line.reply.is_some() {
+                    mine.reply = line.reply;
+                }
                 (mine.broadcaster, mine.moderator, mine.vip, mine.subscriber) =
                     (line.broadcaster, line.moderator, line.vip, line.subscriber);
                 log.reset_gen += 1;
@@ -1754,7 +1766,7 @@ impl Engine {
 
     /// A line for what we are sending, shown at once (before the platform has taken it, and its own copy
     /// has come back); `chat_unlocal` takes it away if the send fails. The sequence number to ask that with.
-    fn chat_local(&self, platform: &str, text: &str, bot: bool) -> Option<u64> {
+    fn chat_local(&self, platform: &str, text: &str, bot: bool, reply: Option<&Line>) -> Option<u64> {
         let (name, id) = {
             let c = self.cfg.borrow();
             let acct = |b: bool| -> Option<(String, String)> {
@@ -1789,6 +1801,11 @@ impl Engine {
             Some(a) => (true, a.to_string()),
             None => (false, text.to_string()),
         };
+        let reply_info = reply.map(|r| Reply {
+            user: r.user.clone(),
+            text: r.text.clone(),
+        });
+        let plain = reply_info.as_ref().map_or(plain.clone(), |r| r.strip(&plain));
         let (plain, emotes) = normalize_line_emotes(platform, plain, &[]);
         let mut guard = self.chat_log_mut();
         let log = &mut *guard;
@@ -1806,6 +1823,7 @@ impl Engine {
             ts: crate::fmt::unix_now().as_millis() as i64,
             user: name,
             user_id: id,
+            reply: reply_info,
             text: plain,
             emotes,
             action,
@@ -1966,9 +1984,9 @@ impl Engine {
         for &p in to {
             let mut text = for_platform(text, p, &kick_known);
             // A reply where the platform has them; a mention elsewhere.
-            let reply = reply.filter(|l| l.platform == p);
-            let reply_id = reply.filter(|l| !l.msg_id.is_empty() && matches!(p, "twitch" | "kick"));
-            if let (Some(l), None) = (reply, reply_id) {
+            let reply_target = reply.filter(|l| l.platform == p);
+            let reply_id = reply_target.filter(|l| !l.msg_id.is_empty() && matches!(p, "twitch" | "kick"));
+            if let (Some(l), None) = (reply_target, reply_id) {
                 text = format!("@{} {text}", l.user);
             }
             let to = reply_id.map(|l| format!(", reply to @{}", l.user)).unwrap_or_default();
@@ -1980,7 +1998,9 @@ impl Engine {
             let e = self.clone();
             // Elsewhere than Twitch (whose copy comes back at once) the line shows as it is sent.
             let command = crate::slash::is_command(&text);
-            let local = (!command).then(|| self.chat_local(p, &text, bot)).flatten();
+            let local = (!command)
+                .then(|| self.chat_local(p, &text, bot, reply_target))
+                .flatten();
             let started = std::time::Instant::now();
             // Twitch's chat commands (/commercial, /timeout...) are calls, not text.
             if p == "twitch" && crate::slash::is_command(&text) {
@@ -2057,7 +2077,7 @@ mod tests {
                 ..Default::default()
             });
             let e = crate::engine::Engine::new(std::sync::Arc::new(tokio::sync::watch::channel(c).0), |_| {});
-            let seq = e.chat_local("kick", "hello there", false).unwrap();
+            let seq = e.chat_local("kick", "hello there", false, None).unwrap();
             let (_, _, lines) = e.chat_sync(999, 0);
             assert_eq!(
                 (lines.len(), lines[0].local, lines[0].user.as_str()),
@@ -2080,10 +2100,46 @@ mod tests {
             assert_eq!((lines[0].local, lines[0].msg_id.as_str()), (false, "k-1"));
             assert_eq!(lines[0].color, "#B27CFF", "Kick's colour, not a guess");
             // A failed send takes its line away.
-            let seq2 = e.chat_local("kick", "never arrives", false).unwrap();
+            let seq2 = e.chat_local("kick", "never arrives", false, None).unwrap();
             e.chat_unlocal(seq2);
             assert_eq!(e.chat_sync(999, 0).2.len(), 1);
             let _ = seq;
+
+            // Optimistic local reply
+            let target = Line {
+                platform: "kick".into(),
+                msg_id: "orig-1".into(),
+                user: "TargetUser".into(),
+                text: "question?".into(),
+                ..Default::default()
+            };
+            let seq_reply = e
+                .chat_local("kick", "answering question", false, Some(&target))
+                .unwrap();
+            let (_, _, lines) = e.chat_sync(999, 0);
+            let reply_local = lines.iter().find(|l| l.seq == seq_reply).expect("local reply");
+            assert!(reply_local.local);
+            assert_eq!(reply_local.reply.as_ref().map(|r| r.user.as_str()), Some("TargetUser"));
+            assert_eq!(reply_local.reply.as_ref().map(|r| r.text.as_str()), Some("question?"));
+
+            // Real confirmation arrives from Kick Pusher:
+            let mut reply_args = Obj::new();
+            reply_args.insert("reply.userName".into(), "TargetUser".into());
+            reply_args.insert("reply.msgBody".into(), "question?".into());
+            e.log_chat(&crate::commands::Chat {
+                platform: "kick".into(),
+                user_id: "7".into(),
+                user: "umanana".into(),
+                msg_id: "k-reply-1".into(),
+                text: "answering question".into(),
+                args: reply_args,
+                ..Default::default()
+            });
+            let (_, _, lines) = e.chat_sync(999, 0);
+            let confirmed = lines.iter().find(|l| l.msg_id == "k-reply-1").expect("confirmed reply");
+            assert!(!confirmed.local);
+            assert_eq!(confirmed.reply.as_ref().map(|r| r.user.as_str()), Some("TargetUser"));
+            assert_eq!(confirmed.reply.as_ref().map(|r| r.text.as_str()), Some("question?"));
         });
     }
 
@@ -2109,7 +2165,7 @@ mod tests {
             let e = crate::engine::Engine::new(cfg.clone(), |_| {});
 
             // YouTube optimistic local message
-            let _ = e.chat_local("youtube", "Como vamos?", false).unwrap();
+            let _ = e.chat_local("youtube", "Como vamos?", false, None).unwrap();
             let (_, _, lines) = e.chat_sync(999, 0);
             assert_eq!(lines.len(), 1);
             assert!(lines[0].local);
@@ -2129,7 +2185,7 @@ mod tests {
             assert_eq!(lines[0].msg_id, "yt-1");
 
             // Twitch optimistic local message
-            let _ = e.chat_local("twitch", "oi?", false).unwrap();
+            let _ = e.chat_local("twitch", "oi?", false, None).unwrap();
             let (_, _, lines) = e.chat_sync(999, 0);
             assert_eq!(lines.len(), 2);
             assert!(lines[1].local);
@@ -2618,11 +2674,17 @@ mod tests {
         let r = Reply::from_args(&a).expect("a reply");
         assert_eq!((r.user.as_str(), r.text.as_str()), ("Ana", "hi there"));
         assert_eq!(r.strip("@ana yes"), "yes");
+        assert_eq!(r.strip("@Ana yes"), "yes");
+        assert_eq!(r.strip("@ana"), "");
         assert_eq!(r.strip("@bob yes"), "@bob yes");
         let mut k = Obj::new();
         k.insert("replyTo".into(), "bob".into());
         k.insert("replyToMessage".into(), "[emote:1:KEKW] lol".into());
         assert_eq!(Reply::from_args(&k).expect("a reply").text, "KEKW lol");
+        let mut kick_args = Obj::new();
+        kick_args.insert("reply.userName".into(), "bob".into());
+        kick_args.insert("replyToMessage".into(), "hello".into());
+        assert_eq!(Reply::from_args(&kick_args).expect("a reply").text, "hello");
         assert!(Reply::from_args(&Obj::new()).is_none());
     }
 
