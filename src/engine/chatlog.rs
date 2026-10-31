@@ -1866,6 +1866,7 @@ impl Engine {
 
     /// Confirms a line `chat_local` showed once the send succeeded, if the platform's echo hasn't
     /// arrived yet (e.g. high-velocity chat where the platform drops or delays the socket echo).
+    #[cfg(test)]
     fn chat_confirm_local(&self, seq: u64) {
         let mut st = self.st.borrow_mut();
         let log = &mut st.chat_log;
@@ -1875,6 +1876,11 @@ impl Engine {
             drop(st);
             crate::ui::chat();
         }
+    }
+
+    /// Whether a local line is still unconfirmed by the platform's incoming message stream.
+    fn is_chat_local(&self, seq: u64) -> bool {
+        self.st.borrow().chat_log.lines.iter().any(|l| l.seq == seq && l.local)
     }
 
     /// Whether `platform`'s chat is the broadcaster's own channel (not another one set in Advanced).
@@ -2071,9 +2077,16 @@ impl Engine {
                         crate::debug(format!("{p}: message sent in {} ms", started.elapsed().as_millis()));
                         if let Some(seq) = local {
                             let e = e.clone();
+                            let p = p.to_string();
                             tokio::task::spawn_local(async move {
-                                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                                e.chat_confirm_local(seq);
+                                tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+                                if e.is_chat_local(seq) {
+                                    e.chat_unlocal(seq);
+                                    e.chat_note(
+                                        &p,
+                                        format!("not sent: {p} dropped this comment (filtered by spam defense)"),
+                                    );
+                                }
                             });
                         }
                     }

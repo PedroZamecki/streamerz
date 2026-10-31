@@ -157,6 +157,7 @@ impl Browser {
                 // No components to download into the profile (speech models, the DRM module...).
                 "--disable-component-update",
                 "--disable-blink-features=AutomationControlled",
+                "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
             ])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -209,7 +210,7 @@ impl Browser {
             .tab(
                 "Page.addScriptToEvaluateOnNewDocument",
                 json!({
-                    "source": "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
+                    "source": "Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] }); Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });"
                 }),
             )
             .await;
