@@ -206,18 +206,32 @@ const SEND: &str = r#"(async text => {
     document.querySelector('[data-e2e="chat-room-send-btn"]') ||
     document.querySelector('button[aria-label*="send" i]');
 
+  const btn = findSendBtn();
+  if (btn && !btn.hasAttribute('disabled') && !btn.classList.contains('cursor-not-allowed')) {
+    btn.click();
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  }
+
   for (const t of ['keydown', 'keypress', 'keyup']) {
     box.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
   }
   await sleep(1000);
 
   if (box.textContent && box.textContent.trim()) {
-    const btn = findSendBtn();
-    if (btn && !btn.hasAttribute('disabled')) {
-      btn.click();
-      btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    const btnRetry = findSendBtn();
+    if (btnRetry && !btnRetry.hasAttribute('disabled')) {
+      btnRetry.click();
+      btnRetry.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     }
     await sleep(1500);
+  }
+
+  const captcha = document.querySelector('#captcha_container') ||
+                  document.querySelector('.captcha_verify_container') ||
+                  document.querySelector('iframe[src*="captcha"]');
+  if (captcha) {
+    clear();
+    return { error: 'TikTok: verification required (captcha)' };
   }
 
   const toast = document.querySelector('[data-e2e*="toast"]') ||
@@ -225,7 +239,7 @@ const SEND: &str = r#"(async text => {
                 document.querySelector('div[role="alert"]');
   if (toast && toast.innerText && toast.innerText.trim()) {
     const msg = toast.innerText.trim();
-    if (box.textContent && box.textContent.trim()) {
+    if (!msg.toLowerCase().includes('success') && !msg.toLowerCase().includes('enviad')) {
       clear();
       return { error: 'TikTok: ' + msg };
     }

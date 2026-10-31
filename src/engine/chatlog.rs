@@ -917,11 +917,22 @@ impl Engine {
                     .collect::<String>()
                     .to_lowercase()
             };
-            if let Some(mine) = log.lines.iter_mut().rev().take(30).find(|m| {
+            let line_handle = c
+                .args
+                .get("uniqueId")
+                .or_else(|| c.args.get("userLogin"))
+                .or_else(|| c.args.get("authorExternalChannelId"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if let Some(mine) = log.lines.iter_mut().rev().take(200).find(|m| {
                 m.local
                     && m.platform == line.platform
                     && m.text == line.text
                     && ((!m.user_id.is_empty() && m.user_id == line.user_id)
+                        || (!line_handle.is_empty()
+                            && (m.user.eq_ignore_ascii_case(line_handle)
+                                || m.user_id.eq_ignore_ascii_case(line_handle)
+                                || norm_user(&m.user) == norm_user(line_handle)))
                         || m.user.eq_ignore_ascii_case(&line.user)
                         || norm_user(&m.user) == norm_user(&line.user))
             }) {
@@ -1853,6 +1864,19 @@ impl Engine {
         }
     }
 
+    /// Confirms a line `chat_local` showed once the send succeeded, if the platform's echo hasn't
+    /// arrived yet (e.g. high-velocity chat where the platform drops or delays the socket echo).
+    fn chat_confirm_local(&self, seq: u64) {
+        let mut st = self.st.borrow_mut();
+        let log = &mut st.chat_log;
+        if let Some(mine) = log.lines.iter_mut().find(|l| l.seq == seq && l.local) {
+            mine.local = false;
+            log.reset_gen += 1;
+            drop(st);
+            crate::ui::chat();
+        }
+    }
+
     /// Whether `platform`'s chat is the broadcaster's own channel (not another one set in Advanced).
     fn own_channel(&self, platform: &str) -> bool {
         let c = self.cfg.borrow();
@@ -2043,7 +2067,16 @@ impl Engine {
                     }
                 };
                 match r {
-                    Ok(()) => crate::debug(format!("{p}: message sent in {} ms", started.elapsed().as_millis())),
+                    Ok(()) => {
+                        crate::debug(format!("{p}: message sent in {} ms", started.elapsed().as_millis()));
+                        if let Some(seq) = local {
+                            let e = e.clone();
+                            tokio::task::spawn_local(async move {
+                                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                                e.chat_confirm_local(seq);
+                            });
+                        }
+                    }
                     Err(err) => {
                         if let Some(seq) = local {
                             e.chat_unlocal(seq);
@@ -2222,6 +2255,69 @@ mod tests {
             assert_eq!(lines2.len(), 5, "instant trim kept only last 5 lines");
             assert!(gen2 > gen1, "reset_gen was bumped");
             assert!(full2, "full sync indicated to UI");
+        });
+    }
+
+    #[test]
+    fn tiktok_local_echo_matches_with_different_nickname_and_high_traffic() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let mut c = crate::Config::default();
+            c.tiktok.broadcaster = Some(crate::tiktok::TikTokAccount {
+                username: "pedrozamecki".into(),
+                ..Default::default()
+            });
+            c.window.chat.total = 100;
+            let (tx, _rx) = tokio::sync::watch::channel(c);
+            let cfg = std::sync::Arc::new(tx);
+            let e = crate::engine::Engine::new(cfg, |_| {});
+
+            // Optimistic TikTok local message
+            let seq = e.chat_local("tiktok", "tap tap", false, None).unwrap();
+            let (_, _, lines) = e.chat_sync(999, 0);
+            assert_eq!(lines.len(), 1);
+            assert!(lines[0].local);
+
+            // Simulate high chat volume: 40 messages from other viewers arrive before echo
+            for i in 0..40 {
+                e.log_chat(&crate::commands::Chat {
+                    platform: "tiktok".into(),
+                    user_id: format!("viewer_{i}"),
+                    user: format!("Viewer {i}"),
+                    msg_id: format!("tt-view-{i}"),
+                    text: format!("cheer {i}"),
+                    ..Default::default()
+                });
+            }
+
+            // TikTok delivers message via WebCast: nickname differs from uniqueId, numeric userId
+            let mut args = crate::model::Obj::new();
+            args.insert("uniqueId".into(), "pedrozamecki".into());
+            e.log_chat(&crate::commands::Chat {
+                platform: "tiktok".into(),
+                user_id: "7034185239447077894".into(),
+                user: "Pedro Zamecki".into(),
+                msg_id: "tt-msg-1".into(),
+                text: "tap tap".into(),
+                args,
+                ..Default::default()
+            });
+
+            let (_, _, lines) = e.chat_sync(0, 0);
+            let confirmed = lines.iter().find(|l| l.seq == seq).expect("found local message");
+            assert!(!confirmed.local, "local message was confirmed and is no longer dimmed");
+            assert_eq!(confirmed.msg_id, "tt-msg-1");
+            assert_eq!(confirmed.user, "Pedro Zamecki");
+
+            // Test fallback confirm when platform echo never arrives
+            let seq2 = e.chat_local("tiktok", "dropped echo", false, None).unwrap();
+            let (_, _, lines2) = e.chat_sync(0, 0);
+            let unconfirmed = lines2.iter().find(|l| l.seq == seq2).expect("found second local");
+            assert!(unconfirmed.local);
+            e.chat_confirm_local(seq2);
+            let (_, _, lines3) = e.chat_sync(0, 0);
+            let fallback_confirmed = lines3.iter().find(|l| l.seq == seq2).expect("found second local");
+            assert!(!fallback_confirmed.local, "fallback confirmation cleared local flag");
         });
     }
 
