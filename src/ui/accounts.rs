@@ -4,6 +4,7 @@
 use super::fit::Ellipsis;
 use super::lists::save;
 use super::{button, dialogs, query, tell, ROW};
+use crate::engine::community::Leftover;
 use crate::engine::Engine;
 use crate::i18n::{button_id, tr, trf};
 use crate::model::Obj;
@@ -328,6 +329,43 @@ pub(super) fn platform_accounts(cmds: &Cmds, cfg: &Cfg, platform: &str, size: i3
     [build((0, b0)), build((1, b1))]
 }
 
+/// The chat room a platform's column shows: the channel's name (the logged-in broadcaster's own when no
+/// other is set) and their round picture (whether their own account or an outside channel).
+pub(super) fn room(cmds: &Cmds, cfg: &Cfg, platform: &str, size: i32) -> (String, Option<fltk::image::RgbImage>) {
+    let Some(p) = P::from_slug(platform) else {
+        return (String::new(), None);
+    };
+    let (set, own, mine) = {
+        let c = cfg.borrow();
+        (
+            p.channel(&c).trim().trim_start_matches('@').to_string(),
+            p.own(&c),
+            p.raw_account_name(&c, false),
+        )
+    };
+    let name = if set.is_empty() {
+        mine.clone().unwrap_or_default()
+    } else {
+        set
+    };
+    let pic = if own {
+        mine.as_ref()
+            .and_then(|m| picture(cmds, cfg, p, false, m, size))
+            .or_else(|| {
+                if !name.is_empty() {
+                    channel_picture(cmds, cfg, p, &name, size)
+                } else {
+                    None
+                }
+            })
+    } else if !name.is_empty() {
+        channel_picture(cmds, cfg, p, &name, size)
+    } else {
+        None
+    };
+    (name, pic)
+}
+
 /// Trigger an interactive keyring unlock on the engine thread and alert only if it fails.
 pub(super) fn unlock_logins_interactive(cmds: &Cmds) {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -449,6 +487,130 @@ async fn avatar(e: &Rc<Engine>, cfg: &Cfg, p: P, bot: bool) -> Option<String> {
     v?.as_str().filter(|u| u.starts_with("http")).map(str::to_string)
 }
 
+/// A channel's profile picture URL, read from public APIs or GQL (works for outside channels).
+async fn channel_avatar(cfg: &Cfg, p: P, channel: &str) -> Option<String> {
+    let clean = channel.trim().trim_start_matches('@');
+    if clean.is_empty() {
+        return None;
+    }
+    match p {
+        P::Twitch => {
+            let (cid, tok) = {
+                let c = cfg.borrow();
+                let a = c.twitch.broadcaster.as_ref().or(c.twitch.bot.as_ref()).cloned();
+                (
+                    crate::twitch::CLIENT_ID.to_string(),
+                    a.map(|x| x.token.access_token).unwrap_or_default(),
+                )
+            };
+            if !tok.is_empty() {
+                let h = vec![
+                    ("Client-Id".into(), cid),
+                    ("Authorization".into(), format!("Bearer {tok}")),
+                ];
+                let url = format!(
+                    "{}/users?login={}",
+                    crate::twitch::HELIX_URL,
+                    crate::commands::url_encode(clean)
+                );
+                if let Ok(r) = crate::http::request("GET", &url, &h, b"").await {
+                    if let Ok(v) = serde_json::from_slice::<Value>(&r.body) {
+                        if let Some(u) = v.pointer("/data/0/profile_image_url").and_then(Value::as_str) {
+                            if u.starts_with("http") {
+                                return Some(u.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            let headers = [
+                ("Client-Id".to_string(), "kimne78kx3ncx6brgo4mv6wki5h1ko".to_string()),
+                ("Content-Type".to_string(), "application/json".to_string()),
+            ];
+            let q = serde_json::json!({
+                "query": format!("{{ user(login: \"{clean}\") {{ profileImageURL(width: 150) }} }}")
+            });
+            if let Ok(r) =
+                crate::http::request("POST", "https://gql.twitch.tv/gql", &headers, q.to_string().as_bytes()).await
+            {
+                if let Ok(v) = serde_json::from_slice::<Value>(&r.body) {
+                    if let Some(u) = v.pointer("/data/user/profileImageURL").and_then(Value::as_str) {
+                        if u.starts_with("http") {
+                            return Some(u.to_string());
+                        }
+                    }
+                }
+            }
+            None
+        }
+        P::YouTube => crate::youtube::public_channel(clean).await.1,
+        P::Kick => {
+            let h = [("Accept".to_string(), "application/json".to_string())];
+            let url = format!("https://kick.com/api/v2/channels/{clean}");
+            let r = crate::http::request("GET", &url, &h, b"").await.ok()?;
+            let v = serde_json::from_slice::<Value>(&r.body).ok()?;
+            v.pointer("/user/profile_pic")
+                .or_else(|| v.pointer("/user/profile_picture"))
+                .and_then(Value::as_str)
+                .filter(|u| u.starts_with("http"))
+                .map(str::to_string)
+        }
+        P::TikTok => crate::webcast::avatar(clean).await,
+    }
+}
+
+/// The channel's profile picture, `size` px and round. Its URL is cached for 24h.
+fn channel_picture(cmds: &Cmds, cfg: &Cfg, p: P, name: &str, size: i32) -> Option<fltk::image::RgbImage> {
+    const FRESH: u64 = 24 * 60 * 60;
+    let norm = name.trim().trim_start_matches('@').to_lowercase();
+    if norm.is_empty() {
+        return None;
+    }
+    let key = format!("{}:chan:{}", p.slug(), norm);
+    let mut a = AVATARS.lock().ok()?;
+    let url = match a.iter().find(|(k, _)| *k == key) {
+        Some((_, url)) => url.clone(),
+        None => {
+            let now = crate::fmt::unix_now().as_secs();
+            let saved = super::img::saved("avatars").map(|v| v.1).unwrap_or_default();
+            let (url, at) = (
+                saved[&key][0].as_str().unwrap_or("").to_string(),
+                saved[&key][1].as_u64().unwrap_or(0),
+            );
+            a.push((key.clone(), url.clone()));
+            if now.saturating_sub(at) >= FRESH {
+                let cfg = cfg.clone();
+                let channel = norm.clone();
+                tell(cmds, move |_| {
+                    tokio::task::spawn_local(async move {
+                        let Some(url) = channel_avatar(&cfg, p, &channel).await else {
+                            return;
+                        };
+                        if let Ok(mut a) = AVATARS.lock() {
+                            if let Some(slot) = a.iter_mut().find(|(k, _)| *k == key) {
+                                slot.1.clone_from(&url);
+                            }
+                        }
+                        let mut all = super::img::saved("avatars").map(|v| v.1).unwrap_or_default();
+                        if !all.is_object() {
+                            all = serde_json::json!({});
+                        }
+                        all[&key] = serde_json::json!([url, crate::fmt::unix_now().as_secs()]);
+                        super::img::save("avatars", &all);
+                        super::wake(super::Msg::Image);
+                    });
+                });
+            }
+            url
+        }
+    };
+    drop(a);
+    if url.is_empty() {
+        return None;
+    }
+    super::img::get(cmds, &url, size, true).map(|p| p.first())
+}
+
 /// The account's profile picture, `size` px and round. Its URL is kept in the cache: used at once,
 /// looked up again (in the background) when older than a day or not known yet.
 fn picture(cmds: &Cmds, cfg: &Cfg, p: P, bot: bool, name: &str, size: i32) -> Option<fltk::image::RgbImage> {
@@ -554,7 +716,9 @@ impl Accounts {
                 (H::Locked, tr("accounts.keyring_locked_above").to_string())
             } else {
                 let why = match r.p {
-                    P::Twitch if c.twitch.broadcaster.is_none() => tr("accounts.login_broadcaster_first").into(),
+                    P::Twitch if c.twitch.broadcaster.is_none() && c.twitch.channel.trim().is_empty() => {
+                        tr("accounts.login_broadcaster_first").into()
+                    }
                     P::Twitch => String::new(),
                     P::TikTok if !tiktok.is_empty() => tiktok.clone(),
                     p if p.channel(&c).is_empty() => tr("accounts.login_broadcaster_first").into(),
@@ -585,15 +749,20 @@ impl Accounts {
                 }
                 .replace('@', "@@"),
             );
-            r.whose.set_label(
-                if r.p.channel(&c).is_empty() || r.p.raw_account_name(&c, false).is_none() {
-                    ""
-                } else if r.p.own(&c) {
-                    tr("accounts.channel_yours")
-                } else {
-                    tr("accounts.channel_theirs")
-                },
-            );
+            // Someone else's channel: what we are there, once the platform says (roles.rs).
+            let (role, _) = crate::roles::get(&r.p.name().to_lowercase());
+            let whose = if r.p.channel(&c).is_empty() || r.p.raw_account_name(&c, false).is_none() {
+                String::new()
+            } else if r.p.own(&c) {
+                tr("accounts.channel_yours").into()
+            } else if role.moderates() {
+                trf("accounts.channel_moderator", &[("role", role.name())])
+            } else if role >= crate::roles::Role::Viewer {
+                tr("accounts.channel_viewer").into()
+            } else {
+                tr("accounts.channel_theirs").into()
+            };
+            r.whose.set_label(&whose);
             for (bot, (pic, name, b)) in r.who.iter_mut().enumerate() {
                 let account = r.p.account(&c, bot == 1);
                 match &account {
@@ -625,7 +794,7 @@ impl Accounts {
 }
 
 pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
-    let (scroll, mut col) = super::tab_scrolled(tabs, "Accounts", 600);
+    let (scroll, mut col) = super::tab_scrolled(tabs, "Accounts", 740);
 
     let mut lock_bar = Flex::default().row();
     lock_bar.set_pad(8);
@@ -782,12 +951,37 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
                 let Some(raw) = super::find::channel(&cmds, p.slug()) else {
                     return;
                 };
-                let before = p.channel(&cfg.borrow()).to_string();
+                let (before, slug) = (p.channel(&cfg.borrow()).to_string(), p.slug());
+                // The channel read until now, as the community knows it, and how many people it saved.
+                let old = query(&cmds, move |e| {
+                    let ch = e.broadcaster(slug);
+                    (e.community_of(slug, &ch), ch)
+                });
                 save(&cfg, |c| drop(p.set_channel(c, &raw)));
                 if p.channel(&cfg.borrow()) != before {
-                    // What the old channel showed goes; its community stays, apart.
-                    let slug = p.slug();
-                    tell(&cmds, move |e| e.channel_changed(slug));
+                    // What the old channel showed goes; what to do with its people is asked.
+                    let (saved, old) = old.unwrap_or_default();
+                    let what = if saved == 0 {
+                        Leftover::Keep
+                    } else {
+                        match dialogs::pick_one(
+                            &trf(
+                                "room.ask",
+                                &[("platform", p.name()), ("channel", &old), ("count", &saved.to_string())],
+                            ),
+                            &[tr("room.keep"), tr("room.move"), tr("room.delete")],
+                        ) {
+                            Some(1) => Leftover::Move,
+                            Some(2) => Leftover::Delete,
+                            _ => Leftover::Keep,
+                        }
+                    };
+                    tell(&cmds, move |e| {
+                        e.channel_changed(slug, &old, what);
+                        e.chat_forget(slug);
+                        e.chat_polls_clear(slug);
+                        e.chat_unpinned(slug, "");
+                    });
                     // Read the new one now, if it was reading.
                     let (on, standby, _) = states(&cmds);
                     let i_p = ALL.iter().position(|x| *x == p).unwrap_or(0);
@@ -853,7 +1047,15 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
     me
 }
 
+/// The login popup's "Log in": the same as the button in Accounts.
+pub(super) fn login_again(cfg: &Cfg, cmds: &Cmds, platform: &str, bot: bool) {
+    if let Some(p) = ALL.into_iter().find(|p| p.name() == platform) {
+        login(cfg, cmds, p, bot);
+    }
+}
+
 fn login(cfg: &Cfg, cmds: &Cmds, p: P, bot: bool) {
+    crate::ui::relogin_done(p.name(), bot);
     match p {
         P::Twitch => device_login(cfg, cmds, bot),
         P::TikTok => tiktok_login(cfg, bot),
@@ -938,6 +1140,7 @@ fn browser_login<T: Send + 'static>(
         super::nested_wait(Some(0.1));
     }
     win.hide();
+    fltk::app::delete_widget(win);
     if out.is_none() {
         // Cancelled: stop listening, so the port is free for the next try.
         if let Ok(h) = hrx.try_recv() {
@@ -1026,11 +1229,17 @@ fn advanced(cfg: &Cfg, p: P) {
         }
     }
     win.hide();
-    if answer.get() != Some(true) {
+    let ok = answer.get() == Some(true);
+    let v: Vec<String> = if ok {
+        inputs.iter().map(|i| i().trim().to_string()).collect()
+    } else {
+        Vec::new()
+    };
+    let on_start = start.is_checked();
+    fltk::app::delete_widget(win);
+    if !ok {
         return;
     }
-    let v: Vec<String> = inputs.iter().map(|i| i().trim().to_string()).collect();
-    let on_start = start.is_checked();
     save(cfg, |c| *p.manual_mut(c) = !on_start);
     save(cfg, |c| match p {
         P::Kick => {
@@ -1083,6 +1292,7 @@ fn tiktok_login(cfg: &Cfg, bot: bool) {
         super::nested_wait(Some(0.1));
     }
     win.hide();
+    fltk::app::delete_widget(win);
 }
 
 fn device_login(cfg: &Cfg, cmds: &Cmds, as_bot: bool) {
@@ -1245,6 +1455,7 @@ fn device_login(cfg: &Cfg, cmds: &Cmds, as_bot: bool) {
     }
     cancelled.store(true, Ordering::Relaxed);
     win.hide();
+    fltk::app::delete_widget(win);
 }
 
 #[cfg(test)]

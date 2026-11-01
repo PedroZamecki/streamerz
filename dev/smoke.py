@@ -13,7 +13,7 @@ import base64, json, os, re, socket, struct, subprocess, sys, tempfile, time
 BIN = sys.argv[1] if len(sys.argv) > 1 else "target/fast/Streamerz"
 PORT = 8095
 OUT = "/tmp/szsmoke"
-env = dict(os.environ, DISPLAY=":99", STREAMERZ_DEV="1")
+env = dict(os.environ, DISPLAY=":99", STREAMERZ_DEV="1", STREAMERZ_DEV_PORT=str(PORT))
 env.pop("WAYLAND_DISPLAY", None)
 
 
@@ -55,15 +55,18 @@ def xdo(*a):
 def main():
     os.makedirs(OUT, exist_ok=True)
     tmp = tempfile.mkdtemp()
-    cfg = os.path.join(tmp, "s.json")
+    os.makedirs(os.path.join(tmp, "streamerz"))
+    cfg = os.path.join(tmp, "streamerz", "streamerz.json")
     json.dump({"start_hidden": False, "locale": "en_US", "websockets": {"port": PORT}}, open(cfg, "w"))
-    env["STREAMERZ_CONFIG"] = cfg
+    env["XDG_CONFIG_HOME"] = tmp
     app = subprocess.Popen([BIN], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     failures = []
 
     def check(step):
         time.sleep(0.5)
-        crashed = [f for f in os.listdir(os.path.join(tmp, "logs")) if f.startswith("crash")] if os.path.isdir(os.path.join(tmp, "logs")) else []
+        import glob
+        logs = glob.glob(os.path.join(tempfile.gettempdir(), f"streamerz-dev-{app.pid}-*", "logs", "crash*"))
+        crashed = [os.path.basename(f) for f in logs]
         if app.poll() is not None or crashed:
             failures.append(f"{step}: the app is gone (exit {app.poll()}) {crashed[:1]}")
             raise SystemExit(print("\n".join(failures), f"\nthe app's files (logs/crash-*.txt) are in {tmp}") or 1)
@@ -81,7 +84,74 @@ def main():
         if not ws:
             sys.exit("can't reach the app")
         for p in ("twitch", "kick", "youtube", "tiktok"):
+            ws.ask({"request": "SimulateChatConnection", "id": "conn-" + p, "platform": p, "connected": True})
             ws.ask({"request": "InjectChat", "id": p, "platform": p, "user": "Ana", "text": f"hello from {p}"})
+        # Rewards, power-ups and gifts are lines of the chat (each takes a line), and a message sent with a
+        # reward has it over it.
+        ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Chat"})
+        # Stream end leaves connected chat visible; a disconnect hides only that platform's messages,
+        # and reconnecting restores them from the retained history.
+        time.sleep(1)
+        kept = lambda: int(ws.ask({"request": "StreamerzUi", "id": "k", "do": "chatlines"})["result"])
+        before_state = kept()
+        ws.ask({"request": "SimulateStream", "id": "end", "platform": "twitch", "live": False})
+        time.sleep(1)
+        if kept() != before_state:
+            failures.append("ending a stream changed the connected chat")
+        ws.ask({"request": "SimulateChatConnection", "id": "down", "platform": "twitch", "connected": False})
+        time.sleep(1)
+        if kept() >= before_state:
+            failures.append("a disconnected chat remained visible in the combined view")
+        ws.ask({"request": "StreamerzUi", "id": "single", "do": "chatview Twitch"})
+        time.sleep(0.5)
+        where = ws.ask({"request": "StreamerzUi", "id": "find-disconnected", "do": "find Disconnected"})["result"]
+        location = re.search(r" at (\d+),(\d+)", where)
+        if not location or int(location.group(2)) < 500:
+            failures.append(f"the disconnected state is not in the composer row ({where})")
+        found = ws.ask({"request": "StreamerzUi", "id": "find-reconnect", "do": "find Reconnect"})["result"]
+        coords = re.search(r" at (\d+),(\d+)", found)
+        if coords:
+            xdo("mousemove", coords.group(1), coords.group(2))
+            xdo("click", "1")
+            check("reconnecting chat")
+        else:
+            failures.append("the reconnect action is missing from the disconnected chat")
+        ws.ask({"request": "StreamerzUi", "id": "together", "do": "chatview All together"})
+        ws.ask({"request": "SimulateChatConnection", "id": "up", "platform": "twitch", "connected": True})
+        time.sleep(1)
+        if kept() != before_state:
+            failures.append("reconnecting did not restore the chat history")
+        seen = lambda: int(ws.ask({"request": "StreamerzUi", "id": "c", "do": "chat"})["result"])
+        time.sleep(1)
+        before = seen()
+        ws.ask({"request": "InjectChat", "id": "rw", "platform": "twitch", "user": "Bia", "text": "drink water",
+                "args": {"messageRewardId": "r1", "messageRewardTitle": "Hydrate", "messageRewardCost": 500}})
+        for trig, args in (("TwitchAutomaticRewardRedemption", {"rewardType": "send_highlighted_message", "rewardCost": 40}),
+                           ("TwitchPowerUpRedemption", {"powerUpType": "celebration", "bits": 50}),
+                           ("TwitchWatchStreak", {"streak": 7}),
+                           ("KickRewardRedemption", {"reward.title": "Hydrate", "rewardCost": 500})):
+            ws.ask({"request": "FireTrigger", "id": "ft", "trigger": trig, "args": dict(args, user="Fabi")})
+        time.sleep(1)
+        if seen() - before < 5:
+            failures.append(f"rewards and power-ups didn't all reach the chat ({before} to {seen()})")
+        ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/chat_rewards.png"})
+        # A login that ran out asks for a new one in a popup, once.
+        ws.ask({"request": "StreamerzUi", "id": "rl", "do": "relogin Kick"})
+        time.sleep(1.5)
+        popup = json.dumps(ws.ask({"request": "StreamerzUi", "id": "w", "do": "windows"}))
+        if "Log in" not in json.dumps(ws.ask({"request": "StreamerzUi", "id": "f", "do": "find Log in"})):
+            failures.append(f"the login popup didn't open ({popup})")
+        ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/relogin.png"})
+        xdo("key", "Escape")
+        check("relogin popup")
+        # Changing a channel asks what to do with the people saved from the old one.
+        ws.ask({"request": "StreamerzUi", "id": "rm", "do": "room"})
+        time.sleep(1)
+        if "Delete them" not in json.dumps(ws.ask({"request": "StreamerzUi", "id": "f", "do": "find Delete them"})):
+            failures.append("the question about the old channel's people didn't open")
+        ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/room.png"})
+        xdo("key", "Escape")
+        check("room question")
         pages = ["Chat", "Accounts", "Community", "Polls", "Actions", "Commands", "Timers", "Queues", "Groups", "Plugins",
                  "Servers", "Stream Apps", "Donations", "Globals", "History", "Settings", "Log", "Crashes", "Backups"]
         for page in pages:
@@ -116,6 +186,21 @@ def main():
             time.sleep(0.4)
             check("sorting the community")
         ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/community_sorted.png"})
+        # The platform funnel (left of the titles) hides Twitch, the first in its menu, and shows it again.
+        shown = lambda: json.dumps(ws.ask({"request": "StreamerzUi", "id": "c", "do": "community"}))
+        before = shown()
+        for _ in range(2):
+            xdo("mousemove", "205", "68")
+            xdo("click", "1")
+            time.sleep(0.5)
+            xdo("mousemove", "240", "80")
+            xdo("click", "1")
+            time.sleep(0.5)
+            check("filtering the community by platform")
+            if _ == 0 and shown() == before:
+                failures.append(f"the platform filter hid nothing ({before})")
+        if shown() != before:
+            failures.append(f"the platform filter didn't show Twitch again ({shown()})")
         # The channel search opens from Accounts, finds something, and closes with Escape.
         ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Accounts"})
         xdo("mousemove", "415", "102")
@@ -162,6 +247,22 @@ def main():
             failures.append(f"the chat froze under the user card ({after})")
         xdo("key", "Escape")
         check("user card")
+        # The chat keeps at most 400 lines of a platform (the default) however many come, still shows them,
+        # and after the window is hidden and shown again it fills from the engine.
+        ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Chat"})
+        for i in range(450):
+            ws.ask({"request": "InjectChat", "id": f"m{i}", "platform": "kick", "user": f"u{i % 7}", "text": f"line {i}"})
+        time.sleep(1)
+        kept = lambda: int(ws.ask({"request": "StreamerzUi", "id": "c", "do": "chatlines"})["result"])
+        if not 100 < kept() <= 430:
+            failures.append(f"the chat kept {kept()} lines of 450 (400 of Kick, and the few lines of others)")
+        ws.ask({"request": "StreamerzUi", "id": "t", "do": "toggle"})
+        time.sleep(1)
+        ws.ask({"request": "StreamerzUi", "id": "t", "do": "toggle"})
+        time.sleep(1.5)
+        check("hiding and showing the chat")
+        if not 100 < kept() <= 430:
+            failures.append(f"the chat filled with {kept()} lines after being shown again")
     finally:
         app.terminate()
     # Asked to end (as a logout does), it saves and quits: the next start mustn't see a crash.
@@ -169,8 +270,9 @@ def main():
         app.wait(10)
     except subprocess.TimeoutExpired:
         failures.append("it didn't quit when asked (SIGTERM)")
-    if os.path.exists(os.path.join(tmp, "logs", "running")):
-        failures.append("SIGTERM left the 'running' marker: the next start would report a crash")
+    import glob
+    if glob.glob(os.path.join(tempfile.gettempdir(), f"streamerz-dev-{app.pid}-*")):
+        failures.append("SIGTERM left the development settings directory behind")
     print("\n".join(failures) or f"ok: every page and the card, screenshots in {OUT}")
     if failures:
         print(f"the app's files (logs/crash-*.txt) are in {tmp}")

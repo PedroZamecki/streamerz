@@ -713,7 +713,7 @@ pub fn handle_pallygg(engine: &Rc<Engine>, event: &str, data: &Value) {
         args.insert(k.clone(), v.clone());
     }
 
-    match event {
+    match event.to_ascii_lowercase().as_str() {
         "connected" => {
             engine.fire(
                 T_PALLYGG_CONNECTED,
@@ -837,7 +837,111 @@ pub fn handle_streamloots(engine: &Rc<Engine>, event: &str, data: &Value) {
 }
 
 /// Unified entry point for incoming webhook requests from any donation / shop service.
-pub fn handle_webhook(engine: &Rc<Engine>, platform: &str, body: &[u8]) -> Result<(), String> {
+/// Whether a webhook really comes from its service, where the service signs it and a secret is set:
+/// Ko-fi puts its verification token in the payload, Patreon an HMAC-MD5 of the body in
+/// `X-Patreon-Signature`. Without the secret set, it's let through (and the log says to set it).
+fn authentic(
+    cfg: &DonationsConfig,
+    platform: &str,
+    body: &[u8],
+    data: &Value,
+    signature: Option<&str>,
+) -> Result<(), String> {
+    match platform {
+        "kofi" | "ko-fi" => {
+            let want = cfg.kofi_token.trim();
+            if want.is_empty() {
+                crate::warn("Ko-fi: webhook taken without a check: set its verification token in Donations".into());
+                return Ok(());
+            }
+            if data["verification_token"].as_str().map(str::trim) == Some(want) {
+                Ok(())
+            } else {
+                Err("Ko-fi: wrong verification token".into())
+            }
+        }
+        "patreon" => {
+            let secret = cfg.patreon_webhook_secret.trim();
+            if secret.is_empty() {
+                crate::warn("Patreon: webhook taken without a check: set its secret in Donations".into());
+                return Ok(());
+            }
+            let want: String = hmac_md5(secret.as_bytes(), body)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            if signature.is_some_and(|s| s.trim().eq_ignore_ascii_case(&want)) {
+                Ok(())
+            } else {
+                Err("Patreon: wrong signature".into())
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
+/// MD5 (RFC 1321): only for checking Patreon's HMAC-MD5 webhook signatures.
+fn md5(data: &[u8]) -> [u8; 16] {
+    const S: [u32; 64] = [
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14,
+        20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6,
+        10, 15, 21,
+    ];
+    let k: Vec<u32> = (0..64)
+        .map(|i| ((i as f64 + 1.0).sin().abs() * 4_294_967_296.0) as u32)
+        .collect();
+    let mut msg = data.to_vec();
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&((data.len() as u64).wrapping_mul(8)).to_le_bytes());
+    let mut h: [u32; 4] = [0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476];
+    for chunk in msg.chunks(64) {
+        let m: Vec<u32> = chunk
+            .chunks(4)
+            .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+            .collect();
+        let [mut a, mut b, mut c, mut d] = h;
+        for i in 0..64 {
+            let (f, g) = match i / 16 {
+                0 => ((b & c) | (!b & d), i),
+                1 => ((d & b) | (!d & c), (5 * i + 1) % 16),
+                2 => (b ^ c ^ d, (3 * i + 5) % 16),
+                _ => (c ^ (b | !d), (7 * i) % 16),
+            };
+            let f = f.wrapping_add(a).wrapping_add(k[i]).wrapping_add(m[g]);
+            a = d;
+            d = c;
+            c = b;
+            b = b.wrapping_add(f.rotate_left(S[i]));
+        }
+        for (x, y) in h.iter_mut().zip([a, b, c, d]) {
+            *x = x.wrapping_add(y);
+        }
+    }
+    let mut out = [0u8; 16];
+    for (i, w) in h.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    out
+}
+
+fn hmac_md5(key: &[u8], data: &[u8]) -> [u8; 16] {
+    let mut k = [0u8; 64];
+    if key.len() > 64 {
+        k[..16].copy_from_slice(&md5(key));
+    } else {
+        k[..key.len()].copy_from_slice(key);
+    }
+    let mut inner: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
+    inner.extend_from_slice(data);
+    let mut outer: Vec<u8> = k.iter().map(|b| b ^ 0x5c).collect();
+    outer.extend_from_slice(&md5(&inner));
+    md5(&outer)
+}
+
+pub fn handle_webhook(engine: &Rc<Engine>, platform: &str, body: &[u8], signature: Option<&str>) -> Result<(), String> {
     let data: Value = serde_json::from_slice(body).or_else(|_| {
         // Try parsing as urlencoded form data (e.g. data={"amount":"10.00",...})
         let s = std::str::from_utf8(body).map_err(|e| e.to_string())?;
@@ -848,8 +952,10 @@ pub fn handle_webhook(engine: &Rc<Engine>, platform: &str, body: &[u8]) -> Resul
             Err("Unable to parse payload".into())
         }
     })?;
+    let platform = platform.to_lowercase();
+    authentic(&engine.config().donations, &platform, body, &data, signature)?;
 
-    match platform.to_lowercase().as_str() {
+    match platform.as_str() {
         "kofi" | "ko-fi" => handle_kofi(engine, &data),
         "streamelements" => {
             let evt = data["type"].as_str().unwrap_or("tip");
@@ -1191,6 +1297,57 @@ mod tests {
     use super::*;
     use crate::Config;
     use std::sync::Arc;
+
+    /// A webhook with no signature header (none of these services sends one but Patreon).
+    fn handle_webhook(e: &Rc<Engine>, p: &str, body: &[u8]) -> Result<(), String> {
+        super::handle_webhook(e, p, body, None)
+    }
+
+    #[test]
+    fn md5_and_hmac_md5_match_the_rfcs() {
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        assert_eq!(hex(&md5(b"")), "d41d8cd98f00b204e9800998ecf8427e");
+        assert_eq!(
+            hex(&md5(b"The quick brown fox jumps over the lazy dog")),
+            "9e107d9d372bb6826bd81d3542a419d6"
+        );
+        // Longer than one block (RFC 1321's last example).
+        assert_eq!(
+            hex(&md5("1234567890".repeat(8).as_bytes())),
+            "57edf4a22be3c955ac49da2e2107b67a"
+        );
+        // RFC 2104's test case 2.
+        assert_eq!(
+            hex(&hmac_md5(b"Jefe", b"what do ya want for nothing?")),
+            "750c783e6ab0b503eaa86e310a5db738"
+        );
+    }
+
+    #[test]
+    fn webhooks_are_checked_once_a_secret_is_set() {
+        let mut cfg = DonationsConfig::default();
+        let kofi = json!({"verification_token": "abc"});
+        assert!(
+            authentic(&cfg, "kofi", b"", &kofi, None).is_ok(),
+            "no token set: let through"
+        );
+        cfg.kofi_token = "abc".into();
+        assert!(authentic(&cfg, "kofi", b"", &kofi, None).is_ok());
+        assert!(authentic(&cfg, "kofi", b"", &json!({"verification_token": "nope"}), None).is_err());
+        assert!(authentic(&cfg, "kofi", b"", &json!({}), None).is_err());
+        cfg.patreon_webhook_secret = "Jefe".into();
+        let body = b"what do ya want for nothing?";
+        assert!(authentic(
+            &cfg,
+            "patreon",
+            body,
+            &json!({}),
+            Some("750c783e6ab0b503eaa86e310a5db738")
+        )
+        .is_ok());
+        assert!(authentic(&cfg, "patreon", body, &json!({}), Some("00")).is_err());
+        assert!(authentic(&cfg, "patreon", body, &json!({}), None).is_err());
+    }
     use tokio::sync::watch;
 
     #[test]

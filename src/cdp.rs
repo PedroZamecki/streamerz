@@ -61,6 +61,79 @@ pub struct Browser {
     page: String,
 }
 
+/// What a browser's profile folder holds that is only downloaded again: its components (speech and
+/// spell-check models, the DRM module), crash and metrics files and caches. Together over 100 MB for a
+/// browser only used to read a chat; the login (`Default`) and settings stay.
+const DISPOSABLE: &[&str] = &[
+    "component_crx_cache",
+    "extensions_crx_cache",
+    "WidevineCdm",
+    "WasmTtsEngine",
+    "OnDeviceHeadSuggestModel",
+    "ZxcvbnData",
+    "hyphen-data",
+    "ActorSafetyLists",
+    "OptimizationHints",
+    "Subresource Filter",
+    "CertificateRevocation",
+    "GrShaderCache",
+    "GraphiteDawnCache",
+    "ShaderCache",
+    "GPUPersistentCache",
+    "BrowserMetrics",
+    "BrowserMetrics-spare.pma",
+    "Crashpad",
+    "SafetyTips",
+    "OriginTrials",
+    "PKIMetadata",
+    "MEIPreload",
+];
+
+/// Takes the disposable files out of `profile` (the browser isn't running on it).
+pub fn tidy(profile: &Path) {
+    for name in DISPOSABLE {
+        let p = profile.join(name);
+        let _ = if p.is_dir() {
+            std::fs::remove_dir_all(&p)
+        } else {
+            std::fs::remove_file(&p)
+        };
+    }
+}
+
+/// Cleans up any stale singleton locks or orphaned processes left on `profile` from a previous
+/// run or crash, ensuring the browser can launch cleanly without instantly exiting or forwarding.
+pub fn reclaim_profile(profile: &Path) {
+    #[cfg(unix)]
+    {
+        let lock = profile.join("SingletonLock");
+        if let Ok(target) = std::fs::read_link(&lock) {
+            if let Some(target_str) = target.to_str() {
+                if let Some(pid_str) = target_str.rsplit('-').next() {
+                    if let Ok(pid) = pid_str.parse::<u32>() {
+                        if Path::new(&format!("/proc/{pid}")).exists() {
+                            let _ = std::process::Command::new("kill")
+                                .args(["-9", &format!("-{pid}")])
+                                .status();
+                            let _ = std::process::Command::new("kill")
+                                .args(["-9", &pid.to_string()])
+                                .status();
+                            std::thread::sleep(Duration::from_millis(50));
+                        }
+                    }
+                }
+            }
+        }
+        let _ = std::fs::remove_file(profile.join("SingletonLock"));
+        let _ = std::fs::remove_file(profile.join("SingletonCookie"));
+        let _ = std::fs::remove_file(profile.join("SingletonSocket"));
+    }
+    #[cfg(windows)]
+    {
+        let _ = std::fs::remove_file(profile.join("lockfile"));
+    }
+}
+
 impl Browser {
     /// Starts the browser on `profile` showing `url`: hidden (`headless`), or as a small app window.
     pub async fn launch(profile: &Path, headless: bool, url: &str) -> Result<Browser, String> {
@@ -68,10 +141,14 @@ impl Browser {
             "no Chrome, Chromium, Edge, Brave or Vivaldi found (or set STREAMERZ_BROWSER to the browser's path)",
         )?;
         std::fs::create_dir_all(profile).map_err(|e| format!("{}: {e}", profile.display()))?;
+        reclaim_profile(profile);
         // Where the browser says which port it listens on: none yet, so a stale one isn't read.
         let port_file = profile.join("DevToolsActivePort");
         let _ = std::fs::remove_file(&port_file);
+        tidy(profile);
         let mut cmd = tokio::process::Command::new(&exe);
+        #[cfg(unix)]
+        cmd.process_group(0);
         cmd.arg(format!("--user-data-dir={}", profile.display()))
             .args([
                 "--remote-debugging-port=0",
@@ -80,13 +157,17 @@ impl Browser {
                 "--mute-audio",
                 "--disable-background-networking",
                 "--disable-sync",
+                // No components to download into the profile (speech models, the DRM module...).
+                "--disable-component-update",
+                "--disable-blink-features=AutomationControlled",
+                "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
             ])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
         if headless {
-            cmd.args(["--headless=new", url]);
+            cmd.args(["--headless=new", "--window-size=1280,800", url]);
         } else {
             cmd.args(["--window-size=520,760", &format!("--app={url}")]);
         }
@@ -128,6 +209,14 @@ impl Browser {
             .call(None, "Target.attachToTarget", json!({"targetId": tab, "flatten": true}))
             .await?;
         b.page = attached["sessionId"].as_str().unwrap_or("").to_string();
+        let _ = b
+            .tab(
+                "Page.addScriptToEvaluateOnNewDocument",
+                json!({
+                    "source": "Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] }); Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });"
+                }),
+            )
+            .await;
         Ok(b)
     }
 
@@ -207,6 +296,7 @@ impl Browser {
     }
 
     /// Sets `cookies` ("a=1; b=2") for `domain` (".tiktok.com").
+    #[allow(dead_code)]
     pub async fn set_cookies(&mut self, cookies: &str, domain: &str) -> Result<(), String> {
         let list: Vec<Value> = cookies
             .split(';')
@@ -216,14 +306,87 @@ impl Browser {
         self.tab("Network.setCookies", json!({"cookies": list})).await.map(drop)
     }
 
-    /// The browser is gone (closed by the user, or crashed).
-    pub fn gone(&mut self) -> bool {
-        self.child.try_wait().ok().flatten().is_some()
+    /// Terminate the browser process and any child zygotes or renderers in its process tree.
+    pub fn force_kill(&mut self) {
+        #[cfg(unix)]
+        if let Some(pid) = self.child.id() {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &format!("-{pid}")])
+                .status();
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .status();
+        }
+        #[cfg(windows)]
+        if let Some(pid) = self.child.id() {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &pid.to_string()])
+                .status();
+        }
+        let _ = self.child.start_kill();
     }
 
-    /// Closes the browser.
+    /// The browser is gone (closed by the user, or crashed).
+    pub fn gone(&mut self) -> bool {
+        if self.child.try_wait().ok().flatten().is_some() {
+            self.force_kill();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Closes the browser and terminates all related helper processes.
     pub async fn close(mut self) {
         let _ = self.call(None, "Browser.close", json!({})).await;
-        let _ = tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await;
+        let _ = tokio::time::timeout(Duration::from_millis(600), self.child.wait()).await;
+        self.force_kill();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tidying_a_profile_keeps_the_login() {
+        let d = std::env::temp_dir().join(format!("sz-profile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("Default")).unwrap();
+        std::fs::write(d.join("Default/Cookies"), "login").unwrap();
+        std::fs::write(d.join("Local State"), "{}").unwrap();
+        std::fs::create_dir_all(d.join("component_crx_cache")).unwrap();
+        std::fs::write(d.join("component_crx_cache/big"), vec![0u8; 1000]).unwrap();
+        std::fs::write(d.join("BrowserMetrics-spare.pma"), "m").unwrap();
+        tidy(&d);
+        assert!(d.join("Default/Cookies").is_file() && d.join("Local State").is_file());
+        assert!(!d.join("component_crx_cache").exists() && !d.join("BrowserMetrics-spare.pma").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn reclaim_profile_removes_stale_singleton_locks() {
+        let d = std::env::temp_dir().join(format!("sz-reclaim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        #[cfg(unix)]
+        {
+            let _ = std::os::unix::fs::symlink("test-host-99999999", d.join("SingletonLock"));
+            std::fs::write(d.join("SingletonCookie"), "123").unwrap();
+            std::fs::write(d.join("SingletonSocket"), "sock").unwrap();
+            assert!(d.join("SingletonLock").is_symlink());
+            reclaim_profile(&d);
+            assert!(!d.join("SingletonLock").exists());
+            assert!(!d.join("SingletonCookie").exists());
+            assert!(!d.join("SingletonSocket").exists());
+        }
+        #[cfg(windows)]
+        {
+            std::fs::write(d.join("lockfile"), "1").unwrap();
+            assert!(d.join("lockfile").is_file());
+            reclaim_profile(&d);
+            assert!(!d.join("lockfile").exists());
+        }
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

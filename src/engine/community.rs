@@ -145,6 +145,73 @@ fn parse(iso: &str) -> Option<crate::fmt::Time> {
     })
 }
 
+/// What a user's record has when it is new: written down, it only takes room.
+fn defaults() -> [(&'static str, Value); 7] {
+    [
+        ("role", json!(1)),
+        ("subscribed", json!(false)),
+        ("present", json!(false)),
+        ("exempt", json!(false)),
+        ("previousActive", json!(NEVER)),
+        ("messages", json!(0)),
+        ("activeSecs", json!(0)),
+    ]
+}
+
+/// "2026-10-28T11:36:49.6161799-03:00" without its fraction of a second.
+fn whole_seconds(t: &str) -> String {
+    match (t.get(19..20), t.get(20..)) {
+        (Some("."), Some(rest)) => {
+            let at = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+            format!("{}{}", &t[..19], &rest[at..])
+        }
+        _ => t.to_string(),
+    }
+}
+
+/// A user's record as it is written to the file: what is only the default, and what is empty, is left out,
+/// and times lose their fractions of a second. `expand` puts the defaults back when it is read.
+fn shrink(u: &mut Obj) {
+    for (k, d) in defaults() {
+        if u.get(k) == Some(&d) {
+            u.remove(k);
+        }
+    }
+    u.retain(|_, v| v.as_str() != Some("") && !v.is_null());
+    for k in ["firstMessage", "lastActive", "previousActive"] {
+        if let Some(t) = u.get(k).and_then(Value::as_str).map(whole_seconds) {
+            u.insert(k.into(), t.into());
+        }
+    }
+}
+
+/// `shrink`'s other way: the record as the program works with it.
+fn expand(u: &mut Obj) {
+    for (k, d) in defaults() {
+        u.entry(k).or_insert(d);
+    }
+}
+
+/// A record kept for later, of a channel that is not read now: only who they are and how much they
+/// were there (nothing of the moment, like whether they are here or what colour their name was).
+fn archive(u: &mut Obj) {
+    for k in ["present", "previousActive", "color", "exempt", "subscribed"] {
+        u.remove(k);
+    }
+    shrink(u);
+}
+
+/// What to do with the people of a channel that was left.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Leftover {
+    /// Keep them apart, in the smallest form (they come back with the channel).
+    Keep,
+    /// They are the new channel's people now.
+    Move,
+    /// Gone.
+    Delete,
+}
+
 /// A change makes a save due: the 50th since the last, or the first a minute after the last save.
 fn due(unsaved: u32, saved_at: u64, now: u64) -> bool {
     unsaved == 0 || now.saturating_sub(saved_at) >= 60
@@ -161,6 +228,7 @@ impl Engine {
         if unix().saturating_sub(c.credits.last_write) > STALE {
             c.credits = Credits::default();
         }
+        c.users.iter_mut().for_each(expand);
         c.saved_at = unix();
         self.st.borrow_mut().community = c;
     }
@@ -170,15 +238,24 @@ impl Engine {
         let text = {
             let c = &mut self.st.borrow_mut().community;
             c.saved_at = unix();
-            serde_json::to_string(&*c).unwrap_or_default()
+            // Written small: each record without what is only its default.
+            let mut users = c.users.clone();
+            users.iter_mut().for_each(shrink);
+            serde_json::to_string(&json!({"users": users, "credits": c.credits})).unwrap_or_default()
         };
         let (path, tmp) = (file(), file().with_extension("json.tmp"));
-        if std::fs::write(&tmp, text)
-            .and_then(|()| std::fs::rename(&tmp, &path))
-            .is_err()
-        {
-            crate::error(format!("can't save {}", path.display()));
-        }
+        std::thread::Builder::new()
+            .name("save-community".into())
+            .spawn(move || {
+                let Ok(_guard) = crate::dev_write_guard() else { return };
+                if std::fs::write(&tmp, text)
+                    .and_then(|()| std::fs::rename(&tmp, &path))
+                    .is_err()
+                {
+                    crate::error(format!("can't save {}", path.display()));
+                }
+            })
+            .ok();
     }
 
     /// Saved every 50 changes, on the first change a minute after the last save, on quit, and on a
@@ -308,11 +385,69 @@ impl Engine {
             .cloned()
     }
 
-    /// The channel of `platform` was changed: its chat lines, pins and who spoke are of the old one, so
-    /// they go (the community keeps them, apart, for when it comes back).
-    pub fn channel_changed(self: &Rc<Self>, platform: &str) {
+    /// How many people are saved from `channel` of `platform`.
+    pub fn community_of(&self, platform: &str, channel: &str) -> usize {
+        let channel = channel.trim().to_lowercase();
+        self.st
+            .borrow()
+            .community
+            .users
+            .iter()
+            .filter(|u| s(u, "type") == platform && s(u, "channel") == channel)
+            .count()
+    }
+
+    /// The channel of `platform` was changed from `old`: its chat lines, pins and who spoke are of the old
+    /// one, so they go, and its people are dealt with as asked (`what`).
+    pub fn channel_changed(self: &Rc<Self>, platform: &str, old: &str, what: Leftover) {
         self.chat_forget(platform);
         self.reset_first_words(Some(platform));
+        let (old, new) = (old.trim().to_lowercase(), self.broadcaster(platform));
+        if !old.is_empty() && old != new {
+            let mut st = self.st.borrow_mut();
+            let c = &mut st.community;
+            let of_old = |u: &Obj| s(u, "type") == platform && s(u, "channel") == old;
+            match what {
+                Leftover::Keep => c.users.iter_mut().filter(|u| of_old(u)).for_each(archive),
+                Leftover::Delete => {
+                    c.users.retain(|u| !of_old(u));
+                    c.credits = Credits::default();
+                }
+                Leftover::Move => {
+                    let moved: Vec<Obj> = c.users.iter().filter(|u| of_old(u)).cloned().collect();
+                    c.users.retain(|u| !of_old(u));
+                    // Who is already in the new channel, by id: a lookup, not a scan per person.
+                    let at: std::collections::HashMap<String, usize> = c
+                        .users
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, x)| s(x, "type") == platform && s(x, "channel") == new)
+                        .map(|(i, x)| (s(x, "id").to_string(), i))
+                        .collect();
+                    for mut u in moved {
+                        // Somebody already there in the new channel: their numbers add up.
+                        let id = s(&u, "id").to_string();
+                        let there = at.get(&id).map(|i| &mut c.users[*i]);
+                        match there {
+                            Some(x) => {
+                                for k in ["messages", "activeSecs"] {
+                                    let sum = n(x, k) as u64 + n(&u, k) as u64;
+                                    x.insert(k.into(), json!(sum));
+                                }
+                                // The first time seen is the earlier one.
+                                if s(&u, "firstMessage") < s(x, "firstMessage") && !s(&u, "firstMessage").is_empty() {
+                                    x.insert("firstMessage".into(), u["firstMessage"].clone());
+                                }
+                            }
+                            None => {
+                                u.insert("channel".into(), new.clone().into());
+                                c.users.push(u);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         self.community_changed();
         crate::ui::chat();
         crate::ui::changed();
@@ -658,7 +793,7 @@ mod tests {
             assert_eq!(e.broadcaster("kick"), "ana");
             // Another channel: nobody there yet, and the old chat is gone.
             e.cfg.send_modify(|c| c.kick.channel = "bia".into());
-            e.channel_changed("kick");
+            e.channel_changed("kick", "ana", Leftover::Keep);
             assert!(e.users().is_empty() && e.community_user("kick", "1").is_none());
             say("2", "Yan");
             assert_eq!(e.users().len(), 1);
@@ -669,6 +804,98 @@ mod tests {
             // The same person in two channels is two records.
             say("2", "Yan");
             assert_eq!(e.users().len(), 2);
+        });
+    }
+
+    fn user(id: &str, channel: &str, messages: u64, first: &str) -> Obj {
+        json!({"id": id, "name": id, "display": id, "role": 1, "subscribed": true, "type": "kick", "channel": channel,
+            "firstMessage": first, "present": true, "previousActive": "2026-01-01T10:00:00.1234567-03:00",
+            "lastActive": "2026-02-02T10:00:00.5-03:00", "exempt": false, "color": "#FF0000",
+            "messages": messages, "activeSecs": 60})
+        .as_object()
+        .cloned()
+        .unwrap()
+    }
+
+    #[test]
+    fn a_record_is_written_small_and_read_back_whole() {
+        let mut u = user("7", "ana", 0, "2026-01-01T09:00:00.9999999-03:00");
+        u.insert("role".into(), json!(1));
+        u.insert("subscribed".into(), json!(false));
+        u.insert("present".into(), json!(false));
+        u.insert("previousActive".into(), json!(NEVER));
+        let whole = u.clone();
+        shrink(&mut u);
+        assert!(!u.contains_key("role") && !u.contains_key("present") && !u.contains_key("messages"));
+        assert_eq!(
+            s(&u, "firstMessage"),
+            "2026-01-01T09:00:00-03:00",
+            "no fraction of a second"
+        );
+        assert_eq!(s(&u, "lastActive"), "2026-02-02T10:00:00-03:00");
+        expand(&mut u);
+        assert_eq!(u["role"], 1);
+        assert_eq!(u["present"], false);
+        assert_eq!(u["previousActive"], NEVER);
+        assert_eq!(u["messages"], 0);
+        assert_eq!(s(&u, "id"), s(&whole, "id"));
+    }
+
+    #[test]
+    fn leaving_a_channel_keeps_moves_or_deletes_its_people() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tokio::task::LocalSet::new().block_on(&rt, async {
+            let channels = |e: &Rc<Engine>| {
+                e.st.borrow()
+                    .community
+                    .users
+                    .iter()
+                    .map(|u| format!("{}@{}", s(u, "id"), s(u, "channel")))
+                    .collect::<Vec<_>>()
+            };
+            let setup = || {
+                let e = engine();
+                e.cfg.send_modify(|c| c.kick.channel = "bia".into());
+                {
+                    let c = &mut e.st.borrow_mut().community;
+                    c.users = vec![
+                        user("1", "ana", 5, "2026-01-01T09:00:00-03:00"),
+                        user("2", "ana", 1, "2026-01-02T09:00:00-03:00"),
+                        user("1", "bia", 2, "2026-03-01T09:00:00-03:00"),
+                    ];
+                    c.credits.add("users", "Zed", true);
+                }
+                e
+            };
+            // Apart: still there, as an archive (nothing of the moment).
+            let e = setup();
+            assert_eq!(e.community_of("kick", "Ana"), 2);
+            e.channel_changed("kick", "ana", Leftover::Keep);
+            assert_eq!(channels(&e), ["1@ana", "2@ana", "1@bia"]);
+            let kept = e.st.borrow().community.users[0].clone();
+            assert!(!kept.contains_key("color") && !kept.contains_key("present"));
+            assert_eq!(kept["messages"], 5);
+            // Moved: they are the new channel's, and who was there already adds up.
+            let e = setup();
+            e.channel_changed("kick", "ana", Leftover::Move);
+            assert_eq!(channels(&e), ["1@bia", "2@bia"]);
+            let st = e.st.borrow();
+            let one = st.community.users.iter().find(|u| s(u, "id") == "1").unwrap();
+            assert_eq!(one["messages"], 7, "5 and 2");
+            assert_eq!(
+                s(one, "firstMessage"),
+                "2026-01-01T09:00:00-03:00",
+                "the earlier first time"
+            );
+            drop(st);
+            // Deleted: gone, with the stream's credits.
+            let e = setup();
+            e.channel_changed("kick", "ana", Leftover::Delete);
+            assert_eq!(channels(&e), ["1@bia"]);
+            assert!(e.st.borrow().community.credits.users.is_empty());
         });
     }
 

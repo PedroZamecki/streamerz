@@ -3,6 +3,8 @@
 Rules for commits, branches and releases are in `CLAUDE.md` (also `AGENTS.md`); the plan is `PLAN.md`,
 and what's covered is `COVERAGE.md`.
 
+The required pattern for UI work is in `docs/UI.md`.
+
 ## Setup
 
 You need Rust (https://rustup.rs) and Node (for commitlint in the git hooks). Then, once per clone:
@@ -34,13 +36,17 @@ cargo ftest                   # run all tests
 cargo ftest twitch::tests     # run only matching unit tests
 ```
 
-To share your existing release `streamerz.json` and `cache/` without copying files:
+Fast and debug builds start with a private copy of the global settings in the OS temporary
+folder. Each process gets its own copy, and prints its path in the log. Changes in that copy do
+not update the source settings. Automatic connections, timers, plugins and startup actions are
+skipped. The local WebSocket server starts on port 8090, or an available port if it is taken. Set
+`STREAMERZ_DEV_PORT` to request another port; the log shows the settings path, which contains the
+actual port. HTTP, UDP and extra servers are off at startup. The development version
+shows the Git commit and `-dirty` when files have uncommitted changes.
 
-```
-STREAMERZ_CONFIG=target/release/streamerz.json cargo frun
-# or:
-./target/fast/Streamerz --config target/release/streamerz.json
-```
+The temporary copy is deleted on normal exit. A later development start tries to remove abandoned
+copies older than a day when their instance lock is free. As with other temporary files, an abrupt
+termination can leave a copy behind until then. Treat the copy as sensitive: it can contain logins.
 
 Optional host tools for even faster linking and clean rebuilds on Linux:
 
@@ -49,10 +55,10 @@ RUSTFLAGS="-C link-arg=-fuse-ld=mold" cargo fbuild   # fast linker (mold or wild
 RUSTC_WRAPPER=sccache cargo fbuild                   # shared rustc artifact cache
 ```
 
-Settings live in `streamerz.json` next to the binary (`target/release/streamerz.json` by default, or the
-path given via `--config <path>` / `STREAMERZ_CONFIG`). It's written
-to a temp file and renamed over the old one, and the previous version is kept as `streamerz.json.bak`;
-when the file is invalid, the `.bak` is loaded instead and the broken file is left alone.
+Production settings use the global configuration folder. Older selected or portable settings are
+copied there on first start, preserving the old files and their keyring identity. The settings file is written to a temporary file and renamed over
+the old one, and the previous version is kept as `streamerz.json.bak`; when the file is invalid,
+the `.bak` is loaded instead and the broken file is left alone.
 
 ## Checks (same as the hooks and CI)
 
@@ -502,8 +508,8 @@ asyncio.run(main())
 
 ## Chat without live channels (dev mode)
 
-Started with `STREAMERZ_DEV=1`, Streamerz sends no chat: every message an action would send (Twitch, YouTube,
-Kick, TikTok send/reply) is kept instead, and the WebSocket server answers two extra requests (unknown
+Started with `STREAMERZ_DEV=1`, Streamerz sends no chat: messages an action would send to Twitch, YouTube,
+or Kick are kept instead, and the WebSocket server answers extra requests (unknown
 otherwise, so a release never has them unless the variable is set):
 
 - `{"request": "InjectChat", "id": "1", "platform": "kick", "user": "bo", "role": "viewer", "text": "!hi"}`
@@ -534,13 +540,10 @@ every few seconds. Then run Streamerz with `"tiktok": {"channel": NAME, "autoCon
 to the TikTok events on its WebSocket. Chat on a quiet live can take minutes; joins and likes come at once.
 An emote-only comment has no text (its emotes are in field 13).
 
-Login and sending use the user's own browser over its DevTools port (src/cdp.rs: Chrome, Chromium, Edge,
-Brave or Vivaldi; `STREAMERZ_BROWSER` picks another, e.g. `/usr/lib/chromium/chromium` to skip a
-distribution's wrapper and its flags). Sending types into the live page's chat in a headless tab; the
-test `tiktok::tests::sends_by_typing_into_the_live_page` runs it against a local stand-in for the page
-(skipped when no such browser is installed). To try a real live page by hand without posting to TikTok,
-point it at a local copy: `STREAMERZ_TIKTOK_URL=http://127.0.0.1:8765` loads `{url}/@{channel}/live`.
-On a display without Wayland (the hidden `:99`), Chromium may need `--ozone-platform=x11`.
+TikTok chat is read-only. Imported Send Message sub-actions are retained for compatibility, but report
+that sending is unavailable. An optional broadcaster login can help with restricted rooms. Login uses
+an installed Chromium-based browser with a separate Streamerz profile; `STREAMERZ_BROWSER` selects the
+executable. No browser is kept running for reading or sending.
 
 ## OBS sub-actions against a real OBS
 
@@ -835,9 +838,25 @@ To try it: `STREAMERZ_CRASH_TEST=1 STREAMERZ_CONFIG=/tmp/x/s.json Streamerz`, th
 mode, the `ui` tool's `panic` crashes a running window instead: the hook logs a `[FATAL]` line and has the
 engine write `community.json` before the process ends.
 
+Only `crash-*.txt` files are reports: the folder also holds the trail (`context.txt`) and `stderr.log`,
+where everything written to stderr is kept (a pipe replaces stderr at start; a thread copies each line to
+the file and to the log as a `stderr:` line, and what's left at exit is drained to the file).
+
+## Scenarios and the reference
+
+`tests/scenarios/*.json` describe actions, steps (fire a trigger, chat, run an action) and what must come of
+it; `cargo test scenarios` runs them on the engine alone (see [docs/SCENARIOS.md](docs/SCENARIOS.md)).
+`./target/fast/Streamerz --scenario tests/scenarios` runs them from a build; which triggers and sub-actions
+they cover: `cargo test --profile fast scenario_coverage -- --ignored` (writes
+`target/scenario-coverage.txt`). Every bug fixed in a trigger or sub-action gets a scenario where it can.
+
+`docs/reference` has a page per trigger and sub-action (format in its README). `cargo test docs` fails when
+one is missing, doubled, or breaks the writing rules. `cargo test --profile fast dump_types -- --ignored`
+writes `target/types.json`, every type with its category and fields, to write new pages from.
+
 ## Where the settings are
 
-In order: `--config`, `STREAMERZ_CONFIG`, the folder named in `location` (a file in the usual config
-folder, written when the user chose another one on first run or in Settings), a `streamerz.json` next to the
-program, the usual folder. On a first run (none of those) a dialog asks. Linux logins are tied to the
-settings file's path in the keyring, so moving the file asks for them again.
+Production uses the global configuration folder. Existing selected or portable settings are copied
+there on first start. Development builds use separate temporary copies; `--config` and
+`STREAMERZ_CONFIG` do not redirect a running app. For MCP, use `STREAMERZ_URL` to select a
+development instance.

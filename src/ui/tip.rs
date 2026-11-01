@@ -61,17 +61,6 @@ fn source(platform: &str, url: &str) -> Option<&'static str> {
         })
 }
 
-/// The emote's id in its picture's address, when it has one (".../emote/ID/2x.webp").
-fn emote_id(url: &str) -> Option<String> {
-    let path = url.split("//").nth(1)?.split_once('/')?.1;
-    let parts: Vec<&str> = path.split(['/', '?']).collect();
-    let at = parts
-        .iter()
-        .rposition(|p| matches!(*p, "emote" | "emotes" | "emoticons"))?;
-    let id = parts.get(at + 1).filter(|id| **id != "v2").or(parts.get(at + 2))?;
-    Some((*id).to_string())
-}
-
 /// An icon key as an image: Lucide ones in the muted ink, the rest (logos) as they are.
 fn picture(key: &str, size: i32) -> Option<SvgImage> {
     if matches!(key, "smile" | "hash" | "tag" | "play") {
@@ -79,6 +68,38 @@ fn picture(key: &str, size: i32) -> Option<SvgImage> {
     } else {
         icon_sized(key, size)
     }
+}
+
+/// What a badge means, in words: nothing when it is one we have no words for (never its internal key).
+fn about_badge(key: &str) -> Option<String> {
+    let base = key.rsplit(':').next().unwrap_or(key);
+    let (base, version) = base.split_once('/').unwrap_or((base, ""));
+    let base = if base.starts_with("sub_gifter") {
+        "sub_gifter"
+    } else {
+        base
+    };
+    let k = match base {
+        "broadcaster" | "owner" | "host" => "tip.badge.broadcaster",
+        "moderator" | "lead_moderator" => "tip.badge.moderator",
+        "vip" => "tip.badge.vip",
+        "subscriber" | "member" | "founder" => "tip.badge.subscriber",
+        "og" => "tip.badge.og",
+        "verified" => "tip.badge.verified",
+        "staff" => "tip.badge.staff",
+        "sub_gifter" => "tip.badge.gifter",
+        "friend" => "tip.badge.friend",
+        "sidekick" => "tip.badge.sidekick",
+        "partner" => "tip.badge.partner",
+        "premium" | "turbo" => "tip.badge.premium",
+        _ => return None,
+    };
+    let text = crate::i18n::tr(k).to_string();
+    // A subscriber badge's version is its months on Twitch.
+    Some(match (base, version.parse::<u32>()) {
+        ("subscriber", Ok(m)) if m > 0 && m < 1000 => format!("{text} ({m})"),
+        _ => text,
+    })
 }
 
 /// What the panel holds.
@@ -149,8 +170,19 @@ fn content(cmds: &Cmds, tip: &Tip) -> Content {
             let src = source(platform, url);
             let pic = img::get(cmds, url, PIC, false).or_else(|| img::get(cmds, url, 28, false));
             let mut rows = Vec::new();
-            if let Some(id) = emote_id(url) {
-                rows.extend(row("hash").map(|i| (i, id)));
+            // Where it comes from, in words (the picture's id is no use to anyone).
+            let from = match src {
+                Some("ui:7tv") => "7TV",
+                Some("ui:bttv") => "BetterTTV",
+                Some("ui:ffz") => "FrankerFaceZ",
+                Some("twitch") => "Twitch",
+                Some("kick") => "Kick",
+                Some("youtube") => "YouTube",
+                Some("tiktok") => "TikTok",
+                _ => "",
+            };
+            if !from.is_empty() {
+                rows.extend(row("smile").map(|i| (i, format!("{from} {}", crate::i18n::tr("tip.emote")))));
             }
             if pic.as_ref().is_some_and(img::Pic::animated) {
                 rows.extend(row("play").map(|i| (i, crate::i18n::tr("tip.animated").to_string())));
@@ -178,7 +210,10 @@ fn content(cmds: &Cmds, tip: &Tip) -> Content {
                 pic,
                 title,
                 source: picture(platform, 16),
-                rows: row("tag").map(|i| (i, key.clone())).into_iter().collect(),
+                rows: about_badge(key)
+                    .and_then(|t| row("info").map(|i| (i, t)))
+                    .into_iter()
+                    .collect(),
             }
         }
     }

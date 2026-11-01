@@ -13,8 +13,6 @@ use std::rc::Rc;
 
 pub const PLATFORMS: [&str; 4] = ["twitch", "youtube", "kick", "tiktok"];
 
-/// Lines kept (all platforms together).
-const KEEP: usize = 500;
 /// Historical lines kept per platform across restarts / on room join.
 const KEEP_HISTORY: usize = 100;
 /// Emotes remembered per platform (the most recent).
@@ -22,6 +20,10 @@ const EMOTES: usize = 300;
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// What a chat message's actions do.
@@ -104,12 +106,37 @@ pub struct Line {
     pub event: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub icon: String,
+    /// What a reward or a power-up cost (0: nothing said), and the icon of what it was paid in
+    /// (empty: channel points).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub cost: u64,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub cost_icon: String,
+    /// A picture that goes with an event (a reward's icon, an emote it unlocked, a gift), as a URL, and
+    /// whether it is drawn big (a gigantified emote).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub picture: String,
+    #[serde(skip_serializing_if = "is_false")]
+    pub huge: bool,
     /// A colour that sets the line apart ("#RRGGBB"): events, highlighted and first messages.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub accent: String,
     /// What's special about a message, said above it ("Highlighted", "First message").
     #[serde(skip_serializing_if = "String::is_empty")]
     pub tag: String,
+    /// Ours, shown the moment it was sent: the platform's own copy (with its id) replaces it when it comes.
+    #[serde(skip)]
+    pub local: bool,
+    /// A `/me` message: shown in italics, in the sender's colour.
+    #[serde(skip_serializing_if = "is_false")]
+    pub action: bool,
+}
+
+/// The words of a `/me` message sent as an action (`/me waves` or IRC's `\x01ACTION waves\x01`).
+pub fn action_of(text: &str) -> Option<&str> {
+    text.strip_prefix("\x01ACTION ")
+        .and_then(|s| s.strip_suffix('\x01'))
+        .or_else(|| text.strip_prefix("/me ").filter(|s| !s.is_empty()))
 }
 
 /// An event the chat shows: its platform, icon, colour, words (an i18n key, with the trigger's
@@ -120,6 +147,14 @@ struct Ev {
     accent: &'static str,
     says: &'static str,
     with: Option<&'static str>,
+    /// The argument holding what it cost, and what it was paid in (an icon; "" for channel points).
+    cost: Option<&'static str>,
+    cost_icon: &'static str,
+    /// The argument holding a picture for it, and whether that picture is drawn big.
+    picture: Option<&'static str>,
+    huge: bool,
+    /// The argument holding a colour of its own ("#RRGGBB", a reward's), over `accent`.
+    color: Option<&'static str>,
 }
 
 const TWITCH: &str = "#9146FF";
@@ -139,7 +174,13 @@ fn event_of(kind: u32, a: &Obj) -> Option<Ev> {
         accent,
         says,
         with,
+        cost: None,
+        cost_icon: "",
+        picture: None,
+        huge: false,
+        color: None,
     };
+    let text = |k: &str| a.get(k).and_then(Value::as_str).unwrap_or("");
     Some(match kind {
         102 => ev("twitch", "gem", TWITCH, "chat.ev.cheer", None),
         103 => ev("twitch", "star", TWITCH, "chat.ev.sub", None),
@@ -149,15 +190,71 @@ fn event_of(kind: u32, a: &Obj) -> Option<Ev> {
         105 => ev("twitch", "gift", TWITCH, "chat.ev.gift_sub", None),
         106 => ev("twitch", "gift", TWITCH, "chat.ev.gift_bomb", None),
         107 => ev("twitch", "swords", TWITCH, "chat.ev.raid", None),
-        112 => ev("twitch", "sparkles", TWITCH, "chat.ev.reward", Some("rawInput")),
-        138 => {
-            let accent = match a.get("announceColor").and_then(Value::as_str).unwrap_or("") {
-                "BLUE" => "#1E69FF",
-                "GREEN" => "#00C881",
-                "ORANGE" => "#FF9100",
+        // One with words comes as a chat message too (marked with the reward): shown there.
+        112 if !text("rawInput").is_empty() => return None,
+        112 => Ev {
+            cost: Some("rewardCost"),
+            picture: Some("rewardImage"),
+            color: Some("rewardColor"),
+            ..ev("twitch", "", TWITCH, "chat.ev.reward", None)
+        },
+        // The rewards every channel has (highlight a message, unlock an emote...) and the power-ups.
+        194 => {
+            let (says, icon) = match text("rewardType") {
+                "send_highlighted_message" => ("chat.ev.auto.highlight", "highlighter"),
+                "single_message_bypass_sub_mode" => ("chat.ev.auto.bypass", "message-square"),
+                "random_sub_emote_unlock" => ("chat.ev.auto.random_emote", "smile"),
+                "chosen_sub_emote_unlock" => ("chat.ev.auto.chosen_emote", "smile"),
+                "chosen_modified_sub_emote_unlock" => ("chat.ev.auto.modified_emote", "smile"),
+                "message_effect" => ("chat.ev.auto.effect", "sparkles"),
+                "gigantify_an_emote" => ("chat.ev.auto.gigantify", "maximize"),
+                "celebration" => ("chat.ev.auto.celebration", "party-popper"),
+                _ => ("chat.ev.reward_other", "sparkles"),
+            };
+            Ev {
+                cost: Some("rewardCost"),
+                picture: Some(if a.contains_key("gigantifiedEmoteUrl") {
+                    "gigantifiedEmoteUrl"
+                } else {
+                    "unlockedEmoteUrl"
+                }),
+                huge: text("rewardType") == "gigantify_an_emote",
+                ..ev("twitch", icon, TWITCH, says, None)
+            }
+        }
+        196 | 496 => {
+            let says = match text("powerUpType") {
+                "message_effect" => "chat.ev.power.effect",
+                "celebration" => "chat.ev.power.celebration",
+                "gigantify_an_emote" => "chat.ev.power.gigantify",
+                _ if kind == 496 => "chat.ev.power.custom",
+                _ => "chat.ev.power.other",
+            };
+            Ev {
+                cost: Some("bits"),
+                cost_icon: "gem",
+                picture: Some("emoteUrl"),
+                huge: text("powerUpType") == "gigantify_an_emote",
+                ..ev("twitch", "zap", TWITCH, says, None)
+            }
+        }
+        472 => ev("twitch", "flame", TWITCH, "chat.ev.watch_streak", None),
+        138 | 481 => {
+            let color = match a.get("announceColor").and_then(Value::as_str).unwrap_or("PRIMARY") {
+                "BLUE" => "#00D6D6",
+                "GREEN" => "#00DB84",
+                "ORANGE" => "#FF8200",
+                "PURPLE" => TWITCH,
                 _ => TWITCH,
             };
-            ev("twitch", "megaphone", accent, "chat.ev.announcement", Some("message"))
+            let is_primary = a
+                .get("announceColor")
+                .and_then(Value::as_str)
+                .is_none_or(|c| c == "PRIMARY");
+            Ev {
+                color: if is_primary { Some("channelColor") } else { None },
+                ..ev("twitch", "megaphone", color, "chat.ev.announcement", Some("message"))
+            }
         }
         136 => ev("twitch", "clock", QUIET, "chat.ev.timeout", None),
         137 => ev("twitch", "ban", QUIET, "chat.ev.ban", None),
@@ -167,7 +264,11 @@ fn event_of(kind: u32, a: &Obj) -> Option<Ev> {
         35017 => ev("kick", "gift", KICK, "chat.ev.gift_bomb_kick", None),
         35018 => ev("kick", "clock", QUIET, "chat.ev.timeout", None),
         35019 => ev("kick", "ban", QUIET, "chat.ev.ban", None),
-        35024 => ev("kick", "sparkles", KICK, "chat.ev.reward_kick", Some("rawInput")),
+        35024 => Ev {
+            cost: Some("rewardCost"),
+            color: Some("reward.backgroundColor"),
+            ..ev("kick", "sparkles", KICK, "chat.ev.reward_kick", Some("rawInput"))
+        },
         35025 => ev("kick", "gem", KICK, "chat.ev.kicks", Some("rawInput")),
         4006 => ev(
             "youtube",
@@ -182,7 +283,11 @@ fn event_of(kind: u32, a: &Obj) -> Option<Ev> {
         4014 => ev("youtube", "gift", MEMBERS, "chat.ev.member_gift", None),
         // A combo gift repeats while it grows: shown once, when it ends.
         41002 if a.get("giftType").and_then(Value::as_u64) == Some(1) && !yes("repeatEnd") => return None,
-        41002 => ev("tiktok", "gift", TIKTOK, "chat.ev.tiktok_gift", None),
+        41002 => Ev {
+            cost: Some("coins"),
+            picture: Some("giftPictureUrl"),
+            ..ev("tiktok", "gift", TIKTOK, "chat.ev.tiktok_gift", None)
+        },
         41004 => ev("tiktok", "user-plus", TIKTOK, "chat.ev.follow", None),
         41005 => ev("tiktok", "share-2", TIKTOK, "chat.ev.share", None),
         41006 => ev("tiktok", "star", TIKTOK, "chat.ev.sub", None),
@@ -195,6 +300,7 @@ fn special(message_type: &str) -> Option<(&'static str, &'static str)> {
     Some(match message_type {
         "channel_points_highlighted" => (crate::i18n::tr("chat.tag.highlighted"), TWITCH),
         "user_intro" => (crate::i18n::tr("chat.tag.first"), "#00C8AF"),
+        "channel_points_sub_only" => (crate::i18n::tr("chat.tag.sub_only"), TWITCH),
         "power_ups_gigantified_emote" => (crate::i18n::tr("chat.tag.gigantified"), TWITCH),
         "power_ups_message_effect" => (crate::i18n::tr("chat.tag.effect"), TWITCH),
         _ => return None,
@@ -211,10 +317,13 @@ impl Reply {
     /// From a chat's args: Twitch's `reply.*` or Kick's `replyTo`/`replyToMessage`.
     pub fn from_args(args: &crate::model::Obj) -> Option<Reply> {
         let s = |k: &str| args.get(k).and_then(Value::as_str).filter(|v| !v.is_empty());
-        let (user, text) = match (s("reply.userName"), s("reply.msgBody")) {
-            (Some(u), Some(t)) => (u, t.replace(r"\s", " ")),
-            _ => (s("replyTo")?, s("replyToMessage").unwrap_or("").to_string()),
-        };
+        let user = s("reply.userName")
+            .or_else(|| s("reply.userLogin"))
+            .or_else(|| s("replyTo"))?;
+        let text = s("reply.msgBody")
+            .map(|t| t.replace(r"\s", " "))
+            .or_else(|| s("replyToMessage").map(String::from))
+            .unwrap_or_default();
         // Kick's emotes as their names.
         let text = text.split(' ').map(shown).collect::<Vec<_>>().join(" ");
         Some(Reply {
@@ -226,16 +335,26 @@ impl Reply {
     /// Twitch starts a reply with "@parent ": shown above it instead.
     pub fn strip(&self, text: &str) -> String {
         let t = text.trim_start();
-        match t.strip_prefix('@').and_then(|r| r.split_once(' ')) {
-            Some((who, rest)) if who.eq_ignore_ascii_case(&self.user) => rest.to_string(),
-            _ => text.to_string(),
+        if let Some(r) = t.strip_prefix('@') {
+            if let Some((who, rest)) = r.split_once(' ') {
+                if who.eq_ignore_ascii_case(&self.user) {
+                    return rest.to_string();
+                }
+            } else if r.eq_ignore_ascii_case(&self.user) {
+                return String::new();
+            }
         }
+        text.to_string()
     }
 }
 
 #[derive(Default)]
 pub struct Log {
     lines: VecDeque<Line>,
+    /// How many lines are kept, and for how long (the config's, taken in as lines come).
+    limits: crate::ChatLimits,
+    /// A sweep for lines past their lifetime is waiting to run.
+    sweeping: bool,
     seq: u64,
     /// Incremented when room history / welcome lines are spliced in so UI panes resync cleanly.
     reset_gen: u64,
@@ -248,8 +367,49 @@ pub struct Log {
     cards: HashMap<(String, String), (std::time::Instant, Facts)>,
     /// The message pinned in each platform's chat, if any (one each).
     pins: Vec<Pin>,
+    /// The polls and predictions going on (and just over), per platform.
+    polls: Vec<Poll>,
+    /// The platforms whose stream has ended (until it starts again).
+    ended: Vec<String>,
+    viewers: [Option<u64>; 4],
+    /// Development-only connection overrides for UI testing.
+    simulated_connections: [Option<bool>; 4],
     /// When Twitch's pin was last asked for (it has no event for pins made elsewhere).
     twitch_pin_asked: Option<std::time::Instant>,
+}
+
+/// A poll or a prediction at the top of a chat: what is asked, and how the choices stand.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Poll {
+    pub platform: String,
+    pub id: String,
+    pub title: String,
+    /// A prediction (points on an outcome), not a poll (votes).
+    pub prediction: bool,
+    /// Each choice and its votes (a prediction's: the points put on it).
+    pub choices: Vec<(String, u64)>,
+    /// When voting closes (ms since the epoch), if said.
+    pub ends: Option<u64>,
+    /// When it ended or was locked (ms), if it has: the card stays a little, with the result.
+    pub over: Option<u64>,
+}
+
+/// What a platform's chat is doing, for the notice over it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ChatState {
+    /// Chat is connected, regardless of whether the stream is live.
+    Connected,
+    /// Not connected.
+    Down,
+}
+
+/// How long a finished poll's card stays.
+const POLL_AFTER: u64 = 20_000;
+
+impl Poll {
+    pub fn live(&self, now_ms: u64) -> bool {
+        self.over.is_none_or(|o| now_ms < o + POLL_AFTER)
+    }
 }
 
 /// A message pinned at the top of a chat.
@@ -382,12 +542,49 @@ fn same_msg(a: &Line, b: &Line) -> bool {
 
 impl Log {
     fn push(&mut self, mut l: Line) {
+        if !self.limits.save_history {
+            return;
+        }
         self.seq += 1;
         l.seq = self.seq;
-        if self.lines.len() == KEEP {
-            self.lines.pop_front();
-        }
         self.lines.push_back(l);
+        self.trim();
+    }
+
+    /// Lines over the limits go, the oldest first.
+    fn trim(&mut self) -> usize {
+        if !self.limits.save_history {
+            let n = self.lines.len();
+            self.lines.clear();
+            self.lines.shrink_to_fit();
+            crate::trim_memory();
+            return n;
+        }
+        let gone = self.limits.excess(self.lines.iter().map(|l| index(&l.platform)));
+        let n = gone.len();
+        for at in gone.into_iter().rev() {
+            self.lines.remove(at);
+        }
+        if n > 0 && self.lines.capacity() > 2 * self.lines.len().max(16) {
+            self.lines.shrink_to_fit();
+            crate::trim_memory();
+        }
+        n
+    }
+
+    /// Lines older than their lifetime go (none when it's off). The age is of when each was said.
+    fn age_out(&mut self, now: u64) -> usize {
+        let life = self.limits.lifetime * 1000;
+        let before = self.lines.len();
+        if life > 0 {
+            self.lines.retain(|l| l.ts <= 0 || now < l.ts as u64 + life);
+        }
+        let removed = before - self.lines.len();
+        if removed > 0 && self.lines.capacity() > 2 * self.lines.len().max(16) {
+            self.lines.shrink_to_fit();
+            crate::trim_memory();
+        }
+        removed
     }
 
     fn remember_emote(&mut self, i: usize, token: String, url: String) {
@@ -455,6 +652,51 @@ fn badge_name(key: &str) -> String {
 }
 
 impl Engine {
+    /// The chat log, with the config's limits in it, so what goes in is trimmed to them.
+    fn chat_log_mut(&self) -> std::cell::RefMut<'_, Log> {
+        let limits = self.config().window.chat.clamped();
+        let mut log = std::cell::RefMut::map(self.st.borrow_mut(), |s| &mut s.chat_log);
+        log.limits = limits;
+        log
+    }
+
+    /// A line came: when lines have a lifetime and no sweep waits, one is set.
+    fn chat_sweep_soon(self: &Rc<Self>) {
+        if self.config().window.chat.lifetime > 0 && !self.st.borrow().chat_log.sweeping {
+            self.chat_trim();
+        }
+    }
+
+    /// The limits changed (or lines came): lines over them go now, and the ones that will be past their
+    /// lifetime are taken out when it is up. Idle, with no lifetime, nothing is waiting.
+    pub fn chat_trim(self: &Rc<Self>) {
+        let (life, due) = {
+            let mut guard = self.chat_log_mut();
+            let log = &mut *guard;
+            let trimmed = log.trim();
+            let now = now_ms();
+            let gone = log.age_out(now);
+            let life = log.limits.lifetime * 1000;
+            let oldest = log.lines.iter().filter(|l| l.ts > 0).map(|l| l.ts as u64).min();
+            if trimmed > 0 || gone > 0 {
+                log.reset_gen += 1;
+            }
+            // Sweeps come in batches (a tenth of the lifetime, at least a second), not for every line.
+            let due = oldest.map(|t| (t + life).saturating_sub(now).max((life / 10).max(1000)));
+            (life, due.filter(|_| life > 0 && !log.sweeping))
+        };
+        crate::ui::chat();
+        if let (true, Some(wait)) = (life > 0, due) {
+            self.chat_log_mut().sweeping = true;
+            let me = self.clone();
+            tokio::task::spawn_local(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+                me.chat_log_mut().sweeping = false;
+                me.chat_trim();
+            });
+        }
+    }
+
     /// Chat history is never kept on disk: the platforms give it back when we join. This removes the file
     /// older versions wrote.
     pub fn forget_saved_chat_history() {
@@ -463,21 +705,34 @@ impl Engine {
 
     /// Merge `fetched` recent messages for `platform` (oldest-to-newest) with any cached historical
     /// lines, then a divider right before live session messages (kept in memory only).
-    /// Forget what `platform`'s chat showed (its channel changed): lines, pins and who was seen.
+    /// Forget what `platform`'s chat showed (its channel changed): lines, pins, polls and who was seen.
     pub fn chat_forget(&self, platform: &str) {
-        let log = &mut self.st.borrow_mut().chat_log;
-        log.lines.retain(|l| l.platform != platform);
-        log.pins.retain(|p| p.platform != platform);
-        log.users.retain(|k, _| k.0 != platform);
-        log.cards.retain(|k, _| k.0 != platform);
-        log.reset_gen += 1;
+        {
+            let log = &mut self.st.borrow_mut().chat_log;
+            log.lines.retain(|l| l.platform != platform);
+            log.pins.retain(|p| p.platform != platform);
+            log.polls.retain(|p| p.platform != platform);
+            log.ended.retain(|p| p != platform);
+            if let Some(i) = index(platform) {
+                log.viewers[i] = None;
+            }
+            log.users.retain(|k, _| k.0 != platform);
+            log.cards.retain(|k, _| k.0 != platform);
+            log.reset_gen += 1;
+        }
+        if platform == "youtube" {
+            crate::youtube::clear_poll();
+        }
+        crate::ui::polls_changed();
+        crate::ui::chat();
     }
 
-    pub fn chat_welcome(&self, platform: &str, fetched: Vec<Line>) {
+    pub fn chat_welcome(self: &Rc<Self>, platform: &str, fetched: Vec<Line>) {
         let Some(p_idx) = index(platform) else { return };
+        self.role_from_history(platform, &fetched);
         {
-            let mut st = self.st.borrow_mut();
-            let log = &mut st.chat_log;
+            let mut guard = self.chat_log_mut();
+            let log = &mut *guard;
 
             // What there is: history (of any platform) and live lines, in the order they came.
             let mut history: Vec<Line> = Vec::new();
@@ -547,27 +802,47 @@ impl Engine {
                 log.push(l);
             }
             log.reset_gen += 1;
-            drop(st);
+            drop(guard);
             for l in &seen {
                 self.seen_in_history(l);
             }
         }
+        self.chat_sweep_soon();
         crate::ui::chat();
     }
 
     /// Keep a chat message for the window (called by `chat`).
-    pub(super) fn log_chat(&self, c: &Chat) {
+    pub(super) fn log_chat(self: &Rc<Self>, c: &Chat) {
+        // Our own message: its badges say our role now (modded or unmodded since we connected).
+        let lead = c.args.get("badges").and_then(Value::as_array).is_some_and(|b| {
+            b.iter().any(|b| {
+                b["name"]
+                    .as_str()
+                    .or(b["key"].as_str())
+                    .is_some_and(|n| n.contains("lead_moderator"))
+            })
+        });
+        let shown = crate::roles::Role::from_flags(c.broadcaster, lead, c.moderator, c.vip);
+        if crate::roles::seen_self(&c.platform, &c.user_id, shown) {
+            crate::say(format!("{}: this account is now a {} here", c.platform, shown.name()));
+            crate::ui::changed();
+        }
         {
-            let mut st = self.st.borrow_mut();
-            let log = &mut st.chat_log;
+            let mut guard = self.chat_log_mut();
+            let log = &mut *guard;
             let Some(i) = index(&c.platform) else { return };
             for e in &c.emotes {
                 log.remember_emote(i, e.0.clone(), e.1.clone());
             }
-            let (text, emotes) = normalize_line_emotes(&c.platform, c.text.clone(), &c.emotes);
+            let was_action = c.args.get("isAction").and_then(Value::as_bool).unwrap_or(false);
+            let (plain, action) = match action_of(&c.text) {
+                Some(a) => (a.to_string(), true),
+                None => (c.text.clone(), was_action),
+            };
+            let (text, emotes) = normalize_line_emotes(&c.platform, plain, &c.emotes);
             let time = crate::fmt::shown_time(&crate::fmt::now());
             let key = (c.platform.clone(), c.user_id.clone());
-            if !log.users.contains_key(&key) && log.users.len() == KEEP {
+            if !log.users.contains_key(&key) && log.users.len() >= log.limits.total {
                 if let Some(old) = log.users.iter().min_by_key(|u| u.1.last).map(|u| u.0.clone()) {
                     log.users.remove(&old);
                 }
@@ -595,6 +870,7 @@ impl Engine {
                 user_id: c.user_id.clone(),
                 reply,
                 text,
+                action,
                 emotes,
                 broadcaster: c.broadcaster,
                 moderator: c.moderator,
@@ -620,6 +896,66 @@ impl Engine {
                     .collect(),
                 ..Default::default()
             };
+            // A message sent with a channel reward: the reward over it, with its picture and price.
+            let arg = |k: &str| c.args.get(k).and_then(Value::as_str).unwrap_or("");
+            if !arg("messageRewardId").is_empty() {
+                line.tag = match arg("messageRewardTitle") {
+                    "" => crate::i18n::tr("chat.tag.reward_other").to_string(),
+                    title => crate::i18n::tr("chat.tag.reward").replace("%title%", title),
+                };
+                line.cost = c.args.get("messageRewardCost").and_then(Value::as_u64).unwrap_or(0);
+                line.cost_icon = arg("messageRewardPoints").into();
+                line.picture = arg("messageRewardImage").into();
+                line.accent = Some(arg("messageRewardColor"))
+                    .filter(|c| c.len() == 7 && c.starts_with('#'))
+                    .unwrap_or(TWITCH)
+                    .into();
+            }
+            // A gigantified emote is the message's last emote, drawn big.
+            line.huge = arg("messageType") == "power_ups_gigantified_emote";
+            // The platform's copy of what we sent from here: it takes the place of the line shown at send.
+            let norm_user = |s: &str| -> String {
+                s.chars()
+                    .filter(|c| !c.is_whitespace() && *c != '@')
+                    .collect::<String>()
+                    .to_lowercase()
+            };
+            let line_handle = c
+                .args
+                .get("uniqueId")
+                .or_else(|| c.args.get("userLogin"))
+                .or_else(|| c.args.get("authorExternalChannelId"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if let Some(mine) = log.lines.iter_mut().rev().take(200).find(|m| {
+                m.local
+                    && m.platform == line.platform
+                    && m.text == line.text
+                    && ((!m.user_id.is_empty() && m.user_id == line.user_id)
+                        || (!line_handle.is_empty()
+                            && (m.user.eq_ignore_ascii_case(line_handle)
+                                || m.user_id.eq_ignore_ascii_case(line_handle)
+                                || norm_user(&m.user) == norm_user(line_handle)))
+                        || m.user.eq_ignore_ascii_case(&line.user)
+                        || norm_user(&m.user) == norm_user(&line.user))
+            }) {
+                mine.local = false;
+                mine.user = line.user;
+                mine.user_id = line.user_id;
+                mine.msg_id = line.msg_id;
+                mine.badges = line.badges;
+                mine.emotes = line.emotes;
+                mine.color = line.color;
+                if line.reply.is_some() {
+                    mine.reply = line.reply;
+                }
+                (mine.broadcaster, mine.moderator, mine.vip, mine.subscriber) =
+                    (line.broadcaster, line.moderator, line.vip, line.subscriber);
+                log.reset_gen += 1;
+                drop(guard);
+                crate::ui::chat();
+                return;
+            }
             // Deduplicate if a message arrived both in pre-join history and right as the live socket opened.
             if log
                 .lines
@@ -633,11 +969,12 @@ impl Engine {
             line.historical = false;
             log.push(line);
         }
+        self.chat_sweep_soon();
         crate::ui::chat();
     }
 
     /// What a trigger shows in the chat, if anything (see `event_of`).
-    pub(super) fn chat_event(&self, kind: u32, a: &Obj) {
+    pub(super) fn chat_event(self: &Rc<Self>, kind: u32, a: &Obj) {
         let Some(ev) = event_of(kind, a) else { return };
         let get = |k: &str| a.get(k).map(crate::vars::text).unwrap_or_default();
         let says = crate::vars::simple(crate::i18n::tr(ev.says), a, &Obj::new());
@@ -646,7 +983,12 @@ impl Engine {
         let user = Some(get("user"))
             .filter(|u| !u.is_empty())
             .unwrap_or_else(|| get("userName"));
-        self.st.borrow_mut().chat_log.push(Line {
+        let cost_icon = if !ev.cost_icon.is_empty() {
+            ev.cost_icon.to_string()
+        } else {
+            get("rewardPoints")
+        };
+        self.chat_log_mut().push(Line {
             platform: ev.platform.into(),
             time: crate::fmt::shown_time(&crate::fmt::now()),
             ts: crate::fmt::unix_now().as_millis() as i64,
@@ -655,16 +997,25 @@ impl Engine {
             text,
             emotes,
             event: says,
+            cost: ev.cost.and_then(|k| a.get(k)).and_then(Value::as_u64).unwrap_or(0),
+            cost_icon,
+            picture: ev.picture.map(get).unwrap_or_default(),
+            huge: ev.huge,
             icon: ev.icon.into(),
-            accent: ev.accent.into(),
+            accent: ev
+                .color
+                .map(get)
+                .filter(|c| c.len() == 7 && c.starts_with('#'))
+                .unwrap_or_else(|| ev.accent.into()),
             ..Default::default()
         });
+        self.chat_sweep_soon();
         crate::ui::chat();
     }
 
     /// A line from Streamerz itself (a failed send, a dev-mode send).
     fn chat_note(&self, platform: &str, text: String) {
-        self.st.borrow_mut().chat_log.push(Line {
+        self.chat_log_mut().push(Line {
             platform: platform.into(),
             time: crate::fmt::shown_time(&crate::fmt::now()),
             user: "Streamerz".into(),
@@ -791,12 +1142,20 @@ impl Engine {
         badges
             .iter()
             .map(|(k, url)| {
+                // Twitch's pictures come from its badge sets, by set and version.
+                let url = if url.is_empty() && platform == "twitch" {
+                    crate::twitch::badge_url(k)
+                        .or_else(|| crate::twitch::badge_url(&format!("{k}/1")))
+                        .unwrap_or_default()
+                } else {
+                    url.clone()
+                };
                 let title = match platform {
                     "twitch" => crate::twitch::badge_title(k),
                     _ => None,
                 }
                 .unwrap_or_else(|| badge_name(k));
-                (k.clone(), url.clone(), title)
+                (k.clone(), url, title)
             })
             .collect()
     }
@@ -1038,12 +1397,29 @@ impl Engine {
 
     /// Whether a platform is reading chat.
     pub fn chat_connected(&self, platform: &str) -> bool {
+        if self.dev() {
+            if let Some(i) = PLATFORMS.iter().position(|p| *p == platform) {
+                if let Some(value) = self.st.borrow().chat_log.simulated_connections[i] {
+                    return value;
+                }
+            }
+        }
         match platform {
             "twitch" => self.twitch_connected(),
             "youtube" => self.youtube_connected(),
             "kick" => self.kick_connected(),
             "tiktok" => self.tiktok_connected(),
             _ => false,
+        }
+    }
+
+    /// Simulate a connection in dev mode; `None` restores the actual connection state.
+    pub fn simulate_chat_connection(&self, platform: &str, connected: Option<bool>) {
+        if self.dev() {
+            if let Some(i) = PLATFORMS.iter().position(|p| *p == platform) {
+                self.st.borrow_mut().chat_log.simulated_connections[i] = connected;
+                crate::ui::changed();
+            }
         }
     }
 
@@ -1054,7 +1430,7 @@ impl Engine {
             .into_iter()
             .filter(|p| {
                 if platform == "all" {
-                    self.chat_connected(p)
+                    self.chat_connected(p) && can_send(&self.cfg.borrow(), p)
                 } else {
                     *p == platform
                 }
@@ -1152,6 +1528,139 @@ impl Engine {
     }
 
     /// The messages pinned now, one per platform at most.
+    /// A poll or prediction started, moved or ended (one per platform and id).
+    pub fn chat_poll(&self, p: Poll) {
+        {
+            let mut st = self.st.borrow_mut();
+            let polls = &mut st.chat_log.polls;
+            let now = now_ms();
+            polls.retain(|x| x.live(now));
+            match polls.iter_mut().find(|x| x.platform == p.platform && x.id == p.id) {
+                Some(x) if *x == p => return,
+                Some(x) => *x = p,
+                None => polls.push(p),
+            }
+        }
+        crate::ui::chat();
+    }
+
+    /// The latest live viewer count, or none when it is unavailable.
+    pub fn chat_viewers(&self) -> [Option<u64>; 4] {
+        let mut counts = self.st.borrow().chat_log.viewers;
+        for (i, platform) in PLATFORMS.iter().enumerate() {
+            if !self.chat_connected(platform) {
+                counts[i] = None;
+            }
+        }
+        counts
+    }
+
+    pub fn set_chat_viewers(&self, platform: &str, count: Option<u64>) {
+        if let Some(i) = PLATFORMS.iter().position(|p| *p == platform) {
+            let changed = {
+                let mut st = self.st.borrow_mut();
+                let slot = &mut st.chat_log.viewers[i];
+                if *slot == count {
+                    false
+                } else {
+                    *slot = count;
+                    true
+                }
+            };
+            if changed {
+                crate::ui::chat();
+            }
+        }
+    }
+
+    /// Track a stream starting or ending and clear its old pins and polls.
+    pub fn chat_stream(&self, platform: &str, live: bool) {
+        if !live {
+            self.set_chat_viewers(platform, None);
+        }
+        let changed = {
+            let mut st = self.st.borrow_mut();
+            let ended = &mut st.chat_log.ended;
+            let has = ended.iter().any(|p| p == platform);
+            match (live, has) {
+                (true, true) => {
+                    ended.retain(|p| p != platform);
+                    true
+                }
+                (false, false) => {
+                    ended.push(platform.to_string());
+                    true
+                }
+                _ => false,
+            }
+        };
+        // A stream ended or a new one started: drop previous stream polls and pins.
+        self.chat_polls_clear(platform);
+        self.chat_unpinned(platform, "");
+        if changed {
+            crate::ui::changed();
+        }
+    }
+
+    /// Whether the platform has reported that its stream ended.
+    pub fn chat_stream_ended(&self, platform: &str) -> bool {
+        self.st.borrow().chat_log.ended.iter().any(|p| p == platform)
+    }
+
+    /// What `platform`'s chat is doing now, independently of its stream.
+    pub fn chat_state(&self, platform: &str) -> ChatState {
+        if self.chat_connected(platform) {
+            ChatState::Connected
+        } else {
+            ChatState::Down
+        }
+    }
+
+    /// Connects `platform`'s chat (the notice's Reconnect).
+    pub fn chat_reconnect(self: &Rc<Self>, platform: &str) {
+        match platform {
+            "twitch" => self.twitch_start().connect(),
+            "youtube" => self.youtube_start().connect(),
+            "kick" => self.kick_start().connect(),
+            _ => self.tiktok_start().send(crate::tiktok::TikTokCmd::Connect),
+        }
+    }
+
+    /// The polls and predictions to show now.
+    pub fn chat_polls(&self) -> Vec<Poll> {
+        let now = now_ms();
+        self.st
+            .borrow()
+            .chat_log
+            .polls
+            .iter()
+            .filter(|p| p.live(now))
+            .cloned()
+            .collect()
+    }
+
+    /// A platform's chat ended or left (a stream over): its polls go with it.
+    pub fn chat_polls_clear(&self, platform: &str) {
+        if platform == "youtube" {
+            crate::youtube::clear_poll();
+        }
+        let before = {
+            let mut st = self.st.borrow_mut();
+            let n = st.chat_log.polls.len();
+            st.chat_log.polls.retain(|p| p.platform != platform);
+            if n != st.chat_log.polls.len() {
+                st.chat_log.reset_gen += 1;
+                true
+            } else {
+                false
+            }
+        };
+        if before || platform == "youtube" {
+            crate::ui::polls_changed();
+            crate::ui::chat();
+        }
+    }
+
     pub fn chat_pins(&self) -> Vec<Pin> {
         let now = now_ms();
         self.st
@@ -1164,13 +1673,19 @@ impl Engine {
             .collect()
     }
 
-    /// Asks Twitch what's pinned (it has no event for pins made on its site), at most once a minute:
-    /// on connecting, and when the chat is looked at.
+    /// Asks Twitch what's pinned (it has no event for pins made on its site): on connecting, when the
+    /// chat is looked at, and polled every 5s while a pin is active so unpinning reflects promptly.
     pub fn twitch_check_pin(self: &Rc<Self>) {
         {
             let mut st = self.st.borrow_mut();
+            let has_pin = st.chat_log.pins.iter().any(|p| p.platform == "twitch");
+            let throttle = if has_pin {
+                std::time::Duration::from_secs(5)
+            } else {
+                std::time::Duration::from_secs(30)
+            };
             let asked = &mut st.chat_log.twitch_pin_asked;
-            if asked.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(60)) {
+            if asked.is_some_and(|t| t.elapsed() < throttle) {
                 return;
             }
             *asked = Some(std::time::Instant::now());
@@ -1185,11 +1700,233 @@ impl Engine {
             let Ok(v) = tw.helix("GET", "chat/pins", who, None, false, false).await else {
                 return;
             };
+            let had_pin = e.chat_pins().iter().any(|p| p.platform == "twitch");
             match twitch_pin(&v["data"][0]) {
-                Some(p) => e.chat_pinned(p),
-                None => e.chat_unpinned("twitch", ""),
+                Some(p) => {
+                    e.chat_pinned(p);
+                    let e2 = e.clone();
+                    tokio::task::spawn_local(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        e2.twitch_check_pin();
+                    });
+                }
+                None => {
+                    if had_pin {
+                        e.chat_unpinned("twitch", "");
+                    }
+                }
             }
         });
+    }
+
+    /// Our role when `platform`'s chat connects (Twitch asks instead, twitch.rs): not logged in, the owner on
+    /// our own channel, else a viewer until the badges on our messages say more (Kick and YouTube have no
+    /// call that tells).
+    pub fn settle_role(self: &Rc<Self>, platform: &str) {
+        use crate::roles::Role;
+        let me = self.my_id(platform);
+        let role = if me.is_empty() {
+            Role::Anonymous
+        } else if self.own_channel(platform) {
+            Role::Broadcaster
+        } else {
+            Role::Viewer
+        };
+        let (known, id) = crate::roles::get(platform);
+        if role == Role::Viewer && id == me && known > Role::Viewer {
+            return;
+        }
+        if crate::roles::set(platform, role, &me) {
+            crate::ui::changed();
+        }
+        // Not the owner: Kick says what we are in a channel; elsewhere our earlier messages in the history
+        // do (see `chat_welcome`), and our next message.
+        if role == Role::Viewer && platform == "kick" {
+            let e = self.clone();
+            tokio::task::spawn_local(async move { e.kick_role().await });
+        }
+    }
+
+    /// Our user id on `platform` ("" when not logged in as the broadcaster there).
+    fn my_id(&self, platform: &str) -> String {
+        let c = self.cfg.borrow();
+        match platform {
+            "kick" => c.kick.broadcaster.as_ref().map(|b| b.user_id.to_string()),
+            "youtube" => c.youtube.broadcaster.as_ref().map(|b| b.channel_id.clone()),
+            "tiktok" => c.tiktok.broadcaster.as_ref().map(|b| b.username.clone()),
+            _ => None,
+        }
+        .unwrap_or_default()
+    }
+
+    /// Kick's own answer to "what is this account in this channel" (what kick.com's chat uses; no login).
+    async fn kick_role(self: &Rc<Self>) {
+        use crate::roles::Role;
+        let (channel, name, me) = {
+            let c = self.cfg.borrow();
+            (
+                c.kick.channel.trim().to_lowercase(),
+                c.kick
+                    .broadcaster
+                    .as_ref()
+                    .map(|b| kick_slug(&b.username))
+                    .unwrap_or_default(),
+                self.my_id("kick"),
+            )
+        };
+        if channel.is_empty() || name.is_empty() {
+            return;
+        }
+        let url = format!("https://kick.com/api/v2/channels/{channel}/users/{name}");
+        let h = [("Accept".to_string(), "application/json".to_string())];
+        let Some(card) = crate::http::request("GET", &url, &h, b"")
+            .await
+            .ok()
+            .filter(|r| r.status == 200)
+            .and_then(|r| serde_json::from_slice::<Value>(&r.body).ok())
+        else {
+            return;
+        };
+        let role = if card["is_channel_owner"].as_bool() == Some(true) {
+            Role::Broadcaster
+        } else if card["is_moderator"].as_bool() == Some(true) {
+            Role::Moderator
+        } else {
+            Role::Viewer
+        };
+        if crate::roles::get("kick").1 == me && crate::roles::set("kick", role, &me) {
+            if role.moderates() {
+                crate::say(format!("kick: this account is a {} here", role.name()));
+            }
+            crate::ui::changed();
+        }
+    }
+
+    /// Our own earlier messages in a chat's history say what we are there: a moderator's badge on one
+    /// is known now, not at our next message.
+    fn role_from_history(&self, platform: &str, lines: &[Line]) {
+        let me = self.my_id(platform);
+        if me.is_empty() {
+            return;
+        }
+        // The newest of ours.
+        let Some(l) = lines.iter().rev().find(|l| l.user_id == me && !l.note) else {
+            return;
+        };
+        let lead = l.badges.iter().any(|b| b.0.contains("lead_moderator"));
+        let role = crate::roles::Role::from_flags(l.broadcaster, lead, l.moderator, l.vip);
+        if crate::roles::seen_self(platform, &me, role) {
+            crate::say(format!("{platform}: this account is a {} here", role.name()));
+            crate::ui::changed();
+        }
+    }
+
+    /// A line for what we are sending, shown at once (before the platform has taken it, and its own copy
+    /// has come back); `chat_unlocal` takes it away if the send fails. The sequence number to ask that with.
+    fn chat_local(&self, platform: &str, text: &str, bot: bool, reply: Option<&Line>) -> Option<u64> {
+        let (name, id) = {
+            let c = self.cfg.borrow();
+            let acct = |b: bool| -> Option<(String, String)> {
+                match platform {
+                    "twitch" => (if b { &c.twitch.bot } else { &c.twitch.broadcaster })
+                        .as_ref()
+                        .map(|a| {
+                            let n = if !a.display_name.is_empty() {
+                                a.display_name.clone()
+                            } else {
+                                a.login.clone()
+                            };
+                            (n, a.user_id.clone())
+                        }),
+                    "kick" => (if b { &c.kick.bot } else { &c.kick.broadcaster })
+                        .as_ref()
+                        .map(|a| (a.username.clone(), a.user_id.to_string())),
+                    "youtube" => (if b { &c.youtube.bot } else { &c.youtube.broadcaster })
+                        .as_ref()
+                        .map(|a| (a.name.clone(), a.channel_id.clone())),
+                    "tiktok" => (if b { &c.tiktok.bot } else { &c.tiktok.broadcaster })
+                        .as_ref()
+                        .map(|a| (a.username.trim_start_matches('@').to_string(), a.username.clone())),
+                    _ => None,
+                }
+            };
+            acct(bot).or_else(|| acct(!bot))?
+        };
+        let (role, mine) = crate::roles::get(platform);
+        let own = mine == id;
+        let (action, plain) = match action_of(text) {
+            Some(a) => (true, a.to_string()),
+            None => (false, text.to_string()),
+        };
+        let reply_info = reply.filter(|_| matches!(platform, "twitch" | "kick")).map(|r| Reply {
+            user: r.user.clone(),
+            text: r.text.clone(),
+        });
+        let plain = reply_info.as_ref().map_or(plain.clone(), |r| r.strip(&plain));
+        let (plain, emotes) = normalize_line_emotes(platform, plain, &[]);
+        let mut guard = self.chat_log_mut();
+        let log = &mut *guard;
+        // Our name's colour and badges as the chat showed them last, until the platform's own copy says.
+        let (color, badges) = log
+            .lines
+            .iter()
+            .rev()
+            .find(|l| l.platform == platform && l.user_id == id && !l.note && !l.local)
+            .map(|l| (l.color.clone(), l.badges.clone()))
+            .unwrap_or_default();
+        log.push(Line {
+            platform: platform.into(),
+            time: crate::fmt::shown_time(&crate::fmt::now()),
+            ts: crate::fmt::unix_now().as_millis() as i64,
+            user: name,
+            user_id: id,
+            reply: reply_info,
+            text: plain,
+            emotes,
+            action,
+            color,
+            badges,
+            local: true,
+            broadcaster: own && role == crate::roles::Role::Broadcaster,
+            moderator: own && role.moderates(),
+            ..Default::default()
+        });
+        let seq = log.seq;
+        drop(guard);
+        crate::ui::chat();
+        Some(seq)
+    }
+
+    /// Takes away the line `chat_local` showed, if it is still waiting for the platform's copy.
+    fn chat_unlocal(&self, seq: u64) {
+        let mut st = self.st.borrow_mut();
+        let log = &mut st.chat_log;
+        let before = log.lines.len();
+        log.lines.retain(|l| !(l.seq == seq && l.local));
+        if log.lines.len() != before {
+            log.reset_gen += 1;
+            drop(st);
+            crate::ui::chat();
+        }
+    }
+
+    /// Confirms a line `chat_local` showed once the send succeeded, if the platform's echo hasn't
+    /// arrived yet (e.g. high-velocity chat where the platform drops or delays the socket echo).
+    #[cfg(test)]
+    fn chat_confirm_local(&self, seq: u64) {
+        let mut st = self.st.borrow_mut();
+        let log = &mut st.chat_log;
+        if let Some(mine) = log.lines.iter_mut().find(|l| l.seq == seq && l.local) {
+            mine.local = false;
+            log.reset_gen += 1;
+            drop(st);
+            crate::ui::chat();
+        }
+    }
+
+    /// Whether a local line is still unconfirmed by the platform's incoming message stream.
+    fn is_chat_local(&self, seq: u64) -> bool {
+        self.st.borrow().chat_log.lines.iter().any(|l| l.seq == seq && l.local)
     }
 
     /// Whether `platform`'s chat is the broadcaster's own channel (not another one set in Advanced).
@@ -1321,11 +2058,15 @@ impl Engine {
             .map(|e| e.0.clone())
             .collect();
         for &p in to {
+            if p == "tiktok" {
+                self.chat_note(p, "TikTok chat is read-only in Streamerz".into());
+                continue;
+            }
             let mut text = for_platform(text, p, &kick_known);
             // A reply where the platform has them; a mention elsewhere.
-            let reply = reply.filter(|l| l.platform == p);
-            let reply_id = reply.filter(|l| !l.msg_id.is_empty() && matches!(p, "twitch" | "kick"));
-            if let (Some(l), None) = (reply, reply_id) {
+            let reply_target = reply.filter(|l| l.platform == p);
+            let reply_id = reply_target.filter(|l| !l.msg_id.is_empty() && matches!(p, "twitch" | "kick"));
+            if let (Some(l), None) = (reply_target, reply_id) {
                 text = format!("@{} {text}", l.user);
             }
             let to = reply_id.map(|l| format!(", reply to @{}", l.user)).unwrap_or_default();
@@ -1335,6 +2076,32 @@ impl Engine {
                 continue;
             }
             let e = self.clone();
+            // Elsewhere than Twitch (whose copy comes back at once) the line shows as it is sent.
+            let command = crate::slash::is_command(&text);
+            let local = (!command)
+                .then(|| self.chat_local(p, &text, bot, reply_target))
+                .flatten();
+            let started = std::time::Instant::now();
+            // Twitch's chat commands (/commercial, /timeout...) are calls, not text.
+            if p == "twitch" && crate::slash::is_command(&text) {
+                tokio::task::spawn_local(async move {
+                    match crate::slash::run(&e, &text, bot, fallback).await {
+                        Ok(done) if !done.is_empty() => e.chat_note(p, done),
+                        Ok(_) => {}
+                        Err(err) => e.chat_note(p, format!("{text}: {}", plain_error(&err))),
+                    }
+                });
+                continue;
+            }
+            if p == "kick" && crate::slash::is_command(&text) {
+                tokio::task::spawn_local(async move {
+                    match crate::slash::run_kick(&e, &text).await {
+                        Ok(done) => e.chat_note(p, done),
+                        Err(err) => e.chat_note(p, format!("{text}: {}", plain_error(&err))),
+                    }
+                });
+                continue;
+            }
             tokio::task::spawn_local(async move {
                 let r = match p {
                     "twitch" => match e.twitch() {
@@ -1346,14 +2113,47 @@ impl Engine {
                         Some(r) => e.kick_start().reply_message(&text, r, bot, fallback).await,
                         None => e.kick_start().send_message(&text, bot, fallback).await,
                     },
-                    _ => e.tiktok_start().send_message(&text, bot, fallback).await,
+                    _ => Err("TikTok chat is read-only".into()),
                 };
-                if let Err(err) = r {
-                    e.chat_note(p, format!("not sent: {err}"));
+                match r {
+                    Ok(()) => {
+                        crate::debug(format!("{p}: message sent in {} ms", started.elapsed().as_millis()));
+                        if let Some(seq) = local {
+                            let e = e.clone();
+                            let p = p.to_string();
+                            tokio::task::spawn_local(async move {
+                                tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+                                if e.is_chat_local(seq) {
+                                    e.chat_unlocal(seq);
+                                    e.chat_note(
+                                        &p,
+                                        format!("not sent: {p} dropped this comment (filtered by spam defense)"),
+                                    );
+                                }
+                            });
+                        }
+                    }
+                    Err(err) => {
+                        if let Some(seq) = local {
+                            e.chat_unlocal(seq);
+                        }
+                        e.chat_note(p, format!("not sent: {err}"));
+                    }
                 }
             });
         }
-        to.to_vec()
+        to.iter().copied().filter(|p| *p != "tiktok").collect()
+    }
+}
+
+/// Whether `platform` has an account logged in to send with (a chat read without one is read only).
+pub fn can_send(c: &crate::Config, platform: &str) -> bool {
+    match platform {
+        "twitch" => c.twitch.broadcaster.is_some() || c.twitch.bot.is_some(),
+        "youtube" => c.youtube.broadcaster.is_some() || c.youtube.bot.is_some(),
+        "kick" => c.kick.broadcaster.is_some() || c.kick.bot.is_some(),
+        "tiktok" => false,
+        _ => false,
     }
 }
 
@@ -1362,7 +2162,592 @@ mod tests {
     use super::*;
 
     #[test]
+    fn what_we_send_shows_at_once_and_its_copy_takes_its_place() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let mut c = crate::Config::default();
+            c.kick.broadcaster = Some(crate::kick::KickAccount {
+                user_id: 7,
+                username: "Umanana".into(),
+                ..Default::default()
+            });
+            let e = crate::engine::Engine::new(std::sync::Arc::new(tokio::sync::watch::channel(c).0), |_| {});
+            let seq = e.chat_local("kick", "hello there", false, None).unwrap();
+            let (_, _, lines) = e.chat_sync(999, 0);
+            assert_eq!(
+                (lines.len(), lines[0].local, lines[0].user.as_str()),
+                (1, true, "Umanana")
+            );
+            // Kick's copy: same words, its id.
+            e.log_chat(&crate::commands::Chat {
+                platform: "kick".into(),
+                user_id: "7".into(),
+                user: "umanana".into(),
+                msg_id: "k-1".into(),
+                text: "hello there".into(),
+                args: [("color".to_string(), serde_json::json!("#B27CFF"))]
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            });
+            let (_, _, lines) = e.chat_sync(999, 0);
+            assert_eq!(lines.len(), 1, "no second line");
+            assert_eq!((lines[0].local, lines[0].msg_id.as_str()), (false, "k-1"));
+            assert_eq!(lines[0].color, "#B27CFF", "Kick's colour, not a guess");
+            // A failed send takes its line away.
+            let seq2 = e.chat_local("kick", "never arrives", false, None).unwrap();
+            e.chat_unlocal(seq2);
+            assert_eq!(e.chat_sync(999, 0).2.len(), 1);
+            let _ = seq;
+
+            // Optimistic local reply
+            let target = Line {
+                platform: "kick".into(),
+                msg_id: "orig-1".into(),
+                user: "TargetUser".into(),
+                text: "question?".into(),
+                ..Default::default()
+            };
+            let seq_reply = e
+                .chat_local("kick", "answering question", false, Some(&target))
+                .unwrap();
+            let (_, _, lines) = e.chat_sync(999, 0);
+            let reply_local = lines.iter().find(|l| l.seq == seq_reply).expect("local reply");
+            assert!(reply_local.local);
+            assert_eq!(reply_local.reply.as_ref().map(|r| r.user.as_str()), Some("TargetUser"));
+            assert_eq!(reply_local.reply.as_ref().map(|r| r.text.as_str()), Some("question?"));
+
+            // Real confirmation arrives from Kick Pusher:
+            let mut reply_args = Obj::new();
+            reply_args.insert("reply.userName".into(), "TargetUser".into());
+            reply_args.insert("reply.msgBody".into(), "question?".into());
+            e.log_chat(&crate::commands::Chat {
+                platform: "kick".into(),
+                user_id: "7".into(),
+                user: "umanana".into(),
+                msg_id: "k-reply-1".into(),
+                text: "answering question".into(),
+                args: reply_args,
+                ..Default::default()
+            });
+            let (_, _, lines) = e.chat_sync(999, 0);
+            let confirmed = lines.iter().find(|l| l.msg_id == "k-reply-1").expect("confirmed reply");
+            assert!(!confirmed.local);
+            assert_eq!(confirmed.reply.as_ref().map(|r| r.user.as_str()), Some("TargetUser"));
+            assert_eq!(confirmed.reply.as_ref().map(|r| r.text.as_str()), Some("question?"));
+        });
+    }
+
+    #[test]
+    fn youtube_and_twitch_local_echo_matches_and_line_limits_trim_instantly() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let mut c = crate::Config::default();
+            c.youtube.broadcaster = Some(crate::youtube::YouTubeAccount {
+                channel_id: "UC123".into(),
+                name: "Zamecki Code".into(),
+                ..Default::default()
+            });
+            c.twitch.broadcaster = Some(crate::twitch::TwitchAccount {
+                user_id: "T999".into(),
+                login: "pedrozamecki".into(),
+                display_name: "PedroZamecki".into(),
+                ..Default::default()
+            });
+            c.window.chat.total = 100;
+            let (tx, _rx) = tokio::sync::watch::channel(c);
+            let cfg = std::sync::Arc::new(tx);
+            let e = crate::engine::Engine::new(cfg.clone(), |_| {});
+
+            // YouTube optimistic local message
+            let target = Line {
+                user: "Alice".into(),
+                text: "Hi".into(),
+                ..Default::default()
+            };
+            let _ = e
+                .chat_local("youtube", "@Alice Como vamos?", false, Some(&target))
+                .unwrap();
+            let (_, _, lines) = e.chat_sync(999, 0);
+            assert_eq!(lines.len(), 1);
+            assert!(lines[0].local);
+            assert!(lines[0].reply.is_none());
+            assert_eq!(lines[0].text, "@Alice Como vamos?");
+
+            // YouTube sends confirmed message back with @handle or no spaces
+            e.log_chat(&crate::commands::Chat {
+                platform: "youtube".into(),
+                user_id: "UC123".into(),
+                user: "@ZameckiCode".into(),
+                msg_id: "yt-1".into(),
+                text: "@Alice Como vamos?".into(),
+                ..Default::default()
+            });
+            let (_, _, lines) = e.chat_sync(0, 0);
+            assert_eq!(lines.len(), 1, "optimistic echo was replaced without duplicate");
+            assert!(!lines[0].local);
+            assert_eq!(lines[0].msg_id, "yt-1");
+
+            // Twitch optimistic local message
+            let _ = e.chat_local("twitch", "oi?", false, None).unwrap();
+            let (_, _, lines) = e.chat_sync(999, 0);
+            assert_eq!(lines.len(), 2);
+            assert!(lines[1].local);
+            assert_eq!(lines[1].user, "PedroZamecki");
+
+            // Populate more messages to test instant trimming
+            for i in 0..15 {
+                e.log_chat(&crate::commands::Chat {
+                    platform: "twitch".into(),
+                    user_id: format!("U{i}"),
+                    user: format!("Viewer{i}"),
+                    msg_id: format!("m{i}"),
+                    text: format!("msg {i}"),
+                    ..Default::default()
+                });
+            }
+            let (gen1, _, lines) = e.chat_sync(0, 0);
+            assert!(lines.len() > 10);
+
+            // Change limit to 5: trims immediately down to 5 and bumps reset_gen
+            cfg.send_if_modified(|c| {
+                c.window.chat.total = 5;
+                true
+            });
+            e.chat_trim();
+
+            let (gen2, full2, lines2) = e.chat_sync(gen1, 0);
+            assert_eq!(lines2.len(), 5, "instant trim kept only last 5 lines");
+            assert!(gen2 > gen1, "reset_gen was bumped");
+            assert!(full2, "full sync indicated to UI");
+        });
+    }
+
+    #[test]
+    fn tiktok_local_echo_matches_with_different_nickname_and_high_traffic() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let mut c = crate::Config::default();
+            c.tiktok.broadcaster = Some(crate::tiktok::TikTokAccount {
+                username: "pedrozamecki".into(),
+                ..Default::default()
+            });
+            c.window.chat.total = 100;
+            let (tx, _rx) = tokio::sync::watch::channel(c);
+            let cfg = std::sync::Arc::new(tx);
+            let e = crate::engine::Engine::new(cfg, |_| {});
+
+            // Optimistic TikTok local message
+            let seq = e.chat_local("tiktok", "tap tap", false, None).unwrap();
+            let (_, _, lines) = e.chat_sync(999, 0);
+            assert_eq!(lines.len(), 1);
+            assert!(lines[0].local);
+
+            // Simulate high chat volume: 40 messages from other viewers arrive before echo
+            for i in 0..40 {
+                e.log_chat(&crate::commands::Chat {
+                    platform: "tiktok".into(),
+                    user_id: format!("viewer_{i}"),
+                    user: format!("Viewer {i}"),
+                    msg_id: format!("tt-view-{i}"),
+                    text: format!("cheer {i}"),
+                    ..Default::default()
+                });
+            }
+
+            // TikTok delivers message via WebCast: nickname differs from uniqueId, numeric userId
+            let mut args = crate::model::Obj::new();
+            args.insert("uniqueId".into(), "pedrozamecki".into());
+            e.log_chat(&crate::commands::Chat {
+                platform: "tiktok".into(),
+                user_id: "7034185239447077894".into(),
+                user: "Pedro Zamecki".into(),
+                msg_id: "tt-msg-1".into(),
+                text: "tap tap".into(),
+                args,
+                ..Default::default()
+            });
+
+            let (_, _, lines) = e.chat_sync(0, 0);
+            let confirmed = lines.iter().find(|l| l.seq == seq).expect("found local message");
+            assert!(!confirmed.local, "local message was confirmed and is no longer dimmed");
+            assert_eq!(confirmed.msg_id, "tt-msg-1");
+            assert_eq!(confirmed.user, "Pedro Zamecki");
+
+            // Test fallback confirm when platform echo never arrives
+            let seq2 = e.chat_local("tiktok", "dropped echo", false, None).unwrap();
+            let (_, _, lines2) = e.chat_sync(0, 0);
+            let unconfirmed = lines2.iter().find(|l| l.seq == seq2).expect("found second local");
+            assert!(unconfirmed.local);
+            e.chat_confirm_local(seq2);
+            let (_, _, lines3) = e.chat_sync(0, 0);
+            let fallback_confirmed = lines3.iter().find(|l| l.seq == seq2).expect("found second local");
+            assert!(!fallback_confirmed.local, "fallback confirmation cleared local flag");
+        });
+    }
+
+    #[test]
+    fn rewards_and_power_ups_show_in_the_chat() {
+        let a = |v: Value| v.as_object().cloned().unwrap();
+        let line = |kind: u32, args: Value| {
+            let args = a(args);
+            let ev = event_of(kind, &args)?;
+            Some((
+                crate::i18n::tr(ev.says),
+                ev.cost.and_then(|k| args.get(k)).and_then(Value::as_u64),
+                ev.huge,
+            ))
+        };
+        // The rewards every channel has, by what they do.
+        let (says, cost, huge) = line(
+            194,
+            serde_json::json!({"rewardType": "send_highlighted_message", "rewardCost": 40000}),
+        )
+        .unwrap();
+        assert_eq!(
+            (says, cost, huge),
+            ("redeemed Highlight My Message", Some(40000), false)
+        );
+        let (says, _, huge) = line(
+            194,
+            serde_json::json!({"rewardType": "gigantify_an_emote", "gigantifiedEmoteUrl": "u"}),
+        )
+        .unwrap();
+        assert!(says.contains("Gigantify") && huge);
+        assert!(line(194, serde_json::json!({"rewardType": "chosen_sub_emote_unlock"}))
+            .unwrap()
+            .0
+            .contains("Unlock"));
+        // A power-up is paid in Bits.
+        let ev = event_of(196, &a(serde_json::json!({"powerUpType": "celebration", "bits": 50}))).unwrap();
+        assert_eq!((ev.cost, ev.cost_icon), (Some("bits"), "gem"));
+        assert!(crate::i18n::tr(ev.says).contains("Celebration"));
+        let ev = event_of(496, &a(serde_json::json!({"powerUpTitle": "Dance"}))).unwrap();
+        assert!(crate::i18n::tr(ev.says).contains("%powerUpTitle%"));
+        assert!(event_of(472, &a(serde_json::json!({"streak": 3}))).is_some());
+        // A reward with words is a chat message with the reward over it: not shown twice.
+        assert!(event_of(112, &a(serde_json::json!({"rawInput": "drink!"}))).is_none());
+        let ev = event_of(112, &a(serde_json::json!({"rawInput": "", "rewardImage": "i"}))).unwrap();
+        assert_eq!((ev.picture, ev.color), (Some("rewardImage"), Some("rewardColor")));
+    }
+
+    #[test]
+    fn a_reward_redemption_without_text_shows_in_chat() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
+            let mut args = crate::model::Obj::new();
+            args.insert("user".into(), "PedroZamecki".into());
+            args.insert("userName".into(), "pedrozamecki".into());
+            args.insert("userId".into(), "123".into());
+            args.insert("rewardTitle".into(), "Alongameeeeeento".into());
+            args.insert("rewardName".into(), "Alongameeeeeento".into());
+            args.insert("rewardCost".into(), 350.into());
+            args.insert("rewardPoints".into(), "https://x/coin.png".into());
+            args.insert("rewardColor".into(), "#00E5FF".into());
+            args.insert("rawInput".into(), "".into());
+            e.fire(
+                crate::twitch::T_REWARD_REDEMPTION,
+                "Reward Redemption",
+                "Twitch/Channel Points",
+                "twitch",
+                &args,
+                |_| true,
+            );
+            let (_, _, lines) = e.chat_sync(u64::MAX, 0);
+            assert_eq!(lines.len(), 1);
+            let l = &lines[0];
+            assert_eq!(l.user, "PedroZamecki");
+            assert_eq!(l.event, "redeemed Alongameeeeeento");
+            assert_eq!(l.cost, 350);
+            assert_eq!(l.cost_icon, "https://x/coin.png");
+            assert_eq!(l.accent, "#00E5FF");
+            assert_eq!(l.icon, "");
+            assert_eq!(l.picture, "");
+        });
+    }
+
+    #[test]
+    fn chat_with_save_history_disabled_does_not_keep_lines() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
+            e.change(|c| c.window.chat.save_history = false);
+            e.chat(&crate::commands::Chat {
+                platform: "twitch".into(),
+                user: "Viewer".into(),
+                user_id: "1".into(),
+                text: "hello".into(),
+                msg_id: "m-1".into(),
+                ..Default::default()
+            });
+            let (_, _, lines) = e.chat_sync(u64::MAX, 0);
+            assert_eq!(lines.len(), 0);
+        });
+    }
+
+    #[test]
+    fn announcement_colors_follow_channel_and_palette() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
+            let fire = |color: &str, chan_color: &str| {
+                let mut args = crate::model::Obj::new();
+                args.insert("user".into(), "Mod".into());
+                args.insert("message".into(), "attention".into());
+                if !color.is_empty() {
+                    args.insert("announceColor".into(), color.into());
+                }
+                if !chan_color.is_empty() {
+                    args.insert("channelColor".into(), chan_color.into());
+                }
+                e.fire(138, "Announcement", "Twitch/General", "twitch", &args, |_| true);
+            };
+            fire("PRIMARY", "#FFB4CB");
+            fire("PURPLE", "#FFB4CB");
+            fire("BLUE", "");
+            fire("GREEN", "");
+            fire("ORANGE", "");
+            fire("", "");
+            let (_, _, lines) = e.chat_sync(u64::MAX, 0);
+            assert_eq!(lines.len(), 6);
+            assert_eq!(lines[0].accent, "#FFB4CB");
+            assert_eq!(lines[1].accent, TWITCH);
+            assert_eq!(lines[2].accent, "#00D6D6");
+            assert_eq!(lines[3].accent, "#00DB84");
+            assert_eq!(lines[4].accent, "#FF8200");
+            assert_eq!(lines[5].accent, TWITCH);
+        });
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_chat_performance() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        crate::engine::tests::run(async {
+            fn get_rss_kb() -> usize {
+                std::fs::read_to_string("/proc/self/statm")
+                    .ok()
+                    .and_then(|s| {
+                        let pages: usize = s.split_whitespace().nth(1)?.parse().ok()?;
+                        Some(pages * 4)
+                    })
+                    .unwrap_or(0)
+            }
+
+            println!("\n=================== CHAT PERFORMANCE BENCHMARK ===================");
+            {
+                println!("\n>>> Raw In-Memory Chat Retention (100, 1,000, 10,000 lines stored without clamp)");
+                for &count in &[100, 1_000, 10_000] {
+                    let rss_before = get_rss_kb();
+                    let t0 = std::time::Instant::now();
+                    let mut lines: std::collections::VecDeque<Line> = std::collections::VecDeque::with_capacity(count);
+
+                    for i in 0..count {
+                        lines.push_back(Line {
+                            platform: "twitch".into(),
+                            time: "12:34:56".into(),
+                            ts: 1730000000000 + (i as i64),
+                            user: format!("ChatterUser{}", i % 200),
+                            user_id: format!("id_{}", i % 200),
+                            text: format!(
+                                "Hello world! This is chat message number {} testing heap usage PogChamp Kappa",
+                                i
+                            ),
+                            emotes: vec![
+                                (
+                                    "PogChamp".into(),
+                                    "https://static-cdn.jtvnw.net/emotes/v1/305954156/1.0".into(),
+                                ),
+                                ("Kappa".into(), "https://static-cdn.jtvnw.net/emotes/v1/25/1.0".into()),
+                            ],
+                            badges: vec![
+                                (
+                                    "subscriber".into(),
+                                    "https://static-cdn.jtvnw.net/badges/v1/sub.png".into(),
+                                ),
+                                ("vip".into(), "https://static-cdn.jtvnw.net/badges/v1/vip.png".into()),
+                            ],
+                            msg_id: format!("msg_id_{}", i),
+                            color: "#1E90FF".into(),
+                            ..Default::default()
+                        });
+                    }
+
+                    let elapsed = t0.elapsed();
+                    let rss_after = get_rss_kb();
+                    let rss_diff = (rss_after as isize) - (rss_before as isize);
+                    let bytes_est = lines.len() * std::mem::size_of::<Line>();
+
+                    println!(
+                        "Stored: {:>5} lines | Time: {:>7.2?} | Stack size: {:>6.2} KB | RSS delta: {:>+6.2} MB ({:.1} KB/msg)",
+                        count,
+                        elapsed,
+                        (bytes_est as f64) / 1024.0,
+                        (rss_diff as f64) / 1024.0,
+                        (rss_diff as f64) / (count as f64)
+                    );
+                }
+            }
+            for &save_history in &[true, false] {
+                println!("\n>>> Mode: save_history = {}", save_history);
+                for &count in &[100, 1_000, 10_000] {
+                    let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
+                    e.change(|c| {
+                        c.window.chat.save_history = save_history;
+                    });
+
+                    let rss_before = get_rss_kb();
+                    let t0 = std::time::Instant::now();
+
+                    for i in 0..count {
+                        let user_id = format!("user_{}", i % 50);
+                        let msg_id = format!("msg_{}_{}", count, i);
+                        let mut args = crate::model::Obj::new();
+                        args.insert("color".into(), "#1E90FF".into());
+                        args.insert(
+                            "badges".into(),
+                            serde_json::json!([{"name": "subscriber", "imageUrl": "https://static-cdn.jtvnw.net/badges/v1/sub.png"}]),
+                        );
+                        e.chat(&crate::commands::Chat {
+                            platform: "twitch".into(),
+                            user: format!("User{}", i % 50),
+                            user_id,
+                            text: format!("Message #{} PogChamp Kappa testing chat throughput!", i),
+                            msg_id,
+                            emotes: vec![
+                                (
+                                    "PogChamp".into(),
+                                    "https://static-cdn.jtvnw.net/emotes/v1/305954156/1.0".into(),
+                                ),
+                                ("Kappa".into(), "https://static-cdn.jtvnw.net/emotes/v1/25/1.0".into()),
+                            ],
+                            args,
+                            ..Default::default()
+                        });
+                    }
+
+                    let elapsed = t0.elapsed();
+                    let rss_after = get_rss_kb();
+                    let rss_diff = (rss_after as isize) - (rss_before as isize);
+                    let msgs_per_sec = (count as f64) / elapsed.as_secs_f64();
+                    let (_, _, lines) = e.chat_sync(u64::MAX, 0);
+
+                    println!(
+                        "Count: {:>5} | Time: {:>7.2?} | Speed: {:>8.1} msg/s | RSS: {:>6.2} MB ({:>+6.2} MB) | Retained lines: {}",
+                        count,
+                        elapsed,
+                        msgs_per_sec,
+                        (rss_after as f64) / 1024.0,
+                        (rss_diff as f64) / 1024.0,
+                        lines.len()
+                    );
+                }
+            }
+            println!("==================================================================\n");
+        });
+    }
+
+    #[test]
+    fn a_message_sent_with_a_reward_has_it_over_it() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
+            let args = |v: Value| v.as_object().cloned().unwrap();
+            let chat = |id: &str, extra: Value| {
+                let mut a = args(serde_json::json!({"messageRewardId": id, "messageType": "text"}));
+                a.extend(args(extra));
+                crate::commands::Chat {
+                    platform: "twitch".into(),
+                    user: "Ana".into(),
+                    user_id: "9".into(),
+                    text: "drink water".into(),
+                    msg_id: id.into(),
+                    args: a,
+                    ..Default::default()
+                }
+            };
+            e.chat(&chat(
+                "m1",
+                serde_json::json!({"messageRewardTitle": "Hydrate", "messageRewardCost": 500,
+                    "messageRewardImage": "https://x/i.png", "messageRewardColor": "#112233",
+                    "messageRewardPoints": "https://x/p.png"}),
+            ));
+            // The reward is not known (not read yet): still marked as one.
+            e.chat(&chat("m2", serde_json::json!({})));
+            let mut big = chat("m3", serde_json::json!({"messageType": "power_ups_gigantified_emote"}));
+            big.args.remove("messageRewardId");
+            e.chat(&big);
+            let (_, _, lines) = e.chat_sync(u64::MAX, 0);
+            let by = |id: &str| lines.iter().find(|l| l.msg_id == id).unwrap();
+            let (one, two, three) = (by("m1"), by("m2"), by("m3"));
+            assert_eq!(one.tag, "Redeemed Hydrate");
+            assert_eq!(
+                (one.cost, one.picture.as_str(), one.accent.as_str()),
+                (500, "https://x/i.png", "#112233")
+            );
+            assert_eq!(one.cost_icon, "https://x/p.png");
+            assert_eq!((two.tag.as_str(), two.cost), ("Redeemed a reward", 0));
+            assert!(three.huge && three.tag.contains("Gigantified"));
+        });
+    }
+
+    #[test]
+    fn a_me_message_is_an_action() {
+        assert_eq!(action_of("/me waves"), Some("waves"));
+        assert_eq!(action_of("\x01ACTION waves\x01"), Some("waves"));
+        assert_eq!(action_of("hello /me"), None);
+        assert_eq!(action_of("/me "), None);
+        assert_eq!(action_of("/mention"), None);
+    }
+
+    #[test]
+    fn a_chat_without_a_login_is_read_only() {
+        let mut c = crate::Config::default();
+        c.kick.channel = "someone".into();
+        assert!(!can_send(&c, "kick"));
+        c.kick.bot = Some(Default::default());
+        assert!(can_send(&c, "kick"));
+        assert!(!can_send(&c, "twitch"));
+        assert!(!can_send(&c, "tiktok"));
+        c.tiktok.broadcaster = Some(Default::default());
+        assert!(!can_send(&c, "tiktok"));
+    }
+
+    #[test]
+    fn youtube_reply_is_sent_as_a_mention() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
+            e.dev_mode();
+            let line = Line {
+                platform: "youtube".into(),
+                user: "Alice".into(),
+                msg_id: "message-id".into(),
+                ..Default::default()
+            };
+            e.send_chat_list(&["youtube"], "Hello", false, false, Some(&line));
+            let out = e.dev_take().unwrap();
+            assert_eq!(out[0]["text"], "@Alice Hello");
+        });
+    }
+
+    #[test]
+    fn tiktok_cannot_be_sent_even_in_development_mode() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        crate::engine::tests::run(async {
+            let c = crate::Config::default();
+            let e = crate::engine::Engine::new(std::sync::Arc::new(tokio::sync::watch::channel(c).0), |_| {});
+            e.st.borrow_mut().dev_out = Some(Vec::new());
+            assert!(e.send_chat_list(&["tiktok"], "hello", false, false, None).is_empty());
+            assert!(e.dev_take().unwrap().is_empty());
+            assert!(e.tiktok().is_none());
+        });
+    }
+
+    #[test]
     fn events_show_in_the_chat_once_and_in_words() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
         crate::engine::tests::run(async {
             let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
             let a = |v: Value| v.as_object().cloned().unwrap();
@@ -1489,11 +2874,17 @@ mod tests {
         let r = Reply::from_args(&a).expect("a reply");
         assert_eq!((r.user.as_str(), r.text.as_str()), ("Ana", "hi there"));
         assert_eq!(r.strip("@ana yes"), "yes");
+        assert_eq!(r.strip("@Ana yes"), "yes");
+        assert_eq!(r.strip("@ana"), "");
         assert_eq!(r.strip("@bob yes"), "@bob yes");
         let mut k = Obj::new();
         k.insert("replyTo".into(), "bob".into());
         k.insert("replyToMessage".into(), "[emote:1:KEKW] lol".into());
         assert_eq!(Reply::from_args(&k).expect("a reply").text, "KEKW lol");
+        let mut kick_args = Obj::new();
+        kick_args.insert("reply.userName".into(), "bob".into());
+        kick_args.insert("replyToMessage".into(), "hello".into());
+        assert_eq!(Reply::from_args(&kick_args).expect("a reply").text, "hello");
         assert!(Reply::from_args(&Obj::new()).is_none());
     }
 
@@ -1559,5 +2950,201 @@ mod tests {
             .map(|u| u["display"].as_str().unwrap().to_string())
             .collect();
         assert_eq!(names, ["Ana", "Bo"]);
+    }
+
+    fn said(e: &Rc<Engine>, platform: &str, text: &str) {
+        e.log_chat(&crate::commands::Chat {
+            platform: platform.into(),
+            user_id: "1".into(),
+            user: "Ana".into(),
+            msg_id: format!("{platform}-{text}"),
+            text: text.into(),
+            ..Default::default()
+        });
+    }
+
+    fn engine_with(limits: crate::ChatLimits) -> Rc<Engine> {
+        let mut c = crate::Config::default();
+        c.window.chat = limits;
+        Engine::new(std::sync::Arc::new(tokio::sync::watch::channel(c).0), |_| {})
+    }
+
+    #[test]
+    fn the_oldest_lines_go_past_each_platforms_limit_and_the_total() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let e = engine_with(crate::ChatLimits {
+                per_platform: 10,
+                total: 15,
+                ..Default::default()
+            });
+            for n in 0..12 {
+                said(&e, "kick", &format!("k{n}"));
+            }
+            let texts = |p: &str| {
+                e.chat_sync(999, 0)
+                    .2
+                    .into_iter()
+                    .filter(|l| l.platform == p)
+                    .map(|l| l.text)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(texts("kick").len(), 10, "a platform keeps its limit");
+            assert_eq!(texts("kick")[0], "k2", "the oldest went");
+            for n in 0..12 {
+                said(&e, "twitch", &format!("t{n}"));
+            }
+            // 10 and 10 are 20: 5 over the total go, the oldest of all (Kick's).
+            assert_eq!((texts("kick").len(), texts("twitch").len()), (5, 10));
+            assert_eq!(texts("kick")[0], "k7");
+            assert_eq!(texts("twitch")[0], "t2");
+        });
+    }
+
+    #[test]
+    fn limits_in_a_file_out_of_range_are_brought_in() {
+        let l = crate::ChatLimits {
+            save_history: true,
+            per_platform: 0,
+            total: 5000,
+            lifetime: u64::MAX,
+            fade_in: u32::MAX,
+            fade_out: 0,
+        }
+        .clamped();
+        assert_eq!(
+            (l.per_platform, l.total),
+            (crate::ChatLimits::LEAST, crate::ChatLimits::MOST)
+        );
+        assert!(l.lifetime < u64::MAX && l.fade_in <= 3000);
+        // Only what differs from the defaults is saved.
+        let json = serde_json::to_value(crate::WindowState::default()).unwrap();
+        assert!(json.get("chat").is_none());
+    }
+
+    #[test]
+    fn lines_past_their_lifetime_leave_the_memory() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let e = engine_with(crate::ChatLimits {
+                lifetime: 300,
+                ..Default::default()
+            });
+            said(&e, "kick", "old");
+            let at = e.chat_sync(999, 0).2[0].ts as u64;
+            // Not yet, then past it.
+            assert_eq!(e.chat_log_mut().age_out(at + 299_000), 0);
+            said(&e, "kick", "new");
+            assert_eq!(
+                e.chat_log_mut().age_out(at + 301_000),
+                2,
+                "both are older than five minutes by now"
+            );
+            assert!(e.chat_sync(999, 0).2.is_empty());
+            // The sweep itself, when a line is old by the clock.
+            let e = engine_with(crate::ChatLimits {
+                lifetime: 300,
+                ..Default::default()
+            });
+            said(&e, "kick", "old");
+            said(&e, "kick", "fresh");
+            e.chat_log_mut().lines[0].ts -= 301_000;
+            e.chat_trim();
+            let left: Vec<String> = e.chat_sync(999, 0).2.into_iter().map(|l| l.text).collect();
+            assert_eq!(left, ["fresh"]);
+            // With no lifetime, nothing ages out.
+            let e = engine_with(crate::ChatLimits::default());
+            said(&e, "kick", "stays");
+            assert_eq!(e.chat_log_mut().age_out(u64::MAX / 2), 0);
+        });
+    }
+
+    #[test]
+    fn stream_end_and_chat_connection_are_independent() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let e = engine_with(crate::ChatLimits::default());
+            e.st.borrow_mut().dev_out = Some(Vec::new());
+            for (i, platform) in PLATFORMS.iter().copied().enumerate() {
+                said(&e, platform, "hello");
+                e.simulate_chat_connection(platform, Some(true));
+                e.set_chat_viewers(platform, Some(1234));
+                assert_eq!(e.chat_viewers()[i], Some(1234));
+                e.chat_stream(platform, false);
+                assert_eq!(e.chat_viewers()[i], None);
+                assert!(e.chat_stream_ended(platform));
+                assert_eq!(e.chat_state(platform), ChatState::Connected);
+                e.simulate_chat_connection(platform, Some(false));
+                assert_eq!(e.chat_state(platform), ChatState::Down);
+                assert!(e
+                    .chat_sync(u64::MAX, 0)
+                    .2
+                    .iter()
+                    .any(|line| line.platform == platform && line.text == "hello"));
+                e.chat_stream(platform, true);
+                assert!(!e.chat_stream_ended(platform));
+                assert_eq!(e.chat_state(platform), ChatState::Down);
+                e.chat_stream(platform, false);
+                e.chat_forget(platform);
+                assert!(!e.chat_stream_ended(platform));
+            }
+        });
+    }
+
+    #[test]
+    fn polls_and_pins_clear_on_channel_change_and_stream_end() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let e = engine_with(crate::ChatLimits::default());
+            e.chat_poll(Poll {
+                platform: "youtube".into(),
+                id: "yt1".into(),
+                title: "YouTube Poll".into(),
+                prediction: false,
+                choices: vec![("A".into(), 1)],
+                ends: None,
+                over: None,
+            });
+            e.chat_poll(Poll {
+                platform: "twitch".into(),
+                id: "tw1".into(),
+                title: "Twitch Poll".into(),
+                prediction: false,
+                choices: vec![("B".into(), 2)],
+                ends: None,
+                over: None,
+            });
+            e.chat_pinned(Pin {
+                platform: "youtube".into(),
+                msg_id: "m1".into(),
+                user: "alice".into(),
+                text: "hello".into(),
+                by: "".into(),
+                until: None,
+            });
+            e.chat_pinned(Pin {
+                platform: "twitch".into(),
+                msg_id: "m2".into(),
+                user: "bob".into(),
+                text: "pinned".into(),
+                by: "".into(),
+                until: None,
+            });
+
+            assert_eq!(e.chat_polls().len(), 2);
+            assert_eq!(e.chat_pins().len(), 2);
+
+            // Channel changed for YouTube: forget drops its poll and pin, twitch stays
+            e.chat_forget("youtube");
+            assert_eq!(e.chat_polls().len(), 1);
+            assert_eq!(e.chat_polls()[0].platform, "twitch");
+            assert_eq!(e.chat_pins().len(), 1);
+            assert_eq!(e.chat_pins()[0].platform, "twitch");
+
+            // Stream ended for Twitch: drops its poll and pin
+            e.chat_stream("twitch", false);
+            assert!(e.chat_polls().is_empty());
+            assert!(e.chat_pins().is_empty());
+        });
     }
 }

@@ -1,0 +1,27 @@
+[
+  {
+    "name": "a global counter goes up on every follow",
+    "actions": [{"name": "count follows", "triggers": [{"type": 101}], "subActions": [
+      {"type": 122, "destination": 0, "variableName": "follows", "persisted": true, "source": 1, "value": "1", "autoType": true},
+      {"type": 121, "source": 0, "variableName": "follows", "persisted": true, "destinationVariable": "n", "defaultValue": "0"},
+      {"type": 35001, "text": "follower number %n%: %user%"}]}],
+    "steps": [
+      {"fire": 101, "args": {"user": "ana"}, "ran": 1},
+      {"fire": 101, "args": {"user": "bo"}, "ran": 1},
+      {"fire": "TwitchFollow", "args": {"user": "cy"}, "ran": 1}
+    ],
+    "expect": {"globals": {"follows": 3}, "chat": ["follower number 1: ana", "follower number 2: bo", "follower number 3: cy"]}
+  },
+  {
+    "name": "a temporary global is set, read and unset",
+    "actions": [{"name": "g", "subActions": [
+      {"type": 122, "destination": 0, "variableName": "mood", "persisted": false, "source": 0, "value": "happy", "autoType": false},
+      {"type": 121, "source": 0, "variableName": "mood", "persisted": false, "destinationVariable": "m", "defaultValue": "none"},
+      {"type": 1020, "logLevel": 2, "message": "mood is %m%"},
+      {"type": 122, "destination": 0, "variableName": "mood", "persisted": false, "source": 3},
+      {"type": 121, "source": 0, "variableName": "mood", "persisted": false, "destinationVariable": "m2", "defaultValue": "gone"},
+      {"type": 1020, "logLevel": 2, "message": "then %m2%"}]}],
+    "steps": [{"run": "g"}],
+    "expect": {"log": ["mood is happy", "then gone"]}
+  }
+]

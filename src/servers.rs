@@ -380,7 +380,7 @@ fn info(e: &Engine) -> Value {
     json!({"instanceId": c.instance_id, "name": c.instance_name, "version": API_VERSION,
         "os": if cfg!(windows) { "windows" } else { "linux" }, "osVersion": "unknown", "mode": "ui",
         "darkMode": c.dark, "source": "websocketServer",
-        "streamerz": option_env!("STREAMERZ_VERSION").unwrap_or("dev")})
+        "streamerz": crate::brand::VERSION})
 }
 
 fn b64(bytes: &[u8]) -> String {
@@ -626,11 +626,38 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
             get("userId"),
             get("role"),
             get("text"),
-            req.get("badges").cloned(),
+            req,
         ) {
             Ok(ran) => ok(&id, json!({"ran": ran})),
             Err(m) => error(&id, &m),
         },
+        "SimulateStream" if e.dev() => {
+            let platform = get("platform");
+            if !crate::engine::chatlog::PLATFORMS.contains(&platform) {
+                error(&id, "Unknown platform")
+            } else {
+                e.chat_stream(platform, req.get("live").and_then(Value::as_bool).unwrap_or(false));
+                ok(&id, json!({}))
+            }
+        }
+        "SimulateChatConnection" if e.dev() => {
+            let platform = get("platform");
+            if !crate::engine::chatlog::PLATFORMS.contains(&platform) {
+                error(&id, "Unknown platform")
+            } else {
+                e.simulate_chat_connection(platform, req.get("connected").and_then(Value::as_bool));
+                ok(&id, json!({}))
+            }
+        }
+        "SimulateChatViewers" if e.dev() => {
+            let platform = get("platform");
+            if !crate::engine::chatlog::PLATFORMS.contains(&platform) {
+                error(&id, "Unknown platform")
+            } else {
+                e.set_chat_viewers(platform, req.get("count").and_then(Value::as_u64));
+                ok(&id, json!({}))
+            }
+        }
         // Dev mode only: a message pinned in a chat ("seconds" 0: no end), or none ("unpin": true).
         "InjectPin" if e.dev() => {
             let platform = get("platform").to_string();
@@ -647,6 +674,29 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
                     until: (secs > 0).then(|| crate::fmt::unix_now().as_millis() as u64 + secs * 1000),
                 });
             }
+            ok(&id, json!({}))
+        }
+        // Dev mode only: a poll or prediction at the top of a chat: "title", "choices" as [[name, votes]],
+        // "seconds" left (0: none), "prediction" and "over" as booleans.
+        "InjectPoll" if e.dev() => {
+            let flag = |k: &str| req.get(k).and_then(Value::as_bool) == Some(true);
+            let now = crate::fmt::unix_now().as_millis() as u64;
+            let secs = req.get("seconds").and_then(Value::as_u64).unwrap_or(0);
+            e.chat_poll(crate::engine::chatlog::Poll {
+                platform: get("platform").into(),
+                id: get("id").into(),
+                title: get("title").into(),
+                prediction: flag("prediction"),
+                choices: req
+                    .get("choices")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(|c| (c[0].as_str().unwrap_or("").to_string(), c[1].as_u64().unwrap_or(0)))
+                    .collect(),
+                ends: (secs > 0).then(|| now + secs * 1000),
+                over: flag("over").then_some(now),
+            });
             ok(&id, json!({}))
         }
         "GetChatOut" if e.dev() => ok(&id, json!({"messages": e.dev_take().unwrap_or_default()})),
@@ -796,7 +846,16 @@ fn authoring(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
 }
 
 async fn websocket(e: Rc<Engine>, s: WsSettings) {
-    let l = match TcpListener::bind((s.address.as_str(), s.port)).await {
+    let reserved = if crate::brand::IS_DEV {
+        crate::take_dev_listener(s.port)
+    } else {
+        None
+    };
+    let listener = match reserved {
+        Some(reserved) => TcpListener::from_std(reserved),
+        None => TcpListener::bind((s.address.as_str(), s.port)).await,
+    };
+    let l = match listener {
         Ok(l) => l,
         Err(err) => {
             return crate::error(format!(
@@ -917,7 +976,8 @@ async fn http_server(e: Rc<Engine>, s: HttpSettings) {
 }
 
 /// The answer to one HTTP request: status and JSON body (None: no body).
-fn http_answer(e: &Rc<Engine>, method: &str, path: &str, body: &[u8]) -> (u16, Option<Value>) {
+/// `signature`: a webhook's signature header (Patreon's), checked by the service's handler.
+fn http_answer(e: &Rc<Engine>, method: &str, path: &str, body: &[u8], signature: Option<&str>) -> (u16, Option<Value>) {
     let invalid = || {
         let msg = format!("'{method} {path}' is an invalid request");
         (418, Some(json!({"status": "error", "error": msg})))
@@ -970,7 +1030,7 @@ fn http_answer(e: &Rc<Engine>, method: &str, path: &str, body: &[u8]) -> (u16, O
             match p {
                 "kofi" | "streamelements" | "streamlabs" | "patreon" | "fourthwall" | "throne" | "tipeeestream"
                 | "treatstream" | "donordrive" | "pallygg" | "pally" | "shopify" | "streamloots" => {
-                    match crate::donations::handle_webhook(e, p, body) {
+                    match crate::donations::handle_webhook(e, p, body, signature) {
                         Ok(()) => (200, Some(json!({"status": "ok"}))),
                         Err(err) => (400, Some(json!({"status": "error", "error": err}))),
                     }
@@ -1030,7 +1090,7 @@ async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
         }
         body.extend_from_slice(&chunk[..n]);
     }
-    let (status, json) = http_answer(e, method, path, &body);
+    let (status, json) = http_answer(e, method, path, &body, h("x-patreon-signature"));
     let reason = match status {
         200 => "OK",
         204 => "No Content",
@@ -1203,25 +1263,25 @@ mod tests {
             let e =
                 crate::engine::tests::engine(json!({"actions": [crate::engine::tests::action("a1", "hi", json!([]))]}));
             assert_eq!(
-                http_answer(&e, "POST", "/DoAction", br#"{"action":{"name":"hi"}}"#).0,
+                http_answer(&e, "POST", "/DoAction", br#"{"action":{"name":"hi"}}"#, None).0,
                 204
             );
-            let (st, v) = http_answer(&e, "POST", "/DoAction", br#"{"action":{"name":"nope"}}"#);
+            let (st, v) = http_answer(&e, "POST", "/DoAction", br#"{"action":{"name":"nope"}}"#, None);
             assert_eq!((st, v.unwrap()["error"].clone()), (400, json!("action not found")));
-            let (st, v) = http_answer(&e, "GET", "/GetActions", b"");
+            let (st, v) = http_answer(&e, "GET", "/GetActions", b"", None);
             assert_eq!((st, v.unwrap()["count"].clone()), (200, json!(1)));
-            let (st, v) = http_answer(&e, "OPTIONS", "/DoAction", b"");
+            let (st, v) = http_answer(&e, "OPTIONS", "/DoAction", b"", None);
             assert_eq!(
                 (st, v.unwrap()["error"].clone()),
                 (418, json!("'OPTIONS /DoAction' is an invalid request"))
             );
-            assert_eq!(http_answer(&e, "POST", "/DoAction", b"xx").0, 400);
+            assert_eq!(http_answer(&e, "POST", "/DoAction", b"xx", None).0, 400);
             assert_eq!(
-                http_answer(&e, "POST", "/api/kofi", br#"{"type":"Donation","amount":"5.00"}"#).0,
+                http_answer(&e, "POST", "/api/kofi", br#"{"type":"Donation","amount":"5.00"}"#, None).0,
                 200
             );
             assert_eq!(
-                http_answer(&e, "POST", "/streamelements", br#"{"type":"tip","amount":10.0}"#).0,
+                http_answer(&e, "POST", "/streamelements", br#"{"type":"tip","amount":10.0}"#, None).0,
                 200
             );
             let req = json!({"request": "DoAction", "id": "1", "action": {"name": "hi"}, "args": {"k": 1}});

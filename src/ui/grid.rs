@@ -9,6 +9,7 @@ use fltk::frame::Frame;
 use fltk::prelude::*;
 use fltk::{app, draw};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -53,6 +54,8 @@ struct State {
     hover: Option<usize>,
     ticking: bool,
     grab: Option<i32>,
+    /// Keep visible images alive even when the shared cache evicts them.
+    visible: HashMap<String, img::Pic>,
 }
 
 #[derive(Clone)]
@@ -87,6 +90,7 @@ impl Grid {
     pub fn set(&self, items: Vec<Item>, keep: bool) {
         let mut st = self.st.borrow_mut();
         st.items = items;
+        st.visible.clear();
         st.hover = None;
         if !keep {
             st.top = 0;
@@ -152,7 +156,12 @@ impl Grid {
         let (fg, bg) = (Color::Foreground, f.color());
         let quiet = super::muted();
         draw::push_clip(f.x(), f.y(), f.w(), f.h());
+        // The custom draw callback replaces the frame's normal background drawing. Clear the old
+        // contents before drawing a new scroll position or animation frame.
+        draw::draw_rect_fill(f.x(), f.y(), f.w(), f.h(), bg);
         let mut moving = false;
+        let mut previous = std::mem::take(&mut st.visible);
+        let mut visible = HashMap::new();
         for (k, (it, &(x, y, w, h))) in st.items.iter().zip(&st.at).enumerate() {
             let (x, y) = (fx + x, fy + y);
             if y + h < f.y() || y > f.y() + f.h() {
@@ -198,7 +207,12 @@ impl Grid {
                         draw::set_draw_color(c);
                         draw::draw_rounded_rectf(x + 1, y + 1, w - 2, h - 2, 6);
                     }
-                    match img::get(cmds, url, PIC, false) {
+                    let pic = visible
+                        .get(url)
+                        .cloned()
+                        .or_else(|| previous.remove(url))
+                        .or_else(|| img::get(cmds, url, PIC, false));
+                    match pic {
                         Some(p) => {
                             // Every animated emote on screen plays; the grid is only open while picking.
                             let mut i = if p.animated() {
@@ -208,6 +222,7 @@ impl Grid {
                                 p.first()
                             };
                             i.draw(x + (w - i.w()) / 2, y + (h - i.h()) / 2, i.w(), i.h());
+                            visible.insert(url.clone(), p);
                         }
                         None => {
                             draw::set_font(Font::Helvetica, 10);
@@ -218,6 +233,7 @@ impl Grid {
                 }
             }
         }
+        st.visible = visible;
         if let Some((ty, th)) = self.thumb(&st) {
             draw::set_draw_color(Color::color_average(fg, bg, if st.grab.is_some() { 0.5 } else { 0.3 }));
             draw::draw_rounded_rectf(f.x() + f.w() - BAR - 3, ty, BAR, th, BAR / 2);
@@ -320,4 +336,56 @@ fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fltk::prelude::SurfaceDevice;
+    use fltk::surface::ImageSurface;
+
+    #[test]
+    fn redraw_clears_previous_grid_contents() {
+        if std::env::var_os("DISPLAY").is_none() {
+            return;
+        }
+        let _app = app::App::default();
+        let (cmds, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let grid = Grid::new(&cmds);
+        let mut frame = grid.area.clone();
+        frame.resize(0, 0, 100, 100);
+        frame.set_color(Color::White);
+        let surface = ImageSurface::new(100, 100, false);
+        ImageSurface::push_current(&surface);
+        draw::draw_rect_fill(0, 0, 100, 100, Color::Red);
+        grid.draw(&frame, &cmds);
+        let pixels = surface.image().unwrap().to_rgb_data();
+        ImageSurface::pop_current();
+        assert_eq!(&pixels[..3], &[255, 255, 255]);
+        visible_picture_survives_redraw_and_is_released_when_items_change();
+    }
+
+    fn visible_picture_survives_redraw_and_is_released_when_items_change() {
+        let (cmds, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let grid = Grid::new(&cmds);
+        let mut frame = grid.area.clone();
+        frame.resize(0, 0, 100, 36);
+        grid.set(
+            vec![Item::Emote {
+                name: "test".into(),
+                url: "test".into(),
+                fav: false,
+            }],
+            false,
+        );
+        grid.st.borrow_mut().visible.insert("test".into(), img::test_pic());
+        let surface = ImageSurface::new(100, 36, false);
+        ImageSurface::push_current(&surface);
+        grid.draw(&frame, &cmds);
+        assert!(grid.st.borrow().visible.contains_key("test"));
+        grid.set(Vec::new(), false);
+        grid.draw(&frame, &cmds);
+        assert!(grid.st.borrow().visible.is_empty());
+        ImageSurface::pop_current();
+    }
 }

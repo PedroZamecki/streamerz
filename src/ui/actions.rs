@@ -212,7 +212,7 @@ impl Actions {
     /// Change the config, save it, and redraw.
     fn edit(&mut self, f: impl FnOnce(&mut Config)) {
         self.cfg.send_modify(f);
-        let _ = crate::save(&self.cfg.borrow());
+        crate::save_later(&self.cfg.borrow());
         self.refresh();
     }
 
@@ -1546,7 +1546,7 @@ fn edit_sub(me: &Rc<RefCell<Actions>>) {
 /// The template picker: each one's name and what it does. The one picked.
 fn pick_template() -> Option<&'static crate::templates::Template> {
     use crate::templates::TEMPLATES;
-    let mut win = fltk::window::Window::default()
+    let mut win = fltk::window::DoubleWindow::default()
         .with_size(560, 380)
         .with_label(tr("actions.template_title"));
     win.set_xclass("streamerz");
@@ -1604,5 +1604,7 @@ fn pick_template() -> Option<&'static crate::templates::Template> {
     }
     win.hide();
     let picked = answer.get() == Some(true) && list.value() > 0;
-    picked.then(|| &TEMPLATES[(list.value() - 1) as usize])
+    let res = picked.then(|| &TEMPLATES[(list.value() - 1) as usize]);
+    app::delete_widget(win);
+    res
 }

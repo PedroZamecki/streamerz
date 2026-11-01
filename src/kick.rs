@@ -42,6 +42,27 @@ pub const T_KICK_VIEWER_COUNT_UPDATE: u32 = 35023;
 pub const T_KICK_REWARD_REDEMPTION: u32 = 35024;
 pub const T_KICK_KICKS_GIFTED: u32 = 35025;
 
+thread_local! {
+    /// The channel's rewards by id (Kick's own shape), as last read.
+    static REWARDS: std::cell::RefCell<std::collections::HashMap<String, Value>> = std::cell::RefCell::default();
+}
+
+/// Takes a list of the channel's rewards (`{"data": [...]}`): what the editors offer, and what the chat
+/// shows of a redemption.
+fn known_rewards(v: &Value) {
+    let list: Vec<(String, String)> = REWARDS.with_borrow_mut(|m| {
+        for r in v["data"].as_array().into_iter().flatten() {
+            if let Some(id) = r["id"].as_str() {
+                m.insert(id.into(), r.clone());
+            }
+        }
+        m.iter()
+            .filter_map(|(id, r)| Some((id.clone(), r["title"].as_str()?.to_string())))
+            .collect()
+    });
+    crate::catalog::set("kick.rewards", list);
+}
+
 /// Public Pusher app key used by kick.com (rotated 2026-10; a dead key answers `pusher:error` 4001).
 // ponytail: hardcoded; ask web.kick.com/api/v1/realtime/connection if it keeps rotating.
 pub const KICK_PUSHER_KEY: &str = "34bf7a0ff419a2a775b9";
@@ -461,6 +482,9 @@ impl Runner {
         if let Some(task) = self.read_task.take() {
             task.abort();
         }
+        self.engine.chat_polls_clear("kick");
+        self.engine.chat_unpinned("kick", "");
+        crate::ui::polls_changed();
         if self.connected.swap(false, Ordering::Relaxed) {
             crate::say("Kick: disconnected".into());
             let args = Obj::new();
@@ -649,6 +673,10 @@ pub async fn token(
                 if crate::secrets::is_locked() {
                     return Err("System keyring is locked; unlock it to use saved Kick login".into());
                 }
+                // An account that's there but has lost its login (not one never made).
+                if (if bot { &c.kick.bot } else { &c.kick.broadcaster }).is_some() {
+                    crate::notify::login_needed("Kick", bot);
+                }
                 return Err(format!(
                     "Kick {} isn't logged in",
                     if bot { "bot" } else { "broadcaster" }
@@ -673,7 +701,13 @@ pub async fn token(
         ],
     )
     .await
-    .map_err(|e| format!("Kick token refresh: {e}"))?;
+    .map_err(|e| {
+        // The server turned the refresh token down (not a network failure): it needs a new login.
+        if e.contains("HTTP 400") || e.contains("HTTP 401") {
+            crate::notify::login_needed("Kick", bot);
+        }
+        format!("Kick token refresh: {e}")
+    })?;
     let new = KickToken {
         access_token: t.access.clone(),
         refresh_token: if t.refresh.is_empty() {
@@ -814,6 +848,16 @@ pub async fn fetch_kick_user(token: &str) -> Result<(u64, String), String> {
     Err(format!("Kick API returned HTTP {}", resp.status))
 }
 
+/// Silence before the server is pinged, and how long its answer is waited for.
+#[cfg(not(test))]
+const IDLE_PROBE: Duration = Duration::from_secs(60);
+#[cfg(not(test))]
+const PONG_WAIT: Duration = Duration::from_secs(20);
+#[cfg(test)]
+const IDLE_PROBE: Duration = Duration::from_millis(300);
+#[cfg(test)]
+const PONG_WAIT: Duration = Duration::from_millis(300);
+
 pub async fn run_pusher_loop_url(
     engine: Rc<Engine>,
     cfg: Arc<watch::Sender<Config>>,
@@ -863,6 +907,7 @@ pub async fn run_pusher_loop_url(
         (channel_id.unwrap_or(1), chatroom_id.unwrap_or(1))
     };
 
+    let mut failures = 0u32;
     loop {
         match crate::http::ws_connect(pusher_url).await {
             Ok((ws, _)) => {
@@ -870,7 +915,7 @@ pub async fn run_pusher_loop_url(
 
                 // Wait for connection established
                 let mut established = false;
-                while let Some(Ok(msg)) = stream.next().await {
+                while let Ok(Some(Ok(msg))) = tokio::time::timeout(Duration::from_secs(15), stream.next()).await {
                     if let Message::Text(txt) = msg {
                         if let Ok(val) = serde_json::from_str::<Value>(&txt) {
                             if val["event"].as_str() == Some("pusher:connection_established") {
@@ -890,13 +935,38 @@ pub async fn run_pusher_loop_url(
 
                 if !established {
                     crate::warn("Kick: connection established handshake failed".into());
-                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    failures += 1;
+                    tokio::time::sleep(crate::http::backoff(failures)).await;
                     continue;
                 }
+                failures = 0;
 
                 connected.store(true, Ordering::Relaxed);
                 crate::ui::changed();
                 crate::say(format!("Kick: connected (@{channel}, chatroom {cr_id})"));
+                engine.settle_role("kick");
+                // The channel's rewards, for the editors' pickers and the price in the chat: kick.com's own
+                // list (no login needed), then the broadcaster's through the API when logged in.
+                if is_live_pusher {
+                    let (e, channel) = (engine.clone(), channel.clone());
+                    let broadcaster = cfg.borrow().kick.broadcaster.is_some();
+                    tokio::task::spawn_local(async move {
+                        let h = [("Accept".to_string(), "application/json".to_string())];
+                        let url = format!("https://kick.com/api/v2/channels/{channel}/rewards");
+                        if let Some(r) = crate::http::request("GET", &url, &h, b"")
+                            .await
+                            .ok()
+                            .filter(|r| r.status == 200)
+                        {
+                            known_rewards(&serde_json::from_slice(&r.body).unwrap_or_default());
+                        }
+                        if broadcaster {
+                            if let Ok(v) = e.kick_start().api("GET", "/channels/rewards", None).await {
+                                known_rewards(&v);
+                            }
+                        }
+                    });
+                }
                 if is_live_pusher {
                     let e_hist = engine.clone();
                     let ch_hist = channel.clone();
@@ -965,8 +1035,29 @@ pub async fn run_pusher_loop_url(
                     uid,
                 )));
 
-                // Message processing loop
-                while let Some(msg_res) = stream.next().await {
+                // Message processing loop. A connection that dies without a close (a network change, a
+                // sleeping laptop) just goes quiet: after a silent minute ask the server, and when even
+                // that gets no answer the socket is dead, so reconnect.
+                let mut probed = false;
+                loop {
+                    let wait = if probed { PONG_WAIT } else { IDLE_PROBE };
+                    let msg_res = match tokio::time::timeout(wait, stream.next()).await {
+                        Ok(Some(m)) => m,
+                        Ok(None) => break,
+                        Err(_) if !probed => {
+                            probed = true;
+                            let ping = json!({ "event": "pusher:ping", "data": {} });
+                            if sink.send(Message::Text(ping.to_string().into())).await.is_err() {
+                                break;
+                            }
+                            continue;
+                        }
+                        Err(_) => {
+                            crate::warn("Kick: no answer from the server, reconnecting".into());
+                            break;
+                        }
+                    };
+                    probed = false;
                     let msg = match msg_res {
                         Ok(m) => m,
                         Err(e) => {
@@ -1013,14 +1104,18 @@ pub async fn run_pusher_loop_url(
                 engine.emit("Kick", "BroadcasterChatDisconnected", || json!(args));
             }
             Err(e) => {
-                crate::warn(format!("Kick: connection error: {e}"));
+                failures += 1;
+                // The same line for every try of an outage would fill the log.
+                if failures == 1 {
+                    crate::warn(format!("Kick: connection error: {e}, retrying"));
+                }
             }
         }
 
         if run_once {
             break;
         }
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        tokio::time::sleep(crate::http::backoff(failures.max(1))).await;
     }
 }
 
@@ -1164,16 +1259,25 @@ pub fn parse_kick_message_line(data: &Value, channel: &str) -> Option<crate::eng
     };
     let reply = meta["original_sender"]["username"]
         .as_str()
+        .or_else(|| meta["original_sender"]["slug"].as_str())
+        .or_else(|| meta["original_sender"]["user_name"].as_str())
+        .filter(|s| !s.is_empty())
         .map(|u| crate::engine::chatlog::Reply {
             user: u.to_string(),
             text: meta["original_message"]["content"]
                 .as_str()
+                .or_else(|| meta["original_message"]["body"].as_str())
+                .or_else(|| meta["original_message"]["text"].as_str())
                 .unwrap_or("")
                 .split(' ')
                 .map(crate::engine::chatlog::shown)
                 .collect::<Vec<_>>()
                 .join(" "),
         });
+    let text = match reply.as_ref() {
+        Some(r) => r.strip(&text),
+        None => text,
+    };
     Some(crate::engine::chatlog::Line {
         platform: "kick".into(),
         ts: secs.unwrap_or(0) * 1000,
@@ -1268,6 +1372,20 @@ pub fn kick_pin(d: &Value) -> Option<crate::engine::chatlog::Pin> {
 
 /// Fire a Kick trigger and its WebSocket event.
 fn kick(engine: &Rc<Engine>, code: u32, name: &str, ev: &str, args: &Obj) {
+    if code == T_KICK_REWARD_REDEMPTION {
+        let text = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        let (id, title) = (text("rewardId"), text("reward.title"));
+        engine.fire(code, name, "Kick", "kick", args, |t| {
+            crate::catalog::matches(
+                "kick.rewards",
+                t.get("rewardId").and_then(Value::as_str).unwrap_or(""),
+                &id,
+                &title,
+            )
+        });
+        engine.emit("Kick", ev, || json!(args));
+        return;
+    }
     engine.fire(code, name, "Kick", "kick", args, |_| true);
     engine.emit("Kick", ev, || json!(args));
 }
@@ -1395,16 +1513,38 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
             ] {
                 args.insert(k.into(), v);
             }
-            if data["type"] == "reply" {
+            let meta = match &data["metadata"] {
+                Value::String(m) => serde_json::from_str(m).unwrap_or(Value::Null),
+                m => m.clone(),
+            };
+            let orig_sender = meta["original_sender"]["username"]
+                .as_str()
+                .or_else(|| meta["original_sender"]["slug"].as_str())
+                .or_else(|| meta["original_sender"]["user_name"].as_str())
+                .filter(|s| !s.is_empty());
+            let orig_msg = meta["original_message"]["content"]
+                .as_str()
+                .or_else(|| meta["original_message"]["body"].as_str())
+                .or_else(|| meta["original_message"]["text"].as_str())
+                .unwrap_or("");
+            let is_reply = data["type"] == "reply" || orig_sender.is_some();
+            if is_reply {
                 args.insert("isReply".into(), true.into());
-                args.insert(
-                    "replyTo".into(),
-                    data["metadata"]["original_sender"]["username"].clone(),
-                );
-                args.insert(
-                    "replyToMessage".into(),
-                    data["metadata"]["original_message"]["content"].clone(),
-                );
+                if let Some(orig_user) = orig_sender {
+                    args.insert("replyTo".into(), orig_user.into());
+                    args.insert("reply.userName".into(), orig_user.into());
+                    args.insert("reply.userLogin".into(), orig_user.into());
+                }
+                args.insert("replyToMessage".into(), orig_msg.into());
+                args.insert("reply.msgBody".into(), orig_msg.into());
+                if let Some(orig_id) = meta["original_message"]["id"].as_str() {
+                    args.insert("reply.msgId".into(), orig_id.into());
+                }
+                if let Some(orig_uid) = meta["original_sender"]["id"].as_u64() {
+                    args.insert("reply.userId".into(), orig_uid.to_string().into());
+                }
+            } else {
+                args.insert("isReply".into(), false.into());
             }
             ACTIVE.with_borrow_mut(|m| {
                 let who = json!({"userId": user_id, "userName": args["userName"], "user": username});
@@ -1452,10 +1592,18 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
             });
             stream_args(&mut args);
             args.insert("channel".into(), channel.into());
+            engine.chat_stream("kick", true);
             kick(engine, T_KICK_STREAM_ONLINE, "KickStreamOnline", "StreamOnline", &args);
         }
         "StopStreamBroadcast" | "LivestreamEnded" | "StreamOffline" => {
             engine.chat_unpinned("kick", "");
+            if !engine.chat_stream_ended("kick") {
+                crate::notify::send(
+                    "Streamerz",
+                    &crate::i18n::trf("chat.state_ended_title", &[("platform", "Kick")]),
+                );
+            }
+            engine.chat_stream("kick", false);
             stream_args(&mut args);
             args.insert("endedAt".into(), now().into());
             args.insert("channel".into(), channel.into());
@@ -1632,6 +1780,11 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
         "RewardRedeemedEvent" => {
             kick_user(&mut args, &json!({"username": data["username"], "id": data["user_id"]}));
             let input = data["user_input"].as_str().unwrap_or("");
+            // What the redemption cost, from the channel's list.
+            let known = REWARDS.with_borrow(|m| data["reward_id"].as_str().and_then(|id| m.get(id).cloned()));
+            if let Some(r) = known {
+                args.insert("rewardCost".into(), r["cost"].clone());
+            }
             for (k, v) in [
                 ("reward.id", data["reward_id"].clone()),
                 ("reward.title", data["reward_title"].clone()),
@@ -1660,6 +1813,7 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
 /// in the last 10 minutes, every 5), only when live and an action uses them; 7TV emote changes when
 /// used.
 pub async fn kick_extras(engine: Rc<Engine>, channel: String, user_id: Option<u64>) {
+    engine.set_chat_viewers("kick", None);
     let codes = crate::emote_events::Codes {
         platform: "kick",
         source: "Kick",
@@ -1681,16 +1835,18 @@ pub async fn kick_extras(engine: Rc<Engine>, channel: String, user_id: Option<u6
             engine.uses_trigger(T_KICK_VIEWER_COUNT_UPDATE),
             engine.uses_trigger(T_KICK_PRESENT_VIEWERS),
         );
-        if !want.0 && !want.1 {
+        if !want.0 && !want.1 && !crate::ui::chat::viewers_visible() {
             continue;
         }
         let h = [("Accept".to_string(), "application/json".to_string())];
         let Ok(r) = crate::http::request("GET", &format!("https://kick.com/api/v2/channels/{channel}"), &h, b"").await
         else {
+            engine.set_chat_viewers("kick", None);
             continue;
         };
         let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
         let l = &v["livestream"];
+        engine.set_chat_viewers("kick", l["viewer_count"].as_u64());
         if !l.is_object() {
             continue;
         }
@@ -1868,6 +2024,43 @@ mod tests {
         assert!(!connected.load(Ordering::Relaxed));
     }
 
+    /// A socket that goes quiet (no close, no pong) is dropped and opened again: chat didn't just stop.
+    #[test]
+    fn a_silent_socket_is_reconnected() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            tokio::spawn(async move {
+                let mut held = Vec::new();
+                for n in 1..=2 {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                    let est = json!({"event": "pusher:connection_established", "data": "{}"});
+                    ws.send(Message::Text(est.to_string().into())).await.unwrap();
+                    tx.send(n).unwrap();
+                    // Never answers: read and ignore, kept open.
+                    held.push(tokio::spawn(async move { while ws.next().await.is_some() {} }));
+                }
+            });
+            let mut config = Config::default();
+            config.kick.channel = "quiet".into();
+            config.kick.channel_id = Some(1);
+            config.kick.chatroom_id = Some(2);
+            let cfg = Arc::new(watch::channel(config).0);
+            let engine = Engine::new(cfg.clone(), |_| {});
+            let url = format!("ws://{addr}");
+            let task = tokio::task::spawn_local(async move {
+                run_pusher_loop_url(engine, cfg, Arc::new(AtomicBool::new(false)), &url, false).await;
+            });
+            assert_eq!(rx.recv().await, Some(1));
+            let second = tokio::time::timeout(Duration::from_secs(6), rx.recv()).await;
+            task.abort();
+            assert_eq!(second, Ok(Some(2)), "no second connection");
+        });
+    }
+
     #[test]
     fn kick_config_defaults() {
         let cfg = KickConfig::default();
@@ -1983,6 +2176,53 @@ mod tests {
     }
 
     #[test]
+    fn parse_kick_reply_chat_message() {
+        let (tx, _rx) = watch::channel(Config::default());
+        let engine = Engine::new(Arc::new(tx), |_| {});
+
+        let event = "App\\Events\\ChatMessageEvent";
+        // Stringified metadata (standard Kick Pusher wire format)
+        let payload = json!({
+            "id": "msg-reply-1",
+            "chatroom_id": 42,
+            "content": "@pedrozamecki This is my reply!",
+            "type": "reply",
+            "metadata": serde_json::to_string(&json!({
+                "original_sender": {
+                    "id": 200,
+                    "username": "PedroZamecki",
+                    "slug": "pedrozamecki"
+                },
+                "original_message": {
+                    "id": "msg-orig-1",
+                    "content": "Original message content"
+                }
+            })).unwrap(),
+            "sender": {
+                "id": 101,
+                "username": "chatter1",
+                "slug": "chatter1",
+                "identity": {
+                    "color": "#00FF00",
+                    "badges": []
+                }
+            }
+        });
+
+        handle_kick_event(&engine, "gamer123", event, &payload);
+        let (_, _, lines) = engine.chat_sync(999, 0);
+        let line = lines
+            .iter()
+            .find(|l| l.msg_id == "msg-reply-1")
+            .expect("reply line found");
+        assert_eq!(line.user, "chatter1");
+        assert_eq!(line.text, "This is my reply!");
+        let reply = line.reply.as_ref().expect("reply details present");
+        assert_eq!(reply.user, "PedroZamecki");
+        assert_eq!(reply.text, "Original message content");
+    }
+
+    #[test]
     fn parse_kick_follow_event() {
         let (tx, _rx) = watch::channel(Config::default());
         let engine = Engine::new(Arc::new(tx), |_| {});
@@ -2040,6 +2280,28 @@ mod tests {
         // Viewer count
         let vc = json!({ "viewers": 1500 });
         handle_kick_event(&engine, "chan", "App\\Events\\ViewerCountUpdated", &vc);
+    }
+
+    #[test]
+    fn a_kick_reward_shows_what_it_cost() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            known_rewards(&json!({"data": [
+                {"id": "r1", "title": "Hydrate", "cost": 500, "background_color": "#00a3ff"}
+            ]}));
+            let ids = crate::catalog::get("kick.rewards");
+            assert!(ids.iter().any(|(id, t)| id == "r1" && t == "Hydrate"));
+            let redeemed = json!({
+                "reward_id": "r1", "reward_title": "Hydrate", "username": "viewer", "user_id": 5,
+                "user_input": "", "reward_background_color": "#00a3ff"
+            });
+            handle_kick_event(&engine, "chan", "App\\Events\\RewardRedeemedEvent", &redeemed);
+            let (_, _, lines) = engine.chat_sync(u64::MAX, 0);
+            let l = lines.iter().find(|l| !l.event.is_empty()).expect("a line");
+            assert_eq!((l.cost, l.accent.as_str()), (500, "#00a3ff"));
+            assert!(l.event.contains("Hydrate"), "{}", l.event);
+        });
     }
 
     #[test]

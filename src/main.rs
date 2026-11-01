@@ -3,10 +3,12 @@
 
 mod backup;
 mod brand;
+mod catalog;
 mod cdp;
 mod commands;
 mod crash;
 pub mod decks;
+mod docs;
 pub mod donations;
 mod edit;
 mod emote_events;
@@ -17,6 +19,8 @@ pub mod hotkeys;
 pub mod http;
 mod i18n;
 pub mod inputs;
+mod instance;
+mod irc;
 pub mod kick;
 mod math;
 mod mcp;
@@ -25,10 +29,14 @@ mod notify;
 mod oauth;
 pub mod obs;
 pub mod remote;
+pub mod roles;
+mod scenario;
 mod search;
 mod secrets;
 pub mod servers;
+mod slash;
 mod slobs;
+mod storage;
 mod templates;
 pub mod tiktok;
 mod tray;
@@ -39,6 +47,20 @@ mod update;
 mod vars;
 mod webcast;
 pub mod youtube;
+
+/// Trims heap memory and returns unused virtual memory pages back to the operating system.
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
+pub fn trim_memory() {
+    unsafe {
+        extern "C" {
+            fn malloc_trim(pad: usize) -> std::ffi::c_int;
+        }
+        malloc_trim(0);
+    }
+}
+
+#[cfg(not(all(target_os = "linux", not(target_env = "musl"))))]
+pub fn trim_memory() {}
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -169,7 +191,7 @@ impl Default for Config {
 }
 
 /// The window as it was left: its tab, the chat's view and its size (0: the default).
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct WindowState {
     pub tab: String,
@@ -181,9 +203,15 @@ pub struct WindowState {
     pub chat_no_badges: bool,
     /// Emotes keep still (their first frame) in the chat and the user card.
     pub chat_still_emotes: bool,
+    /// YouTube chat: show user tag (@handle) instead of plain display name.
+    #[serde(default = "chat_youtube_tag_default")]
+    pub chat_youtube_tag: bool,
     /// Platforms where the individual chat box sends as broadcaster instead of bot-with-fallback.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chat_as_broadcaster: Vec<String>,
+    /// Platforms whose chat is taken out of the Chat page's views (put back from Options).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chat_hidden: Vec<String>,
     /// Selected target platform in "All together" chat view's input bar.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub chat_all_platform: String,
@@ -193,6 +221,128 @@ pub struct WindowState {
     /// The sidebar shows only its icons.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub nav_collapsed: bool,
+    /// How many chat lines are kept, for how long, and how they come and go.
+    #[serde(skip_serializing_if = "ChatLimits::is_default")]
+    pub chat: ChatLimits,
+}
+
+fn chat_youtube_tag_default() -> bool {
+    true
+}
+
+impl Default for WindowState {
+    fn default() -> Self {
+        Self {
+            tab: String::new(),
+            chat_view: String::new(),
+            w: 0,
+            h: 0,
+            chat_no_time: false,
+            chat_no_badges: false,
+            chat_still_emotes: false,
+            chat_youtube_tag: true,
+            chat_as_broadcaster: Vec::new(),
+            chat_hidden: Vec::new(),
+            chat_all_platform: String::new(),
+            favorite_emotes: Vec::new(),
+            nav_collapsed: false,
+            chat: ChatLimits::default(),
+        }
+    }
+}
+
+/// What the chat keeps in memory: the oldest lines go first, and a line can go by its age. Applies to
+/// the engine's log and to every pane that shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ChatLimits {
+    /// Keep chat messages in memory. When off, messages are read and processed (commands, triggers,
+    /// facts) but not saved in memory.
+    pub save_history: bool,
+    /// Lines kept of each platform's chat.
+    pub per_platform: usize,
+    /// Lines kept of all of them together.
+    pub total: usize,
+    /// A line is taken out of the chat, and the memory, after this many seconds (0: it stays).
+    pub lifetime: u64,
+    /// How long a new line takes to appear, and an old one to go, in ms (0: at once).
+    pub fade_in: u32,
+    pub fade_out: u32,
+}
+
+impl Default for ChatLimits {
+    fn default() -> Self {
+        Self {
+            save_history: true,
+            per_platform: 400,
+            total: 1000,
+            lifetime: 0,
+            fade_in: 0,
+            fade_out: 400,
+        }
+    }
+}
+
+impl ChatLimits {
+    /// The most lines a chat can keep.
+    pub const MOST: usize = 1000;
+    pub const LEAST: usize = 0;
+
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The limits as they apply: in range, whatever the file says.
+    pub fn clamped(self) -> Self {
+        Self {
+            save_history: self.save_history,
+            per_platform: if self.save_history {
+                self.per_platform.clamp(Self::LEAST, Self::MOST)
+            } else {
+                0
+            },
+            total: if self.save_history {
+                self.total.clamp(Self::LEAST, Self::MOST)
+            } else {
+                0
+            },
+            lifetime: self.lifetime.min(30 * 24 * 3600),
+            fade_in: self.fade_in.min(3000),
+            fade_out: self.fade_out.min(10_000),
+        }
+    }
+
+    /// Which of the lines, oldest first (each is its platform's index, none for a line of no platform),
+    /// are over the limits and go: the oldest of a platform past its own, then the oldest of all past the
+    /// total. The positions, in order.
+    pub fn excess(&self, lines: impl Iterator<Item = Option<usize>>) -> Vec<usize> {
+        let l = self.clamped();
+        let lines: Vec<Option<usize>> = lines.collect();
+        if !l.save_history {
+            return (0..lines.len()).collect();
+        }
+        let mut each = [0usize; 4];
+        let mut all = lines.len();
+        for p in lines.iter().flatten() {
+            each[*p] += 1;
+        }
+        let mut gone = vec![false; lines.len()];
+        // Each platform's own limit first, then the total over what is left.
+        for (i, p) in lines.iter().enumerate() {
+            if let Some(p) = p.filter(|p| each[*p] > l.per_platform) {
+                gone[i] = true;
+                each[p] -= 1;
+                all -= 1;
+            }
+        }
+        for g in gone.iter_mut().filter(|g| !**g) {
+            if all > l.total {
+                *g = true;
+                all -= 1;
+            }
+        }
+        (0..lines.len()).filter(|i| gone[*i]).collect()
+    }
 }
 
 impl Config {
@@ -242,6 +392,23 @@ impl Level {
 
 /// Debug lines are dropped unless Settings turns them on.
 static DEBUG_LOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Log lines aren't printed (the scenario runner prints its own results).
+static QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+thread_local! {
+    /// A scenario's own copy of the log lines logged on its thread (scenario.rs), so tests running
+    /// side by side don't mix their lines.
+    static CAPTURE: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Starts (true) or ends this thread's capture of log lines; what was caught.
+fn capture(on: bool) -> Vec<String> {
+    CAPTURE.with_borrow_mut(|c| std::mem::replace(c, on.then(Vec::new)).unwrap_or_default())
+}
+
+fn set_quiet(on: bool) {
+    QUIET.store(on, std::sync::atomic::Ordering::Relaxed);
+}
 
 pub fn set_debug_log(on: bool) {
     DEBUG_LOG.store(on, std::sync::atomic::Ordering::Relaxed);
@@ -368,8 +535,15 @@ fn log(level: Level, line: String) {
         return;
     }
     let line = redact(&line);
-    let _ = writeln!(std::io::stdout(), "[{}] {line}", level.tag());
+    if !QUIET.load(std::sync::atomic::Ordering::Relaxed) {
+        let _ = writeln!(std::io::stdout(), "[{}] {line}", level.tag());
+    }
     crash::line(level, &line);
+    CAPTURE.with_borrow_mut(|c| {
+        if let Some(c) = c {
+            c.push(line.clone());
+        }
+    });
     status(|s| {
         if s.log.len() == LOG_LINES {
             s.log.pop_front();
@@ -514,28 +688,13 @@ fn portable_config() -> Option<PathBuf> {
     Some(exe.parent()?.join("streamerz.json")).filter(|p| p.is_file())
 }
 
-/// Nothing says where the settings are and there are none yet: the user should choose.
-pub(crate) fn first_run() -> bool {
-    explicit_config().is_none()
-        && !location_file().is_file()
-        && portable_config().is_none()
-        && !default_config_path().exists()
-}
-
-/// Where the user chose to keep the settings (the usual folder needs no note).
-pub(crate) fn remember_location(file: &Path) -> std::io::Result<()> {
-    let usual = default_config_path();
-    if file == usual {
-        return Ok(());
-    }
-    if let Some(dir) = file.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::create_dir_all(usual.parent().unwrap_or(Path::new(".")))?;
-    std::fs::write(location_file(), file.display().to_string())
-}
-
 pub(crate) fn config_path() -> PathBuf {
+    if let Some(dir) = DEV_DIR.get() {
+        return dir.join("streamerz.json");
+    }
+    if !brand::IS_DEV && !std::env::args_os().any(|a| a == "--scenario") {
+        return resolve_config_path(default_config_path());
+    }
     static CFG_PATH: OnceLock<PathBuf> = OnceLock::new();
     CFG_PATH
         .get_or_init(|| {
@@ -562,14 +721,23 @@ fn with(path: &Path, ext: &str) -> PathBuf {
 /// Written to a temp file and renamed over the old one, so a crash never leaves half a file; the
 /// previous version is kept as `.bak`.
 fn save_to(path: &Path, c: &Config) -> std::io::Result<()> {
+    write_value(path, serde_json::to_value(c).unwrap_or_default())
+}
+
+/// `save_to`, from the config already as JSON (sealing its secrets happens here).
+fn write_value(path: &Path, mut v: serde_json::Value) -> std::io::Result<()> {
+    let _dev_guard = dev_write_guard()?;
     // The window and the engine both save: one at a time.
     static SAVING: Mutex<()> = Mutex::new(());
     let _one = SAVING.lock();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    // Development cleanup removes the directory while shutdown saves may still be queued.
+    // Never recreate it from a background save.
+    if DEV_DIR.get().is_none() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
     }
     let tmp = with(path, ".tmp");
-    let mut v = serde_json::to_value(c).unwrap_or_default();
     secrets::seal(&mut v);
     let mut o = std::fs::OpenOptions::new();
     o.write(true).create(true).truncate(true);
@@ -589,11 +757,49 @@ fn save_to(path: &Path, c: &Config) -> std::io::Result<()> {
 }
 
 fn save(c: &Config) -> std::io::Result<()> {
-    let r = save_to(&config_path(), c);
+    save_value(serde_json::to_value(c).unwrap_or_default())
+}
+
+fn save_value(v: serde_json::Value) -> std::io::Result<()> {
+    let r = write_value(&config_path(), v);
     if let Err(e) = &r {
         error(format!("can't save streamerz.json ({e})"));
     }
     r
+}
+
+/// Saves `c` without making the caller wait: the window's thread must never sit on the disk, the keyring
+/// or the save lock (the engine may hold it). One short thread writes the latest config, and the next
+/// one asked for meanwhile replaces a pending one, so a burst of changes is one write.
+fn save_later(c: &Config) {
+    static PENDING: Mutex<Option<serde_json::Value>> = Mutex::new(None);
+    static BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if let Ok(mut p) = PENDING.lock() {
+        *p = Some(serde_json::to_value(c).unwrap_or_default());
+    }
+    if BUSY.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
+    let spawned = std::thread::Builder::new().name("save".into()).spawn(|| loop {
+        let next = PENDING.lock().ok().and_then(|mut p| p.take());
+        match next {
+            Some(v) => drop(save_value(v)),
+            None => {
+                BUSY.store(false, std::sync::atomic::Ordering::Release);
+                // Something arrived between the last look and the flag going down.
+                let more = PENDING.lock().is_ok_and(|p| p.is_some());
+                if !more || BUSY.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                    return;
+                }
+            }
+        }
+    });
+    if spawned.is_err() {
+        BUSY.store(false, std::sync::atomic::Ordering::Release);
+        if let Some(v) = PENDING.lock().ok().and_then(|mut p| p.take()) {
+            drop(save_value(v));
+        }
+    }
 }
 
 /// The config, else its `.bak`, else the defaults. Written back, so new settings show up in the
@@ -632,6 +838,9 @@ fn load_from(path: &Path) -> Config {
 /// Start with Windows: a value under the user's Run registry key.
 #[cfg(windows)]
 fn autostart(on: bool) -> std::io::Result<()> {
+    if DEV_DIR.get().is_some() {
+        return Err(std::io::Error::other("Autostart is unavailable in development"));
+    }
     use windows_sys::Win32::System::Registry::{RegDeleteKeyValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
     let w = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
     let (key, name) = (w(r"Software\Microsoft\Windows\CurrentVersion\Run"), w("streamerz"));
@@ -665,6 +874,9 @@ fn autostart(on: bool) -> std::io::Result<()> {
 /// Start at login: an XDG autostart entry.
 #[cfg(not(windows))]
 fn autostart(on: bool) -> std::io::Result<()> {
+    if DEV_DIR.get().is_some() {
+        return Err(std::io::Error::other("Autostart is unavailable in development"));
+    }
     use std::io::ErrorKind::NotFound;
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -688,22 +900,214 @@ fn autostart(on: bool) -> std::io::Result<()> {
     )
 }
 
+static DEV_DIR: OnceLock<PathBuf> = OnceLock::new();
+static DEV_LOCK: Mutex<Option<std::fs::File>> = Mutex::new(None);
+static DEV_LISTENER: Mutex<Option<std::net::TcpListener>> = Mutex::new(None);
+
+pub(crate) fn take_dev_listener(port: u16) -> Option<std::net::TcpListener> {
+    let mut listener = DEV_LISTENER.lock().ok()?;
+    if listener.as_ref()?.local_addr().ok()?.port() == port {
+        listener.take()
+    } else {
+        None
+    }
+}
+// Serializes development writes against deleting the temporary directory on shutdown.
+pub(crate) static DEV_CACHE_CLOSED: Mutex<bool> = Mutex::new(false);
+
+pub(crate) fn dev_write_guard() -> std::io::Result<Option<std::sync::MutexGuard<'static, bool>>> {
+    if DEV_DIR.get().is_none() {
+        return Ok(None);
+    }
+    let guard = DEV_CACHE_CLOSED
+        .lock()
+        .map_err(|_| std::io::Error::other("development storage lock poisoned"))?;
+    if *guard {
+        return Err(std::io::Error::other("development storage is closing"));
+    }
+    Ok(Some(guard))
+}
+
+/// Reclaim old abandoned directories only after acquiring their lock.
+fn cleanup_stale_dev(base: &Path) {
+    let Ok(entries) = std::fs::read_dir(base) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with("streamerz-dev-") {
+            continue;
+        }
+        let Ok(kind) = entry.file_type() else { continue };
+        if !kind.is_dir() {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        let old = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age.as_secs() > 24 * 60 * 60);
+        if !old {
+            continue;
+        }
+        // Only directories with an existing lock are ours. Never create files in a foreign directory.
+        let Ok(lock) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(entry.path().join("instance.lock"))
+        else {
+            continue;
+        };
+        if lock.try_lock().is_ok() {
+            // Windows cannot remove an open lock file. The directory is already stale and no
+            // instance can reuse its unique name while its owner is alive.
+            #[cfg(windows)]
+            drop(lock);
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// Give each development process a private copy before any settings are loaded or saved.
+fn prepare_dev(source: &Path) -> std::io::Result<PathBuf> {
+    let base = std::env::temp_dir();
+    cleanup_stale_dev(&base);
+    for n in 0..1000 {
+        let dir = base.join(format!("streamerz-dev-{}-{n}", std::process::id()));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        match builder.create(&dir) {
+            Ok(()) => {
+                for name in ["streamerz.json", "streamerz.json.bak", "community.json"] {
+                    let from = if name == "streamerz.json" {
+                        source.to_path_buf()
+                    } else {
+                        source.with_file_name(name)
+                    };
+                    match std::fs::copy(from, dir.join(name)) {
+                        Ok(_) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => {
+                            let _ = std::fs::remove_dir_all(&dir);
+                            return Err(e);
+                        }
+                    }
+                }
+                for name in ["plugins", "tiktok-bot", "tiktok-broadcaster"] {
+                    let from = source.with_file_name(name);
+                    if from.exists() {
+                        if let Err(e) = storage::copy_tree(&from, &dir.join(name)) {
+                            let _ = std::fs::remove_dir_all(&dir);
+                            return Err(e);
+                        }
+                    }
+                }
+                return Ok(dir);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "no temporary directory available",
+    ))
+}
+
+pub(crate) fn cleanup_dev() {
+    if let Some(dir) = DEV_DIR.get() {
+        let Ok(mut closed) = DEV_CACHE_CLOSED.lock() else {
+            return;
+        };
+        *closed = true;
+        if let Ok(mut lock) = DEV_LOCK.lock() {
+            drop(lock.take());
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
 fn main() {
     // An MCP server for AI assistants, driving the running instance (mcp.rs); no window.
     if std::env::args_os().any(|a| a == "--mcp") {
         mcp::run();
         return;
     }
-    let app = ui::app();
-    if first_run() {
-        let usual = default_config_path();
-        let file = ui::dialogs::choose_location(&usual);
-        if let Err(e) = remember_location(&file) {
-            eprintln!("can't remember where the settings are: {e}");
+    // Scenarios (scenario.rs): the engine alone, on settings of their own in a scratch folder.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--scenario") {
+        let scratch = std::env::temp_dir().join(format!("streamerz-scenario-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&scratch);
+        std::env::set_var("STREAMERZ_CONFIG", scratch.join("streamerz.json"));
+        let code = scenario::cli(&args[i + 1..]);
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::process::exit(code);
+    }
+    // Fast and debug builds can run side by side. Release builds share one OS lock.
+    let _instance = if brand::IS_DEV {
+        None
+    } else {
+        let path = default_config_path();
+        let dir = path.parent().unwrap_or(Path::new("."));
+        match instance::acquire(dir) {
+            Ok(lock) => Some(lock),
+            Err(e) => {
+                eprintln!("Streamerz could not acquire its instance lock: {e}");
+                return;
+            }
+        }
+    };
+    if !brand::IS_DEV {
+        let target = resolve_config_path(default_config_path());
+        let chosen = std::fs::read_to_string(location_file())
+            .ok()
+            .map(|s| resolve_config_path(PathBuf::from(s.trim())))
+            .filter(|p| p.is_file());
+        if let Some(source) = chosen {
+            if let Err(e) = storage::migrate_selected(&source, &target) {
+                eprintln!("Streamerz could not migrate settings: {e}");
+                return;
+            }
+        } else if let Some(source) = portable_config() {
+            if let Err(e) = storage::migrate(&source, &target) {
+                eprintln!("Streamerz could not migrate settings: {e}");
+                return;
+            }
         }
     }
-    update::tidy();
-    secrets::init(&config_path());
+    if brand::IS_DEV {
+        // Resolve the source before selecting the private path. The source is only read.
+        let source = default_config_path();
+        let dir = match prepare_dev(&source) {
+            Ok(dir) => dir,
+            Err(e) => {
+                eprintln!("Streamerz could not create development settings: {e}");
+                return;
+            }
+        };
+        let lock = match instance::acquire(&dir) {
+            Ok(lock) => lock,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                eprintln!("Streamerz could not lock development settings: {e}");
+                return;
+            }
+        };
+        if let Ok(mut held) = DEV_LOCK.lock() {
+            *held = Some(lock);
+        } else {
+            eprintln!("Streamerz could not hold development settings lock");
+            return;
+        }
+        secrets::init(&storage::key_source(&source));
+        std::env::set_var("STREAMERZ_CONFIG", dir.join("streamerz.json"));
+        let _ = DEV_DIR.set(dir);
+    }
+    let app = ui::app();
+    if !brand::IS_DEV {
+        update::tidy();
+    }
+    secrets::init(&storage::key_source(&config_path()));
     crash::start();
     say(version());
     // To try the crash report by hand (see DEVELOPING).
@@ -711,7 +1115,60 @@ fn main() {
         panic!("crash test");
     }
     backup::on_start();
-    let cfg = load_from(&config_path());
+    let mut cfg = load_from(&config_path());
+    if brand::IS_DEV {
+        // A local server gives each development instance its own endpoint for the MCP tools.
+        let requested = std::env::var("STREAMERZ_DEV_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(8090);
+        let listener = match std::net::TcpListener::bind(("127.0.0.1", requested))
+            .or_else(|_| std::net::TcpListener::bind(("127.0.0.1", 0)))
+        {
+            Ok(listener) => listener,
+            Err(e) => {
+                eprintln!("Streamerz could not choose a development port: {e}");
+                cleanup_dev();
+                return;
+            }
+        };
+        cfg.websockets.port = match listener.local_addr() {
+            Ok(addr) => addr.port(),
+            Err(e) => {
+                eprintln!("Streamerz could not read its development port: {e}");
+                cleanup_dev();
+                return;
+            }
+        };
+        if let Err(e) = listener.set_nonblocking(true) {
+            eprintln!("Streamerz could not prepare the development server: {e}");
+            cleanup_dev();
+            return;
+        }
+        if let Ok(mut reserved) = DEV_LISTENER.lock() {
+            *reserved = Some(listener);
+        } else {
+            eprintln!("Streamerz could not reserve the development port");
+            cleanup_dev();
+            return;
+        }
+        cfg.websockets.address = "127.0.0.1".into();
+        cfg.websockets.auto_start = true;
+        cfg.http.auto_start = false;
+        cfg.udp.auto_start = false;
+        for connection in &mut cfg.websockets.connections {
+            connection.insert("autoConnect".into(), false.into());
+        }
+        for server in &mut cfg.websockets.servers {
+            server.insert("autoStart".into(), false.into());
+        }
+        cfg.instance_id.clear();
+        if let Err(e) = save_to(&config_path(), &cfg) {
+            eprintln!("Streamerz could not save development settings: {e}");
+            cleanup_dev();
+            return;
+        }
+    }
     i18n::set(&cfg.locale);
     set_debug_log(cfg.debug_log);
     fmt::set_shown_as(&cfg.date_format, &cfg.time_format);
@@ -731,22 +1188,28 @@ fn main() {
     std::thread::spawn(move || {
         tokio::task::LocalSet::new().block_on(&rt, async move {
             let e = engine::Engine::new(engine_cfg.clone(), |c| {
-                let _ = save(c);
+                save_later(c);
             });
             engine::set_current(&e, crash_tx);
             engine::Engine::forget_saved_chat_history();
             e.load_community();
             e.add_builtins();
-            e.plugins_start();
-            e.auto_connect();
-            if secrets::is_locked() {
+            if !brand::IS_DEV {
+                e.plugins_start();
+                e.auto_connect();
+            }
+            if !brand::IS_DEV && secrets::is_locked() {
                 engine::spawn_secret_recovery(e.clone());
             }
             tokio::task::spawn_local(servers::run(e.clone()));
-            e.started();
+            if !brand::IS_DEV {
+                e.started();
+            }
             tokio::task::spawn_local(crash::offer());
-            tokio::task::spawn_local(update::watch(engine_cfg.clone()));
-            e.timers();
+            if !brand::IS_DEV {
+                tokio::task::spawn_local(update::watch(engine_cfg.clone()));
+                e.timers();
+            }
             #[cfg(unix)]
             tokio::task::spawn_local(ended(e.clone()));
             while let Some(f) = cmd_rx.recv().await {
@@ -756,6 +1219,7 @@ fn main() {
         })
     });
     ui::run(app, cfg, cmd_tx, ui_tx, ui_rx);
+    cleanup_dev();
 }
 
 /// Tests that use the shared log run one at a time.
@@ -765,6 +1229,51 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_cleanup_keeps_locked_and_foreign_directories() {
+        let root = std::env::temp_dir().join(format!("streamerz-clean-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let active = root.join("streamerz-dev-active");
+        let stale = root.join("streamerz-dev-stale");
+        let foreign = root.join("streamerz-dev-foreign");
+        std::fs::create_dir_all(&foreign).unwrap();
+        let held = instance::acquire(&active).unwrap();
+        drop(instance::acquire(&stale).unwrap());
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 24 * 60 * 60);
+        for dir in [&active, &stale, &foreign] {
+            std::fs::File::open(dir)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(old))
+                .unwrap();
+        }
+        cleanup_stale_dev(&root);
+        assert!(active.is_dir());
+        assert!(!stale.exists());
+        assert!(foreign.is_dir());
+        drop(held);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn development_copy_is_independent() {
+        let root = std::env::temp_dir().join(format!("streamerz-copy-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("streamerz.json");
+        std::fs::write(&source, b"original").unwrap();
+        std::fs::write(root.join("community.json"), b"community").unwrap();
+        let first = prepare_dev(&source).unwrap();
+        let second = prepare_dev(&source).unwrap();
+        assert_ne!(first, second);
+        std::fs::write(first.join("streamerz.json"), b"changed").unwrap();
+        assert_eq!(std::fs::read(&source).unwrap(), b"original");
+        assert_eq!(std::fs::read(second.join("streamerz.json")).unwrap(), b"original");
+        assert_eq!(std::fs::read(first.join("community.json")).unwrap(), b"community");
+        std::fs::remove_dir_all(first).unwrap();
+        std::fs::remove_dir_all(second).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn redacts_credentials() {

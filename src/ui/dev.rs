@@ -14,7 +14,10 @@ use std::fmt::Write;
 ///   tree [N]        the widgets of window N: depth, label, x y w h (in the window), hidden ones marked
 ///   find TEXT [N]   where widgets with TEXT in their label are, as screen coordinates to click
 ///   page LABEL      goes to a page (Chat, Settings...)
+///   chatview LABEL  selects a chat view (All together, Side by side, Twitch...)
 ///   chat            the last chat line the chat page took in (its seq)
+///   chatlines       how many lines the chat page holds
+///   room            opens the question asked when a channel is changed
 ///   community       how many users the Community tab lists
 ///   panic           panics on the window's thread (to try crash reports and saving on a crash)
 pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
@@ -23,6 +26,13 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
     let mut windows = app::windows().unwrap_or_default();
     let at = |i: Option<&str>| i.and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
     match what {
+        "chatview" => {
+            if super::chat::dev_select_view(cmd.trim_start_matches("chatview").trim()) {
+                "ok".into()
+            } else {
+                "chat view not found".into()
+            }
+        }
         "page" => match pages {
             Some(p) => {
                 nav::go(p, cmd.trim_start_matches("page").trim());
@@ -88,9 +98,39 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
         "chat" => super::chat::SHOWN
             .load(std::sync::atomic::Ordering::Relaxed)
             .to_string(),
+        "chatlines" => super::chat::KEPT.load(std::sync::atomic::Ordering::Relaxed).to_string(),
         "community" => super::lists::USERS_SHOWN
             .load(std::sync::atomic::Ordering::Relaxed)
             .to_string(),
+        // `relogin Twitch [bot]`: the popup that asks to log in again.
+        "relogin" => match ["Twitch", "YouTube", "Kick", "TikTok"]
+            .into_iter()
+            .find(|p| Some(*p) == a)
+        {
+            Some(p) => {
+                crate::ui::relogin_done(p, b == Some("bot"));
+                crate::ui::relogin(p, b == Some("bot"));
+                "ok".into()
+            }
+            None => "relogin Twitch|YouTube|Kick|TikTok [bot]".into(),
+        },
+        // The question asked when a channel is changed (it waits for an answer, so it opens a moment later).
+        "room" => {
+            app::add_timeout3(0.05, |_| {
+                let text = crate::i18n::trf(
+                    "room.ask",
+                    &[("platform", "Kick"), ("channel", "ana"), ("count", "171")],
+                );
+                let tr = crate::i18n::tr;
+                let _ = super::dialogs::pick_one(&text, &[tr("room.keep"), tr("room.move"), tr("room.delete")]);
+            });
+            "ok".into()
+        }
+        // Hides or shows the window, as a click on the tray icon does.
+        "toggle" => {
+            crate::ui::toggle();
+            "ok".into()
+        }
         "panic" => panic!("dev panic"),
         _ => "commands: shot, windows, tree, find, page, chat, community, panic".into(),
     }
@@ -144,11 +184,13 @@ fn find(g: &Option<fltk::group::Group>, text: &str, at: (i32, i32), out: &mut St
     let Some(g) = g else { return };
     for i in 0..g.children() {
         let Some(c) = g.child(i) else { continue };
-        if c.visible() && c.label().to_lowercase().contains(text) {
+        let label = c.label();
+        let tooltip = c.tooltip().unwrap_or_default();
+        if c.visible_r() && (label.to_lowercase().contains(text) || tooltip.to_lowercase().contains(text)) {
             let _ = writeln!(
                 out,
                 "{:?} at {},{}",
-                c.label(),
+                if label.is_empty() { &tooltip } else { &label },
                 at.0 + c.x() + c.w() / 2,
                 at.1 + c.y() + c.h() / 2
             );

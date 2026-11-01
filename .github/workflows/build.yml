@@ -218,6 +218,7 @@ jobs:
         run: >
           gh release create "${{ needs.version.outputs.tag }}"
           artifacts/*
+          --title "${{ needs.version.outputs.tag }}"
           --repo "${{ github.repository }}"
           --target "${{ github.sha }}"
           --notes-file notes.md

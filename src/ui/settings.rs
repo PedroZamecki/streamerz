@@ -14,6 +14,8 @@ use fltk::frame::Frame;
 use fltk::group::{Flex, Wizard};
 use fltk::prelude::*;
 use fltk::{app, draw};
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::watch;
 
@@ -37,7 +39,7 @@ const UPDATES: [Updates; 3] = [Updates::Ask, Updates::Background, Updates::Ignor
 /// Changes the config and saves it.
 fn put(cfg: &Cfg, f: impl FnOnce(&mut Config)) {
     cfg.send_modify(f);
-    let _ = crate::save(&cfg.borrow());
+    crate::save_later(&cfg.borrow());
 }
 
 /// A section's title, with its icon.
@@ -232,7 +234,7 @@ fn items(names: &[String]) -> String {
 }
 
 pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
-    let (scroll, mut col) = super::tab_scrolled(tabs, "Settings", 840);
+    let (scroll, mut col) = super::tab_scrolled(tabs, "Settings", 1250);
     col.set_pad(2);
     let c = cfg.borrow();
     let chosen = c.theme.unwrap_or(if c.dark { Theme::Dark } else { Theme::Light });
@@ -327,6 +329,124 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
                 .map_or("", |l| l.0);
             put(&cfg, |c| c.locale = code.into());
             i18n::set(code);
+        }
+    });
+
+    section(&mut col, tr("settings.chat"), "message-square");
+    let r = setting(
+        &mut col,
+        tr("settings.chat.save_memory"),
+        tr("settings.chat.save_memory.about"),
+        44,
+    );
+    let mut check = fltk::button::CheckButton::default();
+    check.set_value(!cfg.borrow().window.chat.save_history);
+    done(r, &check);
+
+    let r = setting(
+        &mut col,
+        tr("settings.chat.youtube_tag"),
+        tr("settings.chat.youtube_tag.about"),
+        44,
+    );
+    let mut yt_check = fltk::button::CheckButton::default();
+    yt_check.set_value(cfg.borrow().window.chat_youtube_tag);
+    done(r, &yt_check);
+    yt_check.set_callback({
+        let cfg = cfg.clone();
+        move |b| {
+            let on = b.value();
+            put(&cfg, |c| c.window.chat_youtube_tag = on);
+            super::chat();
+        }
+    });
+
+    // What the chat keeps and how it comes and goes: a number each, read and set in the limits.
+    type Limit = (
+        &'static str,
+        &'static str,
+        fn(&crate::ChatLimits) -> u64,
+        fn(&mut crate::ChatLimits, u64),
+    );
+    let numbers: [Limit; 5] = [
+        (
+            "settings.chat.per_platform",
+            "settings.chat.per_platform.about",
+            |l| l.per_platform as u64,
+            |l, v| l.per_platform = v as usize,
+        ),
+        (
+            "settings.chat.total",
+            "settings.chat.total.about",
+            |l| l.total as u64,
+            |l, v| l.total = v as usize,
+        ),
+        (
+            "settings.chat.lifetime",
+            "settings.chat.lifetime.about",
+            |l| l.lifetime,
+            |l, v| l.lifetime = v,
+        ),
+        (
+            "settings.chat.fade_in",
+            "settings.chat.fade_in.about",
+            |l| u64::from(l.fade_in),
+            |l, v| l.fade_in = v.min(u64::from(u32::MAX)) as u32,
+        ),
+        (
+            "settings.chat.fade_out",
+            "settings.chat.fade_out.about",
+            |l| u64::from(l.fade_out),
+            |l, v| l.fade_out = v.min(u64::from(u32::MAX)) as u32,
+        ),
+    ];
+    let mut inputs = Vec::new();
+    for (key, about, get, set) in numbers {
+        let r = setting(&mut col, tr(key), tr(about), 90);
+        let mut input = fltk::input::IntInput::default();
+        input.set_value(&get(&cfg.borrow().window.chat).to_string());
+        if !cfg.borrow().window.chat.save_history {
+            input.deactivate();
+        }
+        done(r, &input);
+        // Applied as it changes or Enter is pressed.
+        input.set_trigger(fltk::enums::CallbackTrigger::Changed | fltk::enums::CallbackTrigger::EnterKey);
+        input.set_callback({
+            let (cfg, cmds) = (cfg.clone(), cmds.clone());
+            move |i| {
+                if let Ok(val) = i.value().trim().parse::<u64>() {
+                    let mut limits = cfg.borrow().window.chat;
+                    set(&mut limits, val);
+                    let limits = limits.clamped();
+                    put(&cfg, |c| c.window.chat = limits);
+                    if fltk::app::event_key() == fltk::enums::Key::Enter {
+                        i.set_value(&get(&limits).to_string());
+                    }
+                    tell(&cmds, |e| e.chat_trim());
+                    super::chat();
+                }
+            }
+        });
+        inputs.push(input);
+    }
+    let inputs = Rc::new(RefCell::new(inputs));
+    check.set_callback({
+        let (cfg, cmds, inputs) = (cfg.clone(), cmds.clone(), inputs.clone());
+        move |b| {
+            let save_memory = b.value();
+            for inp in inputs.borrow_mut().iter_mut() {
+                if save_memory {
+                    inp.deactivate();
+                } else {
+                    inp.activate();
+                }
+            }
+            let mut limits = cfg.borrow().window.chat;
+            limits.save_history = !save_memory;
+            let limits = limits.clamped();
+            put(&cfg, |c| c.window.chat = limits);
+            tell(&cmds, |e| e.chat_trim());
+            super::chat();
         }
     });
 
@@ -480,10 +600,8 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     // Right-aligned: the space before the buttons takes what they don't.
     Frame::default();
     let mut open = button(&mut row, tr("btn.open"), 90);
-    let mut change = button(&mut row, tr("btn.change"), 100);
     row.end();
     done(r, &row);
-    change.set_callback(move |_| change_location());
     open.set_callback({
         let dir = path.parent().map(|d| d.display().to_string()).unwrap_or_default();
         move |_| crate::oauth::open_browser(&dir)
@@ -510,42 +628,4 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     Frame::default();
     col.end();
     scroll.end();
-}
-
-/// Settings > Files > Change: copies the settings file to a folder picked and makes that the place from
-/// the next start on (the old file stays where it was).
-fn change_location() {
-    let mut c = fltk::dialog::NativeFileChooser::new(fltk::dialog::NativeFileChooserType::BrowseDir);
-    let _ = c.set_directory(
-        &crate::config_path()
-            .parent()
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_default(),
-    );
-    c.show();
-    let dir = c.filename();
-    if dir.as_os_str().is_empty() {
-        return;
-    }
-    let (from, to) = (crate::config_path(), dir.join("streamerz.json"));
-    if to == from {
-        return;
-    }
-    let done = std::fs::create_dir_all(&dir)
-        .and_then(|()| if to.exists() { Ok(0) } else { std::fs::copy(&from, &to) })
-        .and_then(|_| crate::remember_location(&to));
-    match done {
-        Ok(()) => {
-            let extra = if cfg!(windows) {
-                ""
-            } else {
-                tr("settings.location.relogin")
-            };
-            super::dialogs::message(&format!(
-                "{}{extra}",
-                trf("settings.location.moved", &[("path", &to.display().to_string())])
-            ));
-        }
-        Err(e) => super::dialogs::alert(&trf("location.cant_use", &[("error", &e.to_string())])),
-    }
 }

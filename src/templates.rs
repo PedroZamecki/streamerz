@@ -26,7 +26,7 @@ fn say(platform: &str, text: &str) -> Obj {
         "twitch" => 10,
         "youtube" => 4001,
         "kick" => 35001,
-        _ => 43001,
+        _ => unreachable!("unsupported chat platform"),
     };
     with(new_sub(kind), json!({"text": text, "useBot": true, "fallback": true}))
 }
@@ -78,10 +78,7 @@ fn timed(name: &str, minutes: u64, text: &str) -> Made {
     let mut a = action(
         name,
         &[],
-        ["twitch", "youtube", "kick", "tiktok"]
-            .iter()
-            .map(|p| say(p, text))
-            .collect(),
+        ["twitch", "youtube", "kick"].iter().map(|p| say(p, text)).collect(),
     );
     a.triggers = vec![with(new_trigger(701), json!({"timerId": timer_id}))];
     Made {
@@ -122,21 +119,20 @@ pub const TEMPLATES: &[Template] = &[
     },
     Template {
         name: "Thank follows",
-        about: "Thanks new followers in chat (Twitch, Kick, TikTok).",
+        about: "Thanks new followers in chat (Twitch, Kick).",
         make: || {
             per_platform(
                 "Thank follows",
                 &[
                     ("twitch", &[101], "Thanks for the follow, %user%! 💜"),
                     ("kick", &[35011], "Thanks for the follow, %user%! 💚"),
-                    ("tiktok", &[41004], "Thanks for the follow, %user%! ❤️"),
                 ],
             )
         },
     },
     Template {
         name: "Thank subscriptions",
-        about: "Thanks new subscribers, resubs and members (Twitch, YouTube, Kick, TikTok).",
+        about: "Thanks new subscribers, resubs and members (Twitch, YouTube, Kick).",
         make: || {
             per_platform(
                 "Thank subscriptions",
@@ -144,7 +140,6 @@ pub const TEMPLATES: &[Template] = &[
                     ("twitch", &[103, 104], "Thanks for subscribing, %user%! 🎉"),
                     ("youtube", &[4008], "Welcome to the members, %user%! 🎉"),
                     ("kick", &[35014], "Thanks for subscribing, %user%! 🎉"),
-                    ("tiktok", &[41006], "Thanks for subscribing, %user%! 🎉"),
                 ],
             )
         },
@@ -185,20 +180,6 @@ pub const TEMPLATES: &[Template] = &[
                     ("twitch", &[102], "Thanks for the %bits% bits, %user%! 💎"),
                     ("youtube", &[4006], "Thanks for the Super Chat, %user%! 💛"),
                 ],
-            )
-        },
-    },
-    Template {
-        name: "Thank TikTok gifts",
-        about: "Thanks TikTok gifts with the gift's name and count.",
-        make: || {
-            per_platform(
-                "Thank gifts",
-                &[(
-                    "tiktok",
-                    &[41002],
-                    "Thanks for the %repeatCount%x %giftName%, %user%! 🌹",
-                )],
             )
         },
     },

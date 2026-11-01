@@ -150,7 +150,9 @@ pub fn start() {
     let latest = dir.join("latest.log");
     // The last run left its marker: it never got to quit. Whatever it said last is the report.
     let running = dir.join("running");
-    if running.exists() {
+    // The trail was once taken for a report (an old bug): it isn't one.
+    let _ = std::fs::remove_file(dir.join("context.reported"));
+    if running.exists() && !still_running(&running) {
         let tail = |name: &str, n: usize| {
             let t = std::fs::read_to_string(dir.join(name)).unwrap_or_default();
             let lines: Vec<&str> = t.lines().collect();
@@ -164,7 +166,7 @@ pub fn start() {
         ));
         let stamp = crate::fmt::date(&crate::fmt::now(), "yyyyMMdd-HHmmss");
         let _ = std::fs::write(dir.join(format!("crash-{stamp}.txt")), body);
-        keep(&dir, ".txt", KEEP_CRASHES);
+        keep(&dir, "crash-", ".txt", KEEP_CRASHES);
     }
     let _ = std::fs::write(&running, std::process::id().to_string());
     if let Ok(old) = std::fs::read(&latest) {
@@ -182,9 +184,9 @@ pub fn start() {
             }
         }
     }
-    keep(&dir, "log.gz", KEEP_LOGS);
+    keep(&dir, "", "log.gz", KEEP_LOGS);
     #[cfg(unix)]
-    keep_stderr(&dir);
+    capture_stderr(&dir);
     if let Ok(f) = std::fs::File::create(&latest) {
         if let Ok(mut l) = LOG.lock() {
             *l = Some((f, 0));
@@ -199,21 +201,113 @@ pub fn start() {
     });
 }
 
-/// Started from a launcher (stderr isn't a terminal), what the libraries print to stderr (a Wayland protocol
-/// error is printed there, and then the process exits) goes to `logs/stderr.log` instead of nowhere.
+/// Whether the run that left the marker is still going (a second window was started): the marker holds its
+/// pid, and on Linux `/proc` says whether that pid is a Streamerz.
+fn still_running(marker: &Path) -> bool {
+    let Some(pid) = std::fs::read_to_string(marker)
+        .ok()
+        .and_then(|t| t.trim().parse::<u32>().ok())
+    else {
+        return false;
+    };
+    pid != std::process::id()
+        && std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|c| c.trim() == "Streamerz")
+}
+
+/// The read end of the stderr pipe, for the last read at exit.
 #[cfg(unix)]
-fn keep_stderr(dir: &Path) {
-    use std::os::fd::AsRawFd;
+static STDERR_PIPE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+/// Everything written to stderr, by Streamerz, a library or a program it starts (a file manager, the
+/// browser), goes to the log instead of the terminal: a pipe replaces stderr and a thread reads it line by
+/// line. Each line is kept in `logs/stderr.log` first, so a library that prints and then exits (a Wayland
+/// protocol error) still leaves its last words for the next start's report.
+#[cfg(unix)]
+fn capture_stderr(dir: &Path) {
+    use std::io::{BufRead, BufReader};
+    use std::os::fd::FromRawFd;
     extern "C" {
-        fn isatty(fd: i32) -> i32;
+        fn pipe(fds: *mut i32) -> i32;
         fn dup2(old: i32, new: i32) -> i32;
+        fn close(fd: i32) -> i32;
+        fn atexit(f: extern "C" fn()) -> i32;
     }
-    // SAFETY: plain libc calls on standard descriptors and a file we just opened (dup2 copies it).
+    let Ok(mut file) = std::fs::File::create(dir.join("stderr.log")) else {
+        return;
+    };
+    let mut fds = [0i32; 2];
+    // SAFETY: plain libc calls on a pipe we just made; dup2 copies its write end over stderr.
     unsafe {
-        if isatty(2) == 0 {
-            if let Ok(f) = std::fs::File::create(dir.join("stderr.log")) {
-                dup2(f.as_raw_fd(), 2);
+        if pipe(fds.as_mut_ptr()) != 0 {
+            return;
+        }
+        if dup2(fds[1], 2) < 0 {
+            close(fds[0]);
+            close(fds[1]);
+            return;
+        }
+        close(fds[1]);
+        STDERR_PIPE.store(fds[0], std::sync::atomic::Ordering::Relaxed);
+        atexit(drain_stderr);
+    }
+    // SAFETY: the read end is ours alone from here on.
+    let read = unsafe { std::fs::File::from_raw_fd(fds[0]) };
+    let _ = std::thread::Builder::new()
+        .name("stderr".into())
+        .stack_size(64 * 1024)
+        .spawn(move || {
+            for line in BufReader::new(read).lines().map_while(Result::ok) {
+                let _ = writeln!(file, "{line}");
+                if !line.trim().is_empty() {
+                    crate::log(stderr_level(&line), format!("stderr: {}", line.trim_end()));
+                }
             }
+        });
+}
+
+#[cfg_attr(not(unix), allow(dead_code))]
+/// How bad a line printed to stderr is, from what it says (GLib, GTK and most tools mark it).
+fn stderr_level(line: &str) -> crate::Level {
+    let l = line.to_ascii_lowercase();
+    if ["error", "critical", "fatal", "panicked"].iter().any(|w| l.contains(w)) {
+        crate::Level::Error
+    } else if l.contains("warn") {
+        crate::Level::Warn
+    } else {
+        crate::Level::Info
+    }
+}
+
+/// At exit: what's still in the pipe (the thread may not have read it yet) goes to `logs/stderr.log`.
+#[cfg(unix)]
+extern "C" fn drain_stderr() {
+    extern "C" {
+        fn fcntl(fd: i32, cmd: i32, arg: i32) -> i32;
+    }
+    use std::io::Read;
+    use std::os::fd::FromRawFd;
+    #[cfg(target_os = "linux")]
+    const O_NONBLOCK: i32 = 0o4000;
+    #[cfg(not(target_os = "linux"))]
+    const O_NONBLOCK: i32 = 4;
+    const F_SETFL: i32 = 4;
+    let fd = STDERR_PIPE.load(std::sync::atomic::Ordering::Relaxed);
+    if fd < 0 {
+        return;
+    }
+    let mut rest = Vec::new();
+    let mut buf = [0u8; 4096];
+    // SAFETY: our own pipe, made non-blocking; ManuallyDrop leaves the fd open for the reading thread.
+    let pipe = unsafe {
+        fcntl(fd, F_SETFL, O_NONBLOCK);
+        std::mem::ManuallyDrop::new(std::fs::File::from_raw_fd(fd))
+    };
+    while let Ok(n @ 1..) = (&*pipe).read(&mut buf) {
+        rest.extend_from_slice(&buf[..n]);
+    }
+    if !rest.is_empty() {
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(dir().join("stderr.log")) {
+            let _ = f.write_all(&rest);
         }
     }
 }
@@ -231,15 +325,19 @@ fn unclean_report(log: &str, stderr: &str, context: &str) -> String {
 /// Quits for good: the marker that says "it stopped unexpectedly" is removed first.
 pub fn quit(code: i32) -> ! {
     let _ = std::fs::remove_file(dir().join("running"));
+    crate::cleanup_dev();
     std::process::exit(code)
 }
 
-/// Deletes the oldest files of `dir` ending in `.ext`, keeping `n`.
-fn keep(dir: &Path, ext: &str, n: usize) {
+/// Deletes the oldest files of `dir` named `prefix...ext`, keeping `n`.
+fn keep(dir: &Path, prefix: &str, ext: &str, n: usize) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     let mut files: Vec<_> = rd
         .flatten()
-        .filter(|e| e.file_name().to_string_lossy().ends_with(ext))
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.starts_with(prefix) && name.ends_with(ext)
+        })
         .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
         .collect();
     files.sort();
@@ -334,19 +432,27 @@ fn report(info: &std::panic::PanicHookInfo<'_>) {
     let _ = std::fs::write(dir.join(format!("crash-{stamp}.txt")), body);
     // This report says it; the next start needn't make another from the marker.
     let _ = std::fs::remove_file(dir.join("running"));
-    keep(&dir, ".txt", KEEP_CRASHES);
-    keep(&dir, ".reported", KEEP_CRASHES);
+    keep(&dir, "crash-", ".txt", KEEP_CRASHES);
+    keep(&dir, "crash-", ".reported", KEEP_CRASHES);
     // The report is written: now keep what would be lost.
     crate::engine::save_and_wait();
 }
 
-/// The newest crash report nobody has dealt with, and its text.
+/// The newest crash report nobody has dealt with, and its text. Only `crash-*.txt`: the folder also holds
+/// the trail (`context.txt`), which is no report.
 fn pending() -> Option<(PathBuf, String)> {
-    let mut found: Vec<PathBuf> = std::fs::read_dir(dir())
+    pending_in(&dir())
+}
+
+fn pending_in(dir: &Path) -> Option<(PathBuf, String)> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
         .ok()?
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "txt"))
+        .filter(|p| {
+            p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("crash-"))
+                && p.extension().is_some_and(|x| x == "txt")
+        })
         .collect();
     found.sort();
     let path = found.pop()?;
@@ -573,6 +679,48 @@ mod tests {
     }
 
     #[test]
+    fn only_crash_reports_are_offered() {
+        let d = std::env::temp_dir().join(format!("streamerz-pending-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("context.txt"), "Context:").unwrap();
+        std::fs::write(d.join("crash-20260101-000000.reported"), "old").unwrap();
+        assert!(
+            pending_in(&d).is_none(),
+            "the trail and a dealt-with report aren't pending"
+        );
+        std::fs::write(d.join("crash-20260102-000000.txt"), "new").unwrap();
+        assert_eq!(pending_in(&d).unwrap().1, "new");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_live_run_isnt_a_crash() {
+        let d = std::env::temp_dir().join(format!("streamerz-marker-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let m = d.join("running");
+        // A pid that isn't running (or isn't Streamerz) left the marker: it crashed.
+        std::fs::write(&m, "999999999").unwrap();
+        assert!(!still_running(&m));
+        std::fs::write(&m, "garbage").unwrap();
+        assert!(!still_running(&m));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn stderr_lines_get_a_level() {
+        use crate::Level;
+        assert_eq!(
+            stderr_level("** (org.gnome.Nautilus:1): WARNING **: GDK backend forced"),
+            Level::Warn
+        );
+        assert_eq!(stderr_level("(x:1): Gtk-CRITICAL **: assertion failed"), Level::Error);
+        assert_eq!(
+            stderr_level("** Message: Connecting to org.freedesktop.Tracker3"),
+            Level::Info
+        );
+    }
+
+    #[test]
     fn the_home_folder_is_hidden() {
         std::env::set_var("HOME", "/home/someone");
         assert_eq!(private("at /home/someone/x.rs"), "at ~/x.rs");
@@ -586,7 +734,7 @@ mod tests {
             std::fs::write(d.join(format!("{i}.log.gz")), "x").unwrap();
             std::thread::sleep(std::time::Duration::from_millis(15));
         }
-        keep(&d, "log.gz", 2);
+        keep(&d, "", "log.gz", 2);
         let mut left: Vec<_> = std::fs::read_dir(&d)
             .unwrap()
             .flatten()

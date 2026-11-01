@@ -4,7 +4,7 @@
 mod accounts;
 mod actions;
 mod card;
-mod chat;
+pub(crate) mod chat;
 mod conns;
 mod dev;
 pub(crate) mod dialogs;
@@ -24,6 +24,7 @@ pub(crate) mod popover;
 mod recovery;
 mod rows;
 mod settings;
+mod suggest;
 mod tip;
 
 use self::fit::Ellipsis;
@@ -38,7 +39,7 @@ use fltk::group::{Flex, Wizard};
 use fltk::image::RgbImage;
 use fltk::prelude::*;
 use fltk::text::{TextBuffer, TextDisplay};
-use fltk::window::Window;
+use fltk::window::DoubleWindow;
 use fltk::{app, draw};
 use std::cell::Cell;
 use std::rc::Rc;
@@ -265,6 +266,61 @@ pub fn confirm(text: String, no: &'static str, yes: &'static str) -> oneshot::Re
     rx
 }
 
+/// Hides the window when it's up, shows it when it's hidden (the tray icon's click).
+pub fn toggle() {
+    if let Some(ui) = UI.get() {
+        ui.send(Msg::Toggle);
+    }
+}
+
+/// Logins that ran out: the platform and whether it is the bot's.
+type Relogin = (&'static str, bool);
+static RELOGINS: Mutex<Vec<Relogin>> = Mutex::new(Vec::new());
+/// Those already asked about, so a retry loop doesn't open the popup again and again.
+static RELOGIN_ASKED: Mutex<Vec<Relogin>> = Mutex::new(Vec::new());
+
+/// Asks, in a popup shown even while the window hides, to log in again (once per login until it's done).
+/// True when it asked.
+pub fn relogin(platform: &'static str, bot: bool) -> bool {
+    let Ok(mut asked) = RELOGIN_ASKED.lock() else {
+        return false;
+    };
+    if asked.contains(&(platform, bot)) {
+        return false;
+    }
+    asked.push((platform, bot));
+    if let Ok(mut q) = RELOGINS.lock() {
+        q.push((platform, bot));
+    }
+    // Before the window is made, it asks when it is.
+    if let Some(ui) = UI.get() {
+        ui.send(Msg::Input);
+    }
+    true
+}
+
+/// The login was done (or tried) again: the next time it runs out, ask again.
+pub fn relogin_done(platform: &'static str, bot: bool) {
+    if let Ok(mut asked) = RELOGIN_ASKED.lock() {
+        asked.retain(|a| *a != (platform, bot));
+    }
+}
+
+type YtPrompt = (Vec<(String, String)>, oneshot::Sender<Option<String>>);
+static YOUTUBE_STREAMS: Mutex<Vec<YtPrompt>> = Mutex::new(Vec::new());
+
+/// Prompt the user to select which YouTube livestream to focus on when multiple are live.
+pub fn ask_youtube_stream(streams: Vec<(String, String)>) -> oneshot::Receiver<Option<String>> {
+    let (tx, rx) = oneshot::channel();
+    if let Ok(mut q) = YOUTUBE_STREAMS.lock() {
+        q.push((streams, tx));
+    }
+    if let Some(ui) = UI.get() {
+        ui.send(Msg::Input);
+    }
+    rx
+}
+
 /// Saves what the window keeps, starts the new build and quits (after an update).
 pub fn restart() {
     if let Some(ui) = UI.get() {
@@ -275,7 +331,7 @@ pub fn restart() {
 /// A modal text question. Not dialog::input: on Wayland it focuses its input before the window
 /// exists and crashes FLTK.
 fn ask(title: &str, prompt: &str, text: &str) -> Option<String> {
-    let mut win = Window::default().with_size(420, 130).with_label(title);
+    let mut win = DoubleWindow::default().with_size(420, 130).with_label(title);
     win.set_xclass("streamerz");
     let mut col = Flex::new(10, 10, 400, 110, None).column();
     col.set_pad(6);
@@ -316,7 +372,9 @@ fn ask(title: &str, prompt: &str, text: &str) -> Option<String> {
         }
     }
     win.hide();
-    answer.get().unwrap_or(false).then(|| input.value())
+    let val = answer.get().unwrap_or(false).then(|| input.value());
+    app::delete_widget(win);
+    val
 }
 
 /// Run `f` on the engine's thread.
@@ -324,15 +382,27 @@ fn tell(cmds: &UnboundedSender<UiCmd>, f: impl FnOnce(&Rc<Engine>) + Send + 'sta
     let _ = cmds.send(Box::new(f));
 }
 
-/// Run `f` on the engine's thread and wait for its answer. The engine never waits on the window,
-/// so this can't deadlock.
+/// How long the window waits for the engine's answer before it goes on without it.
+const QUERY_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Run `f` on the engine's thread and wait for its answer: None when it takes too long (the engine is
+/// busy with something slow, a locked keyring or a big file), so the window never freezes with it. `f`
+/// still runs when the engine gets to it. The engine never waits on the window, so this can't deadlock.
 fn query<T: Send + 'static>(
     cmds: &UnboundedSender<UiCmd>,
     f: impl FnOnce(&Rc<Engine>) -> T + Send + 'static,
 ) -> Option<T> {
+    query_for(cmds, QUERY_WAIT, f)
+}
+
+fn query_for<T: Send + 'static>(
+    cmds: &UnboundedSender<UiCmd>,
+    wait: std::time::Duration,
+    f: impl FnOnce(&Rc<Engine>) -> T + Send + 'static,
+) -> Option<T> {
     let (tx, rx) = std::sync::mpsc::channel();
     tell(cmds, move |e| drop(tx.send(f(e))));
-    rx.recv().ok()
+    rx.recv_timeout(wait).ok()
 }
 
 /// Wake the window with `m`, if it's up (no wakeups while hidden).
@@ -430,6 +500,13 @@ fn theme(dark: bool, accent: Option<(u8, u8, u8)>) {
     ] {
         app::set_frame_type_cb(f, down, 2, 2, 4, 4);
     }
+    if let Ok(mut bars) = SCROLLBARS.lock() {
+        bars.retain(|sb| !sb.was_deleted());
+        for sb in bars.iter_mut() {
+            sb.set_color(Color::Background);
+            sb.set_selection_color(Color::color_average(Color::Foreground, Color::Background, 0.35));
+        }
+    }
 }
 
 /// Every window's icon, drawn for the theme.
@@ -499,6 +576,12 @@ fn placeholder(i: &mut fltk::input::Input, text: &'static str) {
             draw::draw_text2(&shown, i.x() + 6, i.y(), i.w() - 12, i.h(), Align::Left | Align::Clip);
         }
     });
+    i.handle(|i, ev| {
+        if matches!(ev, Event::Focus | Event::Unfocus) {
+            i.redraw();
+        }
+        false
+    });
 }
 
 /// Column titles over a list with these column `widths`.
@@ -518,6 +601,19 @@ pub(crate) fn header(col: &mut Flex, widths: &'static [i32], titles: &[&'static 
     col.fixed(&f, 16);
 }
 
+/// A column of a sort header that also filters (the platform column): a funnel opens `open`, and both
+/// the funnel and the sort are left out while there's nothing to tell apart (`shown` false).
+pub(crate) struct HeaderFilter {
+    pub column: usize,
+    pub shown: Cell<bool>,
+    /// Some values are filtered out: the funnel is drawn lit.
+    pub filtering: Cell<bool>,
+    pub open: Box<dyn Fn()>,
+}
+
+/// The funnel's width, before the sort arrow in a filtering column.
+const FUNNEL: i32 = 16;
+
 /// Column titles that sort: click one to sort by it, again to turn it around. `sort` holds the column
 /// and whether it goes up; the frame's callback runs after every click (the list sorts itself there).
 pub(crate) fn sort_header(
@@ -525,24 +621,43 @@ pub(crate) fn sort_header(
     widths: &'static [i32],
     titles: &[&'static str],
     sort: Rc<Cell<(usize, bool)>>,
+    filter: Option<Rc<HeaderFilter>>,
 ) -> Frame {
     let titles = titles.to_vec();
+    // Its own box: redrawn alone, it paints over the last arrow instead of on top of it (that left a
+    // ghost of every arrow until the page was drawn again).
     let mut f = Frame::default();
+    f.set_frame(FrameType::FlatBox);
+    f.set_color(Color::Background);
     f.draw({
-        let sort = sort.clone();
+        let (sort, filter) = (sort.clone(), filter.clone());
         move |f| {
             draw::set_font(Font::HelveticaBold, 12);
             let mut x = f.x() + 12;
             for (i, t) in titles.iter().enumerate() {
                 let w = widths.get(i).copied().unwrap_or(f.w());
+                let filters = filter.as_ref().filter(|h| h.column == i);
+                if filters.is_some_and(|h| !h.shown.get()) {
+                    x += w;
+                    continue;
+                }
                 let (on, up) = (sort.get().0 == i, sort.get().1);
+                let mut tx = x;
+                if let Some(h) = filters {
+                    let ink = if h.filtering.get() { Color::Foreground } else { muted() };
+                    if let Some(mut a) = icons::icon("funnel", ink, 12) {
+                        a.draw(x, f.y() + (f.h() - 12) / 2, 12, 12);
+                    }
+                    tx += FUNNEL;
+                }
                 draw::set_draw_color(if on { Color::Foreground } else { muted() });
-                draw::draw_text2(t, x, f.y(), w - 20, f.h(), Align::Left | Align::Clip);
+                draw::draw_text2(t, tx, f.y(), w - 20, f.h(), Align::Left | Align::Clip);
                 if on {
                     let tw = draw::width(t) as i32;
                     let ink = Color::Foreground;
                     if let Some(mut a) = icons::icon(if up { "arrow-up" } else { "arrow-down" }, ink, 12) {
-                        a.draw(x + tw.min(w - 34) + 4, f.y() + (f.h() - 12) / 2, 12, 12);
+                        let gap = if t.is_empty() { 0 } else { 4 };
+                        a.draw(tx + tw.min(w - 34) + gap, f.y() + (f.h() - 12) / 2, 12, 12);
                     }
                 }
                 x += w;
@@ -562,6 +677,16 @@ pub(crate) fn sort_header(
             let ex = app::event_x().max(x);
             for (i, w) in widths.iter().enumerate() {
                 if (x..x + w).contains(&ex) {
+                    if let Some(h) = filter.as_ref().filter(|h| h.column == i) {
+                        if !h.shown.get() {
+                            break;
+                        }
+                        if ex < x + FUNNEL {
+                            (h.open)();
+                            f.redraw();
+                            break;
+                        }
+                    }
                     let (on, up) = sort.get();
                     sort.set((i, on != i || !up));
                     f.redraw();
@@ -576,6 +701,31 @@ pub(crate) fn sort_header(
     });
     col.fixed(&f, 16);
     f
+}
+
+/// A menu at the pointer of things to tick: each item is a label and whether it's ticked; `pick` gets
+/// the item clicked.
+pub(crate) fn tick_menu(items: &[(String, bool)], pick: impl Fn(usize) + Clone + 'static) {
+    use fltk::menu::{MenuButton, MenuFlag};
+    let mut m = menu_at_pointer();
+    for (i, (label, on)) in items.iter().enumerate() {
+        let flag = if *on {
+            MenuFlag::Toggle | MenuFlag::Value
+        } else {
+            MenuFlag::Toggle
+        };
+        let pick = pick.clone();
+        m.add(
+            &label.replace('/', "\\/").replace('&', "&&"),
+            Shortcut::None,
+            flag,
+            move |_| pick(i),
+        );
+    }
+    if m.size() > 0 {
+        m.popup();
+    }
+    MenuButton::delete(m);
 }
 
 fn button(row: &mut Flex, label: &str, w: i32) -> Button {
@@ -795,19 +945,27 @@ fn tab(tabs: &Wizard, label: &str) -> Flex {
     col
 }
 
+static SCROLLBARS: Mutex<Vec<fltk::valuator::Scrollbar>> = Mutex::new(Vec::new());
+
 /// A scrollable page: wraps a vertical Flex inside a fltk::group::Scroll.
 pub(crate) fn tab_scrolled(tabs: &Wizard, label: &str, content_h: i32) -> (fltk::group::Scroll, Flex) {
     let mut s = fltk::group::Scroll::new(tabs.x(), tabs.y(), tabs.w(), tabs.h(), None).with_label(label);
     s.set_type(fltk::group::ScrollType::Vertical);
-    s.set_scrollbar_size(8);
+    s.set_scrollbar_size(10);
+    let mut sb = s.scrollbar();
+    sb.set_color(Color::Background);
+    sb.set_selection_color(Color::color_average(Color::Foreground, Color::Background, 0.35));
+    if let Ok(mut bars) = SCROLLBARS.lock() {
+        bars.push(sb.clone());
+    }
     let mut col = Flex::new(s.x(), s.y(), s.w() - 14, content_h.max(s.h()), None).column();
     col.set_margin(10);
     col.set_pad(4);
     s.resizable(&col);
     let mut col_c = col.clone();
-    s.resize_callback(move |_s, x, y, w, h| {
+    s.resize_callback(move |s, x, y, w, h| {
         let ch = content_h.max(h);
-        col_c.resize(x, y, (w - 14).max(50), ch);
+        col_c.resize(x - s.xposition(), y - s.yposition(), (w - 14).max(50), ch);
     });
     (s, col)
 }
@@ -940,7 +1098,7 @@ pub fn run(
     };
     let _ = UI.set(tx);
     crate::crash::probe(event_probe);
-    if CONFIRMS.lock().is_ok_and(|q| !q.is_empty()) {
+    if CONFIRMS.lock().is_ok_and(|q| !q.is_empty()) || RELOGINS.lock().is_ok_and(|q| !q.is_empty()) {
         tx.send(Msg::Input);
     }
     let c_accent = accent_of(&cfg.borrow());
@@ -948,7 +1106,7 @@ pub fn run(
     // Pictures drawn bigger than they are come out smooth, not blocky.
     RgbImage::set_scaling_algorithm(fltk::image::RgbScaling::Bilinear);
     fltk::image::Image::set_scaling_algorithm(fltk::image::RgbScaling::Bilinear);
-    let mut win = Window::default().with_size(W, H).with_label(&crate::version());
+    let mut win = DoubleWindow::default().with_size(W, H).with_label(&crate::version());
     win.set_xclass("streamerz");
     if let Ok(icon) = RgbImage::new(brand::app(c_dark), brand::SIZE, brand::SIZE, ColorDepth::Rgba8) {
         win.set_icon(Some(icon));
@@ -1046,12 +1204,12 @@ pub fn run(
     let remember = {
         let cfg = cfg.clone();
         let cmds = cmds.clone();
-        move |w: &Window| {
+        move |w: &DoubleWindow| {
             cfg.send_if_modified(|c| {
                 (c.window.w, c.window.h) = (w.w(), w.h());
                 false
             });
-            let _ = crate::save(&cfg.borrow());
+            crate::save_later(&cfg.borrow());
             // Waited for: Quit exits right after.
             let _ = query(&cmds, |e| {
                 e.save_community();
@@ -1128,12 +1286,17 @@ pub fn run(
     });
     let restart = remember.clone();
     let quitting = remember.clone();
-    let close = move |w: &mut Window| {
-        remember(w);
-        crate::crash::step("window hidden");
-        SHOWN.store(false, Ordering::Relaxed);
-        w.hide();
-        img::forget();
+    let close = {
+        let views = views.clone();
+        move |w: &mut DoubleWindow| {
+            remember(w);
+            crate::crash::step("window hidden");
+            SHOWN.store(false, Ordering::Relaxed);
+            w.hide();
+            img::forget();
+            views.chat_release();
+            img::trim();
+        }
     };
     hide.set_callback({
         let mut win = win.clone();
@@ -1157,7 +1320,7 @@ pub fn run(
     let prompted_unlock = Rc::new(Cell::new(false));
     // The tabs are filled only when shown: filling a list measures its text, which opens the display
     // and loads the fonts (~14 MB) even with the window hidden.
-    let open = |win: &mut Window, log: &Rc<std::cell::RefCell<Log>>| {
+    let open = |win: &mut DoubleWindow, log: &Rc<std::cell::RefCell<Log>>| {
         if !win.visible() {
             // Windows tells no one when its colours change: ask as the window opens.
             #[cfg(windows)]
@@ -1191,6 +1354,8 @@ pub fn run(
     // What can be done at any moment, while a dialog or popover holds the loop too: the engine's news
     // reaches the screen whatever is open. What may not run inside another loop is given back.
     let pictures = Rc::new(Cell::new(false));
+    // New chat lines come many a second: the page takes them in at most ten times a second.
+    let chat_due = Rc::new(Cell::new(false));
     let live: Rc<dyn Fn(Msg) -> Option<Msg>> = {
         let status_bar = status_bar.clone();
         let (win, log, views, tabs, acts, cfg, pictures) = (
@@ -1209,7 +1374,15 @@ pub fn run(
                         l.refresh();
                     }
                 }
-                Msg::Chat => views.chat_refresh(&tabs),
+                Msg::Chat => {
+                    if !chat_due.replace(true) {
+                        let (views, tabs, chat_due) = (views.clone(), tabs.clone(), chat_due.clone());
+                        app::add_timeout3(0.016, move |_| {
+                            chat_due.set(false);
+                            views.chat_refresh(&tabs);
+                        });
+                    }
+                }
                 Msg::Image => pictures.set(true),
                 // Hidden: nothing to redraw (filling a list loads the fonts); opening refreshes.
                 Msg::Changed if win.visible() => {
@@ -1296,6 +1469,27 @@ pub fn run(
                     for (text, no, yes, answer) in confirms {
                         let _ = answer.send(dialogs::choice(&text.replace('@', "@@"), no, yes));
                     }
+                    let relogins = RELOGINS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+                    for (platform, bot) in relogins {
+                        let text = trf(
+                            if bot { "relogin.ask_bot" } else { "relogin.ask" },
+                            &[("platform", platform)],
+                        );
+                        if dialogs::choice(&text, tr("relogin.later"), tr("relogin.now")) {
+                            accounts::login_again(&cfg, &cmds, platform, bot);
+                        }
+                    }
+                    let yt_prompts = YOUTUBE_STREAMS
+                        .lock()
+                        .map(|mut q| std::mem::take(&mut *q))
+                        .unwrap_or_default();
+                    for (streams, answer) in yt_prompts {
+                        let choices: Vec<String> =
+                            streams.iter().map(|(id, title)| format!("{title} ({id})")).collect();
+                        let picked = dialogs::pick(tr("youtube.choose_stream_title"), &choices);
+                        let chosen = picked.and_then(|idx| streams.get(idx).map(|s| s.0.clone()));
+                        let _ = answer.send(chosen);
+                    }
                 }
                 _ => {}
             }
@@ -1314,6 +1508,25 @@ fn pump_dev_with(tabs: &Wizard) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A login that ran out is asked about once, and again only after it was done again.
+    #[test]
+    fn a_login_is_asked_about_once() {
+        assert!(relogin("TestPlatform", false));
+        assert!(!relogin("TestPlatform", false), "a retry loop doesn't open it again");
+        assert!(relogin("TestPlatform", true), "the bot's is another login");
+        relogin_done("TestPlatform", false);
+        assert!(relogin("TestPlatform", false));
+    }
+
+    /// A busy engine doesn't freeze the window: a question it doesn't answer in time gets no answer.
+    #[test]
+    fn a_busy_engine_is_not_waited_for_forever() {
+        let (tx, _engine_busy) = tokio::sync::mpsc::unbounded_channel();
+        let t = std::time::Instant::now();
+        let got = query_for(&tx, std::time::Duration::from_millis(50), |_| 1);
+        assert!(got.is_none() && t.elapsed() < std::time::Duration::from_secs(2));
+    }
 
     /// Menu labels show as written: an outcome named "Yes/No" isn't a submenu.
     #[test]

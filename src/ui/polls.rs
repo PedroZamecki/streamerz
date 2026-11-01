@@ -203,7 +203,7 @@ fn lasts_choice(default: usize) -> Choice {
 }
 
 pub fn tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<Polls>> {
-    let (scroll, mut col) = super::tab_scrolled(tabs, "Polls", 900);
+    let (scroll, mut col) = super::tab_scrolled(tabs, "Polls", 1050);
 
     super::hint(&mut col, tr("polls.hint"), 36);
     // How the last thing asked went.

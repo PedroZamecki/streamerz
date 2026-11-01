@@ -1,0 +1,51 @@
+[
+  {
+    "name": "a delay holds the next sub-action back, in order",
+    "actions": [{"name": "slow", "subActions": [
+      {"type": 1020, "logLevel": 2, "message": "before"},
+      {"type": 1002, "value": 300},
+      {"type": 1020, "logLevel": 2, "message": "after"}]}],
+    "steps": [{"run": "slow", "wait": 50}],
+    "expect": {"log": ["before"], "notLog": ["after"]}
+  },
+  {
+    "name": "the delayed sub-action runs once the time is up",
+    "actions": [{"name": "slow", "subActions": [
+      {"type": 1002, "value": 100},
+      {"type": 1020, "logLevel": 2, "message": "after the wait"}]}],
+    "steps": [{"run": "slow", "wait": 400}],
+    "expect": {"log": ["after the wait"]}
+  },
+  {
+    "name": "a random number stays in its range",
+    "actions": [{"name": "dice", "subActions": [
+      {"type": 1003, "randomType": 0, "min": 1, "max": 6},
+      {"type": 120, "input": "%randomNumber%", "operation": 4, "value": "1", "autoType": true, "subActions": [
+        {"type": 99901, "subActions": [{"type": 1020, "logLevel": 2, "message": "too low %randomNumber%"}]},
+        {"type": 99902, "subActions": []}]},
+      {"type": 120, "input": "%randomNumber%", "operation": 5, "value": "6", "autoType": true, "subActions": [
+        {"type": 99901, "subActions": [{"type": 1020, "logLevel": 2, "message": "too high %randomNumber%"}]},
+        {"type": 99902, "subActions": []}]},
+      {"type": 1020, "logLevel": 2, "message": "rolled"}]}],
+    "steps": [{"run": "dice"}, {"run": "dice"}, {"run": "dice"}, {"run": "dice"}, {"run": "dice"}],
+    "expect": {"log": ["rolled", "rolled", "rolled", "rolled", "rolled"], "notLog": ["too low", "too high"]}
+  },
+  {
+    "name": "a quote is added and read back by its number",
+    "actions": [
+      {"name": "add", "subActions": [{"type": 1037, "quoteVariable": "%rawInput%"}, {"type": 1020, "logLevel": 2, "message": "added #%quoteId%"}]},
+      {"name": "get", "subActions": [{"type": 1000, "quoteType": 1, "quoteId": 1}, {"type": 35001, "text": "#%quoteId%: %quote%"}]}
+    ],
+    "steps": [{"run": "add", "args": {"rawInput": "never give up", "user": "ana"}}, {"run": "get", "args": {"input0": "1"}}],
+    "expect": {"log": ["added #1"], "chat": ["#1: never give up"]}
+  },
+  {
+    "name": "turning an action off stops it from running on its trigger",
+    "actions": [
+      {"id": "target", "name": "target", "triggers": [{"type": 101}], "subActions": [{"type": 35001, "text": "target ran"}]},
+      {"name": "switch off", "subActions": [{"type": 1004, "actionId": "target", "state": 1}]}
+    ],
+    "steps": [{"fire": 101, "args": {"user": "a"}, "ran": 1}, {"run": "switch off"}, {"fire": 101, "args": {"user": "b"}, "ran": 0}],
+    "expect": {"chat": ["target ran"]}
+  }
+]

@@ -689,6 +689,19 @@ pub fn populate_chat_vars(args: &mut Obj, ctx: &ChatContext) {
     }
 }
 
+/// The message this one replies to, if it is a reply (`"reply": null` on a message that isn't one).
+fn reply_of(event: &Value) -> Option<ReplyInfo> {
+    let r = event.get("reply").filter(|r| r.is_object())?;
+    let field = |k: &str| r.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    Some(ReplyInfo {
+        msg_id: field("parent_message_id"),
+        user_id: field("parent_user_id"),
+        user_login: field("parent_user_login"),
+        user_name: field("parent_user_name"),
+        msg_body: field("parent_message_body"),
+    })
+}
+
 /// Helper to parse role and subscriber status from Twitch badges array.
 pub fn parse_badges(badges: &[Value], is_broadcaster: bool) -> (u8, bool) {
     if is_broadcaster {
@@ -700,7 +713,7 @@ pub fn parse_badges(badges: &[Value], is_broadcaster: bool) -> (u8, bool) {
         let set_id = b.get("set_id").and_then(Value::as_str).unwrap_or("");
         match set_id {
             "broadcaster" => role = 4,
-            "moderator" if role < 3 => role = 3,
+            "moderator" | "lead_moderator" if role < 3 => role = 3,
             "vip" if role < 2 => role = 2,
             "subscriber" | "founder" => sub = true,
             _ => {}
@@ -745,6 +758,15 @@ struct Runner {
 }
 
 /// A token is refreshed 5 minutes before it expires (or when its expiry is unknown).
+/// How long an EventSub socket may say nothing: its keepalive time (10 s unless it says) and a margin.
+fn stale_after(welcome: &Value) -> Duration {
+    let keep = welcome
+        .pointer("/payload/session/keepalive_timeout_seconds")
+        .and_then(Value::as_u64)
+        .unwrap_or(10);
+    Duration::from_secs(keep + 20)
+}
+
 pub fn needs_refresh(t: &TwitchToken, now: u64) -> bool {
     !t.refresh_token.is_empty() && (t.expires_at == 0 || now + 300 >= t.expires_at)
 }
@@ -755,8 +777,30 @@ fn now_secs() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+thread_local! {
+    /// One refresh at a time: a refresh token is good once, so two at once make the second one fail and
+    /// wipe the login the first just renewed.
+    static REFRESHING: Rc<tokio::sync::Mutex<()>> = Rc::default();
+}
+
 /// Refresh broadcaster and/or bot tokens when about to expire (or unconditionally if `force`).
 async fn refresh_accounts(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>, force: bool) {
+    refresh_with(
+        engine,
+        cfg,
+        force,
+        |rt| async move { refresh_token(CLIENT_ID, &rt).await },
+    )
+    .await;
+}
+
+async fn refresh_with<F, Fut>(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>, force: bool, ask: F)
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Result<TokenResp, String>>,
+{
+    let lock = REFRESHING.with(Rc::clone);
+    let _one_at_a_time = lock.lock().await;
     let now = now_secs();
     for bot in [false, true] {
         let rt = {
@@ -770,7 +814,7 @@ async fn refresh_accounts(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>,
             }
         };
         let who = if bot { "bot" } else { "broadcaster" };
-        match refresh_token(CLIENT_ID, &rt).await {
+        match ask(rt.clone()).await {
             Ok(t) => {
                 let token = TwitchToken {
                     access_token: t.access_token,
@@ -791,7 +835,7 @@ async fn refresh_accounts(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>,
                 crate::say(format!("Twitch: refreshed {who} token"));
             }
             // A refresh token is good once: refused, it never works again. Forget it so nothing
-            // retries it and Accounts shows that re-login is needed.
+            // retries it and Accounts shows that re-login is needed (unless the account got a newer one).
             Err(e) if e.contains("Invalid refresh token") => {
                 engine.change(move |c| {
                     let a = if bot {
@@ -799,11 +843,12 @@ async fn refresh_accounts(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>,
                     } else {
                         &mut c.twitch.broadcaster
                     };
-                    if let Some(a) = a {
+                    if let Some(a) = a.as_mut().filter(|a| a.token.refresh_token == rt) {
                         a.token = TwitchToken::default();
                     }
                 });
                 crate::error(format!("Twitch: {who} login expired; log in again in Accounts"));
+                crate::notify::login_needed("Twitch", bot);
             }
             Err(e) => crate::warn(format!("Twitch: token refresh failed for {who} ({e}); will retry")),
         }
@@ -812,7 +857,11 @@ async fn refresh_accounts(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>,
 
 impl Runner {
     async fn run(mut self) {
-        if !self.cfg.borrow().twitch.manual_connect && self.cfg.borrow().twitch.broadcaster.is_some() {
+        let start = {
+            let t = &self.cfg.borrow().twitch;
+            !t.manual_connect && (t.broadcaster.is_some() || !t.channel.trim().is_empty())
+        };
+        if start {
             self.connect_eventsub().await;
         }
 
@@ -909,6 +958,9 @@ impl Runner {
             t.abort();
         }
         self.session_id = None;
+        self.engine.chat_polls_clear("twitch");
+        self.engine.chat_unpinned("twitch", "");
+        crate::ui::polls_changed();
         if self.is_connected.swap(false, Ordering::Relaxed) {
             crate::ui::changed();
             self.engine.fire(
@@ -943,6 +995,7 @@ impl Runner {
                 self.engine.emit("Twitch", "BotChatDisconnected", || json!({}));
             }
             crate::say("Twitch: disconnected".into());
+            crate::roles::clear("twitch");
             crate::ui::changed();
         }
     }
@@ -951,12 +1004,24 @@ impl Runner {
         if self.is_connected.load(Ordering::Relaxed) && self.read_task.as_ref().is_some_and(|t| !t.is_finished()) {
             return;
         }
-        if self.cfg.borrow().twitch.broadcaster.is_none() {
-            crate::error("Twitch: no broadcaster account configured".into());
+        let (anonymous, channel) = {
+            let c = self.cfg.borrow();
+            (c.twitch.broadcaster.is_none(), !c.twitch.channel.trim().is_empty())
+        };
+        if anonymous && !channel {
+            crate::error("Twitch: no account logged in and no channel set".into());
             return;
         }
         if let Some(t) = self.read_task.take() {
             t.abort();
+        }
+        // A channel and no login: its chat, read only.
+        if anonymous {
+            self.wanted.store(true, Ordering::Relaxed);
+            let (engine, cfg) = (self.engine.clone(), self.cfg.clone());
+            let (is_conn, wanted) = (self.is_connected.clone(), self.wanted.clone());
+            self.read_task = Some(tokio::task::spawn_local(crate::irc::read(engine, cfg, is_conn, wanted)));
+            return;
         }
         if let Some(t) = self.bot_read_task.take() {
             t.abort();
@@ -1198,6 +1263,7 @@ impl Runner {
             if crate::secrets::is_locked() {
                 return Err("System keyring is locked; unlock it to use saved Twitch login".into());
             }
+            crate::notify::login_needed("Twitch", false);
             return Err("Twitch broadcaster login expired; log in again in Accounts".into());
         }
         if use_bot {
@@ -1211,6 +1277,7 @@ impl Runner {
                         broadcaster.user_id.clone(),
                     ));
                 } else {
+                    crate::notify::login_needed("Twitch", true);
                     return Err("Twitch bot login expired and fallback disabled".into());
                 }
             } else if fallback {
@@ -1292,6 +1359,7 @@ async fn supervise_eventsub(
                     "Twitch: @{} login missing or expired; log in again in Accounts",
                     b.login
                 ));
+                crate::notify::login_needed("Twitch", false);
                 wanted.store(false, Ordering::Relaxed);
                 crate::ui::changed();
                 break;
@@ -1420,8 +1488,13 @@ async fn run_eventsub_loop(
     let mut poll_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut emote_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut setup_task: Option<tokio::task::JoinHandle<()>> = None;
+    // A viewer isn't told of timeouts and bans: the chat's own lines are listened to for them (irc.rs).
+    let bans_task: Rc<RefCell<Option<tokio::task::JoinHandle<()>>>> = Rc::default();
 
-    while let Some(msg) = ws.next().await {
+    // Twitch sends something every `keepalive_timeout_seconds` (10 by default): a socket that says nothing
+    // for a good while longer is dead, though nothing closed it, and is opened again.
+    let mut quiet = Duration::from_secs(30);
+    while let Ok(Some(msg)) = tokio::time::timeout(quiet, ws.next()).await {
         let raw = match msg {
             Ok(tokio_tungstenite::tungstenite::Message::Text(t)) => t,
             Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => break,
@@ -1440,6 +1513,7 @@ async fn run_eventsub_loop(
             .unwrap_or("");
         match mtype {
             "session_welcome" => {
+                quiet = stale_after(&val);
                 let sid = val.pointer("/payload/session/id").and_then(Value::as_str).unwrap_or("");
                 if std::mem::take(&mut reconnecting) {
                     crate::say(format!("Twitch: EventSub reconnected (@{}, {sid})", broadcaster.login));
@@ -1490,6 +1564,7 @@ async fn run_eventsub_loop(
                 let sid = sid.to_string();
                 let e = engine.clone();
                 let refused = auth_refused.clone();
+                let (bans, cfg_c, channel) = (bans_task.clone(), cfg.clone(), broadcaster.clone());
                 // The welcome waits only for the history: the ~40 subscriptions take seconds.
                 let setup = tokio::task::spawn_local(async move {
                     let hist_fut = async {
@@ -1499,7 +1574,17 @@ async fn run_eventsub_loop(
                             fetch_recent_messages(&login, &bid).await
                         }
                     };
-                    let subs = create_all_subscriptions(&sid, &token, &bid, &me, &refused);
+                    let subs = async {
+                        let role = channel_role(&token, &bid, &me, &login).await;
+                        // Those who moderate are told of timeouts and bans; the rest listen for them.
+                        let watcher = (!role.moderates() && !custom_eventsub && !login.is_empty()).then(|| {
+                            tokio::task::spawn_local(crate::irc::watch_bans(e.clone(), cfg_c.clone(), channel))
+                        });
+                        if let Some(old) = std::mem::replace(&mut *bans.borrow_mut(), watcher) {
+                            old.abort();
+                        }
+                        create_all_subscriptions(&sid, &token, &bid, &me, role, &refused).await
+                    };
                     let welcome = async {
                         let mut hist = hist_fut.await;
                         SEEN.with_borrow(|s| {
@@ -1575,7 +1660,10 @@ async fn run_eventsub_loop(
         }
     }
 
-    for t in [poll_task, emote_task, setup_task].into_iter().flatten() {
+    for t in [poll_task, emote_task, setup_task, bans_task.borrow_mut().take()]
+        .into_iter()
+        .flatten()
+    {
         t.abort();
     }
     if !is_connected.swap(false, Ordering::Relaxed) {
@@ -1627,7 +1715,10 @@ async fn run_bot_eventsub_loop(
     use futures_util::StreamExt;
     let mut reconnecting = false;
 
-    while let Some(msg) = ws.next().await {
+    // Twitch sends something every `keepalive_timeout_seconds` (10 by default): a socket that says nothing
+    // for a good while longer is dead, though nothing closed it, and is opened again.
+    let mut quiet = Duration::from_secs(30);
+    while let Ok(Some(msg)) = tokio::time::timeout(quiet, ws.next()).await {
         let raw = match msg {
             Ok(tokio_tungstenite::tungstenite::Message::Text(t)) => t,
             Ok(tokio_tungstenite::tungstenite::Message::Close(_)) | Err(_) => break,
@@ -1643,6 +1734,7 @@ async fn run_bot_eventsub_loop(
             .unwrap_or("");
         match mtype {
             "session_welcome" => {
+                quiet = stale_after(&val);
                 let sid = val.pointer("/payload/session/id").and_then(Value::as_str).unwrap_or("");
                 if std::mem::take(&mut reconnecting) {
                     crate::say(format!("Twitch: bot EventSub reconnected (@{})", bot.login));
@@ -1729,7 +1821,68 @@ async fn run_bot_eventsub_loop(
     engine.emit("Twitch", "BotChatDisconnected", || json!(args));
 }
 
-async fn create_all_subscriptions(sid: &str, token: &str, bid: &str, me: &str, auth_refused: &AtomicBool) {
+/// Our role in the channel read: its owner, else a moderator if Twitch lets us list its chatters (only
+/// moderators may), else a viewer. Said in the log, with what a viewer misses.
+async fn channel_role(token: &str, bid: &str, me: &str, login: &str) -> crate::roles::Role {
+    use crate::roles::Role;
+    let role = if bid == me {
+        Role::Broadcaster
+    } else {
+        let headers = vec![
+            ("Client-Id".into(), CLIENT_ID.into()),
+            ("Authorization".into(), format!("Bearer {token}")),
+        ];
+        // Twitch's own list of the channel's moderators, asked for us: a yes or no from Twitch.
+        let url = format!("{HELIX_URL}/moderation/moderators?broadcaster_id={bid}&user_id={me}");
+        let listed = match crate::http::request("GET", &url, &headers, &[]).await {
+            Ok(r) if r.status == 200 => serde_json::from_slice::<Value>(&r.body)
+                .ok()
+                .map(|v| v["data"].as_array().is_some_and(|d| !d.is_empty())),
+            _ => None,
+        };
+        match listed {
+            Some(true) => Role::Moderator,
+            Some(false) => Role::Viewer,
+            // The list refused us (a scope the login lacks): only moderators may list the chatters.
+            None => {
+                let url = format!("{HELIX_URL}/chat/chatters?broadcaster_id={bid}&moderator_id={me}&first=1");
+                match crate::http::request("GET", &url, &headers, &[]).await {
+                    Ok(r) if r.status == 200 => Role::Moderator,
+                    _ => Role::Viewer,
+                }
+            }
+        }
+    };
+    // A lead moderator's badge (seen on our messages) says more than the probe.
+    let (known, _) = crate::roles::get("twitch");
+    let role = if role == Role::Moderator && known == Role::LeadModerator {
+        known
+    } else {
+        role
+    };
+    if crate::roles::set("twitch", role, me) {
+        crate::ui::changed();
+    }
+    match role {
+        Role::Broadcaster => {}
+        Role::Moderator | Role::LeadModerator => {
+            crate::say(format!("Twitch: reading #{login} as a {}", role.name()));
+        }
+        _ => crate::warn(format!(
+            "Twitch: this account isn't a moderator of #{login}: chat is read and sent, but moderation and the channel's events need a moderator (ask the channel to /mod you) or its owner's login"
+        )),
+    }
+    role
+}
+
+async fn create_all_subscriptions(
+    sid: &str,
+    token: &str,
+    bid: &str,
+    me: &str,
+    role: crate::roles::Role,
+    auth_refused: &AtomicBool,
+) {
     let subs = [
         (
             "channel.chat.message",
@@ -1938,25 +2091,32 @@ async fn create_all_subscriptions(sid: &str, token: &str, bid: &str, me: &str, a
         ("channel.shared_chat.end", "1", json!({"broadcaster_user_id": bid})),
     ];
 
-    // On someone else's channel, only what a moderator (or anyone) may read: the rest needs the owner's
-    // login, and would only be refused.
-    let own = bid == me;
-    for (stype, ver, cond) in subs.into_iter().filter(|s| own || moderator_can(s.0, &s.2)) {
-        if !create_sub(sid, token, stype, ver, cond, auth_refused).await {
-            break;
+    // Twitch says what this account may have: nothing is assumed. What it refuses is told once, below.
+    let mut refused = Vec::new();
+    for (stype, ver, cond) in subs {
+        match create_sub(sid, token, stype, ver, cond, auth_refused).await {
+            Sub::Made => {}
+            Sub::Refused => refused.push(stype),
+            Sub::Stop => break,
         }
+    }
+    if !refused.is_empty() {
+        crate::say(format!(
+            "Twitch: {} of this channel's events aren't open to this account (as {}), so Twitch refused them: {}",
+            refused.len(),
+            role.name(),
+            refused.join(", ")
+        ));
     }
 }
 
-/// Whether a moderator (not the channel's owner) can subscribe: chat and moderation (they name the
-/// moderator or the reader), and what's public.
-fn moderator_can(stype: &str, cond: &Value) -> bool {
-    cond.get("moderator_user_id").is_some()
-        || cond.get("user_id").is_some()
-        || matches!(
-            stype,
-            "stream.online" | "stream.offline" | "channel.update" | "channel.raid"
-        )
+/// How a subscription went.
+enum Sub {
+    Made,
+    /// Twitch said this account can't have it.
+    Refused,
+    /// The rest shouldn't be tried (the token or the session is gone).
+    Stop,
 }
 
 thread_local! {
@@ -1977,7 +2137,8 @@ fn subs_url(ws: &str) -> String {
     }
 }
 
-/// False when the rest should not be tried: the token was refused (every other one would be too) or the session is gone.
+/// Makes one subscription. `Stop` when the rest should not be tried: the token was refused (every other one
+/// would be too) or the session is gone.
 async fn create_sub(
     sid: &str,
     token: &str,
@@ -1985,7 +2146,7 @@ async fn create_sub(
     version: &str,
     condition: Value,
     auth_refused: &AtomicBool,
-) -> bool {
+) -> Sub {
     let url = SUBS_URL.with_borrow(Clone::clone);
     let headers = vec![
         ("Client-Id".into(), CLIENT_ID.into()),
@@ -2006,18 +2167,23 @@ async fn create_sub(
         Ok(r) => r,
         Err(e) => {
             crate::error(format!("Twitch: create sub {sub_type}: {e}"));
-            return true;
+            return Sub::Made;
         }
     };
     if res.status == 401 {
         auth_refused.store(true, Ordering::Relaxed);
         crate::warn("Twitch: token rejected (HTTP 401); refreshing...".into());
-        return false;
+        return Sub::Stop;
     }
     // The session closed under us (a channel change, a drop): the rest would be refused the same way.
     if res.status == 400 && res.text().contains("already disconnected") {
         crate::debug(format!("Twitch: session closed before {sub_type}; setup stopped"));
-        return false;
+        return Sub::Stop;
+    }
+    // 403: this account isn't allowed that one (a moderator asking for the owner's).
+    if res.status == 403 {
+        crate::debug(format!("Twitch: {sub_type} refused: {}", res.text()));
+        return Sub::Refused;
     }
     if res.status != 202 && res.status != 200 {
         crate::error(format!(
@@ -2026,7 +2192,7 @@ async fn create_sub(
             res.text()
         ));
     }
-    true
+    Sub::Made
 }
 
 fn unescape_irc_tag(v: &str) -> String {
@@ -2070,8 +2236,10 @@ pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate
     // The text follows ` :`, except a one-word message, which IRC sends without the colon.
     let (_, trailing) = after_cmd.split_once(" :").or_else(|| after_cmd.split_once(' '))?;
     let mut text = trailing.to_string();
+    let mut action = false;
     if let Some(act) = text.strip_prefix("\x01ACTION ").and_then(|s| s.strip_suffix('\x01')) {
         text = act.to_string();
+        action = true;
     }
 
     let mut msg_id = String::new();
@@ -2123,7 +2291,7 @@ pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate
         let Some((set, ver)) = b.split_once('/') else { continue };
         match set {
             "broadcaster" => broadcaster = true,
-            "moderator" => moderator = true,
+            "moderator" | "lead_moderator" => moderator = true,
             "vip" => vip = true,
             "subscriber" | "founder" => subscriber = true,
             _ => {}
@@ -2161,6 +2329,7 @@ pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate
     let text = reply.as_ref().map_or(text.clone(), |r| r.strip(&text));
     Some(crate::engine::chatlog::Line {
         platform: "twitch".into(),
+        action,
         reply,
         msg_id,
         time,
@@ -2206,6 +2375,22 @@ async fn fetch_recent_messages(login: &str, broadcaster_id: &str) -> Vec<crate::
         .collect()
 }
 
+/// An EventSub event from elsewhere (the anonymous chat reader, irc.rs), handled as if EventSub sent it.
+pub(crate) fn notify(
+    engine: &Rc<Engine>,
+    broadcaster: &TwitchAccount,
+    cfg: &Arc<watch::Sender<Config>>,
+    kind: &str,
+    event: &Value,
+) {
+    handle_notification(engine, broadcaster, cfg, kind, event);
+}
+
+/// The channel's last messages, from before we joined.
+pub(crate) async fn recent_messages(login: &str, broadcaster_id: &str) -> Vec<crate::engine::chatlog::Line> {
+    fetch_recent_messages(login, broadcaster_id).await
+}
+
 fn handle_notification(
     engine: &Rc<Engine>,
     broadcaster: &TwitchAccount,
@@ -2235,20 +2420,7 @@ fn handle_notification(
             let (role, sub) = parse_badges(badges, chatter_id == broadcaster.user_id);
             let cheer_bits = event.pointer("/cheer/bits").and_then(Value::as_u64).unwrap_or(0);
 
-            let mut reply_info = None;
-            if let Some(r) = event.get("reply") {
-                reply_info = Some(ReplyInfo {
-                    msg_id: r.get("parent_message_id").and_then(Value::as_str).unwrap_or("").into(),
-                    user_id: r.get("parent_user_id").and_then(Value::as_str).unwrap_or("").into(),
-                    user_login: r.get("parent_user_login").and_then(Value::as_str).unwrap_or("").into(),
-                    user_name: r.get("parent_user_name").and_then(Value::as_str).unwrap_or("").into(),
-                    msg_body: r
-                        .get("parent_message_body")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .into(),
-                });
-            }
+            let reply_info = reply_of(event);
 
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
@@ -2270,7 +2442,25 @@ fn handle_notification(
             // Highlighted with channel points, a first message, a power-up: the chat marks it.
             let kind = event.pointer("/message_type").and_then(Value::as_str).unwrap_or("text");
             args.insert("messageType".into(), kind.into());
+            let action =
+                event["is_action"].as_bool().unwrap_or(false) || crate::engine::chatlog::action_of(text).is_some();
+            args.insert("isAction".into(), action.into());
             args.insert("isHighlight".into(), (kind == "channel_points_highlighted").into());
+            // A message sent with a channel reward: the chat shows the reward above it.
+            let reward = es(event, "/channel_points_custom_reward_id");
+            if !reward.is_empty() {
+                args.insert("messageRewardId".into(), reward.into());
+                match reward_look(reward) {
+                    Some(r) => {
+                        args.insert("messageRewardTitle".into(), r.title.into());
+                        args.insert("messageRewardCost".into(), r.cost.into());
+                        args.insert("messageRewardImage".into(), r.image.into());
+                        args.insert("messageRewardColor".into(), r.color.into());
+                        args.insert("messageRewardPoints".into(), points_icon().into());
+                    }
+                    None => reward_unknown(channel_id(&engine.config())),
+                }
+            }
 
             SEEN.with_borrow_mut(|s| {
                 if s.messages.len() == 200 {
@@ -2453,8 +2643,26 @@ fn handle_notification(
                 args.insert("multiMonthTenure".into(), 0.into());
             };
             match kind {
+                "watch_streak" => {
+                    let w = &event["watch_streak"];
+                    args.insert("streak".into(), w["streak_count"].clone());
+                    args.insert("pointsAwarded".into(), w["channel_points_awarded"].clone());
+                    go(
+                        engine,
+                        T_WATCH_STREAK,
+                        "Watch Streak",
+                        "Twitch/Community",
+                        "WatchStreak",
+                        &args,
+                    );
+                }
                 "announcement" => {
-                    args.insert("announceColor".into(), d["color"].as_str().unwrap_or("PRIMARY").into());
+                    let color = d["color"].as_str().unwrap_or("PRIMARY");
+                    args.insert("announceColor".into(), color.into());
+                    let chan_col = SEEN.with_borrow(|s| s.primary_color.clone());
+                    if !chan_col.is_empty() {
+                        args.insert("channelColor".into(), chan_col.into());
+                    }
                     let (code, name) = (pick(T_ANNOUNCEMENT, T_SHARED_CHAT_ANNOUNCEMENT), "Announcement");
                     go(engine, code, name, "Twitch/General", "Announcement", &args);
                 }
@@ -2670,6 +2878,7 @@ fn handle_notification(
             args.insert("gameId".into(), 0.into());
             args.insert("tagCount".into(), 0.into());
             args.insert("tags".into(), Value::Array(vec![]));
+            engine.chat_stream("twitch", true);
             engine.fire(
                 T_STREAM_ONLINE,
                 "Stream Online",
@@ -2683,6 +2892,13 @@ fn handle_notification(
         "stream.offline" => {
             // A pin "until the stream ends" ends here.
             engine.chat_unpinned("twitch", "");
+            if !engine.chat_stream_ended("twitch") {
+                crate::notify::send(
+                    "Streamerz",
+                    &crate::i18n::trf("chat.state_ended_title", &[("platform", "Twitch")]),
+                );
+            }
+            engine.chat_stream("twitch", false);
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
             args.insert("endedAt".into(), crate::engine::globals::iso_now().into());
@@ -2768,6 +2984,40 @@ fn handle_notification(
                     args.insert(k.into(), v);
                 }
             }
+            // How the chat shows it: the reward's picture, colour and channel points coin.
+            let (img, col) = match reward_look(rid) {
+                Some(r) => (r.image, r.color),
+                None => {
+                    let image = [
+                        "/image/url_4x",
+                        "/default_image/url_4x",
+                        "/image/url_2x",
+                        "/default_image/url_2x",
+                        "/image/url_1x",
+                        "/default_image/url_1x",
+                    ]
+                    .iter()
+                    .find_map(|p| {
+                        event["reward"]
+                            .pointer(p)
+                            .and_then(Value::as_str)
+                            .filter(|u| !u.is_empty())
+                    })
+                    .unwrap_or("");
+                    let color = event["reward"]["background_color"].as_str().unwrap_or("");
+                    (image.to_string(), color.to_string())
+                }
+            };
+            if !img.is_empty() {
+                args.insert("rewardImage".into(), img.into());
+            }
+            if !col.is_empty() {
+                args.insert("rewardColor".into(), col.into());
+            }
+            let points = points_icon();
+            if !points.is_empty() {
+                args.insert("rewardPoints".into(), points.into());
+            }
             if sub_type.ends_with(".add") {
                 go(
                     engine,
@@ -2809,6 +3059,7 @@ fn handle_notification(
                     s.rewards.insert(id, event.clone());
                 }
             });
+            publish_rewards();
             let (code, name, ev) = match sub_type {
                 "channel.channel_points_custom_reward.add" => (T_REWARD_CREATED, "Reward Created", "RewardCreated"),
                 "channel.channel_points_custom_reward.update" => (T_REWARD_UPDATED, "Reward Updated", "RewardUpdated"),
@@ -2829,6 +3080,25 @@ fn handle_notification(
                 p["duration"] = (b - a).into();
             }
             crate::engine::poll_args(&p, &mut args);
+            engine.chat_poll(crate::engine::chatlog::Poll {
+                platform: "twitch".into(),
+                id: es(event, "/id").into(),
+                title: es(event, "/title").into(),
+                prediction: false,
+                choices: event["choices"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|c| {
+                        (
+                            c["title"].as_str().unwrap_or("").to_string(),
+                            c["votes"].as_u64().unwrap_or(0),
+                        )
+                    })
+                    .collect(),
+                ends: end.map(|e| e as u64 * 1000).filter(|_| sub_type != "channel.poll.end"),
+                over: (sub_type == "channel.poll.end").then(|| crate::fmt::unix_now().as_millis() as u64),
+            });
             args.insert("pollId".into(), event["id"].clone());
             args.insert("pollTitle".into(), event["title"].clone());
             let status = es(event, "/status");
@@ -2879,6 +3149,28 @@ fn handle_notification(
             let status = es(event, "/status");
             p["status"] = if status.is_empty() { "ACTIVE" } else { status }.into();
             crate::engine::prediction_args(&p, &mut args);
+            engine.chat_poll(crate::engine::chatlog::Poll {
+                platform: "twitch".into(),
+                id: es(event, "/id").into(),
+                title: es(event, "/title").into(),
+                prediction: true,
+                choices: event["outcomes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|o| {
+                        (
+                            o["title"].as_str().unwrap_or("").to_string(),
+                            o["channel_points"].as_u64().unwrap_or(0),
+                        )
+                    })
+                    .collect(),
+                ends: crate::engine::rest_parse_iso(es(event, "/locks_at"))
+                    .map(|e| e as u64 * 1000)
+                    .filter(|_| sub_type != "channel.prediction.end" && sub_type != "channel.prediction.lock"),
+                over: matches!(sub_type, "channel.prediction.end" | "channel.prediction.lock")
+                    .then(|| crate::fmt::unix_now().as_millis() as u64),
+            });
             args.insert("prediction.LockedAt".into(), event["locked_at"].clone());
             args.insert("prediction.EndedAt".into(), event["ended_at"].clone());
             args.insert("predictionId".into(), event["id"].clone());
@@ -3070,6 +3362,10 @@ fn handle_notification(
                 args.insert("endsAt".into(), to.into());
                 if let (Some(a), Some(b)) = (crate::engine::rest_parse_iso(from), crate::engine::rest_parse_iso(to)) {
                     args.insert("duration".into(), (b - a).into());
+                }
+                // What the chat's own line said (a viewer hears no more than that).
+                if let Some(d) = event["duration"].as_i64() {
+                    args.insert("duration".into(), d.into());
                 }
                 go(
                     engine,
@@ -3790,6 +4086,8 @@ fn handle_notification(
             } else if !id.is_empty() {
                 args.insert("unlockedEmoteId".into(), id.into());
                 args.insert("unlockedEmoteName".into(), name.into());
+                let url = format!("https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/2.0");
+                args.insert("unlockedEmoteUrl".into(), url.into());
             }
             go(
                 engine,
@@ -3802,7 +4100,8 @@ fn handle_notification(
         }
         "channel.bits.use" => {
             // Cheers come with the chat message; this is for power-ups.
-            if es(event, "/type") != "power_up" {
+            let custom = es(event, "/type") == "custom_power_up";
+            if es(event, "/type") != "power_up" && !custom {
                 return;
             }
             let mut args = Obj::new();
@@ -3813,16 +4112,27 @@ fn handle_notification(
             args.insert("powerUpType".into(), p["type"].clone());
             args.insert("emoteId".into(), p["emote"]["id"].clone());
             args.insert("emoteName".into(), p["emote"]["name"].clone());
+            if let Some(id) = p["emote"]["id"].as_str().filter(|i| !i.is_empty()) {
+                let url = format!("https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/3.0");
+                args.insert("emoteUrl".into(), url.into());
+            }
             args.insert("messageEffectId".into(), p["message_effect_id"].clone());
             args.insert("message".into(), event["message"]["text"].clone());
-            go(
-                engine,
-                T_POWER_UP_REDEMPTION,
-                "Power Up Redemption",
-                "Twitch/Channel Points",
-                "PowerUpRedemption",
-                &args,
-            );
+            if custom {
+                let c = &event["custom_power_up"];
+                args.insert("powerUpTitle".into(), c["title"].clone());
+                args.insert("rewardId".into(), c["reward_id"].clone());
+            }
+            let (code, name, id) = if custom {
+                (
+                    T_CUSTOM_POWER_UP_REDEMPTION,
+                    "Custom Power Up Redemption",
+                    "CustomPowerUpRedemption",
+                )
+            } else {
+                (T_POWER_UP_REDEMPTION, "Power Up Redemption", "PowerUpRedemption")
+            };
+            go(engine, code, name, "Twitch/Channel Points", id, &args);
         }
         _ => {}
     }
@@ -3835,7 +4145,29 @@ fn es<'a>(e: &'a Value, p: &str) -> &'a str {
 
 /// Fire a Twitch trigger and send its WebSocket event, with the same arguments.
 fn go(engine: &Rc<Engine>, code: u32, name: &str, cat: &str, ev: &str, args: &Obj) {
-    engine.fire(code, name, cat, "twitch", args, |_| true);
+    // A reward trigger may name the one reward it is for (empty: any).
+    let reward = matches!(
+        code,
+        T_REWARD_REDEMPTION | T_REWARD_CREATED | T_REWARD_UPDATED | T_REWARD_DELETED | T_REWARD_REDEMPTION_UPDATED
+    );
+    let text = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let (id, title) = (
+        text("rewardId"),
+        if text("rewardTitle").is_empty() {
+            text("rewardName")
+        } else {
+            text("rewardTitle")
+        },
+    );
+    engine.fire(code, name, cat, "twitch", args, |t| {
+        !reward
+            || crate::catalog::matches(
+                "twitch.rewards",
+                t.get("rewardId").and_then(Value::as_str).unwrap_or(""),
+                &id,
+                &title,
+            )
+    });
     engine.emit("Twitch", ev, || json!(args));
 }
 
@@ -4019,6 +4351,12 @@ struct Seen {
     title: String,
     game: (String, String),
     rewards: HashMap<String, Value>,
+    /// The channel's primary brand colour (#RRGGBB).
+    primary_color: String,
+    /// The picture of the channel's points (each channel can name and draw its own).
+    points_icon: String,
+    /// When the channel's rewards were last asked for without a login (they change; not asked too often).
+    rewards_asked: Option<std::time::Instant>,
     messages: std::collections::VecDeque<(String, String)>,
     pyramid: Pyramid,
     pyramids: HashMap<String, (u64, u64)>,
@@ -4128,6 +4466,52 @@ fn pyramid(user: (&str, &str, &str), text: &str) -> Option<(bool, Who, String, u
     })
 }
 
+/// The badge sets (global, and the channel's when `channel_id` is given) from Twitch's public web API (the
+/// one twitch.tv's own chat asks): no login needed, so a chat read anonymously has its badge pictures too.
+pub async fn load_public_badges(channel_id: &str) {
+    let headers = [
+        ("Client-Id".to_string(), "kimne78kx3ncx6brgo4mv6wki5h1ko".to_string()),
+        ("Content-Type".to_string(), "application/json".to_string()),
+    ];
+    let fields = "imageURL(size: QUADRUPLE) setID title version";
+    let mut queries = vec![(format!("{{ badges {{ {fields} }} }}"), "/data/badges")];
+    if !channel_id.is_empty() && channel_id.bytes().all(|b| b.is_ascii_digit()) {
+        queries.push((
+            format!("{{ user(id: \"{channel_id}\") {{ broadcastBadges {{ {fields} }} }} }}"),
+            "/data/user/broadcastBadges",
+        ));
+    }
+    for (q, at) in queries {
+        let body = json!({ "query": q }).to_string();
+        let Ok(r) = crate::http::request("POST", "https://gql.twitch.tv/gql", &headers, body.as_bytes()).await else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_slice::<Value>(&r.body) else {
+            continue;
+        };
+        SEEN.with_borrow_mut(|s| {
+            for b in v.pointer(at).and_then(Value::as_array).into_iter().flatten() {
+                let key = format!(
+                    "{}/{}",
+                    b["setID"].as_str().unwrap_or(""),
+                    b["version"].as_str().unwrap_or("")
+                );
+                if let Some(url) = b["imageURL"].as_str().filter(|u| !u.is_empty()) {
+                    s.badges.insert(key.clone(), url.into());
+                }
+                if let Some(t) = b["title"].as_str().filter(|t| !t.is_empty()) {
+                    s.badge_titles.insert(key, t.into());
+                }
+            }
+        });
+    }
+}
+
+/// A badge's picture by its "set/version", once the badge sets are read.
+pub fn badge_url(key: &str) -> Option<String> {
+    SEEN.with_borrow(|s| s.badges.get(key).filter(|u| !u.is_empty()).cloned())
+}
+
 /// A badge's name ("1-Year Subscriber") by its "set/version", once the badge sets are read.
 pub fn badge_title(key: &str) -> Option<String> {
     SEEN.with_borrow(|s| s.badge_titles.get(key).cloned())
@@ -4154,15 +4538,157 @@ pub async fn public_profile(user_id: &str) -> Option<Value> {
     Some(v["data"]["user"].clone()).filter(Value::is_object)
 }
 
+/// What the channel's owner is on Twitch: "partner", "affiliate" or "" (neither). Read at connect.
+static CHANNEL_TYPE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Whether the channel may run commercials (only affiliates and partners can); true when not known yet.
+pub fn commercials_possible() -> bool {
+    CHANNEL_TYPE
+        .lock()
+        .ok()
+        .and_then(|t| t.clone())
+        .is_none_or(|t| t == "partner" || t == "affiliate")
+}
+
+/// How a custom reward is drawn in the chat.
+pub struct RewardLook {
+    pub title: String,
+    pub cost: u64,
+    pub image: String,
+    pub color: String,
+}
+
+/// A custom reward's look by its id, once the channel's rewards are known.
+pub fn reward_look(id: &str) -> Option<RewardLook> {
+    SEEN.with_borrow(|s| {
+        let r = s.rewards.get(id)?;
+        let image = ["/image/url_4x", "/default_image/url_4x"]
+            .iter()
+            .find_map(|p| r.pointer(p).and_then(Value::as_str).filter(|u| !u.is_empty()));
+        Some(RewardLook {
+            title: r["title"].as_str().unwrap_or("").into(),
+            cost: r["cost"].as_u64().unwrap_or(0),
+            image: image.unwrap_or("").into(),
+            color: r["background_color"].as_str().unwrap_or("").into(),
+        })
+    })
+}
+
+/// The picture of the channel's points, if known.
+pub fn points_icon() -> String {
+    SEEN.with_borrow(|s| s.points_icon.clone())
+}
+
+/// The primary brand colour of the channel, if known (#RRGGBB).
+pub fn channel_primary_color() -> String {
+    SEEN.with_borrow(|s| s.primary_color.clone())
+}
+
+/// Sets the channel's primary brand colour.
+pub fn set_channel_primary_color(hex: &str) {
+    let clean = hex.trim().trim_start_matches('#');
+    if clean.len() == 6 && clean.bytes().all(|b| b.is_ascii_hexdigit()) {
+        SEEN.with_borrow_mut(|s| s.primary_color = format!("#{clean}"));
+    }
+}
+
+/// The channel's rewards and its points' picture from Twitch's public web API (what twitch.tv's own
+/// chat reads, no login needed): a moderator or a viewer sees a reward's name, price and picture
+/// too. What the broadcaster's Helix list already gave is kept (it knows more).
+pub async fn load_public_rewards(channel_id: &str) {
+    if channel_id.is_empty() || !channel_id.bytes().all(|b| b.is_ascii_digit()) {
+        return;
+    }
+    let headers = [
+        ("Client-Id".to_string(), "kimne78kx3ncx6brgo4mv6wki5h1ko".to_string()),
+        ("Content-Type".to_string(), "application/json".to_string()),
+    ];
+    let q = format!(
+        "{{ user(id: \"{channel_id}\") {{ primaryColorHex }} channel(id: \"{channel_id}\") {{ communityPointsSettings {{ image {{ url }} customRewards {{ id title cost prompt backgroundColor isEnabled isUserInputRequired image {{ url }} defaultImage {{ url }} }} }} }} }}"
+    );
+    let body = json!({ "query": q }).to_string();
+    SEEN.with_borrow_mut(|s| s.rewards_asked = Some(std::time::Instant::now()));
+    let Ok(r) = crate::http::request("POST", "https://gql.twitch.tv/gql", &headers, body.as_bytes()).await else {
+        return;
+    };
+    if let Ok(v) = serde_json::from_slice::<Value>(&r.body) {
+        if let Some(col) = v["data"]["user"]["primaryColorHex"].as_str() {
+            set_channel_primary_color(col);
+        }
+        absorb_public_rewards(&v["data"]["channel"]["communityPointsSettings"]);
+    }
+}
+
+/// Takes what the public web API said of a channel's points (see `load_public_rewards`).
+fn absorb_public_rewards(settings: &Value) {
+    SEEN.with_borrow_mut(|s| {
+        if let Some(u) = settings["image"]["url"].as_str() {
+            s.points_icon = u.into();
+        }
+        for r in settings["customRewards"].as_array().into_iter().flatten() {
+            let Some(id) = r["id"].as_str() else { continue };
+            let pic = |k: &str| json!({ "url_4x": r[k]["url"] });
+            s.rewards.entry(id.into()).or_insert_with(|| {
+                json!({
+                    "id": id,
+                    "title": r["title"],
+                    "cost": r["cost"],
+                    "prompt": r["prompt"],
+                    "background_color": r["backgroundColor"],
+                    "is_enabled": r["isEnabled"],
+                    "is_user_input_required": r["isUserInputRequired"],
+                    "image": if r["image"].is_object() { pic("image") } else { Value::Null },
+                    "default_image": if r["defaultImage"].is_object() { pic("defaultImage") } else { Value::Null },
+                })
+            });
+        }
+    });
+    publish_rewards();
+}
+
+/// Asks for the channel's rewards again when a reward nobody knows shows up (at most once a minute).
+fn reward_unknown(channel_id: String) {
+    let due = SEEN.with_borrow(|s| s.rewards_asked.is_none_or(|t| t.elapsed() > Duration::from_secs(60)));
+    if due && !channel_id.is_empty() {
+        tokio::task::spawn_local(async move { load_public_rewards(&channel_id).await });
+    }
+}
+
+/// Puts the channel's rewards (as known) where the editors offer them.
+fn publish_rewards() {
+    let list = SEEN.with_borrow(|s| {
+        s.rewards
+            .iter()
+            .filter_map(|(id, r)| Some((id.clone(), r["title"].as_str()?.to_string())))
+            .collect()
+    });
+    crate::catalog::set("twitch.rewards", list);
+}
+
 /// Remember what later events compare against (chat settings, title and game, the custom rewards).
 async fn seed(engine: &Rc<Engine>) {
     let Some(tw) = engine.twitch() else { return };
     let b = vec![("broadcaster_id", "{broadcaster_id}")];
+    let chan = channel_id(&engine.config());
+    // The badge pictures first and without a login's help; Helix's below adds what it knows.
+    load_public_badges(&chan).await;
     let settings = tw.helix("GET", "chat/settings", b.clone(), None, false, false).await;
     let channel = tw.helix("GET", "channels", b.clone(), None, false, false).await;
     let rewards = tw
         .helix("GET", "channel_points/custom_rewards", b.clone(), None, false, false)
         .await;
+    // Affiliates and partners only can run commercials: the owner's account type says.
+    let owner = chan.clone();
+    if !owner.is_empty() {
+        if let Ok(v) = tw
+            .helix("GET", "users", vec![("id", owner.as_str())], None, false, false)
+            .await
+        {
+            if let Ok(mut t) = CHANNEL_TYPE.lock() {
+                *t = v["data"][0]["broadcaster_type"].as_str().map(String::from);
+            }
+        }
+    }
     let global = tw.helix("GET", "chat/badges/global", vec![], None, false, false).await;
     let own = tw.helix("GET", "chat/badges", b, None, false, false).await;
     SEEN.with_borrow_mut(|s| {
@@ -4200,18 +4726,24 @@ async fn seed(engine: &Rc<Engine>) {
             }
         }
     });
+    publish_rewards();
+    load_public_rewards(&chan).await;
 }
 
 /// While connected: viewer count (every minute), present viewers (every 5) and the next ad (every
 /// minute, once 5 minutes before it), each only when an action uses its trigger and the stream is live.
 async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
+    engine.set_chat_viewers("twitch", None);
     let mut tick = tokio::time::interval(Duration::from_secs(60));
     let (mut viewers, mut warned, mut n) = (None, String::new(), 0u64);
     loop {
         tick.tick().await;
         n += 1;
         let want = [T_VIEWER_COUNT_UPDATE, T_PRESENT_VIEWERS, T_UPCOMING_AD].map(|t| engine.uses_trigger(t));
-        let Some(tw) = engine.twitch().filter(|_| want.iter().any(|w| *w)) else {
+        let Some(tw) = engine
+            .twitch()
+            .filter(|_| want.iter().any(|w| *w) || crate::ui::chat::viewers_visible())
+        else {
             continue;
         };
         let id = broadcaster.user_id.as_str();
@@ -4219,9 +4751,11 @@ async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
             .helix("GET", "streams", vec![("user_id", id)], None, false, false)
             .await
         else {
+            engine.set_chat_viewers("twitch", None);
             continue;
         };
         let live = s["data"][0]["type"] == "live";
+        engine.set_chat_viewers("twitch", s["data"][0]["viewer_count"].as_u64());
         let mut args = Obj::new();
         populate_broadcaster_vars(&mut args, &broadcaster);
         if want[0] && live {
@@ -4289,16 +4823,66 @@ async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
 #[cfg(test)]
 pub(crate) mod tests {
     #[test]
-    fn a_moderator_subscribes_to_chat_and_moderation_only() {
+    fn a_message_with_a_null_reply_is_not_a_reply() {
         use super::*;
-        let chat = json!({"broadcaster_user_id": "1", "user_id": "2"});
-        let modr = json!({"broadcaster_user_id": "1", "moderator_user_id": "2"});
-        let owner = json!({"broadcaster_user_id": "1"});
-        assert!(moderator_can("channel.chat.message", &chat));
-        assert!(moderator_can("channel.follow", &modr));
-        assert!(moderator_can("stream.online", &owner));
-        assert!(!moderator_can("channel.bits.use", &owner));
-        assert!(!moderator_can("channel.poll.begin", &owner));
+        assert!(reply_of(&json!({"message_id": "m", "reply": null})).is_none());
+        assert!(reply_of(&json!({"message_id": "m"})).is_none());
+        let r = reply_of(&json!({"reply": {"parent_message_id": "p", "parent_user_login": "ann"}})).unwrap();
+        assert_eq!((r.msg_id.as_str(), r.user_login.as_str()), ("p", "ann"));
+    }
+
+    #[test]
+    fn two_refreshes_at_once_keep_the_login() {
+        use super::*;
+        use std::cell::Cell;
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tokio::task::LocalSet::new().block_on(&rt, async {
+            let mut c = Config::default();
+            c.twitch.broadcaster = Some(TwitchAccount {
+                user_id: "10".into(),
+                token: TwitchToken {
+                    access_token: "old".into(),
+                    refresh_token: "r0".into(),
+                    expires_at: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            let cfg = Arc::new(watch::channel(c).0);
+            let e = Engine::new(cfg.clone(), |_| {});
+            // Twitch's rule: a refresh token works once.
+            let used = Rc::new(Cell::new(0u32));
+            let ask = |u: Rc<Cell<u32>>| {
+                move |rt: String| {
+                    let u = u.clone();
+                    async move {
+                        tokio::task::yield_now().await;
+                        if rt != format!("r{}", u.get()) {
+                            return Err("Refresh token failed: HTTP 400 Invalid refresh token".to_string());
+                        }
+                        u.set(u.get() + 1);
+                        Ok(TokenResp {
+                            access_token: "new".into(),
+                            refresh_token: format!("r{}", u.get()),
+                            expires_in: 3600,
+                            scope: vec![],
+                            token_type: "bearer".into(),
+                        })
+                    }
+                }
+            };
+            tokio::join!(
+                refresh_with(&e, &cfg, false, ask(used.clone())),
+                refresh_with(&e, &cfg, false, ask(used.clone()))
+            );
+            let t = cfg.borrow().twitch.broadcaster.clone().unwrap().token;
+            assert_eq!((t.access_token.as_str(), t.refresh_token.as_str()), ("new", "r1"));
+            assert_eq!(used.get(), 1, "the second one found it fresh and left it alone");
+        });
     }
 
     #[test]
@@ -4595,6 +5179,75 @@ pub(crate) mod tests {
         assert_eq!(out, ["T send target 42"]);
     }
 
+    /// A reward trigger may name its reward (by name or id): only that one starts it.
+    #[test]
+    fn a_reward_trigger_can_name_its_reward() {
+        use crate::engine::tests::{action, engine, log, run};
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::catalog::set(
+            "twitch.rewards",
+            vec![("r-1".into(), "Hydrate".into()), ("r-2".into(), "LED color".into())],
+        );
+        let mk = |id: &str, who: &str| {
+            let mut a = action(id, id, json!([log(&format!("T ran {who}"))]));
+            a["triggers"] = json!([{"id": id, "type": T_REWARD_REDEMPTION, "enabled": true, "rewardId": who}]);
+            a
+        };
+        let e = engine(json!({"actions": [mk("any", ""), mk("by_name", "hydrate"), mk("by_id", "r-2")]}));
+        let cfg = Arc::new(watch::channel(Config::default()).0);
+        let b = TwitchAccount {
+            user_id: "1".into(),
+            ..Default::default()
+        };
+        let out = run(async move {
+            let redeem = |rid: &str, title: &str| {
+                json!({"id": "x", "user_id": "9", "user_login": "bo", "user_name": "Bo", "user_input": "",
+                    "status": "unfulfilled", "reward": {"id": rid, "title": title, "cost": 100, "prompt": ""}})
+            };
+            handle_notification(
+                &e,
+                &b,
+                &cfg,
+                "channel.channel_points_custom_reward_redemption.add",
+                &redeem("r-1", "Hydrate"),
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+        let mut out = out;
+        out.sort();
+        assert_eq!(out, ["T ran ", "T ran hydrate"]);
+    }
+
+    #[test]
+    fn a_reward_is_known_from_the_public_list() {
+        absorb_public_rewards(&json!({
+            "image": {"url": "https://x/points.png"},
+            "customRewards": [
+                {"id": "r9", "title": "Hydrate", "cost": 500, "backgroundColor": "#112233", "image": null,
+                 "defaultImage": {"url": "https://x/default.png"}},
+                {"id": "r8", "title": "Mine", "cost": 7, "backgroundColor": "#FFFFFF",
+                 "image": {"url": "https://x/mine.png"}, "defaultImage": {"url": "https://x/default.png"}}
+            ]
+        }));
+        let r = reward_look("r9").expect("known");
+        assert_eq!(
+            (r.title.as_str(), r.cost, r.color.as_str()),
+            ("Hydrate", 500, "#112233")
+        );
+        assert_eq!(r.image, "https://x/default.png");
+        assert_eq!(reward_look("r8").unwrap().image, "https://x/mine.png");
+        assert_eq!(points_icon(), "https://x/points.png");
+        assert!(reward_look("nope").is_none());
+        // What the broadcaster's own list said stays.
+        SEEN.with_borrow_mut(|s| {
+            s.rewards.insert("r7".into(), json!({"title": "Own", "cost": 1}));
+        });
+        absorb_public_rewards(&json!({"customRewards": [{"id": "r7", "title": "Public", "cost": 2}]}));
+        assert_eq!(reward_look("r7").unwrap().title, "Own");
+        set_channel_primary_color("FFB4CB");
+        assert_eq!(channel_primary_color(), "#FFB4CB");
+    }
+
     #[test]
     fn reward_redemption_notifications() {
         let (tx, _rx) = watch::channel(Config::default());
@@ -4684,6 +5337,36 @@ pub(crate) mod tests {
         });
         handle_notification(&engine, &broadcaster, &cfg, "channel.prediction.begin", &pred);
         handle_notification(&engine, &broadcaster, &cfg, "channel.prediction.end", &pred);
+    }
+
+    /// A viewer isn't told of timeouts by Twitch's events, but the chat's own line says it: it makes the
+    /// same trigger, with how long.
+    #[test]
+    fn a_timeout_heard_in_the_chat_fires_the_trigger() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let lines = crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": [{
+                "id": "a1", "name": "timeouts", "enabled": true, "queue": "00000000-0000-0000-0000-000000000000",
+                "triggers": [{"type": 136, "enabled": true}, {"type": 137, "enabled": true}],
+                "subActions": [crate::engine::tests::log("T %user% %isPermanent% %duration%")]
+            }]}));
+            let cfg = Arc::new(watch::channel(Config::default()).0);
+            let channel = TwitchAccount {
+                user_id: "7".into(),
+                login: "chan".into(),
+                ..Default::default()
+            };
+            for raw in [
+                "@ban-duration=600;target-user-id=9 :tmi.twitch.tv CLEARCHAT #chan :bob",
+                "@target-user-id=10 :tmi.twitch.tv CLEARCHAT #chan :eve",
+            ] {
+                let m = crate::irc::parse(raw).unwrap();
+                let e = crate::irc::ban_event(&m, &channel.user_id, 1_800_000_000).unwrap();
+                handle_notification(&engine, &channel, &cfg, "channel.ban", &e);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+        assert_eq!(lines, ["T bob False 600", "T eve True %duration%"], "{lines:?}");
     }
 
     #[test]

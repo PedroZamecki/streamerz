@@ -137,291 +137,303 @@ pub async fn execute_ifttt_notification(event_name: &str, payload: &Value, key: 
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PronounInfo {
-    pub display: String,
-    pub pronoun: String,
-    pub subject: String,
-    pub subject_lower: String,
-    pub object: String,
-    pub object_lower: String,
-    pub possessive: String,
-    pub possessive_lower: String,
-    pub pronoun_form: String,
-    pub pronoun_form_lower: String,
-    pub reflexive: String,
-    pub reflexive_lower: String,
-    pub past_tense: String,
-    pub past_tense_lower: String,
-    pub current_tense: String,
-    pub current_tense_lower: String,
-    pub plural_lower: String,
+    pub display: &'static str,
+    pub pronoun: &'static str,
+    pub subject: &'static str,
+    pub subject_lower: &'static str,
+    pub object: &'static str,
+    pub object_lower: &'static str,
+    pub possessive: &'static str,
+    pub possessive_lower: &'static str,
+    pub pronoun_form: &'static str,
+    pub pronoun_form_lower: &'static str,
+    pub reflexive: &'static str,
+    pub reflexive_lower: &'static str,
+    pub past_tense: &'static str,
+    pub past_tense_lower: &'static str,
+    pub current_tense: &'static str,
+    pub current_tense_lower: &'static str,
+    pub plural_lower: &'static str,
 }
 
 pub fn lookup_pronoun(id: &str) -> Option<PronounInfo> {
     let id = id.to_ascii_lowercase();
     match id.as_str() {
         "hehim" => Some(PronounInfo {
-            display: "(He/Him)".into(),
-            pronoun: "He/Him".into(),
-            subject: "He".into(),
-            subject_lower: "he".into(),
-            object: "Him".into(),
-            object_lower: "him".into(),
-            possessive: "His".into(),
-            possessive_lower: "his".into(),
-            pronoun_form: "His".into(),
-            pronoun_form_lower: "his".into(),
-            reflexive: "Himself".into(),
-            reflexive_lower: "himself".into(),
-            past_tense: "Was".into(),
-            past_tense_lower: "was".into(),
-            current_tense: "Is".into(),
-            current_tense_lower: "is".into(),
-            plural_lower: String::new(),
+            display: "(He/Him)",
+            pronoun: "He/Him",
+            subject: "He",
+            subject_lower: "he",
+            object: "Him",
+            object_lower: "him",
+            possessive: "His",
+            possessive_lower: "his",
+            pronoun_form: "His",
+            pronoun_form_lower: "his",
+            reflexive: "Himself",
+            reflexive_lower: "himself",
+            past_tense: "Was",
+            past_tense_lower: "was",
+            current_tense: "Is",
+            current_tense_lower: "is",
+            plural_lower: "",
         }),
         "sheher" => Some(PronounInfo {
-            display: "(She/Her)".into(),
-            pronoun: "She/Her".into(),
-            subject: "She".into(),
-            subject_lower: "she".into(),
-            object: "Her".into(),
-            object_lower: "her".into(),
-            possessive: "Her".into(),
-            possessive_lower: "her".into(),
-            pronoun_form: "Hers".into(),
-            pronoun_form_lower: "hers".into(),
-            reflexive: "Herself".into(),
-            reflexive_lower: "herself".into(),
-            past_tense: "Was".into(),
-            past_tense_lower: "was".into(),
-            current_tense: "Is".into(),
-            current_tense_lower: "is".into(),
-            plural_lower: String::new(),
+            display: "(She/Her)",
+            pronoun: "She/Her",
+            subject: "She",
+            subject_lower: "she",
+            object: "Her",
+            object_lower: "her",
+            possessive: "Her",
+            possessive_lower: "her",
+            pronoun_form: "Hers",
+            pronoun_form_lower: "hers",
+            reflexive: "Herself",
+            reflexive_lower: "herself",
+            past_tense: "Was",
+            past_tense_lower: "was",
+            current_tense: "Is",
+            current_tense_lower: "is",
+            plural_lower: "",
         }),
         "theythem" => Some(PronounInfo {
-            display: "(They/Them)".into(),
-            pronoun: "They/Them".into(),
-            subject: "They".into(),
-            subject_lower: "they".into(),
-            object: "Them".into(),
-            object_lower: "them".into(),
-            possessive: "Their".into(),
-            possessive_lower: "their".into(),
-            pronoun_form: "Theirs".into(),
-            pronoun_form_lower: "theirs".into(),
-            reflexive: "Themselves".into(),
-            reflexive_lower: "themselves".into(),
-            past_tense: "Were".into(),
-            past_tense_lower: "were".into(),
-            current_tense: "Are".into(),
-            current_tense_lower: "are".into(),
-            plural_lower: "they".into(),
+            display: "(They/Them)",
+            pronoun: "They/Them",
+            subject: "They",
+            subject_lower: "they",
+            object: "Them",
+            object_lower: "them",
+            possessive: "Their",
+            possessive_lower: "their",
+            pronoun_form: "Theirs",
+            pronoun_form_lower: "theirs",
+            reflexive: "Themselves",
+            reflexive_lower: "themselves",
+            past_tense: "Were",
+            past_tense_lower: "were",
+            current_tense: "Are",
+            current_tense_lower: "are",
+            plural_lower: "they",
         }),
         "itits" => Some(PronounInfo {
-            display: "(It/Its)".into(),
-            pronoun: "It/Its".into(),
-            subject: "It".into(),
-            subject_lower: "it".into(),
-            object: "It".into(),
-            object_lower: "it".into(),
-            possessive: "Its".into(),
-            possessive_lower: "its".into(),
-            pronoun_form: "Its".into(),
-            pronoun_form_lower: "its".into(),
-            reflexive: "Itself".into(),
-            reflexive_lower: "itself".into(),
-            past_tense: "Was".into(),
-            past_tense_lower: "was".into(),
-            current_tense: "Is".into(),
-            current_tense_lower: "is".into(),
-            plural_lower: String::new(),
+            display: "(It/Its)",
+            pronoun: "It/Its",
+            subject: "It",
+            subject_lower: "it",
+            object: "It",
+            object_lower: "it",
+            possessive: "Its",
+            possessive_lower: "its",
+            pronoun_form: "Its",
+            pronoun_form_lower: "its",
+            reflexive: "Itself",
+            reflexive_lower: "itself",
+            past_tense: "Was",
+            past_tense_lower: "was",
+            current_tense: "Is",
+            current_tense_lower: "is",
+            plural_lower: "",
         }),
         "any" => Some(PronounInfo {
-            display: "(Any/Any)".into(),
-            pronoun: "Any/Any".into(),
-            subject: "Any".into(),
-            subject_lower: "any".into(),
-            object: "Any".into(),
-            object_lower: "any".into(),
-            possessive: "Any's".into(),
-            possessive_lower: "any's".into(),
-            pronoun_form: "Any".into(),
-            pronoun_form_lower: "any".into(),
-            reflexive: "Themself".into(),
-            reflexive_lower: "themself".into(),
-            past_tense: "Were".into(),
-            past_tense_lower: "were".into(),
-            current_tense: "Are".into(),
-            current_tense_lower: "are".into(),
-            plural_lower: String::new(),
+            display: "(Any/Any)",
+            pronoun: "Any/Any",
+            subject: "Any",
+            subject_lower: "any",
+            object: "Any",
+            object_lower: "any",
+            possessive: "Any's",
+            possessive_lower: "any's",
+            pronoun_form: "Any",
+            pronoun_form_lower: "any",
+            reflexive: "Themself",
+            reflexive_lower: "themself",
+            past_tense: "Were",
+            past_tense_lower: "were",
+            current_tense: "Are",
+            current_tense_lower: "are",
+            plural_lower: "",
         }),
         "other" => Some(PronounInfo {
-            display: "(Other/Other)".into(),
-            pronoun: "Other/Other".into(),
-            subject: "Other".into(),
-            subject_lower: "other".into(),
-            object: "Other".into(),
-            object_lower: "other".into(),
-            possessive: "Other's".into(),
-            possessive_lower: "other's".into(),
-            pronoun_form: "Others".into(),
-            pronoun_form_lower: "others".into(),
-            reflexive: "Themself".into(),
-            reflexive_lower: "themself".into(),
-            past_tense: "Were".into(),
-            past_tense_lower: "were".into(),
-            current_tense: "Are".into(),
-            current_tense_lower: "are".into(),
-            plural_lower: String::new(),
+            display: "(Other/Other)",
+            pronoun: "Other/Other",
+            subject: "Other",
+            subject_lower: "other",
+            object: "Other",
+            object_lower: "other",
+            possessive: "Other's",
+            possessive_lower: "other's",
+            pronoun_form: "Others",
+            pronoun_form_lower: "others",
+            reflexive: "Themself",
+            reflexive_lower: "themself",
+            past_tense: "Were",
+            past_tense_lower: "were",
+            current_tense: "Are",
+            current_tense_lower: "are",
+            plural_lower: "",
         }),
         "xexem" => Some(PronounInfo {
-            display: "(Xe/Xem)".into(),
-            pronoun: "Xe/Xem".into(),
-            subject: "Xe".into(),
-            subject_lower: "xe".into(),
-            object: "Xem".into(),
-            object_lower: "xem".into(),
-            possessive: "Xyr".into(),
-            possessive_lower: "xyr".into(),
-            pronoun_form: "Xyrs".into(),
-            pronoun_form_lower: "xyrs".into(),
-            reflexive: "Xemself".into(),
-            reflexive_lower: "xemself".into(),
-            past_tense: "Was".into(),
-            past_tense_lower: "was".into(),
-            current_tense: "Is".into(),
-            current_tense_lower: "is".into(),
-            plural_lower: String::new(),
+            display: "(Xe/Xem)",
+            pronoun: "Xe/Xem",
+            subject: "Xe",
+            subject_lower: "xe",
+            object: "Xem",
+            object_lower: "xem",
+            possessive: "Xyr",
+            possessive_lower: "xyr",
+            pronoun_form: "Xyrs",
+            pronoun_form_lower: "xyrs",
+            reflexive: "Xemself",
+            reflexive_lower: "xemself",
+            past_tense: "Was",
+            past_tense_lower: "was",
+            current_tense: "Is",
+            current_tense_lower: "is",
+            plural_lower: "",
         }),
         "faefaer" => Some(PronounInfo {
-            display: "(Fae/Faer)".into(),
-            pronoun: "Fae/Faer".into(),
-            subject: "Fae".into(),
-            subject_lower: "fae".into(),
-            object: "Faer".into(),
-            object_lower: "faer".into(),
-            possessive: "Faer".into(),
-            possessive_lower: "faer".into(),
-            pronoun_form: "Faers".into(),
-            pronoun_form_lower: "faers".into(),
-            reflexive: "Faerself".into(),
-            reflexive_lower: "faerself".into(),
-            past_tense: "Was".into(),
-            past_tense_lower: "was".into(),
-            current_tense: "Is".into(),
-            current_tense_lower: "is".into(),
-            plural_lower: String::new(),
+            display: "(Fae/Faer)",
+            pronoun: "Fae/Faer",
+            subject: "Fae",
+            subject_lower: "fae",
+            object: "Faer",
+            object_lower: "faer",
+            possessive: "Faer",
+            possessive_lower: "faer",
+            pronoun_form: "Faers",
+            pronoun_form_lower: "faers",
+            reflexive: "Faerself",
+            reflexive_lower: "faerself",
+            past_tense: "Was",
+            past_tense_lower: "was",
+            current_tense: "Is",
+            current_tense_lower: "is",
+            plural_lower: "",
         }),
         "vever" => Some(PronounInfo {
-            display: "(Ve/Ver)".into(),
-            pronoun: "Ve/Ver".into(),
-            subject: "Ve".into(),
-            subject_lower: "ve".into(),
-            object: "Ver".into(),
-            object_lower: "ver".into(),
-            possessive: "Vis".into(),
-            possessive_lower: "vis".into(),
-            pronoun_form: "Vers".into(),
-            pronoun_form_lower: "vers".into(),
-            reflexive: "Verself".into(),
-            reflexive_lower: "verself".into(),
-            past_tense: "Was".into(),
-            past_tense_lower: "was".into(),
-            current_tense: "Is".into(),
-            current_tense_lower: "is".into(),
-            plural_lower: String::new(),
+            display: "(Ve/Ver)",
+            pronoun: "Ve/Ver",
+            subject: "Ve",
+            subject_lower: "ve",
+            object: "Ver",
+            object_lower: "ver",
+            possessive: "Vis",
+            possessive_lower: "vis",
+            pronoun_form: "Vers",
+            pronoun_form_lower: "vers",
+            reflexive: "Verself",
+            reflexive_lower: "verself",
+            past_tense: "Was",
+            past_tense_lower: "was",
+            current_tense: "Is",
+            current_tense_lower: "is",
+            plural_lower: "",
         }),
         "aeaer" => Some(PronounInfo {
-            display: "(Ae/Aer)".into(),
-            pronoun: "Ae/Aer".into(),
-            subject: "Ae".into(),
-            subject_lower: "ae".into(),
-            object: "Aer".into(),
-            object_lower: "aer".into(),
-            possessive: "Aer".into(),
-            possessive_lower: "aer".into(),
-            pronoun_form: "Aers".into(),
-            pronoun_form_lower: "aers".into(),
-            reflexive: "Aerself".into(),
-            reflexive_lower: "aerself".into(),
-            past_tense: "Was".into(),
-            past_tense_lower: "was".into(),
-            current_tense: "Is".into(),
-            current_tense_lower: "is".into(),
-            plural_lower: String::new(),
+            display: "(Ae/Aer)",
+            pronoun: "Ae/Aer",
+            subject: "Ae",
+            subject_lower: "ae",
+            object: "Aer",
+            object_lower: "aer",
+            possessive: "Aer",
+            possessive_lower: "aer",
+            pronoun_form: "Aers",
+            pronoun_form_lower: "aers",
+            reflexive: "Aerself",
+            reflexive_lower: "aerself",
+            past_tense: "Was",
+            past_tense_lower: "was",
+            current_tense: "Is",
+            current_tense_lower: "is",
+            plural_lower: "",
         }),
         "ziehir" => Some(PronounInfo {
-            display: "(Zie/Hir)".into(),
-            pronoun: "Zie/Hir".into(),
-            subject: "Zie".into(),
-            subject_lower: "zie".into(),
-            object: "Hir".into(),
-            object_lower: "hir".into(),
-            possessive: "Hir".into(),
-            possessive_lower: "hir".into(),
-            pronoun_form: "Hirs".into(),
-            pronoun_form_lower: "hirs".into(),
-            reflexive: "Hirself".into(),
-            reflexive_lower: "hirself".into(),
-            past_tense: "Was".into(),
-            past_tense_lower: "was".into(),
-            current_tense: "Is".into(),
-            current_tense_lower: "is".into(),
-            plural_lower: String::new(),
+            display: "(Zie/Hir)",
+            pronoun: "Zie/Hir",
+            subject: "Zie",
+            subject_lower: "zie",
+            object: "Hir",
+            object_lower: "hir",
+            possessive: "Hir",
+            possessive_lower: "hir",
+            pronoun_form: "Hirs",
+            pronoun_form_lower: "hirs",
+            reflexive: "Hirself",
+            reflexive_lower: "hirself",
+            past_tense: "Was",
+            past_tense_lower: "was",
+            current_tense: "Is",
+            current_tense_lower: "is",
+            plural_lower: "",
         }),
         "perper" => Some(PronounInfo {
-            display: "(Per/Per)".into(),
-            pronoun: "Per/Per".into(),
-            subject: "Per".into(),
-            subject_lower: "per".into(),
-            object: "Per".into(),
-            object_lower: "per".into(),
-            possessive: "Per".into(),
-            possessive_lower: "per".into(),
-            pronoun_form: "Pers".into(),
-            pronoun_form_lower: "pers".into(),
-            reflexive: "Perself".into(),
-            reflexive_lower: "perself".into(),
-            past_tense: "Was".into(),
-            past_tense_lower: "was".into(),
-            current_tense: "Is".into(),
-            current_tense_lower: "is".into(),
-            plural_lower: String::new(),
+            display: "(Per/Per)",
+            pronoun: "Per/Per",
+            subject: "Per",
+            subject_lower: "per",
+            object: "Per",
+            object_lower: "per",
+            possessive: "Per",
+            possessive_lower: "per",
+            pronoun_form: "Pers",
+            pronoun_form_lower: "pers",
+            reflexive: "Perself",
+            reflexive_lower: "perself",
+            past_tense: "Was",
+            past_tense_lower: "was",
+            current_tense: "Is",
+            current_tense_lower: "is",
+            plural_lower: "",
         }),
         "eem" => Some(PronounInfo {
-            display: "(E/Em)".into(),
-            pronoun: "E/Em".into(),
-            subject: "E".into(),
-            subject_lower: "e".into(),
-            object: "Em".into(),
-            object_lower: "em".into(),
-            possessive: "Eir".into(),
-            possessive_lower: "eir".into(),
-            pronoun_form: "Eirs".into(),
-            pronoun_form_lower: "eirs".into(),
-            reflexive: "Eirself".into(),
-            reflexive_lower: "eirself".into(),
-            past_tense: "Was".into(),
-            past_tense_lower: "was".into(),
-            current_tense: "Is".into(),
-            current_tense_lower: "is".into(),
-            plural_lower: String::new(),
+            display: "(E/Em)",
+            pronoun: "E/Em",
+            subject: "E",
+            subject_lower: "e",
+            object: "Em",
+            object_lower: "em",
+            possessive: "Eir",
+            possessive_lower: "eir",
+            pronoun_form: "Eirs",
+            pronoun_form_lower: "eirs",
+            reflexive: "Eirself",
+            reflexive_lower: "eirself",
+            past_tense: "Was",
+            past_tense_lower: "was",
+            current_tense: "Is",
+            current_tense_lower: "is",
+            plural_lower: "",
         }),
         _ => None,
     }
 }
 
 // In-memory pronoun cache: user_login -> (timestamp, result)
-type PronounCache = HashMap<String, (Instant, Option<PronounInfo>)>;
+const PRONOUN_IDS: [&str; 13] = [
+    "hehim", "sheher", "theythem", "itits", "any", "other", "xexem", "faefaer", "vever", "aeaer", "ziehir", "perper",
+    "eem",
+];
+type PronounCache = HashMap<String, (Instant, Option<u8>)>;
+
+fn cached_pronoun(id: Option<u8>) -> Option<PronounInfo> {
+    id.and_then(|id| PRONOUN_IDS.get(id as usize))
+        .and_then(|id| lookup_pronoun(id))
+}
 static PRONOUN_CACHE: Mutex<Option<PronounCache>> = Mutex::new(None);
 const PRONOUN_TTL: Duration = Duration::from_secs(15 * 60);
 
 pub fn get_cached_pronoun(login: &str) -> Option<PronounInfo> {
     let login = login.trim().to_ascii_lowercase();
     let guard = PRONOUN_CACHE.lock().unwrap();
-    guard
-        .as_ref()
-        .and_then(|m| m.get(&login))
-        .and_then(|(ts, info)| if ts.elapsed() < PRONOUN_TTL { info.clone() } else { None })
+    guard.as_ref().and_then(|m| m.get(&login)).and_then(|(ts, info)| {
+        if ts.elapsed() < PRONOUN_TTL {
+            cached_pronoun(*info)
+        } else {
+            None
+        }
+    })
 }
 
 pub async fn get_user_pronouns(login: &str) -> Option<PronounInfo> {
@@ -436,7 +448,7 @@ pub async fn get_user_pronouns(login: &str) -> Option<PronounInfo> {
         let map = guard.get_or_insert_with(HashMap::new);
         if let Some((ts, info)) = map.get(&login) {
             if ts.elapsed() < PRONOUN_TTL {
-                return info.clone();
+                return cached_pronoun(*info);
             }
         }
     }
@@ -461,7 +473,13 @@ pub async fn get_user_pronouns(login: &str) -> Option<PronounInfo> {
     {
         let mut guard = PRONOUN_CACHE.lock().unwrap();
         let map = guard.get_or_insert_with(HashMap::new);
-        map.insert(login, (Instant::now(), found.clone()));
+        let id = found.as_ref().and_then(|info| {
+            PRONOUN_IDS
+                .iter()
+                .position(|id| lookup_pronoun(id).as_ref() == Some(info))
+                .map(|i| i as u8)
+        });
+        map.insert(login, (Instant::now(), id));
     }
 
     found
@@ -527,26 +545,23 @@ pub fn populate_pronoun_vars(args: &mut Obj, prefix: &str, info: Option<&Pronoun
 
     if let Some(info) = info {
         args.insert(key("userFound"), true.into());
-        args.insert(key("pronoun"), info.pronoun.as_str().into());
-        args.insert(key("pronouns"), info.display.as_str().into());
-        args.insert(key("pronounSubject"), info.subject.as_str().into());
-        args.insert(key("pronounSubjectLower"), info.subject_lower.as_str().into());
-        args.insert(key("pronounObject"), info.object.as_str().into());
-        args.insert(key("pronounObjectLower"), info.object_lower.as_str().into());
-        args.insert(key("pronounPossessive"), info.possessive.as_str().into());
-        args.insert(key("pronounPossessiveLower"), info.possessive_lower.as_str().into());
-        args.insert(key("pronounPronoun"), info.pronoun_form.as_str().into());
-        args.insert(key("pronounPronounLower"), info.pronoun_form_lower.as_str().into());
-        args.insert(key("pronounReflexive"), info.reflexive.as_str().into());
-        args.insert(key("pronounReflexiveLower"), info.reflexive_lower.as_str().into());
-        args.insert(key("pronounPastTense"), info.past_tense.as_str().into());
-        args.insert(key("pronounPastTenseLower"), info.past_tense_lower.as_str().into());
-        args.insert(key("pronounCurrentTense"), info.current_tense.as_str().into());
-        args.insert(
-            key("pronounCurrentTenseLower"),
-            info.current_tense_lower.as_str().into(),
-        );
-        args.insert(key("pronounPluralLower"), info.plural_lower.as_str().into());
+        args.insert(key("pronoun"), info.pronoun.into());
+        args.insert(key("pronouns"), info.display.into());
+        args.insert(key("pronounSubject"), info.subject.into());
+        args.insert(key("pronounSubjectLower"), info.subject_lower.into());
+        args.insert(key("pronounObject"), info.object.into());
+        args.insert(key("pronounObjectLower"), info.object_lower.into());
+        args.insert(key("pronounPossessive"), info.possessive.into());
+        args.insert(key("pronounPossessiveLower"), info.possessive_lower.into());
+        args.insert(key("pronounPronoun"), info.pronoun_form.into());
+        args.insert(key("pronounPronounLower"), info.pronoun_form_lower.into());
+        args.insert(key("pronounReflexive"), info.reflexive.into());
+        args.insert(key("pronounReflexiveLower"), info.reflexive_lower.into());
+        args.insert(key("pronounPastTense"), info.past_tense.into());
+        args.insert(key("pronounPastTenseLower"), info.past_tense_lower.into());
+        args.insert(key("pronounCurrentTense"), info.current_tense.into());
+        args.insert(key("pronounCurrentTenseLower"), info.current_tense_lower.into());
+        args.insert(key("pronounPluralLower"), info.plural_lower.into());
         args.insert(key("pronounLastCached"), now_str.into());
     } else {
         args.insert(key("userFound"), false.into());
@@ -574,6 +589,16 @@ pub fn populate_pronoun_vars(args: &mut Obj, prefix: &str, info: Option<&Pronoun
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    #[test]
+    fn cached_pronouns_preserve_every_value() {
+        for (i, id) in PRONOUN_IDS.iter().enumerate() {
+            let expected = lookup_pronoun(id).expect("known pronoun");
+            assert_eq!(cached_pronoun(Some(i as u8)), Some(expected));
+        }
+        assert_eq!(cached_pronoun(None), None);
+        assert_eq!(cached_pronoun(Some(u8::MAX)), None);
+    }
 
     #[test]
     fn test_discord_payload_building() {

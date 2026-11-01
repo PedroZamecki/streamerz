@@ -70,13 +70,7 @@ pub fn providers_for(platform: &str) -> &'static [Provider] {
             Provider::SevenTv,
             Provider::Emoji,
         ],
-        "youtube" => &[
-            Provider::Favorites,
-            Provider::Platform,
-            Provider::SevenTv,
-            Provider::Bttv,
-            Provider::Emoji,
-        ],
+        "youtube" => &[Provider::Favorites, Provider::SevenTv, Provider::Bttv, Provider::Emoji],
         "tiktok" => &[Provider::Favorites, Provider::Platform, Provider::Emoji],
         _ => &[
             Provider::Favorites,
@@ -242,7 +236,11 @@ pub fn sections(
         Provider::Favorites => vec![EmoteSection {
             title: tr("emotes.favorite_emotes").into(),
             note: favorites.is_empty().then(|| tr("emotes.favorites_hint").into()),
-            emotes: favorites.to_vec(),
+            emotes: favorites
+                .iter()
+                .filter(|(_, url)| !matches!(platform, "youtube" | "all") || !youtube_image(url))
+                .cloned()
+                .collect(),
         }],
         Provider::Emoji => groups()
             .map(|(g, es)| EmoteSection {
@@ -359,6 +357,13 @@ pub fn sections(
         }
         Provider::Ffz => store().lock().map(|s| s.cat.twitch_ffz.clone()).unwrap_or_default(),
     }
+}
+
+// YouTube's native emoji cannot be sent through the text-only Data API.
+fn youtube_image(url: &str) -> bool {
+    url.split('/')
+        .nth(2)
+        .is_some_and(|host| host == "ggpht.com" || host.ends_with(".ggpht.com"))
 }
 
 fn rebuild_lookups(cat: &Catalog) -> [HashMap<String, String>; 3] {
@@ -1062,6 +1067,20 @@ async fn fetch_all(p: &LoadParams) -> Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn youtube_native_emotes_are_not_offered_for_sending() {
+        assert!(!providers_for("youtube").contains(&Provider::Platform));
+        let favorites = vec![
+            (":yt:".into(), "https://yt3.ggpht.com/image".into()),
+            ("😀".into(), twemoji("😀")),
+        ];
+        for platform in ["youtube", "all"] {
+            let items = sections(platform, Provider::Favorites, true, &[], &favorites);
+            assert_eq!(items[0].emotes.len(), 1);
+            assert_eq!(items[0].emotes[0].0, "😀");
+        }
+    }
 
     #[test]
     fn kick_emotes_are_the_logged_in_channels_when_no_other_is_set() {

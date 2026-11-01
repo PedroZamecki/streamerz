@@ -148,16 +148,42 @@ pub(super) fn channel(cmds: &Cmds, platform: &str) -> Option<String> {
         }
     }
     let ok = answer.get() == Some(true);
+    let chosen = if ok && !use_own.get() {
+        let picked = usize::try_from(list.value() - 1)
+            .ok()
+            .and_then(|i| found.borrow().get(i).map(|f| f.handle.clone()));
+        // Without a pick, what was typed (a link or @name).
+        picked.or_else(|| Some(input.value().trim().to_string()).filter(|t| !t.is_empty()))
+    } else {
+        None
+    };
+    let own = use_own.get();
     win.hide();
+    app::delete_widget(win);
     if !ok {
         return None;
     }
-    if use_own.get() {
+    if own {
         return Some(String::new());
     }
-    let picked = usize::try_from(list.value() - 1)
-        .ok()
-        .and_then(|i| found.borrow().get(i).map(|f| f.handle.clone()));
-    // Without a pick, what was typed (a link or @name).
-    picked.or_else(|| Some(input.value().trim().to_string()).filter(|t| !t.is_empty()))
+    chosen
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_find_line_formats() {
+        let f = Found {
+            name: "Cool Streamer".into(),
+            handle: "cool_streamer".into(),
+            detail: "10K followers".into(),
+            picture: "https://x/p.png".into(),
+            live: true,
+        };
+        let l = line(&f);
+        assert!(l.contains("Cool Streamer"));
+        assert!(l.contains("10K followers"));
+    }
 }

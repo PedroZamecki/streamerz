@@ -12,7 +12,7 @@ use fltk::input::Input;
 use fltk::prelude::*;
 use fltk::text::{TextBuffer, TextDisplay, WrapMode};
 use fltk::tree::{Tree, TreeItem, TreeReason, TreeSelect};
-use fltk::window::Window;
+use fltk::window::DoubleWindow;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -26,8 +26,8 @@ pub struct PickItem {
 }
 
 /// A dialog window: centred, modal, closing it cancels.
-fn window(w: i32, h: i32, title: &str) -> (Window, Rc<Cell<Option<bool>>>) {
-    let mut win = Window::default().with_size(w, h).with_label(title);
+fn window(w: i32, h: i32, title: &str) -> (DoubleWindow, Rc<Cell<Option<bool>>>) {
+    let mut win = DoubleWindow::default().with_size(w, h).with_label(title);
     win.set_xclass("streamerz");
     win.make_modal(true);
     let answer = Rc::new(Cell::new(None));
@@ -509,7 +509,7 @@ pub fn sub_action_description(code: u32, name: &str, category: &str) -> String {
         7 => "Plays a random sound from a folder.",
         8 => "Turns a timer on, off, or toggles it.",
         10 | 35001 => "Sends a message to the chat, as the bot or the broadcaster.",
-        43001 => "Sends a message to the TikTok live chat.",
+        43001 => crate::i18n::tr("chat.tiktok_read_only"),
         15 => "Changes the stream title.",
         18 => "Makes a clip of the stream.",
         20 => "Times a user out for some seconds.",
@@ -568,7 +568,7 @@ pub fn trigger_pick_items() -> Vec<PickItem> {
 pub fn sub_action_pick_items() -> Vec<PickItem> {
     SUB_ACTION_INFO
         .iter()
-        .filter(|x| !(99901..=99904).contains(&x.0) || x.0 == 99903)
+        .filter(|x| x.0 != 43001 && (!(99901..=99904).contains(&x.0) || x.0 == 99903))
         .map(|&(code, name, category, _)| {
             let cat = if category.is_empty() {
                 "Core/General".to_string()
@@ -879,9 +879,7 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
     });
 
     let ok = super::dialogs::run(&mut win, &answer, || selected_id.get().is_some());
-    if ok {
-        selected_id.get()
-    } else {
-        None
-    }
+    let res = if ok { selected_id.get() } else { None };
+    app::delete_widget(win);
+    res
 }

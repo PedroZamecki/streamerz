@@ -68,30 +68,64 @@ pub fn format_modifiers(modifiers: u32) -> String {
     parts.join(" + ")
 }
 
-/// Simulate a keyboard press. On Windows, dispatches virtual key event; on other platforms, logs.
+/// Find a named key in the same table used by the hotkey editor.
+fn keyboard_vk(key: &str) -> Option<u16> {
+    crate::hotkeys::keys()
+        .iter()
+        .find(|k| k.name.eq_ignore_ascii_case(key) || k.keysym.eq_ignore_ascii_case(key))
+        .map(|k| k.vk)
+}
+
+/// Send a key and its modifiers on Windows.
 pub fn simulate_keyboard_press(key: &str, modifiers: u32) -> Result<(), String> {
-    if key.is_empty() {
-        return Err("empty key".into());
-    }
+    let vk = keyboard_vk(key).ok_or_else(|| format!("unknown key: {key}"))?;
     #[cfg(target_os = "windows")]
     {
-        // On Windows, if a single ASCII char or known virtual key is given
-        crate::debug(format!(
-            "Keyboard Press: {} (modifiers {})",
-            key,
-            format_modifiers(modifiers)
-        ));
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_LWIN, VK_MENU,
+            VK_SHIFT,
+        };
+        let mods = [(1, VK_MENU), (2, VK_CONTROL), (4, VK_SHIFT), (8, VK_LWIN)];
+        let event = |key, up| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: key,
+                    dwFlags: if up { KEYEVENTF_KEYUP } else { 0 },
+                    ..Default::default()
+                },
+            },
+        };
+        let mut events = Vec::with_capacity(10);
+        for (mask, key) in mods {
+            if modifiers & mask != 0 {
+                events.push(event(key, false));
+            }
+        }
+        events.push(event(vk, false));
+        events.push(event(vk, true));
+        for (mask, key) in mods.into_iter().rev() {
+            if modifiers & mask != 0 {
+                events.push(event(key, true));
+            }
+        }
+        let sent = unsafe {
+            SendInput(
+                events.len() as u32,
+                events.as_ptr(),
+                std::mem::size_of::<INPUT>() as i32,
+            )
+        };
+        if sent != events.len() as u32 {
+            return Err(format!("SendInput sent {sent} of {} events", events.len()));
+        }
+        Ok(())
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let mod_str = format_modifiers(modifiers);
-        if mod_str.is_empty() {
-            crate::debug(format!("Keyboard Press: {key}"));
-        } else {
-            crate::debug(format!("Keyboard Press: {mod_str} + {key}"));
-        }
+        let _ = (vk, modifiers);
+        Err("keyboard simulation is not supported on this system".into())
     }
-    Ok(())
 }
 
 /// Dispatch MIDI Note On message.
@@ -167,7 +201,8 @@ mod tests {
 
     #[test]
     fn keyboard_press_simulation() {
-        assert!(simulate_keyboard_press("F13", 2).is_ok());
-        assert!(simulate_keyboard_press("", 0).is_err());
+        assert_eq!(keyboard_vk("F13"), Some(0x7c));
+        assert_eq!(keyboard_vk("return"), Some(0x0d));
+        assert_eq!(keyboard_vk(""), None);
     }
 }

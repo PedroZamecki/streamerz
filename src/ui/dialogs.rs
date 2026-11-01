@@ -13,7 +13,7 @@ use fltk::input::{Input, MultilineInput};
 use fltk::misc::InputChoice;
 use fltk::prelude::*;
 use fltk::text::{TextBuffer, TextEditor};
-use fltk::window::Window;
+use fltk::window::{DoubleWindow, Window};
 use fltk::{app, dialog, draw};
 use serde_json::Value;
 use std::cell::Cell;
@@ -23,9 +23,9 @@ use std::rc::Rc;
 pub type Answer = Rc<Cell<Option<bool>>>;
 
 /// A dialog window: centred, modal, closing it cancels.
-pub fn window(w: i32, h: i32, title: &str) -> (Window, Answer) {
+pub fn window(w: i32, h: i32, title: &str) -> (DoubleWindow, Answer) {
     crate::crash::step(&format!("dialog {title}"));
-    let mut win = Window::default().with_size(w, h).with_label(title);
+    let mut win = DoubleWindow::default().with_size(w, h).with_label(title);
     win.set_xclass("streamerz");
     win.make_modal(true);
     let answer: Answer = Rc::new(Cell::new(None));
@@ -126,12 +126,25 @@ fn wrap(text: &str, room: i32, width: impl Fn(&str) -> i32) -> Vec<String> {
 /// A small modal message: an icon in the app's colours, the text wrapped to fit, and its buttons (`no`
 /// is None for a plain notice). True when `yes` was pressed.
 fn notice(icon: &'static str, tint: Color, text: &str, no: Option<&str>, yes: &str) -> bool {
+    let buttons: Vec<&str> = no.into_iter().chain([yes]).collect();
+    notice_of(icon, tint, text, &buttons, buttons.len() - 1, no.is_some()) == Some(buttons.len() - 1)
+}
+
+/// `notice` with any number of buttons: the one picked, or None when it is closed (or Escape, when
+/// `escapable`). Enter picks `default`.
+fn notice_of(
+    icon: &'static str,
+    tint: Color,
+    text: &str,
+    buttons: &[&str],
+    default: usize,
+    escapable: bool,
+) -> Option<usize> {
     const PAD: i32 = 22;
     const PIC: i32 = 40;
     const GAP: i32 = 16;
     const LINE: i32 = 19;
     draw::set_font(Font::Helvetica, 14);
-    let buttons: Vec<&str> = no.into_iter().chain([yes]).collect();
     let button_w = |b: &str| (draw::width(b) as i32 + 56).max(90);
     let bar_w: i32 = buttons.iter().map(|b| button_w(b) + 8).sum();
     // The window is as wide as its longest line wants (within reason), and wide enough for its buttons.
@@ -164,101 +177,35 @@ fn notice(icon: &'static str, tint: Color, text: &str, no: Option<&str>, yes: &s
     let mut bar = Flex::default().row();
     bar.set_pad(8);
     Frame::default();
-    if let Some(no) = no {
-        let mut b = button(&mut bar, no, button_w(no));
-        b.set_shortcut(Shortcut::from_key(Key::Escape));
+    let picked: Rc<Cell<usize>> = Rc::default();
+    for (i, label) in buttons.iter().enumerate() {
+        let mut b = button(&mut bar, label, button_w(label));
+        if i == default {
+            b.set_shortcut(Shortcut::from_key(Key::Enter));
+        } else if escapable && i == 0 {
+            b.set_shortcut(Shortcut::from_key(Key::Escape));
+        }
         b.set_callback({
-            let a = answer.clone();
-            move |_| a.set(Some(false))
+            let (a, picked) = (answer.clone(), picked.clone());
+            move |_| {
+                picked.set(i);
+                a.set(Some(true));
+            }
         });
     }
-    let mut b = button(&mut bar, yes, button_w(yes));
-    b.set_shortcut(Shortcut::from_key(Key::Enter));
-    b.set_callback({
-        let a = answer.clone();
-        move |_| a.set(Some(true))
-    });
     bar.end();
     col.fixed(&bar, ROW);
     col.end();
     win.end();
-    run(&mut win, &answer, || true)
+    let picked = run(&mut win, &answer, || true).then(|| picked.get());
+    app::delete_widget(win);
+    picked
 }
 
-/// First run: where to keep the settings. Starts at the usual folder (the suggestion); the answer is the
-/// settings file in the folder picked. Closing it takes the suggestion.
-pub fn choose_location(usual: &std::path::Path) -> std::path::PathBuf {
-    super::theme(true, None);
-    let file = usual.file_name().map_or("streamerz.json".into(), |f| f.to_os_string());
-    let start = usual.parent().map(|p| p.display().to_string()).unwrap_or_default();
-    let (mut win, answer) = window(560, 250, "Streamerz");
-    centre(&mut win, 560, 250);
-    let mut col = Flex::new(22, 20, 516, 210, None).column();
-    col.set_pad(10);
-    let mut title = Frame::default()
-        .with_label(tr("location.title"))
-        .with_align(Align::Left | Align::Inside)
-        .ellipsis();
-    title.set_label_font(Font::HelveticaBold);
-    title.set_label_size(16);
-    col.fixed(&title, 26);
-    draw::set_font(Font::Helvetica, 14);
-    let lines = wrap(tr("location.about"), 516, |t| draw::width(t) as i32);
-    let about = Frame::default()
-        .with_label(&lines.join("\n").replace('@', "@@"))
-        .with_align(Align::Left | Align::Inside | Align::Top);
-    let _ = about;
-    let mut row = Flex::default().row();
-    row.set_pad(8);
-    let mut path = Input::default();
-    path.set_value(&start);
-    let mut browse = button(&mut row, tr("btn.browse"), 100);
-    row.end();
-    col.fixed(&row, ROW);
-    let mut bar = Flex::default().row();
-    bar.set_pad(8);
-    Frame::default();
-    let mut ok = button(&mut bar, tr("location.use"), 140);
-    ok.set_shortcut(Shortcut::from_key(Key::Enter));
-    ok.set_callback({
-        let a = answer.clone();
-        move |_| a.set(Some(true))
-    });
-    bar.end();
-    col.fixed(&bar, ROW);
-    col.end();
-    win.end();
-    browse.set_callback({
-        let mut path = path.clone();
-        move |_| {
-            let mut c = dialog::NativeFileChooser::new(dialog::NativeFileChooserType::BrowseDir);
-            let _ = c.set_directory(&std::path::PathBuf::from(path.value()));
-            c.show();
-            let picked = c.filename();
-            if !picked.as_os_str().is_empty() {
-                path.set_value(&picked.display().to_string());
-            }
-        }
-    });
-    let folder = std::cell::RefCell::new(std::path::PathBuf::from(&start));
-    let ok = run(&mut win, &answer, || {
-        let dir = std::path::PathBuf::from(path.value().trim());
-        match std::fs::create_dir_all(&dir) {
-            Ok(()) => {
-                *folder.borrow_mut() = dir;
-                true
-            }
-            Err(e) => {
-                alert(&trf("location.cant_use", &[("error", &e.to_string())]));
-                false
-            }
-        }
-    });
-    if ok {
-        folder.into_inner().join(file)
-    } else {
-        usual.to_path_buf()
-    }
+/// Asks what to do among `choices` (each a button): the index picked, or None when it is closed. The
+/// first is the one Escape picks.
+pub fn pick_one(text: &str, choices: &[&str]) -> Option<usize> {
+    notice_of("circle-help", Color::Selection, text, choices, 0, true)
 }
 
 /// A problem, with an OK.

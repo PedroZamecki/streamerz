@@ -54,7 +54,7 @@ pub(super) fn save(cfg: &Cfg, f: impl FnOnce(&mut Config)) {
         // A login (or a channel emptied in Advanced) reads the broadcaster's own channel.
         c.own_channels();
     });
-    let _ = crate::save(&cfg.borrow());
+    crate::save_later(&cfg.borrow());
 }
 
 /// A section title, with the platform's or app's logo when there's one.
@@ -563,6 +563,7 @@ impl Views {
     pub fn chat_refresh(&self, tabs: &Wizard) {
         let up = tabs.try_current_widget().map(|g| g.as_widget_ptr());
         if let Ok(mut c) = self.chat.try_borrow_mut() {
+            super::chat::set_viewers_visible(up == Some(c.tab.as_widget_ptr()));
             if up == Some(c.tab.as_widget_ptr()) {
                 c.refresh();
             }
@@ -572,6 +573,14 @@ impl Views {
             if up == Some(c.tab.as_widget_ptr()) {
                 c.live();
             }
+        }
+    }
+
+    /// The window was hidden: the chat keeps no lines.
+    pub fn chat_release(&self) {
+        super::chat::set_viewers_visible(false);
+        if let Ok(mut c) = self.chat.try_borrow_mut() {
+            c.release();
         }
     }
 
@@ -1222,6 +1231,54 @@ fn globals_tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<Globals>> {
 /// How many users the Community tab lists, for dev mode's `community` command.
 pub static USERS_SHOWN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// What the funnel calls once a platform is shown or hidden: the list again.
+type Refresh = Rc<dyn Fn()>;
+
+/// The platforms in the Community list, in the usual order, and those the funnel hides.
+#[derive(Default)]
+struct Platforms {
+    present: Vec<String>,
+    hidden: Vec<String>,
+}
+
+impl Platforms {
+    /// The platforms of the users listed now.
+    fn seen<'a>(&mut self, types: impl Iterator<Item = &'a str>) {
+        let mut present: Vec<String> = Vec::new();
+        for t in types {
+            if !present.iter().any(|p| p == t) {
+                present.push(t.to_string());
+            }
+        }
+        let order = |p: &String| {
+            ["twitch", "youtube", "kick", "tiktok"]
+                .iter()
+                .position(|x| p.eq_ignore_ascii_case(x))
+                .unwrap_or(9)
+        };
+        present.sort_by(|a, b| order(a).cmp(&order(b)).then_with(|| a.cmp(b)));
+        self.present = present;
+    }
+
+    /// Shows or hides the `i`th platform present; one is always left showing.
+    fn toggle(&mut self, i: usize) {
+        let Some(p) = self.present.get(i).cloned() else { return };
+        if let Some(at) = self.hidden.iter().position(|h| *h == p) {
+            self.hidden.remove(at);
+        } else if self.present.iter().filter(|x| !self.hidden.contains(x)).count() > 1 {
+            self.hidden.push(p);
+        }
+    }
+}
+
+/// A platform's name as shown ("twitch" is "Twitch").
+fn platform_name(p: &str) -> String {
+    ["Twitch", "YouTube", "Kick", "TikTok"]
+        .into_iter()
+        .find(|n| n.eq_ignore_ascii_case(p))
+        .map_or_else(|| p.to_string(), str::to_string)
+}
+
 pub struct Community {
     tab: Flex,
     cfg: Cfg,
@@ -1232,6 +1289,10 @@ pub struct Community {
     users: Rows,
     /// The users' sort: the column and whether it goes up.
     sort: Rc<Cell<(usize, bool)>>,
+    /// The platform column's funnel, and the platforms in the list and those hidden.
+    filter: Rc<super::HeaderFilter>,
+    platforms: Rc<RefCell<Platforms>>,
+    users_header: Frame,
     /// The users in the list, as shown (the list's line n is `shown[n - 1]`).
     shown: Vec<Obj>,
     quotes: Rows,
@@ -1290,10 +1351,24 @@ impl Community {
                     }
                 });
                 let q = self.search.value().to_lowercase();
+                // Sorting and filtering by platform show only when there's more than one.
+                let hidden = {
+                    let mut p = self.platforms.borrow_mut();
+                    p.seen(users.iter().map(|u| s(u, "type")));
+                    let many = p.present.len() > 1;
+                    let hidden: Vec<String> = if many { p.hidden.clone() } else { Vec::new() };
+                    if self.filter.shown.get() != many || self.filter.filtering.get() != !hidden.is_empty() {
+                        self.filter.shown.set(many);
+                        self.filter.filtering.set(!hidden.is_empty());
+                        self.users_header.redraw();
+                    }
+                    hidden
+                };
                 self.users.clear();
                 self.shown = users
                     .iter()
                     .filter(|u| q.is_empty() || s(u, "display").to_lowercase().contains(&q))
+                    .filter(|u| !hidden.iter().any(|h| h == s(u, "type")))
                     .cloned()
                     .collect();
                 USERS_SHOWN.store(self.shown.len(), std::sync::atomic::Ordering::Relaxed);
@@ -1459,7 +1534,41 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
         tr("lists.community.first_seen"),
         tr("lists.community.last_seen"),
     ];
-    let mut users_header = super::sort_header(&mut users_v, &[36, 220, 110, 110, 110], &titles, sort.clone());
+    // The platform column filters too: a funnel lists the platforms in the list to show or hide.
+    let platforms: Rc<RefCell<Platforms>> = Rc::default();
+    let after_filter: Rc<RefCell<Option<Refresh>>> = Rc::default();
+    let filter = Rc::new(super::HeaderFilter {
+        column: 0,
+        shown: Cell::new(false),
+        filtering: Cell::new(false),
+        open: Box::new({
+            let (platforms, after) = (platforms.clone(), after_filter.clone());
+            move || {
+                let items: Vec<(String, bool)> = {
+                    let p = platforms.borrow();
+                    p.present
+                        .iter()
+                        .map(|x| (platform_name(x), !p.hidden.contains(x)))
+                        .collect()
+                };
+                let (platforms, after) = (platforms.clone(), after.clone());
+                super::tick_menu(&items, move |i| {
+                    platforms.borrow_mut().toggle(i);
+                    let f = after.borrow().clone();
+                    if let Some(f) = f {
+                        f();
+                    }
+                });
+            }
+        }),
+    });
+    let mut users_header = super::sort_header(
+        &mut users_v,
+        &[36, 220, 110, 110, 110],
+        &titles,
+        sort.clone(),
+        Some(filter.clone()),
+    );
     let mut users = Rows::new(tr("lists.community.users_empty"));
     users.set_column_widths(&[36, 220, 110, 110, 110]);
     users.set_logo_column(0);
@@ -1497,10 +1606,21 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
         views: [users_v, quotes_v, credits_v],
         users,
         sort,
+        filter,
+        platforms,
+        users_header: users_header.clone(),
         shown: Vec::new(),
         quotes: quotes.clone(),
         credits,
         rev: 0,
+    }));
+    *after_filter.borrow_mut() = Some(Rc::new({
+        let me = me.clone();
+        move || {
+            if let Ok(mut m) = me.try_borrow_mut() {
+                m.refresh();
+            }
+        }
     }));
     // Click a user for their card.
     users_click(&me);
@@ -1926,5 +2046,20 @@ mod tests {
                 assert!(new.get(f.0).is_some(), "{}: {} missing", k.what, f.0);
             }
         }
+    }
+
+    #[test]
+    fn the_platform_filter_keeps_one_showing() {
+        let mut p = Platforms::default();
+        p.seen(["kick", "twitch", "kick", "tiktok"].into_iter());
+        assert_eq!(p.present, ["twitch", "kick", "tiktok"]);
+        p.toggle(0);
+        p.toggle(1);
+        assert_eq!(p.hidden, ["twitch", "kick"]);
+        p.toggle(2);
+        assert_eq!(p.hidden.len(), 2, "the last one showing stays");
+        p.toggle(0);
+        assert_eq!(p.hidden, ["kick"]);
+        assert_eq!(platform_name("youtube"), "YouTube");
     }
 }

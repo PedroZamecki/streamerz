@@ -242,6 +242,44 @@ fn flatten(prefix: &str, v: &Value, args: &mut Obj) {
     }
 }
 
+/// Update Redemption Status's `status` as Twitch wants it: the form stores the choice's place (0
+/// Fulfilled, 1 Canceled); older or hand-written ones the word.
+fn redemption_status(v: Option<&Value>) -> &'static str {
+    let cancel = match v {
+        Some(Value::Number(n)) => n.as_i64() == Some(1),
+        Some(Value::String(t)) => t.trim().eq_ignore_ascii_case("canceled") || t.trim() == "1",
+        _ => false,
+    };
+    if cancel {
+        "CANCELED"
+    } else {
+        "FULFILLED"
+    }
+}
+
+/// Set Channel Tags's `tags`: a list (the form's lines) or text split at commas and new lines.
+fn tags_of(v: Option<&Value>) -> Vec<String> {
+    let split = |t: &str| -> Vec<String> {
+        t.split([',', '\n'])
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect()
+    };
+    match v {
+        Some(Value::Array(a)) => a.iter().flat_map(|x| split(&text(x))).collect(),
+        Some(Value::String(t)) => split(t),
+        _ => Vec::new(),
+    }
+}
+
+/// A state field that may be a checkbox: ticked is 0 (enable, pause), unticked 1, as `new_state` reads.
+fn state_of(o: &Obj) -> f64 {
+    match o.get("state") {
+        Some(Value::Bool(on)) => f64::from(u8::from(!on)),
+        _ => n(o, "state"),
+    }
+}
+
 impl Engine {
     /// A chat message: run the commands it matches. How many ran.
     pub fn chat(self: &Rc<Self>, chat: &Chat) -> usize {
@@ -345,6 +383,11 @@ impl Engine {
         true
     }
 
+    /// Keeps chat instead of sending it, as dev mode does (scenarios).
+    pub fn dev_mode(&self) {
+        self.st.borrow_mut().dev_out.get_or_insert_with(Vec::new);
+    }
+
     /// Dev mode: the chat lines kept since the last call. None outside dev mode.
     pub fn dev_take(&self) -> Option<Vec<Value>> {
         self.st.borrow_mut().dev_out.as_mut().map(std::mem::take)
@@ -359,8 +402,11 @@ impl Engine {
         user_id: &str,
         role: &str,
         text: &str,
-        badges: Option<Value>,
+        extra: &Value,
     ) -> Result<usize, String> {
+        // `extra`: the request's "badges" and "args" (what else the message carries), if any.
+        let badges = extra.get("badges").cloned();
+        let with = extra.get("args");
         // The name stands for the id unless one is given (a real account's, to try its user card).
         let id = if user_id.is_empty() { user } else { user_id };
         let source = match platform {
@@ -380,6 +426,10 @@ impl Engine {
         // As Streamer.bot passes them: [{name, version, imageUrl}].
         if let Some(b) = badges.filter(Value::is_array) {
             args.insert("badges".into(), b);
+        }
+        // Anything else a platform's message carries (a reward it was sent with, its type...).
+        for (k, v) in with.and_then(Value::as_object).into_iter().flatten() {
+            args.insert(k.clone(), v.clone());
         }
         Ok(self.chat(&Chat {
             platform: platform.into(),
@@ -689,8 +739,8 @@ impl Engine {
             }
             // Update Redemption Status (11)
             11 => {
-                let status = s(o, "status");
-                let reward_id = self.expand(ctx, s(o, "rewardId"));
+                let status = redemption_status(o.get("status"));
+                let reward_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 let reward_id = if reward_id.is_empty() {
                     ctx.args
                         .get("rewardId")
@@ -760,8 +810,8 @@ impl Engine {
             16 => {
                 ctx.args.insert("gameSuccess".into(), false.into());
                 let Some(tw) = self.twitch() else { return };
-                // Source 0 (String): a game name; 1 (Specific Game): the id picked.
-                let (by_id, want) = if n(o, "source") as i64 == 1 && !s(o, "gameId").is_empty() {
+                // Source 0: a game name; 1: the id picked.
+                let (by_id, want) = if n(o, "source") as i64 >= 1 && !s(o, "gameId").is_empty() {
                     (true, self.expand(ctx, s(o, "gameId")))
                 } else {
                     (false, self.expand(ctx, s(o, "game")))
@@ -890,7 +940,7 @@ impl Engine {
             }
             // Set Enabled State (200)
             200 => {
-                let reward_id = self.expand(ctx, s(o, "rewardId"));
+                let reward_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 let state = n(o, "state");
                 let is_enabled = state == 0.0;
                 if let Some(tw) = self.twitch() {
@@ -911,7 +961,7 @@ impl Engine {
             }
             // Set Paused State (201)
             201 => {
-                let reward_id = self.expand(ctx, s(o, "rewardId"));
+                let reward_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 let state = n(o, "state");
                 let is_paused = state == 1.0;
                 if let Some(tw) = self.twitch() {
@@ -932,7 +982,7 @@ impl Engine {
             }
             // Set Cost (202)
             202 => {
-                let reward_id = self.expand(ctx, s(o, "rewardId"));
+                let reward_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 let cost = n(o, "cost") as u64;
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
@@ -952,7 +1002,7 @@ impl Engine {
             }
             // Set Title (205)
             205 => {
-                let reward_id = self.expand(ctx, s(o, "rewardId"));
+                let reward_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 let title = self.expand(ctx, s(o, "title"));
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
@@ -972,7 +1022,7 @@ impl Engine {
             }
             // Set Prompt (206)
             206 => {
-                let reward_id = self.expand(ctx, s(o, "rewardId"));
+                let reward_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 let prompt = self.expand(ctx, s(o, "prompt"));
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
@@ -992,7 +1042,7 @@ impl Engine {
             }
             // Get Reward Info (208)
             208 => {
-                let reward_id = self.expand(ctx, s(o, "rewardId"));
+                let reward_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 if let Some(tw) = self.twitch() {
                     if let Ok(val) = tw
                         .helix(
@@ -1059,8 +1109,11 @@ impl Engine {
             }
             // Set Channel Tags (252)
             252 => {
-                let tags = self.expand(ctx, s(o, "tags"));
-                let tag_list: Vec<&str> = tags.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+                let tag_list: Vec<String> = tags_of(o.get("tags"))
+                    .into_iter()
+                    .map(|t| self.expand(ctx, &t))
+                    .filter(|t| !t.is_empty())
+                    .collect();
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
                         .helix(
@@ -1881,7 +1934,7 @@ impl Engine {
 
             // Set Global Cooldown (204)
             204 => {
-                let rew_id = self.expand(ctx, s(o, "rewardId"));
+                let rew_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 let cd = n(o, "cooldown") as u64;
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
@@ -1901,7 +1954,7 @@ impl Engine {
             }
             // Update Reward (207)
             207 => {
-                let rew_id = self.expand(ctx, s(o, "rewardId"));
+                let rew_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 let title = self.expand(ctx, s(o, "title"));
                 let prompt = self.expand(ctx, s(o, "prompt"));
                 let cost = n(o, "cost") as u64;
@@ -1923,7 +1976,7 @@ impl Engine {
             }
             // Set Background Color (213)
             213 => {
-                let rew_id = self.expand(ctx, s(o, "rewardId"));
+                let rew_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 let color = self.expand(ctx, s(o, "backgroundColor"));
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
@@ -1943,7 +1996,7 @@ impl Engine {
             }
             // Set Max per User per Stream (214)
             214 => {
-                let rew_id = self.expand(ctx, s(o, "rewardId"));
+                let rew_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 let max = n(o, "redeems") as u64;
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
@@ -1965,7 +2018,7 @@ impl Engine {
             }
             // Set Max Per Stream (215)
             215 => {
-                let rew_id = self.expand(ctx, s(o, "rewardId"));
+                let rew_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
                 let max = n(o, "redeems") as u64;
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
@@ -3684,7 +3737,7 @@ impl Engine {
             // Kick channel rewards (official API; only rewards made by this app's Kick app can be
             // changed, as on Twitch).
             35101..=35103 | 35105..=35108 | 35113 => {
-                let id = self.expand(ctx, s(o, "rewardId"));
+                let id = crate::catalog::resolve("kick.rewards", &self.expand(ctx, s(o, "rewardId")));
                 ctx.args.insert("rewardId".into(), id.as_str().into());
                 let kick = self.kick_start();
                 let path = format!("/channels/rewards/{}", crate::commands::url_encode(&id));
@@ -3711,7 +3764,7 @@ impl Engine {
                     let body = match kind {
                         35101 | 35102 => {
                             let key = if kind == 35101 { "is_enabled" } else { "is_paused" };
-                            let on = new_state(n(o, "state"), current().await?[key].as_bool().unwrap_or(false));
+                            let on = new_state(state_of(o), current().await?[key].as_bool().unwrap_or(false));
                             // Enabled: 0 enable; Paused: 0 pause (Streamer.bot's order).
                             json!({ key: on })
                         }
@@ -3768,15 +3821,7 @@ impl Engine {
             // TikTok Sub-actions
             // 43001: Send Message to Live Chat
             43001 => {
-                let text = self.expand(ctx, s(o, "text"));
-                let use_bot = b(o, "useBot", false);
-                let fallback = b(o, "fallback", false);
-                if !self.dev_out("tiktok", &text, use_bot) {
-                    let tiktok = self.tiktok_start();
-                    if let Err(e) = tiktok.send_message(&text, use_bot, fallback).await {
-                        crate::error(e);
-                    }
-                }
+                crate::error("TikTok chat is read-only in Streamerz".into());
             }
 
             // 43002: Get Top Gifters, 43003: Get Stream Info (this live's, as read)
@@ -3932,7 +3977,9 @@ impl Engine {
             1012 => {
                 let key = self.expand(ctx, s(o, "key"));
                 let modifiers = n(o, "modifiers") as u32;
-                let _ = crate::inputs::simulate_keyboard_press(&key, modifiers);
+                if let Err(e) = crate::inputs::simulate_keyboard_press(&key, modifiers) {
+                    crate::warn(format!("Keyboard Press: {e}"));
+                }
             }
 
             // Set Voice Control Command (1018)
@@ -4429,6 +4476,43 @@ fn split_args(s: &str) -> Vec<String> {
 mod tests {
     use super::super::tests::{action, engine, log, run};
     use super::*;
+
+    #[test]
+    fn redemption_status_reads_the_forms_choice() {
+        assert_eq!(redemption_status(Some(&json!(0))), "FULFILLED");
+        assert_eq!(redemption_status(Some(&json!(1))), "CANCELED");
+        assert_eq!(redemption_status(Some(&json!("Canceled"))), "CANCELED");
+        assert_eq!(redemption_status(None), "FULFILLED");
+    }
+
+    #[test]
+    fn channel_tags_come_from_the_forms_lines() {
+        // The form stores a list: it once read as empty text and cleared every tag.
+        assert_eq!(tags_of(Some(&json!(["English", " Chill "]))), ["English", "Chill"]);
+        assert_eq!(tags_of(Some(&json!("a, b\nc"))), ["a", "b", "c"]);
+        assert!(tags_of(None).is_empty());
+    }
+
+    #[test]
+    fn a_ticked_state_box_enables() {
+        let o = |v: Value| json!({ "state": v }).as_object().cloned().unwrap();
+        assert!(new_state(state_of(&o(json!(true))), false), "ticked: on");
+        assert!(!new_state(state_of(&o(json!(false))), true), "unticked: off");
+        assert!(new_state(state_of(&o(json!(2))), false), "2 toggles");
+    }
+
+    #[test]
+    fn obs_state_lists_match_what_the_engine_reads() {
+        use crate::ui::forms::*;
+        // 0 shows, starts, enables, mutes, plays: new_state and the OBS arms read it so.
+        assert_eq!(STATE_HIDE_SHOW_TOGGLE[0], "Show");
+        assert_eq!(STREAM_STATE[..2], ["Start", "Stop"]);
+        assert_eq!(RECORD_STATE, ["Start", "Stop", "Pause", "Resume", "Toggle"]);
+        assert_eq!(REPLAY_STATE, ["Start", "Stop", "Save", "Toggle"]);
+        assert_eq!(FILTER_STATE[0], "Enable");
+        assert_eq!(MUTE_STATE[0], "Mute");
+        assert_eq!(MEDIA_STATE[2..4], ["Restart", "Stop"]);
+    }
     use serde_json::json;
 
     #[test]
@@ -4682,13 +4766,20 @@ mod tests {
             ];
         });
         run(async move {
-            assert_eq!(e.inject_chat("twitch", "ana", "", "viewer", "!hi", None).unwrap(), 0);
-            assert_eq!(e.inject_chat("kick", "bo", "", "viewer", "!hi", None).unwrap(), 1);
-            assert!(e.inject_chat("nope", "bo", "", "viewer", "!hi", None).is_err());
+            assert_eq!(
+                e.inject_chat("twitch", "ana", "", "viewer", "!hi", &Value::Null)
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                e.inject_chat("kick", "bo", "", "viewer", "!hi", &Value::Null).unwrap(),
+                1
+            );
+            assert!(e.inject_chat("nope", "bo", "", "viewer", "!hi", &Value::Null).is_err());
             tokio::time::sleep(Duration::from_millis(100)).await;
             let out = e.dev_take().unwrap();
             assert_eq!(out[0], json!({"platform": "kick", "text": "hi bo", "bot": false}));
-            assert_eq!(out[1], json!({"platform": "tiktok", "text": "tt bo", "bot": false}));
+            assert_eq!(out.len(), 1);
             assert!(e.dev_take().unwrap().is_empty());
         });
     }
@@ -4719,12 +4810,16 @@ mod tests {
                 &args(json!({"user": "bo", "giftName": "Rose", "repeatCount": 5})),
                 |_| true,
             );
-            assert_eq!(e.inject_chat("kick", "cy", "", "viewer", "!lurk", None).unwrap(), 1);
+            assert_eq!(
+                e.inject_chat("kick", "cy", "", "viewer", "!lurk", &Value::Null)
+                    .unwrap(),
+                1
+            );
             tokio::time::sleep(Duration::from_millis(200)).await;
             let out = e.dev_take().unwrap();
             let said = |p: &str, t: &str| out.iter().any(|o| o["platform"] == p && o["text"] == t);
             assert!(said("twitch", "Thanks for the follow, ana! 💜"), "{out:?}");
-            assert!(said("tiktok", "Thanks for the 5x Rose, bo! 🌹"), "{out:?}");
+            assert!(!out.iter().any(|o| o["platform"] == "tiktok"), "{out:?}");
             assert!(said("kick", "cy is now lurking. Enjoy the stream! 👀"), "{out:?}");
         });
     }

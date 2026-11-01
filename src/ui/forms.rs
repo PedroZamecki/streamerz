@@ -41,6 +41,9 @@ pub enum W {
     /// A sub-action or trigger of the action picked in the `actionId` field.
     Sub,
     Trigger,
+    /// A name found on a connection (the catalog's list for this key: a channel's rewards, OBS's scenes),
+    /// picked, or typed when nothing was found.
+    Suggest(&'static str),
     /// A name, typed or picked.
     ActionGroup,
     CommandGroup,
@@ -76,6 +79,7 @@ impl W {
             SlobsConnection => "Streamlabs Desktop connection id".into(),
             Sub => "sub-action id of the action in actionId".into(),
             Trigger => "trigger id of the action in actionId".into(),
+            Suggest(k) => format!("a name ({k} detected on the connection, or typed)"),
             ActionGroup => "action group name".into(),
             CommandGroup => "command group name".into(),
             Map => "object of texts".into(),
@@ -88,10 +92,11 @@ impl W {
 /// (JSON field, label, kind).
 pub type F = (&'static str, &'static str, W);
 
-pub const STATE_HIDE_SHOW_TOGGLE: &[&str] = &["Hide", "Show", "Toggle"];
-pub const STREAM_STATE: &[&str] = &["Stop", "Start", "Toggle"];
-pub const RECORD_STATE: &[&str] = &["Stop", "Start", "Toggle", "Pause", "Resume"];
-pub const REPLAY_STATE: &[&str] = &["Stop", "Start", "Toggle", "Save"];
+// In the order the engine reads them (Streamer.bot's stored values): 0 shows, starts or enables.
+pub const STATE_HIDE_SHOW_TOGGLE: &[&str] = &["Show", "Hide", "Toggle"];
+pub const STREAM_STATE: &[&str] = &["Start", "Stop", "Toggle"];
+pub const RECORD_STATE: &[&str] = &["Start", "Stop", "Pause", "Resume", "Toggle"];
+pub const REPLAY_STATE: &[&str] = &["Start", "Stop", "Save", "Toggle"];
 // Streamlabs Desktop (checked against Streamer.bot): visibility/filters/mute 0 on, 1 off, 2 toggle;
 // Streaming 0 stop, 1 start; Recording 0 start, 1 stop (Pause/Resume do nothing in Streamlabs).
 const SD_SHOW: &[&str] = &["Visible", "Hidden", "Toggle"];
@@ -100,10 +105,10 @@ const SD_STREAM: &[&str] = &["Stop", "Start"];
 const SD_RECORD: &[&str] = &["Start", "Stop", "Pause", "Resume"];
 const SD_DISPLAY: &[&str] = &["Both", "Horizontal", "Vertical"];
 pub const FLIP_MODE: &[&str] = &["Horizontal", "Vertical", "Both"];
-pub const FILTER_STATE: &[&str] = &["Disable", "Enable", "Toggle"];
-pub const MUTE_STATE: &[&str] = &["Unmute", "Mute", "Toggle"];
-pub const TRACK_STATE: &[&str] = &["Disable", "Enable", "Toggle"];
-pub const MEDIA_STATE: &[&str] = &["Play", "Pause", "Stop", "Restart", "Next", "Previous"];
+pub const FILTER_STATE: &[&str] = &["Enable", "Disable", "Toggle"];
+pub const MUTE_STATE: &[&str] = &["Mute", "Unmute", "Toggle"];
+pub const TRACK_STATE: &[&str] = &["Enable", "Disable", "Toggle"];
+pub const MEDIA_STATE: &[&str] = &["Play", "Pause", "Restart", "Stop", "Next", "Previous"];
 
 pub const OPS: &[&str] = &[
     "Equals",
@@ -183,7 +188,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         14 => &[("status", "Slow mode", Bool), ("duration", "Duration (seconds)", Int)],
         15 => &[("title", "Title", Text)],
         16 => &[
-            ("source", "Source", Pick(&["Manual", "Variable", "Twitch Game ID"])),
+            ("source", "Source", Pick(&["Game name", "Game ID"])),
             ("game", "Game", Text),
             ("gameId", "Game ID", Text),
         ],
@@ -236,38 +241,50 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("duration", "Duration (minutes)", Int),
         ],
         29 | 50 | 51 | 52 | 500 | 502..=505 | 512 | 513 | 526 | 527 | 580 => &[("userLogin", "User login", Text)],
-        200 => &[("rewardId", "Reward ID", Text), ("state", "State", Pick(STATE))],
-        201 => &[("rewardId", "Reward ID", Text), ("state", "State", Pick(STATE))],
+        200 => &[
+            ("rewardId", "Reward", Suggest("twitch.rewards")),
+            ("state", "State", Pick(STATE)),
+        ],
+        201 => &[
+            ("rewardId", "Reward", Suggest("twitch.rewards")),
+            ("state", "State", Pick(STATE)),
+        ],
         202 => &[
-            ("rewardId", "Reward ID", Text),
+            ("rewardId", "Reward", Suggest("twitch.rewards")),
             ("cost", "Cost", Int),
             ("operator", "Operation", Pick(&["Set", "Add", "Subtract"])),
         ],
         203 => &[("disableNotConfigured", "Disable not configured", Bool)],
         204 => &[
-            ("rewardId", "Reward ID", Text),
+            ("rewardId", "Reward", Suggest("twitch.rewards")),
             ("cooldown", "Cooldown (seconds)", Int),
             ("additive", "Additive", Bool),
         ],
-        205 => &[("rewardId", "Reward ID", Text), ("title", "Title", Text)],
-        206 => &[("rewardId", "Reward ID", Text), ("prompt", "Prompt", Multi)],
+        205 => &[
+            ("rewardId", "Reward", Suggest("twitch.rewards")),
+            ("title", "Title", Text),
+        ],
+        206 => &[
+            ("rewardId", "Reward", Suggest("twitch.rewards")),
+            ("prompt", "Prompt", Multi),
+        ],
         207 => &[
-            ("rewardId", "Reward ID", Text),
+            ("rewardId", "Reward", Suggest("twitch.rewards")),
             ("title", "Title", Text),
             ("prompt", "Prompt", Multi),
             ("cost", "Cost", Int),
             ("operator", "Operation", Pick(&["Set", "Add", "Subtract"])),
         ],
-        208..=210 => &[("rewardId", "Reward ID", Text)],
+        208..=210 => &[("rewardId", "Reward", Suggest("twitch.rewards"))],
         211 => &[("groupName", "Group name", Text), ("state", "State", Pick(STATE))],
         212 => &[("groupName", "Group name", Text), ("state", "State", Pick(STATE))],
         213 => &[
-            ("rewardId", "Reward ID", Text),
+            ("rewardId", "Reward", Suggest("twitch.rewards")),
             ("backgroundColor", "Background color", Text),
             ("random", "Random", Bool),
         ],
         214 | 215 => &[
-            ("rewardId", "Reward ID", Text),
+            ("rewardId", "Reward", Suggest("twitch.rewards")),
             ("redeems", "Max redeems", Int),
             ("additive", "Additive", Bool),
         ],
@@ -324,7 +341,10 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("duration", "Duration (seconds)", Int),
         ],
         577 => &[("duration", "Duration (seconds)", Int)],
-        579 => &[("userLogin", "User login", Text), ("status", "Status", Text)],
+        579 => &[
+            ("userLogin", "User login", Text),
+            ("status", "Status", Pick(&["Monitored", "Restricted"])),
+        ],
 
         120 => &[
             ("input", "Input", Text),
@@ -445,7 +465,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         401 => &[
             ("connectionId", "Connection", SlobsConnection),
             ("sceneName", "Scene (empty: active)", Text),
-            ("sourceName", "Source", Text),
+            ("sourceName", "Source", Suggest("obs.sources")),
             ("state", "State", Pick(SD_SHOW)),
             ("display", "Display", Pick(SD_DISPLAY)),
         ],
@@ -461,12 +481,12 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         ],
         405 => &[
             ("connectionId", "Connection", SlobsConnection),
-            ("sceneName", "Scene", Text),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
         ],
         406 => &[
             ("connectionId", "Connection", SlobsConnection),
             ("sceneName", "Scene (empty: active)", Text),
-            ("sourceName", "Source", Text),
+            ("sourceName", "Source", Suggest("obs.sources")),
             ("filterName", "Filter", Text),
             ("state", "State", Pick(SD_SHOW)),
         ],
@@ -474,7 +494,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("connectionId", "Connection", SlobsConnection),
             ("flipMode", "Flip", Pick(FLIP_MODE)),
             ("sceneName", "Scene (empty: active)", Text),
-            ("sourceName", "Source", Text),
+            ("sourceName", "Source", Suggest("obs.sources")),
             ("display", "Display", Pick(SD_DISPLAY)),
         ],
         408 => &[
@@ -482,37 +502,37 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("degrees", "Degrees", Num),
             ("additive", "Additive (rotate by, not to)", Bool),
             ("sceneName", "Scene (empty: active)", Text),
-            ("sourceName", "Source", Text),
+            ("sourceName", "Source", Suggest("obs.sources")),
             ("display", "Display", Pick(SD_DISPLAY)),
         ],
         409 => &[
             ("connectionId", "Connection", SlobsConnection),
             ("sceneName", "Scene (empty: active)", Text),
-            ("sourceName", "Source", Text),
+            ("sourceName", "Source", Suggest("obs.sources")),
             ("url", "URL", Text),
         ],
         410 => &[
             ("connectionId", "Connection", SlobsConnection),
             ("sceneName", "Scene (empty: active)", Text),
-            ("sourceName", "Source", Text),
+            ("sourceName", "Source", Suggest("obs.sources")),
             ("text", "Text", Multi),
         ],
         411 => &[
             ("connectionId", "Connection", SlobsConnection),
             ("sceneName", "Scene (empty: active)", Text),
-            ("sourceName", "Source", Text),
+            ("sourceName", "Source", Suggest("obs.sources")),
             ("state", "State", Pick(SD_SHOW)),
         ],
         413 => &[
             ("connectionId", "Connection", SlobsConnection),
             ("sceneName", "Scene (empty: active)", Text),
-            ("sourceName", "Source", Text),
+            ("sourceName", "Source", Suggest("obs.sources")),
             ("state", "State", Pick(SD_MUTE)),
         ],
         412 => &[
             ("connectionId", "Connection", SlobsConnection),
             ("sceneName", "Scene (empty: active)", Text),
-            ("sourceName", "Source", Text),
+            ("sourceName", "Source", Suggest("obs.sources")),
         ],
         414 => &[("connectionId", "Connection", SlobsConnection)],
         415 => &[
@@ -532,18 +552,18 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         ],
         30 => &[
             ("connectionId", "Connection", ObsConnection),
-            ("sceneName", "Scene", Text),
-            ("sourceName", "Source", Text),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
+            ("sourceName", "Source", Suggest("obs.sources")),
             ("state", "State", Pick(STATE_HIDE_SHOW_TOGGLE)),
         ],
         31 => &[
             ("connectionId", "Connection", ObsConnection),
-            ("sceneName", "Scene", Text),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
             ("groupName", "Group", Text),
         ],
         32 => &[
             ("connectionId", "Connection", ObsConnection),
-            ("sceneName", "Scene", Text),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
             ("groupName", "Group", Text),
         ],
         33 => &[
@@ -552,63 +572,67 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         ],
         34 => &[
             ("connectionId", "Connection", ObsConnection),
-            ("sceneName", "Scene", Text),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
         ],
         35 => &[
             ("connectionId", "Connection", ObsConnection),
-            ("sceneName", "Scene", Text),
-            ("sourceName", "Source", Text),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
+            ("sourceName", "Source", Suggest("obs.sources")),
             ("filterName", "Filter", Text),
             ("state", "State", Pick(FILTER_STATE)),
         ],
         36 => &[
             ("connectionId", "Connection", ObsConnection),
             ("flipMode", "Flip mode", Pick(FLIP_MODE)),
-            ("sceneName", "Scene", Text),
-            ("sourceName", "Source", Text),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
+            ("sourceName", "Source", Suggest("obs.sources")),
         ],
         37 => &[
             ("connectionId", "Connection", ObsConnection),
             ("degrees", "Degrees", Num),
             ("additive", "Additive", Bool),
-            ("sceneName", "Scene", Text),
-            ("sourceName", "Source", Text),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
+            ("sourceName", "Source", Suggest("obs.sources")),
         ],
         38 => &[
             ("connectionId", "Connection", ObsConnection),
-            ("sceneName", "Scene", Text),
-            ("sourceName", "Source", Text),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
+            ("sourceName", "Source", Suggest("obs.sources")),
             ("url", "URL", Text),
         ],
         39 => &[
             ("connectionId", "Connection", ObsConnection),
-            ("sceneName", "Scene", Text),
-            ("sourceName", "Source", Text),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
+            ("sourceName", "Source", Suggest("obs.sources")),
             ("text", "Text", Text),
         ],
         40 => &[
             ("connectionId", "Connection", ObsConnection),
-            ("sceneName", "Scene", Text),
-            ("sourceName", "Source", Text),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
+            ("sourceName", "Source", Suggest("obs.sources")),
             ("state", "State", Pick(FILTER_STATE)),
         ],
         41 => &[
             ("connectionId", "Connection", ObsConnection),
-            ("sceneName", "Scene", Text),
-            ("sourceName", "Source", Text),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
+            ("sourceName", "Source", Suggest("obs.sources")),
         ],
         42 => &[
             ("connectionId", "Connection", ObsConnection),
-            ("sceneName", "Scene", Text),
-            ("sourceName", "Source", Text),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
+            ("sourceName", "Source", Suggest("obs.sources")),
             ("state", "State", Pick(MUTE_STATE)),
         ],
         43 => &[("connectionId", "Connection", ObsConnection)],
         44 => &[
             ("connectionId", "Connection", ObsConnection),
-            ("sceneName", "Scene", Text),
-            ("sourceName", "Source", Text),
-            ("track", "Track (1-6)", Int),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
+            ("sourceName", "Source", Suggest("obs.sources")),
+            (
+                "track",
+                "Track",
+                Pick(&["Track 1", "Track 2", "Track 3", "Track 4", "Track 5", "Track 6"]),
+            ),
             ("state", "State", Pick(TRACK_STATE)),
         ],
         45 => &[
@@ -624,21 +648,21 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         ],
         47 => &[
             ("connectionId", "Connection", ObsConnection),
-            ("sceneName", "Scene", Text),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
             ("filterName", "Filter", Text),
             ("state", "State", Pick(FILTER_STATE)),
         ],
         48 => &[
             ("connectionId", "Connection", ObsConnection),
-            ("sceneName", "Scene", Text),
-            ("sourceName", "Source", Text),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
+            ("sourceName", "Source", Suggest("obs.sources")),
             ("path", "File path", Text),
             ("quality", "Quality", Int),
         ],
         49 => &[
             ("connectionId", "Connection", ObsConnection),
-            ("sceneName", "Scene", Text),
-            ("sourceName", "Source", Text),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
+            ("sourceName", "Source", Suggest("obs.sources")),
             ("state", "State", Pick(MEDIA_STATE)),
         ],
         321 => &[
@@ -647,33 +671,33 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         ],
         322 => &[
             ("connectionId", "Connection", ObsConnection),
-            ("sceneName", "Scene", Text),
-            ("sourceName", "Source", Text),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
+            ("sourceName", "Source", Suggest("obs.sources")),
             ("fileName", "File name", Text),
         ],
         323 => &[
             ("connectionId", "Connection", ObsConnection),
-            ("sceneName", "Scene", Text),
-            ("sourceName", "Source", Text),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
+            ("sourceName", "Source", Suggest("obs.sources")),
             ("fileName", "File name", Text),
         ],
         324 => &[
             ("connectionId", "Connection", ObsConnection),
-            ("sceneName", "Scene", Text),
-            ("sourceName", "Source", Text),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
+            ("sourceName", "Source", Suggest("obs.sources")),
         ],
         325 => &[
             ("connectionId", "Connection", ObsConnection),
-            ("sceneName", "Scene", Text),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
         ],
         326 => &[
             ("connectionId", "Connection", ObsConnection),
-            ("sceneName", "Scene", Text),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
         ],
         327 => &[
             ("connectionId", "Connection", ObsConnection),
-            ("sceneName", "Scene", Text),
-            ("sourceName", "Source", Text),
+            ("sceneName", "Scene", Suggest("obs.scenes")),
+            ("sourceName", "Source", Suggest("obs.sources")),
             ("color", "Color", Text),
             ("random", "Random", Bool),
         ],
@@ -742,26 +766,35 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("duration", "Duration (seconds)", Int),
             ("reason", "Reason", Text),
         ],
-        35101 | 35102 => &[("rewardId", "Reward ID", Text), ("state", "State", Bool)],
+        35101 | 35102 => &[
+            ("rewardId", "Reward", Suggest("kick.rewards")),
+            ("state", "State", Bool),
+        ],
         35103 => &[
-            ("rewardId", "Reward ID", Text),
+            ("rewardId", "Reward", Suggest("kick.rewards")),
             ("cost", "Cost", Int),
             ("operator", "Operator", Int),
         ],
         35104 => &[("disableNotConfigured", "Disable not configured", Bool)],
-        35105 => &[("rewardId", "Reward ID", Text), ("title", "Title", Text)],
-        35106 => &[("rewardId", "Reward ID", Text), ("description", "Description", Text)],
+        35105 => &[
+            ("rewardId", "Reward", Suggest("kick.rewards")),
+            ("title", "Title", Text),
+        ],
+        35106 => &[
+            ("rewardId", "Reward", Suggest("kick.rewards")),
+            ("description", "Description", Text),
+        ],
         35107 => &[
-            ("rewardId", "Reward ID", Text),
+            ("rewardId", "Reward", Suggest("kick.rewards")),
             ("title", "Title", Text),
             ("description", "Description", Text),
             ("cost", "Cost", Int),
             ("operator", "Operator", Int),
         ],
-        35108..=35110 => &[("rewardId", "Reward ID", Text)],
+        35108..=35110 => &[("rewardId", "Reward", Suggest("kick.rewards"))],
         35111 | 35112 => &[("groupName", "Group name", Text), ("state", "State", Bool)],
         35113 => &[
-            ("rewardId", "Reward ID", Text),
+            ("rewardId", "Reward", Suggest("kick.rewards")),
             ("backgroundColor", "Background color", Text),
             ("random", "Random", Bool),
         ],
@@ -1000,6 +1033,8 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
             ("vendorName", "Vendor (empty: any)", Text),
             ("eventType", "Event type (empty: any)", Text),
         ],
+        112..=115 | 171 => &[("rewardId", "Reward (none: any)", Suggest("twitch.rewards"))],
+        35024 => &[("rewardId", "Reward (none: any)", Suggest("kick.rewards"))],
         101..=196
         | 451..=498
         | 4001..=4031
@@ -1288,6 +1323,16 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
                 };
                 let got = fill(&mut c, &list, &text(v));
                 Widget::Id(c, Rc::new(RefCell::new(got)))
+            }
+            Suggest(key) => {
+                let mut c = InputChoice::default();
+                for (_, name) in crate::catalog::get(key) {
+                    c.add(&item(&name));
+                }
+                // An id saved before is shown as the name it has now.
+                let saved = text(v);
+                c.set_value(&crate::catalog::name_of(key, &saved).unwrap_or(saved));
+                Widget::Name(c)
             }
             ActionGroup | CommandGroup => {
                 let mut c = InputChoice::default();
