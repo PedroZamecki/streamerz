@@ -36,7 +36,7 @@ phase, following `CLAUDE.md`.
 | OS | Windows + Linux (Wayland, ksni tray). CI releases a Windows exe and the Linux AppImage on every release. |
 | Budget | Hidden window, Twitch + OBS connected: < 25 MB RSS and ~0% idle CPU, measured and written in every PR. Streamer.bot uses ~300 MB. |
 | Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, fltk, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only). No webview (wry/tao were removed in 1.1.0: TikTok uses the user's own browser). **image-webp** (WebP emotes and avatars; FLTK decodes the other formats itself). HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. **tokio-native-tls** (the crate tokio-tungstenite's native-tls feature uses, for HTTPS), **regex-lite** (If/Else, While, Switch and regex commands; .NET's backreferences and lookaround aren't supported). Anything else needs a question first. |
-| TikTok | Read natively, no bridge app: `webcast.rs` ports the part of piratetok-live-rs (0BSD) Streamerz uses (ttwid cookie, room lookup, WebSocket, ~10 protobuf messages) onto the HTTP/WebSocket code and flate2 already here, instead of vendoring it with reqwest, prost and tracing. Send by typing into the logged-in live page's chat, since TikTok signs its chat requests (no API sends LIVE chat: Login Kit's scopes don't cover it). Since 1.1.0 that page is a headless tab of the user's own Chromium-based browser (Chrome, Chromium, Edge, Brave, Vivaldi), driven over its DevTools port (`cdp.rs`) with a profile of Streamerz's own: nothing bundled, no WebKitGTK, no helper binary. It runs only around sends and closes after 2 idle minutes. Login is the same browser, as a small window on TikTok's login page. Its login replaces tikstream-login. Broadcaster + bot accounts like the other platforms. |
+| TikTok | Read LIVE chat and events natively through `webcast.rs`, without a bridge. Streamerz does not send TikTok messages: TikTok has no public LIVE chat sending API and its private requests require browser signing. An optional broadcaster login can help with restricted rooms. Login uses an installed Chromium-based browser in a separate profile, with no browser kept running for chat. Imported TikTok send sub-actions are kept for compatibility but do not send. |
 | Chat commands | Commands keep Streamer.bot's `sources` bitmask (Twitch 1/2/8, YouTube 1024, Kick 2097152, TikTok 4194304), so each command chooses its platforms. Built-in commands (`!commands`, `!command add/edit/remove`, `!command platforms`, `!so`, `!uptime`, `!title`) are normal commands created on first run, editable and disable-able. Replies go to the platform the command came from; a command can opt in to reply on all connected platforms. |
 | Not in scope | Meld, PolyPop, Elgato, VTube Studio/Voicemod/Speaker.bot/TITS/Crowd Control/HypeRate/Pulsoid/Lumia/Streamfog/mtion, the Streamer.bot website integration/cloud, C# and plugins. |
 | Later (own phases, after phase 14) | Quotes, credits, points, users/first words; sounds and TTS; file I/O, file tail, folder watcher, process triggers; hotkeys/inputs, MIDI, voice control; Decks, HTML overlay, multi-platform chat window. |
@@ -205,9 +205,9 @@ platform handles through channels, never through shared locks held across awaits
   (socket, REST or webhook through the same tunnel as Kick) and ask if one needs Streamer.bot's cloud.
 - [x] 14. Webhooks and remote: Discord webhook, IFTTT, pronouns (alejo.io), Streamer.bot remote instances
   (signals/triggers between instances, also with a real Streamer.bot).
-- [x] 15. Hotkeys, inputs, MIDI and voice control: keyboard simulation, mouse click trigger, MIDI In/Out, Speech to Text triggers and voice control sub-actions.
-- [x] 16. Streamer.bot Decks, Stream Deck, HTML overlay and chat window: Stream Deck sub-actions and triggers, Decks item/page controls, and multi-platform chat window action triggers.
-- [x] 17. File I/O, file tail, watcher and process triggers: File sub-actions (write, read lines, read specific/random line, file/folder exists, set file tail state), file watcher triggers, file tail trigger, process started/stopped triggers.
+- [ ] 15. Hotkeys, inputs, MIDI and voice control: keyboard simulation, mouse click trigger, MIDI In/Out, Speech to Text triggers and voice control sub-actions.
+- [ ] 16. Streamer.bot Decks, Stream Deck, HTML overlay and chat window: Stream Deck sub-actions and triggers, Decks item/page controls, and multi-platform chat window action triggers.
+- [ ] 17. File I/O, file tail, watcher and process triggers: File sub-actions (write, read lines, read specific/random line, file/folder exists, set file tail state), file watcher triggers, file tail trigger, process started/stopped triggers.
 - [x] 18. Command sources and test hooks: fix Kick's (2097152) and TikTok's (4194304) command source bits
   and the TikTok checkbox, and run TikTok Send Message (43001, never routed). `InjectChat` and `GetChatOut`
   WebSocket requests (only with `STREAMERZ_DEV=1`) test every platform's commands without live channels.
@@ -242,7 +242,8 @@ platform handles through channels, never through shared locks held across awaits
   emoji as Twemoji pictures; animated WebP moves only while it's on screen (one 50 ms timeout, re-armed by
   drawing). The picker shows pictures: emotes seen, third-party ones, every emoji by group. GIFs show their
   first frame (FLTK's animated GIF doesn't give out frames; BTTV/FFZ/7TV are asked for WebP); TikTok's
-  subscriber emotes stay text until a live with them can be checked.
+  subscriber emotes stay text until a live with them can be checked. Native YouTube emotes are shown in
+  received chat but omitted from the picker because the sending API accepts text only.
 - [x] 26. Ready-made actions: Actions > Templates (nothing created by itself), in `templates.rs`: welcome first
   chatters, thank follows, subscriptions, gifted subs, cheers/Super Chats, TikTok gifts, raid welcome and
   shoutout, OBS scene on raid, socials and hydrate timers, `!lurk` and `!discord`. Ordinary actions (one per
@@ -354,6 +355,8 @@ platform handles through channels, never through shared locks held across awaits
 
 ## Version 1.2.0
 
+- [ ] Chat viewer counts: per platform in separate panes, combined with a platform breakdown on hover.
+
 - [x] Releases are titled with their version only (`v1.2.3`), not the merge commit's message.
 - [x] Crash reports: only `crash-*.txt` is offered (the trail file `context.txt` once was, again and again);
   a second window starting doesn't take the first, still running, for a crash.
@@ -397,8 +400,9 @@ platform handles through channels, never through shared locks held across awaits
   service, so a chat read without a login has them too), tooltips that say what a badge or emote is, our
   role known at connect (Kick asks, history says the rest), commands listed in the box as `/` is typed
   (the button is gone), poll and prediction cards and a redone pin card, channel reward lines with their
-  price, sent messages shown at once, a notice when a stream ends or a chat is down with Reconnect and
-  Hide chat (Options puts a chat back).
+  price, sent messages shown at once, a desktop notification when a stream ends, and a compact Reconnect
+  and Hide chat message when chat is disconnected (Options puts a chat back). Stream end and chat
+  connectivity are independent.
 - [x] Detected lists (`catalog.rs`): a channel's rewards (Twitch, Kick) and OBS's scenes and sources are
   offered in the editors, and a name can be typed when nothing was found. Reward triggers can name their
   reward. Sub-actions take a reward by name or id.
@@ -416,6 +420,29 @@ platform handles through channels, never through shared locks held across awaits
   big, watch streaks fire and show (EventSub and the anonymous reader's notice), Kick rewards show their
   price (kick.com's reward list) and colour, TikTok gifts their picture and coins. The anonymous reader
   marks highlighted, sub-only, gigantified and animated messages.
+
+## Development isolation
+
+- [x] Production always uses the global configuration and permits only one running production instance.
+  Use an OS-held lock released on exit or crash, independent of network ports. Development instances do
+  not take this lock. Migrate existing chosen or portable configurations without losing data.
+- [x] Each development instance clones the global configuration into its own private OS temporary
+  directory, including the related data needed to use it. Never write production files or keychain items.
+  Keep credentials usable without changing production secrets; do not log or commit them. Clean up on
+  normal exit and remove stale directories safely after crashes. Fail closed if isolation cannot be set up.
+- [x] Development builds identify themselves with the Git commit hash and a dirty marker, use the DEV
+  logo, and report their temporary configuration path. Releases retain their release version and logo.
+- [x] Disable automatic live connections and actions in the development clone. Allow multiple development
+  instances with separate local ports and identifiers, without changing production settings. Make deliberate
+  live testing possible from the development instance.
+- [x] Cover isolation, concurrent instances, cleanup, production locking, and version identification
+  with tests. Check the DEV UI at narrow and wide sizes and run the smoke test.
+- [ ] Verify migrated and development logins with the real keyring, and test the workflow on Windows.
+
+## Feature audit
+
+- [ ] Review [the feature audit and proposed sequence](docs/FEATURE-AUDIT.md), verify its findings against
+  the implementation and real services, and agree priorities before adding implementation phases.
 
 ## Open points (decide when the phase starts, ask first)
 

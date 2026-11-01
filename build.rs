@@ -3,6 +3,7 @@ use std::fmt::Write;
 // Puts assets/brand/streamerz.ico into the Windows exe (Explorer, taskbar); no-op on other targets.
 // And lists the languages: every assets/locales/<code>.json is built in, so a new language is just a file.
 fn main() {
+    dev_version();
     embed_resource::compile("streamerz.rc", embed_resource::NONE)
         .manifest_optional()
         .unwrap();
@@ -67,4 +68,55 @@ fn docs() {
         out,
     )
     .unwrap();
+}
+
+// Identify local builds without changing the version supplied by release CI.
+fn dev_version() {
+    use std::process::Command;
+    for name in ["HEAD", "index"] {
+        if let Ok(path) = Command::new("git").args(["rev-parse", "--git-path", name]).output() {
+            if path.status.success() {
+                println!(
+                    "cargo:rerun-if-changed={}",
+                    String::from_utf8_lossy(&path.stdout).trim()
+                );
+            }
+        }
+    }
+    if let Ok(reference) = Command::new("git").args(["symbolic-ref", "-q", "HEAD"]).output() {
+        if reference.status.success() {
+            let name = String::from_utf8_lossy(&reference.stdout);
+            if let Ok(path) = Command::new("git")
+                .args(["rev-parse", "--git-path", name.trim()])
+                .output()
+            {
+                if path.status.success() {
+                    println!(
+                        "cargo:rerun-if-changed={}",
+                        String::from_utf8_lossy(&path.stdout).trim()
+                    );
+                }
+            }
+        }
+    }
+    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=assets");
+    let output = Command::new("git").args(["rev-parse", "--short=12", "HEAD"]).output();
+    let hash = output
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".into());
+    let dirty = Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=normal"])
+        .output()
+        .ok()
+        .is_some_and(|o| o.status.success() && !o.stdout.is_empty());
+    println!(
+        "cargo:rustc-env=STREAMERZ_DEV_VERSION={}{}",
+        hash,
+        if dirty { "-dirty" } else { "" }
+    );
 }

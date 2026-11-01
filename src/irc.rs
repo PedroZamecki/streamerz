@@ -350,6 +350,7 @@ pub async fn read(
             Ok(()) => backoff = 2,
             Err(e) => crate::warn(format!("Twitch: chat without login: {e}")),
         }
+        engine.set_chat_viewers("twitch", None);
         if connected.swap(false, Ordering::Relaxed) {
             crate::ui::changed();
         }
@@ -377,6 +378,7 @@ async fn session(
     connected: &AtomicBool,
     channel: &str,
 ) -> Result<(), String> {
+    engine.set_chat_viewers("twitch", None);
     crate::say(format!("Twitch: reading #{channel} without a login (read only)..."));
     let (mut ws, _) = crate::http::ws_connect(URL).await.map_err(|e| e.to_string())?;
     // The anonymous nick Twitch's own site uses; any number works.
@@ -389,6 +391,36 @@ async fn session(
     ] {
         ws.send(Message::Text(line.into())).await.map_err(|e| e.to_string())?;
     }
+    let count_engine = engine.clone();
+    let count_channel = channel.to_string();
+    let _viewer_task = crate::emote_events::Abort(tokio::task::spawn_local(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            tick.tick().await;
+            if !crate::ui::chat::viewers_visible() {
+                continue;
+            }
+            let headers = [
+                ("Client-Id".to_string(), "kimne78kx3ncx6brgo4mv6wki5h1ko".to_string()),
+                ("Content-Type".to_string(), "application/json".to_string()),
+            ];
+            let body = serde_json::json!({"query":"query($login: String!) { user(login: $login) { stream { viewersCount } } }", "variables":{"login":count_channel}});
+            let count = match crate::http::request(
+                "POST",
+                "https://gql.twitch.tv/gql",
+                &headers,
+                body.to_string().as_bytes(),
+            )
+            .await
+            {
+                Ok(r) => serde_json::from_slice::<serde_json::Value>(&r.body)
+                    .ok()
+                    .and_then(|v| v["data"]["user"]["stream"]["viewersCount"].as_u64()),
+                Err(_) => None,
+            };
+            count_engine.set_chat_viewers("twitch", count);
+        }
+    }));
     let mut room: Option<TwitchAccount> = None;
     // A socket that goes quiet without closing is found by asking: Twitch answers a PING with a PONG.
     let mut probed = false;

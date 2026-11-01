@@ -1,6 +1,5 @@
 //! TikTok Live, read natively (see webcast.rs): chat, gifts, likes, follows, shares, subscriptions
-//! and joins fire the TikTok triggers (41001..=41009) and chat commands. Sending (43001) posts with the
-//! logged-in account's session. Login is the tikstream-login window.
+//! and joins fire the TikTok triggers (41001..=41009) and chat commands. Chat is read-only.
 
 use crate::commands::Chat;
 use crate::engine::chatlog::{local_hhmm, normalize_line_emotes, Line};
@@ -16,7 +15,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -221,17 +220,6 @@ pub enum TikTokStatus {
 pub enum TikTokCmd {
     Connect,
     Disconnect,
-    SendMessage {
-        text: String,
-        use_bot: bool,
-        fallback: bool,
-        resp: oneshot::Sender<Result<(), String>>,
-    },
-    /// Open the sending tab now (someone is about to type).
-    Warm {
-        use_bot: bool,
-        fallback: bool,
-    },
 }
 
 /// What the reader shares with the handle (read from the UI's queries).
@@ -278,13 +266,6 @@ impl TikTokHandle {
 
     pub fn current_status(&self) -> TikTokStatus {
         self.shared.status.lock().map(|s| s.clone()).unwrap_or_default()
-    }
-
-    /// Opens the sending tab ahead of the first message (no-op: TikTok chat is read-only).
-    pub fn warm(&self, _use_bot: bool, _fallback: bool) {}
-
-    pub async fn send_message(&self, _text: &str, _use_bot: bool, _fallback: bool) -> Result<(), String> {
-        Err("TikTok chat is read-only".into())
     }
 }
 
@@ -350,10 +331,6 @@ impl Runner {
                     crate::ui::polls_changed();
                     self.shared.set(TikTokStatus::Disconnected);
                     crate::say("TikTok: disconnected".into());
-                }
-                TikTokCmd::Warm { .. } => {}
-                TikTokCmd::SendMessage { resp, .. } => {
-                    let _ = resp.send(Err("TikTok chat is read-only".into()));
                 }
             }
         }
@@ -577,6 +554,10 @@ async fn live(
                     for (name, data) in events {
                         if name == "streamEnd" {
                             crate::say(format!("TikTok: @{channel}'s live stream ended"));
+                            if !engine.chat_stream_ended("tiktok") {
+                                crate::notify::send("Streamerz", &crate::i18n::trf("chat.state_ended_title", &[("platform", "TikTok")]));
+                            }
+                            engine.chat_stream("tiktok", false);
                             let mut args = stream_info(false);
                             args.insert("channel".into(), channel.into());
                             engine.fire(T_TIKTOK_STREAM_OFFLINE, "TikTokStreamOffline", "TikTok", "tiktok", &args, |_| true);
@@ -709,7 +690,6 @@ fn tiktok_chat_line(channel: &str, d: &Value) -> Option<Line> {
 }
 
 fn disconnected(engine: &Rc<Engine>, channel: &str) {
-    engine.chat_stream("tiktok", false);
     let mut args = Obj::new();
     args.insert("channel".into(), clean_tiktok_channel(channel).into());
     engine.fire(
@@ -740,6 +720,7 @@ pub fn handle_tiktok_event(engine: &Rc<Engine>, channel: &str, event: &str, d: &
     // Every few seconds, mostly the same: only a change fires.
     if event == "roomUser" {
         let n = d["viewerCount"].as_u64().unwrap_or(0);
+        engine.set_chat_viewers("tiktok", d["viewerCount"].as_u64());
         if STREAM.with_borrow_mut(|s| std::mem::replace(&mut s.viewers, n)) == n {
             return;
         }

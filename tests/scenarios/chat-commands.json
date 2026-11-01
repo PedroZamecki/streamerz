@@ -32,9 +32,9 @@
     "expect": {"chat": ["one then two (one two)"]}
   },
   {
-    "name": "TikTok and Kick each get their own message",
+    "name": "TikTok send actions do not send while Kick still works",
     "actions": [{"name": "both", "subActions": [{"type": 35001, "text": "kick %who%"}, {"type": 43001, "text": "tiktok %who%"}]}],
     "steps": [{"run": "both", "args": {"who": "ana"}}],
-    "expect": {"chat": [{"platform": "kick", "text": "kick ana"}, {"platform": "tiktok", "text": "tiktok ana"}]}
+    "expect": {"chat": [{"platform": "kick", "text": "kick ana"}]}
   }
 ]

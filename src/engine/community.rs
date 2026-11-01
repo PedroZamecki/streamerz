@@ -247,6 +247,7 @@ impl Engine {
         std::thread::Builder::new()
             .name("save-community".into())
             .spawn(move || {
+                let Ok(_guard) = crate::dev_write_guard() else { return };
                 if std::fs::write(&tmp, text)
                     .and_then(|()| std::fs::rename(&tmp, &path))
                     .is_err()

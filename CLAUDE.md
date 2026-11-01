@@ -54,6 +54,8 @@
 
 ## Writing and UI
 
+- Follow `docs/UI.md` for every UI change. Treat its page, list, form, dialog and verification patterns as
+  required; update the pattern alongside an approved change to the design.
 - Text (UI, log lines, messages, docs, commits, PRs): short, plain and natural, as a person would write
   it. Never use the em dash (—) or en dash (–); use a comma, colon, period or parentheses. No decorative
   Unicode symbols (●, ◐, ✓, ★, →, 🔒...) in UI text: show an icon instead.

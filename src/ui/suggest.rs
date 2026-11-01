@@ -22,6 +22,7 @@ pub struct Suggest {
     win: Rc<RefCell<Option<Window>>>,
     rows: Rc<RefCell<Vec<Suggestion>>>,
     at: Rc<Cell<usize>>,
+    mention: Rc<Cell<bool>>,
 }
 
 impl Suggest {
@@ -38,8 +39,30 @@ impl Suggest {
     }
 
     /// Shows what `input` holds fits (or takes the list away when nothing does), for `platform`'s commands.
-    pub fn update(&self, input: &Input, platform: &str) {
-        let mut rows = suggestions(&input.value(), platform, crate::twitch::commercials_possible());
+    pub fn update(&self, input: &Input, platform: &str, users: &[(String, String)]) {
+        let value = input.value();
+        let pos = (input.position().max(0) as usize).min(value.len());
+        let before = value.get(..pos).unwrap_or("");
+        let start = before
+            .rfind(char::is_whitespace)
+            .map_or(0, |i| i + before[i..].chars().next().unwrap().len_utf8());
+        let token = &before[start..];
+        self.mention.set(token.starts_with('@'));
+        let mut rows = if let Some(prefix) = token.strip_prefix('@') {
+            users
+                .iter()
+                .filter(|(name, _)| matches_user(name, prefix))
+                .map(|(name, _)| Suggestion {
+                    fill: format!("@{name}"),
+                    title: format!("@{name}"),
+                    args: "",
+                    about: "chat.mention_hint",
+                    more: true,
+                })
+                .collect()
+        } else {
+            suggestions(&value, platform, crate::twitch::commercials_possible())
+        };
         rows.truncate(MOST);
         if rows.is_empty() {
             return self.hide();
@@ -116,7 +139,19 @@ impl Suggest {
         draw::draw_rounded_rect(0, 0, w, h, 8);
         draw::set_font(Font::HelveticaBold, 11);
         draw::set_draw_color(super::muted());
-        draw::draw_text2(&tr("slash.header").to_uppercase(), 14, 6, w - 28, 18, Align::Left);
+        draw::draw_text2(
+            &tr(if self.mention.get() {
+                "chat.mention_header"
+            } else {
+                "slash.header"
+            })
+            .to_uppercase(),
+            14,
+            6,
+            w - 28,
+            18,
+            Align::Left,
+        );
         let rows = self.rows.borrow();
         for (i, r) in rows.iter().enumerate() {
             let y = HEAD + i as i32 * ROW;
@@ -141,10 +176,24 @@ impl Suggest {
         let Some(r) = self.rows.borrow().get(self.at.get()).cloned() else {
             return false;
         };
-        let text = if r.more { format!("{} ", r.fill) } else { r.fill };
+        let mut cursor = None;
+        let text = if self.mention.get() {
+            let value = input.value();
+            let pos = (input.position().max(0) as usize).min(value.len());
+            let before = value.get(..pos).unwrap_or("");
+            let start = before
+                .rfind(char::is_whitespace)
+                .map_or(0, |i| i + before[i..].chars().next().unwrap().len_utf8());
+            cursor = Some(start + r.fill.len() + 1);
+            format!("{}{} {}", &value[..start], r.fill, &value[pos..])
+        } else if r.more {
+            format!("{} ", r.fill)
+        } else {
+            r.fill
+        };
         let same = input.value() == text;
         input.set_value(&text);
-        let _ = input.set_position(text.len() as i32);
+        let _ = input.set_position(cursor.unwrap_or(text.len()) as i32);
         let _ = input.take_focus();
         self.hide();
         same
@@ -160,7 +209,7 @@ impl Suggest {
         let key = app::event_key();
         let done = |s: &Self, input: &mut Input| {
             s.complete(input);
-            s.update(input, platform);
+            s.update(input, platform, &[]);
             true
         };
         match key {
@@ -200,5 +249,21 @@ impl Suggest {
         if let Some(w) = self.win.borrow().as_ref() {
             w.clone().redraw();
         }
+    }
+}
+
+fn matches_user(name: &str, prefix: &str) -> bool {
+    name.to_lowercase().starts_with(&prefix.to_lowercase())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::matches_user;
+
+    #[test]
+    fn mention_matches_name_prefix_ignoring_case() {
+        assert!(matches_user("Pedro", "pe"));
+        assert!(matches_user("Pedro", ""));
+        assert!(!matches_user("Pedro", "ed"));
     }
 }

@@ -380,7 +380,7 @@ fn info(e: &Engine) -> Value {
     json!({"instanceId": c.instance_id, "name": c.instance_name, "version": API_VERSION,
         "os": if cfg!(windows) { "windows" } else { "linux" }, "osVersion": "unknown", "mode": "ui",
         "darkMode": c.dark, "source": "websocketServer",
-        "streamerz": option_env!("STREAMERZ_VERSION").unwrap_or("dev")})
+        "streamerz": crate::brand::VERSION})
 }
 
 fn b64(bytes: &[u8]) -> String {
@@ -631,6 +631,33 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
             Ok(ran) => ok(&id, json!({"ran": ran})),
             Err(m) => error(&id, &m),
         },
+        "SimulateStream" if e.dev() => {
+            let platform = get("platform");
+            if !crate::engine::chatlog::PLATFORMS.contains(&platform) {
+                error(&id, "Unknown platform")
+            } else {
+                e.chat_stream(platform, req.get("live").and_then(Value::as_bool).unwrap_or(false));
+                ok(&id, json!({}))
+            }
+        }
+        "SimulateChatConnection" if e.dev() => {
+            let platform = get("platform");
+            if !crate::engine::chatlog::PLATFORMS.contains(&platform) {
+                error(&id, "Unknown platform")
+            } else {
+                e.simulate_chat_connection(platform, req.get("connected").and_then(Value::as_bool));
+                ok(&id, json!({}))
+            }
+        }
+        "SimulateChatViewers" if e.dev() => {
+            let platform = get("platform");
+            if !crate::engine::chatlog::PLATFORMS.contains(&platform) {
+                error(&id, "Unknown platform")
+            } else {
+                e.set_chat_viewers(platform, req.get("count").and_then(Value::as_u64));
+                ok(&id, json!({}))
+            }
+        }
         // Dev mode only: a message pinned in a chat ("seconds" 0: no end), or none ("unpin": true).
         "InjectPin" if e.dev() => {
             let platform = get("platform").to_string();
@@ -819,7 +846,16 @@ fn authoring(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
 }
 
 async fn websocket(e: Rc<Engine>, s: WsSettings) {
-    let l = match TcpListener::bind((s.address.as_str(), s.port)).await {
+    let reserved = if crate::brand::IS_DEV {
+        crate::take_dev_listener(s.port)
+    } else {
+        None
+    };
+    let listener = match reserved {
+        Some(reserved) => TcpListener::from_std(reserved),
+        None => TcpListener::bind((s.address.as_str(), s.port)).await,
+    };
+    let l = match listener {
         Ok(l) => l,
         Err(err) => {
             return crate::error(format!(

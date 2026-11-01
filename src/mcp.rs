@@ -49,7 +49,7 @@ const TOOLS: &[(&str, &str, &str, &[&str])] = &[
     ("new_action", "A new, empty action (name, group) ready to fill with triggers and sub-actions from describe, then save.", r#"{"name": {"type": "string"}, "group": {"type": "string"}}"#, &["name"]),
     ("list_plugins", "The WebAssembly plugins in the plugins folder: on or off, and for those on their manifest (sub-actions, triggers, settings). Plugin sub-actions are type 99800 with plugin and name; plugin triggers type 99801 with plugin and event. See PLUGINS.md.", "{}", &[]),
     ("plugin_enable", "Turn a plugin on or off.", r#"{"plugin": {"type": "string", "description": "Its id (the .wasm file's name)"}, "on": {"type": "boolean"}}"#, &["plugin"]),
-    ("ui", "Look at the window (needs STREAMERZ_DEV=1): `shot /tmp/a.png [n]` saves window n (0 = the top one) as a PNG you can read, `windows`, `tree [n]` lists every widget with its place, `find TEXT [n]` gives screen coordinates to click (xdotool), `page Settings` goes to a page. Take a shot after every UI change you make.", r#"{"do": {"type": "string"}}"#, &["do"]),
+    ("ui", "Look at the window (needs STREAMERZ_DEV=1): `shot /tmp/a.png [n]` saves window n (0 = the top one) as a PNG you can read, `windows`, `tree [n]` lists every widget with its place, `find TEXT [n]` gives screen coordinates to click (xdotool), `page Settings` goes to a page, `chatview Twitch` selects a chat view. Take a shot after every UI change you make.", r#"{"do": {"type": "string"}}"#, &["do"]),
     ("docs", "Streamerz's own reference page for a sub-action or trigger: what it does, its fields, the arguments it reads and sets, what login or role it needs, and examples. Read it before using one.", r#"{"kind": {"type": "string", "enum": ["subaction", "trigger"]}, "code": {"type": "integer"}}"#, &["kind", "code"]),
     ("docs_search", "Search the reference (every trigger and sub-action) by words, e.g. \"obs scene\" or \"first words\": kind, code, title and the first line of each match.", r#"{"query": {"type": "string"}, "limit": {"type": "integer", "description": "Default 20"}}"#, &["query"]),
     ("guide", "Streamerz's guides: with no name, their list (README, chat, plugins, commands, integrations, the reference's index...); with one, its text.", r#"{"name": {"type": "string"}}"#, &[]),
@@ -301,7 +301,7 @@ async fn handle(c: &mut Client, m: &Value) -> Option<Value> {
         "initialize" => json!({
             "protocolVersion": m["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"),
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "streamerz", "version": option_env!("STREAMERZ_VERSION").unwrap_or("dev")},
+            "serverInfo": {"name": "streamerz", "version": crate::brand::VERSION},
             "instructions": "Drives and builds a running streamerz (a Streamer.bot clone). To make something: \
                 list_triggers / list_subactions to find types, describe each to get its fields and a ready item, \
                 new_action, fill triggers and subActions, save; then test with fire_trigger or inject_chat and read \

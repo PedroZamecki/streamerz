@@ -58,7 +58,8 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: the sub-action is read and logged, but no key is sent to the computer.
+- On Windows, sends the key and modifiers through SendInput. The key must match a name from the hotkey list.
+- On Linux, keyboard simulation is not implemented and the action logs a warning.
 
 ## Toast Notification
 

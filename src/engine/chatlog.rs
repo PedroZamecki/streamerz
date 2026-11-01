@@ -371,6 +371,9 @@ pub struct Log {
     polls: Vec<Poll>,
     /// The platforms whose stream has ended (until it starts again).
     ended: Vec<String>,
+    viewers: [Option<u64>; 4],
+    /// Development-only connection overrides for UI testing.
+    simulated_connections: [Option<bool>; 4],
     /// When Twitch's pin was last asked for (it has no event for pins made elsewhere).
     twitch_pin_asked: Option<std::time::Instant>,
 }
@@ -394,12 +397,8 @@ pub struct Poll {
 /// What a platform's chat is doing, for the notice over it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ChatState {
-    /// Connected, and the stream is on (or not said to be over).
-    Live,
-    /// The stream ended: the chat may still take messages.
-    Ended,
-    /// Watching for the stream to start.
-    Standby,
+    /// Chat is connected, regardless of whether the stream is live.
+    Connected,
     /// Not connected.
     Down,
 }
@@ -713,6 +712,10 @@ impl Engine {
             log.lines.retain(|l| l.platform != platform);
             log.pins.retain(|p| p.platform != platform);
             log.polls.retain(|p| p.platform != platform);
+            log.ended.retain(|p| p != platform);
+            if let Some(i) = index(platform) {
+                log.viewers[i] = None;
+            }
             log.users.retain(|k, _| k.0 != platform);
             log.cards.retain(|k, _| k.0 != platform);
             log.reset_gen += 1;
@@ -1394,12 +1397,29 @@ impl Engine {
 
     /// Whether a platform is reading chat.
     pub fn chat_connected(&self, platform: &str) -> bool {
+        if self.dev() {
+            if let Some(i) = PLATFORMS.iter().position(|p| *p == platform) {
+                if let Some(value) = self.st.borrow().chat_log.simulated_connections[i] {
+                    return value;
+                }
+            }
+        }
         match platform {
             "twitch" => self.twitch_connected(),
             "youtube" => self.youtube_connected(),
             "kick" => self.kick_connected(),
             "tiktok" => self.tiktok_connected(),
             _ => false,
+        }
+    }
+
+    /// Simulate a connection in dev mode; `None` restores the actual connection state.
+    pub fn simulate_chat_connection(&self, platform: &str, connected: Option<bool>) {
+        if self.dev() {
+            if let Some(i) = PLATFORMS.iter().position(|p| *p == platform) {
+                self.st.borrow_mut().chat_log.simulated_connections[i] = connected;
+                crate::ui::changed();
+            }
         }
     }
 
@@ -1524,9 +1544,40 @@ impl Engine {
         crate::ui::chat();
     }
 
-    /// A platform's stream started (`live`) or ended: the chat's notice follows. Ended streams take their
-    /// pins and polls with them.
+    /// The latest live viewer count, or none when it is unavailable.
+    pub fn chat_viewers(&self) -> [Option<u64>; 4] {
+        let mut counts = self.st.borrow().chat_log.viewers;
+        for (i, platform) in PLATFORMS.iter().enumerate() {
+            if !self.chat_connected(platform) {
+                counts[i] = None;
+            }
+        }
+        counts
+    }
+
+    pub fn set_chat_viewers(&self, platform: &str, count: Option<u64>) {
+        if let Some(i) = PLATFORMS.iter().position(|p| *p == platform) {
+            let changed = {
+                let mut st = self.st.borrow_mut();
+                let slot = &mut st.chat_log.viewers[i];
+                if *slot == count {
+                    false
+                } else {
+                    *slot = count;
+                    true
+                }
+            };
+            if changed {
+                crate::ui::chat();
+            }
+        }
+    }
+
+    /// Track a stream starting or ending and clear its old pins and polls.
     pub fn chat_stream(&self, platform: &str, live: bool) {
+        if !live {
+            self.set_chat_viewers(platform, None);
+        }
         let changed = {
             let mut st = self.st.borrow_mut();
             let ended = &mut st.chat_log.ended;
@@ -1551,20 +1602,15 @@ impl Engine {
         }
     }
 
-    /// What `platform`'s chat is doing now.
+    /// Whether the platform has reported that its stream ended.
+    pub fn chat_stream_ended(&self, platform: &str) -> bool {
+        self.st.borrow().chat_log.ended.iter().any(|p| p == platform)
+    }
+
+    /// What `platform`'s chat is doing now, independently of its stream.
     pub fn chat_state(&self, platform: &str) -> ChatState {
-        let ended = self.st.borrow().chat_log.ended.iter().any(|p| p == platform);
-        let standby = match platform {
-            "youtube" => self.youtube_standby(),
-            "tiktok" => self.tiktok_standby(),
-            _ => false,
-        };
-        if ended {
-            ChatState::Ended
-        } else if self.chat_connected(platform) {
-            ChatState::Live
-        } else if standby {
-            ChatState::Standby
+        if self.chat_connected(platform) {
+            ChatState::Connected
         } else {
             ChatState::Down
         }
@@ -1812,7 +1858,7 @@ impl Engine {
             Some(a) => (true, a.to_string()),
             None => (false, text.to_string()),
         };
-        let reply_info = reply.map(|r| Reply {
+        let reply_info = reply.filter(|_| matches!(platform, "twitch" | "kick")).map(|r| Reply {
             user: r.user.clone(),
             text: r.text.clone(),
         });
@@ -2012,6 +2058,10 @@ impl Engine {
             .map(|e| e.0.clone())
             .collect();
         for &p in to {
+            if p == "tiktok" {
+                self.chat_note(p, "TikTok chat is read-only in Streamerz".into());
+                continue;
+            }
             let mut text = for_platform(text, p, &kick_known);
             // A reply where the platform has them; a mention elsewhere.
             let reply_target = reply.filter(|l| l.platform == p);
@@ -2092,7 +2142,7 @@ impl Engine {
                 }
             });
         }
-        to.to_vec()
+        to.iter().copied().filter(|p| *p != "tiktok").collect()
     }
 }
 
@@ -2210,10 +2260,19 @@ mod tests {
             let e = crate::engine::Engine::new(cfg.clone(), |_| {});
 
             // YouTube optimistic local message
-            let _ = e.chat_local("youtube", "Como vamos?", false, None).unwrap();
+            let target = Line {
+                user: "Alice".into(),
+                text: "Hi".into(),
+                ..Default::default()
+            };
+            let _ = e
+                .chat_local("youtube", "@Alice Como vamos?", false, Some(&target))
+                .unwrap();
             let (_, _, lines) = e.chat_sync(999, 0);
             assert_eq!(lines.len(), 1);
             assert!(lines[0].local);
+            assert!(lines[0].reply.is_none());
+            assert_eq!(lines[0].text, "@Alice Como vamos?");
 
             // YouTube sends confirmed message back with @handle or no spaces
             e.log_chat(&crate::commands::Chat {
@@ -2221,7 +2280,7 @@ mod tests {
                 user_id: "UC123".into(),
                 user: "@ZameckiCode".into(),
                 msg_id: "yt-1".into(),
-                text: "Como vamos?".into(),
+                text: "@Alice Como vamos?".into(),
                 ..Default::default()
             });
             let (_, _, lines) = e.chat_sync(0, 0);
@@ -2656,6 +2715,37 @@ mod tests {
     }
 
     #[test]
+    fn youtube_reply_is_sent_as_a_mention() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
+            e.dev_mode();
+            let line = Line {
+                platform: "youtube".into(),
+                user: "Alice".into(),
+                msg_id: "message-id".into(),
+                ..Default::default()
+            };
+            e.send_chat_list(&["youtube"], "Hello", false, false, Some(&line));
+            let out = e.dev_take().unwrap();
+            assert_eq!(out[0]["text"], "@Alice Hello");
+        });
+    }
+
+    #[test]
+    fn tiktok_cannot_be_sent_even_in_development_mode() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        crate::engine::tests::run(async {
+            let c = crate::Config::default();
+            let e = crate::engine::Engine::new(std::sync::Arc::new(tokio::sync::watch::channel(c).0), |_| {});
+            e.st.borrow_mut().dev_out = Some(Vec::new());
+            assert!(e.send_chat_list(&["tiktok"], "hello", false, false, None).is_empty());
+            assert!(e.dev_take().unwrap().is_empty());
+            assert!(e.tiktok().is_none());
+        });
+    }
+
+    #[test]
     fn events_show_in_the_chat_once_and_in_words() {
         let _g = crate::TEST_LOCK.lock().unwrap();
         crate::engine::tests::run(async {
@@ -2966,6 +3056,38 @@ mod tests {
             let e = engine_with(crate::ChatLimits::default());
             said(&e, "kick", "stays");
             assert_eq!(e.chat_log_mut().age_out(u64::MAX / 2), 0);
+        });
+    }
+
+    #[test]
+    fn stream_end_and_chat_connection_are_independent() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let e = engine_with(crate::ChatLimits::default());
+            e.st.borrow_mut().dev_out = Some(Vec::new());
+            for (i, platform) in PLATFORMS.iter().copied().enumerate() {
+                said(&e, platform, "hello");
+                e.simulate_chat_connection(platform, Some(true));
+                e.set_chat_viewers(platform, Some(1234));
+                assert_eq!(e.chat_viewers()[i], Some(1234));
+                e.chat_stream(platform, false);
+                assert_eq!(e.chat_viewers()[i], None);
+                assert!(e.chat_stream_ended(platform));
+                assert_eq!(e.chat_state(platform), ChatState::Connected);
+                e.simulate_chat_connection(platform, Some(false));
+                assert_eq!(e.chat_state(platform), ChatState::Down);
+                assert!(e
+                    .chat_sync(u64::MAX, 0)
+                    .2
+                    .iter()
+                    .any(|line| line.platform == platform && line.text == "hello"));
+                e.chat_stream(platform, true);
+                assert!(!e.chat_stream_ended(platform));
+                assert_eq!(e.chat_state(platform), ChatState::Down);
+                e.chat_stream(platform, false);
+                e.chat_forget(platform);
+                assert!(!e.chat_stream_ended(platform));
+            }
         });
     }
 

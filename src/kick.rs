@@ -1597,6 +1597,12 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
         }
         "StopStreamBroadcast" | "LivestreamEnded" | "StreamOffline" => {
             engine.chat_unpinned("kick", "");
+            if !engine.chat_stream_ended("kick") {
+                crate::notify::send(
+                    "Streamerz",
+                    &crate::i18n::trf("chat.state_ended_title", &[("platform", "Kick")]),
+                );
+            }
             engine.chat_stream("kick", false);
             stream_args(&mut args);
             args.insert("endedAt".into(), now().into());
@@ -1807,6 +1813,7 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
 /// in the last 10 minutes, every 5), only when live and an action uses them; 7TV emote changes when
 /// used.
 pub async fn kick_extras(engine: Rc<Engine>, channel: String, user_id: Option<u64>) {
+    engine.set_chat_viewers("kick", None);
     let codes = crate::emote_events::Codes {
         platform: "kick",
         source: "Kick",
@@ -1828,16 +1835,18 @@ pub async fn kick_extras(engine: Rc<Engine>, channel: String, user_id: Option<u6
             engine.uses_trigger(T_KICK_VIEWER_COUNT_UPDATE),
             engine.uses_trigger(T_KICK_PRESENT_VIEWERS),
         );
-        if !want.0 && !want.1 {
+        if !want.0 && !want.1 && !crate::ui::chat::viewers_visible() {
             continue;
         }
         let h = [("Accept".to_string(), "application/json".to_string())];
         let Ok(r) = crate::http::request("GET", &format!("https://kick.com/api/v2/channels/{channel}"), &h, b"").await
         else {
+            engine.set_chat_viewers("kick", None);
             continue;
         };
         let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
         let l = &v["livestream"];
+        engine.set_chat_viewers("kick", l["viewer_count"].as_u64());
         if !l.is_object() {
             continue;
         }

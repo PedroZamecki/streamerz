@@ -4,7 +4,7 @@
 mod accounts;
 mod actions;
 mod card;
-mod chat;
+pub(crate) mod chat;
 mod conns;
 mod dev;
 pub(crate) mod dialogs;

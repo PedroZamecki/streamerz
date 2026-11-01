@@ -2892,6 +2892,12 @@ fn handle_notification(
         "stream.offline" => {
             // A pin "until the stream ends" ends here.
             engine.chat_unpinned("twitch", "");
+            if !engine.chat_stream_ended("twitch") {
+                crate::notify::send(
+                    "Streamerz",
+                    &crate::i18n::trf("chat.state_ended_title", &[("platform", "Twitch")]),
+                );
+            }
             engine.chat_stream("twitch", false);
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
@@ -4727,13 +4733,17 @@ async fn seed(engine: &Rc<Engine>) {
 /// While connected: viewer count (every minute), present viewers (every 5) and the next ad (every
 /// minute, once 5 minutes before it), each only when an action uses its trigger and the stream is live.
 async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
+    engine.set_chat_viewers("twitch", None);
     let mut tick = tokio::time::interval(Duration::from_secs(60));
     let (mut viewers, mut warned, mut n) = (None, String::new(), 0u64);
     loop {
         tick.tick().await;
         n += 1;
         let want = [T_VIEWER_COUNT_UPDATE, T_PRESENT_VIEWERS, T_UPCOMING_AD].map(|t| engine.uses_trigger(t));
-        let Some(tw) = engine.twitch().filter(|_| want.iter().any(|w| *w)) else {
+        let Some(tw) = engine
+            .twitch()
+            .filter(|_| want.iter().any(|w| *w) || crate::ui::chat::viewers_visible())
+        else {
             continue;
         };
         let id = broadcaster.user_id.as_str();
@@ -4741,9 +4751,11 @@ async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
             .helix("GET", "streams", vec![("user_id", id)], None, false, false)
             .await
         else {
+            engine.set_chat_viewers("twitch", None);
             continue;
         };
         let live = s["data"][0]["type"] == "live";
+        engine.set_chat_viewers("twitch", s["data"][0]["viewer_count"].as_u64());
         let mut args = Obj::new();
         populate_broadcaster_vars(&mut args, &broadcaster);
         if want[0] && live {

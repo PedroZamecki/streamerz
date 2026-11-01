@@ -44,11 +44,49 @@ pub fn logo(name: &str, size: i32) -> Option<SvgImage> {
     Some(i)
 }
 
+/// Platform logos arranged in a row for a combined connection notice.
+pub fn platform_logos(platforms: &[&str], size: i32) -> Option<SvgImage> {
+    if platforms.is_empty() {
+        return None;
+    }
+    let mut body = String::new();
+    for (i, p) in platforms.iter().enumerate() {
+        let (svg, fill) = match *p {
+            "twitch" => (include_str!("../../assets/icons/twitch.svg"), "#9146FF"),
+            "youtube" => (include_str!("../../assets/icons/youtube.svg"), "#FF0000"),
+            "kick" => (include_str!("../../assets/icons/kick.svg"), "#53FC18"),
+            "tiktok" => (include_str!("../../assets/icons/tiktok.svg"), "#FE2C55"),
+            _ => return None,
+        };
+        let paths = svg.split_once('>')?.1.rsplit_once("</svg>")?.0;
+        body.push_str(&format!(
+            "<g transform=\"translate({} 0)\" fill=\"{fill}\">{paths}</g>",
+            i * 30
+        ));
+    }
+    let width = platforms.len() as i32 * (size + 4) - 4;
+    let mut image = SvgImage::from_data(&format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {} 24\">{body}</svg>",
+        platforms.len() * 30 - 6
+    ))
+    .ok()?;
+    image.scale(width, size, false, true);
+    Some(image)
+}
+
 /// A picture as shown: its frames (one when still) with how long each shows, in ms.
 #[derive(Clone)]
 pub struct Pic {
     frames: Vec<(RgbImage, u32)>,
     total: u32,
+}
+
+#[cfg(test)]
+pub(super) fn test_pic() -> Pic {
+    Pic {
+        frames: vec![(RgbImage::new(&[255, 0, 0], 1, 1, ColorDepth::Rgb8).unwrap(), 1000)],
+        total: 1000,
+    }
 }
 
 impl Pic {
@@ -218,6 +256,18 @@ pub fn forget_saved(name: &str) {
 
 /// Save `v` as `name` in the cache (whole or nothing).
 pub fn save(name: &str, v: &serde_json::Value) {
+    let closed = if crate::DEV_DIR.get().is_some() {
+        let Ok(closed) = crate::DEV_CACHE_CLOSED.lock() else {
+            return;
+        };
+        if *closed {
+            return;
+        }
+        Some(closed)
+    } else {
+        None
+    };
+    let _closed = closed;
     let file = dir().join(format!("{name}.json"));
     let tmp = file.with_extension("part");
     let _ = std::fs::create_dir_all(dir());
@@ -285,6 +335,18 @@ pub fn get(cmds: &UnboundedSender<UiCmd>, url: &str, h: i32, round: bool) -> Opt
                     let _one = FETCHING.acquire().await;
                     match crate::http::request("GET", &url, &[], b"").await {
                         Ok(r) if r.status == 200 => {
+                            let closed = if crate::DEV_DIR.get().is_some() {
+                                let Ok(closed) = crate::DEV_CACHE_CLOSED.lock() else {
+                                    return;
+                                };
+                                if *closed {
+                                    return;
+                                }
+                                Some(closed)
+                            } else {
+                                None
+                            };
+                            let _closed = closed;
                             let _ = std::fs::create_dir_all(file.parent().unwrap_or(&file));
                             // Whole or nothing: a half-written file would be a broken picture forever.
                             let tmp = file.with_extension("part");
@@ -376,7 +438,7 @@ pub fn forget() {
     SHOWN.with_borrow_mut(|m| *m = Shown::default());
     DECODING.with_borrow_mut(HashSet::clear);
     if let Ok(mut r) = READY.lock() {
-        r.clear();
+        *r = Vec::new();
     }
     crate::trim_memory();
 }

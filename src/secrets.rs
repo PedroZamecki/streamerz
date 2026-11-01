@@ -527,7 +527,7 @@ mod keyring {
                 item.call("GetSecret", &(&session,)).await.map_err(e)?;
             return parse(&value).ok_or_else(|| "the keyring's streamerz key is damaged".into());
         }
-        if !interactive {
+        if !interactive || crate::DEV_DIR.get().is_some() {
             return Err("keyring item not available yet".into());
         }
         // None yet: make one in the default collection.

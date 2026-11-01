@@ -3821,15 +3821,7 @@ impl Engine {
             // TikTok Sub-actions
             // 43001: Send Message to Live Chat
             43001 => {
-                let text = self.expand(ctx, s(o, "text"));
-                let use_bot = b(o, "useBot", false);
-                let fallback = b(o, "fallback", false);
-                if !self.dev_out("tiktok", &text, use_bot) {
-                    let tiktok = self.tiktok_start();
-                    if let Err(e) = tiktok.send_message(&text, use_bot, fallback).await {
-                        crate::error(e);
-                    }
-                }
+                crate::error("TikTok chat is read-only in Streamerz".into());
             }
 
             // 43002: Get Top Gifters, 43003: Get Stream Info (this live's, as read)
@@ -3985,7 +3977,9 @@ impl Engine {
             1012 => {
                 let key = self.expand(ctx, s(o, "key"));
                 let modifiers = n(o, "modifiers") as u32;
-                let _ = crate::inputs::simulate_keyboard_press(&key, modifiers);
+                if let Err(e) = crate::inputs::simulate_keyboard_press(&key, modifiers) {
+                    crate::warn(format!("Keyboard Press: {e}"));
+                }
             }
 
             // Set Voice Control Command (1018)
@@ -4785,7 +4779,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
             let out = e.dev_take().unwrap();
             assert_eq!(out[0], json!({"platform": "kick", "text": "hi bo", "bot": false}));
-            assert_eq!(out[1], json!({"platform": "tiktok", "text": "tt bo", "bot": false}));
+            assert_eq!(out.len(), 1);
             assert!(e.dev_take().unwrap().is_empty());
         });
     }
@@ -4825,7 +4819,7 @@ mod tests {
             let out = e.dev_take().unwrap();
             let said = |p: &str, t: &str| out.iter().any(|o| o["platform"] == p && o["text"] == t);
             assert!(said("twitch", "Thanks for the follow, ana! 💜"), "{out:?}");
-            assert!(said("tiktok", "Thanks for the 5x Rose, bo! 🌹"), "{out:?}");
+            assert!(!out.iter().any(|o| o["platform"] == "tiktok"), "{out:?}");
             assert!(said("kick", "cy is now lurking. Enjoy the stream! 👀"), "{out:?}");
         });
     }

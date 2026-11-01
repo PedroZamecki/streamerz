@@ -35,10 +35,86 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{mpsc::UnboundedSender, watch};
 
+static VIEWERS_VISIBLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+thread_local! {
+    static DEV_VIEW: RefCell<Option<Choice>> = const { RefCell::new(None) };
+}
+
+/// Select a chat view for the development UI tool.
+pub(super) fn dev_select_view(name: &str) -> bool {
+    DEV_VIEW.with_borrow(|view| {
+        let Some(mut choice) = view.clone() else { return false };
+        let i = choice.find_index(name);
+        if i < 0 {
+            return false;
+        }
+        choice.set_value(i);
+        choice.do_callback();
+        true
+    })
+}
+pub(crate) fn viewers_visible() -> bool {
+    VIEWERS_VISIBLE.load(std::sync::atomic::Ordering::Relaxed)
+}
+pub(crate) fn set_viewers_visible(visible: bool) {
+    VIEWERS_VISIBLE.store(visible, std::sync::atomic::Ordering::Relaxed);
+}
+
 type Cfg = Arc<watch::Sender<Config>>;
 type Cmds = UnboundedSender<crate::engine::UiCmd>;
 
 const NAMES: [&str; 4] = ["Twitch", "YouTube", "Kick", "TikTok"];
+
+/// Compact a viewer count while retaining one decimal place where it helps.
+fn compact_viewers(n: u64) -> String {
+    for (unit, suffix) in [(1_000_000_000, "b"), (1_000_000, "m"), (1_000, "k")] {
+        if n >= unit {
+            let whole = n / unit;
+            let tenth = (n % unit) * 10 / unit;
+            return if whole < 100 && tenth != 0 {
+                format!("{whole}.{tenth}{suffix}")
+            } else {
+                format!("{whole}{suffix}")
+            };
+        }
+    }
+    n.to_string()
+}
+
+fn viewer_counter() -> Frame {
+    let mut frame = Frame::default();
+    frame.set_label_type(fltk::enums::LabelType::None);
+    frame.set_label_color(super::muted());
+    frame.set_label_size(11);
+    frame.draw(|f| {
+        let text = f.label();
+        draw::set_font(Font::Helvetica, 11);
+        let full = text.trim_end_matches('+');
+        let shown = if draw::width(&text) as i32 > (f.w() - 16).max(0) {
+            full.parse::<u64>().map_or_else(
+                |_| text.clone(),
+                |n| format!("{}{}", compact_viewers(n), if text.ends_with('+') { "+" } else { "" }),
+            )
+        } else {
+            text
+        };
+        let width = draw::width(&shown) as i32;
+        let x = (f.x() + f.w() - width - 20).max(f.x());
+        if let Some(mut icon) = icons::icon("users", f.label_color(), 12) {
+            icon.draw(x, f.y() + (f.h() - 12) / 2, 12, 12);
+        }
+        draw::set_draw_color(f.label_color());
+        draw::draw_text2(
+            &shown,
+            x + 16,
+            f.y(),
+            (f.x() + f.w() - x - 16).max(0),
+            f.h(),
+            Align::Left | Align::Inside | Align::Clip,
+        );
+    });
+    frame
+}
 /// Text size, emote height, and a line's least height.
 const TEXT: i32 = 14;
 const EMOTE: i32 = 28;
@@ -838,6 +914,11 @@ const CARD_GAP: i32 = 8;
 const CARD_PAD: i32 = 12;
 const CHOICE_H: i32 = 26;
 
+/// The same bounds are used to draw cards and shield the chat beneath them.
+fn card_contains(x: i32, y: i32, width: i32, top: i32, height: i32, px: i32, py: i32) -> bool {
+    (x + CARD_GAP..x + width - CARD_GAP).contains(&px) && (y + top..y + top + height).contains(&py)
+}
+
 impl Card<'_> {
     fn height(&self) -> i32 {
         match self {
@@ -898,7 +979,7 @@ fn acts(l: &Line, reply: bool) -> Vec<(Act, &'static str, &'static str)> {
     );
     let mut v = vec![(Act::Copy, "copy", tr("chat.act_copy"))];
     // An event isn't a message to answer, and a pane with no box under it has nowhere to answer.
-    if reply && may.reply && l.event.is_empty() {
+    if reply && p != "tiktok" && may.reply && l.event.is_empty() {
         v.insert(0, (Act::Reply, "corner-up-left", tr("chat.act_reply")));
     }
     if may.pin && !l.msg_id.is_empty() {
@@ -933,20 +1014,29 @@ pub(super) struct Pane {
     st: Rc<RefCell<State>>,
     cmds: Cmds,
     pub(super) on_reply: OnReply,
+    disconnected: Rc<Cell<bool>>,
 }
 
 impl Pane {
+    fn set_disconnected(&self, disconnected: bool) {
+        if self.disconnected.replace(disconnected) != disconnected {
+            self.area.clone().redraw();
+        }
+    }
     pub(super) fn new(cmds: &Cmds) -> (Flex, Pane) {
         let mut group = Flex::default().row();
         group.set_pad(0);
+        group.set_frame(FrameType::DownBox);
+        group.set_color(Color::Background2);
+        group.set_margin(2);
         let mut area = Frame::default();
-        area.set_frame(FrameType::DownBox);
+        area.set_frame(FrameType::FlatBox);
         area.set_color(Color::Background2);
         // A slider has no arrows: drawn over as a thin rounded bar, like the lists'.
         let mut bar = Slider::default();
         bar.draw(|b| {
             let (x, y, w, h) = (b.x(), b.y(), b.w(), b.h());
-            draw::draw_rect_fill(x, y, w, h, Color::Background);
+            draw::draw_rect_fill(x, y, w, h, Color::Background2);
             let max = b.maximum() - b.minimum();
             if max <= 0.0 {
                 return;
@@ -983,6 +1073,7 @@ impl Pane {
             })),
             cmds: cmds.clone(),
             on_reply: Rc::default(),
+            disconnected: Rc::default(),
         };
         area.draw({
             let p = p.clone();
@@ -1077,6 +1168,20 @@ impl Pane {
     }
 
     fn draw(&self, f: &mut Frame) {
+        if self.disconnected.get() {
+            draw::draw_box(f.frame(), f.x(), f.y(), f.w(), f.h(), f.color());
+            draw::set_font(Font::HelveticaBold, 13);
+            draw::set_draw_color(super::muted());
+            draw::draw_text2(
+                tr("chat.disconnected"),
+                f.x() + 4,
+                f.y(),
+                (f.w() - 8).max(1),
+                f.h(),
+                Align::Center | Align::Inside | Align::Clip,
+            );
+            return;
+        }
         let mut st = self.st.borrow_mut();
         self.settle(&mut st);
         draw::draw_box(f.frame(), f.x(), f.y(), f.w(), f.h(), f.color());
@@ -1099,7 +1204,7 @@ impl Pane {
             draw::pop_clip();
             return;
         }
-        let (ms, animate) = (now_ms(), SHOW.get().2);
+        let (ms, animate) = (now_ms(), SHOW.get().2 && !self.disconnected.get());
         // An animation frame redraws only the moving emotes (the text is most of the work): it damages
         // just their squares. Anything else damages it all, and finds the moving emotes again.
         let partial = f.damage_type() == Damage::User1;
@@ -1270,7 +1375,12 @@ impl Pane {
         let ms = epoch_ms();
         let mut counting = false;
         for (card, top) in self.cards(st) {
-            let (x, y, w, h) = (f.x() + 8, f.y() + top, f.w() - 28, card.height());
+            let (x, y, w, h) = (
+                f.x() + CARD_GAP,
+                f.y() + top,
+                (f.w() - 2 * CARD_GAP).max(0),
+                card.height(),
+            );
             let platform = match &card {
                 Card::Pin(p) => p.platform.as_str(),
                 Card::Poll(p) => p.platform.as_str(),
@@ -1302,12 +1412,17 @@ impl Pane {
                     draw::set_font(Font::Helvetica, 12);
                     draw::set_draw_color(muted);
                     let ww = draw::width(&when) as i32;
-                    draw::draw_text2(&when, x + w - ww - CARD_PAD, y + CARD_PAD, ww, 16, Align::Left);
+                    draw::draw_text2(&when, x + w - ww - CARD_PAD - 24, y + CARD_PAD, ww, 16, Align::Left);
+                    if p.platform == "twitch" && crate::roles::get(&p.platform).0.moderates() && !p.msg_id.is_empty() {
+                        if let Some(mut i) = icons::icon("ellipsis", muted, 16) {
+                            i.draw(x + w - CARD_PAD - 16, y + CARD_PAD, 16, 16);
+                        }
+                    }
                     draw::draw_text2(
                         &who,
                         ix + 20,
                         y + CARD_PAD,
-                        (room - ww - 28).max(0),
+                        (room - ww - 52).max(0),
                         16,
                         Align::Left | Align::Clip,
                     );
@@ -1410,9 +1525,10 @@ impl Pane {
     /// The pin under the pointer, if any.
     fn pin_at(&self, f: &Frame) -> Option<Pin> {
         let st = self.st.borrow();
-        let dy = app::event_y() - f.y();
         self.cards(&st).into_iter().find_map(|(c, top)| match c {
-            Card::Pin(p) if dy >= top && dy < top + c.height() => Some(p.clone()),
+            Card::Pin(p) if card_contains(f.x(), f.y(), f.w(), top, c.height(), app::event_x(), app::event_y()) => {
+                Some(p.clone())
+            }
             _ => None,
         })
     }
@@ -1590,6 +1706,9 @@ impl Pane {
     }
 
     fn handle(&self, f: &mut Frame, ev: Event) -> bool {
+        if self.disconnected.get() {
+            return false;
+        }
         if !LIMITS.get().save_history {
             return false;
         }
@@ -1599,6 +1718,26 @@ impl Pane {
         match ev {
             Event::Enter => true,
             Event::Move => {
+                let over_card = {
+                    let st = self.st.borrow();
+                    self.cards(&st).iter().any(|(card, top)| {
+                        card_contains(f.x(), f.y(), f.w(), *top, card.height(), app::event_x(), app::event_y())
+                    })
+                };
+                if over_card {
+                    let mut st = self.st.borrow_mut();
+                    let changed = st.hover.take().is_some() | st.act.take().is_some();
+                    if changed {
+                        f.redraw();
+                    }
+                    drop(st);
+                    f.set_tooltip("");
+                    tip::point(&self.cmds, f, None);
+                    if let Some(mut w) = f.window() {
+                        w.set_cursor(fltk::enums::Cursor::Default);
+                    }
+                    return true;
+                }
                 {
                     let mut st = self.st.borrow_mut();
                     // On its action bar (which may stick out over the next line), the line stays.
@@ -1635,30 +1774,49 @@ impl Pane {
                 }
                 true
             }
-            // A pin: right click unpins it; a click on it does nothing else.
+            // The menu is also available by right-clicking the card.
             Event::Push if self.pin_at(f).is_some() => {
                 let pin = self.pin_at(f).expect("a pin");
-                if super::right_button() {
+                let menu_click = app::event_x() >= f.x() + f.w() - 64;
+                if super::right_button() || menu_click {
                     use fltk::menu::{MenuButton, MenuFlag};
                     let mut m = super::menu_at_pointer();
-                    let cmds = self.cmds.clone();
-                    let i = m.add(
-                        tr("chat.act_unpin"),
-                        fltk::enums::Shortcut::None,
-                        MenuFlag::Normal,
-                        move |_| {
-                            let l = Line {
-                                platform: pin.platform.clone(),
-                                msg_id: pin.msg_id.clone(),
-                                ..Default::default()
-                            };
-                            tell(&cmds, move |e| e.moderate(&l, Moderate::Unpin));
-                        },
-                    );
-                    if let Some(mut item) = m.at(i) {
-                        item.add_image(icons::before_label("pin-off", super::muted(), 14), true);
+                    let (role, _) = crate::roles::get(&pin.platform);
+                    if pin.platform == "twitch" && role.moderates() && !pin.msg_id.is_empty() {
+                        let l = Line {
+                            platform: pin.platform.clone(),
+                            msg_id: pin.msg_id.clone(),
+                            ..Default::default()
+                        };
+                        let cmds = self.cmds.clone();
+                        let unpin = l.clone();
+                        let i = m.add(
+                            tr("chat.act_unpin"),
+                            fltk::enums::Shortcut::None,
+                            MenuFlag::Normal,
+                            move |_| {
+                                let l = unpin.clone();
+                                tell(&cmds, move |e| e.moderate(&l, Moderate::Unpin));
+                            },
+                        );
+                        if let Some(mut item) = m.at(i) {
+                            item.add_image(icons::before_label("pin-off", super::muted(), 14), true);
+                        }
+                        let pane = self.clone();
+                        if pin.platform == "twitch" {
+                            m.add(
+                                tr("chat.pin_change_duration"),
+                                fltk::enums::Shortcut::None,
+                                MenuFlag::Normal,
+                                move |_| {
+                                    pane.run(&l, Act::Mod(Moderate::Pin(None)));
+                                },
+                            );
+                        }
                     }
-                    m.popup();
+                    if m.size() > 0 {
+                        m.popup();
+                    }
                     MenuButton::delete(m);
                 }
                 true
@@ -1782,6 +1940,9 @@ impl Pane {
         st.width = -1;
         self.trim(&mut st);
         self.pulse_soon(&mut st, 0);
+        if st.ages {
+            KEPT.store(st.lines.len(), std::sync::atomic::Ordering::Relaxed);
+        }
         drop(st);
         self.area.clone().redraw();
     }
@@ -1812,6 +1973,8 @@ impl Pane {
         st.lines.shrink_to_fit();
         st.laid.shrink_to_fit();
         st.born.shrink_to_fit();
+        st.pins.shrink_to_fit();
+        st.polls.shrink_to_fit();
     }
 
     /// Lines over the limits go (the oldest first), and those past their lifetime.
@@ -1967,25 +2130,75 @@ struct ChatColumn {
     head_logo: Frame,
     head_pic: Frame,
     head_name: Frame,
+    viewers: Frame,
     pane: Pane,
+    chat_stack: Wizard,
+    chat_group: Flex,
+    down_group: Flex,
     acct_btn: Button,
     input: Input,
     target_plat: Rc<Cell<usize>>,
     /// The chat box and what it answers (hidden in the all-platforms view).
     bar: Flex,
+    down_bar: Flex,
+    read_only: Frame,
     set_reply: SetReply,
     /// What is wrong with the chat (the stream ended, not connected), with what to do about it.
     notice: Flex,
     notice_icon: Frame,
+    notice_title_row: Flex,
+    notice_logo: Frame,
     notice_title: Frame,
-    notice_desc: Frame,
     reconnect_btn: Button,
+    hide_btn: Button,
     notice_plat: Rc<Cell<Option<&'static str>>>,
+    notice_targets: Rc<RefCell<Vec<&'static str>>>,
+    notice_group: Rc<Cell<u8>>,
     /// What the notice shows now, so it is only laid out again when that changes.
     notice_last: Rc<Cell<Shown>>,
 }
 
 impl ChatColumn {
+    fn show_viewers(&self, count: Option<u64>, state: ChatState, ended: bool) {
+        let mut frame = self.viewers.clone();
+        let show = !ended && (state == ChatState::Down || (state == ChatState::Connected && count.is_some()));
+        if frame.visible() != show {
+            let mut head = self.head.clone();
+            if show {
+                frame.show();
+            } else {
+                frame.hide();
+            }
+            head.fixed(&frame, if show { 40 } else { 0 });
+            head.layout();
+        }
+        let color = if state == ChatState::Down {
+            Color::color_average(super::muted(), Color::Background2, 0.7)
+        } else {
+            super::muted()
+        };
+        if frame.label_color() != color {
+            frame.set_label_color(color);
+        }
+        let label = if !ended && state == ChatState::Down && count.is_none() && frame.label().parse::<u64>().is_ok() {
+            frame.label()
+        } else {
+            count.map_or_else(|| "?".into(), |n| n.to_string())
+        };
+        if frame.label() != label {
+            frame.set_label(&label);
+        }
+        frame.set_tooltip(&format!(
+            "{}: {}",
+            tr("chat.viewers"),
+            if label == "?" {
+                tr("chat.viewers_unavailable").to_string()
+            } else {
+                label
+            }
+        ));
+        frame.redraw();
+    }
     fn new(cfg: &Cfg, cmds: &Cmds, fixed_plat: Option<usize>, go_accounts: Rc<dyn Fn()>) -> Self {
         let mut col = Flex::default().column();
         col.set_pad(4);
@@ -1996,15 +2209,48 @@ impl ChatColumn {
         head.fixed(&head_logo, 20);
         let head_pic = Frame::default();
         head.fixed(&head_pic, 22);
-        let mut head_name = Frame::default()
-            .with_align(Align::Left | Align::Inside | Align::Clip)
-            .ellipsis();
+        let mut head_name = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
         head_name.set_label_font(Font::HelveticaBold);
+        head_name.set_label_type(fltk::enums::LabelType::None);
+        head_name.draw(|f| {
+            let label = f.label().replace("@@", "@");
+            draw::set_font(f.label_font(), f.label_size());
+            if draw::width(&label) <= f64::from(f.w().max(0)) {
+                draw::set_draw_color(f.label_color());
+                draw::draw_text2(
+                    &label,
+                    f.x(),
+                    f.y(),
+                    f.w(),
+                    f.h(),
+                    Align::Left | Align::Inside | Align::Clip,
+                );
+            }
+        });
+        let viewers = viewer_counter();
+        head.fixed(&viewers, 40);
         head.end();
         col.fixed(&head, 24);
 
-        let (_pane_group, pane) = Pane::new(cmds);
+        let mut chat_stack = Wizard::default();
+        let (chat_group, pane) = Pane::new(cmds);
         pane.ages();
+        let mut down_group = Flex::default().column();
+        down_group.set_frame(FrameType::DownBox);
+        down_group.set_color(Color::Background2);
+        let _empty_chat = Frame::default();
+        down_group.end();
+        chat_stack.end();
+        chat_stack.resize_callback({
+            let (mut chat, mut down) = (chat_group.clone(), down_group.clone());
+            move |_, x, y, w, h| {
+                chat.resize(x, y, w, h);
+                chat.layout();
+                down.resize(x, y, w, h);
+                down.layout();
+            }
+        });
+        chat_stack.set_current_widget(&chat_group);
 
         // "Replying to @name: text" with an X, while answering one.
         let mut replying = Flex::default().row();
@@ -2026,33 +2272,37 @@ impl ChatColumn {
         col.fixed(&replying, 0);
         replying.hide();
 
-        // Prominent notice card for stream ended or disconnection.
+        // A compact row for chat connection actions.
         let mut notice = Flex::default().row();
-        notice.set_pad(10);
+        notice.set_pad(3);
+        notice.set_margin(3);
         notice.set_frame(FrameType::RFlatBox);
         notice.set_color(Color::Background2);
+        let mut notice_title_row = Flex::default().row();
         let notice_icon = Frame::default();
-        notice.fixed(&notice_icon, 28);
-        let mut text_col = Flex::default().column();
-        text_col.set_pad(2);
+        notice_title_row.fixed(&notice_icon, 26);
+        let notice_logo = Frame::default();
+        notice_title_row.fixed(&notice_logo, 20);
         let mut notice_title = Frame::default()
             .with_align(Align::Left | Align::Inside | Align::Clip)
             .ellipsis();
         notice_title.set_label_font(Font::HelveticaBold);
         notice_title.set_label_size(13);
-        let mut notice_desc = Frame::default()
-            .with_align(Align::Left | Align::Inside | Align::Clip)
-            .ellipsis();
-        notice_desc.set_label_font(Font::Helvetica);
-        notice_desc.set_label_size(11);
-        notice_desc.set_label_color(super::muted());
-        text_col.end();
-        let mut btn_col = Flex::default().column();
-        btn_col.set_pad(4);
-        let mut reconnect_btn = button(&mut btn_col, tr("chat.reconnect"), 88);
-        let mut hide_btn = button(&mut btn_col, tr("chat.hide_chat"), 88);
-        btn_col.end();
-        notice.fixed(&btn_col, 92);
+        notice_title_row.end();
+        let mut btn_row = Flex::default().row();
+        btn_row.set_pad(4);
+        let mut reconnect_btn = Button::default().with_label(tr("chat.reconnect"));
+        let mut hide_btn = Button::default().with_label(tr("chat.hide_chat"));
+        reconnect_btn.set_label("");
+        reconnect_btn.set_image(icons::icon("refresh-cw", super::button_ink(), 16));
+        reconnect_btn.set_align(Align::Center | Align::Inside | Align::ImageNextToText);
+        reconnect_btn.set_tooltip(tr("chat.reconnect"));
+        hide_btn.set_label("");
+        hide_btn.set_image(icons::icon("eye-off", super::button_ink(), 16));
+        hide_btn.set_align(Align::Center | Align::Inside | Align::ImageNextToText);
+        hide_btn.set_tooltip(tr("chat.hide_chat"));
+        btn_row.end();
+        notice.fixed(&btn_row, 52);
         notice.end();
         col.fixed(&notice, 0);
         notice.hide();
@@ -2081,6 +2331,67 @@ impl ChatColumn {
 
         bar.end();
         col.fixed(&bar, ROW + 4);
+        let mut read_only = Frame::default().with_label(tr("chat.tiktok_read_only"));
+        read_only.set_label_color(super::muted());
+        read_only.set_tooltip(tr("chat.tiktok_read_only"));
+        read_only.set_label_type(fltk::enums::LabelType::None);
+        read_only.draw(|f| {
+            let text = f.label();
+            draw::set_font(f.label_font(), f.label_size());
+            let fits = draw::width(&text) + 26.0 <= f64::from(f.w());
+            let x = if fits {
+                f.x() + 4
+            } else {
+                f.x() + (f.w() - 16).max(0) / 2
+            };
+            if let Some(mut icon) = icons::icon("ban", Color::from_rgb(0xf0, 0x6a, 0x6a), 16) {
+                icon.draw(x, f.y() + (f.h() - 16) / 2, 16, 16);
+            }
+            if fits {
+                draw::set_draw_color(f.label_color());
+                draw::draw_text2(
+                    &text,
+                    x + 22,
+                    f.y(),
+                    f.w() - 26,
+                    f.h(),
+                    Align::Left | Align::Inside | Align::Clip,
+                );
+            }
+        });
+        col.fixed(&read_only, 0);
+        read_only.hide();
+        let mut down_row = Flex::default().row();
+        down_row.set_pad(2);
+        down_row.set_margin(2);
+        let mut down_label = Frame::default().with_label(tr("chat.disconnected"));
+        down_label.set_label_size(10);
+        down_label.set_label_color(super::muted());
+        down_label.set_align(Align::Right | Align::Inside | Align::Clip);
+        let mut down_reconnect = Button::default();
+        down_reconnect.set_image(icons::icon("refresh-cw", super::button_ink(), 16));
+        down_reconnect.set_align(Align::Center | Align::Inside | Align::ImageNextToText);
+        down_reconnect.set_tooltip(tr("chat.reconnect"));
+        down_row.fixed(&down_reconnect, 22);
+        let mut down_hide = Button::default();
+        down_hide.set_image(icons::icon("eye-off", super::button_ink(), 16));
+        down_hide.set_align(Align::Center | Align::Inside | Align::ImageNextToText);
+        down_hide.set_tooltip(tr("chat.hide_chat"));
+        down_row.fixed(&down_hide, 22);
+        down_row.end();
+        down_row.resize_callback({
+            let (mut label, mut reconnect, mut hide) = (down_label.clone(), down_reconnect.clone(), down_hide.clone());
+            move |_, x, y, w, h| {
+                draw::set_font(Font::Helvetica, 10);
+                let label_w = (draw::width(&label.label()).ceil() as i32 + 8).min((w - 52).max(0));
+                let left = x + (w - label_w - 48).max(0) / 2;
+                label.resize(left, y, label_w, h);
+                reconnect.resize(left + label_w + 2, y + (h - 22) / 2, 22, 22);
+                hide.resize(left + label_w + 26, y + (h - 22) / 2, 22, 22);
+            }
+        });
+        col.fixed(&down_row, 0);
+        down_row.hide();
         col.end();
 
         let init_idx = fixed_plat.unwrap_or_else(|| {
@@ -2133,32 +2444,69 @@ impl ChatColumn {
             head_logo,
             head_pic,
             head_name,
+            viewers,
             pane,
+            chat_stack,
+            chat_group,
+            down_group,
             acct_btn: acct_btn.clone(),
             input: input.clone(),
             target_plat: target_plat.clone(),
             bar: bar.clone(),
+            down_bar: down_row,
+            read_only,
             set_reply: set_reply.clone(),
             notice: notice.clone(),
             notice_icon: notice_icon.clone(),
+            notice_title_row: notice_title_row.clone(),
+            notice_logo: notice_logo.clone(),
             notice_title: notice_title.clone(),
-            notice_desc: notice_desc.clone(),
             reconnect_btn: reconnect_btn.clone(),
+            hide_btn: hide_btn.clone(),
             notice_plat: Rc::default(),
+            notice_targets: Rc::default(),
+            notice_group: Rc::default(),
             notice_last: Rc::default(),
         };
         reconnect_btn.set_callback({
-            let (cmds, at) = (cmds.clone(), me.notice_plat.clone());
+            let (cmds, at) = (cmds.clone(), me.notice_targets.clone());
             move |_| {
-                if let Some(p) = at.get() {
-                    tell(&cmds, move |e| e.chat_reconnect(p));
+                let targets = at.borrow().clone();
+                tell(&cmds, move |e| {
+                    for p in targets {
+                        e.chat_reconnect(p);
+                    }
+                });
+            }
+        });
+        down_reconnect.set_callback({
+            let (cmds, at) = (cmds.clone(), me.notice_targets.clone());
+            move |_| {
+                let targets = at.borrow().clone();
+                tell(&cmds, move |e| {
+                    for p in targets {
+                        e.chat_reconnect(p);
+                    }
+                });
+            }
+        });
+        down_hide.set_callback({
+            let (cfg, at) = (cfg.clone(), me.notice_targets.clone());
+            move |_| {
+                for p in at.borrow().iter().copied() {
+                    cfg.send_modify(|c| {
+                        if !c.window.chat_hidden.iter().any(|h| h == p) {
+                            c.window.chat_hidden.push(p.to_string());
+                        }
+                    });
+                    crate::ui::changed();
                 }
             }
         });
         hide_btn.set_callback({
-            let (cfg, at) = (cfg.clone(), me.notice_plat.clone());
+            let (cfg, at) = (cfg.clone(), me.notice_targets.clone());
             move |_| {
-                if let Some(p) = at.get() {
+                for p in at.borrow().iter().copied() {
                     cfg.send_modify(|c| {
                         if !c.window.chat_hidden.iter().any(|h| h == p) {
                             c.window.chat_hidden.push(p.to_string());
@@ -2179,14 +2527,18 @@ impl ChatColumn {
                 }
                 let p_idx = target_plat.get().min(3);
                 let plat = PLATFORMS[p_idx];
-                if !crate::engine::can_send(&cfg.borrow(), plat) {
+                if !crate::engine::can_send(&cfg.borrow(), plat)
+                    || !query(&cmds, move |e| e.chat_connected(plat)).unwrap_or(false)
+                {
                     return;
                 }
                 let want_broadcaster = cfg.borrow().window.chat_as_broadcaster.iter().any(|s| s == plat);
                 let use_bot = !want_broadcaster;
                 let to = reply.borrow_mut().take();
                 tell(&cmds, move |e| {
-                    let _ = e.send_chat_list(&[plat], &text, use_bot, true, to.as_ref());
+                    if e.chat_connected(plat) {
+                        let _ = e.send_chat_list(&[plat], &text, use_bot, true, to.as_ref());
+                    }
                 });
                 set_reply(None);
                 input.clone().set_value("");
@@ -2203,10 +2555,16 @@ impl ChatColumn {
         me.input.clone().handle({
             let s = do_send;
             let target_plat = target_plat.clone();
+            let cmds = cmds.clone();
             move |i, ev| {
                 let plat = PLATFORMS[target_plat.get().min(3)];
                 // Twitch's and Kick's chat commands, listed as they are typed.
-                if matches!(plat, "twitch" | "kick") {
+                if matches!(ev, Event::KeyDown | Event::KeyUp | Event::Unfocus) {
+                    let users = if ev == Event::KeyUp && i.value().contains('@') {
+                        query(&cmds, move |e| e.chatters(plat)).unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
                     match ev {
                         Event::KeyDown if suggest.key(i, plat) => return true,
                         Event::KeyUp
@@ -2215,7 +2573,7 @@ impl ChatColumn {
                                 Key::Escape | Key::Tab | Key::Up | Key::Down | Key::Enter | Key::ShiftL | Key::ShiftR
                             ) =>
                         {
-                            suggest.update(i, plat);
+                            suggest.update(i, plat, &users);
                         }
                         Event::Unfocus => suggest.hide(),
                         _ => {}
@@ -2267,16 +2625,35 @@ impl ChatColumn {
 
     /// Shows what is wrong with `platform`'s chat (`state`), or takes the notice away.
     fn show_notice(&self, platform: Option<&'static str>, state: ChatState) {
-        let now = Some((platform.filter(|_| state != ChatState::Live), state));
+        self.notice_targets
+            .replace(platform.filter(|_| state != ChatState::Connected).into_iter().collect());
+        let mut stack = self.chat_stack.clone();
+        if self.pane.disconnected.get() {
+            if stack.index() != Some(1) {
+                stack.set_current_widget(&self.down_group);
+            }
+        } else if stack.index() != Some(0) {
+            stack.set_current_widget(&self.chat_group);
+        }
+        let now = Some((platform.filter(|_| state != ChatState::Connected), state));
         if self.notice_last.get() == now
-            || (state == ChatState::Live && self.notice_last.get().is_none() && !self.notice.visible())
+            || (state == ChatState::Connected && self.notice_last.get().is_none() && !self.notice.visible())
         {
             return;
         }
         self.notice_last.set(now);
+        self.notice_group.set(0);
         let mut notice = self.notice.clone();
         let mut col = self.col.clone();
-        self.notice_plat.set(platform.filter(|_| state != ChatState::Live));
+        self.notice_plat.set(platform.filter(|_| state != ChatState::Connected));
+        if self.pane.disconnected.get() {
+            if notice.visible() {
+                notice.hide();
+                col.fixed(&notice, 0);
+                col.layout();
+            }
+            return;
+        }
         let Some(p) = self.notice_plat.get() else {
             if notice.visible() {
                 notice.hide();
@@ -2286,39 +2663,72 @@ impl ChatColumn {
             return;
         };
         let name = NAMES[PLATFORMS.iter().position(|x| *x == p).unwrap_or(0)];
-        let (title_key, desc_key, icon) = match state {
-            ChatState::Ended => ("chat.state_ended_title", "chat.state_ended_desc", "circle-alert"),
-            ChatState::Standby => ("chat.state_standby_title", "chat.state_standby_desc", "info"),
-            _ => ("chat.state_down_title", "chat.state_down_desc", "triangle-alert"),
-        };
+        let title_key = "chat.state_down_title";
         let mut title = self.notice_title.clone();
-        title.set_label(&trf(title_key, &[("platform", name)]));
+        let mut title_row = self.notice_title_row.clone();
+        let mut logo = self.notice_logo.clone();
+        if state == ChatState::Down {
+            title.set_label(tr("chat.disconnected"));
+            logo.set_image(img::logo(name, 14));
+            logo.show();
+            title_row.fixed(&logo, 20);
+            title.set_tooltip(name);
+        } else {
+            logo.hide();
+            title_row.fixed(&logo, 0);
+            title.set_label(&trf(title_key, &[("platform", name)]));
+            title.set_tooltip("");
+        }
+        title_row.layout();
         title.set_label_color(Color::Foreground);
-        let mut desc = self.notice_desc.clone();
-        desc.set_label(&trf(desc_key, &[("platform", name)]));
         let mut ic = self.notice_icon.clone();
         ic.set_image(icons::icon(
-            icon,
-            if state == ChatState::Down {
-                Color::from_rgb(0xf0, 0xb4, 0x29)
-            } else {
-                super::muted()
-            },
-            24,
+            if state == ChatState::Down { "unplug" } else { "info" },
+            super::muted(),
+            22,
         ));
         let mut re = self.reconnect_btn.clone();
-        // The stream ending isn't a lost connection: nothing to reconnect.
-        if state == ChatState::Ended {
-            re.hide();
-        } else {
-            re.show();
-        }
+        re.show();
         if !notice.visible() {
             notice.show();
         }
-        col.fixed(&notice, 54);
+        col.fixed(&notice, 32);
         col.layout();
         notice.redraw();
+    }
+
+    /// Group disconnected platforms in the combined view, including both actions.
+    fn show_notice_group(&self, platforms: Vec<&'static str>) {
+        let mask = platforms.iter().fold(0u8, |m, p| {
+            m | PLATFORMS.iter().position(|x| x == p).map_or(0, |i| 1 << i)
+        });
+        self.notice_targets.replace(platforms.clone());
+        if self.notice_group.replace(mask) == mask {
+            return;
+        }
+        let mut logo = self.notice_logo.clone();
+        let mut row = self.notice_title_row.clone();
+        logo.set_image(img::platform_logos(&platforms, 14));
+        row.fixed(&logo, (platforms.len() as i32 * 18).max(0));
+        row.layout();
+        self.notice_title.clone().set_tooltip(
+            &platforms
+                .iter()
+                .map(|p| img::platform_name(p))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        self.reconnect_btn.clone().set_tooltip(if platforms.len() > 1 {
+            tr("chat.reconnect_all")
+        } else {
+            tr("chat.reconnect")
+        });
+        self.hide_btn.clone().set_tooltip(if platforms.len() > 1 {
+            tr("chat.hide_chats")
+        } else {
+            tr("chat.hide_chat")
+        });
+        self.notice.clone().redraw();
     }
 
     fn refresh_sender(&self, cfg: &Cfg, cmds: &Cmds) {
@@ -2327,13 +2737,18 @@ impl ChatColumn {
         let (mut logo, mut face, mut name) = (self.head_logo.clone(), self.head_pic.clone(), self.head_name.clone());
         let (room_name, room_pic) = room(cmds, cfg, PLATFORMS[p_idx], 22);
         logo.set_image(img::logo(plat_name, 18));
-        face.set_image(room_pic);
+        if let Some(pic) = room_pic {
+            face.set_image(Some(pic));
+        } else {
+            face.set_image(icons::icon("circle-user-round", super::muted(), 18));
+        }
         let shown = if room_name.is_empty() {
             plat_name.to_string()
         } else {
             format!("{plat_name}: {room_name}")
         };
         name.set_label(&shown.replace('@', "@@"));
+        name.set_tooltip(&shown);
         let (use_bot, sender_name, pic) = effective_sender_role(cfg, cmds, p_idx);
         let mut btn = self.acct_btn.clone();
         match pic {
@@ -2346,7 +2761,33 @@ impl ChatColumn {
             tr("chat.role_broadcaster")
         };
         let plat = PLATFORMS[p_idx];
-        let can_send_plat = crate::engine::can_send(&cfg.borrow(), plat);
+        let connected = query(cmds, move |e| e.chat_connected(plat)).unwrap_or(false);
+        let can_send_plat = crate::engine::can_send(&cfg.borrow(), plat) && connected;
+        let mut bar = self.bar.clone();
+        let mut space = self.down_bar.clone();
+        let mut read_only = self.read_only.clone();
+        let show_read_only = connected && plat == "tiktok";
+        let show_bar = connected && !show_read_only;
+        if show_bar {
+            bar.show();
+        } else {
+            bar.hide();
+        }
+        if show_read_only {
+            read_only.show();
+        } else {
+            read_only.hide();
+        }
+        if connected {
+            space.hide();
+        } else {
+            space.show();
+        }
+        let mut col = self.col.clone();
+        col.fixed(&bar, if show_bar { ROW + 4 } else { 0 });
+        col.fixed(&read_only, if show_read_only { ROW + 4 } else { 0 });
+        col.fixed(&space, if connected { 0 } else { ROW + 4 });
+        col.layout();
         let tip = if plat == "tiktok" {
             tr("chat.tiktok_read_only_tip").to_string()
         } else {
@@ -2400,6 +2841,7 @@ pub struct Chat {
     cfg: Cfg,
     cmds: Cmds,
     view: Choice,
+    viewers: Frame,
     /// The set-up platforms (indexes in PLATFORMS), as the view list shows them.
     plats: Rc<RefCell<Vec<usize>>>,
     /// All together / single platform column, plus one individual column per platform for side by side.
@@ -2407,6 +2849,7 @@ pub struct Chat {
     side: Vec<ChatColumn>,
     client_gen: u64,
     seen: u64,
+    combined_connections: [bool; 4],
 }
 
 /// The last chat line the page took in (its `seq`), for dev mode's `chat` command.
@@ -2443,6 +2886,16 @@ impl Chat {
             return;
         }
         self.refresh_senders();
+        let connected = if self.view.value() == 0 {
+            query(&self.cmds, |e| PLATFORMS.map(|p| e.chat_connected(p))).unwrap_or([false; 4])
+        } else {
+            [true; 4]
+        };
+        if self.view.value() == 0 && self.combined_connections != connected {
+            self.combined_connections = connected;
+            self.client_gen = u64::MAX;
+            self.seen = 0;
+        }
         let (cgen, seen) = (self.client_gen, self.seen);
         let Some((new_gen, full, lines)) = query(&self.cmds, move |e| e.chat_sync(cgen, seen)) else {
             return;
@@ -2454,9 +2907,20 @@ impl Chat {
         let v = self.view.value();
         self.show_pins(v);
         let hidden = self.cfg.borrow().window.chat_hidden.clone();
-        let lines: Vec<Line> = lines.into_iter().filter(|l| !hidden.contains(&l.platform)).collect();
+        let last_seq = lines.last().map_or(self.seen, |l| l.seq);
+        let lines: Vec<Line> = lines
+            .into_iter()
+            .filter(|l| {
+                !hidden.contains(&l.platform)
+                    && (v != 0
+                        || PLATFORMS
+                            .iter()
+                            .position(|p| *p == l.platform)
+                            .is_none_or(|i| connected[i]))
+            })
+            .collect();
         if full {
-            self.seen = lines.last().map_or(0, |l| l.seq);
+            self.seen = last_seq;
             match v {
                 1 => {
                     for (i, col) in self.side.iter().enumerate() {
@@ -2487,6 +2951,7 @@ impl Chat {
             }
             self.seen = l.seq;
         }
+        self.seen = last_seq;
     }
 
     /// Each pane gets the pins of the chats it shows (Twitch is asked, now and then, for pins made on
@@ -2509,8 +2974,28 @@ impl Chat {
                 }
             }
             0 => {
-                self.main.pane.set_pins(pins.clone());
-                self.main.pane.set_polls(polls.clone());
+                let connected = self.combined_connections;
+                self.main.pane.set_pins(
+                    pins.into_iter()
+                        .filter(|p| {
+                            PLATFORMS
+                                .iter()
+                                .position(|x| *x == p.platform)
+                                .is_none_or(|i| connected[i])
+                        })
+                        .collect(),
+                );
+                self.main.pane.set_polls(
+                    polls
+                        .into_iter()
+                        .filter(|p| {
+                            PLATFORMS
+                                .iter()
+                                .position(|x| *x == p.platform)
+                                .is_none_or(|i| connected[i])
+                        })
+                        .collect(),
+                );
             }
             _ => {
                 self.main.pane.set_pins(self.shown().map(of).unwrap_or_default());
@@ -2519,31 +3004,95 @@ impl Chat {
         }
     }
 
-    /// Each column says what is wrong with the chat it shows (the stream ended, not connected).
+    /// Each column follows the connection state of the chat it shows.
     fn refresh_notices(&self) {
         let states: Vec<ChatState> =
             query(&self.cmds, |e| PLATFORMS.map(|p| e.chat_state(p)).to_vec()).unwrap_or_default();
-        let state = |i: usize| states.get(i).copied().unwrap_or(ChatState::Live);
+        let state = |i: usize| states.get(i).copied().unwrap_or(ChatState::Connected);
         if self.view.value() == 1 {
             for (i, col) in self.side.iter().enumerate() {
+                col.pane.set_disconnected(state(i) == ChatState::Down);
                 col.show_notice(Some(PLATFORMS[i]), state(i));
             }
-            self.main.show_notice(None, ChatState::Live);
+            self.main.pane.set_disconnected(false);
+            self.main.show_notice(None, ChatState::Connected);
             return;
         }
         let shown: Vec<usize> = match self.shown().and_then(|s| PLATFORMS.iter().position(|p| *p == s)) {
             Some(i) => vec![i],
             None => self.plats.borrow().clone(),
         };
-        // The first one in trouble.
-        match shown.iter().copied().find(|i| state(*i) != ChatState::Live) {
-            Some(i) => self.main.show_notice(Some(PLATFORMS[i]), state(i)),
-            None => self.main.show_notice(None, ChatState::Live),
+        self.main.pane.set_disconnected(
+            self.shown()
+                .and_then(|p| PLATFORMS.iter().position(|x| *x == p))
+                .is_some_and(|i| state(i) == ChatState::Down),
+        );
+        let disconnected: Vec<&'static str> = shown
+            .iter()
+            .copied()
+            .filter(|i| state(*i) == ChatState::Down)
+            .map(|i| PLATFORMS[i])
+            .collect();
+        match disconnected.first() {
+            Some(p) => {
+                self.main.show_notice(Some(*p), ChatState::Down);
+                if self.shown().is_none() {
+                    self.main.show_notice_group(disconnected);
+                }
+            }
+            None => self.main.show_notice(None, ChatState::Connected),
         }
     }
 
     fn refresh_senders(&self) {
         self.refresh_notices();
+        let (counts, states, ended) = query(&self.cmds, |e| {
+            (
+                e.chat_viewers(),
+                PLATFORMS.map(|p| e.chat_state(p)),
+                PLATFORMS.map(|p| e.chat_stream_ended(p)),
+            )
+        })
+        .unwrap_or(([None; 4], [ChatState::Down; 4], [false; 4]));
+        let shown = self.plats.borrow();
+        let format_count = |i: usize| counts[i].map_or_else(|| "?".to_string(), |n| n.to_string());
+        for (i, col) in self.side.iter().enumerate() {
+            col.show_viewers(counts[i], states[i], ended[i]);
+        }
+        if let Some(i) = self.shown().and_then(|s| PLATFORMS.iter().position(|p| *p == s)) {
+            self.main.show_viewers(counts[i], states[i], ended[i]);
+        }
+        let mut total = self.viewers.clone();
+        let known: Vec<_> = shown.iter().filter_map(|i| counts[*i]).collect();
+        let label = if known.is_empty() {
+            "?".to_string()
+        } else if known.len() < shown.len() {
+            format!("{}+", known.iter().sum::<u64>())
+        } else {
+            known.iter().sum::<u64>().to_string()
+        };
+        total.set_label(&label);
+        total.set_tooltip(
+            &shown
+                .iter()
+                .map(|i| format!("{}: {}", NAMES[*i], format_count(*i)))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        if self.view.value() == 0 && shown.iter().any(|i| !ended[*i]) {
+            let color = if shown.iter().all(|i| states[*i] != ChatState::Connected) {
+                Color::color_average(super::muted(), Color::Background2, 0.7)
+            } else {
+                super::muted()
+            };
+            if total.label_color() != color {
+                total.set_label_color(color);
+            }
+            total.show();
+        } else {
+            total.hide();
+        }
+        drop(shown);
         if self.view.value() == 1 {
             for col in &self.side {
                 col.refresh_sender(&self.cfg, &self.cmds);
@@ -2645,6 +3194,12 @@ impl Chat {
             (self.main.set_reply)(None);
             bar.hide();
             self.main.col.fixed(&bar, 0);
+            let mut read_only = self.main.read_only.clone();
+            read_only.hide();
+            self.main.col.fixed(&read_only, 0);
+            let mut space = self.main.down_bar.clone();
+            space.hide();
+            self.main.col.fixed(&space, 0);
             let (cfg, cmds) = (self.cfg.clone(), self.cmds.clone());
             self.main.pane.on_reply.replace(Some(Rc::new(move |l: &Line| {
                 message_all_popup(&cfg, &cmds, Some(l.clone()))
@@ -2677,6 +3232,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
     let l = Frame::default().with_label(tr("chat.show"));
     top.fixed(&l, 46);
     let mut view = super::fit::choice();
+    view.set_tooltip(tr("chat.view_label"));
     top.fixed(&view, 136);
     let mut hint = Frame::default()
         .with_label(tr("chat.hint"))
@@ -2684,6 +3240,9 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
         .ellipsis();
     hint.set_label_size(12);
     hint.set_label_color(super::muted());
+
+    let viewers = viewer_counter();
+    top.fixed(&viewers, 58);
 
     // Discrete "Message all" button with broadcast icon
     let mut msg_all = Button::default().with_label(tr("chat.message_all_btn"));
@@ -2740,11 +3299,13 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
         cfg: cfg.clone(),
         cmds: cmds.clone(),
         view: view.clone(),
+        viewers,
         plats: Rc::default(),
         main,
         side,
         client_gen: 0,
         seen: 0,
+        combined_connections: [false; 4],
     }));
     {
         let mut m = me.borrow_mut();
@@ -2770,6 +3331,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
             me.borrow_mut().rebuild(true);
         }
     });
+    DEV_VIEW.with_borrow_mut(|saved| *saved = Some(view.clone()));
 
     msg_all.set_callback({
         let (cfg, cmds) = (cfg.clone(), cmds.clone());
@@ -2971,7 +3533,11 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
             };
             h.show(&mut head_title, &format!("{pname}: {st_txt}"));
             head_title.set_label_font(Font::HelveticaBold);
-            note.set_label(tr("chat.acct_note"));
+            note.set_label(if slug == "tiktok" {
+                tr("chat.tiktok_account_note")
+            } else {
+                tr("chat.acct_note")
+            });
 
             let want_broadcaster = cfg.borrow().window.chat_as_broadcaster.iter().any(|s| s == slug);
             let slots = platform_accounts(&cmds, &cfg, slug, 32);
@@ -3018,6 +3584,10 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
                         btn.set_color(Color::Background);
                         btn.deactivate();
                     }
+                }
+                if slug == "tiktok" {
+                    btn.deactivate();
+                    btn.set_tooltip(tr("chat.tiktok_read_only_tip"));
                 }
                 pic_f.redraw();
                 info_f.redraw();
@@ -3110,15 +3680,18 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
     let mut plat_row = Flex::default().row();
     plat_row.set_pad(8);
     let mut checks = Vec::new();
-    for i in 0..4 {
+    for i in 0..3 {
         let suffix = if conn_states[i] { "" } else { tr("chat.offline_suffix") };
         let mut c = CheckButton::default().with_label(&format!("{}{suffix}", NAMES[i]));
         let any_conn = conn_states.iter().any(|&x| x);
-        c.set_checked(match &reply {
-            Some(l) => l.platform == PLATFORMS[i],
-            None if any_conn => conn_states[i],
-            None => set_up[i],
-        });
+        c.set_checked(
+            set_up[i]
+                && match &reply {
+                    Some(l) => l.platform == PLATFORMS[i],
+                    None if any_conn => conn_states[i],
+                    None => set_up[i],
+                },
+        );
         if !set_up[i] {
             c.deactivate();
         }
@@ -3187,7 +3760,7 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
             if text.is_empty() {
                 return;
             }
-            let targets: Vec<&'static str> = (0..4)
+            let targets: Vec<&'static str> = (0..checks.len())
                 .filter(|&i| checks[i].is_checked())
                 .map(|i| PLATFORMS[i])
                 .collect();
@@ -3201,7 +3774,8 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
             let fb = fallback.is_checked();
             let reply = reply.clone();
             tell(&cmds, move |e| {
-                let _ = e.send_chat_list(&targets, &text, use_bot, fb, reply.as_ref());
+                let connected: Vec<_> = targets.into_iter().filter(|p| e.chat_connected(p)).collect();
+                let _ = e.send_chat_list(&connected, &text, use_bot, fb, reply.as_ref());
             });
             done.set(true);
         }
@@ -3561,6 +4135,9 @@ fn emote_picker_popup(
     let seen: Vec<(String, String)> = query(cmds, move |e| {
         let mut v: Vec<(String, String)> = Vec::new();
         for x in PLATFORMS.iter().filter(|x| platform == "all" || **x == platform) {
+            if *x == "youtube" {
+                continue;
+            }
             for em in e.chat_emotes(x) {
                 if !v.iter().any(|y| y.0 == em.0) {
                     v.push(em);
@@ -3822,6 +4399,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn viewer_counts_are_compact_without_rounding_up() {
+        assert_eq!(compact_viewers(999), "999");
+        assert_eq!(compact_viewers(1_234), "1.2k");
+        assert_eq!(compact_viewers(10_000), "10k");
+        assert_eq!(compact_viewers(1_999_999), "1.9m");
+        assert_eq!(compact_viewers(u64::MAX), "18446744073b");
+    }
+
+    #[test]
     fn a_tag_of_one_of_our_names_is_a_mention() {
         let mut c = Config::default();
         c.twitch.broadcaster = Some(crate::twitch::TwitchAccount {
@@ -3837,6 +4423,14 @@ mod tests {
         assert!(!mentions_me("@someoneelse"));
         assert!(!mentions_me("@"));
         ME.set(Vec::new());
+    }
+
+    #[test]
+    fn card_hit_test_matches_its_visible_edges() {
+        assert!(card_contains(10, 20, 300, 8, 70, 18, 28));
+        assert!(card_contains(10, 20, 300, 8, 70, 301, 97));
+        assert!(!card_contains(10, 20, 300, 8, 70, 302, 97));
+        assert!(!card_contains(10, 20, 300, 8, 70, 18, 98));
     }
 
     #[test]

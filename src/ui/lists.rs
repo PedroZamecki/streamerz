@@ -563,6 +563,7 @@ impl Views {
     pub fn chat_refresh(&self, tabs: &Wizard) {
         let up = tabs.try_current_widget().map(|g| g.as_widget_ptr());
         if let Ok(mut c) = self.chat.try_borrow_mut() {
+            super::chat::set_viewers_visible(up == Some(c.tab.as_widget_ptr()));
             if up == Some(c.tab.as_widget_ptr()) {
                 c.refresh();
             }
@@ -577,6 +578,7 @@ impl Views {
 
     /// The window was hidden: the chat keeps no lines.
     pub fn chat_release(&self) {
+        super::chat::set_viewers_visible(false);
         if let Ok(mut c) = self.chat.try_borrow_mut() {
             c.release();
         }

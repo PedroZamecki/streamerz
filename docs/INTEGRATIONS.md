@@ -36,8 +36,8 @@ Charity Donation triggers have Streamer.bot's Range (Min and Max amount).
 
 ## Hotkeys, inputs, MIDI and voice control
 
-- **Inputs & Hotkeys**: Key Press sub-actions (keyboard press simulation with modifiers), and the Key Press
-  and Mouse Click triggers, stored as Streamer.bot stores them (SharpHook's `keyCode` and `modifierMask`).
+- **Inputs & Hotkeys**: On Windows, the Keyboard Press sub-action sends a key and optional modifiers.
+  Keyboard simulation is not implemented on Linux. Key Press and Mouse Click triggers, stored as Streamer.bot stores them (SharpHook's `keyCode` and `modifierMask`).
   Set a trigger's keys by clicking **Keys** and pressing the combination. They work whichever program has
   focus, and listen only while an enabled action uses them:
   - Linux: through the desktop's Global Shortcuts portal (xdg-desktop-portal), with no root and no `input`
@@ -48,20 +48,18 @@ Charity Donation triggers have Streamer.bot's Range (Min and Max amount).
     every key typed.
   - Windows: RegisterHotKey (a combination another program already holds can't be taken), and a mouse hook
     only while a Mouse Click trigger is used (`mouse.button` 1 left, 2 right, 3 middle).
-- **MIDI**: MIDI Message triggers (note on/off, CC, pitch bend, sysex) with device, channel, and status filters, and Note On, Control Change, and Generic MIDI Out sub-actions.
-- **Voice Control**: Speech to Text Dictation and Speech to Text Command triggers, plus Set Voice Control Command, Set Command State, and Set Voice Input sub-actions.
+- **MIDI**: Input and output are not implemented yet. MIDI output sub-actions only log their values.
+- **Voice Control**: Speech input is not implemented yet. The command and input sub-actions only update in-memory state.
 
 ## Decks, Stream Deck, and Chat Window
 
-- **Streamer.bot Decks**: set item state, toggle state, title, background, icon, value, deck notifications, and page navigation (set, next, previous).
-- **Elgato Stream Deck**: set title, background, state, toggle state, value, show alert, and show OK sub-actions; Action, Connected, Disconnected, and Info triggers.
+- **Streamer.bot Decks**: Deck state is kept in memory. Integration with a real Deck needs verification.
+- **Elgato Stream Deck**: State is kept in memory, but Stream Deck key presses and connection events are not read yet.
 - **Chat Window**: multi-platform chat window action trigger (`ChatWindowAction`) with platform, user, message, and action arguments.
 
 ## File I/O, file tail, watcher and process triggers
 
 - **File Operations**: Write to File (append or overwrite), Read Lines, Read Specific Line, and Read Random Line sub-actions with variable expansion and auto-typing.
 - **File and Folder Checks**: File Exists and Folder Exists sub-actions for testing path presence and setting boolean arguments.
-- **File Tail**: Set File Tail State sub-action and File Tail Changed trigger for monitoring log and text file appends.
-- **File Watcher**: File Changed, File Created, File Deleted, and File Renamed triggers for monitoring filesystem directory modifications.
-- **Process Triggers**: Process Started and Process Stopped triggers to react to application launches and terminations.
+- **File Tail, File Watcher and Process Triggers**: The engine can dispatch these events, but no monitoring source is connected yet.
 

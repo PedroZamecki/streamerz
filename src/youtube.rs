@@ -456,7 +456,6 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
                     clear_poll();
                     runner.live.borrow_mut().0.clear();
                     runner.live.borrow_mut().1.clear();
-                    runner.engine.chat_stream("youtube", false);
                     runner.engine.chat_polls_clear("youtube");
                     runner.engine.chat_unpinned("youtube", "");
                     crate::ui::polls_changed();
@@ -994,6 +993,31 @@ fn find<'a>(page: &'a str, key: &str) -> Option<&'a str> {
     page[i..].split('"').next()
 }
 
+/// The watch page's live count, not the video's cumulative view count.
+fn live_viewer_count(page: &str) -> Option<u64> {
+    let start = page.find("\"videoViewCountRenderer\":{")?;
+    let section = &page[start..];
+    let end = section.find("\"originalViewCount\":\"")?;
+    if !section[..end].contains("\"isLive\":true") {
+        return None;
+    }
+    find(&section[end..], "originalViewCount")?.parse().ok()
+}
+
+#[cfg(test)]
+#[test]
+fn live_viewer_count_uses_live_count_only() {
+    assert_eq!(
+        live_viewer_count(r#"{"videoViewCountRenderer":{"isLive":true,"originalViewCount":"132589"}}"#),
+        Some(132589)
+    );
+    assert_eq!(
+        live_viewer_count(r#"{"videoViewCountRenderer":{"isLive":false,"originalViewCount":"132589"}}"#),
+        None
+    );
+    assert_eq!(live_viewer_count(r#"{"viewCount":"123"}"#), None);
+}
+
 /// The channel's page path: `/channel/UC...` for an id, `/@name` for a handle (what people type).
 pub fn channel_path(channel: &str) -> String {
     let c = channel.trim().trim_start_matches('@');
@@ -1298,7 +1322,9 @@ pub async fn read_chat_with_standby(
                 if !live.borrow().0.is_empty() {
                     *live.borrow_mut() = Default::default();
                     clear_poll();
-                    engine.chat_stream("youtube", false);
+                    if is_offline {
+                        engine.chat_stream("youtube", false);
+                    }
                     engine.chat_polls_clear("youtube");
                     engine.chat_unpinned("youtube", "");
                     crate::ui::polls_changed();
@@ -1380,6 +1406,7 @@ pub async fn read_chat_with_standby(
         // A read that fails (a network blip, a 5xx) is retried on the same continuation with a growing
         // wait; only a long run of failures, or an answer that has no next page, ends the session.
         let mut failures = 0u32;
+        let mut ended = false;
         loop {
             let body =
                 json!({"context": {"client": {"clientName": "WEB", "clientVersion": version}}, "continuation": cont});
@@ -1419,7 +1446,8 @@ pub async fn read_chat_with_standby(
                 .cloned()
                 .unwrap_or_default();
             let Some(n) = next["continuation"].as_str() else {
-                // The stream ended: look for a live again.
+                // A valid chat response with no continuation marks the end of the chat.
+                ended = c.is_object();
                 break;
             };
             set_state(true, false);
@@ -1470,7 +1498,7 @@ pub async fn read_chat_with_standby(
                 break;
             }
         }
-        set_state(false, true);
+        set_state(false, ended);
         *live.borrow_mut() = Default::default();
         clear_poll();
         engine.chat_polls_clear("youtube");
@@ -1479,8 +1507,10 @@ pub async fn read_chat_with_standby(
         if let Some(t) = extras {
             t.abort();
         }
-        broadcast_ended(engine);
-        crate::say(format!("YouTube: live stream ended ({label}); back to standby"));
+        if ended {
+            broadcast_ended(engine);
+            crate::say(format!("YouTube: live stream ended ({label}); back to standby"));
+        }
         if run_once {
             return;
         }
@@ -2106,6 +2136,12 @@ async fn broadcast_started(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>
 }
 
 fn broadcast_ended(engine: &Rc<Engine>) {
+    if !engine.chat_stream_ended("youtube") {
+        crate::notify::send(
+            "Streamerz",
+            &crate::i18n::trf("chat.state_ended_title", &[("platform", "YouTube")]),
+        );
+    }
     engine.chat_stream("youtube", false);
     clear_poll();
     engine.chat_polls_clear("youtube");
@@ -2127,6 +2163,7 @@ fn broadcast_ended(engine: &Rc<Engine>) {
 /// chatted in the last 10 minutes, every 5) and New Subscriber (recent public subscribers, every 2
 /// minutes), each only when an action uses it; and the BTTV/7TV emote changes when used.
 async fn while_live(engine: Rc<Engine>, cfg: Arc<watch::Sender<Config>>, video: String) {
+    engine.set_chat_viewers("youtube", None);
     let channel = cfg.borrow().youtube.channel_id.clone();
     let codes = crate::emote_events::Codes {
         platform: "youtube",
@@ -2141,6 +2178,18 @@ async fn while_live(engine: Rc<Engine>, cfg: Arc<watch::Sender<Config>>, video: 
     loop {
         tick.tick().await;
         n += 1;
+        if crate::ui::chat::viewers_visible() {
+            let headers = [
+                ("User-Agent".to_string(), UA.to_string()),
+                ("Accept-Language".to_string(), "en".to_string()),
+            ];
+            let url = format!("{YOUTUBE_WEB}/watch?v={video}");
+            let count = match crate::http::request("GET", &url, &headers, b"").await {
+                Ok(r) if r.status == 200 => live_viewer_count(&r.text()),
+                _ => None,
+            };
+            engine.set_chat_viewers("youtube", count);
+        }
         let base = BROADCAST.with_borrow(Clone::clone);
         if engine.uses_trigger(T_YT_STATISTICS_UPDATED) {
             if let Ok(t) = token(&engine, &cfg, false, true).await {

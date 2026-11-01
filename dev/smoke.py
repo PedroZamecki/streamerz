@@ -13,7 +13,7 @@ import base64, json, os, re, socket, struct, subprocess, sys, tempfile, time
 BIN = sys.argv[1] if len(sys.argv) > 1 else "target/fast/Streamerz"
 PORT = 8095
 OUT = "/tmp/szsmoke"
-env = dict(os.environ, DISPLAY=":99", STREAMERZ_DEV="1")
+env = dict(os.environ, DISPLAY=":99", STREAMERZ_DEV="1", STREAMERZ_DEV_PORT=str(PORT))
 env.pop("WAYLAND_DISPLAY", None)
 
 
@@ -55,15 +55,18 @@ def xdo(*a):
 def main():
     os.makedirs(OUT, exist_ok=True)
     tmp = tempfile.mkdtemp()
-    cfg = os.path.join(tmp, "s.json")
+    os.makedirs(os.path.join(tmp, "streamerz"))
+    cfg = os.path.join(tmp, "streamerz", "streamerz.json")
     json.dump({"start_hidden": False, "locale": "en_US", "websockets": {"port": PORT}}, open(cfg, "w"))
-    env["STREAMERZ_CONFIG"] = cfg
+    env["XDG_CONFIG_HOME"] = tmp
     app = subprocess.Popen([BIN], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     failures = []
 
     def check(step):
         time.sleep(0.5)
-        crashed = [f for f in os.listdir(os.path.join(tmp, "logs")) if f.startswith("crash")] if os.path.isdir(os.path.join(tmp, "logs")) else []
+        import glob
+        logs = glob.glob(os.path.join(tempfile.gettempdir(), f"streamerz-dev-{app.pid}-*", "logs", "crash*"))
+        crashed = [os.path.basename(f) for f in logs]
         if app.poll() is not None or crashed:
             failures.append(f"{step}: the app is gone (exit {app.poll()}) {crashed[:1]}")
             raise SystemExit(print("\n".join(failures), f"\nthe app's files (logs/crash-*.txt) are in {tmp}") or 1)
@@ -81,10 +84,43 @@ def main():
         if not ws:
             sys.exit("can't reach the app")
         for p in ("twitch", "kick", "youtube", "tiktok"):
+            ws.ask({"request": "SimulateChatConnection", "id": "conn-" + p, "platform": p, "connected": True})
             ws.ask({"request": "InjectChat", "id": p, "platform": p, "user": "Ana", "text": f"hello from {p}"})
         # Rewards, power-ups and gifts are lines of the chat (each takes a line), and a message sent with a
         # reward has it over it.
         ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Chat"})
+        # Stream end leaves connected chat visible; a disconnect hides only that platform's messages,
+        # and reconnecting restores them from the retained history.
+        time.sleep(1)
+        kept = lambda: int(ws.ask({"request": "StreamerzUi", "id": "k", "do": "chatlines"})["result"])
+        before_state = kept()
+        ws.ask({"request": "SimulateStream", "id": "end", "platform": "twitch", "live": False})
+        time.sleep(1)
+        if kept() != before_state:
+            failures.append("ending a stream changed the connected chat")
+        ws.ask({"request": "SimulateChatConnection", "id": "down", "platform": "twitch", "connected": False})
+        time.sleep(1)
+        if kept() >= before_state:
+            failures.append("a disconnected chat remained visible in the combined view")
+        ws.ask({"request": "StreamerzUi", "id": "single", "do": "chatview Twitch"})
+        time.sleep(0.5)
+        where = ws.ask({"request": "StreamerzUi", "id": "find-disconnected", "do": "find Disconnected"})["result"]
+        location = re.search(r" at (\d+),(\d+)", where)
+        if not location or int(location.group(2)) < 500:
+            failures.append(f"the disconnected state is not in the composer row ({where})")
+        found = ws.ask({"request": "StreamerzUi", "id": "find-reconnect", "do": "find Reconnect"})["result"]
+        coords = re.search(r" at (\d+),(\d+)", found)
+        if coords:
+            xdo("mousemove", coords.group(1), coords.group(2))
+            xdo("click", "1")
+            check("reconnecting chat")
+        else:
+            failures.append("the reconnect action is missing from the disconnected chat")
+        ws.ask({"request": "StreamerzUi", "id": "together", "do": "chatview All together"})
+        ws.ask({"request": "SimulateChatConnection", "id": "up", "platform": "twitch", "connected": True})
+        time.sleep(1)
+        if kept() != before_state:
+            failures.append("reconnecting did not restore the chat history")
         seen = lambda: int(ws.ask({"request": "StreamerzUi", "id": "c", "do": "chat"})["result"])
         time.sleep(1)
         before = seen()
@@ -234,8 +270,9 @@ def main():
         app.wait(10)
     except subprocess.TimeoutExpired:
         failures.append("it didn't quit when asked (SIGTERM)")
-    if os.path.exists(os.path.join(tmp, "logs", "running")):
-        failures.append("SIGTERM left the 'running' marker: the next start would report a crash")
+    import glob
+    if glob.glob(os.path.join(tempfile.gettempdir(), f"streamerz-dev-{app.pid}-*")):
+        failures.append("SIGTERM left the development settings directory behind")
     print("\n".join(failures) or f"ok: every page and the card, screenshots in {OUT}")
     if failures:
         print(f"the app's files (logs/crash-*.txt) are in {tmp}")
