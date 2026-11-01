@@ -561,6 +561,10 @@ pub struct Views {
 impl Views {
     /// New chat lines: added to the Chat tab when it's up (it catches up when shown).
     pub fn chat_refresh(&self, tabs: &Wizard) {
+        // A refresh queued before hide can still arrive after presentation storage was released.
+        if !super::SHOWN.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
         let up = tabs.try_current_widget().map(|g| g.as_widget_ptr());
         if let Ok(mut c) = self.chat.try_borrow_mut() {
             super::chat::set_viewers_visible(up == Some(c.tab.as_widget_ptr()));
@@ -576,8 +580,9 @@ impl Views {
         }
     }
 
-    /// The window was hidden: the chat keeps no lines.
+    /// The window was hidden: drop the chat and Community presentation copies.
     pub fn chat_release(&self) {
+        self.community.borrow_mut().release();
         super::chat::set_viewers_visible(false);
         if let Ok(mut c) = self.chat.try_borrow_mut() {
             c.release();
@@ -586,6 +591,9 @@ impl Views {
 
     /// A picture arrived: redraw what shows pictures.
     pub fn images(&self) {
+        if !super::SHOWN.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
         if let Ok(mut a) = self.accounts.try_borrow_mut() {
             a.refresh();
         }
@@ -636,6 +644,8 @@ impl Views {
         if let Ok(mut c) = self.community.try_borrow_mut() {
             if is(&c.tab) {
                 c.refresh();
+            } else {
+                c.release();
             }
         }
         if let Ok(mut p) = self.plugins.try_borrow_mut() {
@@ -1294,7 +1304,7 @@ pub struct Community {
     platforms: Rc<RefCell<Platforms>>,
     users_header: Frame,
     /// The users in the list, as shown (the list's line n is `shown[n - 1]`).
-    shown: Vec<Obj>,
+    shown: Vec<(String, String)>,
     quotes: Rows,
     credits: Rows,
     /// The engine's `community_rev` when the users and credits were last read.
@@ -1302,6 +1312,18 @@ pub struct Community {
 }
 
 impl Community {
+    /// The page or window is no longer visible; the engine owns all historical data.
+    fn release(&mut self) {
+        if self.shown.is_empty() {
+            return;
+        }
+        self.shown = Vec::new();
+        self.users.release();
+        self.rev = u64::MAX;
+        USERS_SHOWN.store(0, std::sync::atomic::Ordering::Relaxed);
+        crate::trim_memory();
+    }
+
     /// Reloads the users or credits shown if they changed (new chatters, events) since the last look.
     pub fn live(&mut self) {
         let Some(rev) = query(&self.cmds, |e| e.community_rev()) else {
@@ -1330,20 +1352,19 @@ impl Community {
         self.tab.layout();
         match shown {
             0 => {
-                let Some(mut users) = query(&self.cmds, |e| e.users()) else {
+                let Some(mut users) = query(&self.cmds, |e| e.user_rows()) else {
                     return;
                 };
                 let (column, up) = self.sort.get();
                 users.sort_by(|a, b| {
-                    let key = |u: &Obj| match column {
-                        0 => s(u, "type").to_string(),
-                        1 => s(u, "display").to_lowercase(),
-                        // Numbers sort as numbers, dates as the ISO text they are.
-                        2 => format!("{:03}", u["role"].as_u64().unwrap_or(1)),
-                        3 => s(u, "firstMessage").to_string(),
-                        _ => s(u, "lastActive").to_string(),
-                    };
-                    let by = key(a).cmp(&key(b)).then_with(|| s(a, "display").cmp(s(b, "display")));
+                    let by = match column {
+                        0 => a.platform.cmp(&b.platform),
+                        1 => a.display.to_lowercase().cmp(&b.display.to_lowercase()),
+                        2 => a.role.cmp(&b.role),
+                        3 => a.first_message.cmp(&b.first_message),
+                        _ => a.last_active.cmp(&b.last_active),
+                    }
+                    .then_with(|| a.display.cmp(&b.display));
                     if up {
                         by
                     } else {
@@ -1354,7 +1375,7 @@ impl Community {
                 // Sorting and filtering by platform show only when there's more than one.
                 let hidden = {
                     let mut p = self.platforms.borrow_mut();
-                    p.seen(users.iter().map(|u| s(u, "type")));
+                    p.seen(users.iter().map(|u| u.platform.as_str()));
                     let many = p.present.len() > 1;
                     let hidden: Vec<String> = if many { p.hidden.clone() } else { Vec::new() };
                     if self.filter.shown.get() != many || self.filter.filtering.get() != !hidden.is_empty() {
@@ -1365,14 +1386,13 @@ impl Community {
                     hidden
                 };
                 self.users.clear();
-                self.shown = users
-                    .iter()
-                    .filter(|u| q.is_empty() || s(u, "display").to_lowercase().contains(&q))
-                    .filter(|u| !hidden.iter().any(|h| h == s(u, "type")))
-                    .cloned()
-                    .collect();
-                USERS_SHOWN.store(self.shown.len(), std::sync::atomic::Ordering::Relaxed);
-                for u in &self.shown {
+                self.shown = Vec::new();
+                for u in users
+                    .into_iter()
+                    .filter(|u| q.is_empty() || u.display.to_lowercase().contains(&q))
+                    .filter(|u| !hidden.iter().any(|h| h == &u.platform))
+                {
+                    self.shown.push((u.platform.clone(), u.id.clone()));
                     let role = [
                         "",
                         tr("lists.community.role_viewer"),
@@ -1381,16 +1401,16 @@ impl Community {
                         tr("lists.community.role_broadcaster"),
                     ];
                     self.users.add(&line(&[
-                        s(u, "type").into(),
-                        s(u, "display").into(),
-                        role.get(u["role"].as_u64().unwrap_or(1) as usize)
-                            .unwrap_or(&"")
-                            .to_string(),
-                        day(s(u, "firstMessage")),
-                        day(s(u, "lastActive")),
+                        u.platform,
+                        u.display,
+                        role.get(u.role as usize).unwrap_or(&"").to_string(),
+                        day(&u.first_message),
+                        day(&u.last_active),
                     ]));
                 }
+                USERS_SHOWN.store(self.shown.len(), std::sync::atomic::Ordering::Relaxed);
             }
+
             1 => {
                 let sel = self.quotes.value();
                 self.quotes.clear();
@@ -1433,10 +1453,14 @@ impl Community {
     /// The card of the user selected: who they are, what they said, their time here.
     fn user_card(&self) {
         let n = self.users.value();
-        if let Some(u) = self.shown.get((n - 1).max(0) as usize).filter(|_| n > 0) {
+        if let Some((platform, id)) = self.shown.get((n - 1).max(0) as usize).filter(|_| n > 0) {
+            let (platform, id) = (platform.clone(), id.clone());
+            let Some(Some(u)) = query(&self.cmds, move |e| e.community_user(&platform, &id)) else {
+                return;
+            };
             super::card::open(
                 &self.cmds,
-                super::card::Who::from_member(u),
+                super::card::Who::from_member(&u),
                 (fltk::app::event_x(), fltk::app::event_y()),
             );
         }

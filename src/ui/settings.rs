@@ -234,7 +234,7 @@ fn items(names: &[String]) -> String {
 }
 
 pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
-    let (scroll, mut col) = super::tab_scrolled(tabs, "Settings", 1250);
+    let (scroll, mut col) = super::tab_scrolled(tabs, "Settings", 1450);
     col.set_pad(2);
     let c = cfg.borrow();
     let chosen = c.theme.unwrap_or(if c.dark { Theme::Dark } else { Theme::Light });
@@ -332,6 +332,32 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
         }
     });
 
+    section(&mut col, tr("settings.memory"), "power");
+    let r = setting(
+        &mut col,
+        tr("settings.memory.saver"),
+        tr("settings.memory.saver.about"),
+        44,
+    );
+    let mut saver = switch(cfg.borrow().memory_saver);
+    done(r, &saver);
+    saver.set_callback({
+        let cfg = cfg.clone();
+        move |b| put(&cfg, |c| c.memory_saver = b.value())
+    });
+    for key in [
+        "settings.memory.effects",
+        "settings.memory.first_words",
+        "settings.memory.files",
+    ] {
+        let mut text = Frame::default()
+            .with_label(tr(key))
+            .with_align(Align::Left | Align::Inside)
+            .ellipsis();
+        text.set_label_color(super::muted());
+        col.fixed(&text, 26);
+    }
+
     section(&mut col, tr("settings.chat"), "message-square");
     let r = setting(
         &mut col,
@@ -340,7 +366,10 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
         44,
     );
     let mut check = fltk::button::CheckButton::default();
-    check.set_value(!cfg.borrow().window.chat.save_history);
+    check.set_value(crate::memory_saver() || !cfg.borrow().window.chat.save_history);
+    if crate::memory_saver() {
+        check.deactivate();
+    }
     done(r, &check);
 
     let r = setting(
@@ -405,7 +434,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
         let r = setting(&mut col, tr(key), tr(about), 90);
         let mut input = fltk::input::IntInput::default();
         input.set_value(&get(&cfg.borrow().window.chat).to_string());
-        if !cfg.borrow().window.chat.save_history {
+        if crate::memory_saver() || !cfg.borrow().window.chat.save_history {
             input.deactivate();
         }
         done(r, &input);

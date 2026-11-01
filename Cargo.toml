@@ -24,7 +24,7 @@ futures-util = { version = "0.3", default-features = false, features = [
     "sink",
 ] }
 sha2 = "0.11"
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 base64 = "0.22"
 # Import/export strings are gzipped; miniz_oxide is pure Rust.
 flate2 = { version = "1", default-features = false, features = [

@@ -444,6 +444,45 @@ platform handles through channels, never through shared locks held across awaits
 - [ ] Review [the feature audit and proposed sequence](docs/FEATURE-AUDIT.md), verify its findings against
   the implementation and real services, and agree priorities before adding implementation phases.
 
+## Memory investigation and storage
+
+- [x] Add an opt-in aggressive Memory Saver policy, applied after restart. Disable Community tracking
+  and loading, credits, retained chat, recent chatter facts, downloaded images and emote catalogs.
+  Preserve existing Community files untouched. Keep commands, connections and triggers enabled.
+- [x] Keep exact First Words behavior using session-only disk buckets in Memory Saver. Do not evict
+  speakers and accidentally repeat First Words. Reset by platform or globally, and clear on clean exit.
+- [ ] Measure this mode with First Words under sustained 1,000 messages/second and a 25,000-message
+  burst, verify restart and file preservation, and document the remaining obstacles to a 100 MB ceiling.
+  [Current traffic measurements](docs/MEMORY-SAVER.md); long interactive image and card testing remains.
+
+- [x] Compare memory strategies individually and together using measured RSS, CPU time, latency,
+  write volume and restart integrity. Prefer lower RAM when extra processing helps. Target sustained
+  1,000 messages/second and test an unthrottled 25,000-message burst; report whether 1 to 2% of one CPU
+  core is met, rather than assuming it. Keep all user records and statistics.
+  [Results and applied changes](docs/MEMORY-EXPERIMENTS.md): compact records and borrowed streaming
+  saves selected; record-level compression rejected. The one-core CPU target remains unmet.
+
+- [x] Measure synthetic chat growth and reclamation with native process metrics and allocation traces,
+  separate repeated users from distinct users, and document cache ownership and cleanup in
+  [docs/MEMORY.md](docs/MEMORY.md). Add a reproducible isolated development harness.
+- [x] Retention decision: keep all Community records and statistics across restarts. Reduce the resident
+  working set instead of automatically deleting inactive users.
+- [x] Remove full Community save copies and linear identity lookup. Index credits without duplicating
+  names, avoid cloning unmatched commands, and retain the JSON format, save frequency and unknown fields.
+- [x] Transfer only displayed Community columns to the UI, release rows on page leave and hide, and
+  check refill, cards, sorting, filtering, narrow/wide screenshots and the smoke test.
+- [ ] Reduce the remaining processing and full-snapshot write volume. The sustained 60,000-message
+  test delivers 1,000 messages/second with stable RAM, but uses 37.08% of one core and issues about
+  6 GB of logical writes. Do not weaken save guarantees or drop events to hide this cost.
+- [ ] Agree indexed disk storage and migration, then load historical Community records on demand.
+  Compare compression, CPU, allocated disk space and RAM before selecting the format.
+- [x] Prevent queued refreshes and late image results from refilling hidden presentation storage.
+  Test stale image rejection and ready-pixel cleanup; repeat the full smoke regression.
+- [ ] Bound image pipeline bytes and pending work, review other cache lifetimes, and verify reclamation
+  after expiration, hide, disconnect and cancellation with realistic image and action workloads.
+- [ ] Complete Windows and real Twitch + OBS profiling. Linux release-profile synthetic, restart,
+  sustained SSD, allocation, and UI reclamation comparisons are recorded in the experiment report.
+
 ## Open points (decide when the phase starts, ask first)
 
 - Points: its sub-actions are new in Streamer.bot 1.1.0, unreleased (1.0.7 is the latest). When it's out,

@@ -25,13 +25,32 @@ pub struct Suggest {
     mention: Rc<Cell<bool>>,
 }
 
+// Release the borrow before FLTK destroys the window and invokes its callbacks.
+fn take_window<T>(window: &RefCell<Option<T>>) -> Option<T> {
+    window.borrow_mut().take()
+}
+
+#[cfg(test)]
+mod borrow_tests {
+    use super::*;
+
+    #[test]
+    fn taking_window_allows_reentrant_access() {
+        let window = RefCell::new(Some(1));
+        if let Some(_value) = take_window(&window) {
+            assert!(window.borrow().is_none());
+        }
+    }
+}
+
 impl Suggest {
     pub fn is_open(&self) -> bool {
         self.win.borrow().is_some()
     }
 
     pub fn hide(&self) {
-        if let Some(w) = self.win.borrow_mut().take() {
+        let window = take_window(&self.win);
+        if let Some(w) = window {
             app::delete_widget(w);
             app::redraw();
         }
@@ -128,7 +147,8 @@ impl Suggest {
     }
 
     fn hide_window(&self) {
-        if let Some(w) = self.win.borrow_mut().take() {
+        let window = take_window(&self.win);
+        if let Some(w) = window {
             app::delete_widget(w);
         }
     }

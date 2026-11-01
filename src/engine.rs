@@ -109,6 +109,8 @@ struct State {
 }
 
 pub struct Engine {
+    /// Captured at startup, independent of pending settings changes.
+    pub(crate) memory_saver: bool,
     cfg: Arc<watch::Sender<Config>>,
     /// Writes the config (a no-op in tests).
     save: fn(&Config),
@@ -316,7 +318,9 @@ impl Engine {
     }
 
     pub fn new(cfg: Arc<watch::Sender<Config>>, save: fn(&Config)) -> Rc<Self> {
+        let memory_saver = cfg.borrow().memory_saver;
         Rc::new(Engine {
+            memory_saver,
             cfg,
             save,
             st: RefCell::new(State {

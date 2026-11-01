@@ -138,6 +138,12 @@ impl Rows {
         self.area.redraw();
     }
 
+    /// Drop backing storage when its page is hidden, rather than retaining its high-water capacity.
+    pub fn release(&mut self) {
+        self.clear();
+        self.st.borrow_mut().lines = Vec::new();
+    }
+
     pub fn size(&self) -> i32 {
         self.st.borrow().lines.len() as i32
     }

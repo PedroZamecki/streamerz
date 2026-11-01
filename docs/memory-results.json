@@ -1,0 +1,3370 @@
+{
+  "date": "2026-11-01",
+  "cpu": "Intel Core i7-1355U",
+  "logical_cpus": 12,
+  "kernel": "7.2.8-9-omarchy",
+  "source_baseline": "272aa8d3e5336d4bdebf1062befc2755eaef6db4",
+  "notes": [
+    "Native uninstrumented runs; byte counters use bytes, CPU uses seconds.",
+    "Development release-profile binaries permit fake chat and experimental environment switches.",
+    "Matrix variants use the same binary and buffered writer; identity/credits refinements are held constant.",
+    "For trials with UI phases, summary final_rss and peak_rss include UI; use idle_15s for pre-UI steady memory."
+  ],
+  "trials": [
+    {
+      "name": "finished-sustained",
+      "case": "repeat",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "612a26e4d42449d6fdc8170cd787d5c59c1d15e57008ab01a9caadffea37cd0f",
+        "instrumented": false,
+        "messages": 60000,
+        "cases": [
+          "repeat"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "visit_community": true,
+        "rate": 1000,
+        "seed": "/tmp/streamerz-memory-experiments/finished-burst/unique/community.json",
+        "env": [],
+        "sync_storage": true,
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 60.01347958500082,
+        "delivered_rate": 999.775390710653,
+        "cpu_seconds": 22.25,
+        "cpu_percent_one_core": 37.075004072186715,
+        "latency_ms": {
+          "p50": 0.42418700104462914,
+          "p95": 0.8623590001661796,
+          "p99": 10.502979999728268,
+          "maximum": 14.347881000503548
+        },
+        "write_chars": 6007007010,
+        "write_syscalls": 92400,
+        "peak_rss": 69009408,
+        "kernel_peak_rss": 68173824,
+        "final_rss": 55881728,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 25000,
+        "bytes": 5005841,
+        "messages": 85000,
+        "gzip_bytes": 281011
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.174778131000494,
+          "Rss": 33177600,
+          "Pss": 24497152,
+          "USS": 24133632,
+          "Swap": 0,
+          "cpu_seconds": 0.16,
+          "threads": 4,
+          "io_wchar": 5306541,
+          "io_write_bytes": 442368
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 60000,
+          "seconds": 62.189119073000256,
+          "Rss": 33177600,
+          "Pss": 24496128,
+          "USS": 24133632,
+          "Swap": 0,
+          "cpu_seconds": 22.41,
+          "threads": 3,
+          "io_wchar": 6012313551,
+          "io_write_bytes": 6012354560
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 60000,
+          "seconds": 63.20928518999972,
+          "Rss": 33177600,
+          "Pss": 24497152,
+          "USS": 24133632,
+          "Swap": 0,
+          "cpu_seconds": 22.41,
+          "threads": 3,
+          "io_wchar": 6012313551,
+          "io_write_bytes": 6012354560
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 60000,
+          "seconds": 67.21087803299997,
+          "Rss": 33177600,
+          "Pss": 24497152,
+          "USS": 24133632,
+          "Swap": 0,
+          "cpu_seconds": 22.41,
+          "threads": 3,
+          "io_wchar": 6012313551,
+          "io_write_bytes": 6012354560
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 60000,
+          "seconds": 77.21384728399971,
+          "Rss": 33177600,
+          "Pss": 24497152,
+          "USS": 24133632,
+          "Swap": 0,
+          "cpu_seconds": 22.41,
+          "threads": 3,
+          "io_wchar": 6012313551,
+          "io_write_bytes": 6012354560
+        },
+        {
+          "phase": "community_shown",
+          "messages": 60000,
+          "seconds": 79.39308121199974,
+          "Rss": 59658240,
+          "Pss": 45085696,
+          "USS": 43503616,
+          "Swap": 0,
+          "cpu_seconds": 22.64,
+          "threads": 4,
+          "io_wchar": 6012687637,
+          "io_write_bytes": 6012387328
+        },
+        {
+          "phase": "community_left",
+          "messages": 60000,
+          "seconds": 81.14108598200073,
+          "Rss": 50888704,
+          "Pss": 33182720,
+          "USS": 30560256,
+          "Swap": 0,
+          "cpu_seconds": 22.78,
+          "threads": 7,
+          "io_wchar": 6013398442,
+          "io_write_bytes": 6012391424
+        },
+        {
+          "phase": "community_hidden",
+          "messages": 60000,
+          "seconds": 84.31823119100045,
+          "Rss": 55881728,
+          "Pss": 38175744,
+          "USS": 35553280,
+          "Swap": 0,
+          "cpu_seconds": 22.97,
+          "threads": 7,
+          "io_wchar": 6018507637,
+          "io_write_bytes": 6017544192
+        }
+      ]
+    },
+    {
+      "name": "finished-burst",
+      "case": "unique",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "612a26e4d42449d6fdc8170cd787d5c59c1d15e57008ab01a9caadffea37cd0f",
+        "instrumented": false,
+        "messages": 25000,
+        "cases": [
+          "unique"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "visit_community": false,
+        "rate": 0,
+        "seed": null,
+        "env": [],
+        "sync_storage": false,
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 4.053923059998851,
+        "delivered_rate": 6166.865929618083,
+        "cpu_seconds": 2.7300000000000004,
+        "cpu_percent_one_core": 67.34217595142948,
+        "latency_ms": {
+          "p50": 0.09300399869971443,
+          "p95": 0.3550019991962472,
+          "p99": 1.7052629991667345,
+          "maximum": 8.468817000903073
+        },
+        "write_chars": 1246868977,
+        "write_syscalls": 19298,
+        "peak_rss": 33570816,
+        "kernel_peak_rss": 33570816,
+        "final_rss": 33570816,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 25000,
+        "bytes": 5005651,
+        "messages": 25000,
+        "gzip_bytes": 280980
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.104460080001445,
+          "Rss": 21307392,
+          "Pss": 12673024,
+          "USS": 12300288,
+          "Swap": 0,
+          "cpu_seconds": 0.01,
+          "threads": 4,
+          "io_wchar": 15160,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 25000,
+          "seconds": 6.159992845001398,
+          "Rss": 33570816,
+          "Pss": 24936448,
+          "USS": 24563712,
+          "Swap": 0,
+          "cpu_seconds": 2.74,
+          "threads": 4,
+          "io_wchar": 1246884137,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 25000,
+          "seconds": 7.165225349001048,
+          "Rss": 33570816,
+          "Pss": 24936448,
+          "USS": 24563712,
+          "Swap": 0,
+          "cpu_seconds": 2.74,
+          "threads": 4,
+          "io_wchar": 1246884137,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 25000,
+          "seconds": 11.166971481001383,
+          "Rss": 33570816,
+          "Pss": 24906752,
+          "USS": 24563712,
+          "Swap": 0,
+          "cpu_seconds": 2.74,
+          "threads": 3,
+          "io_wchar": 1246884137,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 25000,
+          "seconds": 21.16812072399989,
+          "Rss": 33570816,
+          "Pss": 24936448,
+          "USS": 24563712,
+          "Swap": 0,
+          "cpu_seconds": 2.74,
+          "threads": 3,
+          "io_wchar": 1246884137,
+          "io_write_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "complete-burst",
+      "case": "unique",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "6e030899ee4b38f00b587acce35cdb03f6ccc3f6fd9f1870ddb52df7b1c01523",
+        "instrumented": false,
+        "messages": 25000,
+        "cases": [
+          "unique"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "visit_community": false,
+        "rate": 0,
+        "seed": null,
+        "env": [],
+        "sync_storage": false,
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 3.7727383379997264,
+        "delivered_rate": 6626.486588851212,
+        "cpu_seconds": 2.58,
+        "cpu_percent_one_core": 68.38534159694451,
+        "latency_ms": {
+          "p50": 0.07388199992419686,
+          "p95": 0.33483900006103795,
+          "p99": 1.5320649999921443,
+          "maximum": 7.558864999737125
+        },
+        "write_chars": 1246868977,
+        "write_syscalls": 19298,
+        "peak_rss": 33546240,
+        "kernel_peak_rss": 33546240,
+        "final_rss": 33546240,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 25000,
+        "bytes": 5005651,
+        "messages": 25000,
+        "gzip_bytes": 281002
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.1042040800002724,
+          "Rss": 21278720,
+          "Pss": 12569600,
+          "USS": 12210176,
+          "Swap": 0,
+          "cpu_seconds": 0.0,
+          "threads": 4,
+          "io_wchar": 15160,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 25000,
+          "seconds": 5.879163662000792,
+          "Rss": 33546240,
+          "Pss": 24837120,
+          "USS": 24477696,
+          "Swap": 0,
+          "cpu_seconds": 2.58,
+          "threads": 4,
+          "io_wchar": 1246884137,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 25000,
+          "seconds": 6.884350261000691,
+          "Rss": 33546240,
+          "Pss": 24837120,
+          "USS": 24477696,
+          "Swap": 0,
+          "cpu_seconds": 2.58,
+          "threads": 4,
+          "io_wchar": 1246884137,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 25000,
+          "seconds": 10.887142139999924,
+          "Rss": 33546240,
+          "Pss": 24837120,
+          "USS": 24477696,
+          "Swap": 0,
+          "cpu_seconds": 2.58,
+          "threads": 3,
+          "io_wchar": 1246884137,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 25000,
+          "seconds": 20.889685245000692,
+          "Rss": 33546240,
+          "Pss": 24837120,
+          "USS": 24477696,
+          "Swap": 0,
+          "cpu_seconds": 2.58,
+          "threads": 3,
+          "io_wchar": 1246884137,
+          "io_write_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "complete-sustained",
+      "case": "repeat",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "6e030899ee4b38f00b587acce35cdb03f6ccc3f6fd9f1870ddb52df7b1c01523",
+        "instrumented": false,
+        "messages": 60000,
+        "cases": [
+          "repeat"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "visit_community": true,
+        "rate": 1000,
+        "seed": "/tmp/streamerz-memory-experiments/complete-burst/unique/community.json",
+        "env": [],
+        "sync_storage": true,
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 60.01538013500067,
+        "delivered_rate": 999.7437301077479,
+        "cpu_seconds": 22.32,
+        "cpu_percent_one_core": 37.19046676000822,
+        "latency_ms": {
+          "p50": 0.3692880000016885,
+          "p95": 0.6748119994881563,
+          "p99": 11.504928000249492,
+          "maximum": 21.65224800046417
+        },
+        "write_chars": 6007007010,
+        "write_syscalls": 92400,
+        "peak_rss": 67211264,
+        "kernel_peak_rss": 66187264,
+        "final_rss": 51761152,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 25000,
+        "bytes": 5005841,
+        "messages": 85000,
+        "gzip_bytes": 281038
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.16344259699963,
+          "Rss": 33247232,
+          "Pss": 24451072,
+          "USS": 24080384,
+          "Swap": 0,
+          "cpu_seconds": 0.15,
+          "threads": 4,
+          "io_wchar": 5306521,
+          "io_write_bytes": 442368
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 60000,
+          "seconds": 62.17884149699967,
+          "Rss": 33247232,
+          "Pss": 24451072,
+          "USS": 24080384,
+          "Swap": 0,
+          "cpu_seconds": 22.47,
+          "threads": 3,
+          "io_wchar": 6012313531,
+          "io_write_bytes": 6012141568
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 60000,
+          "seconds": 63.19559588899938,
+          "Rss": 33247232,
+          "Pss": 24451072,
+          "USS": 24080384,
+          "Swap": 0,
+          "cpu_seconds": 22.47,
+          "threads": 3,
+          "io_wchar": 6012313531,
+          "io_write_bytes": 6012141568
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 60000,
+          "seconds": 67.1973805560001,
+          "Rss": 33247232,
+          "Pss": 24451072,
+          "USS": 24080384,
+          "Swap": 0,
+          "cpu_seconds": 22.47,
+          "threads": 3,
+          "io_wchar": 6012313531,
+          "io_write_bytes": 6012141568
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 60000,
+          "seconds": 77.20044754299943,
+          "Rss": 33247232,
+          "Pss": 24451072,
+          "USS": 24080384,
+          "Swap": 0,
+          "cpu_seconds": 22.47,
+          "threads": 3,
+          "io_wchar": 6012313531,
+          "io_write_bytes": 6012141568
+        },
+        {
+          "phase": "community_shown",
+          "messages": 60000,
+          "seconds": 79.38495631400019,
+          "Rss": 60121088,
+          "Pss": 45636608,
+          "USS": 44072960,
+          "Swap": 0,
+          "cpu_seconds": 22.69,
+          "threads": 4,
+          "io_wchar": 6012687617,
+          "io_write_bytes": 6012190720
+        },
+        {
+          "phase": "community_left",
+          "messages": 60000,
+          "seconds": 81.10775454199938,
+          "Rss": 50700288,
+          "Pss": 33089536,
+          "USS": 30494720,
+          "Swap": 0,
+          "cpu_seconds": 22.82,
+          "threads": 7,
+          "io_wchar": 6013398422,
+          "io_write_bytes": 6012194816
+        },
+        {
+          "phase": "community_hidden",
+          "messages": 60000,
+          "seconds": 84.30365443199935,
+          "Rss": 51761152,
+          "Pss": 34151424,
+          "USS": 31555584,
+          "Swap": 0,
+          "cpu_seconds": 23.04,
+          "threads": 7,
+          "io_wchar": 6018507617,
+          "io_write_bytes": 6017331200
+        }
+      ]
+    },
+    {
+      "name": "admission-before-25k",
+      "case": "unique",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "c6d77d5bbe575bd7009cc454931f598994a8dcc45e9f7d199468d99cec83298c",
+        "instrumented": false,
+        "messages": 25000,
+        "cases": [
+          "unique"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "visit_community": false,
+        "rate": 0,
+        "seed": null,
+        "env": [],
+        "sync_storage": false,
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 3.4535385890003454,
+        "delivered_rate": 7238.951978016395,
+        "cpu_seconds": 2.39,
+        "cpu_percent_one_core": 69.20438090983673,
+        "latency_ms": {
+          "p50": 0.0777710001784726,
+          "p95": 0.31139300062932307,
+          "p99": 1.6882990003068699,
+          "maximum": 4.131705999498081
+        },
+        "write_chars": 1246868977,
+        "write_syscalls": 19298,
+        "peak_rss": 35082240,
+        "kernel_peak_rss": 35082240,
+        "final_rss": 35082240,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 25000,
+        "bytes": 5005651,
+        "messages": 25000,
+        "gzip_bytes": 280348
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.103914905000238,
+          "Rss": 21434368,
+          "Pss": 12668928,
+          "USS": 12308480,
+          "Swap": 0,
+          "cpu_seconds": 0.01,
+          "threads": 4,
+          "io_wchar": 15160,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 25000,
+          "seconds": 5.5586674450005376,
+          "Rss": 35082240,
+          "Pss": 26316800,
+          "USS": 25956352,
+          "Swap": 0,
+          "cpu_seconds": 2.4,
+          "threads": 4,
+          "io_wchar": 1246884137,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 25000,
+          "seconds": 6.561657733000175,
+          "Rss": 35082240,
+          "Pss": 26316800,
+          "USS": 25956352,
+          "Swap": 0,
+          "cpu_seconds": 2.4,
+          "threads": 4,
+          "io_wchar": 1246884137,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 25000,
+          "seconds": 10.564355508000517,
+          "Rss": 35082240,
+          "Pss": 26316800,
+          "USS": 25956352,
+          "Swap": 0,
+          "cpu_seconds": 2.4,
+          "threads": 3,
+          "io_wchar": 1246884137,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 25000,
+          "seconds": 20.566680431999885,
+          "Rss": 35082240,
+          "Pss": 26316800,
+          "USS": 25956352,
+          "Swap": 0,
+          "cpu_seconds": 2.4,
+          "threads": 3,
+          "io_wchar": 1246884137,
+          "io_write_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "admission-after-25k",
+      "case": "unique",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "e0d04b02e054af978d308b32e08e4d5b6ef328213698f8bad0e7e17ffee23d38",
+        "instrumented": false,
+        "messages": 25000,
+        "cases": [
+          "unique"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "visit_community": false,
+        "rate": 0,
+        "seed": null,
+        "env": [],
+        "sync_storage": false,
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 3.7387285459999475,
+        "delivered_rate": 6686.765217749604,
+        "cpu_seconds": 2.56,
+        "cpu_percent_one_core": 68.47247582975595,
+        "latency_ms": {
+          "p50": 0.06957799996598624,
+          "p95": 0.3512939993015607,
+          "p99": 1.4626100000896258,
+          "maximum": 8.62647800022387
+        },
+        "write_chars": 1246868977,
+        "write_syscalls": 19298,
+        "peak_rss": 33648640,
+        "kernel_peak_rss": 33648640,
+        "final_rss": 33648640,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 25000,
+        "bytes": 5005651,
+        "messages": 25000,
+        "gzip_bytes": 280937
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.1035903800002416,
+          "Rss": 21389312,
+          "Pss": 12571648,
+          "USS": 12197888,
+          "Swap": 0,
+          "cpu_seconds": 0.01,
+          "threads": 4,
+          "io_wchar": 15160,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 25000,
+          "seconds": 5.8431843799999115,
+          "Rss": 33648640,
+          "Pss": 24830976,
+          "USS": 24457216,
+          "Swap": 0,
+          "cpu_seconds": 2.57,
+          "threads": 4,
+          "io_wchar": 1246884137,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 25000,
+          "seconds": 6.849216096999953,
+          "Rss": 33648640,
+          "Pss": 24830976,
+          "USS": 24457216,
+          "Swap": 0,
+          "cpu_seconds": 2.57,
+          "threads": 4,
+          "io_wchar": 1246884137,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 25000,
+          "seconds": 10.851661151000371,
+          "Rss": 33648640,
+          "Pss": 24830976,
+          "USS": 24457216,
+          "Swap": 0,
+          "cpu_seconds": 2.57,
+          "threads": 3,
+          "io_wchar": 1246884137,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 25000,
+          "seconds": 20.85452028600048,
+          "Rss": 33648640,
+          "Pss": 24830976,
+          "USS": 24457216,
+          "Swap": 0,
+          "cpu_seconds": 2.57,
+          "threads": 3,
+          "io_wchar": 1246884137,
+          "io_write_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "final-verified-10k",
+      "case": "unique",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "e0d04b02e054af978d308b32e08e4d5b6ef328213698f8bad0e7e17ffee23d38",
+        "instrumented": false,
+        "messages": 10000,
+        "cases": [
+          "unique"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "visit_community": false,
+        "rate": 1000,
+        "seed": null,
+        "env": [],
+        "sync_storage": false,
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 10.005383228999563,
+        "delivered_rate": 999.4619667356709,
+        "cpu_seconds": 3.8200000000000003,
+        "cpu_percent_one_core": 38.17944712930263,
+        "latency_ms": {
+          "p50": 0.5960820008112933,
+          "p95": 0.9407640000063111,
+          "p99": 2.4719619996176334,
+          "maximum": 6.02641799923731
+        },
+        "write_chars": 198158677,
+        "write_syscalls": 3128,
+        "peak_rss": 27348992,
+        "kernel_peak_rss": 27348992,
+        "final_rss": 27348992,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 10000,
+        "bytes": 1975651,
+        "messages": 10000,
+        "gzip_bytes": 111936
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.103294194999762,
+          "Rss": 21278720,
+          "Pss": 12561408,
+          "USS": 12206080,
+          "Swap": 0,
+          "cpu_seconds": 0.01,
+          "threads": 4,
+          "io_wchar": 15160,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 10000,
+          "seconds": 12.10981015499965,
+          "Rss": 27348992,
+          "Pss": 18631680,
+          "USS": 18276352,
+          "Swap": 0,
+          "cpu_seconds": 3.83,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 10000,
+          "seconds": 13.113250657000208,
+          "Rss": 27348992,
+          "Pss": 18631680,
+          "USS": 18276352,
+          "Swap": 0,
+          "cpu_seconds": 3.83,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 10000,
+          "seconds": 17.11572830299974,
+          "Rss": 27348992,
+          "Pss": 18631680,
+          "USS": 18276352,
+          "Swap": 0,
+          "cpu_seconds": 3.83,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 10000,
+          "seconds": 27.11799008900016,
+          "Rss": 27348992,
+          "Pss": 18631680,
+          "USS": 18276352,
+          "Swap": 0,
+          "cpu_seconds": 3.83,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "release-baseline-10k",
+      "case": "unique",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "6e9d5f04955a52822f9c2a1f84d82a0c9ef4430fbab463d284ffe68e8060c934",
+        "instrumented": false,
+        "messages": 10000,
+        "cases": [
+          "unique"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "rate": 1000,
+        "seed": null,
+        "env": [],
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 24.77757246200008,
+        "delivered_rate": 403.5907882152869,
+        "cpu_seconds": 22.6,
+        "cpu_percent_one_core": 91.21151813665485,
+        "latency_ms": {
+          "p50": 1.5263090003827529,
+          "p95": 4.458113999589841,
+          "p99": 30.438629999935074,
+          "maximum": 68.11479199996029
+        },
+        "write_chars": 198158677,
+        "write_syscalls": 201,
+        "peak_rss": 122720256,
+        "kernel_peak_rss": 122343424,
+        "final_rss": 107081728,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 10000,
+        "bytes": 1975651,
+        "messages": 10000,
+        "gzip_bytes": 111726
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.1033504150000226,
+          "Rss": 21196800,
+          "Pss": 12480512,
+          "USS": 12120064,
+          "Swap": 0,
+          "cpu_seconds": 0.0,
+          "threads": 4,
+          "io_wchar": 15094,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 10000,
+          "seconds": 26.881578247000107,
+          "Rss": 107081728,
+          "Pss": 98365440,
+          "USS": 98004992,
+          "Swap": 0,
+          "cpu_seconds": 22.6,
+          "threads": 3,
+          "io_wchar": 198173771,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 10000,
+          "seconds": 27.883970592999958,
+          "Rss": 107081728,
+          "Pss": 98365440,
+          "USS": 98004992,
+          "Swap": 0,
+          "cpu_seconds": 22.6,
+          "threads": 3,
+          "io_wchar": 198173771,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 10000,
+          "seconds": 31.889216210000086,
+          "Rss": 107081728,
+          "Pss": 98365440,
+          "USS": 98004992,
+          "Swap": 0,
+          "cpu_seconds": 22.6,
+          "threads": 3,
+          "io_wchar": 198173771,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 10000,
+          "seconds": 41.8932445559999,
+          "Rss": 107081728,
+          "Pss": 98365440,
+          "USS": 98004992,
+          "Swap": 0,
+          "cpu_seconds": 22.6,
+          "threads": 3,
+          "io_wchar": 198173771,
+          "io_write_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "release-baseline-25k",
+      "case": "unique",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "6e9d5f04955a52822f9c2a1f84d82a0c9ef4430fbab463d284ffe68e8060c934",
+        "instrumented": false,
+        "messages": 25000,
+        "cases": [
+          "unique"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "rate": 0,
+        "seed": null,
+        "env": [],
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 204.56617961500024,
+        "delivered_rate": 122.20983960814422,
+        "cpu_seconds": 198.88,
+        "cpu_percent_one_core": 97.22037160507088,
+        "latency_ms": {
+          "p50": 6.637905999923532,
+          "p95": 16.53519100000267,
+          "p99": 86.65751199987426,
+          "maximum": 205.40017500024987
+        },
+        "write_chars": 1246868977,
+        "write_syscalls": 501,
+        "peak_rss": 278999040,
+        "kernel_peak_rss": 278491136,
+        "final_rss": 235544576,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 25000,
+        "bytes": 5005651,
+        "messages": 25000,
+        "gzip_bytes": 277738
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.1028312729999925,
+          "Rss": 21336064,
+          "Pss": 12594176,
+          "USS": 12226560,
+          "Swap": 0,
+          "cpu_seconds": 0.01,
+          "threads": 4,
+          "io_wchar": 15094,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 25000,
+          "seconds": 206.66774210999984,
+          "Rss": 278999040,
+          "Pss": 270257152,
+          "USS": 269889536,
+          "Swap": 0,
+          "cpu_seconds": 198.89,
+          "threads": 3,
+          "io_wchar": 1246884071,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 25000,
+          "seconds": 207.67419586300002,
+          "Rss": 235544576,
+          "Pss": 226802688,
+          "USS": 226435072,
+          "Swap": 0,
+          "cpu_seconds": 198.89,
+          "threads": 3,
+          "io_wchar": 1246884071,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 25000,
+          "seconds": 211.67977849099998,
+          "Rss": 235544576,
+          "Pss": 226802688,
+          "USS": 226435072,
+          "Swap": 0,
+          "cpu_seconds": 198.89,
+          "threads": 3,
+          "io_wchar": 1246884071,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 25000,
+          "seconds": 221.68265691099987,
+          "Rss": 235544576,
+          "Pss": 226797568,
+          "USS": 226435072,
+          "Swap": 0,
+          "cpu_seconds": 198.89,
+          "threads": 3,
+          "io_wchar": 1246884071,
+          "io_write_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "release-final-10k-1",
+      "case": "unique",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "b2d5da825dffbc5f14a73257a7e7ee69c4f45dd2b75b2bc1e346301e0859076f",
+        "instrumented": false,
+        "messages": 10000,
+        "cases": [
+          "unique"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "rate": 1000,
+        "seed": null,
+        "env": [],
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 10.00390115900018,
+        "delivered_rate": 999.6100362310488,
+        "cpu_seconds": 3.91,
+        "cpu_percent_one_core": 39.08475241663401,
+        "latency_ms": {
+          "p50": 0.5830489999425481,
+          "p95": 0.9473579998484638,
+          "p99": 3.0651739998575067,
+          "maximum": 5.8375960002194915
+        },
+        "write_chars": 198158677,
+        "write_syscalls": 3128,
+        "peak_rss": 27418624,
+        "kernel_peak_rss": 27418624,
+        "final_rss": 27418624,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 10000,
+        "bytes": 1975651,
+        "messages": 10000,
+        "gzip_bytes": 112965
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.1036824900002102,
+          "Rss": 21364736,
+          "Pss": 12562432,
+          "USS": 12193792,
+          "Swap": 0,
+          "cpu_seconds": 0.01,
+          "threads": 4,
+          "io_wchar": 15160,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 10000,
+          "seconds": 12.108640508000008,
+          "Rss": 27418624,
+          "Pss": 18616320,
+          "USS": 18247680,
+          "Swap": 0,
+          "cpu_seconds": 3.92,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 10000,
+          "seconds": 13.111960192999959,
+          "Rss": 27418624,
+          "Pss": 18616320,
+          "USS": 18247680,
+          "Swap": 0,
+          "cpu_seconds": 3.92,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 10000,
+          "seconds": 17.114540470000065,
+          "Rss": 27418624,
+          "Pss": 18616320,
+          "USS": 18247680,
+          "Swap": 0,
+          "cpu_seconds": 3.92,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 10000,
+          "seconds": 27.117879818000347,
+          "Rss": 27418624,
+          "Pss": 18616320,
+          "USS": 18247680,
+          "Swap": 0,
+          "cpu_seconds": 3.92,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "release-final-10k-2",
+      "case": "unique",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "b2d5da825dffbc5f14a73257a7e7ee69c4f45dd2b75b2bc1e346301e0859076f",
+        "instrumented": false,
+        "messages": 10000,
+        "cases": [
+          "unique"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "rate": 1000,
+        "seed": null,
+        "env": [],
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 10.00496273600038,
+        "delivered_rate": 999.5039725652828,
+        "cpu_seconds": 3.92,
+        "cpu_percent_one_core": 39.180555724559085,
+        "latency_ms": {
+          "p50": 0.6183269997563912,
+          "p95": 0.9337139999843203,
+          "p99": 2.812054000060016,
+          "maximum": 6.129836000127398
+        },
+        "write_chars": 198158677,
+        "write_syscalls": 3128,
+        "peak_rss": 27328512,
+        "kernel_peak_rss": 27328512,
+        "final_rss": 27328512,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 10000,
+        "bytes": 1975651,
+        "messages": 10000,
+        "gzip_bytes": 113080
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.10360693299981,
+          "Rss": 21168128,
+          "Pss": 12487680,
+          "USS": 12124160,
+          "Swap": 0,
+          "cpu_seconds": 0.0,
+          "threads": 4,
+          "io_wchar": 15160,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 10000,
+          "seconds": 12.109583923000173,
+          "Rss": 27328512,
+          "Pss": 18648064,
+          "USS": 18284544,
+          "Swap": 0,
+          "cpu_seconds": 3.92,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 10000,
+          "seconds": 13.112701629000185,
+          "Rss": 27328512,
+          "Pss": 18648064,
+          "USS": 18284544,
+          "Swap": 0,
+          "cpu_seconds": 3.92,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 10000,
+          "seconds": 17.114727109999876,
+          "Rss": 27328512,
+          "Pss": 18648064,
+          "USS": 18284544,
+          "Swap": 0,
+          "cpu_seconds": 3.92,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 10000,
+          "seconds": 27.117036881999866,
+          "Rss": 27328512,
+          "Pss": 18647040,
+          "USS": 18284544,
+          "Swap": 0,
+          "cpu_seconds": 3.92,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "final-current-10k",
+      "case": "unique",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "44fb99f34f41ca0cae1fc1ddbdc3b0f30ce4b1232418dea2c1c8def177940d8e",
+        "instrumented": false,
+        "messages": 10000,
+        "cases": [
+          "unique"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "rate": 1000,
+        "seed": null,
+        "env": [],
+        "sync_storage": false,
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 10.007628598000338,
+        "delivered_rate": 999.237721711429,
+        "cpu_seconds": 3.8600000000000003,
+        "cpu_percent_one_core": 38.570576058061164,
+        "latency_ms": {
+          "p50": 0.5575580003096547,
+          "p95": 0.8194319998438004,
+          "p99": 2.885037999931228,
+          "maximum": 5.420409000180371
+        },
+        "write_chars": 198158677,
+        "write_syscalls": 3128,
+        "peak_rss": 28327936,
+        "kernel_peak_rss": 28327936,
+        "final_rss": 28327936,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 10000,
+        "bytes": 1975651,
+        "messages": 10000,
+        "gzip_bytes": 113049
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.105350785000155,
+          "Rss": 21450752,
+          "Pss": 12593152,
+          "USS": 12218368,
+          "Swap": 0,
+          "cpu_seconds": 0.01,
+          "threads": 4,
+          "io_wchar": 15160,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 10000,
+          "seconds": 12.114061527000104,
+          "Rss": 28327936,
+          "Pss": 19471360,
+          "USS": 19095552,
+          "Swap": 0,
+          "cpu_seconds": 3.87,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 10000,
+          "seconds": 13.11761935300001,
+          "Rss": 28327936,
+          "Pss": 19432448,
+          "USS": 19095552,
+          "Swap": 0,
+          "cpu_seconds": 3.87,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 10000,
+          "seconds": 17.118514052000137,
+          "Rss": 28327936,
+          "Pss": 19464192,
+          "USS": 19095552,
+          "Swap": 0,
+          "cpu_seconds": 3.87,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 10000,
+          "seconds": 27.11931293600037,
+          "Rss": 28327936,
+          "Pss": 19470336,
+          "USS": 19095552,
+          "Swap": 0,
+          "cpu_seconds": 3.87,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "final-current-25k",
+      "case": "unique",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "44fb99f34f41ca0cae1fc1ddbdc3b0f30ce4b1232418dea2c1c8def177940d8e",
+        "instrumented": false,
+        "messages": 25000,
+        "cases": [
+          "unique"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "rate": 0,
+        "seed": null,
+        "env": [],
+        "sync_storage": false,
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 3.606665516999783,
+        "delivered_rate": 6931.610342618169,
+        "cpu_seconds": 2.49,
+        "cpu_percent_one_core": 69.03883901247697,
+        "latency_ms": {
+          "p50": 0.06979899990255944,
+          "p95": 0.3300480002508266,
+          "p99": 1.55144400014251,
+          "maximum": 7.491317000130948
+        },
+        "write_chars": 1246868977,
+        "write_syscalls": 19298,
+        "peak_rss": 35102720,
+        "kernel_peak_rss": 35102720,
+        "final_rss": 35102720,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 25000,
+        "bytes": 5005651,
+        "messages": 25000,
+        "gzip_bytes": 280373
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.1036795240001993,
+          "Rss": 21368832,
+          "Pss": 12561408,
+          "USS": 12185600,
+          "Swap": 0,
+          "cpu_seconds": 0.01,
+          "threads": 4,
+          "io_wchar": 15160,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 25000,
+          "seconds": 5.711624642000061,
+          "Rss": 35102720,
+          "Pss": 26295296,
+          "USS": 25919488,
+          "Swap": 0,
+          "cpu_seconds": 2.5,
+          "threads": 4,
+          "io_wchar": 1246884137,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 25000,
+          "seconds": 6.714645747000304,
+          "Rss": 35102720,
+          "Pss": 26295296,
+          "USS": 25919488,
+          "Swap": 0,
+          "cpu_seconds": 2.5,
+          "threads": 4,
+          "io_wchar": 1246884137,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 25000,
+          "seconds": 10.717077796000012,
+          "Rss": 35102720,
+          "Pss": 26295296,
+          "USS": 25919488,
+          "Swap": 0,
+          "cpu_seconds": 2.5,
+          "threads": 3,
+          "io_wchar": 1246884137,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 25000,
+          "seconds": 20.71965690900015,
+          "Rss": 35102720,
+          "Pss": 26295296,
+          "USS": 25919488,
+          "Swap": 0,
+          "cpu_seconds": 2.5,
+          "threads": 3,
+          "io_wchar": 1246884137,
+          "io_write_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "final-current-restart",
+      "case": "repeat",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "44fb99f34f41ca0cae1fc1ddbdc3b0f30ce4b1232418dea2c1c8def177940d8e",
+        "instrumented": false,
+        "messages": 1000,
+        "cases": [
+          "repeat"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "rate": 1000,
+        "seed": "/tmp/streamerz-memory-experiments/final-current-25k/unique/community.json",
+        "env": [],
+        "sync_storage": false,
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 1.0098890489998666,
+        "delivered_rate": 990.2077866774968,
+        "cpu_seconds": 0.39,
+        "cpu_percent_one_core": 38.61810368042237,
+        "latency_ms": {
+          "p50": 0.4234970001562033,
+          "p95": 0.7515649999731977,
+          "p99": 8.997768999961409,
+          "maximum": 10.38724000000002
+        },
+        "write_chars": 100116420,
+        "write_syscalls": 1540,
+        "peak_rss": 67887104,
+        "kernel_peak_rss": 66805760,
+        "final_rss": 51761152,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 25000,
+        "bytes": 5005831,
+        "messages": 26000,
+        "gzip_bytes": 280425
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.1415343120002035,
+          "Rss": 33316864,
+          "Pss": 24499200,
+          "USS": 24125440,
+          "Swap": 0,
+          "cpu_seconds": 0.14,
+          "threads": 4,
+          "io_wchar": 5305283,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 1000,
+          "seconds": 3.153860630000054,
+          "Rss": 33316864,
+          "Pss": 24499200,
+          "USS": 24125440,
+          "Swap": 0,
+          "cpu_seconds": 0.53,
+          "threads": 4,
+          "io_wchar": 105421703,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 1000,
+          "seconds": 4.154882544999964,
+          "Rss": 33316864,
+          "Pss": 24499200,
+          "USS": 24125440,
+          "Swap": 0,
+          "cpu_seconds": 0.53,
+          "threads": 4,
+          "io_wchar": 105421703,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 1000,
+          "seconds": 8.157404341000074,
+          "Rss": 33316864,
+          "Pss": 24499200,
+          "USS": 24125440,
+          "Swap": 0,
+          "cpu_seconds": 0.53,
+          "threads": 4,
+          "io_wchar": 105421703,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 1000,
+          "seconds": 18.159569792000184,
+          "Rss": 33316864,
+          "Pss": 24499200,
+          "USS": 24125440,
+          "Swap": 0,
+          "cpu_seconds": 0.53,
+          "threads": 3,
+          "io_wchar": 105421703,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "community_shown",
+          "messages": 1000,
+          "seconds": 20.34455128799982,
+          "Rss": 61038592,
+          "Pss": 46461952,
+          "USS": 44920832,
+          "Swap": 0,
+          "cpu_seconds": 0.76,
+          "threads": 4,
+          "io_wchar": 105795789,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "community_left",
+          "messages": 1000,
+          "seconds": 22.03266619599981,
+          "Rss": 50814976,
+          "Pss": 33120256,
+          "USS": 30539776,
+          "Swap": 0,
+          "cpu_seconds": 0.89,
+          "threads": 7,
+          "io_wchar": 106506586,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "community_hidden",
+          "messages": 1000,
+          "seconds": 25.20536445300013,
+          "Rss": 51761152,
+          "Pss": 34065408,
+          "USS": 31485952,
+          "Swap": 0,
+          "cpu_seconds": 1.08,
+          "threads": 7,
+          "io_wchar": 111615755,
+          "io_write_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "release-final-repeat",
+      "case": "repeat",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "b2d5da825dffbc5f14a73257a7e7ee69c4f45dd2b75b2bc1e346301e0859076f",
+        "instrumented": false,
+        "messages": 10000,
+        "cases": [
+          "repeat"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "rate": 1000,
+        "seed": null,
+        "env": [],
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 10.00274667199983,
+        "delivered_rate": 999.7254082213719,
+        "cpu_seconds": 3.06,
+        "cpu_percent_one_core": 30.59159749157398,
+        "latency_ms": {
+          "p50": 0.5961159999969823,
+          "p95": 0.8714840000720869,
+          "p99": 0.9946119998858194,
+          "maximum": 1.8350129998907505
+        },
+        "write_chars": 422727,
+        "write_syscalls": 201,
+        "peak_rss": 21700608,
+        "kernel_peak_rss": 21700608,
+        "final_rss": 21700608,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 10,
+        "bytes": 2141,
+        "messages": 10000,
+        "gzip_bytes": 311
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.1031610820000424,
+          "Rss": 21213184,
+          "Pss": 12564480,
+          "USS": 12197888,
+          "Swap": 0,
+          "cpu_seconds": 0.01,
+          "threads": 4,
+          "io_wchar": 15160,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 10000,
+          "seconds": 12.106782789000135,
+          "Rss": 21700608,
+          "Pss": 13051904,
+          "USS": 12685312,
+          "Swap": 0,
+          "cpu_seconds": 3.07,
+          "threads": 3,
+          "io_wchar": 437887,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 10000,
+          "seconds": 13.110607629999777,
+          "Rss": 21700608,
+          "Pss": 13051904,
+          "USS": 12685312,
+          "Swap": 0,
+          "cpu_seconds": 3.07,
+          "threads": 3,
+          "io_wchar": 437887,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 10000,
+          "seconds": 17.11323183500008,
+          "Rss": 21700608,
+          "Pss": 13051904,
+          "USS": 12685312,
+          "Swap": 0,
+          "cpu_seconds": 3.07,
+          "threads": 3,
+          "io_wchar": 437887,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 10000,
+          "seconds": 27.115611418999833,
+          "Rss": 21700608,
+          "Pss": 13051904,
+          "USS": 12685312,
+          "Swap": 0,
+          "cpu_seconds": 3.07,
+          "threads": 3,
+          "io_wchar": 437887,
+          "io_write_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "refined-ttl",
+      "case": "ttl",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "ee34a4491e13fab099714224179b9827fa8573395d4636be274ab5be7e8269c0",
+        "instrumented": false,
+        "messages": 10000,
+        "cases": [
+          "ttl"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "rate": 1000,
+        "seed": null,
+        "env": [],
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 10.004306673999963,
+        "delivered_rate": 999.5695179945698,
+        "cpu_seconds": 3.2,
+        "cpu_percent_one_core": 31.98622457582623,
+        "latency_ms": {
+          "p50": 0.576011999783077,
+          "p95": 0.8992329999273352,
+          "p99": 2.256941000268853,
+          "maximum": 5.24392799979978
+        },
+        "write_chars": 198158709,
+        "write_syscalls": 3132,
+        "peak_rss": 34758656,
+        "kernel_peak_rss": 34201600,
+        "final_rss": 34201600,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 10000,
+        "bytes": 1975651,
+        "messages": 10000,
+        "gzip_bytes": 113049
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.1035593740002696,
+          "Rss": 28344320,
+          "Pss": 19632128,
+          "USS": 19271680,
+          "Swap": 0,
+          "cpu_seconds": 0.01,
+          "threads": 4,
+          "io_wchar": 15939,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 10000,
+          "seconds": 12.108958115000405,
+          "Rss": 34758656,
+          "Pss": 26046464,
+          "USS": 25686016,
+          "Swap": 0,
+          "cpu_seconds": 3.21,
+          "threads": 3,
+          "io_wchar": 198174648,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 10000,
+          "seconds": 13.112301709000349,
+          "Rss": 34758656,
+          "Pss": 26046464,
+          "USS": 25686016,
+          "Swap": 0,
+          "cpu_seconds": 3.21,
+          "threads": 3,
+          "io_wchar": 198174656,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 10000,
+          "seconds": 17.115780823000023,
+          "Rss": 34201600,
+          "Pss": 25489408,
+          "USS": 25128960,
+          "Swap": 0,
+          "cpu_seconds": 3.21,
+          "threads": 3,
+          "io_wchar": 198174664,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 10000,
+          "seconds": 27.11823610400006,
+          "Rss": 34201600,
+          "Pss": 25489408,
+          "USS": 25128960,
+          "Swap": 0,
+          "cpu_seconds": 3.21,
+          "threads": 3,
+          "io_wchar": 198174664,
+          "io_write_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "ui-full-records-25k",
+      "case": "repeat",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "b2d5da825dffbc5f14a73257a7e7ee69c4f45dd2b75b2bc1e346301e0859076f",
+        "instrumented": false,
+        "messages": 1000,
+        "cases": [
+          "repeat"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "rate": 1000,
+        "seed": "/tmp/streamerz-memory-experiments/final-current-25k/unique/community.json",
+        "env": [],
+        "sync_storage": false,
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 1.0098681540002872,
+        "delivered_rate": 990.2282748879668,
+        "cpu_seconds": 0.26,
+        "cpu_percent_one_core": 25.74593514708714,
+        "latency_ms": {
+          "p50": 0.23066999983711867,
+          "p95": 0.6787439997424372,
+          "p99": 4.692992999480339,
+          "maximum": 10.273276999214431
+        },
+        "write_chars": 100116620,
+        "write_syscalls": 1540,
+        "peak_rss": 118718464,
+        "kernel_peak_rss": 118562816,
+        "final_rss": 50737152,
+        "idle_cpu_seconds": 0.010000000000000009
+      },
+      "saved": {
+        "users": 25000,
+        "bytes": 5005841,
+        "messages": 26000,
+        "gzip_bytes": 280427
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.174485137999909,
+          "Rss": 33210368,
+          "Pss": 24481792,
+          "USS": 24129536,
+          "Swap": 0,
+          "cpu_seconds": 0.17,
+          "threads": 4,
+          "io_wchar": 5305283,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 1000,
+          "seconds": 3.1848301890004223,
+          "Rss": 33210368,
+          "Pss": 24481792,
+          "USS": 24129536,
+          "Swap": 0,
+          "cpu_seconds": 0.43,
+          "threads": 4,
+          "io_wchar": 105421903,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 1000,
+          "seconds": 4.1858814360002725,
+          "Rss": 33210368,
+          "Pss": 24481792,
+          "USS": 24129536,
+          "Swap": 0,
+          "cpu_seconds": 0.43,
+          "threads": 4,
+          "io_wchar": 105421903,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 1000,
+          "seconds": 8.187956323000435,
+          "Rss": 33210368,
+          "Pss": 24481792,
+          "USS": 24129536,
+          "Swap": 0,
+          "cpu_seconds": 0.43,
+          "threads": 4,
+          "io_wchar": 105421903,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 1000,
+          "seconds": 18.189401028000248,
+          "Rss": 33210368,
+          "Pss": 24481792,
+          "USS": 24129536,
+          "Swap": 0,
+          "cpu_seconds": 0.44,
+          "threads": 3,
+          "io_wchar": 105421903,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "community_shown",
+          "messages": 1000,
+          "seconds": 20.565896901000087,
+          "Rss": 110071808,
+          "Pss": 95625216,
+          "USS": 94089216,
+          "Swap": 0,
+          "cpu_seconds": 0.86,
+          "threads": 4,
+          "io_wchar": 105795989,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "community_left",
+          "messages": 1000,
+          "seconds": 22.256705327000418,
+          "Rss": 50708480,
+          "Pss": 33137664,
+          "USS": 30580736,
+          "Swap": 0,
+          "cpu_seconds": 0.99,
+          "threads": 7,
+          "io_wchar": 106506795,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "community_hidden",
+          "messages": 1000,
+          "seconds": 25.61188503700032,
+          "Rss": 50737152,
+          "Pss": 33166336,
+          "USS": 30609408,
+          "Swap": 0,
+          "cpu_seconds": 1.37,
+          "threads": 7,
+          "io_wchar": 111714807,
+          "io_write_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "disk-buffered",
+      "case": "repeat",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "44fb99f34f41ca0cae1fc1ddbdc3b0f30ce4b1232418dea2c1c8def177940d8e",
+        "instrumented": false,
+        "messages": 1000,
+        "cases": [
+          "repeat"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "rate": 1000,
+        "seed": "/tmp/streamerz-memory-experiments/final-current-25k/unique/community.json",
+        "env": [
+          "STREAMERZ_MEMORY_WRITE=buffered"
+        ],
+        "sync_storage": true,
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 1.0084390279998843,
+        "delivered_rate": 991.6315932192529,
+        "cpu_seconds": 0.43999999999999995,
+        "cpu_percent_one_core": 43.63179010164712,
+        "latency_ms": {
+          "p50": 0.4983699996046198,
+          "p95": 0.7201530002021173,
+          "p99": 6.588208000266604,
+          "maximum": 7.868841999879805
+        },
+        "write_chars": 100116420,
+        "write_syscalls": 20,
+        "peak_rss": 43749376,
+        "kernel_peak_rss": 43749376,
+        "final_rss": 43749376,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 25000,
+        "bytes": 5005831,
+        "messages": 26000,
+        "gzip_bytes": 280425
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.172825750999891,
+          "Rss": 33177600,
+          "Pss": 24379392,
+          "USS": 24010752,
+          "Swap": 0,
+          "cpu_seconds": 0.15,
+          "threads": 4,
+          "io_wchar": 5305391,
+          "io_write_bytes": 475136
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 1000,
+          "seconds": 3.1816539689998535,
+          "Rss": 43749376,
+          "Pss": 34951168,
+          "USS": 34582528,
+          "Swap": 0,
+          "cpu_seconds": 0.59,
+          "threads": 5,
+          "io_wchar": 105421811,
+          "io_write_bytes": 100663296
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 1000,
+          "seconds": 4.183789703000002,
+          "Rss": 43749376,
+          "Pss": 34951168,
+          "USS": 34582528,
+          "Swap": 0,
+          "cpu_seconds": 0.59,
+          "threads": 4,
+          "io_wchar": 105421811,
+          "io_write_bytes": 100663296
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 1000,
+          "seconds": 8.186661244999868,
+          "Rss": 43749376,
+          "Pss": 34951168,
+          "USS": 34582528,
+          "Swap": 0,
+          "cpu_seconds": 0.59,
+          "threads": 4,
+          "io_wchar": 105421811,
+          "io_write_bytes": 100663296
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 1000,
+          "seconds": 18.187810768999952,
+          "Rss": 43749376,
+          "Pss": 34951168,
+          "USS": 34582528,
+          "Swap": 0,
+          "cpu_seconds": 0.59,
+          "threads": 3,
+          "io_wchar": 105421811,
+          "io_write_bytes": 100663296
+        }
+      ]
+    },
+    {
+      "name": "disk-stream",
+      "case": "repeat",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "44fb99f34f41ca0cae1fc1ddbdc3b0f30ce4b1232418dea2c1c8def177940d8e",
+        "instrumented": false,
+        "messages": 1000,
+        "cases": [
+          "repeat"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "rate": 1000,
+        "seed": "/tmp/streamerz-memory-experiments/final-current-25k/unique/community.json",
+        "env": [],
+        "sync_storage": true,
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 1.0120343769999636,
+        "delivered_rate": 988.1087270615867,
+        "cpu_seconds": 0.38,
+        "cpu_percent_one_core": 37.5481316283403,
+        "latency_ms": {
+          "p50": 0.3723640002135653,
+          "p95": 0.8195039999918663,
+          "p99": 11.242335999668285,
+          "maximum": 12.983686000097805
+        },
+        "write_chars": 100116420,
+        "write_syscalls": 1540,
+        "peak_rss": 33153024,
+        "kernel_peak_rss": 33153024,
+        "final_rss": 33153024,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 25000,
+        "bytes": 5005831,
+        "messages": 26000,
+        "gzip_bytes": 280424
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.1666068009999435,
+          "Rss": 33153024,
+          "Pss": 24390656,
+          "USS": 24027136,
+          "Swap": 0,
+          "cpu_seconds": 0.15,
+          "threads": 4,
+          "io_wchar": 5305391,
+          "io_write_bytes": 425984
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 1000,
+          "seconds": 3.179243927999778,
+          "Rss": 33153024,
+          "Pss": 24390656,
+          "USS": 24027136,
+          "Swap": 0,
+          "cpu_seconds": 0.53,
+          "threads": 4,
+          "io_wchar": 105421811,
+          "io_write_bytes": 100614144
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 1000,
+          "seconds": 4.180287173000124,
+          "Rss": 33153024,
+          "Pss": 24390656,
+          "USS": 24027136,
+          "Swap": 0,
+          "cpu_seconds": 0.53,
+          "threads": 4,
+          "io_wchar": 105421811,
+          "io_write_bytes": 100614144
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 1000,
+          "seconds": 8.182580787000006,
+          "Rss": 33153024,
+          "Pss": 24390656,
+          "USS": 24027136,
+          "Swap": 0,
+          "cpu_seconds": 0.53,
+          "threads": 4,
+          "io_wchar": 105421811,
+          "io_write_bytes": 100614144
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 1000,
+          "seconds": 18.184345136000047,
+          "Rss": 33153024,
+          "Pss": 24390656,
+          "USS": 24027136,
+          "Swap": 0,
+          "cpu_seconds": 0.53,
+          "threads": 3,
+          "io_wchar": 105421811,
+          "io_write_bytes": 100614144
+        }
+      ]
+    },
+    {
+      "name": "sustained-60k",
+      "case": "repeat",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "44fb99f34f41ca0cae1fc1ddbdc3b0f30ce4b1232418dea2c1c8def177940d8e",
+        "instrumented": false,
+        "messages": 60000,
+        "cases": [
+          "repeat"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "rate": 1000,
+        "seed": "/tmp/streamerz-memory-experiments/final-current-25k/unique/community.json",
+        "env": [],
+        "sync_storage": true,
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 60.01326849999987,
+        "delivered_rate": 999.7789072261601,
+        "cpu_seconds": 22.119999999999997,
+        "cpu_percent_one_core": 36.85851571307109,
+        "latency_ms": {
+          "p50": 0.39213400032167556,
+          "p95": 0.7124610001483234,
+          "p99": 10.824183999829984,
+          "maximum": 23.72359199944185
+        },
+        "write_chars": 6007019010,
+        "write_syscalls": 92400,
+        "peak_rss": 33316864,
+        "kernel_peak_rss": 33316864,
+        "final_rss": 33316864,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 25000,
+        "bytes": 5005851,
+        "messages": 85000,
+        "gzip_bytes": 280426
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.18269722200057,
+          "Rss": 33316864,
+          "Pss": 24554496,
+          "USS": 24186880,
+          "Swap": 0,
+          "cpu_seconds": 0.17,
+          "threads": 4,
+          "io_wchar": 5305391,
+          "io_write_bytes": 475136
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 60000,
+          "seconds": 62.19573749400024,
+          "Rss": 33316864,
+          "Pss": 24554496,
+          "USS": 24186880,
+          "Swap": 0,
+          "cpu_seconds": 22.29,
+          "threads": 3,
+          "io_wchar": 6012324401,
+          "io_write_bytes": 6012305408
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 60000,
+          "seconds": 63.210766203000276,
+          "Rss": 33316864,
+          "Pss": 24554496,
+          "USS": 24186880,
+          "Swap": 0,
+          "cpu_seconds": 22.29,
+          "threads": 3,
+          "io_wchar": 6012324401,
+          "io_write_bytes": 6012305408
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 60000,
+          "seconds": 67.21387294000033,
+          "Rss": 33316864,
+          "Pss": 24554496,
+          "USS": 24186880,
+          "Swap": 0,
+          "cpu_seconds": 22.29,
+          "threads": 3,
+          "io_wchar": 6012324401,
+          "io_write_bytes": 6012305408
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 60000,
+          "seconds": 77.21641563499998,
+          "Rss": 33316864,
+          "Pss": 24553472,
+          "USS": 24186880,
+          "Swap": 0,
+          "cpu_seconds": 22.29,
+          "threads": 3,
+          "io_wchar": 6012324401,
+          "io_write_bytes": 6012305408
+        }
+      ]
+    },
+    {
+      "name": "matrix-map-legacy",
+      "case": "unique",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "44fb99f34f41ca0cae1fc1ddbdc3b0f30ce4b1232418dea2c1c8def177940d8e",
+        "instrumented": false,
+        "messages": 10000,
+        "cases": [
+          "unique"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "rate": 1000,
+        "seed": null,
+        "env": [
+          "STREAMERZ_MEMORY_WRITE=buffered",
+          "STREAMERZ_MEMORY_RECORDS=map",
+          "STREAMERZ_MEMORY_SAVE=legacy"
+        ],
+        "sync_storage": false,
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 10.883473577999212,
+        "delivered_rate": 918.8243007466715,
+        "cpu_seconds": 8.52,
+        "cpu_percent_one_core": 78.28383042361641,
+        "latency_ms": {
+          "p50": 0.20756199955940247,
+          "p95": 0.715971999852627,
+          "p99": 35.84327200042026,
+          "maximum": 70.23004799975752
+        },
+        "write_chars": 198158677,
+        "write_syscalls": 201,
+        "peak_rss": 123764736,
+        "kernel_peak_rss": 123359232,
+        "final_rss": 107290624,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 10000,
+        "bytes": 1975651,
+        "messages": 10000,
+        "gzip_bytes": 111963
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.103583351999987,
+          "Rss": 21286912,
+          "Pss": 12587008,
+          "USS": 12222464,
+          "Swap": 0,
+          "cpu_seconds": 0.01,
+          "threads": 4,
+          "io_wchar": 15160,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 10000,
+          "seconds": 12.986920934999944,
+          "Rss": 107290624,
+          "Pss": 98591744,
+          "USS": 98226176,
+          "Swap": 0,
+          "cpu_seconds": 8.53,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 10000,
+          "seconds": 13.989034572999117,
+          "Rss": 107290624,
+          "Pss": 98590720,
+          "USS": 98226176,
+          "Swap": 0,
+          "cpu_seconds": 8.53,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 10000,
+          "seconds": 17.99025719399924,
+          "Rss": 107290624,
+          "Pss": 98591744,
+          "USS": 98226176,
+          "Swap": 0,
+          "cpu_seconds": 8.53,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 10000,
+          "seconds": 27.993827374999455,
+          "Rss": 107290624,
+          "Pss": 98591744,
+          "USS": 98226176,
+          "Swap": 0,
+          "cpu_seconds": 8.53,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "matrix-map-borrowed",
+      "case": "unique",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "44fb99f34f41ca0cae1fc1ddbdc3b0f30ce4b1232418dea2c1c8def177940d8e",
+        "instrumented": false,
+        "messages": 10000,
+        "cases": [
+          "unique"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "rate": 1000,
+        "seed": null,
+        "env": [
+          "STREAMERZ_MEMORY_WRITE=buffered",
+          "STREAMERZ_MEMORY_RECORDS=map"
+        ],
+        "sync_storage": false,
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 10.02985713399994,
+        "delivered_rate": 997.0231745476485,
+        "cpu_seconds": 4.99,
+        "cpu_percent_one_core": 49.75145640992766,
+        "latency_ms": {
+          "p50": 0.37290599993866635,
+          "p95": 0.83600500056491,
+          "p99": 13.54945300045074,
+          "maximum": 29.320392000045103
+        },
+        "write_chars": 198158677,
+        "write_syscalls": 201,
+        "peak_rss": 67731456,
+        "kernel_peak_rss": 67731456,
+        "final_rss": 67731456,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 10000,
+        "bytes": 1975651,
+        "messages": 10000,
+        "gzip_bytes": 111836
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.103706124999917,
+          "Rss": 21270528,
+          "Pss": 12594176,
+          "USS": 12234752,
+          "Swap": 0,
+          "cpu_seconds": 0.01,
+          "threads": 4,
+          "io_wchar": 15160,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 10000,
+          "seconds": 12.134401705999153,
+          "Rss": 67731456,
+          "Pss": 59055104,
+          "USS": 58695680,
+          "Swap": 0,
+          "cpu_seconds": 5.0,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 10000,
+          "seconds": 13.136498583999128,
+          "Rss": 67731456,
+          "Pss": 59055104,
+          "USS": 58695680,
+          "Swap": 0,
+          "cpu_seconds": 5.0,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 10000,
+          "seconds": 17.139092824999352,
+          "Rss": 67731456,
+          "Pss": 59055104,
+          "USS": 58695680,
+          "Swap": 0,
+          "cpu_seconds": 5.0,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 10000,
+          "seconds": 27.140826438999284,
+          "Rss": 67731456,
+          "Pss": 59055104,
+          "USS": 58695680,
+          "Swap": 0,
+          "cpu_seconds": 5.0,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "matrix-packed-legacy",
+      "case": "unique",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "44fb99f34f41ca0cae1fc1ddbdc3b0f30ce4b1232418dea2c1c8def177940d8e",
+        "instrumented": false,
+        "messages": 10000,
+        "cases": [
+          "unique"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "rate": 1000,
+        "seed": null,
+        "env": [
+          "STREAMERZ_MEMORY_WRITE=buffered",
+          "STREAMERZ_MEMORY_SAVE=legacy"
+        ],
+        "sync_storage": false,
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 10.228763198999332,
+        "delivered_rate": 977.6353020840573,
+        "cpu_seconds": 7.2,
+        "cpu_percent_one_core": 70.38974175005212,
+        "latency_ms": {
+          "p50": 0.1892239997687284,
+          "p95": 0.6856310001239763,
+          "p99": 30.197172000043793,
+          "maximum": 54.36030500004563
+        },
+        "write_chars": 198158677,
+        "write_syscalls": 201,
+        "peak_rss": 69160960,
+        "kernel_peak_rss": 69160960,
+        "final_rss": 69160960,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 10000,
+        "bytes": 1975651,
+        "messages": 10000,
+        "gzip_bytes": 113013
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.103397070000028,
+          "Rss": 21184512,
+          "Pss": 12585984,
+          "USS": 12234752,
+          "Swap": 0,
+          "cpu_seconds": 0.0,
+          "threads": 4,
+          "io_wchar": 15160,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 10000,
+          "seconds": 12.333055490999868,
+          "Rss": 69160960,
+          "Pss": 60562432,
+          "USS": 60211200,
+          "Swap": 0,
+          "cpu_seconds": 7.2,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 10000,
+          "seconds": 13.33507158500015,
+          "Rss": 69160960,
+          "Pss": 60562432,
+          "USS": 60211200,
+          "Swap": 0,
+          "cpu_seconds": 7.2,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 10000,
+          "seconds": 17.337656918999528,
+          "Rss": 69160960,
+          "Pss": 60562432,
+          "USS": 60211200,
+          "Swap": 0,
+          "cpu_seconds": 7.2,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 10000,
+          "seconds": 27.340953140999773,
+          "Rss": 69160960,
+          "Pss": 60562432,
+          "USS": 60211200,
+          "Swap": 0,
+          "cpu_seconds": 7.2,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "matrix-packed-borrowed",
+      "case": "unique",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "44fb99f34f41ca0cae1fc1ddbdc3b0f30ce4b1232418dea2c1c8def177940d8e",
+        "instrumented": false,
+        "messages": 10000,
+        "cases": [
+          "unique"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "rate": 1000,
+        "seed": null,
+        "env": [
+          "STREAMERZ_MEMORY_WRITE=buffered"
+        ],
+        "sync_storage": false,
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 10.005054573000052,
+        "delivered_rate": 999.4947980580043,
+        "cpu_seconds": 3.9800000000000004,
+        "cpu_percent_one_core": 39.77989296270858,
+        "latency_ms": {
+          "p50": 0.5499600001712679,
+          "p95": 0.8151179999913438,
+          "p99": 2.6752889998533647,
+          "maximum": 5.379146000450419
+        },
+        "write_chars": 198158677,
+        "write_syscalls": 201,
+        "peak_rss": 30711808,
+        "kernel_peak_rss": 30711808,
+        "final_rss": 30711808,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 10000,
+        "bytes": 1975651,
+        "messages": 10000,
+        "gzip_bytes": 113053
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.10342275199946,
+          "Rss": 21180416,
+          "Pss": 12553216,
+          "USS": 12206080,
+          "Swap": 0,
+          "cpu_seconds": 0.01,
+          "threads": 4,
+          "io_wchar": 15160,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 10000,
+          "seconds": 12.108932633000222,
+          "Rss": 30711808,
+          "Pss": 22084608,
+          "USS": 21737472,
+          "Swap": 0,
+          "cpu_seconds": 3.99,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 10000,
+          "seconds": 13.112426781000067,
+          "Rss": 30711808,
+          "Pss": 22084608,
+          "USS": 21737472,
+          "Swap": 0,
+          "cpu_seconds": 3.99,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 10000,
+          "seconds": 17.114856379999765,
+          "Rss": 30711808,
+          "Pss": 22084608,
+          "USS": 21737472,
+          "Swap": 0,
+          "cpu_seconds": 3.99,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 10000,
+          "seconds": 27.117127352999887,
+          "Rss": 30711808,
+          "Pss": 22084608,
+          "USS": 21737472,
+          "Swap": 0,
+          "cpu_seconds": 3.99,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        }
+      ]
+    },
+    {
+      "name": "matrix-deflate-borrowed",
+      "case": "unique",
+      "metadata": {
+        "binary": "<temporary benchmark binary>",
+        "sha256": "44fb99f34f41ca0cae1fc1ddbdc3b0f30ce4b1232418dea2c1c8def177940d8e",
+        "instrumented": false,
+        "messages": 10000,
+        "cases": [
+          "unique"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "rate": 1000,
+        "seed": null,
+        "env": [
+          "STREAMERZ_MEMORY_WRITE=buffered",
+          "STREAMERZ_MEMORY_RECORDS=deflate"
+        ],
+        "sync_storage": false,
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 11.673912487000052,
+        "delivered_rate": 856.6108415782537,
+        "cpu_seconds": 9.82,
+        "cpu_percent_one_core": 84.11918464298452,
+        "latency_ms": {
+          "p50": 0.22532300044986187,
+          "p95": 0.7984450003277743,
+          "p99": 37.87002799981565,
+          "maximum": 80.61390300008497
+        },
+        "write_chars": 198158677,
+        "write_syscalls": 201,
+        "peak_rss": 29679616,
+        "kernel_peak_rss": 29679616,
+        "final_rss": 29679616,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 10000,
+        "bytes": 1975651,
+        "messages": 10000,
+        "gzip_bytes": 113202
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.103427111000201,
+          "Rss": 21311488,
+          "Pss": 12575744,
+          "USS": 12210176,
+          "Swap": 0,
+          "cpu_seconds": 0.0,
+          "threads": 4,
+          "io_wchar": 15160,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 10000,
+          "seconds": 13.779285723000612,
+          "Rss": 29679616,
+          "Pss": 20942848,
+          "USS": 20578304,
+          "Swap": 0,
+          "cpu_seconds": 9.82,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 10000,
+          "seconds": 14.780865454000377,
+          "Rss": 29679616,
+          "Pss": 20942848,
+          "USS": 20578304,
+          "Swap": 0,
+          "cpu_seconds": 9.82,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 10000,
+          "seconds": 18.78329889500037,
+          "Rss": 29679616,
+          "Pss": 20942848,
+          "USS": 20578304,
+          "Swap": 0,
+          "cpu_seconds": 9.82,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 10000,
+          "seconds": 28.785471819000122,
+          "Rss": 29679616,
+          "Pss": 20942848,
+          "USS": 20578304,
+          "Swap": 0,
+          "cpu_seconds": 9.82,
+          "threads": 3,
+          "io_wchar": 198173837,
+          "io_write_bytes": 0
+        }
+      ]
+    }
+  ],
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "libc": "glibc 2.44",
+  "headline_trials": [
+    "finished-burst",
+    "finished-sustained"
+  ],
+  "allocation_traces": [
+    {
+      "name": "complete-heap",
+      "workload": "10000 distinct users",
+      "profile": "release",
+      "allocation_calls": 1714997,
+      "temporary_allocations": 332365,
+      "peak_requested_heap_decimal_mb": 7.02,
+      "exit_retained_decimal_mb": 6.57,
+      "includes_profiler_overhead": true
+    },
+    {
+      "name": "image-lifecycle-heap",
+      "workload": "isolated image lifecycle unit test, two sequential 4 MiB payloads",
+      "allocation_calls": 622,
+      "peak_requested_heap_decimal_mb": 4.4,
+      "exit_retained_decimal_kb": 122.43,
+      "includes_profiler_overhead": true
+    }
+  ],
+  "memory_saver_comparison": [
+    {
+      "name": "streamerz-normal-final",
+      "metadata": {
+        "binary": "<release binary>",
+        "sha256": "5fafd8ca46d6c28fbe4e7622725a6b3c13b305c3a98f376e97627106cc318cce",
+        "memory_saver": false,
+        "first_words": true,
+        "instrumented": false,
+        "messages": 60000,
+        "cases": [
+          "unique"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "visit_community": true,
+        "visit_settings": false,
+        "rate": 1000,
+        "seed": "/tmp/streamerz-memory-experiments/finished-burst/unique/community.json",
+        "env": [],
+        "sync_storage": false,
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 60.018017958998826,
+        "delivered_rate": 999.6997908359597,
+        "cpu_seconds": 27.79,
+        "cpu_percent_one_core": 46.302761978885535,
+        "latency_ms": {
+          "p50": 0.4281270012143068,
+          "p95": 1.100878002034733,
+          "p99": 13.270100000227103,
+          "maximum": 50.186115000542486
+        },
+        "write_chars": 9554128700,
+        "write_syscalls": 146637,
+        "peak_rss": 110252032,
+        "kernel_peak_rss": 109424640,
+        "final_rss": 78643200,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "users": 60000,
+        "bytes": 13200651,
+        "messages": 85000,
+        "gzip_bytes": 672464
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.156669587999204,
+          "Rss": 33239040,
+          "Pss": 24552448,
+          "USS": 24190976,
+          "Swap": 0,
+          "cpu_seconds": 0.14,
+          "threads": 4,
+          "io_wchar": 5306725,
+          "io_write_bytes": 507904
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 60000,
+          "seconds": 62.17653874499956,
+          "Rss": 64159744,
+          "Pss": 55472128,
+          "USS": 55111680,
+          "Swap": 0,
+          "cpu_seconds": 27.93,
+          "threads": 3,
+          "io_wchar": 9559435425,
+          "io_write_bytes": 9557442560
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 60000,
+          "seconds": 63.1845554720021,
+          "Rss": 64159744,
+          "Pss": 55472128,
+          "USS": 55111680,
+          "Swap": 0,
+          "cpu_seconds": 27.93,
+          "threads": 3,
+          "io_wchar": 9559435425,
+          "io_write_bytes": 9557442560
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 60000,
+          "seconds": 67.18823989000157,
+          "Rss": 64159744,
+          "Pss": 55472128,
+          "USS": 55111680,
+          "Swap": 0,
+          "cpu_seconds": 27.93,
+          "threads": 3,
+          "io_wchar": 9559435425,
+          "io_write_bytes": 9557442560
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 60000,
+          "seconds": 77.19079977500223,
+          "Rss": 64159744,
+          "Pss": 55472128,
+          "USS": 55111680,
+          "Swap": 0,
+          "cpu_seconds": 27.93,
+          "threads": 3,
+          "io_wchar": 9559435425,
+          "io_write_bytes": 9557442560
+        },
+        {
+          "phase": "community_shown",
+          "messages": 60000,
+          "seconds": 79.5750130660017,
+          "Rss": 103899136,
+          "Pss": 89339904,
+          "USS": 87834624,
+          "Swap": 0,
+          "cpu_seconds": 28.35,
+          "threads": 4,
+          "io_wchar": 9559809551,
+          "io_write_bytes": 9557458944
+        },
+        {
+          "phase": "community_left",
+          "messages": 60000,
+          "seconds": 81.30677673100217,
+          "Rss": 78704640,
+          "Pss": 60992512,
+          "USS": 58441728,
+          "Swap": 0,
+          "cpu_seconds": 28.47,
+          "threads": 7,
+          "io_wchar": 9560528582,
+          "io_write_bytes": 9557463040
+        },
+        {
+          "phase": "community_hidden",
+          "messages": 60000,
+          "seconds": 84.70696033700006,
+          "Rss": 78643200,
+          "Pss": 60931072,
+          "USS": 58380288,
+          "Swap": 0,
+          "cpu_seconds": 28.9,
+          "threads": 7,
+          "io_wchar": 9573806621,
+          "io_write_bytes": 9570779136
+        }
+      ]
+    },
+    {
+      "name": "streamerz-saver-final",
+      "metadata": {
+        "binary": "<release binary>",
+        "sha256": "5fafd8ca46d6c28fbe4e7622725a6b3c13b305c3a98f376e97627106cc318cce",
+        "memory_saver": true,
+        "first_words": true,
+        "instrumented": false,
+        "messages": 60000,
+        "cases": [
+          "unique"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "visit_community": false,
+        "visit_settings": true,
+        "rate": 1000,
+        "seed": "/tmp/streamerz-memory-experiments/finished-burst/unique/community.json",
+        "env": [],
+        "sync_storage": false,
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 60.00310778899802,
+        "delivered_rate": 999.9482061994363,
+        "cpu_seconds": 16.82,
+        "cpu_percent_one_core": 28.03188138045753,
+        "latency_ms": {
+          "p50": 0.5899899988435209,
+          "p95": 1.0770010012493003,
+          "p99": 1.3845110006514005,
+          "maximum": 6.8219400018278975
+        },
+        "write_chars": 888890,
+        "write_syscalls": 120000,
+        "peak_rss": 42110976,
+        "kernel_peak_rss": 22241280,
+        "final_rss": 22241280,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "preserved": true,
+        "bytes": 5005651
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.1033187590001035,
+          "Rss": 22175744,
+          "Pss": 13441024,
+          "USS": 13090816,
+          "Swap": 0,
+          "cpu_seconds": 0.05,
+          "threads": 4,
+          "io_wchar": 5306723,
+          "io_write_bytes": 458752
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 60000,
+          "seconds": 62.10653039499812,
+          "Rss": 22241280,
+          "Pss": 13506560,
+          "USS": 13156352,
+          "Swap": 0,
+          "cpu_seconds": 16.87,
+          "threads": 3,
+          "io_wchar": 6195613,
+          "io_write_bytes": 204713984
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 60000,
+          "seconds": 63.124091432997375,
+          "Rss": 22241280,
+          "Pss": 13506560,
+          "USS": 13156352,
+          "Swap": 0,
+          "cpu_seconds": 16.87,
+          "threads": 3,
+          "io_wchar": 6195613,
+          "io_write_bytes": 204713984
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 60000,
+          "seconds": 67.12626473699856,
+          "Rss": 22241280,
+          "Pss": 13506560,
+          "USS": 13156352,
+          "Swap": 0,
+          "cpu_seconds": 16.87,
+          "threads": 3,
+          "io_wchar": 6195613,
+          "io_write_bytes": 204713984
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 60000,
+          "seconds": 77.12938623099762,
+          "Rss": 22241280,
+          "Pss": 13505536,
+          "USS": 13156352,
+          "Swap": 0,
+          "cpu_seconds": 16.87,
+          "threads": 3,
+          "io_wchar": 6195613,
+          "io_write_bytes": 204713984
+        }
+      ]
+    },
+    {
+      "name": "streamerz-saver-burst",
+      "metadata": {
+        "binary": "<release binary>",
+        "sha256": "5fafd8ca46d6c28fbe4e7622725a6b3c13b305c3a98f376e97627106cc318cce",
+        "memory_saver": true,
+        "first_words": true,
+        "instrumented": false,
+        "messages": 25000,
+        "cases": [
+          "unique"
+        ],
+        "shown": false,
+        "sample_interval_seconds": 0.2,
+        "visit_community": false,
+        "visit_settings": false,
+        "rate": 0,
+        "seed": "/tmp/streamerz-memory-experiments/finished-burst/unique/community.json",
+        "env": [],
+        "sync_storage": false,
+        "kernel": "7.2.8-9-omarchy"
+      },
+      "summary": {
+        "traffic_seconds": 5.11469835400203,
+        "delivered_rate": 4887.873784470316,
+        "cpu_seconds": 2.4400000000000004,
+        "cpu_percent_one_core": 47.70564813643029,
+        "latency_ms": {
+          "p50": 0.18906699915532954,
+          "p95": 0.4088440000487026,
+          "p99": 0.6177899995236658,
+          "maximum": 1.4883280018693767
+        },
+        "write_chars": 363890,
+        "write_syscalls": 50000,
+        "peak_rss": 22237184,
+        "kernel_peak_rss": 22237184,
+        "final_rss": 22237184,
+        "idle_cpu_seconds": 0.0
+      },
+      "saved": {
+        "preserved": true,
+        "bytes": 5005651
+      },
+      "phases": [
+        {
+          "phase": "baseline",
+          "messages": 0,
+          "seconds": 2.1043743540030846,
+          "Rss": 22237184,
+          "Pss": 13583360,
+          "USS": 13213696,
+          "Swap": 0,
+          "cpu_seconds": 0.05,
+          "threads": 4,
+          "io_wchar": 5306723,
+          "io_write_bytes": 524288
+        },
+        {
+          "phase": "traffic_end",
+          "messages": 25000,
+          "seconds": 7.219797807003488,
+          "Rss": 22237184,
+          "Pss": 13583360,
+          "USS": 13213696,
+          "Swap": 0,
+          "cpu_seconds": 2.49,
+          "threads": 4,
+          "io_wchar": 5670613,
+          "io_write_bytes": 93364224
+        },
+        {
+          "phase": "idle_1s",
+          "messages": 25000,
+          "seconds": 8.224754375001794,
+          "Rss": 22237184,
+          "Pss": 13583360,
+          "USS": 13213696,
+          "Swap": 0,
+          "cpu_seconds": 2.49,
+          "threads": 4,
+          "io_wchar": 5670613,
+          "io_write_bytes": 93364224
+        },
+        {
+          "phase": "idle_5s",
+          "messages": 25000,
+          "seconds": 12.226983938002377,
+          "Rss": 22237184,
+          "Pss": 13583360,
+          "USS": 13213696,
+          "Swap": 0,
+          "cpu_seconds": 2.49,
+          "threads": 3,
+          "io_wchar": 5670613,
+          "io_write_bytes": 93364224
+        },
+        {
+          "phase": "idle_15s",
+          "messages": 25000,
+          "seconds": 22.228987434002192,
+          "Rss": 22237184,
+          "Pss": 13583360,
+          "USS": 13213696,
+          "Swap": 0,
+          "cpu_seconds": 2.49,
+          "threads": 3,
+          "io_wchar": 5670613,
+          "io_write_bytes": 93364224
+        }
+      ]
+    }
+  ]
+}

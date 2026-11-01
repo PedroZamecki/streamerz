@@ -1,6 +1,9 @@
 //! Quotes, credits, users and first words: Streamer.bot's quotes.dat (kept in the config), credits.cache
 //! and users.dat (kept in community.json next to it).
 
+mod speakers;
+mod users;
+
 use super::{n, s, Ctx, Engine};
 use crate::commands::Chat;
 use crate::model::Obj;
@@ -8,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::rc::Rc;
+pub(crate) use users::UserRow;
+use users::{Names, Users};
 
 /// GetCredits' events, in its order.
 const EVENTS: [&str; 12] = [
@@ -53,9 +58,9 @@ fn event_of(kind: u32) -> Option<&'static str> {
 #[derive(Default, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Credits {
-    events: BTreeMap<String, Vec<String>>,
+    events: BTreeMap<String, Names>,
     /// Who spoke: "users", and by role "moderators", "vips", "subscribers".
-    users: BTreeMap<String, Vec<String>>,
+    users: BTreeMap<String, Names>,
     /// Channel point redemptions per name, for top channelRewards.
     redeems: BTreeMap<String, u64>,
     /// Unix seconds.
@@ -66,14 +71,12 @@ impl Credits {
     fn add(&mut self, list: &str, name: &str, users: bool) {
         let to = if users { &mut self.users } else { &mut self.events };
         let l = to.entry(list.into()).or_default();
-        if !name.is_empty() && !l.iter().any(|x| x == name) {
-            l.push(name.into());
-        }
+        l.add(name);
     }
 
     /// Streamer.bot's GetCredits shape.
     pub fn json(&self) -> Value {
-        let list = |m: &BTreeMap<String, Vec<String>>, k: &str| json!(m.get(k).cloned().unwrap_or_default());
+        let list = |m: &BTreeMap<String, Names>, k: &str| json!(m.get(k).map_or(&[][..], Names::as_slice));
         let events: serde_json::Map<String, Value> =
             EVENTS.iter().map(|k| ((*k).into(), list(&self.events, k))).collect();
         let mut top: Vec<(&String, &u64)> = self.redeems.iter().collect();
@@ -102,11 +105,15 @@ impl Credits {
 pub struct Community {
     /// users.dat's users: id, name, display, role, subscribed, type, firstMessage, present,
     /// previousActive, lastActive, exempt.
-    pub users: Vec<Obj>,
+    users: Users,
     pub credits: Credits,
     /// First Words: "platform:id" of who spoke since the last reset.
     #[serde(skip)]
     speakers: HashSet<String>,
+    #[serde(skip)]
+    disk_speakers: Option<speakers::Speakers>,
+    #[serde(skip)]
+    speakers_failed: bool,
     /// Changes since the last save.
     #[serde(skip)]
     unsaved: u32,
@@ -185,6 +192,53 @@ fn shrink(u: &mut Obj) {
     }
 }
 
+/// Save compact records without cloning the full collection or building a JSON tree.
+struct SavedUser<'a>(&'a Obj);
+
+impl Serialize for SavedUser<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        for (k, v) in self.0 {
+            let default = match k.as_str() {
+                "role" => v.as_u64() == Some(1),
+                "subscribed" | "present" | "exempt" => v.as_bool() == Some(false),
+                "previousActive" => v.as_str() == Some(NEVER),
+                "messages" | "activeSecs" => v.as_u64() == Some(0),
+                _ => false,
+            };
+            if default || v.is_null() || v.as_str() == Some("") {
+                continue;
+            }
+            if matches!(k.as_str(), "firstMessage" | "lastActive" | "previousActive") {
+                if let Some(t) = v.as_str() {
+                    map.serialize_entry(k, &whole_seconds(t))?;
+                    continue;
+                }
+            }
+            map.serialize_entry(k, v)?;
+        }
+        map.end()
+    }
+}
+
+#[derive(Serialize)]
+struct Snapshot<'a> {
+    users: &'a Users,
+    credits: &'a Credits,
+}
+
+fn write_snapshot(path: &std::path::Path, value: &impl Serialize) -> std::io::Result<()> {
+    use std::io::Write;
+    let _guard = crate::dev_write_guard()?;
+    let tmp = path.with_extension("json.tmp");
+    let mut writer = std::io::BufWriter::with_capacity(64 * 1024, std::fs::File::create(&tmp)?);
+    serde_json::to_writer(&mut writer, value).map_err(std::io::Error::other)?;
+    writer.flush()?;
+    drop(writer);
+    std::fs::rename(tmp, path)
+}
+
 /// `shrink`'s other way: the record as the program works with it.
 fn expand(u: &mut Obj) {
     for (k, d) in defaults() {
@@ -217,31 +271,69 @@ fn due(unsaved: u32, saved_at: u64, now: u64) -> bool {
     unsaved == 0 || now.saturating_sub(saved_at) >= 60
 }
 
+// Development-only ablation switch; production always uses borrowed serialization.
+fn legacy_save() -> bool {
+    static LEGACY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *LEGACY.get_or_init(|| crate::brand::IS_DEV && std::env::var("STREAMERZ_MEMORY_SAVE").as_deref() == Ok("legacy"))
+}
+
 impl Engine {
     pub fn load_community(&self) {
-        let Ok(text) = std::fs::read_to_string(file()) else {
+        if self.memory_saver {
+            return;
+        }
+        let Ok(input) = std::fs::File::open(file()) else {
             return;
         };
-        let Ok(mut c) = serde_json::from_str::<Community>(&text) else {
+        let Ok(mut c) = serde_json::from_reader::<_, Community>(std::io::BufReader::new(input)) else {
             return;
         };
         if unix().saturating_sub(c.credits.last_write) > STALE {
             c.credits = Credits::default();
         }
-        c.users.iter_mut().for_each(expand);
         c.saved_at = unix();
         self.st.borrow_mut().community = c;
     }
 
     /// Write community.json now.
     pub fn save_community(&self) {
+        if self.memory_saver {
+            return;
+        }
+        // Streaming bounds temporary storage to the writer buffer and avoids out-of-order writers.
+        // The buffered development path is retained only for reproducible memory experiments.
+        let buffered = crate::brand::IS_DEV && std::env::var("STREAMERZ_MEMORY_WRITE").as_deref() == Ok("buffered");
+        if !buffered && !legacy_save() {
+            let result = {
+                let c = &mut self.st.borrow_mut().community;
+                c.saved_at = unix();
+                write_snapshot(
+                    &file(),
+                    &Snapshot {
+                        users: &c.users,
+                        credits: &c.credits,
+                    },
+                )
+            };
+            if result.is_err() {
+                crate::error(format!("can't save {}", file().display()));
+            }
+            return;
+        }
         let text = {
             let c = &mut self.st.borrow_mut().community;
             c.saved_at = unix();
-            // Written small: each record without what is only its default.
-            let mut users = c.users.clone();
-            users.iter_mut().for_each(shrink);
-            serde_json::to_string(&json!({"users": users, "credits": c.credits})).unwrap_or_default()
+            if legacy_save() {
+                let mut users: Vec<Obj> = c.users.iter().collect();
+                users.iter_mut().for_each(shrink);
+                serde_json::to_vec(&json!({"users":users,"credits":c.credits})).unwrap_or_default()
+            } else {
+                serde_json::to_vec(&Snapshot {
+                    users: &c.users,
+                    credits: &c.credits,
+                })
+                .unwrap_or_default()
+            }
         };
         let (path, tmp) = (file(), file().with_extension("json.tmp"));
         std::thread::Builder::new()
@@ -261,6 +353,9 @@ impl Engine {
     /// Saved every 50 changes, on the first change a minute after the last save, on quit, and on a
     /// crash (see `crash`). No timer: a quiet channel has nothing new to lose.
     fn community_changed(&self) {
+        if self.memory_saver {
+            return;
+        }
         let due = {
             let c = &mut self.st.borrow_mut().community;
             c.rev += 1;
@@ -274,6 +369,28 @@ impl Engine {
 
     /// Whether this is `user`'s first message on `platform` since First Words were reset.
     pub fn first_words(&self, platform: &str, user: &str) -> bool {
+        if self.memory_saver {
+            let c = &mut self.st.borrow_mut().community;
+            if c.speakers_failed {
+                return false;
+            }
+            let result = (|| {
+                if c.disk_speakers.is_none() {
+                    c.disk_speakers = Some(speakers::Speakers::new()?);
+                }
+                c.disk_speakers.as_ref().unwrap().insert(platform, &user.to_lowercase())
+            })();
+            return match result {
+                Ok(first) => first,
+                Err(err) => {
+                    c.speakers_failed = true;
+                    crate::error(format!(
+                        "First Words storage failed: {err}. Reset First Words to retry."
+                    ));
+                    false
+                }
+            };
+        }
         self.st
             .borrow_mut()
             .community
@@ -283,6 +400,18 @@ impl Engine {
 
     /// Forget who spoke: everyone's (None) or one platform's (its stream started).
     pub fn reset_first_words(&self, platform: Option<&str>) {
+        if self.memory_saver {
+            let c = &mut self.st.borrow_mut().community;
+            if let Some(disk) = &c.disk_speakers {
+                if let Err(err) = disk.reset(platform) {
+                    c.speakers_failed = true;
+                    crate::error(format!("First Words reset failed: {err}"));
+                    return;
+                }
+            }
+            c.speakers_failed = false;
+            return;
+        }
         let speakers = &mut self.st.borrow_mut().community.speakers;
         match platform {
             Some(p) => speakers.retain(|k| !k.starts_with(&format!("{p}:"))),
@@ -302,6 +431,9 @@ impl Engine {
 
     /// TestCredits: a few names in every list.
     pub fn test_credits(self: &Rc<Self>) -> Value {
+        if self.memory_saver {
+            return self.credits();
+        }
         {
             let c = &mut self.st.borrow_mut().community.credits;
             for (i, k) in EVENTS.iter().enumerate() {
@@ -321,7 +453,23 @@ impl Engine {
         self.st.borrow().community.rev
     }
 
+    /// Only list columns cross to the window; opening a card fetches its full record separately.
+    pub(crate) fn user_rows(&self) -> Vec<UserRow> {
+        let keys: Vec<(&str, String)> = super::chatlog::PLATFORMS
+            .iter()
+            .map(|p| (*p, self.broadcaster(p)))
+            .collect();
+        self.st
+            .borrow()
+            .community
+            .users
+            .rows()
+            .filter(|u| u.channel.is_empty() || keys.iter().any(|(p, k)| *p == u.platform && k == &u.channel))
+            .collect()
+    }
+
     /// The Community tab's people: those of the channels read now.
+    #[cfg(test)]
     pub fn users(&self) -> Vec<Obj> {
         let st = self.st.borrow();
         let keys: Vec<(&str, String)> = super::chatlog::PLATFORMS
@@ -335,7 +483,10 @@ impl Engine {
                 let ch = s(u, "channel");
                 ch.is_empty() || keys.iter().any(|(p, k)| *p == s(u, "type") && k == ch)
             })
-            .cloned()
+            .map(|mut u| {
+                expand(&mut u);
+                u
+            })
             .collect()
     }
 
@@ -368,21 +519,14 @@ impl Engine {
         }
     }
 
-    /// Whether `u` is somebody of the channel `platform` reads now. Records from before channels were told
-    /// apart have none: they belong to the one being read.
-    fn of_channel(&self, u: &Obj, platform: &str) -> bool {
-        let ch = s(u, "channel");
-        ch.is_empty() || ch == self.broadcaster(platform)
-    }
-
-    /// One user of the Community tab.
+    /// One user of the Community tab, without decoding unrelated historical records.
     pub fn community_user(&self, platform: &str, id: &str) -> Option<Obj> {
+        let channel = self.broadcaster(platform);
         let st = self.st.borrow();
-        st.community
-            .users
-            .iter()
-            .find(|u| s(u, "type") == platform && s(u, "id") == id && self.of_channel(u, platform))
-            .cloned()
+        let index = st.community.users.find(platform, id, &channel)?;
+        let mut user = st.community.users.get(index);
+        expand(&mut user);
+        Some(user)
     }
 
     /// How many people are saved from `channel` of `platform`.
@@ -408,13 +552,13 @@ impl Engine {
             let c = &mut st.community;
             let of_old = |u: &Obj| s(u, "type") == platform && s(u, "channel") == old;
             match what {
-                Leftover::Keep => c.users.iter_mut().filter(|u| of_old(u)).for_each(archive),
+                Leftover::Keep => c.users.edit_matching(of_old, archive),
                 Leftover::Delete => {
                     c.users.retain(|u| !of_old(u));
                     c.credits = Credits::default();
                 }
                 Leftover::Move => {
-                    let moved: Vec<Obj> = c.users.iter().filter(|u| of_old(u)).cloned().collect();
+                    let moved: Vec<Obj> = c.users.iter().filter(|u| of_old(u)).collect();
                     c.users.retain(|u| !of_old(u));
                     // Who is already in the new channel, by id: a lookup, not a scan per person.
                     let at: std::collections::HashMap<String, usize> = c
@@ -422,22 +566,24 @@ impl Engine {
                         .iter()
                         .enumerate()
                         .filter(|(_, x)| s(x, "type") == platform && s(x, "channel") == new)
-                        .map(|(i, x)| (s(x, "id").to_string(), i))
+                        .map(|(i, x)| (s(&x, "id").to_string(), i))
                         .collect();
                     for mut u in moved {
                         // Somebody already there in the new channel: their numbers add up.
                         let id = s(&u, "id").to_string();
-                        let there = at.get(&id).map(|i| &mut c.users[*i]);
+                        let there = at.get(&id).copied();
                         match there {
-                            Some(x) => {
+                            Some(index) => {
+                                let mut x = c.users.get(index);
                                 for k in ["messages", "activeSecs"] {
-                                    let sum = n(x, k) as u64 + n(&u, k) as u64;
+                                    let sum = n(&x, k) as u64 + n(&u, k) as u64;
                                     x.insert(k.into(), json!(sum));
                                 }
                                 // The first time seen is the earlier one.
-                                if s(&u, "firstMessage") < s(x, "firstMessage") && !s(&u, "firstMessage").is_empty() {
+                                if s(&u, "firstMessage") < s(&x, "firstMessage") && !s(&u, "firstMessage").is_empty() {
                                     x.insert("firstMessage".into(), u["firstMessage"].clone());
                                 }
+                                c.users.put(index, x);
                             }
                             None => {
                                 u.insert("channel".into(), new.clone().into());
@@ -455,6 +601,9 @@ impl Engine {
 
     /// Credits and users from a trigger that fired.
     pub(super) fn record(self: &Rc<Self>, kind: u32, args: &Obj) {
+        if self.memory_saver {
+            return;
+        }
         let name = |k: &str| s(args, k).to_string();
         let who = [name("user"), name("userName"), name("gameName")]
             .into_iter()
@@ -476,6 +625,9 @@ impl Engine {
     }
 
     fn credit(&self, list: &str, name: &str) {
+        if self.memory_saver {
+            return;
+        }
         {
             let c = &mut self.st.borrow_mut().community.credits;
             c.add(list, name, false);
@@ -487,17 +639,16 @@ impl Engine {
     /// Someone seen in a platform's recent history (read when joining): added to the Community tab when
     /// not there yet, with no message counted and no credits.
     pub(super) fn seen_in_history(&self, l: &super::chatlog::Line) {
+        if self.memory_saver {
+            return;
+        }
         if l.user_id.is_empty() || l.note {
             return;
         }
         let channel = self.broadcaster(&l.platform);
         let mut st = self.st.borrow_mut();
         let users = &mut st.community.users;
-        if users.iter().any(|u| {
-            s(u, "type") == l.platform
-                && s(u, "id") == l.user_id
-                && (s(u, "channel").is_empty() || s(u, "channel") == channel)
-        }) {
+        if users.find(&l.platform, &l.user_id, &channel).is_some() {
             return;
         }
         let role = if l.broadcaster {
@@ -513,13 +664,18 @@ impl Engine {
         let u = json!({"id": l.user_id, "name": l.user.to_lowercase(), "display": l.user, "role": role,
             "subscribed": l.subscriber, "type": l.platform, "channel": channel, "firstMessage": now,
             "present": false, "previousActive": NEVER, "lastActive": now, "exempt": false, "color": l.color});
-        users.push(u.as_object().cloned().unwrap_or_default());
+        if let Value::Object(u) = u {
+            users.push(u);
+        }
         drop(st);
         self.community_changed();
     }
 
     /// A chat message: the users present for the credits, and the user's record.
     pub(super) fn spoke(&self, c: &Chat) {
+        if self.memory_saver {
+            return;
+        }
         let (id, platform, display) = (c.user_id.as_str(), c.platform.as_str(), c.user.as_str());
         if id.is_empty() || c.bot || c.internal {
             return;
@@ -548,26 +704,22 @@ impl Engine {
                 cm.credits.add("subscribers", display, true);
             }
             cm.credits.last_write = unix();
-            let i = match cm.users.iter().position(|u| {
-                s(u, "type") == platform
-                    && s(u, "id") == id
-                    && (s(u, "channel").is_empty() || s(u, "channel") == channel)
-            }) {
-                Some(i) => i,
-                None => {
-                    let u = json!({"id": id, "name": "", "display": "", "role": 1, "subscribed": false,
-                        "type": platform, "channel": channel, "firstMessage": now, "present": true, "previousActive": NEVER,
-                        "lastActive": NEVER, "exempt": false});
-                    cm.users.push(u.as_object().cloned().unwrap_or_default());
-                    cm.users.len() - 1
-                }
+            let index = cm.users.find(platform, id, &channel);
+            let mut u = match index {
+                Some(i) => cm.users.get(i),
+                None => match json!({"id": id, "name": "", "display": "", "role": 1, "subscribed": false,
+                    "type": platform, "channel": channel, "firstMessage": now, "present": true,
+                    "previousActive": NEVER, "lastActive": NEVER, "exempt": false})
+                {
+                    Value::Object(u) => u,
+                    _ => unreachable!("user record"),
+                },
             };
-            let u = &mut cm.users[i];
-            if s(u, "channel").is_empty() {
+            if s(&u, "channel").is_empty() {
                 u.insert("channel".into(), channel.clone().into());
             }
             // A new visit (half an hour quiet): the last one becomes the previous.
-            let last = s(u, "lastActive").to_string();
+            let last = s(&u, "lastActive").to_string();
             let quiet = parse(&last).zip(parse(&now)).is_none_or(|(a, b)| {
                 let mins = |t: crate::fmt::Time| {
                     ((t.year * 372 + t.month as i32 * 31 + t.day as i32) * 1440) + (t.hour * 60 + t.min) as i32
@@ -579,7 +731,7 @@ impl Engine {
             }
             // What the Community tab shows: messages sent, and the time spent chatting (gaps under half an
             // hour between messages add up).
-            let (messages, active) = (n(u, "messages") as u64, n(u, "activeSecs") as u64);
+            let (messages, active) = (n(&u, "messages") as u64, n(&u, "activeSecs") as u64);
             let gap = super::rest_parse_iso(&last).map_or(u64::MAX, |t| unix().saturating_sub(t as u64));
             u.insert("messages".into(), json!(messages + 1));
             u.insert(
@@ -596,6 +748,10 @@ impl Engine {
                 ("lastActive", json!(now)),
             ] {
                 u.insert(k.into(), v);
+            }
+            match index {
+                Some(i) => cm.users.put(i, u),
+                None => cm.users.push(u),
             }
         }
         self.community_changed();
@@ -733,6 +889,42 @@ mod tests {
     }
 
     #[test]
+    fn saver_skips_community_and_chat_but_keeps_processing() {
+        let cfg = crate::Config {
+            memory_saver: true,
+            ..Default::default()
+        };
+        let cfg = std::sync::Arc::new(tokio::sync::watch::channel(cfg).0);
+        let e = Engine::new(cfg.clone(), |_| {});
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tokio::task::LocalSet::new().block_on(&rt, async {
+            for i in 0..10000 {
+                let c = Chat {
+                    platform: "twitch".into(),
+                    user_id: i.to_string(),
+                    user: format!("viewer{i}"),
+                    ..Default::default()
+                };
+                e.chat(&c);
+                e.record(112, &json!({"user":format!("viewer{i}")}).as_object().unwrap().clone());
+            }
+            assert!(e.users().is_empty());
+            assert_eq!(e.community_rev(), 0);
+            assert!(e.st.borrow().community.speakers.is_empty());
+            assert!(e.chat_sync(0, 0).2.is_empty());
+            assert!(e.chatters("twitch").is_empty());
+            assert!(e.chat_emotes("twitch").is_empty());
+            assert_eq!(e.st.borrow().chat_lines, 10000);
+            // A pending disable does not partially change the running policy.
+            cfg.send_modify(|c| c.memory_saver = false);
+            assert!(e.memory_saver);
+        });
+    }
+
+    #[test]
     fn credits_and_users_from_triggers() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -853,7 +1045,7 @@ mod tests {
                     .community
                     .users
                     .iter()
-                    .map(|u| format!("{}@{}", s(u, "id"), s(u, "channel")))
+                    .map(|u| format!("{}@{}", s(&u, "id"), s(&u, "channel")))
                     .collect::<Vec<_>>()
             };
             let setup = || {
@@ -865,7 +1057,8 @@ mod tests {
                         user("1", "ana", 5, "2026-01-01T09:00:00-03:00"),
                         user("2", "ana", 1, "2026-01-02T09:00:00-03:00"),
                         user("1", "bia", 2, "2026-03-01T09:00:00-03:00"),
-                    ];
+                    ]
+                    .into();
                     c.credits.add("users", "Zed", true);
                 }
                 e
@@ -875,7 +1068,7 @@ mod tests {
             assert_eq!(e.community_of("kick", "Ana"), 2);
             e.channel_changed("kick", "ana", Leftover::Keep);
             assert_eq!(channels(&e), ["1@ana", "2@ana", "1@bia"]);
-            let kept = e.st.borrow().community.users[0].clone();
+            let kept = e.st.borrow().community.users.get(0);
             assert!(!kept.contains_key("color") && !kept.contains_key("present"));
             assert_eq!(kept["messages"], 5);
             // Moved: they are the new channel's, and who was there already adds up.
@@ -886,7 +1079,7 @@ mod tests {
             let one = st.community.users.iter().find(|u| s(u, "id") == "1").unwrap();
             assert_eq!(one["messages"], 7, "5 and 2");
             assert_eq!(
-                s(one, "firstMessage"),
+                s(&one, "firstMessage"),
                 "2026-01-01T09:00:00-03:00",
                 "the earlier first time"
             );
@@ -897,6 +1090,33 @@ mod tests {
             assert_eq!(channels(&e), ["1@bia"]);
             assert!(e.st.borrow().community.credits.users.is_empty());
         });
+    }
+
+    #[test]
+    fn failed_streaming_save_preserves_the_previous_file() {
+        struct Broken;
+        impl Serialize for Broken {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("test failure"))
+            }
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "streamerz-community-save-{}-{}",
+            std::process::id(),
+            crate::fmt::unix_now().as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("community.json");
+        std::fs::write(&path, b"previous").unwrap();
+        assert!(write_snapshot(&path, &Broken).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"previous");
+        let value = json!({"users":[],"credits":{}});
+        write_snapshot(&path, &value).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&std::fs::read(&path).unwrap()).unwrap(),
+            value
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// A busy chat saves every 50 changes; a slow one a minute after the last save, so a crash loses
