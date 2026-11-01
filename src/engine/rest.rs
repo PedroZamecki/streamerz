@@ -286,19 +286,33 @@ impl Engine {
         self.st.borrow_mut().chat_lines += 1;
         self.log_chat(chat);
         self.spoke(chat);
-        let cmds: Vec<Obj> = self.cfg.borrow().commands.clone();
+        // Keep a snapshot of matching commands only. Ordinary messages must not clone every
+        // command and all of its fields; release the config borrow before any command can edit it.
+        let cmds: Vec<Obj> = {
+            let cfg = self.cfg.borrow();
+            cfg.commands
+                .iter()
+                .filter_map(|c| {
+                    let enabled = c.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+                    if !enabled
+                        || (n(c, "sources") as u64 & chat.source) == 0
+                        || (chat.bot && b(c, "ignoreBotAccount", true))
+                        || (chat.internal && b(c, "ignoreInternal", true))
+                    {
+                        return None;
+                    }
+                    commands::matches(c, &chat.text).map(|_| c.clone())
+                })
+                .collect()
+        };
         let mut ran = 0;
         for c in &cmds {
-            let enabled = c.get("enabled").and_then(Value::as_bool).unwrap_or(true);
-            if !enabled || (n(c, "sources") as u64 & chat.source) == 0 {
-                continue;
-            }
-            if (chat.bot && b(c, "ignoreBotAccount", true)) || (chat.internal && b(c, "ignoreInternal", true)) {
-                continue;
-            }
+            // Keep captures for only the command being executed, rather than accumulating them
+            // across every matching command. The second match trades a little CPU for bounded scratch data.
             let Some((alias, raw, matched)) = commands::matches(c, &chat.text) else {
                 continue;
             };
+
             if !commands::permitted(c, chat, &|g| self.user_in_group(g, &chat.user_id)) {
                 continue;
             }

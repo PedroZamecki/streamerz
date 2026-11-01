@@ -2862,7 +2862,19 @@ impl Chat {
     /// Sync new lines (or full history resync when pre-join history / badges updated) and refresh avatars.
     pub fn refresh(&mut self) {
         emotes::load_for_config(&self.cmds, &self.cfg);
-        let limits = self.cfg.borrow().window.chat.clamped();
+        let mut limits = self.cfg.borrow().window.chat.clamped();
+        if crate::memory_saver() {
+            limits.save_history = false;
+        }
+        // Disable each composer, including its emote button, when chat is disabled.
+        for column in std::iter::once(&self.main).chain(self.side.iter()) {
+            let mut bar = column.bar.clone();
+            if limits.save_history {
+                bar.activate();
+            } else {
+                bar.deactivate();
+            }
+        }
         if LIMITS.get() != limits {
             LIMITS.set(limits);
             self.main.pane.apply_limits();
@@ -3643,6 +3655,9 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
 /// Popup opened by the discrete `"Message all"` button in the top bar:
 /// lets the user pick target platforms, bot/broadcaster + fallback behavior, emotes, and send.
 fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
+    if crate::memory_saver() || !cfg.borrow().window.chat.save_history {
+        return;
+    }
     let conn_states: [bool; 4] = query(cmds, |e| {
         [
             e.twitch_connected(),
@@ -4131,6 +4146,9 @@ fn emote_picker_popup(
     sender_name: Option<&str>,
     target_input: &mut Input,
 ) {
+    if crate::memory_saver() || !cfg.borrow().window.chat.save_history {
+        return;
+    }
     emotes::load_for_config(cmds, cfg);
     let seen: Vec<(String, String)> = query(cmds, move |e| {
         let mut v: Vec<(String, String)> = Vec::new();

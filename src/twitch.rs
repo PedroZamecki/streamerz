@@ -4469,6 +4469,9 @@ fn pyramid(user: (&str, &str, &str), text: &str) -> Option<(bool, Who, String, u
 /// The badge sets (global, and the channel's when `channel_id` is given) from Twitch's public web API (the
 /// one twitch.tv's own chat asks): no login needed, so a chat read anonymously has its badge pictures too.
 pub async fn load_public_badges(channel_id: &str) {
+    if crate::memory_saver() {
+        return;
+    }
     let headers = [
         ("Client-Id".to_string(), "kimne78kx3ncx6brgo4mv6wki5h1ko".to_string()),
         ("Content-Type".to_string(), "application/json".to_string()),
@@ -4689,8 +4692,14 @@ async fn seed(engine: &Rc<Engine>) {
             }
         }
     }
-    let global = tw.helix("GET", "chat/badges/global", vec![], None, false, false).await;
-    let own = tw.helix("GET", "chat/badges", b, None, false, false).await;
+    let (global, own) = if engine.memory_saver {
+        (Err("Memory Saver".to_string()), Err("Memory Saver".to_string()))
+    } else {
+        (
+            tw.helix("GET", "chat/badges/global", vec![], None, false, false).await,
+            tw.helix("GET", "chat/badges", b, None, false, false).await,
+        )
+    };
     SEEN.with_borrow_mut(|s| {
         for sets in [global, own].into_iter().flatten() {
             for set in sets["data"].as_array().into_iter().flatten() {

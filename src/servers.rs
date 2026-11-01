@@ -430,6 +430,18 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
     let get = |k: &str| req.get(k).and_then(Value::as_str).unwrap_or("");
     let persisted = req.get("persisted").and_then(Value::as_bool).unwrap_or(true);
     Some(match get("request") {
+        "StreamerzFirstWords" if e.dev() => ok(&id, json!({"first":e.first_words(get("platform"), get("user"))})),
+        "StreamerzMemory" => {
+            if let Some(enabled) = req.get("enabled").and_then(Value::as_bool) {
+                e.change(|c| c.memory_saver = enabled);
+            }
+            ok(
+                &id,
+                json!({"active":e.memory_saver,"enabled":e.config().memory_saver,
+                "restartRequired":e.memory_saver != e.config().memory_saver,
+                "firstWords":"disk in saver mode, memory otherwise"}),
+            )
+        }
         "GetInfo" => ok(&id, json!({"info": info(e)})),
         "GetEvents" => ok(
             &id,
@@ -1141,6 +1153,22 @@ async fn udp_server(e: Rc<Engine>, s: UdpSettings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_policy_is_inspectable_and_changes_require_restart() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tokio::task::LocalSet::new().block_on(&rt, async {
+            let cfg = Arc::new(tokio::sync::watch::channel(crate::Config::default()).0);
+            let e = Engine::new(cfg, |_| {});
+            let result = answer(&e, &json!({"request":"StreamerzMemory","enabled":true}), true).unwrap();
+            assert_eq!(result["restartRequired"], true);
+            assert_eq!(result["active"], false);
+            assert_eq!(result["enabled"], true);
+        });
+    }
 
     #[test]
     fn origins() {

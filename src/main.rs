@@ -70,6 +70,26 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::watch;
 
+/// Startup policy shared with presentation code. Changing the saved setting requires restart.
+static MEMORY_SAVER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Session-only speaker files can also be left by an interrupted process. The config directory is
+/// protected by the existing instance lock before startup reaches this cleanup.
+pub(crate) fn cleanup_first_words() {
+    if memory_saver() {
+        let path = config_path().with_file_name("first-words");
+        if let Err(e) = std::fs::remove_dir_all(path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                error(format!("Can't clear First Words session: {e}"));
+            }
+        }
+    }
+}
+
+pub fn memory_saver() -> bool {
+    MEMORY_SAVER.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -81,6 +101,8 @@ pub struct Config {
     /// The language of the app (a code from `i18n`); empty follows the system's.
     locale: String,
     start_hidden: bool,
+    /// Aggressive background mode, applied on restart. Existing Community files stay untouched.
+    memory_saver: bool,
     autostart: bool,
     /// Keep [DEBUG] lines in the log.
     debug_log: bool,
@@ -156,6 +178,7 @@ impl Default for Config {
             theme: Some(ui::Theme::System),
             locale: String::new(),
             start_hidden: true,
+            memory_saver: false,
             autostart: false,
             debug_log: false,
             actions: model::ActionsFile::default(),
@@ -1116,6 +1139,8 @@ fn main() {
     }
     backup::on_start();
     let mut cfg = load_from(&config_path());
+    MEMORY_SAVER.store(cfg.memory_saver, std::sync::atomic::Ordering::Relaxed);
+    cleanup_first_words();
     if brand::IS_DEV {
         // A local server gives each development instance its own endpoint for the MCP tools.
         let requested = std::env::var("STREAMERZ_DEV_PORT")

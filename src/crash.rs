@@ -324,6 +324,7 @@ fn unclean_report(log: &str, stderr: &str, context: &str) -> String {
 
 /// Quits for good: the marker that says "it stopped unexpectedly" is removed first.
 pub fn quit(code: i32) -> ! {
+    crate::cleanup_first_words();
     let _ = std::fs::remove_file(dir().join("running"));
     crate::cleanup_dev();
     std::process::exit(code)

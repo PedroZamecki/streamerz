@@ -214,6 +214,8 @@ struct Raw {
 
 /// Pictures decoded and waiting for the window's thread to take them in.
 static READY: std::sync::Mutex<Vec<(Key, Prepared)>> = std::sync::Mutex::new(Vec::new());
+/// A hide invalidates decoded results and queued work from the previous visible window.
+static GENERATION: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 /// A wakeup for the window is already on its way (they come in bursts: one per 150 ms is plenty).
 static WAKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -308,7 +310,7 @@ fn prune(dir: &std::path::Path, keep: u64) {
 /// downloading and decoding happen off the window's thread, and the window gets `Msg::Image` when it's
 /// there.
 pub fn get(cmds: &UnboundedSender<UiCmd>, url: &str, h: i32, round: bool) -> Option<Pic> {
-    if url.is_empty() {
+    if crate::memory_saver() || url.is_empty() {
         return None;
     }
     take_ready();
@@ -370,9 +372,16 @@ pub fn get(cmds: &UnboundedSender<UiCmd>, url: &str, h: i32, round: bool) -> Opt
     }
     DECODING.with_borrow_mut(|d| d.insert(key.clone()));
     let scale = fltk::app::screen_scale(0);
+    let generation = GENERATION.load(std::sync::atomic::Ordering::Relaxed);
     tell(cmds, move |_| {
         tokio::task::spawn_local(async move {
+            if GENERATION.load(std::sync::atomic::Ordering::Relaxed) != generation {
+                return;
+            }
             let _one = DECODERS.acquire().await;
+            if GENERATION.load(std::sync::atomic::Ordering::Relaxed) != generation {
+                return;
+            }
             let made = tokio::task::spawn_blocking(move || {
                 let bytes = std::fs::read(&file).ok()?;
                 // Shown: recently used, so pruning keeps it.
@@ -386,13 +395,26 @@ pub fn get(cmds: &UnboundedSender<UiCmd>, url: &str, h: i32, round: bool) -> Opt
             .ok()
             .flatten()
             .unwrap_or(Prepared::Frames(Vec::new()));
-            if let Ok(mut r) = READY.lock() {
-                r.push((key, made));
+            if publish(generation, key, made) {
+                arrived();
             }
-            arrived();
         });
     });
     None
+}
+
+fn publish(generation: usize, key: Key, made: Prepared) -> bool {
+    let Ok(mut ready) = READY.lock() else { return false };
+    // Check under the same lock as forget: a completion cannot refill the cleared queue.
+    if GENERATION.load(std::sync::atomic::Ordering::Relaxed) != generation {
+        drop(ready);
+        drop(made);
+        drop(key);
+        crate::trim_memory();
+        return false;
+    }
+    ready.push((key, made));
+    true
 }
 
 /// Something came in for the window (a picture downloaded or decoded): it is told, once for a burst.
@@ -435,6 +457,7 @@ fn take_ready() {
 
 /// The window was hidden: free the decoded pictures (the files stay).
 pub fn forget() {
+    GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     SHOWN.with_borrow_mut(|m| *m = Shown::default());
     DECODING.with_borrow_mut(HashSet::clear);
     if let Ok(mut r) = READY.lock() {
@@ -805,5 +828,32 @@ mod tests {
         // 1x1 grown to 8 logical px, 16 on a screen scaled 2: pixels and the size they show at.
         assert_eq!((f.len(), f[0].shown), (1, (8, 8)));
         assert!(build(&f[0]).is_some());
+    }
+
+    #[test]
+    fn hiding_discards_late_decode_results_and_releases_ready_pixels() {
+        let _guard = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pixels = || {
+            Prepared::Frames(vec![Raw {
+                px: vec![17; 1024 * 1024 * 4],
+                size: (1024, 1024),
+                depth: ColorDepth::Rgba8,
+                shown: (20, 20),
+                ms: 1000,
+            }])
+        };
+        let key = ("test-picture".to_string(), 20, false);
+        let old = GENERATION.load(std::sync::atomic::Ordering::Relaxed);
+        forget();
+        assert!(!publish(old, key.clone(), pixels()));
+        assert!(
+            READY.lock().unwrap().is_empty(),
+            "an old completion refilled the hidden cache"
+        );
+        let current = GENERATION.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(publish(current, key, pixels()));
+        assert_eq!(READY.lock().unwrap().len(), 1);
+        forget();
+        assert!(READY.lock().unwrap().is_empty(), "ready pixels survived hide");
     }
 }

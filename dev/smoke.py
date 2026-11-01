@@ -201,6 +201,25 @@ def main():
                 failures.append(f"the platform filter hid nothing ({before})")
         if shown() != before:
             failures.append(f"the platform filter didn't show Twitch again ({shown()})")
+        # Hidden Community rows must release their presentation data and refill on return.
+        count = int(ws.ask({"request": "StreamerzUi", "id": "count", "do": "community"})["result"])
+        ws.ask({"request": "StreamerzUi", "id": "leave", "do": "page Chat"})
+        if int(ws.ask({"request": "StreamerzUi", "id": "released", "do": "community"})["result"]) != 0:
+            failures.append("Community kept its rows after leaving the page")
+        ws.ask({"request": "StreamerzUi", "id": "return", "do": "page Community"})
+        if int(ws.ask({"request": "StreamerzUi", "id": "refilled", "do": "community"})["result"]) != count:
+            failures.append("Community did not refill its rows on return")
+        # A queued chat refresh must not refill released rows after hide.
+        ws.ask({"request": "InjectChat", "id": "late-chat", "platform": "kick", "user": "CleanupTest", "text": "before hide"})
+        count += 1
+        ws.ask({"request": "StreamerzUi", "id": "hide", "do": "toggle"})
+        time.sleep(.5)
+        if int(ws.ask({"request": "StreamerzUi", "id": "hidden", "do": "community"})["result"]) != 0:
+            failures.append("Community kept its rows after hiding the window")
+        ws.ask({"request": "StreamerzUi", "id": "show", "do": "toggle"})
+        time.sleep(.5)
+        if int(ws.ask({"request": "StreamerzUi", "id": "shown", "do": "community"})["result"]) != count:
+            failures.append("Community did not refill its rows after showing the window")
         # The channel search opens from Accounts, finds something, and closes with Escape.
         ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Accounts"})
         xdo("mousemove", "415", "102")

@@ -168,6 +168,9 @@ fn known() -> &'static HashMap<String, &'static str> {
 
 /// `text` cut into emoji (with their picture's URL) and the text between them.
 pub fn split(text: &str) -> Vec<(&str, Option<String>)> {
+    if crate::memory_saver() {
+        return vec![(text, None)];
+    }
     let at: Vec<usize> = text.char_indices().map(|(i, _)| i).chain([text.len()]).collect();
     let (mut out, mut plain, mut k) = (Vec::new(), 0, 0);
     while k + 1 < at.len() {
@@ -489,6 +492,9 @@ const FRESH: u64 = 12 * 60 * 60;
 
 /// Ensure emote catalogs are loaded for the current configuration and logged-in accounts.
 pub fn load_for_config(cmds: &UnboundedSender<UiCmd>, cfg: &tokio::sync::watch::Sender<Config>) {
+    if crate::memory_saver() || !cfg.borrow().window.chat.save_history {
+        return;
+    }
     let p = LoadParams::from_cfg(&cfg.borrow());
     {
         let Ok(mut st) = store().lock() else { return };

@@ -728,6 +728,9 @@ impl Engine {
     }
 
     pub fn chat_welcome(self: &Rc<Self>, platform: &str, fetched: Vec<Line>) {
+        if self.memory_saver {
+            return;
+        }
         let Some(p_idx) = index(platform) else { return };
         self.role_from_history(platform, &fetched);
         {
@@ -813,6 +816,9 @@ impl Engine {
 
     /// Keep a chat message for the window (called by `chat`).
     pub(super) fn log_chat(self: &Rc<Self>, c: &Chat) {
+        if self.memory_saver {
+            return;
+        }
         // Our own message: its badges say our role now (modded or unmodded since we connected).
         let lead = c.args.get("badges").and_then(Value::as_array).is_some_and(|b| {
             b.iter().any(|b| {
@@ -975,6 +981,9 @@ impl Engine {
 
     /// What a trigger shows in the chat, if anything (see `event_of`).
     pub(super) fn chat_event(self: &Rc<Self>, kind: u32, a: &Obj) {
+        if self.memory_saver {
+            return;
+        }
         let Some(ev) = event_of(kind, a) else { return };
         let get = |k: &str| a.get(k).map(crate::vars::text).unwrap_or_default();
         let says = crate::vars::simple(crate::i18n::tr(ev.says), a, &Obj::new());
@@ -1493,6 +1502,9 @@ impl Engine {
 
     /// A message got pinned in `pin.platform`'s chat (here or anywhere): it replaces the one there.
     pub fn chat_pinned(&self, pin: Pin) {
+        if self.memory_saver {
+            return;
+        }
         let mut st = self.st.borrow_mut();
         let until = pin.until.unwrap_or(u64::MAX);
         for l in st.chat_log.lines.iter_mut().filter(|l| l.platform == pin.platform) {
@@ -1530,6 +1542,9 @@ impl Engine {
     /// The messages pinned now, one per platform at most.
     /// A poll or prediction started, moved or ended (one per platform and id).
     pub fn chat_poll(&self, p: Poll) {
+        if self.memory_saver {
+            return;
+        }
         {
             let mut st = self.st.borrow_mut();
             let polls = &mut st.chat_log.polls;
