@@ -119,14 +119,15 @@ jobs:
       # Every scenario (tests/scenarios) on the exe just built, on real Windows.
       - if: github.event_name == 'pull_request' && needs.version.outputs.reuse == ''
         name: Run the scenarios on the Windows exe
-        run: |
-          set -o pipefail
-          ./target/release/Streamerz.exe --scenario tests/scenarios | tail -n 40
+        run: ./target/release/Streamerz.exe --scenario tests/scenarios
       - if: needs.version.outputs.reuse == ''
         name: Stage Windows binary
         run: |
           mkdir -p dist
           cp target/release/Streamerz.exe dist/Streamerz-windows-x86_64.exe
+      - if: needs.version.outputs.reuse == ''
+        name: Verify the Windows executable icon
+        run: python dev/check-windows-icon.py dist/Streamerz-windows-x86_64.exe
       - uses: actions/upload-artifact@v4
         with:
           name: streamerz-windows-${{ needs.version.outputs.tag || 'dev' }}-${{ needs.version.outputs.tree }}
