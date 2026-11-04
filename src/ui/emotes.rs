@@ -515,6 +515,10 @@ fn kick_slug(cfg: &Config) -> String {
 impl LoadParams {
     fn from_cfg(cfg: &Config) -> Self {
         let x: u8 = if fltk::app::screen_scale(0) > 1.25 { 2 } else { 1 };
+        Self::with_scale(cfg, x)
+    }
+
+    fn with_scale(cfg: &Config, x: u8) -> Self {
         let tw_broadcaster = cfg
             .twitch
             .broadcaster
@@ -1226,10 +1230,10 @@ mod tests {
             login: "me".into(),
             ..Default::default()
         });
-        assert_eq!(LoadParams::from_cfg(&cfg).tw_chan_id, "10");
+        assert_eq!(LoadParams::with_scale(&cfg, 1).tw_chan_id, "10");
         cfg.twitch.channel = "other".into();
         cfg.twitch.channel_id = "20".into();
-        assert_eq!(LoadParams::from_cfg(&cfg).tw_chan_id, "20");
+        assert_eq!(LoadParams::with_scale(&cfg, 1).tw_chan_id, "20");
     }
 
     #[test]
