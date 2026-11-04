@@ -67,6 +67,9 @@ pub struct Line {
     /// The emotes in `text`: name and picture URL.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub emotes: Vec<(String, String)>,
+    /// URL of a standalone Twitch GIF message.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub gif: String,
     /// Roles, shown as badges when no explicit badge list is present.
     #[serde(skip_serializing_if = "is_false")]
     pub broadcaster: bool,
@@ -883,6 +886,12 @@ impl Engine {
                 text,
                 action,
                 emotes,
+                gif: c
+                    .args
+                    .get("messageGifUrl")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
                 broadcaster: c.broadcaster,
                 moderator: c.moderator,
                 vip: c.vip,

@@ -2224,6 +2224,17 @@ fn unescape_irc_tag(v: &str) -> String {
 }
 
 /// Parse an IRCv3 `PRIVMSG` line (e.g. from `recent-messages.robotty.de`) into a historical chat `Line`.
+fn standalone_gif<'a>(event: &'a Value, text: &str) -> Option<&'a str> {
+    let fragments = event.pointer("/message/fragments")?.as_array()?;
+    if fragments.len() != 1 || fragments[0]["type"] != "gif" || fragments[0]["text"].as_str()? != text {
+        return None;
+    }
+    fragments[0]
+        .pointer("/gif/url")?
+        .as_str()
+        .filter(|url| url.starts_with("https://"))
+}
+
 pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate::engine::chatlog::Line> {
     let raw = raw.trim_end_matches(['\r', '\n']);
     let (tags_part, rest) = if let Some(r) = raw.strip_prefix('@') {
@@ -2255,6 +2266,7 @@ pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate
     let mut color = String::new();
     let mut badges_raw = String::new();
     let mut emotes_raw = String::new();
+    let mut gifs_raw = String::new();
     let mut sent_ts: Option<i64> = None;
     let mut reply = crate::engine::chatlog::Reply::default();
 
@@ -2267,6 +2279,7 @@ pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate
             "color" => color = v.to_string(),
             "badges" => badges_raw = v.to_string(),
             "emotes" => emotes_raw = v.to_string(),
+            "gifs" => gifs_raw = unescape_irc_tag(v),
             "tmi-sent-ts" => sent_ts = v.parse::<i64>().ok(),
             // Deleted by a moderator since: not shown again.
             "rm-deleted" if v == "1" => return None,
@@ -2332,6 +2345,8 @@ pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate
         }
     }
 
+    let gif_event = json!({"message": {"fragments": crate::irc::message_fragments(&text, &emotes_raw, &gifs_raw)}});
+    let gif = standalone_gif(&gif_event, &text).unwrap_or("").to_string();
     let reply = (!reply.user.is_empty()).then_some(reply);
     let text = reply.as_ref().map_or(text.clone(), |r| r.strip(&text));
     Some(crate::engine::chatlog::Line {
@@ -2345,6 +2360,7 @@ pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate
         user_id,
         text,
         emotes,
+        gif,
         broadcaster,
         moderator,
         vip,
@@ -2445,6 +2461,10 @@ pub(crate) fn handle_notification(
                     internal: false,
                 },
             );
+
+            if let Some(url) = standalone_gif(event, text) {
+                args.insert("messageGifUrl".into(), url.into());
+            }
 
             // Highlighted with channel points, a first message, a power-up: the chat marks it.
             let kind = event.pointer("/message_type").and_then(Value::as_str).unwrap_or("text");
@@ -5566,5 +5586,19 @@ pub(crate) mod tests {
         assert_eq!(line.badges[0].0, "broadcaster/1");
         assert_eq!(line.emotes.len(), 1);
         assert_eq!(line.emotes[0].0, "Kappa");
+    }
+}
+
+#[cfg(test)]
+mod gif_message_tests {
+    use super::*;
+    #[test]
+    fn event_and_recent_history_keep_standalone_gif_url() {
+        let url = "https://media.giphy.com/a.gif?x=1&y=2";
+        let event = json!({"message": {"fragments": [{"type": "gif", "text": "[a gif]", "gif": {"url": url}}]}});
+        assert_eq!(standalone_gif(&event, "[a gif]"), Some(url));
+        assert_eq!(standalone_gif(&event, "other"), None);
+        let raw = format!("@gifs=0-6|id|{url};id=msg :user!user@host PRIVMSG #channel :[a gif]");
+        assert_eq!(parse_irc_recent_message(&raw, "").unwrap().gif, url);
     }
 }

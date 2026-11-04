@@ -119,6 +119,25 @@ fn fragments(text: &str, emotes: &str) -> Vec<Value> {
     out
 }
 
+/// Decode a standalone GIF message, preserving Twitch's full asset URL.
+pub(crate) fn message_fragments(text: &str, emotes: &str, gifs: &str) -> Vec<Value> {
+    if let Some((range, rest)) = gifs.split_once('|') {
+        if let Some((id, url)) = rest.split_once('|') {
+            if let Some((start, end)) = range.split_once('-') {
+                if start == "0"
+                    && end.parse::<usize>().ok() == text.chars().count().checked_sub(1)
+                    && !id.is_empty()
+                    && url.starts_with("https://")
+                    && !url.contains(',')
+                {
+                    return vec![json!({"type": "gif", "text": text, "gif": {"id": id, "url": url}})];
+                }
+            }
+        }
+    }
+    fragments(text, emotes)
+}
+
 /// What sets a message apart, as EventSub says it: from IRC's `msg-id` tag ("text" for a plain one).
 fn message_type(msg_id: &str) -> &'static str {
     match msg_id {
@@ -168,7 +187,7 @@ pub fn event(m: &Irc, room_id: &str) -> Option<(&'static str, Value)> {
                 "chatter_user_login": m.login,
                 "chatter_user_name": if name.is_empty() { m.login.as_str() } else { name },
                 "message_id": m.tag("id"),
-                "message": {"text": text, "fragments": fragments(&text, m.tag("emotes"))},
+                "message": {"text": text, "fragments": message_fragments(&text, m.tag("emotes"), m.tag("gifs"))},
                 "color": m.tag("color"),
                 "badges": badges,
                 "is_action": is_action,
@@ -618,5 +637,21 @@ mod tests {
         assert_eq!(f[0]["text"], "é ");
         assert_eq!(f[1]["text"], "Kappa");
         assert!(fragments("hi", "25:0-9").len() == 1, "a range past the end is ignored");
+    }
+}
+
+#[cfg(test)]
+mod gif_tests {
+    use super::*;
+    #[test]
+    fn standalone_gif_preserves_url_and_rejects_bad_spans() {
+        let url = "https://media.giphy.com/a.gif?x=1&y=2";
+        let tag = format!("0-6|id|{url}");
+        let f = message_fragments("[a gif]", "", &tag);
+        assert_eq!(f[0]["gif"]["url"], url);
+        assert_eq!(
+            message_fragments("[a gif]", "", "0-99|id|https://example.com/a")[0]["type"],
+            "text"
+        );
     }
 }

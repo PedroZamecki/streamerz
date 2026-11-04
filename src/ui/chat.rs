@@ -486,7 +486,7 @@ fn display_user(l: &Line, yt_tag: bool) -> String {
 }
 
 /// A line's things, in order.
-fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
+fn items(cmds: &Cmds, l: &Line, tag: bool, width: i32) -> Vec<It> {
     let gray = Color::from_rgb(0x88, 0x88, 0x88);
     let (time, badges, _, yt_tag) = SHOW.get();
     let mut v = Vec::new();
@@ -582,6 +582,22 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
     }
     let name = display_user(l, yt_tag);
     v.push(It::Text(format!("{name}:"), Font::HelveticaBold, name_color(l)));
+    if !l.deleted && !l.gif.is_empty() {
+        if let Some(mut p) = img::get(cmds, &l.gif, 140, false) {
+            if p.w() > width.max(1) {
+                let h = (140 * width.max(1) / p.w()).max(1);
+                if let Some(smaller) = img::get(cmds, &l.gif, h, false) {
+                    p = smaller;
+                } else {
+                    words(cmds, l, &mut v);
+                    return v;
+                }
+            }
+            v.push(It::Break);
+            v.push(It::Pic(p, None));
+            return v;
+        }
+    }
     words(cmds, l, &mut v);
     v
 }
@@ -1164,7 +1180,7 @@ impl Pane {
     }
 
     fn lay(&self, l: &Line, tag: bool, w: i32) -> (Rows, i32) {
-        let r = rows(items(&self.cmds, l, tag), w);
+        let r = rows(items(&self.cmds, l, tag, w), w);
         let h = r.iter().map(|r| r.1).sum();
         (r, h)
     }

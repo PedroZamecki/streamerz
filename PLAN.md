@@ -554,3 +554,5 @@ platform handles through channels, never through shared locks held across awaits
 - Phase 10: Kick Pusher app key and chatroom id lookup (kick.com's v2 channel endpoint may sit behind
   Cloudflare). Check, and fall back to the official API ids.
 - Phase 13: integrations whose only transport is Streamer.bot's website relay.
+
+- [x] Twitch standalone GIF messages: show the animated picture below the sender in live chat and history, with the title as fallback.
