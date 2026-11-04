@@ -27,6 +27,9 @@ None set.
 
 ### Notes
 
+- Sent over the WebSocket to the remote instances (WebSocket clients, Servers page, connected to another
+  instance's server): to the one whose id or name is the Instance, or to all of them when it is empty or
+  `Any`. With none connected, the log says so and nothing is sent.
 - The sent arguments also carry `instanceId`, `instanceName` (this instance's name) and `instanceOs` (`windows` or `linux`).
 - The key is spelled `useArge` in the saved settings.
 
@@ -55,6 +58,7 @@ None set.
 
 ### Notes
 
+- Sent like Send Remote Trigger, to the same instances.
 - The signal carries the same `instanceId`, `instanceName` and `instanceOs` values as a remote trigger.
 - A kept signal stays in memory until a wait takes it. Streamerz doesn't save it to disk.
 

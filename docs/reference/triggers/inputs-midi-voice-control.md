@@ -10,7 +10,7 @@ Speech recognition for the voice control commands, and the text it hears.
 - Category: Inputs & MIDI/Voice Control
 - Needs: nothing
 
-Meant to start its actions for each phrase the speech recognizer dictates.
+Starts its actions for each phrase the speech recognizer hears.
 
 ### Fields
 
@@ -20,15 +20,22 @@ Meant to start its actions for each phrase the speech recognizer dictates.
 
 ### Arguments
 
-None set.
+| Argument | What it holds |
+| --- | --- |
+| `spokenText` | What was heard. |
+| `spokenTextConfidence` | How sure the recognizer was, 0 to 1. |
+| `spokenTextConfidencePercent` | The same, 0 to 100. |
 
 ### When
 
-It doesn't fire yet (see Notes).
+Each phrase heard, once it ends.
 
 ### Notes
 
-- Streamerz doesn't fire this yet.
+- Windows only: it uses Windows' own speech recognizer (SAPI dictation) and the default microphone. Linux has no system recognizer, so there it logs a warning and nothing listens.
+- The recognizer runs only while an enabled action uses Speech to Text Dictation or Command.
+- The culture field is kept but not used: the recognizer listens in Windows' language.
+- Built from SAPI's documentation; not checked on a real Windows yet (Wine has no recognizer). The engine side is covered by the speech scenario.
 
 ## Speech To Text Command
 
@@ -38,7 +45,7 @@ It doesn't fire yet (see Notes).
 - Category: Inputs & MIDI/Voice Control
 - Needs: nothing
 
-Meant to start its actions when a voice control command is recognized.
+Starts its actions when a phrase heard says one of the voice commands (Commands page), with enough confidence.
 
 ### Fields
 
@@ -48,12 +55,22 @@ Meant to start its actions when a voice control command is recognized.
 
 ### Arguments
 
-None set.
+| Argument | What it holds |
+| --- | --- |
+| `spokenText` | What was heard. |
+| `spokenTextConfidence` | How sure the recognizer was, 0 to 1. |
+| `spokenTextConfidencePercent` | The same, 0 to 100. |
+| `spokenCommand` | The phrase of the command that matched (lowercase). |
+| `spokenTextInput` | What was said after the phrase (commands said at the start). |
+| `commandId` | The id of the voice command. |
+| `commandName` | Its name. |
 
 ### When
 
-It doesn't fire yet (see Notes).
+A phrase heard is the command's phrase (Said: the whole phrase), starts with it (at the start) or holds it (anywhere), and the recognizer was at least as sure as the global confidence (Advanced), or the command's own when it overrides it.
 
 ### Notes
 
-- Streamerz doesn't fire this yet.
+- Windows only: it uses Windows' own speech recognizer (SAPI dictation) and the default microphone. Linux has no system recognizer, so there it logs a warning and nothing listens.
+- The recognizer runs only while an enabled action uses Speech to Text Dictation or Command.
+- Built from SAPI's documentation; not checked on a real Windows yet (Wine has no recognizer). The engine side is covered by the speech scenario.

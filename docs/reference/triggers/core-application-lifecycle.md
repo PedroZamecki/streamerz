@@ -56,9 +56,9 @@ Not yet. Streamerz doesn't fire this trigger.
 - Code: 708
 - Type: ToastActivation
 - Category: Core/Application Lifecycle
-- Needs: nothing
+- Needs: a Toast Notification sub-action
 
-Would start an action when someone clicks a toast notification.
+Starts its actions when someone clicks a toast that Toast Notification showed.
 
 ### Fields
 
@@ -66,15 +66,13 @@ None.
 
 ### Arguments
 
-None yet.
+- `toast.id`, `toast.title`, `toast.message`, `toast.attribution`: what the toast showed.
+- `toast.iconPath`: its icon path; `toast.localIconPath`: the same when it is a file here, else empty.
+- Plus `triggerId`, `triggerName`, `triggerCategory` and `eventSource`.
 
 ### When
 
-Not yet. Streamerz doesn't fire this trigger.
-
-### Notes
-
-- Streamerz doesn't fire this yet.
+On a click on the toast, while Streamerz runs (a toast is listened to for an hour).
 
 ## Application Action Added
 

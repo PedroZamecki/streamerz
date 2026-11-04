@@ -10,14 +10,14 @@ Sub-actions that keep voice control commands in Streamerz and turn them on or of
 - Category: Core/Voice Control
 - Needs: nothing
 
-Sets the phrase of a voice command, by its id. A new command starts enabled.
+Sets the phrases of a voice command from the Voice commands list (Commands page), by its id.
 
 ### Fields
 
 | Field | Key | What it holds |
 | --- | --- | --- |
 | Command ID | `commandId` | The id of the command. |
-| Command Phrase | `command` | The phrase to say. |
+| Command Phrase | `command` | The phrase to say (one per line for several). |
 
 ### Arguments
 
@@ -25,7 +25,7 @@ None set.
 
 ### Notes
 
-- No speech recognition runs in Streamerz yet, so nothing reads these commands, and the Speech to Text Command trigger doesn't fire.
+- An id that isn't in the list changes nothing.
 
 ## Set Voice Control Command State
 
@@ -35,7 +35,7 @@ None set.
 - Category: Core/Voice Control
 - Needs: nothing
 
-Enables, disables or toggles a voice command, by its id. A command that isn't known yet is created with no phrase, then the state is applied.
+Enables, disables or toggles a voice command from the Voice commands list, by its id. A disabled command doesn't fire Speech to Text Command.
 
 ### Fields
 
@@ -50,4 +50,4 @@ None set.
 
 ### Notes
 
-- No speech recognition runs in Streamerz yet, so nothing reads the state.
+- An id that isn't in the list changes nothing.

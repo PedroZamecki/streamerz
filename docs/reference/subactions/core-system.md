@@ -69,11 +69,18 @@ None set.
 - Category: Core/System
 - Needs: nothing
 
-Shows a notification. Streamerz doesn't show it yet.
+Shows a desktop notification: a toast on Windows, the system's notification on Linux. Clicking it fires
+Toast Activation.
 
 ### Fields
 
-None.
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Toast Id | `toastId` | An id for the toast, passed on to Toast Activation. |
+| Title | `title` | The title. |
+| Text | `text` | The text. |
+| Attribution | `attribution` | Who it is from; empty: `Streamerz`. |
+| Icon Path | `iconPath` | An image file shown with it; empty: Streamerz's icon. |
 
 ### Arguments
 
@@ -81,4 +88,6 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: the type is known and kept, but nothing runs it.
+- Variables in every field are filled in first.
+- In dev mode (and in scenarios) nothing is shown: the log says what would have been.
+- Windows shows it as from PowerShell's app id, as Streamerz's other notifications.

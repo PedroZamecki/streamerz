@@ -18,7 +18,8 @@ None.
 
 ### Arguments
 
-The fields of the webhook's JSON, as Throne sent them. Streamerz doesn't rename them.
+Streamer.bot's names: the gift's fields flattened under `throne.` (`throne.gifterLogin`,
+`throne.itemName`, `throne.price`...). The body's own top-level keys are kept too.
 
 ### When
 

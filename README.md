@@ -120,6 +120,84 @@ keyring they stay in the file, which only you can read. **Logout** also revokes 
 and Google. Copying `streamerz.json` to another computer or user doesn't carry the logins: log in again.
 Importing actions that run programs shows them and asks first.
 
+## Spotify
+
+Spotify is optional. To connect, you need Spotify Premium and your own Spotify developer app:
+
+1. Create an app in the [Spotify developer dashboard](https://developer.spotify.com/dashboard),
+   select Web API and add `http://127.0.0.1:45564/callback` as a redirect URI.
+2. In Streamerz, open **Integrations**, then **Advanced** beside Spotify, and enter the app's client ID.
+   Add your Spotify account in the app's User Management page if needed.
+3. Choose **Connect** and approve access in your browser.
+
+Spotify development-mode apps have account and user limits. See [Spotify's quota mode guide](https://developer.spotify.com/documentation/web-api/concepts/quota-modes)
+for the current requirements. Streamerz can read the current track and add a Spotify track link, URI or
+song name to your Spotify playback queue through its WebSocket and MCP tools. A song name is searched on
+Spotify and the result that best matches the words (title and artist, in any order, with or without a
+dash) is used; naming the artist helps. Spotify playback must already be available; Streamerz does not play audio. The queue
+request may fail if Spotify has no active device or denies access.
+
+On Windows, **Check local Spotify** can read the title and artist from a local Spotify media session
+without an API login. Connect Spotify to use its API actions, including queue and playback controls.
+The Spotify player actions also include device selection, seek, shuffle, repeat and recent tracks.
+Reconnect Spotify to grant recent listening access if your existing login predates that action.
+
+### Where Spotify is, and what works without the login
+
+Spotify is on **Integrations**: Connect, Disconnect, Advanced (your client ID) and **Monitor local
+Spotify**. Everything is in **Integrations > Spotify** when you pick a trigger or sub-action:
+
+- **Triggers**: Connected, Disconnected, Error, Local session connected and disconnected, Track changed,
+  Playback started and paused, and the song request ones (requested, refused, taken back, skipped, vote to
+  skip, blocked).
+- **Sub-actions**: Player (current track, devices, queue, play, pause, next, previous, seek, volume, add to
+  queue, transfer playback, shuffle, repeat, playback state, recently played), Song Requests (the request
+  itself, take back, skip, vote to skip, block, get and clear requests) and Library (like song).
+
+Spotify is also found **without the login**, from the app on this computer (Windows media session; on Linux
+MPRIS). Turn on Monitor local Spotify and Streamerz sees the song that plays and whether it plays: the
+Track changed, Playback started and paused and Local session triggers, and Get Current Track. Everything else
+needs the login (queue, search, song requests, volume, seek, devices, shuffle, repeat, library): those
+sub-actions say so in `spotifyError`, and the page says it too.
+
+### Song requests
+
+Streamerz does what Songify does for Spotify. Choose **Templates**, then **Song requests (Spotify)**. It adds a
+group named Song requests, with the Spotify logo as its icon, and one command for Twitch, YouTube and Kick
+each:
+
+| Command | What it does |
+| --- | --- |
+| `!sr song or link` (also `!ssr`) | Adds the best match to your Spotify queue, at once, and replies with the song, its place and when it plays |
+| `!song`, `!next` | What plays now, what is next, and who asked |
+| `!queue`, `!pos` | The next five songs, and where the viewer's own songs are |
+| `!remove` | Takes back the viewer's last request: it is skipped when it starts. A moderator can add `@name` or a number |
+| `!skip`, `!voteskip` | Skip (moderators by default; a viewer can skip the song they asked for) and a vote to skip |
+| `!play`, `!pause`, `!vol 0-100` | Playback and volume (moderators) |
+| `!songlike` | Saves the song that plays to your liked songs (moderators) |
+| `!bansong` | Blocks the song that plays for good and skips it (moderators) |
+
+A request can be a name (`firework katy perry`, `firework - katy perry` or `katy perry - firework`), a Spotify
+track link or a `spotify:track:` URI. Links to albums, artists, playlists, episodes and short links are
+refused with a message. The best of Spotify's first ten results is chosen by the words of the title and the
+artist, and a request no result matches is "No track found".
+
+Open **Group settings** to change who can request (everyone, subscribers, VIPs or moderators), songs per
+viewer and per subscriber, who has no limit, the longest song, explicit songs (and who may still ask for
+them), blocked viewers, artists and songs, who can skip, votes to skip and the wait between skips, who
+controls playback, and every reply. A reply can use `%user%`, `%spotifyTitle%`, `%spotifyArtist%`,
+`%spotifyPosition%`, `%spotifyTimeToPlay%`, `%spotifyList%`, `%spotifyRequestedBy%`, `%spotifyVotes%`,
+`%spotifyVolume%` and `%spotifyError%`. A command's cooldown is on the Commands page.
+
+Spotify cannot take a song out of its queue, so a song that was taken back stays there until it plays and
+Streamerz skips it then; it looks at the player every few seconds only while such a song waits. The
+requests are kept while Streamerz runs. Spotify Premium is needed, and Spotify open on a device (it can be
+paused: Streamerz names the device). Liking songs and the country check need permissions an older login does
+not have: choose **Disconnect** and **Connect** again once. Without them, songs are still requested.
+
+**Disconnect** removes the saved login from Streamerz. To revoke Spotify's authorization, remove the
+app from your Spotify account's connected apps.
+
 ## The editor
 
 Click the tray icon to open the window. The Actions tab lists your actions by group; select one to see
@@ -130,6 +208,56 @@ timers and commands picked by name; "Edit JSON" shows the whole thing); the othe
 **Import** takes a Streamer.bot import string (pasted or from a file); **Export** makes one from the
 actions you tick, with the commands, timers and queues they use. Sub-actions that don't run in
 Streamerz are kept, shown greyed out with "(not supported)", and skipped.
+
+## Action groups
+
+An action group holds actions and also what they share: **settings**, **files**, and the **commands and
+timers** they use. Select a group (or one of its actions) and choose **Group settings**:
+
+- **Settings** are named values every action in the group reads as `%group.name%`. Each has a label,
+  a type (text, whole number, number, on or off, or a time such as `1:30:00` or `1h 30m`), a default
+  and an optional description. **Change value** sets it; **Add setting**, **Edit setting** and
+  **Delete setting** declare them. Values persist between runs, and a Set Argument named `group.name`
+  updates the shared value.
+- **Files** travel with the group, such as an overlay. **Save files** writes them to a folder you
+  choose and never replaces a file that is there. An `.html` file is an overlay: **Copy URL** gives its
+  address for an OBS browser source, and **Save as page** writes a copy that works as a local file.
+  See [Overlays](docs/OVERLAYS.md).
+- **Commands and timers** lists the ones the group uses, so exporting the group takes them along.
+
+Exporting an action of a group shares the group whole: its settings (with their current values), files,
+commands, timers and icon. On import, settings are merged by name: imported values replace matching
+names and other existing values stay. This is a Streamerz extension to the export format and
+Streamer.bot ignores it.
+
+Use **Add group**, **Rename group** and **Delete group** to manage groups. Renaming keeps everything
+the group holds. Deleting a group leaves its actions, commands and timers ungrouped and deletes its
+settings, files and icon. Choose **Set group icon** for a PNG or JPEG up to 1 MB; it is embedded in
+exports with a SHA-256 digest.
+
+The MCP tools `list_action_groups`, `manage_action_group`, `group_meta`, `set_group_meta`,
+`group_variables`, `set_group_variables`, `action_group_icon`, `export_group`, `export_actions`,
+`import_actions`, `save_group_files`, `list_templates` and `add_template` do the same. Importing
+actions that run programs requires explicit confirmation before setting `allowPrograms`.
+
+### Subathon timer
+
+Choose **Templates**, then **Subathon timer**. It is an ordinary group named Subathon, built from these
+tools: three actions that use the Countdown sub-action, and five settings (starting time, maximum
+time, time per subscription, time per donation unit and the donation currency). The countdown starts
+when it is added, never goes above the maximum, and pauses while Streamerz is closed. It counts Twitch
+subscriptions, resubscriptions and individual gifts, and Streamlabs donations in the chosen currency.
+Run the **Subathon: reset** action to start it again.
+
+Open **Group settings > Files**, save `subathon.html` and add it as an OBS browser source. It connects
+to the local WebSocket server on port 8080; if you use a different address, append
+`?server=ws%3A%2F%2F127.0.0.1%3A8090%2F` to the file URL. If server authentication is enabled, add
+`password` as a URL query parameter with the URL-encoded password. Keep that URL private.
+
+To make your own, create a group, declare its settings, build the actions with `%group.name%` in their
+fields, add any files, and export it for others to import and configure.
+
+## Other tabs
 
 The other tabs, as in Streamer.bot:
 
@@ -161,6 +289,8 @@ word in your language, a fix, a feature.
 - **Found a bug or want something?** [Open an issue](https://github.com/PedroZamecki/streamerz/issues/new/choose).
   A crash? The Crashes page in Streamerz fills in the report for you.
 - **Translate it:** [LOCALIZATION.md](LOCALIZATION.md).
+- **Test it:** [docs/UNTESTED.md](docs/UNTESTED.md) lists what hasn't been tried on the real thing yet
+  (Windows, MIDI and Stream Deck hardware, some live events).
 - **Write code:** [CONTRIBUTING.md](CONTRIBUTING.md) has how to build, test and send a pull request;
   [DEVELOPING.md](DEVELOPING.md) has how it works inside; [PLAN.md](PLAN.md) is what comes next.
 - **Found a security problem?** Please don't post it: [SECURITY.md](SECURITY.md).
@@ -192,6 +322,12 @@ fire triggers, inject a chat message and read what would have been sent. Start S
 `STREAMERZ_DEV=1` for the testing tools (it then keeps chat replies instead of sending them). It connects to
 the address in `streamerz.json` next to the exe, or `STREAMERZ_URL`.
 
-- Claude Code: `claude mcp add Streamerz -- /path/to/Streamerz --mcp` (this repo's `.mcp.json` points at
-  `target/release/Streamerz` and a dev instance on port 8090).
-- Other clients: command `/path/to/Streamerz`, argument `--mcp`.
+The **MCP** page (under App) does the setup for you. It lists the AI agents installed on this computer
+(Claude Code, Codex, OpenCode, Gemini CLI, Antigravity, Cursor, Windsurf, VS Code, GitHub Copilot CLI,
+Claude Desktop, Qwen Code, Kiro, Crush, Amp, LM Studio) and adds Streamerz to one's own config with a click,
+keeping everything else in the file. **Open chat** opens a terminal agent in your terminal, already set up,
+in a folder with notes telling it what it's there for. The `agents` and `agent_setup` MCP tools do the same.
+
+- By hand, Claude Code: `claude mcp add Streamerz -- /path/to/Streamerz --mcp` (this repo's `.mcp.json`
+  points at `target/release/Streamerz` and a dev instance on port 8090).
+- Other clients: command `/path/to/Streamerz`, argument `--mcp` (**Copy config** on the MCP page gives it).

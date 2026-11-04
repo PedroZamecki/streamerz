@@ -27,6 +27,8 @@ None set.
 ### Notes
 
 - The folders on the way to the file are created when they are missing.
+- Append starts a new line first when the file is already there (even empty), as Streamer.bot does:
+  `\r\n` on Windows, `\n` on Linux. A file it makes starts with the text.
 - Variables in the path and the text are filled in first.
 - A write that fails is not reported in the app.
 

@@ -1,6 +1,10 @@
 # Elgato / Stream Deck (sub-actions)
 
-Button title, background, state and value for Elgato Stream Deck buttons.
+Button title, background, state and value for Elgato Stream Deck buttons, through Streamer.bot's own
+Stream Deck plugin (`bot.streamer.streamdeck`). Turn on the Stream Deck server on the Servers page
+(port 8059, as Streamer.bot's) and add it as an instance in the plugin. Each sub-action is pushed to every
+connected plugin, in the messages Streamer.bot sends (checked against Streamer.bot 1.0.7); the plugin
+finds the button by its id (the `sdButtonId` a button passes when pressed).
 
 ## Set Title
 
@@ -26,8 +30,7 @@ None set.
 
 ### Notes
 
-- The title is kept in Streamerz's memory only. Nothing sends it to a Stream Deck yet.
-- State sets the button's state: Enable turns it on, Disable turns it off, Toggle flips it.
+- State is the button's state the title is for (0 or 1).
 
 ## Set Background
 
@@ -54,7 +57,6 @@ None set.
 
 ### Notes
 
-- The background is kept in Streamerz's memory only. Nothing sends it to a Stream Deck yet.
 - State works the same as for Set Title.
 
 ## Set State
@@ -80,7 +82,6 @@ None set.
 
 ### Notes
 
-- The state is kept in Streamerz's memory only. Nothing sends it to a Stream Deck yet.
 
 ## Show Alert
 
@@ -104,7 +105,7 @@ None set.
 
 ### Notes
 
-- Streamerz only writes a debug line. Nothing shows on the device yet.
+- Pushed to the plugin, which flashes the button.
 
 ## Show Ok
 
@@ -128,7 +129,7 @@ None set.
 
 ### Notes
 
-- Streamerz only writes a debug line. Nothing shows on the device yet.
+- Pushed to the plugin, which flashes the button.
 
 ## Toggle State
 
@@ -152,7 +153,6 @@ None set.
 
 ### Notes
 
-- The state is kept in Streamerz's memory only. Nothing sends it to a Stream Deck yet.
 
 ## Set Value
 
@@ -177,7 +177,6 @@ None set.
 
 ### Notes
 
-- The value is kept in Streamerz's memory only. Nothing sends it to a Stream Deck yet.
 
 ## Execute MCP Action
 

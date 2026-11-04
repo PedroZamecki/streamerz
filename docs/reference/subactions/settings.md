@@ -47,7 +47,7 @@ None set.
 
 ### Notes
 
-- The choice is kept while Streamerz runs. Nothing reads it yet, because Streamerz doesn't run speech recognition yet.
+- The choice is kept while Streamerz runs, but the recognizer always listens on the default microphone (Windows only), so it changes nothing yet.
 
 ## Reset First Words
 

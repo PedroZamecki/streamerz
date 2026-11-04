@@ -10,7 +10,7 @@ Sub-actions for file tails, the watches on new lines added to a file that the Fi
 - Category: Core/File Tail
 - Needs: nothing
 
-Enables, disables or toggles a file tail, by its id. A tail that isn't known yet starts enabled, then the state is applied.
+Enables, disables or toggles a file tail (Files page), by its id. The change is saved and the tail starts or stops at once.
 
 ### Fields
 
@@ -25,4 +25,4 @@ None set.
 
 ### Notes
 
-- Streamerz keeps the state, but nothing reads it yet. No file tail is watched yet, so File Tail Changed doesn't fire.
+- An id that matches no file tail does nothing.

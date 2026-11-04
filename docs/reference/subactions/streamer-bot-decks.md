@@ -1,6 +1,8 @@
 # Streamer.bot / Decks (sub-actions)
 
-Changes the items, pages and notifications of a deck. Decks are kept in memory by Streamerz.
+Streamer.bot Decks are a web app that works through Streamer.bot's website integration (its cloud),
+which Streamerz doesn't use (PLAN.md). These sub-actions are kept when imported, so nothing is lost, and
+skipped when they run, with a log line (once per type).
 
 ## Item Set State
 
@@ -28,8 +30,7 @@ None set.
 
 ### Notes
 
-- A deck is found by its deck ID, or by its deck name when the ID is empty. An item is created the first time it's used.
-- The deck state is kept in memory only. No screen or feature reads it yet.
+- Not run by Streamerz (see the top of this page).
 
 ## Item Toggle State
 
@@ -56,8 +57,7 @@ None set.
 
 ### Notes
 
-- An item is created the first time it's used.
-- The deck state is kept in memory only. No screen or feature reads it yet.
+- Not run by Streamerz (see the top of this page).
 
 ## Item Set Title
 
@@ -87,7 +87,7 @@ None set.
 
 ### Notes
 
-- The deck state is kept in memory only. No screen or feature reads it yet.
+- Not run by Streamerz (see the top of this page).
 
 ## Item Set Background
 
@@ -118,8 +118,7 @@ None set.
 
 ### Notes
 
-- `fileId` is saved but not used yet.
-- The deck state is kept in memory only. No screen or feature reads it yet.
+- Not run by Streamerz (see the top of this page).
 
 ## Item Set Icon
 
@@ -151,8 +150,7 @@ None set.
 
 ### Notes
 
-- `fileId` is saved but not used yet.
-- The deck state is kept in memory only. No screen or feature reads it yet.
+- Not run by Streamerz (see the top of this page).
 
 ## Item Set Value
 
@@ -181,7 +179,7 @@ None set.
 
 ### Notes
 
-- The deck state is kept in memory only. No screen or feature reads it yet.
+- Not run by Streamerz (see the top of this page).
 
 ## Deck Notify
 
@@ -210,7 +208,7 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: nothing shows the notification or plays the sound. The sound ID is saved but not used.
+- Not run by Streamerz (see the top of this page).
 
 ## Page Set
 
@@ -236,7 +234,7 @@ None set.
 
 ### Notes
 
-- The deck state is kept in memory only. No screen or feature reads it yet.
+- Not run by Streamerz (see the top of this page).
 
 ## Page Next
 
@@ -261,8 +259,7 @@ None set.
 
 ### Notes
 
-- There is no last page: the number keeps going up.
-- The deck state is kept in memory only. No screen or feature reads it yet.
+- Not run by Streamerz (see the top of this page).
 
 ## Page Previous
 
@@ -287,5 +284,4 @@ None set.
 
 ### Notes
 
-- The page never goes below 0.
-- The deck state is kept in memory only. No screen or feature reads it yet.
+- Not run by Streamerz (see the top of this page).

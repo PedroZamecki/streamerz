@@ -337,7 +337,7 @@ def stop():
         time.sleep(1)
     subprocess.run(['pkill', '-9', '-f', 'Streamer.bot.exe']); time.sleep(2)
 def start():
-    subprocess.Popen(['setsid', 'lutris', 'lutris:rungameid/2'], env=dict(os.environ, LUTRIS_SKIP_INIT='1'),
+    subprocess.Popen(['setsid', 'lutris', 'lutris:rungameid/1'], env=dict(os.environ, LUTRIS_SKIP_INIT='1'),
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(90):
         time.sleep(2)
@@ -439,7 +439,7 @@ if [ "$1" = stop ]; then
   for i in $(seq 1 30); do pgrep -f 'lutris' >/dev/null || break; sleep 1; done
   sleep 2
 else
-  (env -u VIRTUAL_ENV -u PYTHONHOME -u PYTHONPATH PATH=/usr/local/bin:/usr/bin:/bin LUTRIS_SKIP_INIT=1 setsid lutris lutris:rungameid/2 >/tmp/sb-launch.log 2>&1 &)
+  (env -u VIRTUAL_ENV -u PYTHONHOME -u PYTHONPATH PATH=/usr/local/bin:/usr/bin:/bin LUTRIS_SKIP_INIT=1 setsid lutris lutris:rungameid/1 >/tmp/sb-launch.log 2>&1 &)
   for i in $(seq 1 90); do sleep 2; ss -ltn | grep -q ':8080 ' && break; done
   sleep 4
 fi
@@ -766,6 +766,12 @@ t1=$(awk '{print $14+$15}' /proc/$pid/stat); sleep 30; t2=$(awk '{print $14+$15}
 The second number is CPU ticks (1/100 s) used in 30 s idle. The tray can be toggled without clicking:
 `busctl --user call org.kde.StatusNotifierItem-$pid-1 /StatusNotifierItem org.kde.StatusNotifierItem Activate ii 0 0`.
 
+`dev/emote-check.py BINARY hidden|visible` does it for emotes: it reads xqc's Twitch channel without a login,
+checks that a channel emote and a chatter's own 7TV emotes draw (screenshot in `/tmp/emotecheck`), and
+prints RSS and idle ticks. Run it under `dbus-run-session` with Xwayland on `:99`. 7TV is asked through its
+GraphQL API (names and ids: 60 KB for a 967-emote set, where REST is 2.4 MB and 5 s); a chatter's personal
+set is asked once the first time they appear.
+
 ## Icons
 
 - `assets/brand/`: the app's logo. The four SVGs are the sources: `streamerz.svg` (colour, light
@@ -853,6 +859,72 @@ they cover: `cargo test --profile fast scenario_coverage -- --ignored` (writes
 `docs/reference` has a page per trigger and sub-action (format in its README). `cargo test docs` fails when
 one is missing, doubled, or breaks the writing rules. `cargo test --profile fast dump_types -- --ignored`
 writes `target/types.json`, every type with its category and fields, to write new pages from.
+
+## Spotify
+
+## Ports
+
+`ports.rs` holds what the engine needs from a connector: `ObsPort` (obs-websocket requests, batches,
+connect and disconnect per connection) and `MusicPort` (current track, queue, playback). Production
+adapters are `obs::ObsHandle` and `spotify::Spotify`; the engine and the WebSocket server only see the
+traits. Tests plug in `ports::fakes::FakeObs` (`Engine::set_obs`) and `FakeMusic`
+(`Engine::with_music`), so a sub-action or request runs with no OBS, Spotify account or network. The MCP
+tools `connectors` (state of each connector, no secrets) and `obs_request` (a raw OBS request, dev mode)
+reach the same ports.
+
+## Spotify
+
+Spotify is off until the user connects it in Integrations. `spotify.rs` uses the user's client ID and
+PKCE, stores tokens through the existing secrets layer, and refreshes them on demand. It creates no
+background connection or polling task. `StreamerzSpotifyLocal` and MCP `spotify_local` read an on-demand
+Windows media session without an API login. Local metadata does not grant API control.
+`StreamerzSpotifyCurrent` reads the current track;
+`StreamerzSpotifyQueue` takes a `query` containing a track URI, link or search phrase. The MCP tools
+`spotify_current` and `spotify_queue` call those requests. They operate on the real Spotify account,
+including in development mode. Mock HTTP tests cover playback lookup and search followed by queueing;
+testing the real API needs a user's Premium account and developer app.
+
+## Song requests
+
+Copied from Songify (https://github.com/songify-rocks/Songify): a request is checked and given to Spotify's
+queue at once. `songrequests.rs` is the memory of who asked for what (`Requests`), the rules in Songify's
+order (`check`) and the replies' reasons (`Reason`). `engine/songs.rs` is the 99802 sub-action: request,
+remove, current, next, queue, pos, skip, voteskip, play, pause, volume, bansong and like. Spotify cannot
+remove a queued song, so a request taken back is marked and a watcher skips it when it plays; the watcher
+only runs while one is marked. Every operation ends with `spotifyReply`, picked from the sub-action's
+fields (the group's `msg*` settings) or the plain text. `spotify.rs`: `find` (links, unsupported links,
+Spotify's first 10 results chosen by `score`, which reads "title - artist", "artist - title" and "title by
+artist", drops accents and penalises other recordings; `market=from_token` when the login allows it),
+`player` (queue, current track, device and volume; a device that is not active is still named), `add_uri`
+(on the device, again without it if it is gone, again after a 503), `set_volume`, `like`. `MusicPort`
+has `find`, `add`, `player`, `playback`, `volume`, `like`; `ports::fakes::FakeMusic` plays them in memory.
+The template is `templates/songs.rs`. Tests: `cargo test song`. Against the real Spotify (they open the
+browser to log in and need `STREAMERZ_SPOTIFY_CLIENT_ID`, and change the account's queue and likes):
+`live_spotify`, `live_devices` and `live_chat` in `spotify.rs` (ignored).
+
+## Action groups
+
+`groups.rs` is the model. A group's values stay in `Config.action_group_variables` (read as
+`%group.name%` through `Engine::expand`); everything else about it is its `Meta` in
+`Config.action_groups`: typed setting definitions (`Def`, `Kind`: text, integer, number, boolean,
+duration in milliseconds), files (base64, portable names only), and the ids of the commands and
+timers it lists (commands and timers whose `group` names it count too). `groups::values` gives the
+declared settings with their defaults; `set_values` keeps declared types; `rename` and `remove`
+move or drop everything. `edit::export_groups` adds `streamerz.groups`, `groupVariables` and
+`groupIcons` to a Streamer.bot export, and `edit::import` checks all of it before changing anything.
+The UI is `ui/groups.rs`. The WebSocket requests are `StreamerzManageActionGroup`,
+`StreamerzActionGroups`, `StreamerzGroupMeta`, `StreamerzSetGroupMeta`, `StreamerzGroupVariables`,
+`StreamerzSetGroupVariables`, `StreamerzGroupExport`, `StreamerzSaveGroupFiles` and
+`StreamerzTemplateAdd` (adds a built-in template); each has an MCP tool.
+
+`templates.rs` lists the built-in templates; a `Made` can carry group definitions and `add_to`
+applies them (defaults first, then countdowns). `templates/subathon.rs` is the subathon built only
+from these tools: countdown sub-action 99803 (its `startMs`, `maxMs`, `perUnitMs` and
+`expectedCurrency` fields take `%group.name%`), a group with five settings, and the overlay as a
+group file. `templates/clock.rs` keeps the countdown state: it is created when the group is added
+or imported (`clock::start_for` finds the resets), capped on every add, and its remaining time is
+saved at shutdown. The overlay reads `StreamerzCountdown` and listens for
+`Misc.StreamerzCountdownChanged`.
 
 ## Where the settings are
 

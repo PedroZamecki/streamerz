@@ -24,11 +24,8 @@ None set.
 
 ### When
 
-Never, for now. Streamerz doesn't fire this yet.
-
-### Notes
-
-- Streamerz doesn't fire this yet. The Stream Deck actions that set titles, states and values are there, but nothing reads key presses from a Stream Deck yet.
+Never: Streamer.bot 1.0.7 drops this trigger from actions. A button press runs the action the button
+names, with `sdButtonId`, `sdButtonUuid` and the button's own arguments (`eventSource` is `streamdeck`).
 
 ## Connected
 
@@ -52,11 +49,7 @@ None set.
 
 ### When
 
-Never, for now. Streamerz doesn't fire this yet.
-
-### Notes
-
-- Streamerz doesn't fire this yet.
+When the Stream Deck plugin connects to the Stream Deck server (Servers page). No other arguments.
 
 ## Disconnected
 
@@ -80,11 +73,7 @@ None set.
 
 ### When
 
-Never, for now. Streamerz doesn't fire this yet.
-
-### Notes
-
-- Streamerz doesn't fire this yet.
+When the plugin disconnects. No other arguments.
 
 ## Info
 
@@ -108,11 +97,8 @@ None set.
 
 ### When
 
-Never, for now. Streamerz doesn't fire this yet.
-
-### Notes
-
-- Streamerz doesn't fire this yet.
+Never: Streamer.bot 1.0.7 doesn't fire it with its current plugin either, which sends no device
+information.
 
 ## Mcp Connected
 
