@@ -1,0 +1,132 @@
+[
+  {
+    "name": "files: write, append, read lines, a random line, a specific line, exists",
+    "actions": [{"name": "files", "subActions": [
+      {"type": 3, "file": "{tmp}/a.txt", "text": "one %who%\ntwo", "append": false},
+      {"type": 3, "file": "{tmp}/a.txt", "text": "three", "append": true},
+      {"type": 1006, "file": "{tmp}/a.txt", "variableName": "lines"},
+      {"type": 1021, "file": "{tmp}/a.txt", "variableName": "second", "count": 2},
+      {"type": 5, "file": "{tmp}/a.txt", "variableName": "any"},
+      {"type": 1039, "file": "{tmp}/a.txt"},
+      {"type": 1039, "file": "{tmp}/nope.txt", "variableName": "missing"},
+      {"type": 1040, "folder": "{tmp}"},
+      {"type": 1020, "logLevel": 2, "message": "count=%lineCount% first=%line0% second=%second% any=%any%"}]}],
+    "steps": [{"run": "files", "args": {"who": "ana"}}],
+    "expect": {"log": ["count=3 first=one ana second=two any="],
+               "runs": [{"action": "files", "after": {"fileFound": true, "lines.count": 3, "fileExists": true, "missing": false, "folderExists": true}}]}
+  },
+  {
+    "name": "files: set file tail state runs",
+    "actions": [{"name": "tail", "subActions": [{"type": 1030, "fileTailId": "ft1", "state": 2}, {"type": 1020, "logLevel": 2, "message": "tail set"}]}],
+    "steps": [{"run": "tail"}],
+    "expect": {"log": ["tail set"]}
+  },
+  {
+    "name": "run a program: arguments in, key=value lines back (Linux)",
+    "only": "linux",
+    "actions": [{"name": "prog", "subActions": [
+      {"type": 6, "command": "/bin/sh", "arguments": "-c \"read j; echo got=$j | cut -c1-12; echo color=red\"", "waitForExit": 5},
+      {"type": 1020, "logLevel": 2, "message": "color=%color% lines=%outputCount%"}]}],
+    "steps": [{"run": "prog", "args": {"x": 1}, "wait": 600}],
+    "expect": {"log": ["color=red lines=3"]}
+  },
+  {
+    "name": "run a program: arguments in, key=value lines back (Windows)",
+    "only": "windows",
+    "actions": [{"name": "prog", "subActions": [
+      {"type": 6, "command": "C:\\Windows\\System32\\cmd.exe", "arguments": "/c echo color=red", "waitForExit": 5},
+      {"type": 1020, "logLevel": 2, "message": "color=%color%"}]}],
+    "steps": [{"run": "prog", "wait": 1500}],
+    "expect": {"log": ["color=red"]}
+  },
+  {
+    "name": "fetch url: text, JSON into arguments, and an HTTP error",
+    "fakes": {"http": {"GET /plain": "hello world", "GET /json": {"a": {"b": 2}, "list": [1, 2]}, "GET /gone": {"status": 404, "body": "no"}}},
+    "actions": [{"name": "fetch", "subActions": [
+      {"type": 1007, "url": "{http}/plain", "variableName": "page"},
+      {"type": 1007, "url": "{http}/json", "variableName": "data", "parseAsJson": true},
+      {"type": 1007, "url": "{http}/gone", "variableName": "x"},
+      {"type": 1020, "logLevel": 2, "message": "page=%page% b=%data.a.b%"}]}],
+    "steps": [{"run": "fetch", "wait": 500}],
+    "expect": {"calls": ["http GET /plain", "http GET /json", "http GET /gone"], "log": ["HTTP 404", "page=hello world b=2"]}
+  },
+  {
+    "name": "discord webhook: the message posted, its id back",
+    "fakes": {"http": {"POST /hook?wait=true": {"id": "msg42"}}},
+    "actions": [{"name": "discord", "subActions": [
+      {"type": 7001, "webhookUrl": "{http}/hook", "content": "live now, %game%", "username": "Bot", "textToSpeech": false}]}],
+    "steps": [{"run": "discord", "args": {"game": "Chess"}, "wait": 500}],
+    "expect": {"calls": [{"platform": "http", "call": "POST /hook?wait=true", "body": {"content": "live now, Chess", "username": "Bot"}}],
+               "runs": [{"action": "discord", "after": {"messageId": "msg42"}}]}
+  },
+  {
+    "name": "ifttt: with no maker key it says so and sends nothing; no event name is an error",
+    "actions": [{"name": "ifttt", "subActions": [
+      {"type": 8001, "eventName": "stream_live", "text": "hi"},
+      {"type": 8002, "eventName": "stream_live", "args": {"value1": "%user%"}},
+      {"type": 8001, "eventName": "", "text": "x"}]}],
+    "steps": [{"run": "ifttt", "args": {"user": "ana"}}],
+    "expect": {"log": ["IFTTT: event 'stream_live' dispatched", "IFTTT: event 'stream_live' dispatched", "IFTTT: missing event name"]}
+  },
+  {
+    "name": "pronouns: no user, no pronouns (the defaults are set)",
+    "actions": [{"name": "p", "subActions": [{"type": 15001, "userLogin": "", "prefix": "p"}, {"type": 1020, "logLevel": 2, "message": "done"}]}],
+    "steps": [{"run": "p"}],
+    "expect": {"log": ["done"]}
+  },
+  {
+    "name": "remote instances: with none connected, sending says so; one's trigger and signal arrive as requests",
+    "actions": [
+      {"name": "listener", "triggers": [{"type": 29003, "eventName": "boom"}], "subActions": [{"type": 1020, "logLevel": 2, "message": "remote %eventName% %color% from %instanceId%"}]},
+      {"name": "send", "subActions": [
+        {"type": 20001, "instanceId": "", "eventName": "boom", "customArgs": {"color": "blue"}},
+        {"type": 20002, "instanceId": "inst1", "signalName": "go", "customArgs": {"n": "5"}}]},
+      {"name": "wait", "subActions": [{"type": 20003, "instanceId": "inst1", "signalName": "go", "timeout": 500}, {"type": 1020, "logLevel": 2, "message": "signal n=%n% timeout=%signalTimeout%"}]}],
+    "steps": [{"run": "send"},
+      {"request": {"request": "ExecuteRemoteTrigger", "id": "r1", "instanceId": "inst1", "eventName": "boom", "args": {"color": "red"}}, "reply": {"status": "ok"}, "ran": 1},
+      {"request": {"request": "SendRemoteSignal", "id": "r2", "instanceId": "inst1", "signalName": "go", "args": {"n": "5"}}, "reply": {"status": "ok"}},
+      {"run": "wait"}],
+    "expect": {"log": ["Send Remote Trigger boom: no remote instance  is connected", "Send Remote Signal go: no remote instance inst1 is connected",
+      "remote boom red from inst1", "signal n=5 timeout=False"]}
+  },
+  {
+    "name": "devices: MIDI out to a missing device, Stream Deck with no plugin, Decks skipped, voice control",
+    "debug": true,
+    "actions": [{"name": "dev", "subActions": [
+      {"type": 9002, "device": "no such pad", "channel": 2, "controller": 7, "value": 64},
+      {"type": 9003, "device": "no such pad", "command": "NoteOff", "channel": 1, "data1": 60, "data2": 0},
+      {"type": 11001, "buttonId": "b1", "title": "Live", "state": 0}, {"type": 11002, "buttonId": "b1", "color": "#FF0000", "state": 0},
+      {"type": 11004, "buttonId": "b1", "state": 1}, {"type": 11005, "buttonId": "b1"}, {"type": 11006, "buttonId": "b1"},
+      {"type": 11007, "buttonId": "b1"}, {"type": 11008, "buttonId": "b1", "value": "42"},
+      {"type": 21001, "deckName": "Main", "itemName": "Mute", "state": 0}, {"type": 21002, "deckName": "Main", "itemName": "Mute"},
+      {"type": 21003, "deckName": "Main", "itemName": "Mute", "title": "M", "state": 0}, {"type": 21004, "deckName": "Main", "itemName": "Mute", "color": "#000000", "state": 0},
+      {"type": 21005, "deckName": "Main", "itemName": "Mute", "name": "mic", "state": 0}, {"type": 21006, "deckName": "Main", "itemName": "Mute", "value": "1", "state": 0},
+      {"type": 21007, "deckName": "Main", "title": "Hi", "description": "d"}, {"type": 21008, "deckName": "Main", "page": 2},
+      {"type": 21009, "deckName": "Main"}, {"type": 21010, "deckName": "Main"},
+      {"type": 1018, "commandId": "v1", "command": "lights off"}, {"type": 1019, "commandId": "v1", "state": 1},
+      {"type": 1025, "audioDeviceId": "mic1", "audioDeviceName": "Blue Yeti"},
+      {"type": 1012, "key": "NoSuchKey", "modifiers": 0},
+      {"type": 1020, "logLevel": 2, "message": "devices done"}]}],
+    "steps": [{"run": "dev"}],
+    "expect": {"log": ["MIDI Out: no MIDI output no such pad", "MIDI Out: no MIDI output no such pad",
+                       "Stream Deck: no plugin connected for \"SetTitle\"", "not supported yet, skipped", "Keyboard Press: unknown key: NoSuchKey", "devices done"]}
+  },
+  {
+    "name": "users: clearing a group fires Group Cleared; reset first words; quotes count and delete; reset credits",
+    "config": {"groups": [{"id": "g1", "name": "Friends", "userIds": ["5"]}], "quotes": [{"id": 1, "quote": "hi", "user": "ana"}, {"id": 2, "quote": "yo", "user": "bo"}]},
+    "actions": [
+      {"name": "cleared", "triggers": [{"type": 32003}], "subActions": [{"type": 1020, "logLevel": 2, "message": "cleared %group.name%"}]},
+      {"name": "users", "subActions": [
+        {"type": 10001, "groupId": "g1"}, {"type": 1026}, {"type": 1027},
+        {"type": 1035}, {"type": 1036, "quoteId": "1"}, {"type": 1035, "variableName": "after"},
+        {"type": 1020, "logLevel": 2, "message": "quotes %quoteCount%"}]}],
+    "steps": [{"run": "users"}],
+    "expect": {"log": ["quotes 1", "cleared Friends"], "runs": [{"action": "users", "after": {"success": true}}]}
+  },
+  {
+    "name": "udp broadcast: sent with no error",
+    "actions": [{"name": "udp", "subActions": [{"type": 2, "port": 47999, "payload": "{\"hello\": \"%user%\"}"}, {"type": 1020, "logLevel": 2, "message": "sent"}]}],
+    "steps": [{"run": "udp", "args": {"user": "ana"}}],
+    "expect": {"log": ["sent"], "notLog": ["UDP Broadcast to port"]}
+  }
+]

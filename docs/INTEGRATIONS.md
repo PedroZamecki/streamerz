@@ -40,14 +40,24 @@ Charity Donation triggers have Streamer.bot's Range (Min and Max amount).
   Keyboard simulation is not implemented on Linux. Key Press and Mouse Click triggers, stored as Streamer.bot stores them (SharpHook's `keyCode` and `modifierMask`).
   Set a trigger's keys by clicking **Keys** and pressing the combination. They work whichever program has
   focus, and listen only while an enabled action uses them:
-  - Linux: through the desktop's Global Shortcuts portal (xdg-desktop-portal), with no root and no `input`
-    group. KDE and GNOME ask you to allow each shortcut; Hyprland binds them in its config, so the capture
-    window shows the line to add to hyprland.lua or hyprland.conf (**Copy line**). The portal needs an app
-    id, so a hidden `streamerz.desktop` is written to `~/.local/share/applications` the first time.
-    Mouse Click doesn't work on Linux: only reading every input device could see clicks, which also sees
-    every key typed.
+  - Linux on X11: the X server gives both (key grabs and XInput2's clicks). Nothing to set up.
+  - Linux on Wayland, keys: the desktop's Global Shortcuts portal (xdg-desktop-portal), with no root and no
+    `input` group. KDE and GNOME ask you to allow each shortcut. On Hyprland, Streamerz binds them itself
+    through Hyprland's socket while it runs (non-consuming, so other programs still get the keys) and
+    removes them when it quits. The portal needs an app id, so a hidden `streamerz.desktop` is written to
+    `~/.local/share/applications` the first time. A desktop without the portal (sway, older GNOME) can
+    read the keyboards instead, once you allow it in the trigger.
+  - Linux on Wayland, clicks: Wayland gives no program the clicks made in other windows, so Streamerz reads
+    the mice themselves. The Mouse Click trigger has an **Allow** button: it asks for your password once
+    (polkit, or sudo in a terminal) and adds `/etc/udev/rules.d/70-streamerz-mice.rules`, which lets the
+    person at the computer read mice and touchpads (systemd's `uaccess`, as for sound cards). Keyboards
+    stay closed. **Remove access** deletes the rule. Only button presses are read. The pointer's place
+    comes from Hyprland; other Wayland desktops don't share it (`mouse.x` and `mouse.y` are 0), and a
+    touchpad's taps aren't clicks the device sees.
   - Windows: RegisterHotKey (a combination another program already holds can't be taken), and a mouse hook
-    only while a Mouse Click trigger is used (`mouse.button` 1 left, 2 right, 3 middle).
+    only while a Mouse Click trigger is used.
+  - Mouse Click's **Button** is caught like the keys: click the field, then click with the button you want
+    (or **Any button**). `mouse.button` is 1 left, 2 right, 3 middle, 4 back, 5 forward.
 - **MIDI**: Input and output are not implemented yet. MIDI output sub-actions only log their values.
 - **Voice Control**: Speech input is not implemented yet. The command and input sub-actions only update in-memory state.
 

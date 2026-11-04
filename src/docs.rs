@@ -173,6 +173,7 @@ mod tests {
         let fields = |f: Option<&'static [forms::F]>| -> Vec<serde_json::Value> {
             f.unwrap_or(&[])
                 .iter()
+                .filter(|f| !f.0.is_empty())
                 .map(|(k, l, w)| serde_json::json!({"key": k, "label": l, "holds": w.about()}))
                 .collect()
         };

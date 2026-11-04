@@ -47,5 +47,13 @@
     ],
     "steps": [{"fire": 101, "args": {"user": "a"}, "ran": 1}, {"run": "switch off"}, {"fire": 101, "args": {"user": "b"}, "ran": 0}],
     "expect": {"chat": ["target ran"]}
+  },
+  {
+    "name": "overlay: an action sets a topic for the pages listening and goes on",
+    "actions": [
+      {"name": "publish", "subActions": [{"type": 99880, "topic": "score", "value": "{\"home\": %home%}"}, {"type": 99880, "topic": "", "value": "ignored"}, {"type": 1020, "logLevel": 2, "message": "published"}]}
+    ],
+    "steps": [{"run": "publish", "args": {"home": "3"}}],
+    "expect": {"log": ["published"]}
   }
 ]

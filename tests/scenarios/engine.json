@@ -1,0 +1,172 @@
+[
+  {
+    "name": "clear non-persisted globals and user globals",
+    "actions": [
+      {"name": "set", "subActions": [
+        {"type": 122, "variableName": "temp", "value": "1", "persisted": false, "source": 0},
+        {"type": 122, "variableName": "kept", "value": "2", "persisted": true, "source": 0}]},
+      {"name": "clear", "subActions": [{"type": 125}, {"type": 126}]},
+      {"name": "read", "subActions": [
+        {"type": 121, "variableName": "temp", "persisted": false, "destinationVariable": "t", "defaultValue": "gone"},
+        {"type": 121, "variableName": "kept", "persisted": true, "destinationVariable": "k", "defaultValue": "gone"},
+        {"type": 1020, "logLevel": 2, "message": "temp=%t% kept=%k%"}]}],
+    "steps": [{"run": "set"}, {"run": "clear"}, {"run": "read"}],
+    "expect": {"log": ["temp=gone kept=2"]}
+  },
+  {
+    "name": "loop break and loop continue in a while",
+    "actions": [{"name": "loop", "subActions": [
+      {"type": 123, "variableName": "i", "value": "0", "autoType": true},
+      {"type": 128, "input": "%i%", "operation": 2, "value": "10", "autoType": true, "subActions": [
+        {"type": 123, "variableName": "i", "value": "$math(%i% + 1)$", "autoType": true},
+        {"type": 120, "input": "%i%", "operation": 0, "value": "2", "autoType": true, "subActions": [
+          {"type": 99901, "subActions": [{"type": 130}]}, {"type": 99902, "subActions": []}]},
+        {"type": 120, "input": "%i%", "operation": 0, "value": "4", "autoType": true, "subActions": [
+          {"type": 99901, "subActions": [{"type": 129}]}, {"type": 99902, "subActions": []}]},
+        {"type": 1020, "logLevel": 2, "message": "turn %i%"}]},
+      {"type": 1020, "logLevel": 2, "message": "out at %i%"}]}],
+    "steps": [{"run": "loop"}],
+    "expect": {"log": ["turn 1", "turn 3", "out at 4"], "notLog": ["turn 2", "turn 4", "turn 5"]}
+  },
+  {
+    "name": "a comment does nothing and a group runs what it holds",
+    "actions": [{"name": "grouped", "subActions": [
+      {"type": 1009, "comment": "just a note"},
+      {"type": 99900, "name": "inner", "subActions": [{"type": 1020, "logLevel": 2, "message": "inside the group"}]},
+      {"type": 1020, "logLevel": 2, "message": "after the group"}]}],
+    "steps": [{"run": "grouped"}],
+    "expect": {"log": ["inside the group", "after the group"]}
+  },
+  {
+    "name": "action group state: set, then read all off, all on and mixed",
+    "actions": [
+      {"id": "a1", "name": "a1", "group": "Alerts", "subActions": []},
+      {"id": "a2", "name": "a2", "group": "Alerts", "subActions": []},
+      {"name": "off", "subActions": [{"type": 1011, "groupName": "Alerts", "state": 1}]},
+      {"name": "on", "subActions": [{"type": 1011, "groupName": "Alerts", "state": 0}]},
+      {"name": "one off", "subActions": [{"type": 1004, "actionId": "a2", "state": 1}]},
+      {"name": "read", "subActions": [
+        {"type": 1017, "groupName": "Alerts"},
+        {"type": 1016, "actionId": "a1"},
+        {"type": 1020, "logLevel": 2, "message": "group %actionGroupState% a1 %actionState%"}]}],
+    "steps": [{"run": "off"}, {"run": "read"}, {"run": "on"}, {"run": "read"}, {"run": "one off"}, {"run": "read"}],
+    "expect": {"log": ["group 0 a1 False", "group 1 a1 True", "group 2 a1 True"],
+               "runs": [{"action": "read", "after": {"actionGroupState": 2, "actionsEnabled": ["a1"], "actionsDisabled": ["a2"]}}]}
+  },
+  {
+    "name": "a sub-action turned off is skipped, and a weight is set",
+    "actions": [
+      {"id": "target", "name": "target", "subActions": [
+        {"id": "s1", "type": 1020, "logLevel": 2, "message": "first"},
+        {"id": "s2", "type": 1020, "logLevel": 2, "message": "second"}]},
+      {"name": "off", "subActions": [
+        {"type": 1028, "actionId": "target", "subActionId": "s2", "state": 1},
+        {"type": 1038, "actionId": "target", "subActionId": "s1", "weight": 3.5}]},
+      {"name": "toggle", "subActions": [{"type": 1028, "actionId": "target", "subActionId": "s2", "state": 2}]}],
+    "steps": [{"run": "off"}, {"run": "target"}, {"run": "toggle"}, {"run": "target"}],
+    "expect": {"log": ["first", "first", "second"], "notLog": []}
+  },
+  {
+    "name": "a trigger turned off doesn't fire its action",
+    "actions": [
+      {"id": "target", "name": "target", "triggers": [{"id": "t1", "type": 101}], "subActions": [{"type": 1020, "logLevel": 2, "message": "followed"}]},
+      {"name": "off", "subActions": [{"type": 1033, "actionId": "target", "triggerId": "t1", "state": 1}]},
+      {"name": "on", "subActions": [{"type": 1033, "actionId": "target", "triggerId": "t1", "state": 2}]}],
+    "steps": [{"run": "off"}, {"fire": 101, "ran": 0}, {"run": "on"}, {"fire": 101, "ran": 1}],
+    "expect": {"log": ["followed"]}
+  },
+  {
+    "name": "custom event trigger fires the Custom trigger by event name, with the arguments",
+    "actions": [
+      {"name": "listener", "triggers": [{"type": 18001, "eventName": "boom"}], "subActions": [{"type": 1020, "logLevel": 2, "message": "heard %who%"}]},
+      {"name": "other", "triggers": [{"type": 18001, "eventName": "else"}], "subActions": [{"type": 1020, "logLevel": 2, "message": "wrong event"}]},
+      {"name": "emit", "subActions": [{"type": 1034, "eventName": "boom", "useArgs": true}]}],
+    "steps": [{"run": "emit", "args": {"who": "ana"}}],
+    "expect": {"log": ["heard ana"], "notLog": ["wrong event"]}
+  },
+  {
+    "name": "a queued local signal is picked up by a later wait, with its arguments",
+    "actions": [
+      {"name": "send", "subActions": [{"type": 1031, "signalName": "go", "queueSignal": true, "customArgs": {"color": "red"}}]},
+      {"name": "wait", "subActions": [
+        {"type": 1032, "signalName": "go", "timeout": 500},
+        {"type": 1020, "logLevel": 2, "message": "got %color% timeout=%signalTimeout%"}]}],
+    "steps": [{"run": "send"}, {"run": "wait"}],
+    "expect": {"log": ["got red timeout=False"]}
+  },
+  {
+    "name": "a wait for a signal that never comes times out",
+    "actions": [{"name": "wait", "subActions": [
+      {"type": 1032, "signalName": "never", "timeout": 50},
+      {"type": 1020, "logLevel": 2, "message": "timeout=%signalTimeout%"}]}],
+    "steps": [{"run": "wait", "wait": 300}],
+    "expect": {"log": ["Wait For Local Signal: never timed out", "timeout=True"]}
+  },
+  {
+    "name": "a paused queue holds its actions until resumed; clear drops what waits",
+    "config": {"actions": {"queues": [{"id": "q1", "name": "Q1", "blocking": true}]}},
+    "actions": [
+      {"name": "pause", "subActions": [{"type": 1001, "actionQueueId": "q1", "state": 0}]},
+      {"name": "resume", "subActions": [{"type": 1001, "actionQueueId": "q1", "state": 1}]},
+      {"name": "clear", "subActions": [{"type": 1005, "actionQueueId": "q1"}]},
+      {"name": "held", "queue": "q1", "subActions": [{"type": 1020, "logLevel": 2, "message": "held ran %n%"}]}],
+    "steps": [{"run": "pause"}, {"run": "held", "args": {"n": 1}}, {"run": "clear"}, {"run": "held", "args": {"n": 2}},
+              {"run": "resume"}],
+    "expect": {"log": ["held ran 2"], "notLog": ["held ran 1"]}
+  },
+  {
+    "name": "a queue made non-blocking runs its actions side by side",
+    "config": {"actions": {"queues": [{"id": "q1", "name": "Q1", "blocking": true}]}},
+    "actions": [
+      {"name": "unblock", "subActions": [{"type": 1022, "actionQueueId": "q1", "state": 1}]},
+      {"name": "slow", "queue": "q1", "subActions": [{"type": 1002, "value": 200}, {"type": 1020, "logLevel": 2, "message": "slow done"}]},
+      {"name": "fast", "queue": "q1", "subActions": [{"type": 1020, "logLevel": 2, "message": "fast done"}]}],
+    "steps": [{"run": "unblock"}, {"run": "slow", "wait": 10}, {"run": "fast", "wait": 400}],
+    "expect": {"log": ["fast done", "slow done"]}
+  },
+  {
+    "name": "a blocking queue runs its actions one after the other",
+    "config": {"actions": {"queues": [{"id": "q1", "name": "Q1", "blocking": false}]}},
+    "actions": [
+      {"name": "block", "subActions": [{"type": 1022, "actionQueueId": "q1", "state": 0}]},
+      {"name": "slow", "queue": "q1", "subActions": [{"type": 1002, "value": 200}, {"type": 1020, "logLevel": 2, "message": "slow done"}]},
+      {"name": "fast", "queue": "q1", "subActions": [{"type": 1020, "logLevel": 2, "message": "fast done"}]}],
+    "steps": [{"run": "block"}, {"run": "slow", "wait": 10}, {"run": "fast", "wait": 400}],
+    "expect": {"log": ["slow done", "fast done"]}
+  },
+  {
+    "name": "get input with no window answers no success",
+    "actions": [{"name": "ask", "subActions": [
+      {"type": 1023, "title": "Q", "prompt": "name?", "outputVariable": "answer"},
+      {"type": 1020, "logLevel": 2, "message": "success=%success%"}]}],
+    "steps": [{"run": "ask"}],
+    "expect": {"log": ["success=False"]}
+  },
+  {
+    "name": "a timer turned on fires its Timed Actions trigger with its counter",
+    "config": {"timers": [{"id": "tm1", "name": "Every second", "enabled": false, "interval": 1, "repeat": true}]},
+    "actions": [
+      {"name": "start", "subActions": [{"type": 8, "timerId": "tm1", "state": 0}]},
+      {"name": "tick", "triggers": [{"type": 701, "timerId": "tm1"}], "subActions": [{"type": 1020, "logLevel": 2, "message": "tick %timerName% %counter%"}]}],
+    "steps": [{"run": "start", "wait": 1300}],
+    "expect": {"log": ["tick Every second 1"]}
+  },
+  {
+    "name": "command and command group state: set and read",
+    "config": {"commands": [
+      {"id": "c1", "name": "hi", "command": "!hi", "group": "Fun"},
+      {"id": "c2", "name": "bye", "command": "!bye\r\n!cya", "group": "Fun"},
+      {"id": "c3", "name": "mod", "command": "!mod", "group": "Mods"}]},
+    "actions": [
+      {"name": "c1 off", "subActions": [{"type": 9, "commandId": "c1", "state": 1}]},
+      {"name": "fun off", "subActions": [{"type": 1010, "groupName": "Fun", "state": 1}]},
+      {"name": "fun on", "subActions": [{"type": 1010, "groupName": "Fun", "state": 0}]},
+      {"name": "read", "subActions": [
+        {"type": 1014, "commandId": "c1"},
+        {"type": 1015, "groupName": "Fun"},
+        {"type": 1013, "groupName": "", "variableName": "list"},
+        {"type": 1020, "logLevel": 2, "message": "c1=%commandState% fun=%commandGroupState% list=%list%"}]}],
+    "steps": [{"run": "c1 off"}, {"run": "read"}, {"run": "fun off"}, {"run": "read"}, {"run": "fun on"}, {"run": "read"}],
+    "expect": {"log": ["c1=False fun=2 list=!bye, !cya, !mod", "c1=False fun=0 list=!mod", "c1=True fun=1 list=!bye, !cya, !hi, !mod"]}
+  }
+]

@@ -707,6 +707,11 @@ impl Engine {
     /// lines, then a divider right before live session messages (kept in memory only).
     /// Forget what `platform`'s chat showed (its channel changed): lines, pins, polls and who was seen.
     pub fn chat_forget(&self, platform: &str) {
+        if platform == "kick" {
+            let mut st = self.st.borrow_mut();
+            st.kick_chatters = None;
+            st.kick_chatters_failed = false;
+        }
         {
             let log = &mut self.st.borrow_mut().chat_log;
             log.lines.retain(|l| l.platform != platform);
@@ -1450,9 +1455,9 @@ impl Engine {
 
     /// Drops `platform`'s line `msg_id`, or all of `user_id`'s lines: deleted, banned or timed out.
     pub fn chat_remove(&self, platform: &str, msg_id: &str, user_id: &str) {
-        // Struck through where the broadcaster moderates (their own channel); elsewhere, like the
-        // platforms show it to viewers, the text goes.
-        let own = self.own_channel(platform);
+        // Struck through (the words kept, to read on hover) where we moderate: our own channel, or
+        // one we are a moderator in; elsewhere, like the platforms show it to viewers, the text goes.
+        let own = self.own_channel(platform) || crate::roles::get(platform).0.moderates();
         let mut st = self.st.borrow_mut();
         let log = &mut st.chat_log;
         let mut changed = false;
@@ -1584,6 +1589,7 @@ impl Engine {
             };
             if changed {
                 crate::ui::chat();
+                self.emit("Overlay", "viewers", || self.viewers_value());
             }
         }
     }
@@ -1858,7 +1864,14 @@ impl Engine {
                         .map(|a| (a.username.clone(), a.user_id.to_string())),
                     "youtube" => (if b { &c.youtube.bot } else { &c.youtube.broadcaster })
                         .as_ref()
-                        .map(|a| (a.name.clone(), a.channel_id.clone())),
+                        .map(|a| {
+                            let name = if c.window.chat_youtube_tag && !a.handle.is_empty() {
+                                a.handle.clone()
+                            } else {
+                                a.name.clone()
+                            };
+                            (name, a.channel_id.clone())
+                        }),
                     "tiktok" => (if b { &c.tiktok.bot } else { &c.tiktok.broadcaster })
                         .as_ref()
                         .map(|a| (a.username.trim_start_matches('@').to_string(), a.username.clone())),
@@ -1882,11 +1895,19 @@ impl Engine {
         let mut guard = self.chat_log_mut();
         let log = &mut *guard;
         // Our name's colour and badges as the chat showed them last, until the platform's own copy says.
-        let (color, badges) = log
+        let previous = log
             .lines
             .iter()
             .rev()
-            .find(|l| l.platform == platform && l.user_id == id && !l.note && !l.local)
+            .find(|l| l.platform == platform && l.user_id == id && !l.note && !l.local);
+        let name = if platform == "youtube" && self.cfg.borrow().window.chat_youtube_tag && !name.starts_with('@') {
+            // No stored handle: the name chat showed us with, else the display name without its spaces
+            // (a handle never has any), so the wait doesn't show a name the chat won't.
+            previous.map_or_else(|| name.split_whitespace().collect::<String>(), |l| l.user.clone())
+        } else {
+            name
+        };
+        let (color, badges) = previous
             .map(|l| (l.color.clone(), l.badges.clone()))
             .unwrap_or_default();
         log.push(Line {
@@ -2261,6 +2282,7 @@ mod tests {
             c.youtube.broadcaster = Some(crate::youtube::YouTubeAccount {
                 channel_id: "UC123".into(),
                 name: "Zamecki Code".into(),
+                handle: "@ZameckiCode".into(),
                 ..Default::default()
             });
             c.twitch.broadcaster = Some(crate::twitch::TwitchAccount {
@@ -2286,6 +2308,7 @@ mod tests {
             let (_, _, lines) = e.chat_sync(999, 0);
             assert_eq!(lines.len(), 1);
             assert!(lines[0].local);
+            assert_eq!(lines[0].user, "@ZameckiCode");
             assert!(lines[0].reply.is_none());
             assert_eq!(lines[0].text, "@Alice Como vamos?");
 
@@ -2302,6 +2325,30 @@ mod tests {
             assert_eq!(lines.len(), 1, "optimistic echo was replaced without duplicate");
             assert!(!lines[0].local);
             assert_eq!(lines[0].msg_id, "yt-1");
+
+            cfg.send_modify(|c| c.window.chat_youtube_tag = false);
+            let seq = e.chat_local("youtube", "display name", false, None).unwrap();
+            let (_, _, lines) = e.chat_sync(999, 0);
+            assert_eq!(lines.iter().find(|l| l.seq == seq).unwrap().user, "Zamecki Code");
+            e.chat_unlocal(seq);
+
+            // No stored handle and nothing said yet: still not the display name, with the tag on.
+            cfg.send_modify(|c| {
+                c.window.chat_youtube_tag = true;
+                c.youtube.broadcaster.as_mut().unwrap().handle.clear();
+            });
+            let seq = e.chat_local("youtube", "no handle", false, None).unwrap();
+            let (_, _, lines) = e.chat_sync(999, 0);
+            assert_eq!(
+                lines
+                    .iter()
+                    .find(|l| l.seq == seq)
+                    .unwrap()
+                    .user
+                    .trim_start_matches('@'),
+                "ZameckiCode"
+            );
+            e.chat_unlocal(seq);
 
             // Twitch optimistic local message
             let _ = e.chat_local("twitch", "oi?", false, None).unwrap();
@@ -2448,7 +2495,7 @@ mod tests {
 
     #[test]
     fn a_reward_redemption_without_text_shows_in_chat() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::engine::tests::run(async {
             let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
             let mut args = crate::model::Obj::new();
@@ -2484,7 +2531,7 @@ mod tests {
 
     #[test]
     fn chat_with_save_history_disabled_does_not_keep_lines() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::engine::tests::run(async {
             let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
             e.change(|c| c.window.chat.save_history = false);
@@ -2503,7 +2550,7 @@ mod tests {
 
     #[test]
     fn announcement_colors_follow_channel_and_palette() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::engine::tests::run(async {
             let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
             let fire = |color: &str, chan_color: &str| {
@@ -2538,7 +2585,7 @@ mod tests {
     #[test]
     #[ignore]
     fn bench_chat_performance() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::engine::tests::run(async {
             fn get_rss_kb() -> usize {
                 std::fs::read_to_string("/proc/self/statm")
@@ -2665,7 +2712,7 @@ mod tests {
 
     #[test]
     fn a_message_sent_with_a_reward_has_it_over_it() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::engine::tests::run(async {
             let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
             let args = |v: Value| v.as_object().cloned().unwrap();
@@ -2731,7 +2778,7 @@ mod tests {
 
     #[test]
     fn youtube_reply_is_sent_as_a_mention() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::engine::tests::run(async {
             let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
             e.dev_mode();
@@ -2749,7 +2796,7 @@ mod tests {
 
     #[test]
     fn tiktok_cannot_be_sent_even_in_development_mode() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::engine::tests::run(async {
             let c = crate::Config::default();
             let e = crate::engine::Engine::new(std::sync::Arc::new(tokio::sync::watch::channel(c).0), |_| {});
@@ -2762,7 +2809,7 @@ mod tests {
 
     #[test]
     fn events_show_in_the_chat_once_and_in_words() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::engine::tests::run(async {
             let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
             let a = |v: Value| v.as_object().cloned().unwrap();
@@ -3068,7 +3115,10 @@ mod tests {
             let left: Vec<String> = e.chat_sync(999, 0).2.into_iter().map(|l| l.text).collect();
             assert_eq!(left, ["fresh"]);
             // With no lifetime, nothing ages out.
-            let e = engine_with(crate::ChatLimits::default());
+            let e = engine_with(crate::ChatLimits {
+                save_history: true,
+                ..Default::default()
+            });
             said(&e, "kick", "stays");
             assert_eq!(e.chat_log_mut().age_out(u64::MAX / 2), 0);
         });
@@ -3078,7 +3128,10 @@ mod tests {
     fn stream_end_and_chat_connection_are_independent() {
         let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::engine::tests::run(async {
-            let e = engine_with(crate::ChatLimits::default());
+            let e = engine_with(crate::ChatLimits {
+                save_history: true,
+                ..Default::default()
+            });
             e.st.borrow_mut().dev_out = Some(Vec::new());
             for (i, platform) in PLATFORMS.iter().copied().enumerate() {
                 said(&e, platform, "hello");
@@ -3110,7 +3163,10 @@ mod tests {
     fn polls_and_pins_clear_on_channel_change_and_stream_end() {
         let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::engine::tests::run(async {
-            let e = engine_with(crate::ChatLimits::default());
+            let e = engine_with(crate::ChatLimits {
+                save_history: true,
+                ..Default::default()
+            });
             e.chat_poll(Poll {
                 platform: "youtube".into(),
                 id: "yt1".into(),

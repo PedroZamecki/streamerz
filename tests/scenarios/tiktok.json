@@ -1,0 +1,42 @@
+[
+  {
+    "name": "tiktok: live events fire their triggers; top gifters and stream info read them back",
+    "actions": [
+      {"name": "on 41001", "triggers": [{"type": 41001}], "subActions": [{"type": 1009}]},
+      {"name": "on 41002", "triggers": [{"type": 41002}], "subActions": [{"type": 1009}]},
+      {"name": "on 41003", "triggers": [{"type": 41003}], "subActions": [{"type": 1009}]},
+      {"name": "on 41004", "triggers": [{"type": 41004}], "subActions": [{"type": 1009}]},
+      {"name": "on 41005", "triggers": [{"type": 41005}], "subActions": [{"type": 1009}]},
+      {"name": "on 41006", "triggers": [{"type": 41006}], "subActions": [{"type": 1009}]},
+      {"name": "on 41007", "triggers": [{"type": 41007}], "subActions": [{"type": 1009}]},
+      {"name": "on 41010", "triggers": [{"type": 41010}], "subActions": [{"type": 1009}]},
+      {"name": "info", "subActions": [{"type": 43002, "count": 5}, {"type": 43003}, {"type": 43001, "text": "can't send"}]}
+    ],
+    "steps": [
+      {"event": {"platform": "tiktok", "type": "chat", "channel": "streamer", "data": {"uniqueId": "ana_tt", "nickname": "Ana", "userId": "u1", "comment": "hello", "msgId": "t1"}}, "ran": 1},
+      {"event": {"platform": "tiktok", "type": "gift", "channel": "streamer", "data": {"uniqueId": "rich", "nickname": "Rich", "userId": "u2", "giftName": "Rose", "diamondCount": 5, "repeatCount": 3, "giftType": 1, "repeatEnd": true}}, "ran": 1},
+      {"event": {"platform": "tiktok", "type": "like", "channel": "streamer", "data": {"uniqueId": "ana_tt", "nickname": "Ana", "likeCount": 10, "totalLikeCount": 120}}, "ran": 1},
+      {"event": {"platform": "tiktok", "type": "follow", "channel": "streamer", "data": {"uniqueId": "bo_tt", "nickname": "Bo", "userId": "u3"}}, "ran": 1},
+      {"event": {"platform": "tiktok", "type": "share", "channel": "streamer", "data": {"uniqueId": "bo_tt", "userId": "u3"}}, "ran": 1},
+      {"event": {"platform": "tiktok", "type": "subscribe", "channel": "streamer", "data": {"uniqueId": "cy_tt", "nickname": "Cy", "userId": "u4"}}, "ran": 1},
+      {"event": {"platform": "tiktok", "type": "member", "channel": "streamer", "data": {"uniqueId": "dee_tt", "nickname": "Dee", "userId": "u5"}}, "ran": 1},
+      {"event": {"platform": "tiktok", "type": "roomUser", "channel": "streamer", "data": {"viewerCount": 321}}, "ran": 1},
+      {"event": {"platform": "tiktok", "type": "roomUser", "channel": "streamer", "data": {"viewerCount": 321}}, "ran": 0},
+      {"run": "info"}
+    ],
+    "expect": {
+      "runs": [
+        {"action": "on 41001", "args": {"user": "Ana", "message": "hello", "channel": "streamer", "uniqueId": "ana_tt"}},
+        {"action": "on 41002", "args": {"user": "Rich", "coins": 15, "userTotalCoins": 15, "giftName": "Rose"}},
+        {"action": "on 41003", "args": {"user": "Ana", "totalLikes": 120}},
+        {"action": "on 41004", "args": {"user": "Bo"}},
+        {"action": "on 41005", "args": {"user": "bo_tt"}},
+        {"action": "on 41006", "args": {"user": "Cy"}},
+        {"action": "on 41007", "args": {"user": "Dee"}},
+        {"action": "on 41010", "args": {"viewerCount": 321}},
+        {"action": "info", "after": {"topGifter0": "Rich", "topGifter0Coins": 15, "isLive": false, "viewerCount": 321, "totalLikes": 120}}
+      ],
+      "log": ["TikTok chat is read-only in Streamerz"]
+    }
+  }
+]

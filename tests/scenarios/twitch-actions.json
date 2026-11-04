@@ -1,0 +1,320 @@
+[
+  {
+    "name": "twitch: chat message, reply and announcement",
+    "fakes": {"twitch": {}},
+    "actions": [{"name": "talk", "subActions": [
+      {"type": 10, "text": "hello %user%", "useBot": true},
+      {"type": 560, "text": "replying", "replyId": "%msgId%"},
+      {"type": 23, "text": "big news", "color": "purple", "useBot": false}]}],
+    "steps": [{"run": "talk", "args": {"user": "ana", "msgId": "m1"}}],
+    "expect": {"chat": [{"platform": "twitch", "text": "hello ana", "bot": true}, {"platform": "twitch", "text": "replying"}],
+               "calls": [{"platform": "twitch", "call": "announce", "text": "big news", "color": "purple", "bot": false}]}
+  },
+  {
+    "name": "twitch: nothing is sent when Twitch isn't connected",
+    "actions": [{"name": "act", "subActions": [
+      {"type": 23, "text": "big news"}, {"type": 15, "title": "t"}, {"type": 20, "userLogin": "x", "duration": 5},
+      {"type": 1020, "logLevel": 2, "message": "title=%titleSuccess% timeout=%timeoutResult%"}]}],
+    "steps": [{"run": "act"}],
+    "expect": {"log": ["title=False timeout=False"], "notCalls": ["twitch"]}
+  },
+  {
+    "name": "twitch: chat modes (subscriber, emote, slow, follower)",
+    "fakes": {"twitch": {}},
+    "actions": [{"name": "modes", "subActions": [
+      {"type": 12, "status": true}, {"type": 13, "status": false},
+      {"type": 14, "status": true, "duration": 30}, {"type": 28, "status": true, "duration": 10}]}],
+    "steps": [{"run": "modes"}],
+    "expect": {"calls": [
+      {"call": "PATCH chat/settings", "query": {"broadcaster_id": "{broadcaster_id}", "moderator_id": "{moderator_id}"}, "body": {"subscriber_mode": true}},
+      {"call": "PATCH chat/settings", "body": {"emote_mode": false}},
+      {"call": "PATCH chat/settings", "body": {"slow_mode": true, "slow_mode_wait_time": 30}},
+      {"call": "PATCH chat/settings", "body": {"follower_mode": true, "follower_mode_duration": 10}}]}
+  },
+  {
+    "name": "twitch: title, game by name, stream marker, clip and commercial",
+    "fakes": {"twitch": {
+      "GET games": {"data": [{"id": "509658", "name": "Just Chatting", "box_art_url": "https://x/{width}x{height}.jpg"}]},
+      "POST streams/markers": {"data": [{"id": "mk1", "created_at": "2026-01-01T00:00:00Z", "description": "here", "position_seconds": 42}]},
+      "POST clips": {"data": [{"id": "Clip1"}]}}},
+    "actions": [{"name": "channel", "subActions": [
+      {"type": 15, "title": "Playing with %user%"},
+      {"type": 16, "source": 0, "game": "just chatting"},
+      {"type": 17, "description": "here"},
+      {"type": 18, "hasDelay": true},
+      {"type": 19, "duration": 60}]}],
+    "steps": [{"run": "channel", "args": {"user": "ana"}}],
+    "expect": {
+      "calls": [
+        {"call": "PATCH channels", "body": {"title": "Playing with ana"}},
+        {"call": "GET games", "query": {"name": "just chatting"}},
+        {"call": "PATCH channels", "body": {"game_id": "509658"}},
+        {"call": "POST streams/markers", "body": {"user_id": "{broadcaster_id}", "description": "here"}},
+        {"call": "POST clips", "query": {"has_delay": "true"}},
+        {"call": "POST channels/commercial", "body": {"length": 60}}],
+      "runs": [{"action": "channel", "after": {"titleSuccess": true, "gameSuccess": true, "gameName": "Just Chatting",
+        "gameBoxArt": "https://x/285x380.jpg", "streamMarkerSuccess": true, "streamMarkerId": "mk1", "streamMarkerPosition": 42,
+        "createClipSuccess": true, "createClipId": "Clip1", "createClipUrl": "https://clips.twitch.tv/Clip1"}}]}
+  },
+  {
+    "name": "twitch: a failed request sets the result false and logs",
+    "fakes": {"twitch": {"PATCH channels": {"error": "HTTP 401 missing scope"}}},
+    "actions": [{"name": "title", "subActions": [{"type": 15, "title": "x"}]}],
+    "steps": [{"run": "title"}],
+    "expect": {"log": ["Twitch: HTTP 401 missing scope"], "runs": [{"action": "title", "after": {"titleSuccess": false}}]}
+  },
+  {
+    "name": "twitch: tags (set, clear, add, remove) and branded content",
+    "fakes": {"twitch": {"GET channels": {"data": [{"tags": ["English", "Chill"]}]}}},
+    "actions": [{"name": "tags", "subActions": [
+      {"type": 252, "tags": ["Cozy", "%lang%"]},
+      {"type": 251},
+      {"type": 253, "tag": "Games"},
+      {"type": 254, "tag": "chill"},
+      {"type": 564, "status": true}]}],
+    "steps": [{"run": "tags", "args": {"lang": "Portuguese"}}],
+    "expect": {"calls": [
+      {"call": "PATCH channels", "body": {"tags": ["Cozy", "Portuguese"]}},
+      {"call": "PATCH channels", "body": {"tags": []}},
+      {"call": "GET channels"}, {"call": "PATCH channels", "body": {"tags": ["English", "Chill", "Games"]}},
+      {"call": "GET channels"}, {"call": "PATCH channels", "body": {"tags": ["English"]}},
+      {"call": "PATCH channels", "body": {"is_branded_content": true}}],
+      "runs": [{"action": "tags", "after": {"success": true}}]}
+  },
+  {
+    "name": "twitch: viewer count, broadcaster info, random users and present user",
+    "config": {"twitch": {"broadcaster": {"userId": "1", "login": "streamer", "displayName": "Streamer"}}},
+    "fakes": {"twitch": {
+      "GET streams": {"data": [{"viewer_count": 33}]},
+      "GET users": {"data": [{"id": "1", "login": "streamer", "display_name": "Streamer", "broadcaster_type": "affiliate", "description": "hi"}]},
+      "GET chat/chatters": {"total": 2, "data": [{"user_id": "5", "user_login": "ana", "user_name": "Ana"}, {"user_id": "6", "user_login": "bo", "user_name": "Bo"}]}}},
+    "actions": [{"name": "info", "subActions": [
+      {"type": 24}, {"type": 21}, {"type": 22, "count": 5}, {"type": 550, "userIndex": "1"}]}],
+    "steps": [{"run": "info"}],
+    "expect": {
+      "calls": [{"call": "GET streams", "query": {"user_id": "{broadcaster_id}"}}, {"call": "GET users", "query": {"id": "1"}},
+                {"call": "GET chat/chatters", "query": {"first": "1000"}}, {"call": "GET chat/chatters"}],
+      "runs": [{"action": "info", "after": {"viewerCount": 33, "broadcastUser": "Streamer", "broadcastIsAffiliate": true,
+        "broadcastIsPartner": false, "randomUsersAdded": 2, "randomUserType0": "twitch", "presentUser": "Bo",
+        "presentUserId": "6", "presentUsersCount": 2}}]}
+  },
+  {
+    "name": "twitch: charity campaign and shield mode",
+    "fakes": {"twitch": {
+      "GET charity/campaigns": {"data": [{"id": "c1", "charity_name": "Good", "current_amount": {"value": 500}, "target_amount": {"value": 1000}}]},
+      "GET moderation/shield_mode": {"data": [{"is_active": true}]}}},
+    "actions": [{"name": "c", "subActions": [{"type": 25}, {"type": 26}, {"type": 27, "status": false}]}],
+    "steps": [{"run": "c"}],
+    "expect": {
+      "calls": [{"call": "GET charity/campaigns"}, {"call": "GET moderation/shield_mode"},
+                {"call": "PUT moderation/shield_mode", "body": {"is_active": false}}],
+      "runs": [{"action": "c", "after": {"campaignId": "c1", "charity.name": "Good", "currentAmount": 500, "targetAmount": 1000, "shieldMode": true}}]}
+  },
+  {
+    "name": "twitch: shoutout, raid and cancel raid",
+    "fakes": {"twitch": {"resolve": {"pal": "777"}}},
+    "actions": [{"name": "s", "subActions": [
+      {"type": 29, "userLogin": "pal"}, {"type": 500, "userLogin": "pal"}, {"type": 501}]}],
+    "steps": [{"run": "s"}],
+    "expect": {
+      "calls": [{"call": "POST chat/shoutouts", "query": {"to_broadcaster_id": "777"}},
+                {"call": "raid", "login": "pal"}, {"call": "cancelRaid"}],
+      "runs": [{"action": "s", "after": {"shoutoutSuccess": true, "startRaidSuccess": true}}]}
+  },
+  {
+    "name": "twitch: moderation (timeout, ban, unban, untimeout, warn, clear chat)",
+    "fakes": {"twitch": {"resolve": {"troll": "666"}}},
+    "actions": [{"name": "mod", "subActions": [
+      {"type": 20, "userLogin": "troll", "duration": 600, "reason": "spam"},
+      {"type": 511, "userLogin": "troll", "reason": "bad"},
+      {"type": 512, "userLogin": "@troll"},
+      {"type": 513, "userLogin": "troll"},
+      {"type": 565, "userLogin": "troll", "reason": "be nice"},
+      {"type": 510}]}],
+    "steps": [{"run": "mod"}],
+    "expect": {
+      "calls": [
+        {"call": "POST moderation/bans", "body": {"data": {"user_id": "666", "duration": 600, "reason": "spam"}}},
+        {"call": "POST moderation/bans", "body": {"data": {"user_id": "666", "reason": "bad"}}},
+        {"call": "DELETE moderation/bans", "query": {"user_id": "666"}},
+        {"call": "DELETE moderation/bans", "query": {"user_id": "666"}},
+        {"call": "POST moderation/warnings", "body": {"data": {"user_id": "666", "reason": "be nice"}}},
+        {"call": "DELETE moderation/chat"}],
+      "runs": [{"action": "mod", "after": {"timeoutResult": true, "timedOutUserId": "666", "banResult": true, "bannedUserId": "666",
+        "unbanResult": true, "unbannedUserName": "troll", "unTimedOutResult": true, "warnedResult": true, "warnedUserId": "666", "clearSuccess": true}}]}
+  },
+  {
+    "name": "twitch: VIP and moderator add and remove",
+    "fakes": {"twitch": {"resolve": {"pal": "777"}}},
+    "actions": [{"name": "roles", "subActions": [
+      {"type": 502, "userLogin": "pal"}, {"type": 503, "userLogin": "pal"},
+      {"type": 504, "userLogin": "pal"}, {"type": 505, "userLogin": "pal"}]}],
+    "steps": [{"run": "roles"}],
+    "expect": {"calls": [
+      {"call": "POST channels/vips", "query": {"user_id": "777"}}, {"call": "DELETE channels/vips", "query": {"user_id": "777"}},
+      {"call": "POST moderation/moderators", "query": {"user_id": "777"}}, {"call": "DELETE moderation/moderators", "query": {"user_id": "777"}}]}
+  },
+  {
+    "name": "twitch: suspicious status add and remove",
+    "fakes": {"twitch": {"resolve": {"sus": "42"}}},
+    "actions": [{"name": "sus", "subActions": [
+      {"type": 579, "userLogin": "sus", "status": 1}, {"type": 579, "userLogin": "sus", "status": 0}, {"type": 580, "userLogin": "sus"}]}],
+    "steps": [{"run": "sus"}],
+    "expect": {"calls": [
+      {"call": "POST moderation/suspicious_users", "body": {"user_id": "42", "status": "RESTRICTED"}},
+      {"call": "POST moderation/suspicious_users", "body": {"user_id": "42", "status": "ACTIVE_MONITORING"}},
+      {"call": "DELETE moderation/suspicious_users", "query": {"user_id": "42"}}]}
+  },
+  {
+    "name": "twitch: follower and subscriber counts",
+    "fakes": {"twitch": {
+      "GET channels/followers": {"total": 1234, "data": [{"user_id": "5", "user_login": "ana", "user_name": "Ana", "followed_at": "2026-01-01T00:00:00Z"}]},
+      "GET subscriptions": {"total": 56, "data": [{"user_id": "6", "user_login": "bo", "user_name": "Bo", "tier": "1000"}]}}},
+    "actions": [{"name": "counts", "subActions": [{"type": 506}, {"type": 507}, {"type": 508}, {"type": 509}]}],
+    "steps": [{"run": "counts"}],
+    "expect": {
+      "calls": [{"call": "GET channels/followers", "query": {"first": "1"}}, {"call": "GET channels/followers"},
+                {"call": "GET subscriptions", "query": {"first": "1"}}, {"call": "GET subscriptions"}],
+      "runs": [{"action": "counts", "after": {"totalFollowers": 1234, "totalSubscribers": 56}}]}
+  },
+  {
+    "name": "twitch: target info, follow age and team info",
+    "fakes": {"twitch": {
+      "resolve": {"pal": "777"},
+      "GET users": {"data": [{"id": "777", "login": "pal", "display_name": "Pal", "broadcaster_type": "partner", "description": "a & b", "created_at": "2020-01-01T00:00:00Z"}]},
+      "GET subscriptions": {"data": [{"tier": "2000"}]},
+      "GET moderation/moderators": {"data": []},
+      "GET channels/vips": {"data": [{"user_id": "777"}]},
+      "GET channels": {"data": [{"title": "Hello", "game_name": "Chess", "game_id": "743", "tags": ["A", "B"]}]},
+      "GET channels/followers": {"data": [{"user_name": "Pal", "user_login": "pal", "followed_at": "2024-01-01T00:00:00Z"}]},
+      "GET teams/channel": {"data": [{"id": "t1", "team_name": "crew", "team_display_name": "Crew"}]}}},
+    "actions": [{"name": "who", "subActions": [{"type": 50, "userLogin": "@pal"}, {"type": 51, "userLogin": "pal"}, {"type": 52, "userLogin": "pal"}]}],
+    "steps": [{"run": "who"}],
+    "expect": {
+      "calls": [{"call": "GET users", "query": {"login": "pal"}}, {"call": "GET channels", "query": {"broadcaster_id": "777"}},
+                {"call": "GET channels/followers", "query": {"user_id": "777"}}, {"call": "GET teams/channel", "query": {"broadcaster_id": "777"}}],
+      "runs": [{"action": "who", "after": {"addTargetResult": true, "targetUser": "Pal", "targetIsPartner": true,
+        "targetIsSubscribed": true, "targetSubscriptionTier": "2000", "targetIsModerator": false, "targetIsVip": true,
+        "targetChannelTitle": "Hello", "game": "Chess", "tagCount": 2, "tag1": "B", "tagsDelimited": "A, B",
+        "isFollowing": true, "followUser": "Pal", "teamName0": "crew", "teamDisplayName0": "Crew"}}]}
+  },
+  {
+    "name": "twitch: channel point rewards",
+    "fakes": {"twitch": {"GET channel_points/custom_rewards": {"data": [{"id": "r1", "title": "Hydrate", "cost": 100, "is_enabled": true, "is_paused": false,
+      "global_cooldown_setting": {"global_cooldown_seconds": 30}, "max_per_stream_setting": {"max_per_stream": 5}, "max_per_user_per_stream_setting": {"max_per_user_per_stream": 1}}]}}},
+    "actions": [{"name": "rewards", "subActions": [
+      {"type": 200, "rewardId": "r1", "state": 1}, {"type": 201, "rewardId": "r1", "state": 1},
+      {"type": 202, "rewardId": "r1", "cost": 250}, {"type": 204, "rewardId": "r1", "cooldown": 60},
+      {"type": 205, "rewardId": "r1", "title": "Drink"}, {"type": 206, "rewardId": "r1", "prompt": "glug"},
+      {"type": 207, "rewardId": "r1", "title": "T", "prompt": "P", "cost": 9},
+      {"type": 213, "rewardId": "r1", "backgroundColor": "#FF0000"},
+      {"type": 214, "rewardId": "r1", "redeems": 2}, {"type": 215, "rewardId": "r1", "redeems": 0},
+      {"type": 208, "rewardId": "r1"},
+      {"type": 11, "status": 1}]}],
+    "steps": [{"run": "rewards", "args": {"rewardId": "r1", "redemptionId": "red1"}}],
+    "expect": {
+      "calls": [
+        {"call": "PATCH channel_points/custom_rewards", "query": {"id": "r1"}, "body": {"is_enabled": false}},
+        {"call": "PATCH channel_points/custom_rewards", "body": {"is_paused": true}},
+        {"call": "PATCH channel_points/custom_rewards", "body": {"cost": 250}},
+        {"call": "PATCH channel_points/custom_rewards", "body": {"is_global_cooldown_enabled": true, "global_cooldown_seconds": 60}},
+        {"call": "PATCH channel_points/custom_rewards", "body": {"title": "Drink"}},
+        {"call": "PATCH channel_points/custom_rewards", "body": {"prompt": "glug"}},
+        {"call": "PATCH channel_points/custom_rewards", "body": {"title": "T", "prompt": "P", "cost": 9}},
+        {"call": "PATCH channel_points/custom_rewards", "body": {"background_color": "#FF0000"}},
+        {"call": "PATCH channel_points/custom_rewards", "body": {"is_max_per_user_per_stream_enabled": true, "max_per_user_per_stream": 2}},
+        {"call": "PATCH channel_points/custom_rewards", "body": {"is_max_per_stream_enabled": false, "max_per_stream": 0}},
+        {"call": "GET channel_points/custom_rewards", "query": {"id": "r1"}},
+        {"call": "PATCH channel_points/custom_rewards/redemptions", "query": {"reward_id": "r1", "id": "red1"}}],
+      "runs": [{"action": "rewards", "after": {"rewardTitle": "Hydrate", "rewardCost": 100, "rewardGlobalCooldown": 30, "rewardMaxPerStream": 5, "rewardMaxPerUserPerStream": 1}}]}
+  },
+  {
+    "name": "twitch: ads (snooze, schedule, pre-roll free time)",
+    "fakes": {"twitch": {"GET channels/ads/schedule": {"data": [{"preroll_free_time": 90, "snooze_count": 2, "next_ad_at": 1700000000}]}}},
+    "actions": [{"name": "ads", "subActions": [{"type": 555}, {"type": 556}, {"type": 557}]}],
+    "steps": [{"run": "ads"}],
+    "expect": {
+      "calls": [{"call": "POST channels/ads/schedule/snooze"}, {"call": "GET channels/ads/schedule"}, {"call": "GET channels/ads/schedule"}],
+      "runs": [{"action": "ads", "after": {"snooze.success": true, "prerollFree": true, "prerollFreeSeconds": 90, "snoozeCount": 2}}]}
+  },
+  {
+    "name": "twitch: polls (create, get, terminate, archive)",
+    "fakes": {"twitch": {
+      "POST polls": {"data": [{"id": "p1"}]},
+      "GET polls": {"data": [{"id": "p1", "title": "Best?", "status": "ACTIVE", "choices": [{"id": "a", "title": "Cats", "votes": 3}]}]}}},
+    "actions": [{"name": "polls", "subActions": [
+      {"type": 561, "title": "Best?", "choices": ["Cats", "%other%"], "duration": 5, "channelPointsPerVote": 10},
+      {"type": 566}, {"type": 562}, {"type": 563}]}],
+    "steps": [{"run": "polls", "args": {"other": "Dogs"}}],
+    "expect": {
+      "calls": [
+        {"call": "POST polls", "body": {"title": "Best?", "choices": [{"title": "Cats"}, {"title": "Dogs"}], "duration": 15,
+          "channel_points_voting_enabled": true, "channel_points_per_vote": 10}},
+        {"call": "GET polls"},
+        {"call": "GET polls"}, {"call": "PATCH polls", "body": {"id": "p1", "status": "TERMINATED"}},
+        {"call": "GET polls"}, {"call": "PATCH polls", "body": {"id": "p1", "status": "ARCHIVED"}}],
+      "runs": [{"action": "polls", "after": {"success": true, "pollId": "p1", "active": true}}]}
+  },
+  {
+    "name": "twitch: predictions (create, get, lock, cancel, resolve by index and title)",
+    "fakes": {"twitch": {
+      "POST predictions": {"data": [{"id": "pr1"}]},
+      "GET predictions": {"data": [{"id": "pr1", "title": "Win?", "status": "ACTIVE", "outcomes": [
+        {"id": "o1", "title": "Yes", "color": "BLUE", "users": 2, "channel_points": 100},
+        {"id": "o2", "title": "No", "color": "PINK", "users": 1, "channel_points": 50}]}]}}},
+    "actions": [{"name": "pred", "subActions": [
+      {"type": 568, "title": "Win?", "outcomes": ["Yes", "No"], "predictionWindow": 10},
+      {"type": 567}, {"type": 570}, {"type": 569}, {"type": 571, "winningIndex": "1"}, {"type": 572, "outcomeTitle": "yes"}]}],
+    "steps": [{"run": "pred"}],
+    "expect": {
+      "calls": [
+        {"call": "POST predictions", "body": {"title": "Win?", "outcomes": [{"title": "Yes"}, {"title": "No"}], "prediction_window": 30}},
+        {"call": "GET predictions"},
+        {"call": "GET predictions"}, {"call": "PATCH predictions", "body": {"id": "pr1", "status": "LOCKED"}},
+        {"call": "GET predictions"}, {"call": "PATCH predictions", "body": {"status": "CANCELED"}},
+        {"call": "GET predictions"}, {"call": "PATCH predictions", "body": {"status": "RESOLVED", "winning_outcome_id": "o2"}},
+        {"call": "GET predictions"}, {"call": "PATCH predictions", "body": {"status": "RESOLVED", "winning_outcome_id": "o1"}}],
+      "runs": [{"action": "pred", "after": {"prediction.Id": "pr1", "locked": true, "cancelled": true, "success": true,
+        "prediction.winningIndex": 0, "prediction.winningOutcome.title": "Yes"}}]}
+  },
+  {
+    "name": "twitch: clip download urls",
+    "fakes": {"twitch": {"GET clips": {"data": [{"url": "https://clips.twitch.tv/C", "thumbnail_url": "https://t/C.jpg"}]}}},
+    "actions": [{"name": "clip", "subActions": [{"type": 573, "clipId": "%clipId%"}]}],
+    "steps": [{"run": "clip", "args": {"clipId": "C"}}],
+    "expect": {"calls": [{"call": "GET clips", "query": {"id": "C"}}],
+               "runs": [{"action": "clip", "after": {"clipUrl": "https://clips.twitch.tv/C", "clipThumbnailUrl": "https://t/C.jpg"}}]}
+  },
+  {
+    "name": "twitch: pinned chat messages (get, pin, update, unpin)",
+    "fakes": {"twitch": {"GET chat/pins": {"data": [{"message_id": "pm1", "message": {"text": "rules"}, "sender_user_id": "1", "sender_user_name": "Streamer", "pinned_by_user_name": "Mod"}]}}},
+    "actions": [{"name": "pins", "subActions": [
+      {"type": 575}, {"type": 576, "messageId": "m9", "duration": 60}, {"type": 577, "duration": 120}, {"type": 578}]}],
+    "steps": [{"run": "pins"}],
+    "expect": {
+      "calls": [{"call": "GET chat/pins"}, {"call": "PUT chat/pins", "query": {"message_id": "m9", "duration_seconds": "60"}},
+                {"call": "PATCH chat/pins", "query": {"message_id": "pm1", "duration_seconds": "120"}},
+                {"call": "DELETE chat/pins", "query": {"message_id": "pm1"}}],
+      "runs": [{"action": "pins", "after": {"pinnedMessageId": "pm1", "pinnedMessage": "rules", "pinnedByUserName": "Mod"}}]}
+  },
+  {
+    "name": "twitch: sub counter get and set",
+    "config": {"twitch": {"subCounterRollover": 10}},
+    "actions": [
+      {"name": "set", "subActions": [{"type": 552, "value": "7"}]},
+      {"name": "get", "subActions": [{"type": 551}]}],
+    "steps": [{"run": "set"}, {"run": "get"}],
+    "expect": {"runs": [{"action": "set", "after": {"setResult": true}}, {"action": "get", "after": {"subCounter.count": 7}}]}
+  },
+  {
+    "name": "twitch: user groups (add, in group, remove)",
+    "config": {"groups": [{"id": "g1", "name": "Friends", "userIds": []}]},
+    "fakes": {"twitch": {"resolve": {"pal": "777"}}},
+    "actions": [
+      {"name": "add", "subActions": [{"type": 553, "userLogin": "pal", "groupName": "Friends"}]},
+      {"name": "check", "subActions": [{"type": 558, "userLogin": "pal", "groupName": "friends"}, {"type": 1020, "logLevel": 2, "message": "in=%inGroup%"}]},
+      {"name": "remove", "subActions": [{"type": 554, "userLogin": "pal", "groupName": "Friends"}]}],
+    "steps": [{"run": "add"}, {"run": "check"}, {"run": "remove"}, {"run": "check"}],
+    "expect": {"log": ["in=True", "in=False"], "runs": [{"action": "add", "after": {"addResult": true}}, {"action": "remove", "after": {"removeResult": true}}]}
+  }
+]

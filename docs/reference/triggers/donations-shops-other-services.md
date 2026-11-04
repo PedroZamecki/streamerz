@@ -304,7 +304,10 @@ None.
 
 ### Arguments
 
-- Every field of the payload, as it was sent.
+- Streamer.bot's names, from the tip and its campaign page: `tipId`, `tipDisplayName`, `tipMessage`,
+  `tipNetAmount`, `tipGrossAmount`, `tipProcessingFee` and their `InCents` and `Formatted` forms (as Pally
+  sends them), `createdAt`, `campaignId`, `campaignTitle`, `campaignSlug`, `campaignUrl`.
+- The payload's own fields are kept too.
 - Plus `triggerId`, `triggerName`, `triggerCategory` and `eventSource`.
 
 ### When

@@ -1,6 +1,9 @@
 # Servers & Remote / Remote Instances (triggers)
 
-Triggers for Remote instances: a Streamerz or Streamer.bot instance connecting, and the triggers and signals sent between instances over WebSocket.
+Triggers for remote instances. In Streamerz an instance is another Streamerz (or Streamer.bot) whose
+WebSocket server one of your WebSocket clients (Servers page) connects to: once its server says who it is,
+it is a remote instance, and Send Remote Trigger and Send Remote Signal reach it. (Streamer.bot links its
+instances through its website, which Streamerz doesn't use.)
 
 ## Connected
 
@@ -8,7 +11,7 @@ Triggers for Remote instances: a Streamerz or Streamer.bot instance connecting, 
 - Code: 29001
 - Type: StreamerBotRemoteInstanceConnected
 - Category: Servers & Remote/Remote Instances
-- Needs: a WebSocket client set up in Streamerz, or the WebSocket server running (with an instance on the other end)
+- Needs: a WebSocket client (Servers page) connected to another instance's WebSocket server
 
 Fires when a remote instance connects.
 
@@ -37,7 +40,7 @@ When a WebSocket client connection is made, or when a client connects to the Web
 - Code: 29002
 - Type: StreamerBotRemoteInstanceDisconnected
 - Category: Servers & Remote/Remote Instances
-- Needs: a WebSocket client set up in Streamerz, or the WebSocket server running (with an instance on the other end)
+- Needs: a WebSocket client (Servers page) connected to another instance's WebSocket server
 
 Fires when a remote instance disconnects.
 
@@ -66,7 +69,7 @@ None.
 - Code: 29003
 - Type: StreamerBotRemoteInstanceTrigger
 - Category: Servers & Remote/Remote Instances
-- Needs: a WebSocket client set up in Streamerz, or the WebSocket server running (with an instance on the other end)
+- Needs: a WebSocket client (Servers page) connected to another instance's WebSocket server
 
 Fires when a remote instance sends a trigger.
 
@@ -97,7 +100,7 @@ When a trigger arrives from a remote instance: over a WebSocket client connectio
 - Code: 29004
 - Type: StreamerBotRemoteInstanceSignal
 - Category: Servers & Remote/Remote Instances
-- Needs: a WebSocket client set up in Streamerz, or the WebSocket server running (with an instance on the other end)
+- Needs: a WebSocket client (Servers page) connected to another instance's WebSocket server
 
 Fires when a remote instance sends a signal.
 

@@ -25,12 +25,45 @@ An action on a selection must operate on that selection; make unavailable action
 Every actionable list or tree must offer the same actions in its right-click menu using `context_menu()`.
 Keep action names and icons consistent between the buttons and menu.
 
+Show a switched off item (a trigger or sub-action) with dimmed text and the Lucide `power-off` icon, never
+a text tag and never red (red is for errors). In `Rows` use `add_state(line, true)`; in a tree set the
+`power-off` icon on the item. The icon's tooltip says "disabled".
+
+Triggers and sub-actions wear an icon: the logo of their service, else a Lucide icon chosen by their title.
+The action list itself has no icons.
+
+## Trees and pickers
+
+A tree looks like shadcn's file tree: a chevron on groups (right when closed, down when open), no connector
+lines, a rounded zinc selection, and an icon on every node. A group wears the logo of its platform or app
+when `img::logo` has one, else a Lucide icon chosen by name in `ui/picker_icons.rs`; an item wears the Lucide
+icon its title's words name, else its group's. Icons are drawn in `muted()`. Clicking a group opens or closes
+it. The trigger and sub-action picker is the model: search with an icon, collapse and expand all, the tree
+on the left and the selection's icon, path (muted) and description on the right. A new group or item needs
+no mapping unless the tests say so: `no_group_is_left_with_the_plain_folder` fails for a group with no icon.
+
+## Action groups
+
+Keep actions, group controls, triggers, and sub-actions together on the Actions page. The group tree
+shows optional user-supplied images next to group names. Group actions are available from the button
+grid and the tree's context menu. The grid folds to icons when space is limited, with the action name
+available as a tooltip. Deleting a group confirms that actions become ungrouped and its settings, files and icon are removed.
+
+Group settings is one dialog: a table of settings (label, value, type) with the standard button grid
+(Change value, Add, Edit and Delete setting, Files, Commands and timers). A value is typed by its
+kind: a time takes `h:mm:ss`, an on or off setting asks for yes or no.
+
 ## Forms and dialogs
 
 Use `dialogs::window`, `dialogs::row`, `dialogs::ok_cancel` and the existing form helpers where they fit.
 Group fields by task, label them clearly and put common fields before advanced options. Use placeholders as
 examples or hints, not as the only label. Keep the user's entries when validation fails and explain what
 needs to be fixed. Cancel or closing a dialog must leave the original values unchanged.
+
+For a form with many optional fields, use tabs to separate the main task, rules and replies. Keep the
+buttons visible and let each tab scroll when needed. When a value accepts expressions, offer common
+values in an editable choice so selecting a value is easy and expressions remain available. Preserve an
+unchanged value and its stored type.
 
 Prefer forms and tables for ordinary editing. When raw data is useful, provide JSON one button away with
 the existing editor. Ask for confirmation before an irreversible destructive action, with text that names

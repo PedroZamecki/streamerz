@@ -142,7 +142,13 @@ impl Engine {
                 b => e.builtin(b, &response, &chat, &mut args).await,
             };
             if let Some(r) = reply.filter(|r| !r.trim().is_empty()) {
-                let text = e.expand(&Ctx { args }, &r);
+                let text = e.expand(
+                    &Ctx {
+                        args,
+                        group: String::new(),
+                    },
+                    &r,
+                );
                 e.send_chat(if all { "all" } else { &chat.platform }, &text, true);
             }
         });

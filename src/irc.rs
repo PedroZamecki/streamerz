@@ -397,7 +397,7 @@ async fn session(
         let mut tick = tokio::time::interval(Duration::from_secs(60));
         loop {
             tick.tick().await;
-            if !crate::ui::chat::viewers_visible() {
+            if !count_engine.viewers_wanted() {
                 continue;
             }
             let headers = [

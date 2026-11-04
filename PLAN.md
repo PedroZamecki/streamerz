@@ -278,9 +278,15 @@ platform handles through channels, never through shared locks held across awaits
   Desktop, donations...); clicking it shows each one's state (connecting, connected, failed and why) with a
   retry button and a link to its settings.
 - [x] 32. Hotkeys: Hotkey Press triggers through the desktop's Global Shortcuts portal on Linux (no sudo, no
-  input group: the desktop asks the user) and RegisterHotKey on Windows; mouse clicks on Windows only (on
-  Linux only the input group could see them, which lets any program read every key); "press the keys" to
-  set a trigger's shortcut.
+  input group: the desktop asks the user) and RegisterHotKey on Windows; "press the keys" to set a
+  trigger's shortcut. Changed in 1.4.0: X11 uses the X server for keys and clicks (no setup); Hyprland
+  gets its binds from Streamerz through its socket; Wayland clicks (and keys where there's no portal) read
+  the devices once the user allows it in the trigger (a udev `uaccess` rule for mice only, or keyboards
+  only, added through polkit and removed by the same button). Mouse Click gets a Button filter, set by
+  clicking with it.
+- [x] Chat emotes follow the channel read (not the logged-in account's) and each chatter's personal 7TV set,
+  asked once per chatter (400 kept); 7TV sets come from its GraphQL API (60 KB, not 2.4 MB). BTTV personal
+  emotes and FFZ user sets are not covered (no public API for BTTV's).
 - [x] 33. Cache: the BTTV/FFZ/7TV emote lists and the accounts' picture URLs kept in `cache/` (used at once,
   fetched again in the background after a day), user card lookups reused for 10 minutes, and the pictures
   kept under 50 MB (least recently shown go first). Faster start was dropped: it's fast enough.
@@ -421,6 +427,53 @@ platform handles through channels, never through shared locks held across awaits
   price (kick.com's reward list) and colour, TikTok gifts their picture and coins. The anonymous reader
   marks highlighted, sub-only, gigantified and animated messages.
 
+## Version 1.4.0
+
+- [ ] Introduce testable boundaries for the features in this version, with Linux and Windows
+  platform tests. Migrate existing code incrementally.
+- [x] Provide reusable groups containing actions, commands, timers and files, with named variables and
+  editable configuration shared by their items. Users can create, edit, export, import and configure
+  groups in the UI. Use group variables for shared configuration instead of template-specific configuration packages.
+  Keep Streamer.bot exports compatible. Groups can be created, renamed and deleted, and have optional
+  embedded PNG or JPEG icons addressed by SHA-256. Include icons and group variables in exports; merge
+  imported variables by name. Expose group management, icons and import/export through MCP.
+- [ ] Introduce testable service boundaries for OBS and Spotify so their connectors can be replaced
+  without changing action behavior.
+- [x] Create a configurable subathon example using the general group tools, with an HTML overlay receiving timer updates from
+  Streamerz. Twitch subscriptions and Streamlabs donations add configurable time per subscription and currency
+  unit in one configured currency. Cap remaining time at the configured maximum; start on installation,
+  provide a manual reset, and pause the countdown while Streamerz is closed.
+- [x] Add an opt-in Spotify connection to read what is playing and add tracks to the Spotify queue.
+  Song requests accept song names or Spotify links. Streamerz does not play Spotify audio. Use an
+  explicitly marked Streamerz-specific action for the song request template; it does not run in
+  Streamer.bot and must be preserved on export.
+- [x] Improve Spotify connection reliability and make song requests easy to build with Streamerz's
+  actions and templates. Use existing commands and triggers for permissions and cooldowns, and expose
+  Spotify operations through actions and MCP. Keep the integration opt-in without unnecessary polling.
+  Song requests follow Songify (https://github.com/songify-rocks/Songify): a group with settings
+  (who can request, limits, blocks, skipping, replies), commands for `!sr`, `!song`, `!next`, `!queue`,
+  `!pos`, `!remove`, `!skip`, `!voteskip`, `!play`, `!pause`, `!vol`, `!songlike` and `!bansong`, and the
+  Spotify icon. A request goes to Spotify's queue at once; a request taken back is skipped when it plays.
+- [ ] Expand Spotify triggers and sub-actions, with Spotify under Integrations and countdown actions
+  under Core/Timers. On Windows, read local Spotify media sessions without an API login and make the
+  local-only limitations clear. API-dependent operations require an authorized account.
+- [x] An MCP page (App section) listing the AI agents installed here (Claude Code, Codex, OpenCode, Gemini
+  CLI, Antigravity, Cursor, Windsurf, VS Code, Copilot CLI, Claude Desktop, Qwen Code, Kiro, Crush, Amp,
+  LM Studio), found by their command or folder. Adding Streamerz writes its MCP server into the agent's own
+  config file (nothing else in it changes; a file it can't read is left alone); a development build adds
+  `streamerz-dev` with its address. Open chat starts a terminal agent in the user's terminal (no terminal
+  inside Streamerz) in a folder with notes for it. Read only when the page shows; MCP tools `agents`
+  and `agent_setup`.
+- [x] Overlays: an overlay is an `.html` file in an action group (so it exports and imports with the group),
+  served on the HTTP server's port at `/overlays/<group>/<file>` (index at `/overlays`), with Streamerz's
+  script added to the page: `streamerz.settings` (the group's settings), `streamerz.on(topic)` and
+  `streamerz.event("Source.Type")`, fed by server-sent events on the same port (no new port, thread or
+  timer; a page that asks for nothing connects to nothing). Built-in topics `viewers` (per platform and
+  total; polled only while a page listens) and `ad` (Twitch ad breaks); any other topic by the Streamerz-only
+  Overlay sub-action (99880) or the MCP tools `overlays` and `overlay_publish`. Files dialog: Copy URL and
+  Save as page (a copy with the script inside, for a local file in OBS). Templates: Ad break overlay and
+  Viewer counter overlay. See `docs/OVERLAYS.md`.
+
 ## Development isolation
 
 - [x] Production always uses the global configuration and permits only one running production instance.
@@ -447,8 +500,10 @@ platform handles through channels, never through shared locks held across awaits
 ## Memory investigation and storage
 
 - [x] Add an opt-in aggressive Memory Saver policy, applied after restart. Disable Community tracking
-  and loading, credits, retained chat, recent chatter facts, downloaded images and emote catalogs.
+  and loading, credits, retained chat, recent chatter facts in RAM, downloaded images and emote catalogs.
   Preserve existing Community files untouched. Keep commands, connections and triggers enabled.
+- [x] Keep Kick random users exact for the session with chat history off or Memory Saver on. Store
+  Kick identities in session-only disk buckets and clear them on exit and the next start.
 - [x] Keep exact First Words behavior using session-only disk buckets in Memory Saver. Do not evict
   speakers and accidentally repeat First Words. Reset by platform or globally, and clear on clean exit.
 - [ ] Measure this mode with First Words under sustained 1,000 messages/second and a 25,000-message

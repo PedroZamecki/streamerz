@@ -230,7 +230,7 @@ Each row links to the source page. `Flagged` means the reference contains a matc
 | [file-process-process-monitor](reference/triggers/file-process-process-monitor.md) | Started | 703 | Flagged: Not yet. Streamerz doesn't fire this trigger. |
 | [file-process-process-monitor](reference/triggers/file-process-process-monitor.md) | Stopped | 704 | Flagged: Not yet. Streamerz doesn't fire this trigger. |
 | [inputs-midi-hotkeys-mouse](reference/triggers/inputs-midi-hotkeys-mouse.md) | Input Key Press | 16001 | Review |
-| [inputs-midi-hotkeys-mouse](reference/triggers/inputs-midi-hotkeys-mouse.md) | Input Mouse Click | 16002 | Flagged: Windows only. On Linux this trigger never fires: catching clicks would mean reading every input device, which also sees every key typed, and Streamerz doesn't do that. |
+| [inputs-midi-hotkeys-mouse](reference/triggers/inputs-midi-hotkeys-mouse.md) | Input Mouse Click | 16002 | Review |
 | [inputs-midi-midi-controller](reference/triggers/inputs-midi-midi-controller.md) | Midi Message | 15001 | Flagged: Never, for now. Streamerz doesn't fire this yet. |
 | [inputs-midi-voice-control](reference/triggers/inputs-midi-voice-control.md) | Speech To Text Dictation | 301 | Flagged: It doesn't fire yet (see Notes). |
 | [inputs-midi-voice-control](reference/triggers/inputs-midi-voice-control.md) | Speech To Text Command | 302 | Flagged: It doesn't fire yet (see Notes). |
@@ -243,11 +243,11 @@ Each row links to the source page. `Flagged` means the reference contains a matc
 | [integrations-crowd-control](reference/triggers/integrations-crowd-control.md) | Timed Effect Ended | 20007 | Flagged: Never, for now. Streamerz doesn't fire this yet. |
 | [integrations-crowd-control](reference/triggers/integrations-crowd-control.md) | Timed Effect Updated | 20008 | Flagged: Never, for now. Streamerz doesn't fire this yet. |
 | [integrations-crowd-control](reference/triggers/integrations-crowd-control.md) | Coin Exchange | 20009 | Flagged: Never, for now. Streamerz doesn't fire this yet. |
-| [integrations-heart-rate-monitors](reference/triggers/integrations-heart-rate-monitors.md) | Heart Rate Pulse | 5001 | Flagged: Meant to fire on each new heart rate reading from Pulsoid. Streamerz doesn't fire this yet. |
-| [integrations-heart-rate-monitors](reference/triggers/integrations-heart-rate-monitors.md) | Heart Rate Pulse | 6001 | Flagged: Meant to fire on each new heart rate reading from HypeRate. Streamerz doesn't fire this yet. |
-| [integrations-heart-rate-monitors](reference/triggers/integrations-heart-rate-monitors.md) | Twitch Clip Created | 6002 | Flagged: Meant to fire when a Twitch clip is created from HypeRate. Streamerz doesn't fire this yet. |
-| [integrations-heart-rate-monitors](reference/triggers/integrations-heart-rate-monitors.md) | Connected | 6003 | Flagged: Meant to fire when HypeRate is connected. Streamerz doesn't fire this yet. |
-| [integrations-heart-rate-monitors](reference/triggers/integrations-heart-rate-monitors.md) | Disconnected | 6004 | Flagged: Meant to fire when HypeRate is disconnected. Streamerz doesn't fire this yet. |
+| [integrations-pulsoid](reference/triggers/integrations-pulsoid.md) | Heart Rate Pulse | 5001 | Flagged: Meant to fire on each new heart rate reading from Pulsoid. Streamerz doesn't fire this yet. |
+| [integrations-hyperate](reference/triggers/integrations-hyperate.md) | Heart Rate Pulse | 6001 | Flagged: Meant to fire on each new heart rate reading from HypeRate. Streamerz doesn't fire this yet. |
+| [integrations-hyperate](reference/triggers/integrations-hyperate.md) | Twitch Clip Created | 6002 | Flagged: Meant to fire when HypeRate itself creates a clip on Twitch. Streamerz doesn't fire this yet. |
+| [integrations-hyperate](reference/triggers/integrations-hyperate.md) | Connected | 6003 | Flagged: Meant to fire when HypeRate is connected. Streamerz doesn't fire this yet. |
+| [integrations-hyperate](reference/triggers/integrations-hyperate.md) | Disconnected | 6004 | Flagged: Meant to fire when HypeRate is disconnected. Streamerz doesn't fire this yet. |
 | [integrations-meld-studio](reference/triggers/integrations-meld-studio.md) | Connected | 33001 | Flagged: Streamerz doesn't fire this yet. |
 | [integrations-meld-studio](reference/triggers/integrations-meld-studio.md) | Disconnected | 33002 | Flagged: Streamerz doesn't fire this yet. |
 | [integrations-meld-studio](reference/triggers/integrations-meld-studio.md) | Streaming Started | 33003 | Flagged: Streamerz doesn't fire this yet. |

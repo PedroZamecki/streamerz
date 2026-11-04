@@ -1,0 +1,82 @@
+[
+  {
+    "name": "streamlabs desktop: streaming and recording only toggle when the state differs",
+    "config": {"slobs": {"connections": [{"id": "sd1", "name": "SD", "host": "127.0.0.1", "default": true}]}},
+    "fakes": {"streamlabsDesktop": {"StreamingService.getModel": {"streamingStatus": "offline", "recordingStatus": "recording"}}},
+    "actions": [{"name": "out", "subActions": [
+      {"type": 404, "state": 1}, {"type": 404, "state": 0},
+      {"type": 415, "state": 1}, {"type": 415, "state": 0}]}],
+    "steps": [{"run": "out"}],
+    "expect": {
+      "calls": ["streamlabsDesktop StreamingService.getModel", "streamlabsDesktop StreamingService.toggleStreaming",
+                "streamlabsDesktop StreamingService.getModel", "streamlabsDesktop StreamingService.getModel",
+                "streamlabsDesktop StreamingService.toggleRecording", "streamlabsDesktop StreamingService.getModel"],
+      "notCalls": []}
+  },
+  {
+    "name": "streamlabs desktop: scenes, sources, filters and audio",
+    "config": {"slobs": {"connections": [{"id": "sd1", "name": "SD", "host": "127.0.0.1", "default": true}]}},
+    "fakes": {"streamlabsDesktop": {
+      "ScenesService.activeScene": {"id": "scA", "name": "Live", "nodes": []},
+      "ScenesService.getScenes": [{"id": "scM", "name": "Main", "nodes": [
+        {"id": "n1", "name": "Cam", "sceneNodeType": "item", "resourceId": "item1", "sourceId": "src1", "visible": true},
+        {"id": "g1", "name": "Alerts", "sceneNodeType": "folder"},
+        {"id": "n2", "name": "Follow", "sceneNodeType": "item", "resourceId": "item2", "sourceId": "src2", "visible": false, "parentId": "g1"},
+        {"id": "n3", "name": "Sub", "sceneNodeType": "item", "resourceId": "item3", "sourceId": "src3", "visible": true, "parentId": "g1"}]}],
+      "SourceFiltersService.getFilters": [{"name": "Blur", "visible": false}],
+      "AudioService.getSourcesForScene": [{"name": "Cam", "resourceId": "audio1", "muted": false}]}},
+    "actions": [{"name": "scene", "subActions": [
+      {"type": 414},
+      {"type": 405, "sceneName": "Main"},
+      {"type": 401, "sceneName": "Main", "sourceName": "Cam", "state": 2},
+      {"type": 402, "sceneName": "Main", "groupName": "Alerts"},
+      {"type": 403, "sceneName": "Main", "groupName": "Alerts"},
+      {"type": 406, "sceneName": "Main", "sourceName": "Cam", "filterName": "Blur", "state": 0},
+      {"type": 411, "sceneName": "Main", "sourceName": "Cam", "state": 2},
+      {"type": 412, "sceneName": "Main", "sourceName": "Cam"},
+      {"type": 417, "sceneName": "Main", "filterName": "Blur", "state": 1},
+      {"type": 407, "sceneName": "Main", "sourceName": "Cam", "flipMode": 2},
+      {"type": 408, "sceneName": "Main", "sourceName": "Cam", "degrees": 45, "additive": true},
+      {"type": 408, "sceneName": "Main", "sourceName": "Cam", "degrees": 90},
+      {"type": 409, "sceneName": "Main", "sourceName": "Cam", "url": "https://x/%id%"},
+      {"type": 410, "sceneName": "Main", "sourceName": "Cam", "text": "hi"},
+      {"type": 413, "sceneName": "Main", "sourceName": "Cam", "state": 0}]}],
+    "steps": [{"run": "scene", "args": {"id": "7"}}],
+    "expect": {
+      "calls": [
+        "streamlabsDesktop ScenesService.activeScene",
+        {"call": "ScenesService.makeSceneActive", "args": ["scM"]},
+        {"call": "item1.setVisibility", "args": [false]},
+        {"call": "item2.setVisibility", "args": [true]},
+        {"call": "item3.setVisibility", "args": [false]},
+        {"call": "SourceFiltersService.getFilters", "args": ["src1"]},
+        {"call": "SourceFiltersService.setVisibility", "args": ["src1", "Blur", true]},
+        {"call": "SourceFiltersService.setVisibility", "args": ["src1", "Blur", true]},
+        {"call": "SourceFiltersService.setVisibility", "args": ["src1", "Blur", false]},
+        {"call": "SourceFiltersService.getFilters", "args": ["scM"]},
+        {"call": "SourceFiltersService.setVisibility", "args": ["scM", "Blur", false]},
+        "streamlabsDesktop item1.flipX", "streamlabsDesktop item1.flipY",
+        {"call": "item1.rotate", "args": [45.0]},
+        {"call": "item1.setTransform", "args": [{"rotation": 90.0}]},
+        {"call": "Source[\"src1\"].updateSettings", "args": [{"url": "https://x/7"}]},
+        {"call": "Source[\"src1\"].updateSettings", "args": [{"text": "hi"}]},
+        {"call": "AudioService.getSourcesForScene", "args": ["scM"]},
+        {"call": "audio1.setMuted", "args": [true]}],
+      "runs": [{"action": "scene", "after": {"currentScene": "Live"}}]}
+  },
+  {
+    "name": "streamlabs desktop: events fire scene changed, streaming and recording triggers",
+    "config": {"slobs": {"connections": [{"id": "sd1", "name": "SD", "host": "127.0.0.1", "default": true}]}},
+    "actions": [
+      {"name": "scene", "triggers": [{"type": 22003}], "subActions": [{"type": 1020, "logLevel": 2, "message": "scene %sd.sceneName% on %sd.name%"}]},
+      {"name": "live", "triggers": [{"type": 22004}, {"type": 22005}, {"type": 22006}, {"type": 22007}], "subActions": [{"type": 1020, "logLevel": 2, "message": "output %triggerName%"}]}],
+    "steps": [
+      {"event": {"platform": "streamlabsDesktop", "data": {"_type": "EVENT", "resourceId": "ScenesService.sceneSwitched", "data": {"name": "Brb"}}}, "ran": 1},
+      {"event": {"platform": "streamlabsDesktop", "data": {"_type": "EVENT", "resourceId": "StreamingService.streamingStatusChange", "data": "starting"}}, "ran": 1},
+      {"event": {"platform": "streamlabsDesktop", "data": {"_type": "EVENT", "resourceId": "StreamingService.streamingStatusChange", "data": "live"}}, "ran": 0},
+      {"event": {"platform": "streamlabsDesktop", "data": {"_type": "EVENT", "resourceId": "StreamingService.streamingStatusChange", "data": "ending"}}, "ran": 1},
+      {"event": {"platform": "streamlabsDesktop", "data": {"_type": "EVENT", "resourceId": "StreamingService.recordingStatusChange", "data": "recording"}}, "ran": 1},
+      {"event": {"platform": "streamlabsDesktop", "data": {"_type": "EVENT", "resourceId": "StreamingService.recordingStatusChange", "data": "stopping"}}, "ran": 1}],
+    "expect": {"log": ["scene Brb on SD"]}
+  }
+]

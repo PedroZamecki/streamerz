@@ -1036,3 +1036,31 @@ mod tests {
         assert_eq!(strftime_to_net("%r"), "hh:mm:ss tt");
     }
 }
+
+/// A Windows error as a person reads it: its message, or (when Windows has none, as for a missing
+/// component) what it means, with its code.
+#[cfg(windows)]
+pub fn win_error(e: &windows::core::Error) -> String {
+    let code = e.code().0 as u32;
+    let msg = e.message();
+    let msg = msg.trim();
+    match code {
+        // REGDB_E_CLASSNOTREG, CLASS_E_CLASSNOTAVAILABLE: the component isn't installed.
+        0x8004_0154 | 0x8004_0111 => format!("not available on this system ({code:#010x})"),
+        _ if msg.is_empty() => format!("error {code:#010x}"),
+        _ => format!("{msg} ({code:#010x})"),
+    }
+}
+
+#[cfg(all(test, windows))]
+mod win_tests {
+    /// A missing component says so, not a bare code or nothing (SAPI and the media session under Wine).
+    #[test]
+    fn windows_errors_read_as_words() {
+        use windows::core::{Error, HRESULT};
+        let missing = Error::from_hresult(HRESULT(0x8004_0154_u32 as i32));
+        assert_eq!(super::win_error(&missing), "not available on this system (0x80040154)");
+        let other = super::win_error(&Error::from_hresult(HRESULT(0x8007_0005_u32 as i32)));
+        assert!(other.ends_with("(0x80070005)") && other.len() > 13, "{other}");
+    }
+}

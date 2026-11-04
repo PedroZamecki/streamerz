@@ -1,4 +1,4 @@
-//! Pictures: the platforms' logos (built in, from Simple Icons, CC0) and pictures from the web (profile
+//! Pictures: the platforms' logos (built in: Simple Icons, CC0, and the ones Streamer.bot's docs publish for its integrations) and pictures from the web (profile
 //! pictures, emotes). Web ones are fetched on the engine's thread into `cache/` next to the settings
 //! file, and decoded only while the window shows them; hiding the window frees them.
 
@@ -33,15 +33,63 @@ pub fn logo(name: &str, size: i32) -> Option<SvgImage> {
         "TikTok" => include_str!("../../assets/icons/tiktok.svg"),
         "OBS Studio" => include_str!("../../assets/icons/obsstudio.svg"),
         "Streamlabs Desktop" | "Streamlabs" => include_str!("../../assets/icons/streamlabs.svg"),
+        "Spotify" => include_str!("../../assets/icons/spotify.svg"),
         "Discord" => include_str!("../../assets/icons/discord.svg"),
         "StreamElements" => include_str!("../../assets/icons/streamelements.svg"),
         "DonorDrive" => include_str!("../../assets/icons/donordrive.svg"),
         "Streamer.bot" => include_str!("../../assets/icons/streamerbot.svg"),
+        "Crowd Control" => include_str!("../../assets/icons/crowdcontrol.svg"),
+        "Elgato" => include_str!("../../assets/icons/elgato.svg"),
+        "Patreon" => include_str!("../../assets/icons/patreon.svg"),
+        "Shopify" => include_str!("../../assets/icons/shopify.svg"),
+        "Claude Code" | "Claude Desktop" => include_str!("../../assets/icons/claude.svg"),
+        "Codex" => include_str!("../../assets/icons/codex.svg"),
+        "OpenCode" => include_str!("../../assets/icons/opencode.svg"),
+        "Gemini CLI" => include_str!("../../assets/icons/gemini.svg"),
+        "Cursor" => include_str!("../../assets/icons/cursor.svg"),
+        "Windsurf" => include_str!("../../assets/icons/windsurf.svg"),
+        "VS Code (Copilot)" => include_str!("../../assets/icons/vscode.svg"),
+        "GitHub Copilot CLI" => include_str!("../../assets/icons/copilot.svg"),
+        "LM Studio" => include_str!("../../assets/icons/lmstudio.svg"),
+        "Qwen Code" => include_str!("../../assets/icons/qwen.svg"),
+        "Amp" => include_str!("../../assets/icons/amp.svg"),
+        "Pally.gg" => include_str!("../../assets/icons/pallygg.svg"),
         _ => return None,
     };
     let mut i = SvgImage::from_data(svg).ok()?;
     i.scale(size, size, true, true);
     Some(i)
+}
+
+/// The logos that are pictures (48 px PNGs), by the name of the app or service.
+fn picture_logo(name: &str) -> Option<&'static [u8]> {
+    Some(match name {
+        "HypeRate" => include_bytes!("../../assets/icons/hyperate.png"),
+        "Pulsoid" => include_bytes!("../../assets/icons/pulsoid.png"),
+        "Meld Studio" => include_bytes!("../../assets/icons/meld-studio.png"),
+        "Speaker.bot" => include_bytes!("../../assets/icons/speakerbot.png"),
+        "VoiceMod" => include_bytes!("../../assets/icons/voicemod.png"),
+        "VTube Studio" => include_bytes!("../../assets/icons/vtube-studio.png"),
+        "Fourthwall" => include_bytes!("../../assets/icons/fourthwall.png"),
+        "Ko-fi" => include_bytes!("../../assets/icons/ko-fi.png"),
+        "PolyPop" => include_bytes!("../../assets/icons/polypop.png"),
+        _ => return None,
+    })
+}
+
+/// Whether `name` has a logo, vector or picture.
+pub fn has_logo(name: &str) -> bool {
+    picture_logo(name).is_some() || logo(name, 16).is_some()
+}
+
+/// The logo of `name` as any kind of image, `size` px square: for trees, which take one icon.
+pub fn any_logo(name: &str, size: i32) -> Option<fltk::image::SharedImage> {
+    if let Some(l) = logo(name, size) {
+        return fltk::image::SharedImage::from_image(&l).ok();
+    }
+    let mut p = PngImage::from_data(picture_logo(name)?).ok()?.to_rgb().ok()?;
+    p.scale(size, size, true, true);
+    fltk::image::SharedImage::from_image(&p).ok()
 }
 
 /// Platform logos arranged in a row for a combined connection notice.

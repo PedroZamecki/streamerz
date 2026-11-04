@@ -1,6 +1,7 @@
 //! Streamerz: actions, triggers and the servers that tools already use, for Twitch, Kick, YouTube,
 //! OBS and Streamlabs Desktop, running on ~nothing.
 
+mod agents;
 mod backup;
 mod brand;
 mod catalog;
@@ -8,6 +9,8 @@ mod cdp;
 mod commands;
 mod crash;
 pub mod decks;
+#[cfg(not(windows))]
+mod devinput;
 mod docs;
 pub mod donations;
 mod edit;
@@ -15,6 +18,9 @@ mod emote_events;
 pub mod engine;
 pub mod fileio;
 mod fmt;
+mod fswatch;
+mod group_icons;
+mod groups;
 pub mod hotkeys;
 pub mod http;
 mod i18n;
@@ -24,10 +30,13 @@ mod irc;
 pub mod kick;
 mod math;
 mod mcp;
+mod midi;
 pub mod model;
 mod notify;
 mod oauth;
 pub mod obs;
+mod overlays;
+pub mod ports;
 pub mod remote;
 pub mod roles;
 mod scenario;
@@ -36,7 +45,11 @@ mod secrets;
 pub mod servers;
 mod slash;
 mod slobs;
+mod songrequests;
+mod speech;
+mod spotify;
 mod storage;
+mod streamdeck;
 mod templates;
 pub mod tiktok;
 mod tray;
@@ -46,6 +59,8 @@ mod ui;
 mod update;
 mod vars;
 mod webcast;
+#[cfg(not(windows))]
+mod x11input;
 pub mod youtube;
 
 /// Trims heap memory and returns unused virtual memory pages back to the operating system.
@@ -76,12 +91,10 @@ static MEMORY_SAVER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBo
 /// Session-only speaker files can also be left by an interrupted process. The config directory is
 /// protected by the existing instance lock before startup reaches this cleanup.
 pub(crate) fn cleanup_first_words() {
-    if memory_saver() {
-        let path = config_path().with_file_name("first-words");
-        if let Err(e) = std::fs::remove_dir_all(path) {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                error(format!("Can't clear First Words session: {e}"));
-            }
+    let path = config_path().with_file_name("first-words");
+    if let Err(e) = std::fs::remove_dir_all(path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            error(format!("Can't clear session data: {e}"));
         }
     }
 }
@@ -110,6 +123,12 @@ pub struct Config {
     actions: model::ActionsFile,
     /// Persisted globals, and persisted user globals by user ("platform:id", then name).
     globals: model::Obj,
+    /// Persistent variables scoped to action group names.
+    action_group_variables: model::Obj,
+    /// Embedded icons keyed by action group name.
+    action_group_icons: model::Obj,
+    /// What each action group declares besides its values: settings, files, commands and timers.
+    action_groups: model::Obj,
     user_globals: model::Obj,
     /// When each persisted global was last written (ISO 8601).
     global_writes: model::Obj,
@@ -125,6 +144,19 @@ pub struct Config {
     /// users.dat groups: id, name, bots, userIds).
     timers: Vec<model::Obj>,
     groups: Vec<model::Obj>,
+    /// File and folder watchers (Streamer.bot's settings.json fileWatcherSettings.watchers: id, name,
+    /// enabled, folderPath, filter, includeSubdirectories, addChangedData, asJson) and file tails (its
+    /// fileTails.fileTails: id, name, enabled, filePath).
+    file_watchers: Vec<model::Obj>,
+    /// The server for the Stream Deck plugin (Streamer.bot's streamDeckSettings): off unless turned on.
+    stream_deck: streamdeck::Settings,
+    /// Voice commands (Streamer.bot's speechToText.commands: id, name, enabled, command (one phrase per
+    /// line), location (0 exact, 1 start, 2 anywhere), overrideGlobalConfidence, confidenceThreshold),
+    /// the confidence they need (0 to 1) and whether the log says what was heard.
+    voice_commands: Vec<model::Obj>,
+    speech_confidence: f64,
+    speech_log_spoken: bool,
+    file_tails: Vec<model::Obj>,
     /// Quotes, in Streamer.bot's quotes.dat shape (id, timestamp, userId, user, platform, gameId,
     /// gameName, quote).
     quotes: Vec<model::Obj>,
@@ -144,6 +176,9 @@ pub struct Config {
     /// YouTube configuration.
     #[serde(default)]
     pub youtube: youtube::YouTubeConfig,
+    /// Spotify is opt-in and makes requests only when used.
+    #[serde(default)]
+    pub spotify: spotify::SpotifyConfig,
     /// TikTok configuration.
     #[serde(default)]
     pub tiktok: tiktok::TikTokConfig,
@@ -183,6 +218,9 @@ impl Default for Config {
             debug_log: false,
             actions: model::ActionsFile::default(),
             globals: Map::new(),
+            action_group_variables: Map::new(),
+            action_group_icons: Map::new(),
+            action_groups: Map::new(),
             user_globals: Map::new(),
             global_writes: Map::new(),
             websockets: servers::WsSettings::default(),
@@ -193,6 +231,12 @@ impl Default for Config {
             commands: Vec::new(),
             timers: Vec::new(),
             groups: Vec::new(),
+            file_watchers: Vec::new(),
+            stream_deck: Default::default(),
+            voice_commands: Vec::new(),
+            speech_confidence: 0.0,
+            speech_log_spoken: false,
+            file_tails: Vec::new(),
             counters: Map::new(),
             quotes: Vec::new(),
             twitch: twitch::TwitchConfig::default(),
@@ -200,6 +244,7 @@ impl Default for Config {
             slobs: slobs::Settings::default(),
             kick: kick::KickConfig::default(),
             youtube: youtube::YouTubeConfig::default(),
+            spotify: spotify::SpotifyConfig::default(),
             tiktok: tiktok::TikTokConfig::default(),
             donations: donations::DonationsConfig::default(),
             builtins: false,
@@ -296,7 +341,9 @@ pub struct ChatLimits {
 impl Default for ChatLimits {
     fn default() -> Self {
         Self {
-            save_history: true,
+            // Off unless the user turns it on: Streamerz reads chat to run actions, not to keep it.
+            // (Tests read what the chat said, so they keep it.)
+            save_history: cfg!(test),
             per_platform: 400,
             total: 1000,
             lifetime: 0,
@@ -510,6 +557,8 @@ fn redact(line: &str) -> String {
     const MARKERS: &[&str] = &[
         "access_token",
         "refresh_token",
+        "accesstoken",
+        "refreshtoken",
         "client_secret",
         "id_token",
         "sessionid",
@@ -615,7 +664,7 @@ async fn ended(e: std::rc::Rc<engine::Engine>) {
         _ = int.recv() => {}
     }
     say("Asked to close: saving and quitting".into());
-    e.save_all();
+    e.save_shutdown();
     crash::quit(0)
 }
 
@@ -794,35 +843,56 @@ fn save_value(v: serde_json::Value) -> std::io::Result<()> {
 /// Saves `c` without making the caller wait: the window's thread must never sit on the disk, the keyring
 /// or the save lock (the engine may hold it). One short thread writes the latest config, and the next
 /// one asked for meanwhile replaces a pending one, so a burst of changes is one write.
+#[derive(Default)]
+struct SaveQueue {
+    pending: Option<serde_json::Value>,
+    busy: bool,
+}
+
+static SAVE_QUEUE: Mutex<SaveQueue> = Mutex::new(SaveQueue {
+    pending: None,
+    busy: false,
+});
+static SAVE_DONE: std::sync::Condvar = std::sync::Condvar::new();
+
 fn save_later(c: &Config) {
-    static PENDING: Mutex<Option<serde_json::Value>> = Mutex::new(None);
-    static BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if let Ok(mut p) = PENDING.lock() {
-        *p = Some(serde_json::to_value(c).unwrap_or_default());
-    }
-    if BUSY.swap(true, std::sync::atomic::Ordering::AcqRel) {
+    let mut queue = SAVE_QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+    queue.pending = Some(serde_json::to_value(c).unwrap_or_default());
+    if queue.busy {
         return;
     }
-    let spawned = std::thread::Builder::new().name("save".into()).spawn(|| loop {
-        let next = PENDING.lock().ok().and_then(|mut p| p.take());
-        match next {
-            Some(v) => drop(save_value(v)),
-            None => {
-                BUSY.store(false, std::sync::atomic::Ordering::Release);
-                // Something arrived between the last look and the flag going down.
-                let more = PENDING.lock().is_ok_and(|p| p.is_some());
-                if !more || BUSY.swap(true, std::sync::atomic::Ordering::AcqRel) {
-                    return;
-                }
-            }
-        }
-    });
-    if spawned.is_err() {
-        BUSY.store(false, std::sync::atomic::Ordering::Release);
-        if let Some(v) = PENDING.lock().ok().and_then(|mut p| p.take()) {
-            drop(save_value(v));
-        }
+    queue.busy = true;
+    drop(queue);
+    if std::thread::Builder::new()
+        .name("save".into())
+        .spawn(drain_saves)
+        .is_err()
+    {
+        drain_saves();
     }
+}
+
+fn drain_saves() {
+    loop {
+        let mut queue = SAVE_QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(value) = queue.pending.take() else {
+            queue.busy = false;
+            SAVE_DONE.notify_all();
+            return;
+        };
+        drop(queue);
+        drop(save_value(value));
+    }
+}
+
+/// Wait for the last requested save before deleting development storage or exiting.
+fn wait_for_saves() {
+    wait_on_saves(&SAVE_QUEUE, &SAVE_DONE);
+}
+
+fn wait_on_saves(queue: &Mutex<SaveQueue>, done: &std::sync::Condvar) {
+    let state = queue.lock().unwrap_or_else(|e| e.into_inner());
+    drop(done.wait_while(state, |q| q.busy).unwrap_or_else(|e| e.into_inner()));
 }
 
 /// The config, else its `.bak`, else the defaults. Written back, so new settings show up in the
@@ -864,27 +934,28 @@ fn autostart(on: bool) -> std::io::Result<()> {
     if DEV_DIR.get().is_some() {
         return Err(std::io::Error::other("Autostart is unavailable in development"));
     }
+    let exe = format!("\"{}\"", update::exe().ok_or(std::io::ErrorKind::NotFound)?.display());
+    run_at_login("streamerz", on.then_some(exe.as_str()))
+}
+
+/// Sets (or, with None, removes) the value `name` of the user's Run key: what Windows starts at login.
+#[cfg(windows)]
+fn run_at_login(name: &str, command: Option<&str>) -> std::io::Result<()> {
     use windows_sys::Win32::System::Registry::{RegDeleteKeyValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
     let w = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
-    let (key, name) = (w(r"Software\Microsoft\Windows\CurrentVersion\Run"), w("streamerz"));
-    let exe = w(&format!(
-        "\"{}\"",
-        update::exe().ok_or(std::io::ErrorKind::NotFound)?.display()
-    ));
+    let (key, name) = (w(RUN_KEY), w(name));
     // SAFETY: NUL-terminated UTF-16 strings that outlive the calls; size is in bytes.
     let err = unsafe {
-        if on {
-            let size = (exe.len() * 2) as u32;
-            RegSetKeyValueW(
+        match command.map(w) {
+            Some(exe) => RegSetKeyValueW(
                 HKEY_CURRENT_USER,
                 key.as_ptr(),
                 name.as_ptr(),
                 REG_SZ,
                 exe.as_ptr().cast(),
-                size,
-            )
-        } else {
-            RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr())
+                (exe.len() * 2) as u32,
+            ),
+            None => RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr()),
         }
     };
     // 2 = not found: already off.
@@ -893,6 +964,9 @@ fn autostart(on: bool) -> std::io::Result<()> {
         e => Err(std::io::Error::from_raw_os_error(e as i32)),
     }
 }
+
+#[cfg(windows)]
+const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
 /// Start at login: an XDG autostart entry.
 #[cfg(not(windows))]
@@ -996,6 +1070,7 @@ fn prepare_dev(source: &Path) -> std::io::Result<PathBuf> {
     cleanup_stale_dev(&base);
     for n in 0..1000 {
         let dir = base.join(format!("streamerz-dev-{}-{n}", std::process::id()));
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
@@ -1179,6 +1254,8 @@ fn main() {
         }
         cfg.websockets.address = "127.0.0.1".into();
         cfg.websockets.auto_start = true;
+        cfg.spotify.enabled = false;
+        cfg.spotify.local_monitor = false;
         cfg.http.auto_start = false;
         cfg.udp.auto_start = false;
         for connection in &mut cfg.websockets.connections {
@@ -1231,6 +1308,7 @@ fn main() {
                 e.started();
             }
             tokio::task::spawn_local(crash::offer());
+            e.watchers();
             if !brand::IS_DEV {
                 tokio::task::spawn_local(update::watch(engine_cfg.clone()));
                 e.timers();
@@ -1251,9 +1329,69 @@ fn main() {
 #[cfg(test)]
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
+/// Whether the tests run under Wine (its ntdll has `wine_get_version`), for the few things Wine does
+/// differently from Windows.
+#[cfg(all(test, windows))]
+fn under_wine() -> bool {
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+    let ntdll: Vec<u16> = "ntdll.dll".encode_utf16().chain([0]).collect();
+    // SAFETY: a NUL-terminated module name, and a name looked up in a module that is always loaded.
+    unsafe { GetProcAddress(GetModuleHandleW(ntdll.as_ptr()), c"wine_get_version".as_ptr().cast()).is_some() }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shutdown_waits_for_the_pending_save() {
+        let queue = std::sync::Arc::new(std::sync::Mutex::new(super::SaveQueue {
+            busy: true,
+            pending: None,
+        }));
+        let done = std::sync::Arc::new(std::sync::Condvar::new());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker_queue = queue.clone();
+        let worker_done = done.clone();
+        let worker = std::thread::spawn(move || {
+            super::wait_on_saves(&worker_queue, &worker_done);
+            tx.send(()).unwrap();
+        });
+        assert!(rx.recv_timeout(std::time::Duration::from_millis(50)).is_err());
+        queue.lock().unwrap().busy = false;
+        done.notify_all();
+        rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        worker.join().unwrap();
+    }
     use super::*;
+
+    /// Start with Windows writes the Run value Windows reads, and turning it off removes it (twice is fine).
+    #[cfg(windows)]
+    #[test]
+    fn run_at_login_sets_and_removes_the_value() {
+        use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
+        let w = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
+        let read = || {
+            let mut buf = [0u16; 512];
+            let mut size = (buf.len() * 2) as u32;
+            // SAFETY: NUL-terminated names; the buffer and its size in bytes.
+            let r = unsafe {
+                RegGetValueW(
+                    HKEY_CURRENT_USER,
+                    w(RUN_KEY).as_ptr(),
+                    w("streamerz-test").as_ptr(),
+                    RRF_RT_REG_SZ,
+                    std::ptr::null_mut(),
+                    buf.as_mut_ptr().cast(),
+                    &mut size,
+                )
+            };
+            (r == 0).then(|| String::from_utf16_lossy(&buf[..(size as usize / 2).saturating_sub(1)]))
+        };
+        run_at_login("streamerz-test", Some(r#""C:\Program Files\Streamerz\Streamerz.exe""#)).unwrap();
+        assert_eq!(read().as_deref(), Some(r#""C:\Program Files\Streamerz\Streamerz.exe""#));
+        run_at_login("streamerz-test", None).unwrap();
+        assert_eq!(read(), None);
+        run_at_login("streamerz-test", None).unwrap();
+    }
 
     #[cfg(unix)]
     #[test]
@@ -1311,6 +1449,10 @@ mod tests {
             "GET /revoke?client_id=c&token=***&x=2"
         );
         assert_eq!(redact("Authorization: Bearer abc123"), "Authorization: Bearer ***");
+        assert_eq!(
+            redact(r#"{"accessToken":"private","refreshToken":"secret"}"#),
+            r#"{"accessToken":"***","refreshToken":"***"}"#
+        );
         assert_eq!(
             redact("Twitch: refreshed the bot token"),
             "Twitch: refreshed the bot token"

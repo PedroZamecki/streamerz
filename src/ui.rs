@@ -3,8 +3,10 @@
 
 mod accounts;
 mod actions;
+mod agents;
 mod card;
 pub(crate) mod chat;
+pub(crate) mod clipboard;
 mod conns;
 mod dev;
 pub(crate) mod dialogs;
@@ -13,11 +15,13 @@ mod find;
 pub(crate) mod fit;
 pub(crate) mod forms;
 mod grid;
+mod groups;
 pub(crate) mod icons;
 pub(crate) mod img;
 mod lists;
 mod nav;
 pub mod picker;
+mod picker_icons;
 mod plugins;
 pub(crate) mod polls;
 pub(crate) mod popover;
@@ -760,6 +764,14 @@ fn button_ink() -> Color {
 fn icon_for(label: &str) -> Option<&'static str> {
     Some(match crate::i18n::button_id(label)? {
         "add" => "plus",
+        "collapse_all" => "chevrons-down-up",
+        "expand_all" => "chevrons-up-down",
+        "add_group" => "folder-plus",
+        "group_variables" => "sliders-horizontal",
+        "set_group_icon" => "image",
+        "clear_group_icon" => "image-off",
+        "rename_group" => "folder-pen",
+        "delete_group" => "folder-x",
         "edit" | "edit_json" => "pencil",
         "delete" => "trash-2",
         "on_off" => "power",
@@ -768,13 +780,26 @@ fn icon_for(label: &str) -> Option<&'static str> {
         "connect" | "connect_all" => "plug",
         "disconnect" | "disconnect_all" => "unplug",
         "test" => "play",
-        "templates" => "layout-template",
+        "templates" | "manage_templates" => "layout-template",
+        "change_value" => "pencil",
+        "add_setting" | "add_file" => "plus",
+        "edit_setting" => "sliders-horizontal",
+        "delete_setting" => "trash-2",
+        "group_files" => "file-text",
+        "group_members" => "list",
+        "save_files" => "upload",
+        "copy_url" => "copy",
+        "save_page" => "globe",
         "save" => "save",
         "retry" | "refresh" | "reset" | "check" => "rotate-cw",
+        "add_streamerz" => "plus",
+        "remove_streamerz" => "x",
+        "open_chat" => "terminal",
+        "copy_config" => "copy",
         "quit" | "logout" => "log-out",
         "login" => "log-in",
         "hide" => "eye-off",
-        "duplicate" | "copy" | "copy_line" | "copy_code" | "copy_redirect_url" | "copy_path" => "copy",
+        "duplicate" | "copy" | "copy_code" | "copy_redirect_url" | "copy_path" => "copy",
         "clear" => "eraser",
         "advanced" => "sliders-horizontal",
         "settings" => "settings",
@@ -786,7 +811,8 @@ fn icon_for(label: &str) -> Option<&'static str> {
         "report_github" => "bug",
         "start_poll" | "start_prediction" => "play",
         "end_poll" => "square",
-        "lock" => "lock",
+        "lock" | "remove_access" => "lock",
+        "allow_access" => "lock-open",
         "resolve" => "trophy",
         "cancel_prediction" => "x",
         "backup_now" => "archive",
@@ -877,6 +903,11 @@ pub(crate) fn context_menu(buttons: &[Button]) {
 /// Buttons in a grid `rows` high that fills `col`'s width, all the same width; where their labels don't
 /// fit, they show only their icons (the label in the tooltip).
 fn grid(col: &mut Flex, labels: &[&str], rows: i32) -> Vec<Button> {
+    grid_group(col, labels, rows).1
+}
+
+/// `grid`, also giving the group holding the buttons (to show or hide them together).
+fn grid_group(col: &mut Flex, labels: &[&str], rows: i32) -> (fltk::group::Group, Vec<Button>) {
     let mut g = fltk::group::Group::default();
     let out: Vec<Button> = labels.iter().map(|l| Button::default().with_label(l)).collect();
     g.end();
@@ -922,7 +953,7 @@ fn grid(col: &mut Flex, labels: &[&str], rows: i32) -> Vec<Button> {
     };
     place(g.x(), g.y(), g.w(), g.h());
     g.resize_callback(move |_, x, y, w, h| place(x, y, w, h));
-    out
+    (g, out)
 }
 
 /// A quiet line of help text in `col`, `h` tall, wrapped.
@@ -1356,7 +1387,9 @@ pub fn run(
     let pictures = Rc::new(Cell::new(false));
     // New chat lines come many a second: the page takes them in at most ten times a second.
     let chat_due = Rc::new(Cell::new(false));
+    clipboard::sync(&cfg, &cmds);
     let live: Rc<dyn Fn(Msg) -> Option<Msg>> = {
+        let cmds_live = cmds.clone();
         let status_bar = status_bar.clone();
         let (win, log, views, tabs, acts, cfg, pictures) = (
             win.clone(),
@@ -1386,13 +1419,14 @@ pub fn run(
                 Msg::Image => pictures.set(true),
                 // Hidden: nothing to redraw (filling a list loads the fonts); opening refreshes.
                 Msg::Changed if win.visible() => {
+                    clipboard::sync(&cfg, &cmds_live);
                     status_bar();
                     if let Ok(mut a) = acts.try_borrow_mut() {
                         a.refresh();
                     }
                     views.refresh(&tabs);
                 }
-                Msg::Changed => {}
+                Msg::Changed => clipboard::sync(&cfg, &cmds_live),
                 Msg::Dev => pump_dev_with(&tabs),
                 Msg::Theme => {
                     let dark = is_dark(&cfg.borrow());

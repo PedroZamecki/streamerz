@@ -1,0 +1,69 @@
+[
+  {
+    "name": "youtube: messages, title, description, moderation and polls",
+    "config": {"youtube": {"channelId": "UCme"}},
+    "fakes": {"youtube": {"createPoll": "poll9"}},
+    "actions": [
+      {"name": "yt", "subActions": [{"type": 4001, "broadcast": "b1", "text": "hello %user%"}, {"type": 4002, "broadcast": "b1", "title": "T %n%"}, {"type": 4003, "broadcast": "b1", "description": "D"}, {"type": 4004, "broadcast": "b1", "title": "T2", "description": "D2"}, {"type": 4008, "broadcast": "b1", "userId": "UCx"}, {"type": 4009, "broadcast": "b1", "userId": "UCx", "duration": 300}, {"type": 4010}, {"type": 4011, "broadcast": "b1", "question": "Pets?", "options": ["Cats", "%other%"]}, {"type": 4012, "broadcast": "b1"}]}
+    ],
+    "steps": [
+      {"run": "yt", "args": {"user": "ana", "n": "1", "other": "Dogs"}}
+    ],
+    "expect": {"chat": [{"platform": "youtube", "text": "hello ana"}], "calls": [{"platform": "youtube", "call": "title", "broadcast": "b1", "title": "T 1"}, {"call": "description", "description": "D"}, {"call": "titleAndDescription", "title": "T2", "description": "D2"}, {"call": "ban", "userId": "UCx"}, {"call": "timeout", "userId": "UCx", "duration": 300}, {"call": "createPoll", "question": "Pets?", "options": ["Cats", "Dogs"]}, {"call": "endPoll", "broadcast": "b1"}], "runs": [{"action": "yt", "after": {"banResult": true, "timeoutResult": true, "broadcasterUserId": "UCme", "success": true, "pollId": "poll9"}}]}
+  },
+  {
+    "name": "youtube: user groups (add, in group, remove)",
+    "config": {"groups": [{"id": "g1", "name": "Friends", "userIds": []}]},
+    "actions": [
+      {"name": "add", "subActions": [{"type": 4005, "userLogin": "UCpal", "groupName": "Friends"}]},
+      {"name": "check", "subActions": [{"type": 4007, "userLogin": "UCpal", "groupName": "Friends"}, {"type": 1020, "logLevel": 2, "message": "in=%inGroup%"}]},
+      {"name": "remove", "subActions": [{"type": 4006, "userLogin": "UCpal", "groupName": "Friends"}]}
+    ],
+    "steps": [
+      {"run": "add"},
+      {"run": "check"},
+      {"run": "remove"},
+      {"run": "check"}
+    ],
+    "expect": {"log": ["in=True", "in=False"]}
+  },
+  {
+    "name": "youtube: InnerTube items fire their triggers with their arguments",
+    "actions": [
+      {"name": "on 4016", "triggers": [{"type": 4016}], "subActions": [{"type": 1009}]},
+      {"name": "on 4003", "triggers": [{"type": 4003}], "subActions": [{"type": 1009}]},
+      {"name": "on 4006", "triggers": [{"type": 4006}], "subActions": [{"type": 1009}]},
+      {"name": "on 4007", "triggers": [{"type": 4007}], "subActions": [{"type": 1009}]},
+      {"name": "on 4009", "triggers": [{"type": 4009}], "subActions": [{"type": 1009}]},
+      {"name": "on 4008", "triggers": [{"type": 4008}], "subActions": [{"type": 1009}]},
+      {"name": "on 4014", "triggers": [{"type": 4014}], "subActions": [{"type": 1009}]},
+      {"name": "on 4015", "triggers": [{"type": 4015}], "subActions": [{"type": 1009}]},
+      {"name": "on 4030", "triggers": [{"type": 4030}], "subActions": [{"type": 1009}]},
+      {"name": "on 4010", "triggers": [{"type": 4010}], "subActions": [{"type": 1009}]},
+      {"name": "on 4011", "triggers": [{"type": 4011}], "subActions": [{"type": 1009}]},
+      {"name": "on 4028", "triggers": [{"type": 4028}], "subActions": [{"type": 1009}]},
+      {"name": "on 4029", "triggers": [{"type": 4029}], "subActions": [{"type": 1009}]},
+      {"name": "on 4027", "triggers": [{"type": 4027}], "subActions": [{"type": 1009}]},
+      {"name": "on 4004", "triggers": [{"type": 4004}], "subActions": [{"type": 1009}]},
+      {"name": "on 4005", "triggers": [{"type": 4005}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "youtube", "data": {"addChatItemAction": {"item": {"liveChatTextMessageRenderer": {"authorName": {"simpleText": "@ana"}, "authorExternalChannelId": "UCa", "authorPhoto": {"thumbnails": [{"url": "s"}, {"url": "big"}]}, "timestampUsec": "1700000000000000", "id": "m1", "message": {"runs": [{"text": "hi there"}]}}}}}}},
+      {"event": {"platform": "youtube", "data": {"addChatItemAction": {"item": {"liveChatPaidMessageRenderer": {"authorName": {"simpleText": "@ana"}, "authorExternalChannelId": "UCa", "authorPhoto": {"thumbnails": [{"url": "s"}, {"url": "big"}]}, "timestampUsec": "1700000000000000", "id": "m2", "purchaseAmountText": {"simpleText": "\u20ac2.50"}, "message": {"runs": [{"text": "gg"}]}}}}}}},
+      {"event": {"platform": "youtube", "data": {"addChatItemAction": {"item": {"liveChatPaidStickerRenderer": {"authorName": {"simpleText": "@ana"}, "authorExternalChannelId": "UCa", "authorPhoto": {"thumbnails": [{"url": "s"}, {"url": "big"}]}, "timestampUsec": "1700000000000000", "id": "m3", "purchaseAmountText": {"simpleText": "$5.00"}, "sticker": {"thumbnails": [{"url": "st"}], "accessibility": {"accessibilityData": {"label": "Cat"}}}}}}}}},
+      {"event": {"platform": "youtube", "data": {"addChatItemAction": {"item": {"liveChatMembershipItemRenderer": {"authorName": {"simpleText": "@ana"}, "authorExternalChannelId": "UCa", "authorPhoto": {"thumbnails": [{"url": "s"}, {"url": "big"}]}, "timestampUsec": "1700000000000000", "id": "m4", "headerPrimaryText": {"runs": [{"text": "Member for "}, {"text": "6"}, {"text": " months"}]}, "headerSubtext": {"simpleText": "Gold"}, "message": {"runs": [{"text": "yay"}]}}}}}}},
+      {"event": {"platform": "youtube", "data": {"addChatItemAction": {"item": {"liveChatMembershipItemRenderer": {"authorName": {"simpleText": "@ana"}, "authorExternalChannelId": "UCa", "authorPhoto": {"thumbnails": [{"url": "s"}, {"url": "big"}]}, "timestampUsec": "1700000000000000", "id": "m5", "headerSubtext": {"runs": [{"text": "Welcome to Gold!"}]}}}}}}},
+      {"event": {"platform": "youtube", "data": {"addChatItemAction": {"item": {"liveChatSponsorshipsGiftPurchaseAnnouncementRenderer": {"authorExternalChannelId": "UCa", "header": {"liveChatSponsorshipsHeaderRenderer": {"authorName": {"simpleText": "@ana"}, "primaryText": {"runs": [{"text": "Gifted "}, {"text": "5"}, {"text": " Gold memberships"}]}}}}}}}}},
+      {"event": {"platform": "youtube", "data": {"addChatItemAction": {"item": {"liveChatSponsorshipsGiftRedemptionAnnouncementRenderer": {"authorName": {"simpleText": "@bo"}, "message": {"runs": [{"text": "received a gift membership by "}, {"text": "@ana"}]}}}}}}},
+      {"event": {"platform": "youtube", "data": {"addChatItemAction": {"item": {"liveChatJewelsGiftRenderer": {"authorName": {"simpleText": "@ana"}, "authorExternalChannelId": "UCa", "authorPhoto": {"thumbnails": [{"url": "s"}, {"url": "big"}]}, "timestampUsec": "1700000000000000", "id": "m6", "jewelCount": 50}}}}}},
+      {"event": {"platform": "youtube", "data": {"addChatItemAction": {"item": {"liveChatModeChangeMessageRenderer": {"text": {"runs": [{"text": "Members-only mode is on"}]}}}}}}},
+      {"event": {"platform": "youtube", "data": {"addChatItemAction": {"item": {"liveChatModeChangeMessageRenderer": {"text": {"runs": [{"text": "Members-only mode is off"}]}}}}}}},
+      {"event": {"platform": "youtube", "data": {"showLiveChatActionPanelAction": {"panel": {"liveChatPollRenderer": {"liveChatPollId": "p", "choices": [{"text": {"simpleText": "Cats"}, "voteRatio": 0.25}, {"text": {"simpleText": "Dogs"}, "voteRatio": 0.75}], "header": {"pollHeaderRenderer": {"pollQuestion": {"simpleText": "Pets?"}, "metadataText": {"runs": [{"text": "40 votes"}]}}}}}}}}},
+      {"event": {"platform": "youtube", "data": {"updateLiveChatPollAction": {"pollToUpdate": {"pollRenderer": {"liveChatPollId": "p", "choices": [{"text": {"simpleText": "Cats"}, "voteRatio": 0.25}, {"text": {"simpleText": "Dogs"}, "voteRatio": 0.75}], "header": {"pollHeaderRenderer": {"pollQuestion": {"simpleText": "Pets?"}, "metadataText": {"runs": [{"text": "40 votes"}]}}}}}}}}},
+      {"event": {"platform": "youtube", "data": {"closeLiveChatActionPanelAction": {"targetPanelId": "p"}}}},
+      {"event": {"platform": "youtube", "data": {"markChatItemAsDeletedAction": {"targetItemId": "m1"}}}},
+      {"event": {"platform": "youtube", "data": {"markChatItemsByAuthorAsDeletedAction": {"externalChannelId": "UCa"}}}}
+    ],
+    "expect": {"runs": [{"action": "on 4016", "args": {"user": "ana", "userName": "@ana", "messageId": "m1"}}, {"action": "on 4003", "args": {"user": "ana", "userName": "@ana", "message": "hi there", "input0": "hi", "userProfileUrl": "big", "userId": "UCa"}}, {"action": "on 4006", "args": {"amount": "\u20ac2.50", "microAmount": 2500000, "currencyCode": "EUR", "message": "gg"}}, {"action": "on 4007", "args": {"microAmount": 5000000, "currencyCode": "USD", "stickerAltText": "Cat", "stickerImageUrl": "st"}}, {"action": "on 4009", "args": {"months": 6, "levelName": "Gold", "message": "yay"}}, {"action": "on 4008", "args": {"levelName": "Gold", "isUpgrade": false}}, {"action": "on 4014", "args": {"user": "ana", "count": 5}}, {"action": "on 4015", "args": {"user": "bo", "gifterUser": "ana"}}, {"action": "on 4030", "args": {"jewelCount": 50, "gift.jewelsAmount": 50}}, {"action": "on 4010", "args": {}}, {"action": "on 4011", "args": {}}, {"action": "on 4028", "args": {"poll.question": "Pets?", "poll.option1.text": "Dogs"}}, {"action": "on 4029", "args": {"poll.question": "Pets?"}}, {"action": "on 4027", "args": {"poll.question": "Pets?", "poll.totalVotes": 40, "panelId": "p"}}, {"action": "on 4004", "args": {"messageId": "m1"}}, {"action": "on 4005", "args": {"userId": "UCa", "banType": "unknown", "userType": "youtube"}}]}
+  }
+]

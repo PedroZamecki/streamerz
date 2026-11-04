@@ -30,8 +30,10 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: the message is only logged, no MIDI device gets it.
-- With Send Note Off on, the log says the note would be turned off after the duration. No Note Off is sent.
+- Sent to the MIDI output named in Device (any case; empty: the first one). A missing device is a
+  warning in the log.
+- With Send Note Off on, a Note Off follows after the duration (the action doesn't wait for it).
+- Channel is 1 to 16.
 
 ## Control Change
 
@@ -59,7 +61,7 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: the message is only logged, no MIDI device gets it.
+- Sent to the MIDI output named in Device (any case; empty: the first one). Channel is 1 to 16.
 
 ## Generic Event
 
@@ -88,4 +90,4 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: the message is only logged, no MIDI device gets it.
+- Sent to the MIDI output named in Device (any case; empty: the first one). Channel is 1 to 16.

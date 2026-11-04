@@ -1,0 +1,78 @@
+[
+  {
+    "name": "file watcher: created, changed (with its lines), renamed and deleted, as Streamer.bot passes them",
+    "config": {"file_watchers": [
+      {"id": "w1", "name": "Texts", "enabled": true, "folderPath": "{tmp}", "filter": "*.txt", "includeSubdirectories": false, "addChangedData": true, "asJson": false},
+      {"id": "w2", "name": "Json", "enabled": true, "folderPath": "{tmp}", "filter": "*.json", "includeSubdirectories": false, "addChangedData": true, "asJson": true},
+      {"id": "w3", "name": "Off", "enabled": false, "folderPath": "{tmp}", "filter": "*.*"}]},
+    "actions": [
+      {"name": "created", "triggers": [{"type": 502, "watcherId": "w1"}], "subActions": [{"type": 1009}]},
+      {"name": "changed", "triggers": [{"type": 501, "watcherId": "w1"}], "subActions": [{"type": 1009}]},
+      {"name": "renamed", "triggers": [{"type": 504}], "subActions": [{"type": 1009}]},
+      {"name": "deleted", "triggers": [{"type": 503}], "subActions": [{"type": 1009}]},
+      {"name": "json", "triggers": [{"type": 501, "watcherId": "w2"}], "subActions": [{"type": 1009}]},
+      {"name": "write", "subActions": [{"type": 3, "file": "{tmp}/notes.txt", "text": "Hello World! a+b\nsecond", "append": false}]},
+      {"name": "move", "subActions": [{"type": 6, "command": "/bin/mv", "arguments": "{tmp}/notes.txt {tmp}/moved.txt", "waitForExit": 5}]},
+      {"name": "remove", "subActions": [{"type": 6, "command": "/bin/rm", "arguments": "{tmp}/moved.txt", "waitForExit": 5}]},
+      {"name": "data", "subActions": [{"type": 3, "file": "{tmp}/data.json", "text": "{\"a\": {\"b\": 2}, \"c\": [1, 2]}", "append": false}]}
+    ],
+    "only": "linux",
+    "steps": [{"wait": 100}, {"run": "write", "wait": 400}, {"run": "move", "wait": 400}, {"run": "remove", "wait": 400}, {"run": "data", "wait": 400}],
+    "expect": {"runs": [
+      {"action": "created", "args": {"fileName": "notes.txt", "changeType": "Created", "watcherFilter": "*.txt", "triggerName": "Created", "triggerCategory": "Core/File/Folder Watcher", "eventSource": "filewatcher"}},
+      {"action": "changed", "args": {"fileName": "notes.txt", "changeType": "Changed", "fileWasDeleted": false, "fileSize": 23, "empty": false,
+        "lineCount": 2, "line0": "Hello World! a+b", "lineEscaped0": "Hello+World!+a%2Bb", "line1": "second"}},
+      {"action": "renamed", "args": {"oldFilename": "notes.txt", "fileName": "moved.txt", "changeType": "Renamed"}},
+      {"action": "deleted", "args": {"fileName": "moved.txt", "changeType": "Deleted"}},
+      {"action": "json", "args": {"fileName": "data.json", "a.b": 2, "c[0]": 1, "c[1]": 2}}
+    ]}
+  },
+  {
+    "name": "file tail: each new line once it's whole; a shorter file starts from its new end; Set File Tail State turns it off",
+    "only": "linux",
+    "config": {"file_tails": [{"id": "t1", "name": "Log", "enabled": false, "filePath": "{tmp}/app.log"}]},
+    "actions": [
+      {"name": "seed", "subActions": [{"type": 3, "file": "{tmp}/app.log", "text": "old line\n", "append": false}]},
+      {"name": "line", "triggers": [{"type": 511, "tailId": "t1"}], "subActions": [{"type": 1020, "logLevel": 2, "message": "tail: [%line%] %fileName%"}]},
+      {"name": "add", "subActions": [{"type": 6, "command": "/bin/sh", "arguments": "-c \"printf '%text%' >> {tmp}/app.log\"", "waitForExit": 5}]},
+      {"name": "shrink", "subActions": [{"type": 3, "file": "{tmp}/app.log", "text": "x", "append": false}]},
+      {"name": "off", "subActions": [{"type": 1030, "fileTailId": "t1", "state": 1}]},
+      {"name": "on", "subActions": [{"type": 1030, "fileTailId": "t1", "state": 2}]}
+    ],
+    "steps": [{"run": "seed", "wait": 200}, {"run": "on", "wait": 100},
+      {"run": "add", "args": {"text": "one\\n"}, "wait": 300},
+      {"run": "add", "args": {"text": "two half"}, "wait": 300},
+      {"run": "shrink", "wait": 300},
+      {"run": "add", "args": {"text": "after shrink\\n"}, "wait": 300},
+      {"run": "off", "wait": 100},
+      {"run": "add", "args": {"text": "after off\\n"}, "wait": 300}],
+    "expect": {"log": ["tail: [one] app.log", "tail: [after shrink] app.log"], "notLog": ["tail: [old line]", "tail: [after off]", "tail: [x]", "tail: [two half]", "tail: []"],
+      "config": {"file_tails": [{"enabled": false}]}}
+  },
+  {
+    "name": "file watcher and file tail on Windows: created, changed with its lines and JSON, new lines",
+    "only": "windows",
+    "config": {"file_watchers": [
+      {"id": "w1", "name": "Texts", "enabled": true, "folderPath": "{tmp}", "filter": "*.txt", "addChangedData": true},
+      {"id": "w2", "name": "Json", "enabled": true, "folderPath": "{tmp}", "filter": "*.json", "asJson": true}],
+      "file_tails": [{"id": "t1", "name": "Log", "enabled": false, "filePath": "{tmp}/app.log"}]},
+    "actions": [
+      {"name": "created", "triggers": [{"type": 502, "watcherId": "w1"}], "subActions": [{"type": 1009}]},
+      {"name": "changed", "triggers": [{"type": 501, "watcherId": "w1"}], "subActions": [{"type": 1009}]},
+      {"name": "json", "triggers": [{"type": 501, "watcherId": "w2"}], "subActions": [{"type": 1009}]},
+      {"name": "line", "triggers": [{"type": 511}], "subActions": [{"type": 1020, "logLevel": 2, "message": "tail: [%line%]"}]},
+      {"name": "write", "subActions": [{"type": 3, "file": "{tmp}/notes.txt", "text": "Hello World! a+b\r\nsecond", "append": false}]},
+      {"name": "data", "subActions": [{"type": 3, "file": "{tmp}/data.json", "text": "{\"a\": {\"b\": 2}}", "append": false}]},
+      {"name": "seed", "subActions": [{"type": 3, "file": "{tmp}/app.log", "text": "old\r\n", "append": false}]},
+      {"name": "on", "subActions": [{"type": 1030, "fileTailId": "t1", "state": 0}]},
+      {"name": "grow", "subActions": [{"type": 3, "file": "{tmp}/app.log", "text": "old\r\nnew line\r\n", "append": false}]}
+    ],
+    "steps": [{"wait": 200}, {"run": "write", "wait": 600}, {"run": "data", "wait": 600},
+      {"run": "seed", "wait": 300}, {"run": "on", "wait": 300}, {"run": "grow", "wait": 600}],
+    "expect": {"runs": [
+      {"action": "created", "args": {"fileName": "notes.txt", "changeType": "Created"}},
+      {"action": "changed", "args": {"fileName": "notes.txt", "lineCount": 2, "line0": "Hello World! a+b", "lineEscaped0": "Hello+World!+a%2Bb", "line1": "second"}},
+      {"action": "json", "args": {"fileName": "data.json", "a.b": 2}}],
+      "log": ["tail: [new line]"], "notLog": ["tail: [old]"]}
+  }
+]

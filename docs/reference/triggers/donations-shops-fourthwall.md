@@ -18,7 +18,9 @@ None.
 
 ### Arguments
 
-Every top-level key of the webhook's JSON body, as Fourthwall sent it.
+Streamer.bot's names: the event's data flattened under `fw.` (`fw.username`, `fw.offer.name`,
+`fw.variants[0].quantity`), with `fw.shopId` and `fw.createdAt`; a donation also has `fw.donationId`.
+The body's own top-level keys are kept too.
 
 ### When
 
@@ -44,7 +46,9 @@ None.
 
 ### Arguments
 
-Every top-level key of the webhook's JSON body, as Fourthwall sent it.
+Streamer.bot's names: the event's data flattened under `fw.` (`fw.username`, `fw.offer.name`,
+`fw.variants[0].quantity`), with `fw.shopId` and `fw.createdAt`; a donation also has `fw.donationId`.
+The body's own top-level keys are kept too.
 
 ### When
 
@@ -70,7 +74,9 @@ None.
 
 ### Arguments
 
-Every top-level key of the webhook's JSON body, as Fourthwall sent it.
+Streamer.bot's names: the event's data flattened under `fw.` (`fw.username`, `fw.offer.name`,
+`fw.variants[0].quantity`), with `fw.shopId` and `fw.createdAt`; a donation also has `fw.donationId`.
+The body's own top-level keys are kept too.
 
 ### When
 
@@ -96,7 +102,9 @@ None.
 
 ### Arguments
 
-Every top-level key of the webhook's JSON body, as Fourthwall sent it.
+Streamer.bot's names: the event's data flattened under `fw.` (`fw.username`, `fw.offer.name`,
+`fw.variants[0].quantity`), with `fw.shopId` and `fw.createdAt`; a donation also has `fw.donationId`.
+The body's own top-level keys are kept too.
 
 ### When
 
@@ -122,7 +130,9 @@ None.
 
 ### Arguments
 
-Every top-level key of the webhook's JSON body, as Fourthwall sent it.
+Streamer.bot's names: the event's data flattened under `fw.` (`fw.username`, `fw.offer.name`,
+`fw.variants[0].quantity`), with `fw.shopId` and `fw.createdAt`; a donation also has `fw.donationId`.
+The body's own top-level keys are kept too.
 
 ### When
 
@@ -148,7 +158,9 @@ None.
 
 ### Arguments
 
-Every top-level key of the webhook's JSON body, as Fourthwall sent it.
+Streamer.bot's names: the event's data flattened under `fw.` (`fw.username`, `fw.offer.name`,
+`fw.variants[0].quantity`), with `fw.shopId` and `fw.createdAt`; a donation also has `fw.donationId`.
+The body's own top-level keys are kept too.
 
 ### When
 
@@ -174,7 +186,9 @@ None.
 
 ### Arguments
 
-Every top-level key of the webhook's JSON body, as Fourthwall sent it.
+Streamer.bot's names: the event's data flattened under `fw.` (`fw.username`, `fw.offer.name`,
+`fw.variants[0].quantity`), with `fw.shopId` and `fw.createdAt`; a donation also has `fw.donationId`.
+The body's own top-level keys are kept too.
 
 ### When
 
@@ -200,7 +214,9 @@ None.
 
 ### Arguments
 
-Every top-level key of the webhook's JSON body, as Fourthwall sent it.
+Streamer.bot's names: the event's data flattened under `fw.` (`fw.username`, `fw.offer.name`,
+`fw.variants[0].quantity`), with `fw.shopId` and `fw.createdAt`; a donation also has `fw.donationId`.
+The body's own top-level keys are kept too.
 
 ### When
 
@@ -226,7 +242,9 @@ None.
 
 ### Arguments
 
-Every top-level key of the webhook's JSON body, as Fourthwall sent it.
+Streamer.bot's names: the event's data flattened under `fw.` (`fw.username`, `fw.offer.name`,
+`fw.variants[0].quantity`), with `fw.shopId` and `fw.createdAt`; a donation also has `fw.donationId`.
+The body's own top-level keys are kept too.
 
 ### When
 
@@ -252,7 +270,9 @@ None.
 
 ### Arguments
 
-Every top-level key of the webhook's JSON body, as Fourthwall sent it.
+Streamer.bot's names: the event's data flattened under `fw.` (`fw.username`, `fw.offer.name`,
+`fw.variants[0].quantity`), with `fw.shopId` and `fw.createdAt`; a donation also has `fw.donationId`.
+The body's own top-level keys are kept too.
 
 ### When
 
@@ -278,7 +298,9 @@ None.
 
 ### Arguments
 
-Every top-level key of the webhook's JSON body, as Fourthwall sent it.
+Streamer.bot's names: the event's data flattened under `fw.` (`fw.username`, `fw.offer.name`,
+`fw.variants[0].quantity`), with `fw.shopId` and `fw.createdAt`; a donation also has `fw.donationId`.
+The body's own top-level keys are kept too.
 
 ### When
 
@@ -304,7 +326,9 @@ None.
 
 ### Arguments
 
-Every top-level key of the webhook's JSON body, as Fourthwall sent it.
+Streamer.bot's names: the event's data flattened under `fw.` (`fw.username`, `fw.offer.name`,
+`fw.variants[0].quantity`), with `fw.shopId` and `fw.createdAt`; a donation also has `fw.donationId`.
+The body's own top-level keys are kept too.
 
 ### When
 
@@ -330,7 +354,9 @@ None.
 
 ### Arguments
 
-Every top-level key of the webhook's JSON body, as Fourthwall sent it.
+Streamer.bot's names: the event's data flattened under `fw.` (`fw.username`, `fw.offer.name`,
+`fw.variants[0].quantity`), with `fw.shopId` and `fw.createdAt`; a donation also has `fw.donationId`.
+The body's own top-level keys are kept too.
 
 ### When
 

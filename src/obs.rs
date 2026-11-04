@@ -157,45 +157,49 @@ pub struct ObsHandle {
     connections: Arc<std::sync::RwLock<HashMap<String, Arc<AtomicBool>>>>,
 }
 
-impl ObsHandle {
-    pub async fn send_request(
-        &self,
-        connection_id: Option<&str>,
-        request_type: &str,
+impl crate::ports::ObsPort for ObsHandle {
+    fn send_request<'a>(
+        &'a self,
+        connection_id: Option<&'a str>,
+        request_type: &'a str,
         request_data: Value,
-    ) -> Result<Value, String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(ObsCmd::Request {
-                connection_id: connection_id.map(String::from),
-                request_type: request_type.to_string(),
-                request_data,
-                resp: resp_tx,
-            })
-            .map_err(|_| "OBS runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "OBS request cancelled".to_string())?
+    ) -> crate::ports::Fut<'a, Result<Value, String>> {
+        Box::pin(async move {
+            let (resp_tx, resp_rx) = oneshot::channel();
+            self.tx
+                .send(ObsCmd::Request {
+                    connection_id: connection_id.map(String::from),
+                    request_type: request_type.to_string(),
+                    request_data,
+                    resp: resp_tx,
+                })
+                .map_err(|_| "OBS runner is down".to_string())?;
+            resp_rx.await.map_err(|_| "OBS request cancelled".to_string())?
+        })
     }
 
-    pub async fn send_batch(
-        &self,
-        connection_id: Option<&str>,
+    fn send_batch<'a>(
+        &'a self,
+        connection_id: Option<&'a str>,
         halt_on_failure: bool,
         requests: Vec<Value>,
-    ) -> Result<Vec<Value>, String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(ObsCmd::BatchRequest {
-                connection_id: connection_id.map(String::from),
-                halt_on_failure,
-                execution_type: 0,
-                requests,
-                resp: resp_tx,
-            })
-            .map_err(|_| "OBS runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "OBS batch request cancelled".to_string())?
+    ) -> crate::ports::Fut<'a, Result<Vec<Value>, String>> {
+        Box::pin(async move {
+            let (resp_tx, resp_rx) = oneshot::channel();
+            self.tx
+                .send(ObsCmd::BatchRequest {
+                    connection_id: connection_id.map(String::from),
+                    halt_on_failure,
+                    execution_type: 0,
+                    requests,
+                    resp: resp_tx,
+                })
+                .map_err(|_| "OBS runner is down".to_string())?;
+            resp_rx.await.map_err(|_| "OBS batch request cancelled".to_string())?
+        })
     }
 
-    pub fn is_connected(&self, connection_id: Option<&str>) -> bool {
+    fn is_connected(&self, connection_id: Option<&str>) -> bool {
         let map = match self.connections.read() {
             Ok(m) => m,
             Err(_) => return false,
@@ -207,19 +211,19 @@ impl ObsHandle {
         }
     }
 
-    pub fn connect(&self, connection_id: Option<&str>) {
+    fn connect(&self, connection_id: Option<&str>) {
         let _ = self.tx.send(ObsCmd::Connect {
             connection_id: connection_id.map(String::from),
         });
     }
 
-    pub fn disconnect(&self, connection_id: Option<&str>) {
+    fn disconnect(&self, connection_id: Option<&str>) {
         let _ = self.tx.send(ObsCmd::Disconnect {
             connection_id: connection_id.map(String::from),
         });
     }
 
-    pub fn reload(&self) {
+    fn reload(&self) {
         let _ = self.tx.send(ObsCmd::Reload);
     }
 }
@@ -699,7 +703,7 @@ fn fire_disconnected(engine: &Rc<Engine>, info: &ObsConnInfo) {
     engine.emit("ObsStudio", "Disconnected", || json!(args));
 }
 
-fn handle_obs_message(
+pub(crate) fn handle_obs_message(
     engine: &Rc<Engine>,
     info: &ObsConnInfo,
     txt: &str,
@@ -1011,7 +1015,7 @@ mod tests {
     #[test]
     fn stream_states_and_scene_variables() {
         use crate::engine::tests::{action, engine, log, run};
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let watch: &[(u32, &str)] = &[
             (T_OBS_STREAMING_STARTED, "started %obs.name% %obs.host%"),
             (T_OBS_STREAMING_STOPPED, "stopped"),
@@ -1179,8 +1183,15 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async move {
-                let (tx, _rx) = watch::channel(Config::default());
-                let engine = Engine::new(Arc::new(tx), |_| {});
+                // Connected and Disconnected fire for this connection.
+                use crate::engine::tests::{action, engine as with_actions};
+                let on = |id: &str, code: u32| {
+                    let mut a = action(id, id, json!([]));
+                    a["triggers"] = json!([{"id": "t", "type": code, "enabled": true}]);
+                    a
+                };
+                let engine =
+                    with_actions(json!({"actions": [on("up", T_OBS_CONNECTED), on("down", T_OBS_DISCONNECTED)]}));
                 let info = ObsConnInfo {
                     id: "mock-obs".into(),
                     name: "Mock OBS".into(),
@@ -1227,6 +1238,9 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 let _ = task.await;
                 assert!(!connected.load(Ordering::Relaxed));
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let ran: Vec<String> = engine.history().iter().map(|r| r.name.clone()).collect();
+                assert_eq!(ran, ["up", "down"], "Connected, then Disconnected");
             })
             .await;
     }

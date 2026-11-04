@@ -2,6 +2,7 @@
 """Opens the real app on the hidden display and pokes at it, so a crash or an empty screen is caught.
 
   dev/smoke.py [path to the Streamerz binary]      (default target/fast/Streamerz)
+  dev/smoke.py --exe path/to/Streamerz.exe          (the Windows build, under Wine: see dev/windows.sh)
 
 It starts a dev instance on DISPLAY=:99 with a scratch config, feeds it chat, visits every page, opens the
 user card and the emote picker, right-clicks around, and checks after each step that the app is alive, that
@@ -10,11 +11,23 @@ Needs xdotool, and the nested display from the project's notes running as :99.
 """
 import base64, json, os, re, socket, struct, subprocess, sys, tempfile, time
 
-BIN = sys.argv[1] if len(sys.argv) > 1 else "target/fast/Streamerz"
+WINE = len(sys.argv) > 2 and sys.argv[1] == "--exe"
+BIN = sys.argv[2] if WINE else sys.argv[1] if len(sys.argv) > 1 else "target/fast/Streamerz"
 PORT = 8095
-OUT = "/tmp/szsmoke"
+OUT = "/tmp/szsmoke-wine" if WINE else "/tmp/szsmoke"
 env = dict(os.environ, DISPLAY=":99", STREAMERZ_DEV="1", STREAMERZ_DEV_PORT=str(PORT))
 env.pop("WAYLAND_DISPLAY", None)
+# Under Wine the app's folders are the prefix's (APPDATA and TEMP), and its pid is Wine's own, so the
+# development folder is found by name. The window manager is Wine's: clicks are moved by where the window is.
+if WINE:
+    env.setdefault("WINEPREFIX", os.path.expanduser("~/.wine"))
+    env.setdefault("WINEDEBUG", "-all")
+    _user = os.path.join(env["WINEPREFIX"], "drive_c", "users", os.environ["USER"])
+    TEMP = os.path.join(_user, "AppData", "Local", "Temp")
+    ROAMING = os.path.join(_user, "AppData", "Roaming")
+else:
+    TEMP = tempfile.gettempdir()
+OFFSET = [0, 0]
 
 
 class Ws:
@@ -48,24 +61,38 @@ class Ws:
         return self.read()
 
 
-def xdo(*a):
+def xdo(*a, found=False):
+    # Places from `find` are already on the screen; the others are the window's at 1,20.
+    if a[0] == "mousemove" and not found:
+        a = ("mousemove", str(int(a[1]) + OFFSET[0]), str(int(a[2]) + OFFSET[1]))
     subprocess.run(["xdotool", *a], env=env, check=True)
+
+
+def dev_dirs(pid):
+    import glob
+    return glob.glob(os.path.join(TEMP, "streamerz-dev-*" if WINE else f"streamerz-dev-{pid}-*"))
 
 
 def main():
     os.makedirs(OUT, exist_ok=True)
-    tmp = tempfile.mkdtemp()
-    os.makedirs(os.path.join(tmp, "streamerz"))
+    tmp = ROAMING if WINE else tempfile.mkdtemp()
+    os.makedirs(os.path.join(tmp, "streamerz"), exist_ok=True)
     cfg = os.path.join(tmp, "streamerz", "streamerz.json")
-    json.dump({"start_hidden": False, "locale": "en_US", "websockets": {"port": PORT}}, open(cfg, "w"))
+    # These checks exercise retained chat; history is opt-in in a fresh installation.
+    json.dump({"start_hidden": False, "locale": "en_US", "websockets": {"port": PORT},
+               "window": {"chat": {"saveHistory": True}}}, open(cfg, "w"))
     env["XDG_CONFIG_HOME"] = tmp
-    app = subprocess.Popen([BIN], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if WINE:
+        import shutil
+        for d in dev_dirs(0):
+            shutil.rmtree(d, ignore_errors=True)
+    app = subprocess.Popen(["wine", BIN] if WINE else [BIN], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     failures = []
 
     def check(step):
         time.sleep(0.5)
         import glob
-        logs = glob.glob(os.path.join(tempfile.gettempdir(), f"streamerz-dev-{app.pid}-*", "logs", "crash*"))
+        logs = [f for d in dev_dirs(app.pid) for f in glob.glob(os.path.join(d, "logs", "crash*"))]
         crashed = [os.path.basename(f) for f in logs]
         if app.poll() is not None or crashed:
             failures.append(f"{step}: the app is gone (exit {app.poll()}) {crashed[:1]}")
@@ -83,6 +110,13 @@ def main():
                 time.sleep(0.5)
         if not ws:
             sys.exit("can't reach the app")
+        if WINE:
+            # The places below are measured with the window at 1,20 (no window manager).
+            geo = subprocess.run(["xdotool", "search", "--name", "^Streamerz", "getwindowgeometry"], env=env,
+                                 capture_output=True, text=True).stdout
+            at = re.search(r"Position: (\d+),(\d+)", geo)
+            if at:
+                OFFSET[:] = [int(at.group(1)) - 1, int(at.group(2)) - 20]
         for p in ("twitch", "kick", "youtube", "tiktok"):
             ws.ask({"request": "SimulateChatConnection", "id": "conn-" + p, "platform": p, "connected": True})
             ws.ask({"request": "InjectChat", "id": p, "platform": p, "user": "Ana", "text": f"hello from {p}"})
@@ -111,7 +145,7 @@ def main():
         found = ws.ask({"request": "StreamerzUi", "id": "find-reconnect", "do": "find Reconnect"})["result"]
         coords = re.search(r" at (\d+),(\d+)", found)
         if coords:
-            xdo("mousemove", coords.group(1), coords.group(2))
+            xdo("mousemove", coords.group(1), coords.group(2), found=True)
             xdo("click", "1")
             check("reconnecting chat")
         else:
@@ -150,10 +184,53 @@ def main():
         if "Delete them" not in json.dumps(ws.ask({"request": "StreamerzUi", "id": "f", "do": "find Delete them"})):
             failures.append("the question about the old channel's people didn't open")
         ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/room.png"})
-        xdo("key", "Escape")
+        # This question has three explicit choices, so answer it before navigating away.
+        keep = ws.ask({"request": "StreamerzUi", "id": "keep", "do": "find Keep them apart"})["result"]
+        where = re.search(r" at (\d+),(\d+)", keep)
+        if where:
+            xdo("mousemove", *where.groups(), found=True)
+            xdo("click", "1")
+        else:
+            failures.append("the keep-people choice is missing")
         check("room question")
+        # A built-in template makes a group with settings: its settings dialog opens, shows them and closes.
+        if ws.ask({"request": "StreamerzTemplateAdd", "id": "tpl", "name": "Subathon timer"}).get("status") != "ok":
+            failures.append("the subathon template was not added")
+        ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Actions"})
+        time.sleep(1)
+        # The group's name is the first line of the tree and its settings button the first of the third row
+        # of the button grid; places are the window's own, so the window's corner (from the heading) is added.
+        heading = ws.ask({"request": "StreamerzUi", "id": "f", "do": "find Actions"})["result"]
+        # Besides the page's own label, "Actions" is the list's heading, at the left.
+        corner = next(((int(x), int(y)) for x, y in re.findall(r'"Actions" at (\d+),(\d+)', heading) if int(x) < 300), None)
+        if not corner:
+            failures.append(f"group settings: the Actions page is not shown ({heading})")
+        for rel in ((254, 52), (237, 631)) if corner else ():
+            xdo("mousemove", str(corner[0] - 214 + rel[0]), str(corner[1] - 21 + rel[1]), found=True)
+            xdo("click", "1")
+            time.sleep(1)
+        if corner:
+            ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/group_settings.png"})
+            if "Group settings: Subathon" not in json.dumps(ws.ask({"request": "StreamerzUi", "id": "w", "do": "windows"})):
+                failures.append("group settings: the dialog did not open")
+            xdo("key", "Escape")
+            check("group settings")
+        # A switched off trigger and sub-action are dimmed with a power-off icon, not tagged with text.
+        ws.ask({"request": "StreamerzSave", "what": "action", "item": {
+            "name": "Off demo", "enabled": True,
+            "triggers": [{"type": 16001, "keyCode": 68, "modifierMask": 6, "enabled": False}, {"type": 16001, "keyCode": 69, "modifierMask": 0, "enabled": True}],
+            "subActions": [{"type": 99001, "enabled": False}]}})
+        ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Actions"})
+        time.sleep(1)
+        if corner:
+            # The action's name is the line after the Subathon group and its three actions.
+            xdo("mousemove", str(corner[0] - 214 + 250), str(corner[1] - 21 + 124), found=True)
+            xdo("click", "1")
+            time.sleep(1)
+        ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/actions_off.png"})
+        check("disabled trigger and sub-action")
         pages = ["Chat", "Accounts", "Community", "Polls", "Actions", "Commands", "Timers", "Queues", "Groups", "Plugins",
-                 "Servers", "Stream Apps", "Donations", "Globals", "History", "Settings", "Log", "Crashes", "Backups"]
+                 "Servers", "Stream Apps", "Integrations", "Donations", "Globals", "History", "Settings", "MCP", "Log", "Crashes", "Backups"]
         for page in pages:
             ws.ask({"request": "StreamerzUi", "id": "p", "do": f"page {page}"})
             r = ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/{page.replace(' ', '_')}.png"})
@@ -165,6 +242,17 @@ def main():
             time.sleep(0.4)
             xdo("key", "Escape")
             check(f"page {page}")
+        # The Spotify request form keeps the main action, rules and replies in separate tabs.
+        ws.ask({"request": "StreamerzUi", "id": "f", "do": "form 99802"})
+        time.sleep(0.4)
+        if "Cancel" not in ws.ask({"request": "StreamerzUi", "id": "f", "do": "find Cancel"}).get("result", ""):
+            failures.append("the long Spotify form has no visible Cancel button")
+        tree = ws.ask({"request": "StreamerzUi", "id": "t", "do": "tree"}).get("result", "")
+        for label in ('"Action"', '"Rules"', '"Replies"', '"Skip own song"'):
+            if label not in tree:
+                failures.append(f"Spotify form: missing {label}")
+        ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/spotify_form.png"})
+        xdo("key", "Escape")
         # The Accounts page fills in (it's in a scroll: it once never did).
         ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Accounts"})
         if "Bot (optional)" not in json.dumps(ws.ask({"request": "StreamerzUi", "id": "f", "do": "find optional"})):
@@ -283,15 +371,19 @@ def main():
         if not 100 < kept() <= 430:
             failures.append(f"the chat filled with {kept()} lines after being shown again")
     finally:
-        app.terminate()
+        if WINE:
+            # Windows ends a session with WM_ENDSESSION; Wine's wineboot -e sends it.
+            subprocess.run(["wineboot", "-e"], env=env)
+        else:
+            app.terminate()
     # Asked to end (as a logout does), it saves and quits: the next start mustn't see a crash.
     try:
         app.wait(10)
     except subprocess.TimeoutExpired:
-        failures.append("it didn't quit when asked (SIGTERM)")
-    import glob
-    if glob.glob(os.path.join(tempfile.gettempdir(), f"streamerz-dev-{app.pid}-*")):
-        failures.append("SIGTERM left the development settings directory behind")
+        failures.append("it didn't quit when asked (" + ("the session ending" if WINE else "SIGTERM") + ")")
+        app.kill()
+    if dev_dirs(app.pid):
+        failures.append("quitting left the development settings directory behind")
     print("\n".join(failures) or f"ok: every page and the card, screenshots in {OUT}")
     if failures:
         print(f"the app's files (logs/crash-*.txt) are in {tmp}")

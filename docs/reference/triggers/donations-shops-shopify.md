@@ -18,7 +18,9 @@ None.
 
 ### Arguments
 
-Every top-level key of the webhook's JSON body, as Shopify sent it (the order's fields, such as `id`).
+Streamer.bot's names: the order flattened under `shopify.` (`shopify.total_price`,
+`shopify.line_items[0].title`...) and `shopify.event` (the topic). The body's own top-level keys are kept
+too.
 
 ### When
 
@@ -44,7 +46,9 @@ None.
 
 ### Arguments
 
-Every top-level key of the webhook's JSON body, as Shopify sent it (the order's fields, such as `id`).
+Streamer.bot's names: the order flattened under `shopify.` (`shopify.total_price`,
+`shopify.line_items[0].title`...) and `shopify.event` (the topic). The body's own top-level keys are kept
+too.
 
 ### When
 

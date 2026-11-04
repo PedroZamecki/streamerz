@@ -1,0 +1,122 @@
+[
+  {
+    "name": "kick: random users with Memory Saver and no chat history",
+    "config": {"memory_saver": true, "window": {"chat": {"saveHistory": false}}},
+    "actions": [{"name": "pick", "subActions": [{"type": 35012, "count": 3}]}],
+    "steps": [
+      {"event": {"platform": "kick", "type": "App\\Events\\ChatMessageEvent", "channel": "streamer", "data": {"id": "k1", "content": "hello", "type": "message", "sender": {"id": 5, "username": "Ana", "slug": "ana", "identity": {"color": "#FF0000", "badges": []}}}}},
+      {"run": "pick"}
+    ],
+    "expect": {"runs": [{"action": "pick", "after": {"randomUsersCount": 1, "randomUser0": "Ana", "randomUserType0": "kick"}}]}
+  },
+  {
+    "name": "kick: chat, reply, broadcaster info and random users",
+    "config": {"kick": {"channel": "Streamer"}, "window": {"chat": {"saveHistory": false}}},
+    "fakes": {"kick": {"GET /channels?slug=streamer": {"data": [{"broadcaster_user_id": 1001}]}}},
+    "actions": [
+      {"name": "talk", "subActions": [{"type": 35001, "text": "hi %user%"}, {"type": 35002, "text": "re", "replyId": "%msgId%"}, {"type": 35010}, {"type": 35012, "count": 3}]}
+    ],
+    "steps": [
+      {"event": {"platform": "kick", "type": "App\\Events\\ChatMessageEvent", "channel": "streamer", "data": {"id": "k1", "content": "hello", "type": "message", "sender": {"id": 5, "username": "Ana", "slug": "ana", "identity": {"color": "#FF0000", "badges": []}}}}},
+      {"run": "talk", "args": {"user": "ana", "msgId": "k1"}}
+    ],
+    "expect": {"chat": [{"platform": "kick", "text": "hi ana"}, {"platform": "kick", "text": "re"}], "runs": [{"action": "talk", "after": {"broadcastUser": "Streamer", "broadcastUserType": "kick", "broadcastUserId": "1001", "randomUsersCount": 1, "randomUser0": "Ana", "randomUserType0": "kick"}}]}
+  },
+  {
+    "name": "kick: target info, title and category",
+    "fakes": {"kick": {"GET /channels?slug=pal": {"data": [{"slug": "pal", "broadcaster_user_id": 77, "channel_description": "d", "stream_title": "Live!", "category": {"id": 15, "name": "Chess"}, "stream": {"custom_tags": ["a", "b"]}}]}, "GET https://api.kick.com/public/v2/categories?name=just+chatting": {"data": [{"id": 1, "name": "Just Chatting", "thumbnail": "t"}]}}},
+    "actions": [
+      {"name": "chan", "subActions": [{"type": 35011, "userLogin": "@Pal"}, {"type": 35030, "title": "New %x%"}, {"type": 35031, "categoryName": "just chatting"}]}
+    ],
+    "steps": [
+      {"run": "chan", "args": {"x": "title"}}
+    ],
+    "expect": {"calls": [{"platform": "kick", "call": "GET /channels?slug=pal"}, {"platform": "kick", "call": "title", "title": "New title"}, {"platform": "kick", "call": "GET https://api.kick.com/public/v2/categories?name=just+chatting"}, {"platform": "kick", "call": "category", "id": 1}], "runs": [{"action": "chan", "after": {"addTargetResult": true, "targetUserId": 77, "game": "Chess", "tagCount": 2, "tagsDelimited": "a, b", "titleSuccess": true, "category.success": true, "category.name": "Just Chatting"}}]}
+  },
+  {
+    "name": "kick: moderation (ban, unban, timeout, untimeout)",
+    "fakes": {"kick": {}},
+    "actions": [
+      {"name": "mod", "subActions": [{"type": 35040, "userLogin": "troll", "reason": "spam"}, {"type": 35041, "userLogin": "troll"}, {"type": 35042, "userLogin": "troll", "duration": 10, "reason": "calm"}, {"type": 35043, "userLogin": "troll"}]}
+    ],
+    "steps": [
+      {"run": "mod"}
+    ],
+    "expect": {"calls": [{"platform": "kick", "call": "ban", "login": "troll", "reason": "spam"}, {"platform": "kick", "call": "unban", "login": "troll"}, {"platform": "kick", "call": "timeout", "login": "troll", "duration": 10, "reason": "calm"}, {"platform": "kick", "call": "untimeout", "login": "troll"}], "runs": [{"action": "mod", "after": {"banResult": true, "unbanResult": true, "timeoutResult": true, "unTimedOutResult": true, "timedOutUserType": "kick"}}]}
+  },
+  {
+    "name": "kick: a failed moderation call sets its result false",
+    "fakes": {"kick": {"ban": {"error": "Kick: 403 forbidden"}}},
+    "actions": [
+      {"name": "mod", "subActions": [{"type": 35040, "userLogin": "troll"}]}
+    ],
+    "steps": [
+      {"run": "mod"}
+    ],
+    "expect": {"log": ["Kick: 403 forbidden"], "runs": [{"action": "mod", "after": {"banResult": false}}]}
+  },
+  {
+    "name": "kick: channel rewards",
+    "fakes": {"kick": {"GET /channels/rewards": {"data": [{"id": "kr1", "title": "Hydrate", "description": "drink", "cost": 100, "is_enabled": true, "is_paused": false, "background_color": "#00FF00"}]}}},
+    "actions": [
+      {"name": "rewards", "subActions": [{"type": 35101, "rewardId": "kr1", "state": 1}, {"type": 35102, "rewardId": "kr1", "state": 0}, {"type": 35103, "rewardId": "kr1", "cost": 50, "operator": 1}, {"type": 35105, "rewardId": "kr1", "title": "Drink"}, {"type": 35106, "rewardId": "kr1", "description": "glug"}, {"type": 35107, "rewardId": "kr1", "cost": 7, "title": "T"}, {"type": 35113, "rewardId": "kr1", "backgroundColor": "#FF112233"}, {"type": 35108, "rewardId": "kr1"}]}
+    ],
+    "steps": [
+      {"run": "rewards"}
+    ],
+    "expect": {"calls": [{"call": "PATCH /channels/rewards/kr1", "body": {"is_enabled": false}}, {"call": "PATCH /channels/rewards/kr1", "body": {"is_paused": true}}, {"call": "PATCH /channels/rewards/kr1", "body": {"cost": 150}}, {"call": "PATCH /channels/rewards/kr1", "body": {"title": "Drink"}}, {"call": "PATCH /channels/rewards/kr1", "body": {"description": "glug"}}, {"call": "PATCH /channels/rewards/kr1", "body": {"cost": 7, "title": "T"}}, {"call": "PATCH /channels/rewards/kr1", "body": {"background_color": "#112233"}}], "runs": [{"action": "rewards", "after": {"rewardTitle": "Hydrate", "rewardCost": 100, "rewardEnabled": true, "rewardIsOurs": true}}]}
+  },
+  {
+    "name": "kick: user groups (add, in group, remove)",
+    "config": {"groups": [{"id": "g1", "name": "Friends", "userIds": []}]},
+    "fakes": {"kick": {"GET /channels?slug=pal": {"data": [{"broadcaster_user_id": 77}]}}},
+    "actions": [
+      {"name": "add", "subActions": [{"type": 35020, "userLogin": "pal", "groupName": "Friends"}]},
+      {"name": "check", "subActions": [{"type": 35022, "userLogin": "pal", "groupName": "Friends"}, {"type": 1020, "logLevel": 2, "message": "in=%inGroup% id=%foundUserId%"}]},
+      {"name": "remove", "subActions": [{"type": 35021, "userLogin": "pal", "groupName": "Friends"}]}
+    ],
+    "steps": [
+      {"run": "add"},
+      {"run": "check"},
+      {"run": "remove"},
+      {"run": "check"}
+    ],
+    "expect": {"log": ["in=True id=77", "in=False"]}
+  },
+  {
+    "name": "kick: events fire their triggers with their arguments",
+    "actions": [
+      {"name": "on 35008", "triggers": [{"type": 35008}], "subActions": [{"type": 1009}]},
+      {"name": "on 35010", "triggers": [{"type": 35010}], "subActions": [{"type": 1009}]},
+      {"name": "on 35011", "triggers": [{"type": 35011}], "subActions": [{"type": 1009}]},
+      {"name": "on 35012", "triggers": [{"type": 35012}], "subActions": [{"type": 1009}]},
+      {"name": "on 35020", "triggers": [{"type": 35020}], "subActions": [{"type": 1009}]},
+      {"name": "on 35014", "triggers": [{"type": 35014}], "subActions": [{"type": 1009}]},
+      {"name": "on 35015", "triggers": [{"type": 35015}], "subActions": [{"type": 1009}]},
+      {"name": "on 35016", "triggers": [{"type": 35016}], "subActions": [{"type": 1009}]},
+      {"name": "on 35017", "triggers": [{"type": 35017}], "subActions": [{"type": 1009}]},
+      {"name": "on 35018", "triggers": [{"type": 35018}], "subActions": [{"type": 1009}]},
+      {"name": "on 35019", "triggers": [{"type": 35019}], "subActions": [{"type": 1009}]},
+      {"name": "on 35025", "triggers": [{"type": 35025}], "subActions": [{"type": 1009}]},
+      {"name": "on 35024", "triggers": [{"type": 35024}], "subActions": [{"type": 1009}]},
+      {"name": "on 35013", "triggers": [{"type": 35013}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "kick", "type": "App\\Events\\ChatMessageEvent", "channel": "streamer", "data": {"id": "k2", "content": "first", "type": "message", "sender": {"id": 6, "username": "Bo", "slug": "bo", "identity": {"color": "#FF0000", "badges": [{"type": "subscriber"}]}}}}},
+      {"event": {"platform": "kick", "type": "App\\Events\\FollowersUpdated", "channel": "streamer", "data": {"username": "Cy", "user_id": 8, "followed": true, "followersCount": 10}}},
+      {"event": {"platform": "kick", "type": "App\\Events\\StreamerIsLive", "channel": "streamer", "data": {"livestream": {"session_title": "Live!", "created_at": "2026-01-01T00:00:00Z", "categories": [{"id": 15, "name": "Chess"}]}}}},
+      {"event": {"platform": "kick", "type": "App\\Events\\LivestreamUpdated", "channel": "streamer", "data": {"livestream": {"session_title": "New!"}}}},
+      {"event": {"platform": "kick", "type": "App\\Events\\ChannelSubscriptionEvent", "channel": "streamer", "data": {"username": "Dee", "user_id": 9, "months": 1}}},
+      {"event": {"platform": "kick", "type": "App\\Events\\ChannelSubscriptionEvent", "channel": "streamer", "data": {"username": "Eve", "user_id": 10, "months": 6}}},
+      {"event": {"platform": "kick", "type": "App\\Events\\GiftedSubscriptionsEvent", "channel": "streamer", "data": {"gifter_username": "Gg", "gifter_id": 11, "gifted_usernames": ["Rr"], "gifter_total": 3}}},
+      {"event": {"platform": "kick", "type": "App\\Events\\GiftedSubscriptionsEvent", "channel": "streamer", "data": {"gifter_username": "Gg", "gifter_id": 11, "gifted_usernames": ["R1", "R2"], "gifter_total": 5}}},
+      {"event": {"platform": "kick", "type": "App\\Events\\UserBannedEvent", "channel": "streamer", "data": {"user": {"id": 12, "username": "Troll", "slug": "troll"}, "banned_by": {"id": 3, "slug": "mod", "username": "Mod"}, "permanent": false, "duration": 5, "reason": "r"}}},
+      {"event": {"platform": "kick", "type": "App\\Events\\UserBannedEvent", "channel": "streamer", "data": {"user": {"id": 12, "username": "Troll", "slug": "troll"}, "banned_by": {"id": 3, "slug": "mod", "username": "Mod"}, "permanent": true}}},
+      {"event": {"platform": "kick", "type": "KicksGifted", "channel": "streamer", "data": {"sender": {"id": 13, "username": "Rich"}, "gift": {"amount": 100, "name": "Rage", "type": "BASIC", "tier": "BASIC"}, "message": "gg"}}},
+      {"event": {"platform": "kick", "type": "RewardRedeemedEvent", "channel": "streamer", "data": {"username": "Ana", "user_id": 5, "reward_id": "kr1", "reward_title": "Hydrate", "user_input": "now"}}},
+      {"event": {"platform": "kick", "type": "App\\Events\\StopStreamBroadcast", "channel": "streamer", "data": {}}},
+      {"event": {"platform": "kick", "type": "App\\Events\\FollowersUpdated", "channel": "streamer", "data": {"username": "Cy", "followed": false}}}
+    ],
+    "expect": {"runs": [{"action": "on 35008", "args": {"user": "Bo", "firstMessage": true}}, {"action": "on 35010", "args": {"user": "Bo", "message": "first", "isSubscribed": true, "userType": "kick", "messageId": "k2"}}, {"action": "on 35011", "args": {"user": "Cy", "followersCount": 10}}, {"action": "on 35012", "args": {"channel": "streamer"}}, {"action": "on 35020", "args": {"statusUpdated": true, "oldStatus": "Live!"}}, {"action": "on 35014", "args": {"user": "Dee", "months": 1}}, {"action": "on 35015", "args": {"user": "Eve", "monthsSubscribed": 6}}, {"action": "on 35016", "args": {"user": "Gg", "count": 1, "recipient.userName": "Rr"}}, {"action": "on 35017", "args": {"count": 2, "recipient.1.userName": "R2"}}, {"action": "on 35018", "args": {"user": "Troll", "duration": 300, "bannedBy": "Mod"}}, {"action": "on 35019", "args": {"user": "Troll", "createdByUsername": "mod"}}, {"action": "on 35025", "args": {"user": "Rich", "amount": 100, "kicks.name": "Rage", "message": "gg"}}, {"action": "on 35024", "args": {"reward.title": "Hydrate", "rawInput": "now", "user": "Ana"}}, {"action": "on 35013", "args": {"channel": "streamer"}}]}
+  }
+]

@@ -111,11 +111,23 @@ jobs:
         run: cargo build --release --locked --bin Streamerz
         env:
           STREAMERZ_VERSION: ${{ needs.version.outputs.tag || 'dev' }}
+      # Every unit test on real Windows (the Windows-only ones too: DPAPI, the Run key, Toolhelp, the file
+      # watcher, Windows line endings), on the PR runner.
+      - if: github.event_name == 'pull_request'
+        name: Run the unit tests on Windows
+        run: cargo test --release --locked --bin Streamerz
+      # Every scenario (tests/scenarios) on the exe just built, on real Windows.
+      - if: github.event_name == 'pull_request' && needs.version.outputs.reuse == ''
+        name: Run the scenarios on the Windows exe
+        run: ./target/release/Streamerz.exe --scenario tests/scenarios
       - if: needs.version.outputs.reuse == ''
         name: Stage Windows binary
         run: |
           mkdir -p dist
           cp target/release/Streamerz.exe dist/Streamerz-windows-x86_64.exe
+      - if: needs.version.outputs.reuse == ''
+        name: Verify the Windows executable icon
+        run: python dev/check-windows-icon.py dist/Streamerz-windows-x86_64.exe
       - uses: actions/upload-artifact@v4
         with:
           name: streamerz-windows-${{ needs.version.outputs.tag || 'dev' }}-${{ needs.version.outputs.tree }}

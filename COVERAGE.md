@@ -189,7 +189,7 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] channel-goal: Goal Begin
 - [x] channel-goal: Goal End
 - [x] channel-goal: Goal Progress
-- [ ] channel-power-ups: Custom Power Up Redemption (not in EventSub; the other power-ups come from `channel.bits.use`)
+- [x] channel-power-ups: Custom Power Up Redemption (`channel.bits.use` with type `custom_power_up`)
 - [x] channel-reward: Automatic Reward Redemption
 - [x] channel-reward: Reward Redemption Updated
 - [x] channel-reward: Reward Redemption
@@ -219,7 +219,7 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] chat/mode: Unique Mode Off
 - [x] chat/mode: Unique Mode On
 - [ ] chat: Modiversary (an IRC notice only; Streamerz reads chat through EventSub)
-- [ ] chat: Watch Streak (an IRC notice only; Streamerz reads chat through EventSub)
+- [x] chat: Watch Streak (EventSub `channel.chat.notification`, notice `watch_streak`)
 - [x] chat: Whispers
 - [ ] community-goal: Community Goal Contribution (PubSub only, which Twitch shut down; no EventSub or Helix)
 - [ ] community-goal: Community Goal Ended (PubSub only, which Twitch shut down; no EventSub or Helix)
@@ -730,16 +730,16 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 
 **Sub-actions: Streamer.bot Decks** (10)
 
-- [x] Item Set State
-- [x] Item Toggle State
-- [x] Item Set Title
-- [x] Item Set Background
-- [x] Item Set Icon
-- [x] Item Set Value
-- [x] Deck Notify
-- [x] Page Set
-- [x] Page Next
-- [x] Page Previous
+- [x] ~~Item Set State~~ (needs Streamer.bot's website integration, not in scope: kept on import, skipped with a log line)
+- [x] ~~Item Toggle State~~ (needs Streamer.bot's website integration, not in scope: kept on import, skipped with a log line)
+- [x] ~~Item Set Title~~ (needs Streamer.bot's website integration, not in scope: kept on import, skipped with a log line)
+- [x] ~~Item Set Background~~ (needs Streamer.bot's website integration, not in scope: kept on import, skipped with a log line)
+- [x] ~~Item Set Icon~~ (needs Streamer.bot's website integration, not in scope: kept on import, skipped with a log line)
+- [x] ~~Item Set Value~~ (needs Streamer.bot's website integration, not in scope: kept on import, skipped with a log line)
+- [x] ~~Deck Notify~~ (needs Streamer.bot's website integration, not in scope: kept on import, skipped with a log line)
+- [x] ~~Page Set~~ (needs Streamer.bot's website integration, not in scope: kept on import, skipped with a log line)
+- [x] ~~Page Next~~ (needs Streamer.bot's website integration, not in scope: kept on import, skipped with a log line)
+- [x] ~~Page Previous~~ (needs Streamer.bot's website integration, not in scope: kept on import, skipped with a log line)
 
 **Triggers: Stream Deck** (4)
 

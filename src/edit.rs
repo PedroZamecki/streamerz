@@ -234,6 +234,29 @@ fn referenced(actions: &[Action]) -> Vec<String> {
 /// Export these actions (and the commands, timers, queues, WebSocket clients and servers their
 /// triggers use) as Streamer.bot does: meta, then data, then versions.
 pub fn export(c: &Config, ids: &[String], meta: [&str; 4]) -> Obj {
+    export_groups(c, ids, &[], meta)
+}
+
+/// Export a whole group: its actions, commands, timers, settings, files and icon.
+pub fn export_group(c: &Config, group: &str, meta: [&str; 4]) -> Obj {
+    export_with(c, &[], &[group.to_string()], meta)
+}
+
+/// Export these actions and these whole groups (each with all its actions, settings, files and icon,
+/// even a group that holds only files, such as an overlay).
+pub fn export_with(c: &Config, ids: &[String], groups: &[String], meta: [&str; 4]) -> Obj {
+    let mut all = ids.to_vec();
+    for a in &c.actions.actions {
+        if groups.contains(&a.group) && !all.contains(&a.id) {
+            all.push(a.id.clone());
+        }
+    }
+    export_groups(c, &all, groups, meta)
+}
+
+/// Like [`export`], and also these groups (besides those of the actions) with what they hold: their
+/// settings, files, icon and the commands and timers they list.
+pub fn export_groups(c: &Config, ids: &[String], extra: &[String], meta: [&str; 4]) -> Obj {
     let actions: Vec<Action> = c
         .actions
         .actions
@@ -241,7 +264,29 @@ pub fn export(c: &Config, ids: &[String], meta: [&str; 4]) -> Obj {
         .filter(|a| ids.contains(&a.id))
         .cloned()
         .collect();
-    let refs = referenced(&actions);
+    let mut groups: Vec<String> = actions
+        .iter()
+        .map(|a| a.group.clone())
+        .filter(|g| !g.is_empty())
+        .collect();
+    groups.extend(extra.iter().cloned());
+    groups.sort();
+    groups.dedup();
+    let group_variables: Obj = groups
+        .iter()
+        .filter_map(|g| c.action_group_variables.get(g).map(|v| (g.clone(), v.clone())))
+        .collect();
+    let group_icons: Obj = groups
+        .iter()
+        .filter_map(|g| c.action_group_icons.get(g).map(|v| (g.clone(), v.clone())))
+        .collect();
+    let group_meta = crate::groups::export_meta(c, &groups);
+    let mut refs = referenced(&actions);
+    for g in &groups {
+        let (commands, timers) = crate::groups::members(c, g);
+        refs.extend(commands);
+        refs.extend(timers);
+    }
     let pick = |list: &[Obj]| -> Vec<Obj> {
         list.iter()
             .filter(|x| refs.iter().any(|r| r == s(x, "id")))
@@ -262,6 +307,7 @@ pub fn export(c: &Config, ids: &[String], meta: [&str; 4]) -> Obj {
         "data": {"actions": actions_json, "queues": pick(&c.actions.queues), "commands": pick(&c.commands),
             "websocketServers": pick(&c.websockets.servers), "websocketClients": pick(&c.websockets.connections),
             "timers": pick(&c.timers)},
+        "streamerz": {"groupVariables": group_variables, "groupIcons": group_icons, "groups": group_meta},
         "version": 23, "exportedFrom": crate::servers::API_VERSION, "minimumVersion": "1.0.0-alpha.1",
     });
     match v {
@@ -308,8 +354,20 @@ pub fn summary(x: &Obj) -> String {
         .and_then(|m| m.get("name"))
         .and_then(Value::as_str)
         .unwrap_or("");
+    let groups = x
+        .get("streamerz")
+        .and_then(|v| v.get("groups"))
+        .and_then(Value::as_object);
+    let files: usize = groups
+        .into_iter()
+        .flat_map(|g| g.values())
+        .filter_map(|m| m.get("files").and_then(Value::as_array))
+        .map(Vec::len)
+        .sum();
     format!(
-        "{name}\n{} actions, {} commands, {} queues, {} timers, {} WebSocket clients, {} WebSocket servers",
+        "{name}\n{} groups, {} files, {} actions, {} commands, {} queues, {} timers, {} WebSocket clients, {} WebSocket servers",
+        groups.map_or(0, |g| g.len()),
+        files,
         n("actions"),
         n("commands"),
         n("queues"),
@@ -345,6 +403,14 @@ pub fn import(c: &mut Config, x: &Obj) -> Result<Vec<&'static str>, String> {
     }
     let mut unsupported = Vec::new();
     let mut actions = Vec::new();
+    // Check the groups before changing anything, so a bad import leaves the configuration alone.
+    let imported_groups = x
+        .get("streamerz")
+        .and_then(|v| v.get("groups"))
+        .and_then(Value::as_object);
+    if let Some(g) = imported_groups {
+        crate::groups::import_meta(&mut Config::default(), g)?;
+    }
     for a in raw {
         let mut a: Action = serde_json::from_value(Value::Object(a)).map_err(|e| format!("bad action: {e}"))?;
         if a.queue.as_deref().is_none_or(str::is_empty) {
@@ -367,6 +433,10 @@ pub fn import(c: &mut Config, x: &Obj) -> Result<Vec<&'static str>, String> {
             into.push(n);
         }
     }
+    if let Some(g) = imported_groups {
+        crate::groups::import_meta(c, g)?;
+    }
+    let started = actions.clone();
     for a in actions {
         if !a.group.is_empty() && !c.actions.groups.iter().any(|g| g.as_str() == Some(&a.group)) {
             c.actions.groups.push(a.group.clone().into());
@@ -374,11 +444,43 @@ pub fn import(c: &mut Config, x: &Obj) -> Result<Vec<&'static str>, String> {
         c.actions.actions.retain(|o| o.id != a.id && o.name != a.name);
         c.actions.actions.push(a);
     }
+    if let Some(groups) = x
+        .get("streamerz")
+        .and_then(|v| v.get("groupVariables"))
+        .and_then(Value::as_object)
+    {
+        for (group, values) in groups {
+            if let Some(values) = values.as_object() {
+                let entry = c
+                    .action_group_variables
+                    .entry(group.clone())
+                    .or_insert_with(|| json!({}));
+                if !entry.is_object() {
+                    *entry = json!({});
+                }
+                if let Some(existing) = entry.as_object_mut() {
+                    existing.extend(values.clone());
+                }
+            }
+        }
+    }
+    if let Some(icons) = x
+        .get("streamerz")
+        .and_then(|v| v.get("groupIcons"))
+        .and_then(Value::as_object)
+    {
+        for (group, icon) in icons {
+            if crate::group_icons::decode(icon).is_some() {
+                c.action_group_icons.insert(group.clone(), icon.clone());
+            }
+        }
+    }
     merge(&mut c.actions.queues, list("queues"));
     merge(&mut c.commands, list("commands"));
     merge(&mut c.timers, list("timers"));
     merge(&mut c.websockets.connections, list("websocketClients"));
     merge(&mut c.websockets.servers, list("websocketServers"));
+    crate::templates::clock::start_for(c, &started, crate::templates::clock::now_ms());
     Ok(unsupported)
 }
 
@@ -493,10 +595,21 @@ mod tests {
             .push(json!({"id": "c1", "name": "hi"}).as_object().unwrap().clone());
         c.commands
             .push(json!({"id": "c2", "name": "other"}).as_object().unwrap().clone());
+        c.action_group_variables
+            .insert("Greetings".into(), json!({"shared": 1, "replace": "new"}));
+        c.action_group_variables
+            .insert("Other".into(), json!({"private": true}));
+        let icon = crate::group_icons::encode(b"\x89PNG\r\n\x1a\ntest").unwrap();
+        c.action_group_icons.insert("Greetings".into(), icon.clone());
         let x = export(&c, std::slice::from_ref(&id), ["Hello", "me", "1.0.0", ""]);
+        assert_eq!(x["streamerz"]["groupIcons"]["Greetings"], icon);
+        assert_eq!(
+            x["streamerz"]["groupVariables"],
+            json!({"Greetings": {"shared": 1, "replace": "new"}})
+        );
         assert_eq!(
             x.keys().collect::<Vec<_>>(),
-            ["meta", "data", "version", "exportedFrom", "minimumVersion"]
+            ["meta", "data", "streamerz", "version", "exportedFrom", "minimumVersion"]
         );
         assert_eq!(x["data"]["actions"][0]["queue"], Value::Null);
         assert_eq!(x["data"]["commands"].as_array().unwrap().len(), 1);
@@ -504,14 +617,21 @@ mod tests {
         let x: Obj = crate::model::read_export(&crate::model::write_export(&x)).unwrap();
         let mut d = Config::default();
         d.actions.actions.push(new_action("hi", ""));
+        d.action_group_variables
+            .insert("Greetings".into(), json!({"keep": true, "replace": "old"}));
         let unsupported = import(&mut d, &x).unwrap();
         assert_eq!(unsupported, ["ExecuteCode"]);
+        assert_eq!(
+            d.action_group_variables["Greetings"],
+            json!({"keep": true, "shared": 1, "replace": "new"})
+        );
         assert_eq!(d.actions.actions.len(), 1);
         assert_eq!(
             (d.actions.actions[0].id.as_str(), d.actions.actions[0].queue.as_deref()),
             (id.as_str(), Some(DEFAULT_QUEUE))
         );
         assert_eq!(d.actions.groups, [json!("Greetings")]);
+        assert_eq!(d.action_group_icons["Greetings"], icon);
         assert_eq!(d.commands.len(), 1);
         assert!(summary(&x).contains("1 actions, 1 commands"));
         // Importing again keeps actions that aren't in the import.

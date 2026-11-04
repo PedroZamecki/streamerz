@@ -49,7 +49,11 @@ pub fn now() -> u64 {
 /// Whether a token expiring at `expires_at` should be refreshed before use (a minute early; 0 is
 /// unknown, used as is).
 pub fn stale(expires_at: u64) -> bool {
-    expires_at != 0 && expires_at <= now() + 60
+    stale_at(expires_at, now())
+}
+
+fn stale_at(expires_at: u64, current: u64) -> bool {
+    expires_at != 0 && expires_at <= current.saturating_add(60)
 }
 
 fn b64(bytes: &[u8]) -> String {
@@ -171,25 +175,48 @@ pub(crate) fn decode(s: &str) -> String {
 
 /// POST a form to a token endpoint.
 pub async fn token(url: &str, form: &[(&str, &str)]) -> Result<Token, String> {
+    token_with(
+        form,
+        |body| async move {
+            let headers = [(
+                "Content-Type".to_string(),
+                "application/x-www-form-urlencoded".to_string(),
+            )];
+            let response = crate::http::request("POST", url, &headers, body.as_bytes()).await?;
+            Ok((response.status, response.body))
+        },
+        now,
+    )
+    .await
+}
+
+// The exchange depends on a transport and a clock, supplied by the caller. Tests can exercise
+// the same flow without a network connection or wall clock.
+async fn token_with<F, Fut, C>(form: &[(&str, &str)], send: F, clock: C) -> Result<Token, String>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Result<(u16, Vec<u8>), String>>,
+    C: FnOnce() -> u64,
+{
     let body = form
         .iter()
         .map(|(k, v)| format!("{k}={}", url_encode(v)))
         .collect::<Vec<_>>()
         .join("&");
-    let headers = [(
-        "Content-Type".to_string(),
-        "application/x-www-form-urlencoded".to_string(),
-    )];
-    let r = crate::http::request("POST", url, &headers, body.as_bytes()).await?;
-    let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
+    let (status, body) = send(body).await?;
+    let v: Value = serde_json::from_slice(&body).unwrap_or_default();
     let access = v["access_token"].as_str().unwrap_or("");
-    if !(200..300).contains(&r.status) || access.is_empty() {
-        return Err(format!("token request failed (HTTP {}): {}", r.status, r.text()));
+    if !(200..300).contains(&status) || access.is_empty() {
+        return Err(format!(
+            "token request failed (HTTP {}): {}",
+            status,
+            String::from_utf8_lossy(&body)
+        ));
     }
     Ok(Token {
         access: access.into(),
         refresh: v["refresh_token"].as_str().unwrap_or("").into(),
-        expires_at: v["expires_in"].as_u64().map_or(0, |s| now() + s),
+        expires_at: v["expires_in"].as_u64().map_or(0, |s| clock().saturating_add(s)),
     })
 }
 
@@ -207,6 +234,38 @@ mod tests {
         assert!(!stale(0));
         assert!(stale(now() + 10));
         assert!(!stale(now() + 3600));
+    }
+
+    #[test]
+    fn token_exchange_without_network_or_clock() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        rt.block_on(async {
+            let token = token_with(
+                &[("code", "a/b +"), ("client_id", "test")],
+                |body| async move {
+                    assert_eq!(body, "code=a%2Fb+%2B&client_id=test");
+                    Ok((
+                        200,
+                        br#"{"access_token":"access","refresh_token":"refresh","expires_in":120}"#.to_vec(),
+                    ))
+                },
+                || 1_000,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                (token.access.as_str(), token.refresh.as_str(), token.expires_at),
+                ("access", "refresh", 1_120)
+            );
+            assert!(!stale_at(token.expires_at, 1_059));
+            assert!(stale_at(token.expires_at, 1_060));
+            assert!(!stale_at(0, u64::MAX));
+
+            let error = token_with(&[], |_| async { Ok((401, b"denied".to_vec())) }, || 0).await;
+            assert_eq!(error.err().unwrap(), "token request failed (HTTP 401): denied");
+            let error = token_with(&[], |_| async { Err("offline".into()) }, || 0).await;
+            assert_eq!(error.err().unwrap(), "offline");
+        });
     }
 
     #[test]

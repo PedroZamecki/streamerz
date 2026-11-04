@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ad break</title>
+<style>
+html, body { margin: 0; background: transparent; }
+#box { display: none; align-items: center; gap: 14px; padding: 12px 18px; width: max-content;
+  background: rgba(10, 10, 14, .92); border-radius: 12px; color: white; font: bold 34px sans-serif; }
+#box.on { display: flex; animation: in .25s ease-out; }
+#badge { padding: 4px 14px; border-radius: 8px; color: #111; }
+@keyframes in { from { opacity: 0; transform: translateY(8px); } }
+</style>
+</head>
+<body>
+<div id="box"><span id="badge"></span><span id="time"></span></div>
+<script>
+const s = streamerz.settings;
+const box = document.getElementById("box"), time = document.getElementById("time"), badge = document.getElementById("badge");
+badge.textContent = s.label || "Ad";
+badge.style.background = s.accent || "#fbbf24";
+box.style.fontSize = (s.size || 34) + "px";
+let timer;
+function show(ad) {
+  clearInterval(timer);
+  const left = () => Math.max(0, Math.ceil((ad.endsAt - Date.now()) / 1000));
+  if (!ad.running || left() === 0) return box.classList.remove("on");
+  const draw = () => {
+    const n = left();
+    time.textContent = Math.floor(n / 60) + ":" + String(n % 60).padStart(2, "0");
+    if (n === 0) { clearInterval(timer); box.classList.remove("on"); }
+  };
+  box.classList.add("on");
+  draw();
+  timer = setInterval(draw, 250);
+}
+streamerz.on("ad", show);
+</script>
+</body>
+</html>

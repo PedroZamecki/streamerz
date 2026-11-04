@@ -1,0 +1,33 @@
+{
+  "about": "How every trigger is accounted for. A trigger is tested by a scenario in tests/scenarios, or listed here: with `test`, the unit test that covers it (it must exist); else `why` no scenario can fire it (out of scope, not wired, not implemented). Sub-actions the engine doesn't run need no entry: one test checks they're all skipped. todo: what is still to test (connections and polling, see docs/TESTING.md); it only shrinks.",
+  "triggers": [
+    {"codes": "1, 123, 143, 168, 170, 172, 705, 707, 801, 802, 806, 9001-9007, 17001", "why": "Streamer.bot 1.0.7 drops these triggers when it loads an action (checked with dev/sb-oracle.py): no Streamer.bot action can use them. Raw Action/Sub-Action/Completed are WebSocket events only"},
+    {"codes": "5001", "why": "Pulsoid is not in scope (PLAN.md)"},
+    {"codes": "6001-6004", "why": "HypeRate is not in scope (PLAN.md)"},
+    {"codes": "19001-19011", "why": "VTube Studio is not in scope (PLAN.md)"},
+    {"codes": "20001-20009", "why": "Crowd Control is not in scope (PLAN.md)"},
+    {"codes": "21001-21020, 21301-21302, 21341-21342, 21351-21390, 21401-21426, 21501-21502", "why": "Elgato is not in scope (PLAN.md)"},
+    {"codes": "23001-23002", "why": "Speaker.bot is not in scope (PLAN.md)"},
+    {"codes": "27001-27012", "why": "T.I.T.S. (throwing system) is not in scope (PLAN.md)"},
+    {"codes": "30001-30004", "why": "Voicemod is not in scope (PLAN.md)"},
+    {"codes": "33001-33012", "why": "Meld Studio is not in scope (PLAN.md)"},
+    {"codes": "116-117", "why": "Twitch community goals were PubSub only; Twitch shut PubSub down (COVERAGE.md)"},
+    {"codes": "497, 498", "why": "Twitch modiversaries are IRC notices only; chat is read through EventSub (COVERAGE.md)"},
+    {"codes": "602", "why": "Quote Show: Streamer.bot 1.0 dropped its !quote command, so it never fires there either (COVERAGE.md)"},
+    {"codes": "4013, 4021, 4022", "why": "YouTube scheduled broadcasts (Data API) are not watched (COVERAGE.md)"},
+    {"codes": "4031", "why": "YouTube InnerTube shows a removal, not a timeout: User Banned fires instead (COVERAGE.md)"},
+    {"codes": "803-805, 2001-2003", "test": "servers::tests::client_and_custom_server", "why": "A real WebSocket client and custom server, end to end"},
+    {"codes": "14001, 14002", "test": "obs::tests::mock_obs_v5_protocol_and_events", "why": "A fake obs-websocket server: Hello, Identify with auth, events, a request, then close"},
+    {"codes": "35001-35003", "test": "kick::tests::test_mock_pusher_protocol", "why": "A fake Pusher socket: connected, authenticated, events, closed"},
+    {"codes": "4001", "test": "youtube::tests::mock_live_chat_read", "why": "A fake YouTube page and InnerTube chat: the live is found and read"},
+    {"codes": "99831, 99832, 99835", "test": "engine::songs::tests::requests_fire_their_triggers_and_a_missing_login_says_what_it_limits", "why": "Song requests refused, taken back and blocked"},
+    {"codes": "99804", "test": "engine::tests::spotify_connection_events_reach_actions_and_listeners", "why": "Spotify connected reaches actions and listeners"},
+    {"codes": "29001, 29002, 29004", "test": "servers::tests::remote_triggers_and_signals_go_over_the_websocket", "why": "Remote instances over a real WebSocket (loopback): connected, a trigger and a signal sent and received, disconnected"},
+    {"codes": "17002, 17003", "test": "servers::tests::the_stream_deck_plugin_gets_its_pushes", "why": "The Stream Deck plugin's server over a real WebSocket, as the plugin talks to Streamer.bot 1.0.7"},
+    {"codes": "17004", "why": "Stream Deck Info: Streamer.bot 1.0.7 never fired it with its current plugin (bot.streamer.streamdeck), which sends no device information (checked)"}
+  ],
+  "todo": {
+    "triggers": "124, 158, 160, 164, 173-175, 178-186, 4002, 4012, 4017-4020, 4023-4026, 11002-11004, 22001-22002, 35009, 35021-35023, 41008-41009, 41011-41012, 99805, 99807-99809, 99825-99826, 99840",
+    "subActions": ""
+  }
+}

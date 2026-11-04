@@ -46,6 +46,7 @@ const NAV: &[Section] = &[
             ("Actions", "nav.page.actions", "zap"),
             ("Commands", "nav.page.commands", "terminal"),
             ("Timers", "nav.page.timers", "timer"),
+            ("Files", "nav.page.files", "file-text"),
             ("Queues", "nav.page.queues", "list-ordered"),
             ("Groups", "nav.page.groups", "folder"),
             ("Plugins", "nav.page.plugins", "puzzle"),
@@ -57,6 +58,7 @@ const NAV: &[Section] = &[
         &[
             ("Servers", "nav.page.servers", "server"),
             ("Stream Apps", "nav.page.stream_apps", "monitor-play"),
+            ("Integrations", "nav.page.integrations", "plug"),
             ("Donations", "nav.page.donations", "heart"),
         ],
     ),
@@ -73,6 +75,7 @@ const NAV: &[Section] = &[
         "nav.section.app",
         &[
             ("Settings", "nav.page.settings", "settings"),
+            ("MCP", "nav.page.mcp", "bot"),
             ("Log", "nav.page.log", "scroll-text"),
             ("Crashes", "nav.page.crashes", "bug"),
             ("Backups", "nav.page.backups", "archive"),
