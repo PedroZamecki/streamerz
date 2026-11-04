@@ -284,6 +284,21 @@ impl Engine {
     /// A chat message: run the commands it matches. How many ran.
     pub fn chat(self: &Rc<Self>, chat: &Chat) -> usize {
         self.st.borrow_mut().chat_lines += 1;
+        if chat.platform == "kick" && !chat.user_id.is_empty() && !chat.internal {
+            let mut st = self.st.borrow_mut();
+            if !st.kick_chatters_failed {
+                let result = (|| {
+                    if st.kick_chatters.is_none() {
+                        st.kick_chatters = Some(super::chatters::Chatters::new()?);
+                    }
+                    st.kick_chatters.as_ref().unwrap().insert(&chat.user_id, &chat.user)
+                })();
+                if let Err(e) = result {
+                    crate::error(format!("Kick: can't record session chatters: {e}"));
+                    st.kick_chatters_failed = true;
+                }
+            }
+        }
         self.log_chat(chat);
         self.spoke(chat);
         // Keep a snapshot of matching commands only. Ordinary messages must not clone every
@@ -3649,12 +3664,24 @@ impl Engine {
             // Kick has no list of who is in chat: the people who chatted this session.
             35012 => {
                 let count = (n(o, "count") as usize).max(1);
-                let mut users = self.chatters("kick");
+                let st = self.st.borrow();
+                if st.kick_chatters_failed {
+                    crate::error("Kick: session chatters are unavailable".to_string());
+                    ctx.args.insert("randomUsersCount".into(), 0.into());
+                    return;
+                }
+                let users = match st.kick_chatters.as_ref() {
+                    Some(index) => match index.sample(count) {
+                        Ok(users) => users,
+                        Err(e) => {
+                            crate::error(format!("Kick: can't read session chatters: {e}"));
+                            Vec::new()
+                        }
+                    },
+                    None => Vec::new(),
+                };
                 let take = count.min(users.len());
-                for i in 0..take {
-                    let pick = i + (crate::math::secure_u64() as usize) % (users.len() - i);
-                    users.swap(i, pick);
-                    let (name, id) = &users[i];
+                for (i, (name, id)) in users.iter().enumerate() {
                     ctx.args.insert(format!("randomUser{i}"), name.as_str().into());
                     ctx.args
                         .insert(format!("randomUserName{i}"), name.to_lowercase().into());

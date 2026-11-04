@@ -17,6 +17,7 @@ use tokio::sync::{oneshot, watch};
 
 pub mod builtins;
 pub mod chatlog;
+mod chatters;
 pub use chatlog::can_send;
 pub mod community;
 pub mod events;
@@ -119,6 +120,8 @@ struct State {
     dev_out: Option<Vec<Value>>,
     /// Every platform's chat, for the chat window.
     chat_log: chatlog::Log,
+    kick_chatters: Option<chatters::Chatters>,
+    kick_chatters_failed: bool,
 }
 
 pub struct Engine {

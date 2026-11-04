@@ -707,6 +707,11 @@ impl Engine {
     /// lines, then a divider right before live session messages (kept in memory only).
     /// Forget what `platform`'s chat showed (its channel changed): lines, pins, polls and who was seen.
     pub fn chat_forget(&self, platform: &str) {
+        if platform == "kick" {
+            let mut st = self.st.borrow_mut();
+            st.kick_chatters = None;
+            st.kick_chatters_failed = false;
+        }
         {
             let log = &mut self.st.borrow_mut().chat_log;
             log.lines.retain(|l| l.platform != platform);

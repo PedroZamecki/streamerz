@@ -5,6 +5,8 @@ Community users or credits, store chat history, load the emote catalog, or downl
 The existing Community file is preserved. Commands, actions and connections remain enabled.
 First Words still tracks users in session-only disk buckets and is reset on restart. Disk errors
 are logged and disable First Words until it is reset; no false first-message events are generated.
+Kick random-user actions also keep session identities in disk buckets, without retaining chat messages.
+Those identities are cleared on channel change, clean exit, and the next start after an interruption.
 
 Disabling chat history also prevents new user cards and emote catalog loads, and deactivates the
 chat composers. This setting is separate from the Memory Saver policy.

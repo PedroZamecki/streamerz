@@ -1,7 +1,17 @@
 [
   {
+    "name": "kick: random users with Memory Saver and no chat history",
+    "config": {"memory_saver": true, "window": {"chat": {"saveHistory": false}}},
+    "actions": [{"name": "pick", "subActions": [{"type": 35012, "count": 3}]}],
+    "steps": [
+      {"event": {"platform": "kick", "type": "App\\Events\\ChatMessageEvent", "channel": "streamer", "data": {"id": "k1", "content": "hello", "type": "message", "sender": {"id": 5, "username": "Ana", "slug": "ana", "identity": {"color": "#FF0000", "badges": []}}}}},
+      {"run": "pick"}
+    ],
+    "expect": {"runs": [{"action": "pick", "after": {"randomUsersCount": 1, "randomUser0": "Ana", "randomUserType0": "kick"}}]}
+  },
+  {
     "name": "kick: chat, reply, broadcaster info and random users",
-    "config": {"kick": {"channel": "Streamer"}},
+    "config": {"kick": {"channel": "Streamer"}, "window": {"chat": {"saveHistory": false}}},
     "fakes": {"kick": {"GET /channels?slug=streamer": {"data": [{"broadcaster_user_id": 1001}]}}},
     "actions": [
       {"name": "talk", "subActions": [{"type": 35001, "text": "hi %user%"}, {"type": 35002, "text": "re", "replyId": "%msgId%"}, {"type": 35010}, {"type": 35012, "count": 3}]}

@@ -91,12 +91,10 @@ static MEMORY_SAVER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBo
 /// Session-only speaker files can also be left by an interrupted process. The config directory is
 /// protected by the existing instance lock before startup reaches this cleanup.
 pub(crate) fn cleanup_first_words() {
-    if memory_saver() {
-        let path = config_path().with_file_name("first-words");
-        if let Err(e) = std::fs::remove_dir_all(path) {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                error(format!("Can't clear First Words session: {e}"));
-            }
+    let path = config_path().with_file_name("first-words");
+    if let Err(e) = std::fs::remove_dir_all(path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            error(format!("Can't clear session data: {e}"));
         }
     }
 }

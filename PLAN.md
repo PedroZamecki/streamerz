@@ -500,8 +500,10 @@ platform handles through channels, never through shared locks held across awaits
 ## Memory investigation and storage
 
 - [x] Add an opt-in aggressive Memory Saver policy, applied after restart. Disable Community tracking
-  and loading, credits, retained chat, recent chatter facts, downloaded images and emote catalogs.
+  and loading, credits, retained chat, recent chatter facts in RAM, downloaded images and emote catalogs.
   Preserve existing Community files untouched. Keep commands, connections and triggers enabled.
+- [x] Keep Kick random users exact for the session with chat history off or Memory Saver on. Store
+  Kick identities in session-only disk buckets and clear them on exit and the next start.
 - [x] Keep exact First Words behavior using session-only disk buckets in Memory Saver. Do not evict
   speakers and accidentally repeat First Words. Reset by platform or globally, and clear on clean exit.
 - [ ] Measure this mode with First Words under sustained 1,000 messages/second and a 25,000-message
