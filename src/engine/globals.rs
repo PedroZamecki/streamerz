@@ -269,7 +269,10 @@ impl Engine {
     /// Set a (non-user) global, as the editor's global viewer does: fires the same triggers as
     /// Global (Set).
     pub fn put_global(self: &Rc<Self>, name: &str, value: Value, persisted: bool) {
-        let ctx = Ctx { args: Obj::new() };
+        let ctx = Ctx {
+            args: Obj::new(),
+            group: String::new(),
+        };
         self.write_global(&ctx, name, persisted, None, Some(value));
     }
 
@@ -381,7 +384,7 @@ mod tests {
 
     #[test]
     fn triggers_like_streamerbot() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let set = |src: i64, v: &str| json!({"type": 122, "destination": 0, "variableName": "g", "persisted": false, "source": src, "value": v});
         let main = action("a1", "main", json!([set(0, "1"), set(0, "1"), set(3, ""), set(3, "")]));
         let watch = |id: &str, kind: u32, what: &str| {

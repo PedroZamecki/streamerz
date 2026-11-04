@@ -453,10 +453,13 @@ pub fn import() -> Option<Obj> {
 }
 
 /// Choose actions and the export's details, then show the export string (copy or save it).
+/// Pick what to export: whole groups (with their settings and files, such as overlays, even when
+/// they hold no action) and single actions. `build` gets the action ids and the group names.
 pub fn export(
     actions: &[(String, String, String)],
+    groups: &[String],
     selected: Option<&str>,
-    build: impl Fn(&[String], [&str; 4]) -> String + 'static,
+    build: impl Fn(&[String], &[String], [&str; 4]) -> String + 'static,
 ) {
     let (mut win, answer) = window(640, 580, tr("dialogs.export.title"));
     let mut col = Flex::new(10, 10, 620, 560, None).column();
@@ -473,6 +476,9 @@ pub fn export(
     sel_bar.end();
     col.fixed(&sel_bar, ROW);
     let mut list = CheckBrowser::default();
+    for g in groups {
+        list.add(&trf("dialogs.export.group", &[("name", g)]), false);
+    }
     for (id, name, group) in actions {
         let label = if group.is_empty() {
             name.clone()
@@ -520,18 +526,25 @@ pub fn export(
     win.end();
     win.resizable(&col);
     let ids = actions.iter().map(|(id, _, _)| id.clone()).collect::<Vec<_>>();
+    let groups = groups.to_vec();
     make.set_callback({
         let (list, name, mut out) = (list.clone(), name.clone(), out.clone());
         move |_| {
-            let chosen: Vec<String> = (1..=list.nitems() as i32)
-                .filter(|&i| list.checked(i))
-                .filter_map(|i| ids.get(i as usize - 1).cloned())
+            let ticked: Vec<usize> = (1..=list.nitems())
+                .filter(|&i| list.checked(i as i32))
+                .map(|i| i - 1)
                 .collect();
-            if chosen.is_empty() {
+            let chosen_groups: Vec<String> = ticked.iter().filter_map(|&i| groups.get(i).cloned()).collect();
+            let chosen: Vec<String> = ticked
+                .iter()
+                .filter_map(|&i| ids.get(i.checked_sub(groups.len())?).cloned())
+                .collect();
+            if chosen.is_empty() && chosen_groups.is_empty() {
                 return dialog::alert_default(tr("dialogs.export.tick_at_least_one"));
             }
             let s = build(
                 &chosen,
+                &chosen_groups,
                 [&name.value(), &author.value(), &version.value(), &description.value()],
             );
             out.set_value(&s);
@@ -572,42 +585,20 @@ pub fn export(
 /// mask (see `hotkeys`), or None when cancelled.
 pub fn capture_keys() -> Option<(i64, i64)> {
     use crate::hotkeys::{self, ALT, CTRL, META, SHIFT};
-    let hypr = std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.contains("Hyprland"));
-    let (mut win, answer) = window(560, if hypr { 230 } else { 170 }, tr("dialogs.keys.title"));
-    let mut col = Flex::new(10, 10, 540, if hypr { 210 } else { 150 }, None).column();
+    let (mut win, answer) = window(560, 170, tr("dialogs.keys.title"));
+    let mut col = Flex::new(10, 10, 540, 150, None).column();
     col.set_pad(6);
     let mut shown = Frame::default().with_label(tr("dialogs.keys.prompt"));
     shown.set_label_size(18);
     shown.set_label_font(Font::HelveticaBold);
     col.fixed(&shown, 50);
-    let how = if cfg!(windows) {
-        tr("dialogs.keys.windows")
-    } else if hypr {
-        tr("dialogs.keys.hyprland")
-    } else {
-        tr("dialogs.keys.desktop")
-    };
     let mut note = Frame::default()
-        .with_label(how)
+        .with_label(hotkeys::how_keys())
         .with_align(Align::Left | Align::Inside | Align::Wrap);
     note.set_label_size(12);
     col.fixed(&note, 34);
-    let mut line = Frame::default()
-        .with_align(Align::Left | Align::Inside | Align::Clip)
-        .ellipsis();
-    line.set_label_font(Font::Courier);
-    line.set_label_size(12);
-    if hypr {
-        col.fixed(&line, ROW);
-    } else {
-        line.hide();
-    }
     let mut bar = Flex::default().row();
     bar.set_pad(8);
-    let mut copy = button(&mut bar, tr("btn.copy_line"), 100);
-    if !hypr {
-        copy.hide();
-    }
     Frame::default();
     let mut ok = button(&mut bar, tr("dialogs.ok"), 90);
     let mut cancel = button(&mut bar, tr("dialogs.cancel"), 90);
@@ -616,7 +607,7 @@ pub fn capture_keys() -> Option<(i64, i64)> {
     col.end();
     win.end();
     // Buttons don't take the keys: every key goes to the window.
-    for b in [&mut copy, &mut ok, &mut cancel] {
+    for b in [&mut ok, &mut cancel] {
         b.visible_focus(false);
     }
     ok.deactivate();
@@ -628,17 +619,6 @@ pub fn capture_keys() -> Option<(i64, i64)> {
     cancel.set_callback({
         let a = answer.clone();
         move |_| a.set(Some(false))
-    });
-    copy.set_callback({
-        let got = got.clone();
-        move |_| {
-            if let Some(l) = got
-                .get()
-                .and_then(|(k, m)| hotkeys::hyprland_bind(k, m, hotkeys::hyprland_lua()))
-            {
-                app::copy(&l);
-            }
-        }
     });
     win.handle({
         let got = got.clone();
@@ -667,9 +647,6 @@ pub fn capture_keys() -> Option<(i64, i64)> {
                 Some(key) => {
                     got.set(Some((key.code, mask)));
                     shown.set_label(&hotkeys::label(key.code, mask).replace('&', "&&").replace('@', "@@"));
-                    if let Some(l) = hotkeys::hyprland_bind(key.code, mask, hotkeys::hyprland_lua()) {
-                        line.set_label(&l.replace('@', "@@"));
-                    }
                     ok.activate();
                 }
                 None => shown.set_label(tr("dialogs.keys.unusable")),
@@ -678,6 +655,63 @@ pub fn capture_keys() -> Option<(i64, i64)> {
         }
     });
     run(&mut win, &answer, || true).then(|| got.get()).flatten()
+}
+
+/// Wait for a click with the mouse button wanted (SharpHook's number, 0: any button), as `capture_keys`
+/// waits for keys; None when cancelled.
+pub fn capture_button(now: i64) -> Option<i64> {
+    use crate::hotkeys::{button_name, from_fltk_button};
+    let (mut win, answer) = window(420, 170, tr("dialogs.mouse.title"));
+    let mut col = Flex::new(10, 10, 400, 150, None).column();
+    col.set_pad(6);
+    // The whole box takes the click, whichever button it is (the left one too).
+    let mut target = Frame::default().with_label(tr("dialogs.mouse.prompt"));
+    target.set_frame(fltk::enums::FrameType::BorderBox);
+    target.set_label_size(16);
+    target.set_label_font(Font::HelveticaBold);
+    let mut shown = Frame::default().with_label(button_name(now));
+    col.fixed(&shown, ROW);
+    let mut bar = Flex::default().row();
+    bar.set_pad(8);
+    let mut any = button(&mut bar, tr("input.any_button"), 110);
+    Frame::default();
+    let ok = button(&mut bar, tr("dialogs.ok"), 90);
+    let mut cancel = button(&mut bar, tr("dialogs.cancel"), 90);
+    bar.end();
+    col.fixed(&bar, ROW);
+    col.end();
+    win.end();
+    let got = Rc::new(Cell::new(now));
+    target.handle({
+        let (got, mut shown) = (got.clone(), shown.clone());
+        move |_, ev| {
+            if ev != fltk::enums::Event::Push {
+                return false;
+            }
+            if let Some(n) = from_fltk_button(app::event_button()) {
+                got.set(n);
+                shown.set_label(button_name(n));
+            }
+            true
+        }
+    });
+    any.set_callback({
+        let got = got.clone();
+        move |_| {
+            got.set(0);
+            shown.set_label(button_name(0));
+        }
+    });
+    let mut ok = ok;
+    ok.set_callback({
+        let a = answer.clone();
+        move |_| a.set(Some(true))
+    });
+    cancel.set_callback({
+        let a = answer.clone();
+        move |_| a.set(Some(false))
+    });
+    run(&mut win, &answer, || true).then(|| got.get())
 }
 
 /// A value as one line of text: strings as they are, the rest as JSON.

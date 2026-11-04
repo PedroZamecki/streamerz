@@ -68,6 +68,9 @@ pub(super) fn title(col: &mut Flex, t: &str) {
         "WebSocket clients" => "plug",
         "WebSocket servers" => "server",
         "Pending" => "hourglass",
+        "File and folder watchers" => "folder-open",
+        "Voice commands" => "message-square",
+        "File tails" => "scroll-text",
         _ => "",
     };
     let pic = super::img::logo(t.split('\'').next().unwrap_or(t), ROW - 8)
@@ -236,6 +239,104 @@ pub static TIMERS: Kind = Kind {
         ]
     },
     after: Some(|e| e.timers()),
+};
+
+pub static VOICE_COMMANDS: Kind = Kind {
+    what: "lists.voice.what",
+    get: |c| &c.voice_commands,
+    get_mut: |c| &mut c.voice_commands,
+    fields: &[
+        ("name", "Name", Text),
+        ("enabled", "Enabled", Bool),
+        ("command", "Phrases (one per line)", Multi),
+        (
+            "location",
+            "Where it's said",
+            Pick(&["The whole phrase", "At the start", "Anywhere"]),
+        ),
+        ("overrideGlobalConfidence", "Its own confidence", Bool),
+        ("confidenceThreshold", "Confidence (0 to 1)", Num),
+    ],
+    new: || {
+        json!({"id": "", "name": "New voice command", "enabled": true, "command": "", "location": 0,
+            "overrideGlobalConfidence": false, "confidenceThreshold": 0.0})
+    },
+    columns: &[200, 360, 140, 80],
+    titles: &["lists.voice.name", "lists.voice.phrases", "lists.voice.where", ""],
+    empty: "lists.voice.empty",
+    label: |o| {
+        let at = match o.get("location").and_then(Value::as_u64).unwrap_or(0) {
+            1 => tr("lists.voice.at_start"),
+            2 => tr("lists.voice.anywhere"),
+            _ => tr("lists.voice.whole"),
+        };
+        vec![
+            s(o, "name").into(),
+            s(o, "command").lines().collect::<Vec<_>>().join(", "),
+            at.into(),
+            yes(!on(o, "enabled"), tr("lists.disabled")),
+        ]
+    },
+    after: None,
+};
+
+pub static FILE_WATCHERS: Kind = Kind {
+    what: "lists.watchers.what",
+    get: |c| &c.file_watchers,
+    get_mut: |c| &mut c.file_watchers,
+    fields: &[
+        ("name", "Name", Text),
+        ("enabled", "Enabled", Bool),
+        ("folderPath", "Folder (or a file)", Text),
+        ("filter", "Filter (*.txt, *.*)", Text),
+        ("includeSubdirectories", "Include subfolders", Bool),
+        ("addChangedData", "Add the file's lines to Changed", Bool),
+        ("asJson", "Read the file as JSON on Changed", Bool),
+    ],
+    new: || {
+        json!({"id": "", "name": "New watcher", "enabled": true, "folderPath": "", "filter": "*.*",
+            "includeSubdirectories": false, "addChangedData": false, "asJson": false})
+    },
+    columns: &[200, 360, 100, 80],
+    titles: &[
+        "lists.watchers.name",
+        "lists.watchers.folder",
+        "lists.watchers.filter",
+        "",
+    ],
+    empty: "lists.watchers.empty",
+    label: |o| {
+        vec![
+            s(o, "name").into(),
+            s(o, "folderPath").into(),
+            s(o, "filter").into(),
+            yes(!on(o, "enabled"), tr("lists.disabled")),
+        ]
+    },
+    after: Some(|e| e.watchers()),
+};
+
+pub static FILE_TAILS: Kind = Kind {
+    what: "lists.tails.what",
+    get: |c| &c.file_tails,
+    get_mut: |c| &mut c.file_tails,
+    fields: &[
+        ("name", "Name", Text),
+        ("enabled", "Enabled", Bool),
+        ("filePath", "File", Text),
+    ],
+    new: || json!({"id": "", "name": "New file tail", "enabled": true, "filePath": ""}),
+    columns: &[200, 440, 80],
+    titles: &["lists.tails.name", "lists.tails.file", ""],
+    empty: "lists.tails.empty",
+    label: |o| {
+        vec![
+            s(o, "name").into(),
+            s(o, "filePath").into(),
+            yes(!on(o, "enabled"), tr("lists.disabled")),
+        ]
+    },
+    after: Some(|e| e.watchers()),
 };
 
 pub static CLIENTS: Kind = Kind {
@@ -556,6 +657,7 @@ pub struct Views {
     pub crashes: Rc<RefCell<super::recovery::Crashes>>,
     pub backups: Rc<RefCell<super::recovery::Backups>>,
     pub polls: Rc<RefCell<super::polls::Polls>>,
+    pub agents: Rc<RefCell<super::agents::Agents>>,
 }
 
 impl Views {
@@ -616,7 +718,7 @@ impl Views {
         let is =
             |w: &Flex| up.is_some() && (up == Some(w.as_widget_ptr()) || up == w.parent().map(|p| p.as_widget_ptr()));
         if let Ok(mut a) = self.accounts.try_borrow_mut() {
-            if is(&a.tab) {
+            if is(&a.tab) || is(&a.integrations_tab) {
                 a.refresh();
             }
         }
@@ -668,6 +770,11 @@ impl Views {
                 b.refresh();
             }
         }
+        if let Ok(mut a) = self.agents.try_borrow_mut() {
+            if is(&a.tab) {
+                a.refresh();
+            }
+        }
     }
 }
 
@@ -676,10 +783,31 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
     let chat = super::chat::tab(tabs, cfg, cmds);
     let mut col = tab(tabs, "Commands");
     let commands = list(&mut col, cfg, cmds, &COMMANDS, Some("enabled"));
+    title(&mut col, tr("lists.voice.title"));
+    let guide = Frame::default()
+        .with_label(tr("lists.voice.guide"))
+        .with_align(Align::Left | Align::Inside | Align::Wrap);
+    col.fixed(&guide, 36);
+    let voice = list(&mut col, cfg, cmds, &VOICE_COMMANDS, Some("enabled"));
     col.end();
 
     let mut col = tab(tabs, "Timers");
     let timers = list(&mut col, cfg, cmds, &TIMERS, Some("enabled"));
+    col.end();
+
+    let mut col = tab(tabs, "Files");
+    title(&mut col, tr("lists.watchers.title"));
+    let guide = Frame::default()
+        .with_label(tr("lists.watchers.guide"))
+        .with_align(Align::Left | Align::Inside | Align::Wrap);
+    col.fixed(&guide, 36);
+    let watchers = list(&mut col, cfg, cmds, &FILE_WATCHERS, Some("enabled"));
+    title(&mut col, tr("lists.tails.title"));
+    let guide = Frame::default()
+        .with_label(tr("lists.tails.guide"))
+        .with_align(Align::Left | Align::Inside | Align::Wrap);
+    col.fixed(&guide, 36);
+    let tails = list(&mut col, cfg, cmds, &FILE_TAILS, Some("enabled"));
     col.end();
 
     let queues = queues_tab(tabs, cfg, cmds);
@@ -745,9 +873,10 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
     let crashes = super::recovery::crashes_tab(tabs);
     let polls = super::polls::tab(tabs, cmds);
     let backups = super::recovery::backups_tab(tabs, cfg, cmds);
+    let agents = super::agents::tab(tabs, cfg);
 
     Views {
-        lists: vec![commands, timers, clients, custom, obs, slobs],
+        lists: vec![commands, voice, timers, watchers, tails, clients, custom, obs, slobs],
         queues,
         history,
         globals,
@@ -761,6 +890,7 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
         crashes,
         backups,
         polls,
+        agents,
     }
 }
 
@@ -1766,6 +1896,13 @@ impl Servers {
                 state(u.auto_start),
                 u.port
             ),
+            format!(
+                "{}: {}, ws://{}:{}/",
+                tr("lists.servers.stream_deck_server"),
+                state(c.stream_deck.auto_start),
+                c.stream_deck.address,
+                c.stream_deck.port
+            ),
         ];
         for (f, t) in self.lines.iter_mut().zip(texts) {
             f.set_label(&t.replace('@', "@@"));
@@ -1794,7 +1931,8 @@ impl Servers {
             match which {
                 0 => (tr("lists.servers.websocket_server"), ws, to_obj(&c.websockets)),
                 1 => (tr("lists.servers.http_server"), http, to_obj(&c.http)),
-                _ => (tr("lists.servers.udp_server"), udp, to_obj(&c.udp)),
+                2 => (tr("lists.servers.udp_server"), udp, to_obj(&c.udp)),
+                _ => (tr("lists.servers.stream_deck_server"), http, to_obj(&c.stream_deck)),
             }
         };
         let Some(o) = ask(title, fields, &o, &Lists::default()) else {
@@ -1811,7 +1949,8 @@ impl Servers {
             let r = match which {
                 0 => serde_json::from_value(v).map(|x| c.websockets = x),
                 1 => serde_json::from_value(v).map(|x| c.http = x),
-                _ => serde_json::from_value(v).map(|x| c.udp = x),
+                2 => serde_json::from_value(v).map(|x| c.udp = x),
+                _ => serde_json::from_value(v).map(|x| c.stream_deck = x),
             };
             bad = r.err();
         });
@@ -1828,7 +1967,7 @@ fn servers_box(col: &mut Flex, cfg: &Cfg) -> Rc<RefCell<Servers>> {
         cfg: cfg.clone(),
         lines: Vec::new(),
     }));
-    for i in 0..3 {
+    for i in 0..4 {
         let mut r = Flex::default().row();
         r.set_pad(8);
         let f = Frame::default().with_align(Align::Left | Align::Inside).ellipsis();

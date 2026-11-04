@@ -348,6 +348,20 @@ pub(super) fn room(cmds: &Cmds, cfg: &Cfg, platform: &str, size: i32) -> (String
     } else {
         set
     };
+    // The name as the platform writes it ("umaNanaAi"), once it has told; Twitch and YouTube accounts
+    // already keep theirs.
+    // The channel box may hold a typed lowercase login even when it is the account's own, so the
+    // account's own display name wins there.
+    let shown = match (&mine, own && matches!(p, P::Twitch | P::YouTube)) {
+        _ if name.is_empty() => name.clone(),
+        (Some(m), true) if !m.is_empty() => m.clone(),
+        _ => {
+            channel_url(cmds, cfg, p, &name);
+            channel_name(p, &name)
+                .or_else(|| mine.clone().filter(|m| own && !m.is_empty()))
+                .unwrap_or_else(|| name.clone())
+        }
+    };
     let pic = if own {
         mine.as_ref()
             .and_then(|m| picture(cmds, cfg, p, false, m, size))
@@ -363,7 +377,7 @@ pub(super) fn room(cmds: &Cmds, cfg: &Cfg, platform: &str, size: i32) -> (String
     } else {
         None
     };
-    (name, pic)
+    (shown, pic)
 }
 
 /// Trigger an interactive keyring unlock on the engine thread and alert only if it fails.
@@ -487,12 +501,20 @@ async fn avatar(e: &Rc<Engine>, cfg: &Cfg, p: P, bot: bool) -> Option<String> {
     v?.as_str().filter(|u| u.starts_with("http")).map(str::to_string)
 }
 
-/// A channel's profile picture URL, read from public APIs or GQL (works for outside channels).
-async fn channel_avatar(cfg: &Cfg, p: P, channel: &str) -> Option<String> {
+/// A channel's profile picture URL and display name (as the platform writes it, e.g. "umaNanaAi"), read from
+/// public APIs or GQL (works for outside channels).
+async fn channel_profile(cfg: &Cfg, p: P, channel: &str) -> (Option<String>, Option<String>) {
     let clean = channel.trim().trim_start_matches('@');
     if clean.is_empty() {
-        return None;
+        return (None, None);
     }
+    let text = |v: &Value, ptr: &str| {
+        v.pointer(ptr)
+            .and_then(Value::as_str)
+            .filter(|t| !t.trim().is_empty())
+            .map(str::to_string)
+    };
+    let link = |v: Option<String>| v.filter(|u| u.starts_with("http"));
     match p {
         P::Twitch => {
             let (cid, tok) = {
@@ -515,10 +537,10 @@ async fn channel_avatar(cfg: &Cfg, p: P, channel: &str) -> Option<String> {
                 );
                 if let Ok(r) = crate::http::request("GET", &url, &h, b"").await {
                     if let Ok(v) = serde_json::from_slice::<Value>(&r.body) {
-                        if let Some(u) = v.pointer("/data/0/profile_image_url").and_then(Value::as_str) {
-                            if u.starts_with("http") {
-                                return Some(u.to_string());
-                            }
+                        let pic = link(text(&v, "/data/0/profile_image_url"));
+                        let name = text(&v, "/data/0/display_name");
+                        if pic.is_some() || name.is_some() {
+                            return (pic, name);
                         }
                     }
                 }
@@ -528,83 +550,119 @@ async fn channel_avatar(cfg: &Cfg, p: P, channel: &str) -> Option<String> {
                 ("Content-Type".to_string(), "application/json".to_string()),
             ];
             let q = serde_json::json!({
-                "query": format!("{{ user(login: \"{clean}\") {{ profileImageURL(width: 150) }} }}")
+                "query": format!("{{ user(login: \"{clean}\") {{ displayName profileImageURL(width: 150) }} }}")
             });
             if let Ok(r) =
                 crate::http::request("POST", "https://gql.twitch.tv/gql", &headers, q.to_string().as_bytes()).await
             {
                 if let Ok(v) = serde_json::from_slice::<Value>(&r.body) {
-                    if let Some(u) = v.pointer("/data/user/profileImageURL").and_then(Value::as_str) {
-                        if u.starts_with("http") {
-                            return Some(u.to_string());
-                        }
-                    }
+                    return (
+                        link(text(&v, "/data/user/profileImageURL")),
+                        text(&v, "/data/user/displayName"),
+                    );
                 }
             }
-            None
+            (None, None)
         }
-        P::YouTube => crate::youtube::public_channel(clean).await.1,
+        P::YouTube => {
+            let (_, pic, name) = crate::youtube::public_profile(clean).await;
+            (pic, name)
+        }
         P::Kick => {
             let h = [("Accept".to_string(), "application/json".to_string())];
             let url = format!("https://kick.com/api/v2/channels/{clean}");
-            let r = crate::http::request("GET", &url, &h, b"").await.ok()?;
-            let v = serde_json::from_slice::<Value>(&r.body).ok()?;
-            v.pointer("/user/profile_pic")
-                .or_else(|| v.pointer("/user/profile_picture"))
-                .and_then(Value::as_str)
-                .filter(|u| u.starts_with("http"))
-                .map(str::to_string)
+            let Ok(r) = crate::http::request("GET", &url, &h, b"").await else {
+                return (None, None);
+            };
+            let Ok(v) = serde_json::from_slice::<Value>(&r.body) else {
+                return (None, None);
+            };
+            (
+                link(text(&v, "/user/profile_pic").or_else(|| text(&v, "/user/profile_picture"))),
+                text(&v, "/user/username"),
+            )
         }
-        P::TikTok => crate::webcast::avatar(clean).await,
+        P::TikTok => crate::webcast::profile(clean).await,
     }
 }
 
-/// The channel's profile picture, `size` px and round. Its URL is cached for 24h.
-fn channel_picture(cmds: &Cmds, cfg: &Cfg, p: P, name: &str, size: i32) -> Option<fltk::image::RgbImage> {
+/// Display names by "platform:chan:name", from the platform (empty until known).
+static NAMES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+/// The channel's display name when the platform has told it (looked up with its picture).
+fn channel_name(p: P, name: &str) -> Option<String> {
+    let norm = name.trim().trim_start_matches('@').to_lowercase();
+    let key = format!("{}:chan:{}", p.slug(), norm);
+    NAMES
+        .lock()
+        .ok()?
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, n)| n.clone())
+        .filter(|n| !n.is_empty())
+}
+
+/// The channel's profile picture URL (cached for 24h), and its display name once known. Looks both up in
+/// the background when missing or old.
+fn channel_url(cmds: &Cmds, cfg: &Cfg, p: P, name: &str) -> String {
     const FRESH: u64 = 24 * 60 * 60;
     let norm = name.trim().trim_start_matches('@').to_lowercase();
     if norm.is_empty() {
-        return None;
+        return String::new();
     }
     let key = format!("{}:chan:{}", p.slug(), norm);
-    let mut a = AVATARS.lock().ok()?;
-    let url = match a.iter().find(|(k, _)| *k == key) {
-        Some((_, url)) => url.clone(),
-        None => {
-            let now = crate::fmt::unix_now().as_secs();
-            let saved = super::img::saved("avatars").map(|v| v.1).unwrap_or_default();
-            let (url, at) = (
-                saved[&key][0].as_str().unwrap_or("").to_string(),
-                saved[&key][1].as_u64().unwrap_or(0),
-            );
-            a.push((key.clone(), url.clone()));
-            if now.saturating_sub(at) >= FRESH {
-                let cfg = cfg.clone();
-                let channel = norm.clone();
-                tell(cmds, move |_| {
-                    tokio::task::spawn_local(async move {
-                        let Some(url) = channel_avatar(&cfg, p, &channel).await else {
-                            return;
-                        };
-                        if let Ok(mut a) = AVATARS.lock() {
-                            if let Some(slot) = a.iter_mut().find(|(k, _)| *k == key) {
-                                slot.1.clone_from(&url);
-                            }
-                        }
-                        let mut all = super::img::saved("avatars").map(|v| v.1).unwrap_or_default();
-                        if !all.is_object() {
-                            all = serde_json::json!({});
-                        }
-                        all[&key] = serde_json::json!([url, crate::fmt::unix_now().as_secs()]);
-                        super::img::save("avatars", &all);
-                        super::wake(super::Msg::Image);
-                    });
-                });
-            }
-            url
-        }
+    let Ok(mut a) = AVATARS.lock() else {
+        return String::new();
     };
-    drop(a);
+    if let Some((_, url)) = a.iter().find(|(k, _)| *k == key) {
+        return url.clone();
+    }
+    let now = crate::fmt::unix_now().as_secs();
+    let saved = super::img::saved("avatars").map(|v| v.1).unwrap_or_default();
+    let (url, at, known) = (
+        saved[&key][0].as_str().unwrap_or("").to_string(),
+        saved[&key][1].as_u64().unwrap_or(0),
+        saved[&key][2].as_str().unwrap_or("").to_string(),
+    );
+    a.push((key.clone(), url.clone()));
+    if let Ok(mut n) = NAMES.lock() {
+        n.push((key.clone(), known.clone()));
+    }
+    if now.saturating_sub(at) >= FRESH || known.is_empty() {
+        let cfg = cfg.clone();
+        tell(cmds, move |_| {
+            tokio::task::spawn_local(async move {
+                let (pic, shown) = channel_profile(&cfg, p, &norm).await;
+                let (url, shown) = (pic.unwrap_or_default(), shown.unwrap_or_default());
+                if url.is_empty() && shown.is_empty() {
+                    return;
+                }
+                if let Ok(mut a) = AVATARS.lock() {
+                    if let Some(slot) = a.iter_mut().find(|(k, _)| *k == key) {
+                        slot.1.clone_from(&url);
+                    }
+                }
+                if let Ok(mut n) = NAMES.lock() {
+                    if let Some(slot) = n.iter_mut().find(|(k, _)| *k == key) {
+                        slot.1.clone_from(&shown);
+                    }
+                }
+                let mut all = super::img::saved("avatars").map(|v| v.1).unwrap_or_default();
+                if !all.is_object() {
+                    all = serde_json::json!({});
+                }
+                all[&key] = serde_json::json!([url, crate::fmt::unix_now().as_secs(), shown]);
+                super::img::save("avatars", &all);
+                super::wake(super::Msg::Image);
+            });
+        });
+    }
+    url
+}
+
+/// The channel's profile picture, `size` px and round.
+fn channel_picture(cmds: &Cmds, cfg: &Cfg, p: P, name: &str, size: i32) -> Option<fltk::image::RgbImage> {
+    let url = channel_url(cmds, cfg, p, name);
     if url.is_empty() {
         return None;
     }
@@ -678,11 +736,13 @@ struct Row {
 
 pub struct Accounts {
     pub tab: Flex,
+    pub integrations_tab: Flex,
     cfg: Cfg,
     cmds: Cmds,
     lock_bar: Flex,
     lock_msg: Frame,
     rows: Vec<Row>,
+    spotify_status: Frame,
 }
 
 impl Accounts {
@@ -787,6 +847,13 @@ impl Accounts {
                 pic.set_image(raw_name.and_then(|n| picture(&self.cmds, &self.cfg, r.p, bot == 1, &n, ROW - 4)));
             }
         }
+        let spotify_on = c.spotify.enabled && !c.spotify.token.access_token.is_empty();
+        let (health, text) = if spotify_on {
+            (super::Health::Up, tr("conns.connected"))
+        } else {
+            (super::Health::Off, tr("conns.off"))
+        };
+        health.show(&mut self.spotify_status, text);
         drop(c);
         self.tab.layout();
         self.tab.redraw();
@@ -794,7 +861,7 @@ impl Accounts {
 }
 
 pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
-    let (scroll, mut col) = super::tab_scrolled(tabs, "Accounts", 740);
+    let (scroll, mut col) = super::tab_scrolled(tabs, "Accounts", 780);
 
     let mut lock_bar = Flex::default().row();
     lock_bar.set_pad(8);
@@ -909,14 +976,45 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
     col.end();
     scroll.end();
 
+    let mut integrations_tab = super::tab(tabs, "Integrations");
+    let mut spotify_row = Flex::default().row();
+    spotify_row.set_pad(8);
+    let mut spotify_logo = Frame::default();
+    spotify_logo.set_image(super::img::logo("Spotify", 18));
+    spotify_row.fixed(&spotify_logo, 22);
+    let mut spotify_name = Frame::default()
+        .with_label(tr("accounts.spotify.name"))
+        .with_align(Align::Left | Align::Inside);
+    spotify_name.set_label_font(fltk::enums::Font::HelveticaBold);
+    spotify_row.fixed(&spotify_name, 110);
+    let spotify_status = Frame::default()
+        .with_align(Align::Left | Align::Inside | Align::Clip)
+        .ellipsis();
+    let mut spotify_setup = button(&mut spotify_row, tr("btn.configure"), 100);
+    spotify_row.end();
+    integrations_tab.fixed(&spotify_row, ROW);
+    Frame::default();
+    integrations_tab.end();
+
     let me = Rc::new(RefCell::new(Accounts {
         tab: col,
+        integrations_tab,
         cfg: cfg.clone(),
         cmds: cmds.clone(),
         lock_bar,
         lock_msg,
         rows: Vec::new(),
+        spotify_status,
     }));
+    spotify_setup.set_callback({
+        let (cfg, cmds, me) = (cfg.clone(), cmds.clone(), me.clone());
+        move |_| {
+            spotify_configure(&cfg, &cmds);
+            if let Ok(mut m) = me.try_borrow_mut() {
+                m.refresh();
+            }
+        }
+    });
     unlock_btn.set_callback({
         let cmds = cmds.clone();
         let me = me.clone();
@@ -1080,6 +1178,187 @@ fn login(cfg: &Cfg, cmds: &Cmds, p: P, bot: bool) {
             }
         }
     }
+}
+
+/// Everything about the Spotify connection, in one place: the app's client ID (changing it forgets the
+/// old login), connecting and disconnecting, and the local monitor that works without a login.
+fn spotify_configure(cfg: &Cfg, cmds: &Cmds) {
+    let (mut win, answer) = dialogs::window(640, 420, tr("accounts.spotify.setup"));
+    let mut col = Flex::new(10, 10, 620, 400, None).column();
+    col.set_pad(6);
+    let help = Frame::default()
+        .with_label(tr("accounts.spotify.help"))
+        .with_align(Align::Left | Align::Inside | Align::Wrap);
+    col.fixed(&help, 96);
+    let row = dialogs::row(tr("accounts.spotify.client_id"));
+    let mut client = Input::default();
+    client.set_value(&cfg.borrow().spotify.client_id);
+    row.end();
+    col.fixed(&row, ROW);
+    let mut links = Flex::default().row();
+    links.set_pad(8);
+    let mut dashboard = button(&mut links, tr("accounts.spotify.dashboard"), 140);
+    dashboard.set_callback(|_| crate::oauth::open_browser("https://developer.spotify.com/dashboard"));
+    let mut copy = button(&mut links, tr("btn.copy_redirect_url"), 150);
+    copy.set_callback(|_| fltk::app::copy(crate::spotify::REDIRECT));
+    Frame::default();
+    links.end();
+    col.fixed(&links, ROW);
+
+    let mut link = Flex::default().row();
+    link.set_pad(8);
+    let status = Frame::default()
+        .with_align(Align::Left | Align::Inside | Align::Clip)
+        .ellipsis();
+    let mut connect = button(&mut link, tr("btn.connect"), 110);
+    let mut disconnect = button(&mut link, tr("btn.disconnect"), 110);
+    link.end();
+    col.fixed(&link, ROW);
+
+    let mut monitor = CheckButton::default().with_label(tr("spotify.local_monitor"));
+    col.fixed(&monitor, ROW);
+    super::hint(&mut col, tr("spotify.limited_hint"), 80);
+    let mut local = super::grid(&mut col, &[tr("spotify.local_check")], 1).remove(0);
+    Frame::default();
+    let mut bar = Flex::default().row();
+    bar.set_pad(8);
+    Frame::default();
+    dialogs::ok_cancel(&mut bar, &answer, true);
+    bar.end();
+    col.fixed(&bar, ROW);
+    col.end();
+    win.end();
+
+    // What the connection is now; the buttons follow it.
+    let show = {
+        let cfg = cfg.clone();
+        let (status, connect, disconnect, monitor) = (status, connect.clone(), disconnect.clone(), monitor.clone());
+        Rc::new(move || {
+            let (mut status, mut connect, mut disconnect, monitor) =
+                (status.clone(), connect.clone(), disconnect.clone(), monitor.clone());
+            let c = cfg.borrow();
+            let on = c.spotify.enabled && !c.spotify.token.access_token.is_empty();
+            let (health, text) = if on {
+                (super::Health::Up, tr("conns.connected"))
+            } else {
+                (super::Health::Off, tr("conns.off"))
+            };
+            health.show(&mut status, text);
+            monitor.set_checked(c.spotify.local_monitor);
+            if on {
+                connect.deactivate();
+                disconnect.activate();
+            } else {
+                connect.activate();
+                disconnect.deactivate();
+            }
+        })
+    };
+    show();
+    monitor.set_callback({
+        let (cfg, cmds) = (cfg.clone(), cmds.clone());
+        move |monitor| {
+            let on = monitor.is_checked();
+            save(&cfg, |c| c.spotify.local_monitor = on);
+            tell(&cmds, move |e| {
+                if on {
+                    e.spotify_local_start();
+                } else {
+                    e.spotify_local_stop();
+                }
+            });
+        }
+    });
+    local.set_callback({
+        let cmds = cmds.clone();
+        move |_| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            tell(&cmds, move |_| {
+                tokio::task::spawn_local(async move {
+                    let _ = tx.send(crate::spotify::local::current().await);
+                });
+            });
+            let message = match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+                Ok(Ok(Some(track))) => trf(
+                    "spotify.local_found",
+                    &[("artist", &track.artist), ("title", &track.title)],
+                ),
+                Ok(Ok(None)) => tr("spotify.local_missing").to_string(),
+                Ok(Err(error)) => trf("spotify.local_error", &[("error", &error)]),
+                Err(_) => tr("spotify.local_timeout").to_string(),
+            };
+            dialogs::message(&message);
+        }
+    });
+    // A new client ID forgets the old login (and says so to the triggers).
+    let set_client = {
+        let (cfg, cmds, client) = (cfg.clone(), cmds.clone(), client.clone());
+        Rc::new(move || {
+            let id = client.value().trim().to_string();
+            let disconnect = {
+                let c = cfg.borrow();
+                c.spotify.enabled && c.spotify.client_id != id
+            };
+            save(&cfg, |c| {
+                if c.spotify.client_id != id {
+                    c.spotify.client_id = id;
+                    c.spotify.enabled = false;
+                    c.spotify.token = Default::default();
+                }
+            });
+            if disconnect {
+                tell(&cmds, |e| crate::spotify::event(e, 99805, ""));
+            }
+        })
+    };
+    connect.set_callback({
+        let (cfg, cmds, show, set_client) = (cfg.clone(), cmds.clone(), show.clone(), set_client.clone());
+        move |_| {
+            set_client();
+            let id = cfg.borrow().spotify.client_id.clone();
+            if id.trim().is_empty() {
+                dialogs::message(tr("accounts.spotify.need_client_id"));
+                return;
+            }
+            let request_id = id.clone();
+            let events = cmds.clone();
+            if let Some(token) = browser_login(&cmds, "Spotify", false, async move {
+                let result = crate::spotify::login(&request_id).await;
+                if let Err(error) = &result {
+                    let error = error.clone();
+                    tell(&events, move |e| crate::spotify::event(e, 99806, &error));
+                }
+                result
+            }) {
+                save(&cfg, |c| {
+                    if c.spotify.client_id == id {
+                        c.spotify.token = token;
+                        c.spotify.enabled = true;
+                    }
+                });
+                if cfg.borrow().spotify.enabled && cfg.borrow().spotify.client_id == id {
+                    tell(&cmds, |e| crate::spotify::event(e, 99804, ""));
+                }
+            }
+            show();
+        }
+    });
+    disconnect.set_callback({
+        let (cfg, cmds, show) = (cfg.clone(), cmds.clone(), show.clone());
+        move |_| {
+            save(&cfg, |c| {
+                c.spotify.enabled = false;
+                c.spotify.token = Default::default();
+            });
+            tell(&cmds, |e| crate::spotify::event(e, 99805, ""));
+            show();
+        }
+    });
+    let ok = dialogs::run(&mut win, &answer, || true);
+    if ok {
+        set_client();
+    }
+    fltk::app::delete_widget(win);
 }
 
 /// Run a browser login on the engine's thread, with a dialog to cancel it; the account.

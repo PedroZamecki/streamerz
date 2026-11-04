@@ -19,6 +19,8 @@ use std::rc::Rc;
 /// What a field is, and so how it's edited.
 pub enum W {
     Text,
+    /// Suggested values, with expressions still accepted.
+    Expression(&'static [&'static str]),
     /// Several lines.
     Multi,
     Bool,
@@ -32,6 +34,9 @@ pub enum W {
     Action,
     Queue,
     Timer,
+    FileWatcher,
+    FileTail,
+    VoiceCommand,
     Command,
     UserGroup,
     Client,
@@ -53,6 +58,11 @@ pub enum W {
     Lines,
     /// A key combination, captured: SharpHook's key code here, its modifier mask in `modifierMask`.
     Keys,
+    /// A mouse button, caught by clicking it on the field (SharpHook's numbers; 0: any).
+    MouseButton,
+    /// Not a value (its key is empty): how this computer catches the Key Press (false) or Mouse Click
+    /// (true) trigger, what it needs and why, with the button that gives or takes back the access.
+    Access(bool),
 }
 
 use W::*;
@@ -62,6 +72,7 @@ impl W {
     pub fn about(&self) -> String {
         match self {
             Text => "text".into(),
+            Expression(values) => format!("text or expression (suggested: {values:?})"),
             Multi => "text (several lines)".into(),
             Bool => "true/false".into(),
             Bit(b) => format!("bit {b} of a number of flags"),
@@ -71,6 +82,9 @@ impl W {
             Action => "action id".into(),
             Queue => "queue id".into(),
             Timer => "timer id".into(),
+            FileWatcher => "file watcher id".into(),
+            FileTail => "file tail id".into(),
+            VoiceCommand => "voice command id".into(),
             Command => "command id".into(),
             UserGroup => "user group name".into(),
             Client => "WebSocket client id".into(),
@@ -85,12 +99,30 @@ impl W {
             Map => "object of texts".into(),
             Lines => "list of texts".into(),
             Keys => "key code (modifiers in modifierMask)".into(),
+            MouseButton => "mouse button: 0 any, 1 left, 2 right, 3 middle, 4 back, 5 forward".into(),
+            Access(_) => "nothing (a note)".into(),
         }
     }
 }
 
 /// (JSON field, label, kind).
 pub type F = (&'static str, &'static str, W);
+
+pub(super) fn field_label(label: &'static str) -> &'static str {
+    if label.starts_with("spotify.") {
+        return crate::i18n::tr(label);
+    }
+    match label {
+        "countdown.id" => crate::i18n::tr("countdown.id"),
+        "countdown.operation" => crate::i18n::tr("countdown.operation"),
+        "countdown.start" => crate::i18n::tr("countdown.start"),
+        "countdown.max" => crate::i18n::tr("countdown.max"),
+        "countdown.per_unit" => crate::i18n::tr("countdown.per_unit"),
+        "countdown.units" => crate::i18n::tr("countdown.units"),
+        "countdown.currency" => crate::i18n::tr("countdown.currency"),
+        _ => label,
+    }
+}
 
 // In the order the engine reads them (Streamer.bot's stored values): 0 shows, starts or enables.
 pub const STATE_HIDE_SHOW_TOGGLE: &[&str] = &["Show", "Hide", "Toggle"];
@@ -161,6 +193,94 @@ pub fn plugin_fields(key: &str, fields: &[crate::engine::plugins::Field]) -> &'s
 /// A core sub-action's fields; None when it has no form (it opens as JSON).
 pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
     Some(match kind {
+        99810..=99816 | 99830..=99833 => &[],
+        99827 => &[("query", "spotify.query", Text)],
+        99828 => &[
+            ("who", "spotify.who", Text),
+            ("skipOwn", "spotify.skip_own", Expression(&["true", "false"])),
+            ("skipCooldownMs", "spotify.skip_cooldown", Text),
+        ],
+        99829 => &[
+            ("votesNeeded", "spotify.votes_needed", Text),
+            ("skipCooldownMs", "spotify.skip_cooldown", Text),
+        ],
+        99817 => &[("value", "spotify.position_ms", Text)],
+        99818 => &[("value", "spotify.volume_percent", Text)],
+        99819 => &[("value", "spotify.query", Text)],
+        99820 => &[("value", "spotify.device_id", Text)],
+        99821 => &[("value", "spotify.shuffle_state", Text)],
+        99822 => &[("value", "spotify.repeat_state", Text)],
+        99823..=99824 => &[],
+        99841..=99842 | 99850..=99855 | 99860 | 99870 | 99874..=99875 => &[],
+        99840 => &[("value", "spotify.play_from", Text)],
+        99843 => &[("value", "spotify.volume_delta", Text)],
+        99844 => &[("value", "spotify.seek_delta", Text)],
+        99861 => &[
+            ("value", "spotify.playlist_name", Text),
+            ("extra", "spotify.playlist_description", Text),
+        ],
+        99862 | 99864 | 99865 => &[("value", "spotify.playlist", Text)],
+        99863 => &[("value", "spotify.playlist", Text), ("extra", "spotify.query", Text)],
+        99866 => &[("value", "spotify.playlist", Text), ("extra", "spotify.new_name", Text)],
+        99871..=99872 => &[("value", "spotify.period", Text)],
+        99873 => &[("value", "spotify.query", Text), ("extra", "spotify.search_type", Text)],
+        99802 => &[
+            (
+                "operation",
+                "spotify.operation",
+                Expression(&[
+                    "request", "remove", "current", "next", "queue", "pos", "skip", "voteskip", "play", "pause",
+                    "volume", "bansong", "like",
+                ]),
+            ),
+            ("query", "spotify.query", Text),
+            ("who", "spotify.who", Text),
+            ("reply", "spotify.reply", Text),
+            ("replyDone", "spotify.reply_done", Text),
+            ("maxPerUser", "spotify.max_per_user", Text),
+            ("maxPerSubscriber", "spotify.max_per_subscriber", Text),
+            ("unlimitedWho", "spotify.unlimited_who", Text),
+            ("maxLengthMs", "spotify.max_length", Text),
+            (
+                "blockExplicit",
+                "spotify.block_explicit",
+                Expression(&["true", "false"]),
+            ),
+            ("explicitWho", "spotify.explicit_who", Text),
+            ("blockedUsers", "spotify.blocked_users", Text),
+            ("blockedArtists", "spotify.blocked_artists", Text),
+            ("blockedSongs", "spotify.blocked_songs", Text),
+            ("skipOwn", "spotify.skip_own", Expression(&["true", "false"])),
+            ("skipCooldownMs", "spotify.skip_cooldown", Text),
+            ("votesNeeded", "spotify.votes_needed", Text),
+            ("msgNotAllowed", "spotify.msg_not_allowed", Text),
+            ("msgNoQuery", "spotify.msg_no_query", Text),
+            ("msgNotFound", "spotify.msg_not_found", Text),
+            ("msgUnsupported", "spotify.msg_unsupported", Text),
+            ("msgBlockedArtist", "spotify.msg_blocked_artist", Text),
+            ("msgBlockedSong", "spotify.msg_blocked_song", Text),
+            ("msgExplicit", "spotify.msg_explicit", Text),
+            ("msgUnavailable", "spotify.msg_unavailable", Text),
+            ("msgTooLong", "spotify.msg_too_long", Text),
+            ("msgDuplicate", "spotify.msg_duplicate", Text),
+            ("msgMaxRequests", "spotify.msg_max_requests", Text),
+            ("msgSkipCooldown", "spotify.msg_skip_cooldown", Text),
+            ("msgError", "spotify.msg_error", Text),
+            ("msgEmpty", "spotify.msg_empty", Text),
+            ("msgNoPos", "spotify.msg_no_pos", Text),
+            ("msgNoRemove", "spotify.msg_no_remove", Text),
+            ("msgNoVolume", "spotify.msg_no_volume", Text),
+        ],
+        99880 => &[("topic", "overlay.topic", Text), ("value", "overlay.value", Multi)],
+        99803 => &[
+            ("clockId", "countdown.id", Text),
+            ("operation", "countdown.operation", Text),
+            ("startMs", "countdown.start", Text),
+            ("maxMs", "countdown.max", Text),
+            ("perUnitMs", "countdown.per_unit", Text),
+            ("units", "countdown.units", Text),
+            ("expectedCurrency", "countdown.currency", Text),
+        ],
         2 => &[("port", "Port", Int), ("payload", "Payload", Multi)],
         4 => &[
             ("actionId", "Action", Action),
@@ -842,14 +962,20 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("timeout", "Timeout (ms)", Int),
         ],
         1012 => &[("key", "Key", Text), ("modifiers", "Modifiers", Int)],
-        1018 => &[("commandId", "Command ID", Text), ("command", "Command Phrase", Text)],
-        1019 => &[("commandId", "Command ID", Text), ("state", "State", Pick(STATE))],
+        1018 => &[
+            ("commandId", "Voice command", VoiceCommand),
+            ("command", "Phrases (one per line)", Multi),
+        ],
+        1019 => &[
+            ("commandId", "Voice command", VoiceCommand),
+            ("state", "State", Pick(STATE)),
+        ],
         1025 => &[
             ("audioDeviceId", "Audio Device ID", Text),
             ("audioDeviceName", "Audio Device Name", Text),
         ],
         9001 => &[
-            ("device", "Device", Text),
+            ("device", "Device (none: the first)", Suggest("midi.outputs")),
             ("name", "Name", Text),
             ("sendNoteOff", "Send Note Off", Bool),
             ("channel", "Channel", Int),
@@ -858,14 +984,14 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("duration", "Duration (ms)", Int),
         ],
         9002 => &[
-            ("device", "Device", Text),
+            ("device", "Device (none: the first)", Suggest("midi.outputs")),
             ("name", "Name", Text),
             ("channel", "Channel", Int),
             ("controller", "Controller", Int),
             ("value", "Value", Int),
         ],
         9003 => &[
-            ("device", "Device", Text),
+            ("device", "Device (none: the first)", Suggest("midi.outputs")),
             ("name", "Name", Text),
             ("command", "Command", Text),
             ("channel", "Channel", Int),
@@ -980,7 +1106,14 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("count", "Line Number", Int),
             ("variableName", "Variable Name", Text),
         ],
-        1030 => &[("fileTailId", "File Tail ID", Text), ("state", "State", Pick(STATE))],
+        1030 => &[("fileTailId", "File tail", FileTail), ("state", "State", Pick(STATE))],
+        1024 => &[
+            ("toastId", "Toast id", Text),
+            ("title", "Title", Text),
+            ("text", "Text", Multi),
+            ("attribution", "Attribution (empty: Streamerz)", Text),
+            ("iconPath", "Icon file (empty: Streamerz's)", Text),
+        ],
         1039 => &[("file", "File", Text), ("variableName", "Variable Name", Text)],
         1040 => &[("folder", "Folder", Text), ("variableName", "Variable Name", Text)],
         99901 | 99902 | 99904 => &[("random", "Random", Bool)],
@@ -998,7 +1131,7 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
     Some(match kind {
         401 | 402 => &[("commandId", "Command", Command)],
         701 => &[("timerId", "Timer", Timer)],
-        702 | 706 => &[],
+        702 | 706 | 99804..=99809 | 99825..=99826 | 99830..=99842 => &[],
         709 | 711 | 712 => &[
             ("variableName", "Variable (none: any)", Text),
             ("persisted", "Persisted", Pick(PERSISTED)),
@@ -1061,22 +1194,24 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
         29001 | 29002 => &[("instanceId", "Instance", Text)],
         29003 => &[("instanceId", "Instance", Text), ("eventName", "Event Name", Text)],
         29004 => &[("instanceId", "Instance", Text), ("signalName", "Signal Name", Text)],
-        301 => &[("culture", "Culture", Text)],
-        302 => &[("commandId", "Command ID", Text)],
+        301 => &[],
+        302 => &[("commandId", "Voice command (none: any)", VoiceCommand)],
         15001 => &[
-            ("device", "Device", Text),
-            ("channel", "Channel", Int),
-            ("status", "Status / Type", Text),
+            ("device", "Device (none: any)", Suggest("midi.inputs")),
+            ("commandCode", "Command (none: any)", Pick(crate::midi::COMMANDS)),
+            ("channel", "Channel (0: any)", Int),
+            ("data1", "Note or controller (none: any)", Text),
         ],
-        16001 => &[("keyCode", "Keys", Keys)],
-        16002 => &[],
+        16001 => &[("keyCode", "Keys", Keys), ("", "", Access(false))],
+        16002 => &[("button", "Button", MouseButton), ("", "", Access(true))],
         705 => &[("actionName", "Action Name", Text)],
         17001 => &[("buttonId", "Button ID", Text)],
         17002 => &[("device", "Device", Text)],
         17003 => &[("device", "Device", Text)],
         17004 => &[("device", "Device", Text)],
-        501..=504 => &[("watcherId", "Watcher ID", Text), ("path", "Path", Text)],
-        511 => &[("tailId", "Tail ID", Text), ("path", "Path", Text)],
+        34001 => &[("webhookName", "Webhook name (none: any)", Text)],
+        501..=504 => &[("watcherId", "Watcher (none: any)", FileWatcher)],
+        511 => &[("tailId", "File tail (none: any)", FileTail)],
         703 | 704 => &[("processName", "Process Name", Text)],
         _ => return None,
     })
@@ -1091,6 +1226,9 @@ pub struct Lists {
     actions: Vec<(String, String, Ids, Ids)>,
     queues: Ids,
     timers: Ids,
+    file_watchers: Ids,
+    file_tails: Ids,
+    voice_commands: Ids,
     commands: Ids,
     user_groups: Ids,
     clients: Ids,
@@ -1156,6 +1294,9 @@ impl Lists {
             actions,
             queues,
             timers: ids(&c.timers),
+            file_watchers: ids(&c.file_watchers),
+            file_tails: ids(&c.file_tails),
+            voice_commands: ids(&c.voice_commands),
             commands: ids(&c.commands),
             user_groups: ids(&c.groups),
             clients: ids(&c.websockets.connections),
@@ -1208,9 +1349,13 @@ enum Widget {
     Pick(Choice),
     Id(Choice, Rc<RefCell<Vec<String>>>),
     Name(InputChoice),
+    Expression(InputChoice, String),
     Map(MultilineInput),
     Lines(MultilineInput),
     Keys(Rc<Cell<(i64, i64)>>),
+    MouseButton(Rc<Cell<i64>>),
+    /// Shown, not saved.
+    Note,
 }
 
 /// The form's answer.
@@ -1226,6 +1371,87 @@ fn text(v: Option<&Value>) -> String {
 }
 
 /// Edit `o`'s fields `fields`. The result keeps every other field of `o`, in place.
+/// The access note's height: its text and its button.
+const ACCESS_H: i32 = 36 + ROW;
+
+/// How this computer catches a Key Press or Mouse Click trigger (see `hotkeys::access_note`), with the
+/// button that allows reading the devices or takes it back.
+fn access_note(col: &mut Flex, mouse: bool) {
+    let mut block = Flex::default().column();
+    col.fixed(&block, ACCESS_H);
+    block.set_pad(4);
+    let mut text = Frame::default().with_align(
+        fltk::enums::Align::Left | fltk::enums::Align::Inside | fltk::enums::Align::Wrap | fltk::enums::Align::Top,
+    );
+    text.set_label_size(12);
+    text.set_label_color(super::muted());
+    let mut bar = Flex::default().row();
+    let mut b = fltk::button::Button::default();
+    bar.fixed(&b, 170);
+    Frame::default();
+    bar.end();
+    block.fixed(&bar, ROW);
+    block.end();
+    let mut show = {
+        let (mut text, mut b, mut bar, mut block) = (text.clone(), b.clone(), bar.clone(), block.clone());
+        move || {
+            let (note, fix) = crate::hotkeys::access_note(mouse);
+            text.set_label(&note.replace('@', "@@"));
+            match fix {
+                Some(f) => {
+                    b.set_label(crate::i18n::tr(if f == crate::hotkeys::Fix::Allow {
+                        "btn.allow_access"
+                    } else {
+                        "btn.remove_access"
+                    }));
+                    super::with_icon(&mut b);
+                    let file = if mouse {
+                        "70-streamerz-mice.rules"
+                    } else {
+                        "70-streamerz-keyboards.rules"
+                    };
+                    b.set_tooltip(&crate::i18n::trf(
+                        "input.allow_tip",
+                        &[("file", &format!("/etc/udev/rules.d/{file}"))],
+                    ));
+                    bar.show();
+                }
+                None => bar.hide(),
+            }
+            block.layout();
+            block.redraw();
+        }
+    };
+    show();
+    #[cfg(not(windows))]
+    b.set_callback(move |b| {
+        let kind = if mouse {
+            crate::devinput::Kind::Mice
+        } else {
+            crate::devinput::Kind::Keyboards
+        };
+        let install = crate::hotkeys::access_note(mouse).1 == Some(crate::hotkeys::Fix::Allow);
+        b.deactivate();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || drop(tx.send(crate::devinput::grant(kind, install))));
+        let got = loop {
+            if let Ok(r) = rx.try_recv() {
+                break r;
+            }
+            fltk::app::wait_for(0.1).ok();
+        };
+        b.activate();
+        match got {
+            Ok(()) if !install => super::dialogs::alert(crate::i18n::tr("input.removed")),
+            Ok(()) => {}
+            Err(e) => super::dialogs::alert(&e),
+        }
+        show();
+    });
+    #[cfg(windows)]
+    let _ = &mut b;
+}
+
 pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
     let tall = |w: &W| matches!(w, Multi | Map | Lines);
     let check = |w: &W| matches!(w, Bool | Bit(_));
@@ -1240,17 +1466,52 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
         .map(|(f, &shared)| match () {
             _ if shared => 0,
             _ if tall(&f.2) => 84,
+            _ if matches!(f.2, Access(_)) => ACCESS_H + 4,
             _ => ROW + 4,
         })
         .sum::<i32>()
         + ROW
         + 34;
-    let (mut win, answer) = window(560, h.max(120), title);
-    let mut col = Flex::new(10, 10, 540, h.max(120) - 20, None).column();
+    let visible_h = h.clamp(120, 600);
+    let (mut win, answer) = window(560, visible_h, title);
+    // The song request action has many optional rules and replies. Keep them in separate
+    // tabs so the common operation is visible without scrolling through advanced options.
+    let song = fields.iter().any(|f| f.1 == "spotify.operation");
+    let tab_y = if song { 35 } else { 10 };
+    let area_h = visible_h - ROW - 34 - (tab_y - 10);
+    let mut tabs = song.then(|| fltk::group::Tabs::new(10, 10, 540, visible_h - ROW - 34, None));
+    let mut page = song.then(|| fltk::group::Group::new(10, tab_y, 540, area_h, crate::i18n::tr("spotify.tab_action")));
+    let mut scroll = fltk::group::Scroll::new(10, tab_y, 540, area_h, None);
+    scroll.set_type(fltk::group::ScrollType::Vertical);
+    let content_h = if song {
+        (5 * (ROW + 4)).max(area_h)
+    } else {
+        (h - ROW - 34).max(area_h)
+    };
+    let mut col = Flex::new(10, tab_y, 526, content_h, None).column();
     col.set_pad(4);
     let mut ws = Vec::new();
     let mut half: Option<Flex> = None;
-    for ((key, label, w), &shared) in fields.iter().zip(&shares) {
+    for (index, ((key, label, w), &shared)) in fields.iter().zip(&shares).enumerate() {
+        if song && (index == 5 || index == 17) {
+            Frame::default();
+            col.end();
+            scroll.end();
+            if let Some(p) = &mut page {
+                p.end();
+            }
+            let label = crate::i18n::tr(if index == 5 {
+                "spotify.tab_rules"
+            } else {
+                "spotify.tab_replies"
+            });
+            page = Some(fltk::group::Group::new(10, tab_y, 540, area_h, label));
+            scroll = fltk::group::Scroll::new(10, tab_y, 540, area_h, None);
+            scroll.set_type(fltk::group::ScrollType::Vertical);
+            let count = if index == 5 { 12 } else { fields.len() - 17 };
+            col = Flex::new(10, tab_y, 526, (count as i32 * (ROW + 4)).max(area_h), None).column();
+            col.set_pad(4);
+        }
         let v = o.get(*key);
         if let Bool | Bit(_) = w {
             let r = match half.take() {
@@ -1276,12 +1537,35 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
             continue;
         }
         half = None;
-        let r = row(label);
+        if let Access(mouse) = w {
+            access_note(&mut col, *mouse);
+            ws.push(Widget::Note);
+            continue;
+        }
+        let label = field_label(label);
+        let mut r = row(label);
+        if song {
+            if let Some(label) = r.child(0) {
+                r.fixed(&label, 200);
+            }
+        }
         let widget = match w {
             Text => {
                 let mut i = Input::default();
                 i.set_value(&text(v));
+                if *key == "operation" && fields.iter().any(|f| f.1 == "spotify.operation") {
+                    i.set_tooltip(crate::i18n::tr("spotify.operation_help"));
+                }
                 Widget::Text(i)
+            }
+            Expression(values) => {
+                let mut c = InputChoice::default();
+                for value in *values {
+                    c.add(&item(value));
+                }
+                let original = text(v);
+                c.set_value(&original);
+                Widget::Expression(c, original)
             }
             Multi => {
                 let mut i = MultilineInput::default();
@@ -1306,13 +1590,16 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
                 c.set_value(v.and_then(Value::as_i64).unwrap_or(0) as i32);
                 Widget::Pick(c)
             }
-            Action | Queue | Timer | Command | UserGroup | Client | Server | ObsConnection | SlobsConnection | Sub
-            | Trigger => {
+            Action | Queue | Timer | FileWatcher | FileTail | VoiceCommand | Command | UserGroup | Client | Server
+            | ObsConnection | SlobsConnection | Sub | Trigger => {
                 let mut c = super::fit::choice();
                 let list = match w {
                     Action => lists.actions.iter().map(|a| (a.0.clone(), a.1.clone())).collect(),
                     Queue => lists.queues.clone(),
                     Timer => lists.timers.clone(),
+                    FileWatcher => lists.file_watchers.clone(),
+                    FileTail => lists.file_tails.clone(),
+                    VoiceCommand => lists.voice_commands.clone(),
                     Command => lists.commands.clone(),
                     UserGroup => lists.user_groups.clone(),
                     Client => lists.clients.clone(),
@@ -1389,7 +1676,22 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
                 });
                 Widget::Keys(combo)
             }
-            Bool | Bit(_) => unreachable!(),
+            MouseButton => {
+                let held = Rc::new(Cell::new(o.get(*key).and_then(Value::as_i64).unwrap_or(0)));
+                let mut b = fltk::button::Button::default().with_label(crate::hotkeys::button_name(held.get()));
+                b.set_tooltip(crate::i18n::tr("dialogs.mouse.tip"));
+                b.set_callback({
+                    let held = held.clone();
+                    move |b| {
+                        if let Some(n) = super::dialogs::capture_button(held.get()) {
+                            held.set(n);
+                            b.set_label(crate::hotkeys::button_name(n));
+                        }
+                    }
+                });
+                Widget::MouseButton(held)
+            }
+            Bool | Bit(_) | Access(_) => unreachable!(),
         };
         r.end();
         col.fixed(&r, if tall(w) { 80 } else { ROW });
@@ -1426,7 +1728,15 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
         col.fixed(&f, ROW);
     }
     Frame::default();
-    let mut bar = Flex::default().row();
+    col.end();
+    scroll.end();
+    if let Some(p) = &mut page {
+        p.end();
+    }
+    if let Some(t) = &mut tabs {
+        t.end();
+    }
+    let mut bar = Flex::new(10, visible_h - ROW - 14, 540, ROW + 4, None).row();
     bar.set_pad(8);
     let json = Rc::new(Cell::new(false));
     let mut j = button(&mut bar, "Edit JSON", 100);
@@ -1439,8 +1749,6 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
     });
     ok_cancel(&mut bar, &answer, !fields.iter().any(|f| tall(&f.2)));
     bar.end();
-    col.fixed(&bar, ROW + 4);
-    col.end();
     win.end();
     let mut out = o.clone();
     let ok = run(&mut win, &answer, || {
@@ -1486,6 +1794,13 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
                     }
                 },
                 Widget::Name(c) => c.value().unwrap_or_default().trim().into(),
+                Widget::Expression(c, original) => {
+                    let value = c.value().unwrap_or_default();
+                    if &value == original {
+                        continue;
+                    }
+                    value.trim().into()
+                }
                 Widget::Map(i) => Value::Object(
                     i.value()
                         .lines()
@@ -1495,6 +1810,8 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
                         .collect(),
                 ),
                 Widget::Lines(i) => i.value().lines().map(Value::from).collect(),
+                Widget::Note => continue,
+                Widget::MouseButton(c) => c.get().into(),
                 Widget::Keys(c) => {
                     let (k, m) = c.get();
                     if k == 0 {
@@ -1531,6 +1848,18 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spotify_song_form_groups_and_expression_suggestions() {
+        let fields = sub_fields(99802).unwrap();
+        assert_eq!(fields[0].0, "operation");
+        assert_eq!(fields[5].0, "maxPerUser");
+        assert_eq!(fields[17].0, "msgNotAllowed");
+        assert!(matches!(fields[0].2, Expression(_)));
+        for key in ["skipOwn", "blockExplicit"] {
+            assert!(matches!(fields.iter().find(|f| f.0 == key).unwrap().2, Expression(_)));
+        }
+    }
 
     #[test]
     fn every_core_type_has_a_form() {

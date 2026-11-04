@@ -1,0 +1,152 @@
+[
+  {
+    "name": "obs: source visibility on, off and toggled, by connection",
+    "fakes": {"obs": {"GetSceneItemId": {"sceneItemId": 7}, "GetSceneItemEnabled": {"sceneItemEnabled": true}}},
+    "actions": [{"name": "vis", "subActions": [
+      {"type": 30, "connectionId": "c2", "sceneName": "Main", "sourceName": "%cam%", "state": 0},
+      {"type": 30, "sceneName": "Main", "sourceName": "Cam", "state": 1},
+      {"type": 30, "sceneName": "Main", "sourceName": "Cam", "state": 2}]}],
+    "steps": [{"run": "vis", "args": {"cam": "Cam"}}],
+    "expect": {"calls": [
+      {"call": "GetSceneItemId", "connection": "c2", "data": {"sceneName": "Main", "sourceName": "Cam"}},
+      {"call": "SetSceneItemEnabled", "connection": "c2", "data": {"sceneName": "Main", "sceneItemId": 7, "sceneItemEnabled": true}},
+      {"call": "SetSceneItemEnabled", "connection": null, "data": {"sceneItemEnabled": false}},
+      {"call": "GetSceneItemEnabled"},
+      {"call": "SetSceneItemEnabled", "data": {"sceneItemEnabled": false}}]}
+  },
+  {
+    "name": "obs: groups and scenes: random visible, hide all",
+    "fakes": {"obs": {"GetGroupSceneItemList": {"sceneItems": [{"sceneItemId": 1}, {"sceneItemId": 2}]},
+                      "GetSceneItemList": {"sceneItems": [{"sceneItemId": 5}]}}},
+    "actions": [{"name": "groups", "subActions": [
+      {"type": 31, "groupName": "Alerts"}, {"type": 32, "groupName": "Alerts"},
+      {"type": 325, "sceneName": "Main"}, {"type": 326, "sceneName": "Main"}]}],
+    "steps": [{"run": "groups"}],
+    "expect": {"calls": [
+      {"call": "GetGroupSceneItemList", "data": {"sceneName": "Alerts"}},
+      {"call": "SetSceneItemEnabled", "data": {"sceneName": "Alerts", "sceneItemId": 1}},
+      {"call": "SetSceneItemEnabled", "data": {"sceneName": "Alerts", "sceneItemId": 2}},
+      {"call": "GetGroupSceneItemList"},
+      {"call": "SetSceneItemEnabled", "data": {"sceneItemId": 1, "sceneItemEnabled": false}},
+      {"call": "SetSceneItemEnabled", "data": {"sceneItemId": 2, "sceneItemEnabled": false}},
+      {"call": "GetSceneItemList", "data": {"sceneName": "Main"}},
+      {"call": "SetSceneItemEnabled", "data": {"sceneName": "Main", "sceneItemId": 5, "sceneItemEnabled": false}},
+      {"call": "GetSceneItemList"},
+      {"call": "SetSceneItemEnabled", "data": {"sceneName": "Main", "sceneItemId": 5, "sceneItemEnabled": true}}]}
+  },
+  {
+    "name": "obs: streaming, recording and replay buffer states",
+    "fakes": {"obs": {}},
+    "actions": [{"name": "outputs", "subActions": [
+      {"type": 33, "state": 0}, {"type": 33, "state": 1}, {"type": 33, "state": 2},
+      {"type": 45, "state": 0}, {"type": 45, "state": 1}, {"type": 45, "state": 2}, {"type": 45, "state": 3}, {"type": 45, "state": 4},
+      {"type": 321, "state": 0}, {"type": 321, "state": 1}, {"type": 321, "state": 2}, {"type": 321, "state": 3}]}],
+    "steps": [{"run": "outputs"}],
+    "expect": {"calls": ["obs StartStream", "obs StopStream", "obs ToggleStream",
+      "obs StartRecord", "obs StopRecord", "obs PauseRecord", "obs ResumeRecord", "obs ToggleRecord",
+      "obs StartReplayBuffer", "obs StopReplayBuffer", "obs SaveReplayBuffer", "obs ToggleReplayBuffer"]}
+  },
+  {
+    "name": "obs: active scene, current scene and status",
+    "fakes": {"obs": {"GetCurrentProgramScene": {"currentProgramSceneName": "Brb"},
+                      "GetStreamStatus": {"outputActive": true}, "GetRecordStatus": {"outputActive": false}}},
+    "actions": [{"name": "scene", "subActions": [{"type": 34, "sceneName": "%to%"}, {"type": 43}, {"type": 328}]}],
+    "steps": [{"run": "scene", "args": {"to": "Brb"}}],
+    "expect": {
+      "calls": [{"call": "SetCurrentProgramScene", "data": {"sceneName": "Brb"}}, "obs GetCurrentProgramScene", "obs GetStreamStatus", "obs GetRecordStatus"],
+      "runs": [{"action": "scene", "after": {"currentScene": "Brb", "obs.isConnected": true, "obs.isStreaming": true, "obs.isRecording": false}}]}
+  },
+  {
+    "name": "obs: source and scene filters, random filter, hide filters",
+    "fakes": {"obs": {"GetSourceFilter": {"filterEnabled": false},
+                      "GetSourceFilterList": {"filters": [{"filterName": "Blur", "filterEnabled": true}]}}},
+    "actions": [{"name": "filters", "subActions": [
+      {"type": 35, "sourceName": "Cam", "filterName": "Blur", "state": 1},
+      {"type": 35, "sourceName": "Cam", "filterName": "Blur", "state": 2},
+      {"type": 47, "sceneName": "Main", "filterName": "Glow", "state": 0},
+      {"type": 40, "sourceName": "Cam", "state": 2},
+      {"type": 41, "sourceName": "Cam"}]}],
+    "steps": [{"run": "filters"}],
+    "expect": {"calls": [
+      {"call": "SetSourceFilterEnabled", "data": {"sourceName": "Cam", "filterName": "Blur", "filterEnabled": false}},
+      {"call": "GetSourceFilter", "data": {"sourceName": "Cam", "filterName": "Blur"}},
+      {"call": "SetSourceFilterEnabled", "data": {"filterEnabled": true}},
+      {"call": "SetSourceFilterEnabled", "data": {"sourceName": "Main", "filterName": "Glow", "filterEnabled": true}},
+      {"call": "GetSourceFilterList", "data": {"sourceName": "Cam"}},
+      {"call": "SetSourceFilterEnabled", "data": {"filterName": "Blur", "filterEnabled": false}},
+      {"call": "GetSourceFilterList"},
+      {"call": "SetSourceFilterEnabled", "data": {"filterName": "Blur", "filterEnabled": false}}]}
+  },
+  {
+    "name": "obs: flip and rotate a source",
+    "fakes": {"obs": {"GetSceneItemId": {"sceneItemId": 3}, "GetSceneItemTransform": {"sceneItemTransform": {"scaleX": 1.0, "scaleY": 2.0, "rotation": 350}}}},
+    "actions": [{"name": "move", "subActions": [
+      {"type": 36, "sceneName": "Main", "sourceName": "Cam", "flipMode": 2},
+      {"type": 37, "sceneName": "Main", "sourceName": "Cam", "degrees": 20, "additive": true},
+      {"type": 37, "sceneName": "Main", "sourceName": "Cam", "degrees": 90, "additive": false}]}],
+    "steps": [{"run": "move"}],
+    "expect": {"calls": [
+      {"call": "SetSceneItemTransform", "data": {"sceneItemId": 3, "sceneItemTransform": {"scaleX": -1.0, "scaleY": -2.0}}},
+      {"call": "SetSceneItemTransform", "data": {"sceneItemTransform": {"rotation": 10}}},
+      {"call": "SetSceneItemTransform", "data": {"sceneItemTransform": {"rotation": 90}}}]}
+  },
+  {
+    "name": "obs: input settings (browser url, text, media file, image file, color)",
+    "fakes": {"obs": {}},
+    "actions": [{"name": "inputs", "subActions": [
+      {"type": 38, "sourceName": "Web", "url": "https://x/%id%"},
+      {"type": 39, "sourceName": "Txt", "text": "hi %user%"},
+      {"type": 322, "sourceName": "Vid", "fileName": "C:/a.mp4"},
+      {"type": 323, "sourceName": "Img", "fileName": "C:/a.png"},
+      {"type": 327, "sourceName": "Bg", "color": "#FF102030"}]}],
+    "steps": [{"run": "inputs", "args": {"id": "9", "user": "ana"}}],
+    "expect": {"calls": [
+      {"call": "SetInputSettings", "data": {"inputName": "Web", "inputSettings": {"url": "https://x/9"}, "overlay": true}},
+      {"call": "SetInputSettings", "data": {"inputName": "Txt", "inputSettings": {"text": "hi ana"}}},
+      {"call": "SetInputSettings", "data": {"inputName": "Vid", "inputSettings": {"local_file": "C:/a.mp4"}}},
+      {"call": "SetInputSettings", "data": {"inputName": "Img", "inputSettings": {"file": "C:/a.png"}}},
+      {"call": "SetInputSettings", "data": {"inputName": "Bg"}}]}
+  },
+  {
+    "name": "obs: mute, audio track, media actions",
+    "fakes": {"obs": {"GetInputAudioTracks": {"inputAudioTracks": {"2": true}}}},
+    "actions": [{"name": "audio", "subActions": [
+      {"type": 42, "sourceName": "Mic", "state": 0}, {"type": 42, "sourceName": "Mic", "state": 1}, {"type": 42, "sourceName": "Mic", "state": 2},
+      {"type": 44, "sourceName": "Mic", "track": 1, "state": 2},
+      {"type": 49, "sourceName": "Vid", "state": 0}, {"type": 49, "sourceName": "Vid", "state": 3}]}],
+    "steps": [{"run": "audio"}],
+    "expect": {"calls": [
+      {"call": "SetInputMute", "data": {"inputName": "Mic", "inputMuted": true}},
+      {"call": "SetInputMute", "data": {"inputMuted": false}},
+      {"call": "ToggleInputMute", "data": {"inputName": "Mic"}},
+      {"call": "GetInputAudioTracks"},
+      {"call": "SetInputAudioTracks", "data": {"inputName": "Mic", "inputAudioTracks": {"2": false}}},
+      {"call": "TriggerMediaInputAction", "data": {"mediaAction": "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY"}},
+      {"call": "TriggerMediaInputAction", "data": {"mediaAction": "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP"}}]}
+  },
+  {
+    "name": "obs: raw request, results into arguments",
+    "fakes": {"obs": {"GetVersion": {"obsVersion": "31.0.0", "platform": "linux"}}},
+    "actions": [{"name": "raw", "subActions": [
+      {"type": 46, "raw": "{\"requestType\": \"GetVersion\", \"requestData\": {}}", "resultsToArgs": true},
+      {"type": 1020, "logLevel": 2, "message": "obs %obsRaw.obsVersion%"}]}],
+    "steps": [{"run": "raw"}],
+    "expect": {"calls": ["obs GetVersion"], "log": ["obs 31.0.0"]}
+  },
+  {
+    "name": "obs: screenshot, record chapter and scene item properties",
+    "fakes": {"obs": {"GetSceneItemId": {"sceneItemId": 4},
+      "GetSceneItemTransform": {"sceneItemTransform": {"positionX": 10, "positionY": 20, "rotation": 0, "scaleX": 1, "scaleY": 1, "width": 640, "height": 360}},
+      "GetSceneItemEnabled": {"sceneItemEnabled": true}, "GetSceneItemLocked": {"sceneItemLocked": false}, "GetInputMute": {"inputMuted": true}}},
+    "actions": [{"name": "shots", "subActions": [
+      {"type": 48, "sceneName": "Main", "sourceName": "", "path": "/tmp/shot.jpg", "quality": 80},
+      {"type": 329, "chapterName": "Boss %n%"},
+      {"type": 324, "sceneName": "Main", "sourceName": "Cam"}]}],
+    "steps": [{"run": "shots", "args": {"n": 2}}],
+    "expect": {
+      "calls": [{"call": "SaveSourceScreenshot", "data": {"sourceName": "Main", "imageFilePath": "/tmp/shot.jpg", "imageFormat": "jpg", "imageCompressionQuality": 80}},
+                {"call": "CreateRecordChapter", "data": {"chapterName": "Boss 2"}},
+                "obs GetSceneItemId", "obs GetSceneItemTransform", "obs GetSceneItemEnabled", "obs GetSceneItemLocked", "obs GetInputMute"],
+      "runs": [{"action": "shots", "after": {"success": true, "props.position.x": 10, "props.visible": true, "props.muted": true, "props.width": 640}}]}
+  }
+]

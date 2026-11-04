@@ -583,6 +583,32 @@ mod tests {
         assert_eq!(w["kick"]["clientSecret"], "new");
     }
 
+    #[test]
+    fn spotify_tokens_are_protected_and_restored() {
+        let mut config = serde_json::to_value(crate::Config::default()).unwrap();
+        config["spotify"]["token"]["accessToken"] = "access".into();
+        config["spotify"]["token"]["refreshToken"] = "refresh".into();
+        let secrets = split(&mut config);
+        assert_eq!(config["spotify"]["token"]["accessToken"], "");
+        assert_eq!(config["spotify"]["token"]["refreshToken"], "");
+        assert_eq!(secrets["spotify/token/accessToken"], "access");
+        assert_eq!(secrets["spotify/token/refreshToken"], "refresh");
+        merge(&mut config, &secrets);
+        assert_eq!(config["spotify"]["token"]["refreshToken"], "refresh");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dpapi_round_trip_and_invalid_data() {
+        let plain = b"Streamerz test secret\0with binary data";
+        let sealed = protect(plain).unwrap();
+        assert!(sealed.starts_with("dpapi:"));
+        assert_eq!(unprotect(&sealed, false, 0).unwrap(), plain);
+        assert!(unprotect("dpapi:invalid!", false, 0).is_err());
+        assert!(unprotect("dpapi:AA==", false, 0).is_err());
+        assert!(unprotect("other:AA==", false, 0).is_err());
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn cipher_and_transient_errors() {

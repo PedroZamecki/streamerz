@@ -102,7 +102,19 @@ pub async fn run(e: Rc<Engine>) {
     let mut extra: Vec<tokio::task::AbortHandle> = Vec::new();
     let mut last = None;
     let mut last_extra = None;
+    let mut deck: Option<(crate::streamdeck::Settings, Option<tokio::task::AbortHandle>)> = None;
     loop {
+        // The Stream Deck plugin's server: on only when turned on, restarted when its settings change.
+        let now_deck = rx.borrow().stream_deck.clone();
+        if deck.as_ref().map(|d| &d.0) != Some(&now_deck) {
+            if let Some(h) = deck.take().and_then(|d| d.1) {
+                h.abort();
+            }
+            let h = now_deck
+                .auto_start
+                .then(|| tokio::task::spawn_local(crate::streamdeck::run(e.clone(), now_deck.clone())).abort_handle());
+            deck = Some((now_deck, h));
+        }
         let now_extra = {
             let c = rx.borrow();
             (c.websockets.connections.clone(), c.websockets.servers.clone())
@@ -145,6 +157,10 @@ pub async fn run(e: Rc<Engine>) {
         }
         // Opt-in: listens only while a Hotkey Press (or Mouse Click) trigger is used.
         e.hotkeys_sync();
+        // Opt-in: the process list is watched only while Process Started or Stopped is used.
+        e.processes_sync();
+        e.midi_sync();
+        e.speech_sync();
         if rx.changed().await.is_err() {
             return;
         }
@@ -153,6 +169,23 @@ pub async fn run(e: Rc<Engine>) {
 
 fn flag(o: &Obj, k: &str) -> bool {
     o.get(k).and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// A remote instance reached by a WebSocket client: it leaves (Remote Instance Disconnected) when
+/// this is dropped.
+struct RemoteGuard(Rc<Engine>, Option<String>);
+
+impl Drop for RemoteGuard {
+    fn drop(&mut self) {
+        if let Some(id) = self.1.take() {
+            let name = self.0.remote_remove(&id);
+            self.0.remote_disconnected(&id, &name);
+        }
+    }
+}
+
+fn text_of(v: &Value) -> String {
+    v.as_str().unwrap_or("").to_string()
 }
 
 fn field<'a>(o: &'a Obj, k: &str) -> &'a str {
@@ -216,38 +249,54 @@ async fn ws_client(e: Rc<Engine>, c: Obj) {
             Ok((ws, _)) => {
                 crate::say(format!("WebSocket client {}: connected to {url}", field(&c, "name")));
                 ws_event(&e, true, "Open", &c, Obj::new());
-                e.remote_connected(field(&c, "id"), field(&c, "name"));
-                let (_sink, mut stream) = ws.split();
-                while let Some(Ok(m)) = stream.next().await {
+                let (mut sink, mut stream) = ws.split();
+                // What goes out (remote triggers and signals), once the server said who it is.
+                let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                // Leaves the remote instances however the connection ends (closed, or the task aborted
+                // when the settings change).
+                let mut remote = RemoteGuard(e.clone(), None);
+                loop {
+                    let m = tokio::select! {
+                        m = stream.next() => match m { Some(Ok(m)) => m, _ => break },
+                        o = out_rx.recv() => {
+                            if let Some(o) = o {
+                                if sink.send(Message::Text(o.into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                            continue;
+                        }
+                    };
                     match frame_text(m) {
                         Some(Ok(text)) => {
                             if let Ok(val) = serde_json::from_str::<Value>(&text) {
+                                // A Streamer.bot or Streamerz server: a remote instance from now on.
+                                let info = &val["info"];
+                                if remote.1.is_none() && val["request"] == "Hello" && info["instanceId"].is_string() {
+                                    let (id, name) = (text_of(&info["instanceId"]), text_of(&info["name"]));
+                                    e.remote_add(&id, &name, out_tx.clone());
+                                    e.remote_connected(&id, &name);
+                                    remote.1 = Some(id);
+                                }
                                 if let Some(event) = val.get("event") {
                                     if event.get("source").and_then(Value::as_str) == Some("StreamerbotRemote") {
                                         let ev_type = event.get("type").and_then(Value::as_str).unwrap_or("");
                                         let data =
                                             val.get("data").and_then(Value::as_object).cloned().unwrap_or_default();
                                         let inst = data.get("instanceId").and_then(Value::as_str).unwrap_or("");
+                                        let args = data
+                                            .get("arguments")
+                                            .and_then(Value::as_object)
+                                            .cloned()
+                                            .unwrap_or_default();
                                         match ev_type {
                                             "InstanceTrigger" => {
-                                                let ev_name =
-                                                    data.get("eventName").and_then(Value::as_str).unwrap_or("");
-                                                let args = data
-                                                    .get("arguments")
-                                                    .and_then(Value::as_object)
-                                                    .cloned()
-                                                    .unwrap_or_default();
-                                                e.fire_remote_trigger(inst, ev_name, args);
+                                                let ev = data.get("eventName").and_then(Value::as_str).unwrap_or("");
+                                                e.fire_remote_trigger(inst, ev, args);
                                             }
                                             "InstanceSignal" => {
-                                                let sig_name =
-                                                    data.get("signalName").and_then(Value::as_str).unwrap_or("");
-                                                let args = data
-                                                    .get("arguments")
-                                                    .and_then(Value::as_object)
-                                                    .cloned()
-                                                    .unwrap_or_default();
-                                                e.deliver_remote_signal(inst, sig_name, args);
+                                                let sig = data.get("signalName").and_then(Value::as_str).unwrap_or("");
+                                                e.deliver_remote_signal(inst, sig, args);
                                             }
                                             _ => {}
                                         }
@@ -262,7 +311,7 @@ async fn ws_client(e: Rc<Engine>, c: Obj) {
                         None => {}
                     }
                 }
-                e.remote_disconnected(field(&c, "id"), field(&c, "name"));
+                drop(remote);
                 ws_event(&e, true, "Close", &c, Obj::new());
                 if !flag(&c, "reconnectOnDisconnect") {
                     return;
@@ -425,7 +474,7 @@ fn error(id: &Value, msg: &str) -> Value {
 
 /// Answer a WebSocket request (not Authenticate, Subscribe or UnSubscribe, which need the
 /// connection). None: an unknown request, answered with just its id.
-fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
+pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
     let id = req.get("id").cloned().unwrap_or(Value::Null);
     let get = |k: &str| req.get(k).and_then(Value::as_str).unwrap_or("");
     let persisted = req.get("persisted").and_then(Value::as_bool).unwrap_or(true);
@@ -605,7 +654,26 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
             ok(&id, json!({}))
         }
         // Streamerz's own: read and write what's set up (actions, commands...), for the MCP server.
-        "StreamerzGet" | "StreamerzSave" | "StreamerzDelete" if !authed && e.config().websockets.enable_auth => {
+        "StreamerzGet"
+        | "StreamerzSave"
+        | "StreamerzDelete"
+        | "StreamerzCountdown"
+        | "StreamerzOverlays"
+        | "StreamerzOverlayPublish"
+        | "StreamerzManageActionGroup"
+        | "StreamerzActionGroups"
+        | "StreamerzGroupIcon"
+        | "StreamerzActionExport"
+        | "StreamerzActionImport"
+        | "StreamerzGroupVariables"
+        | "StreamerzSetGroupVariables"
+        | "StreamerzTemplateAdd"
+        | "StreamerzGroupMeta"
+        | "StreamerzSetGroupMeta"
+        | "StreamerzGroupExport"
+        | "StreamerzSaveGroupFiles"
+            if !authed && e.config().websockets.enable_auth =>
+        {
             error(&id, "Authentication required to use this method")
         }
         "StreamerzPlugins" => {
@@ -631,6 +699,128 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
             Ok(v) => ok(&id, v),
             Err(m) => error(&id, &m),
         },
+        "StreamerzManageActionGroup"
+        | "StreamerzActionGroups"
+        | "StreamerzGroupVariables"
+        | "StreamerzSetGroupVariables"
+        | "StreamerzGroupMeta"
+        | "StreamerzSetGroupMeta"
+        | "StreamerzGroupExport"
+        | "StreamerzSaveGroupFiles" => match group_request(e, req) {
+            Ok(v) => ok(&id, v),
+            Err(m) => error(&id, &m),
+        },
+        "StreamerzTemplateAdd" => match crate::templates::TEMPLATES
+            .iter()
+            .find(|t| t.name.eq_ignore_ascii_case(get("name")))
+        {
+            None => error(&id, "template not found"),
+            Some(t) => {
+                let made = (t.make)();
+                let has_timers = !made.timers.is_empty();
+                let mut result = Ok(());
+                e.change(|c| result = made.add_to(c));
+                if has_timers {
+                    e.timers();
+                }
+                match result {
+                    Ok(()) => ok(&id, json!({})),
+                    Err(m) => error(&id, &m),
+                }
+            }
+        },
+        "StreamerzGroupIcon" => {
+            let group = get("group");
+            if group.is_empty() {
+                error(&id, "group is required")
+            } else if let Some(icon) = req.get("icon") {
+                if !icon.is_null() && crate::group_icons::decode(icon).is_none() {
+                    error(&id, "invalid icon")
+                } else {
+                    e.change(|c| {
+                        if icon.is_null() {
+                            c.action_group_icons.remove(group);
+                        } else {
+                            c.action_group_icons.insert(group.into(), icon.clone());
+                        }
+                    });
+                    ok(&id, json!({}))
+                }
+            } else {
+                ok(&id, json!({"icon": e.config().action_group_icons.get(group)}))
+            }
+        }
+        "StreamerzActionExport" => {
+            let ids: Vec<String> = req["ids"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect();
+            let meta = &req["meta"];
+            let get_meta = |k| meta.get(k).and_then(Value::as_str).unwrap_or("");
+            let export = crate::edit::export(
+                &e.config(),
+                &ids,
+                [
+                    get_meta("name"),
+                    get_meta("author"),
+                    get_meta("version"),
+                    get_meta("description"),
+                ],
+            );
+            ok(
+                &id,
+                json!({"export": export, "text": crate::model::write_export(&export)}),
+            )
+        }
+        "StreamerzActionImport" => {
+            if let Some(x) = req["export"].as_object() {
+                let programs = crate::edit::programs(x);
+                if !programs.is_empty() && req["allowPrograms"] != true {
+                    error(
+                        &id,
+                        "Import contains programs; confirm them before setting allowPrograms",
+                    )
+                } else {
+                    let mut result = Ok(Vec::new());
+                    e.change(|c| result = crate::edit::import(c, x));
+                    match result {
+                        Ok(unsupported) => ok(&id, json!({"unsupported": unsupported})),
+                        Err(msg) => error(&id, &msg),
+                    }
+                }
+            } else {
+                error(&id, "export must be an object")
+            }
+        }
+        "StreamerzOverlays" => {
+            let files: Vec<Value> = crate::overlays::list(&e.config())
+                .into_iter()
+                .map(|(g, f)| json!({"group": g, "file": f, "url": crate::overlays::url(&e.config(), &g, &f)}))
+                .collect();
+            let topics = e.overlay_topics();
+            ok(
+                &id,
+                json!({"overlays": files, "topics": topics, "base": crate::overlays::base(&e.config())}),
+            )
+        }
+        "StreamerzOverlayPublish" => {
+            let topic = get("topic").trim();
+            if topic.is_empty() {
+                error(&id, "topic is required")
+            } else {
+                e.overlay_publish(topic, req.get("value").cloned().unwrap_or(Value::Null));
+                ok(&id, json!({}))
+            }
+        }
+        "StreamerzCountdown" => {
+            let clock_id = get("clockId");
+            match crate::templates::clock::get(&e.config(), clock_id, crate::templates::clock::now_ms()) {
+                Some(snapshot) => ok(&id, json!({"clockId": clock_id, "snapshot": snapshot})),
+                None => error(&id, "Countdown not found"),
+            }
+        }
         // Dev mode only (STREAMERZ_DEV=1): fake chat in, and the chat that would have gone out.
         "InjectChat" if e.dev() => match e.inject_chat(
             get("platform"),
@@ -669,6 +859,13 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
                 e.set_chat_viewers(platform, req.get("count").and_then(Value::as_u64));
                 ok(&id, json!({}))
             }
+        }
+        // Dev mode only: a Twitch ad break of "seconds" as overlays see it (the Ad Run trigger is FireTrigger's).
+        "SimulateAdBreak" if e.dev() => {
+            let seconds = req.get("seconds").and_then(Value::as_u64).unwrap_or(30);
+            let automatic = req.get("automatic").and_then(Value::as_bool).unwrap_or(false);
+            e.overlay_ad(seconds, automatic, &crate::engine::globals::iso_now());
+            ok(&id, json!({}))
         }
         // Dev mode only: a message pinned in a chat ("seconds" 0: no end), or none ("unpin": true).
         "InjectPin" if e.dev() => {
@@ -752,6 +949,115 @@ fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value> {
 
 /// The config's lists that can be read and written, by name.
 const KINDS: [&str; 5] = ["action", "command", "timer", "group", "queue"];
+
+/// The requests about action groups: StreamerzManageActionGroup {operation: create|rename|delete, group,
+/// name?}, StreamerzActionGroups, StreamerzGroupVariables {group} and StreamerzSetGroupVariables {group,
+/// values}, StreamerzGroupMeta {group} and StreamerzSetGroupMeta {group, meta}, StreamerzGroupExport
+/// {group, meta?} and StreamerzSaveGroupFiles {group, folder}.
+fn group_request(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
+    use crate::groups;
+    let text = |k: &str| req.get(k).and_then(Value::as_str).unwrap_or("");
+    let group = text("group");
+    if group.is_empty() && req["request"] != "StreamerzActionGroups" {
+        return Err("group is required".into());
+    }
+    let known = |e: &Rc<Engine>| {
+        if groups::exists(&e.config(), group) {
+            Ok(())
+        } else {
+            Err("group not found".to_string())
+        }
+    };
+    match req["request"].as_str().unwrap_or("") {
+        "StreamerzManageActionGroup" => {
+            let mut result = Ok(());
+            let (op, name) = (text("operation"), text("name"));
+            e.change(|c| {
+                result = match op {
+                    "create" if groups::create(c, group) => Ok(()),
+                    "create" => Err("group is empty or already exists"),
+                    "rename" if groups::rename(c, group, name) => Ok(()),
+                    "rename" => Err("group not found, or the new name is empty or already exists"),
+                    "delete" if groups::exists(c, group) => {
+                        groups::remove(c, group);
+                        Ok(())
+                    }
+                    "delete" => Err("group not found"),
+                    _ => Err("unknown operation"),
+                };
+            });
+            result.map(|_| json!({})).map_err(str::to_string)
+        }
+        "StreamerzActionGroups" => Ok(json!({"groups": groups::names(&e.config())})),
+        "StreamerzGroupVariables" => {
+            known(e)?;
+            Ok(json!({"values": groups::values(&e.config(), group)}))
+        }
+        "StreamerzSetGroupVariables" => {
+            known(e)?;
+            let values = req["values"].as_object().ok_or("values must be an object")?.clone();
+            let mut result = Ok(());
+            e.change(|c| result = groups::set_values(c, group, values));
+            result.map(|_| json!({}))
+        }
+        "StreamerzGroupMeta" => {
+            known(e)?;
+            let c = e.config();
+            let (commands, timers) = groups::members(&c, group);
+            Ok(json!({"meta": groups::meta(&c, group), "commands": commands, "timers": timers}))
+        }
+        "StreamerzSetGroupMeta" => {
+            known(e)?;
+            let meta: groups::Meta =
+                serde_json::from_value(req["meta"].clone()).map_err(|err| format!("invalid meta: {err}"))?;
+            let mut result = Ok(());
+            e.change(|c| {
+                let ids = |list: &[crate::model::Obj]| -> Vec<String> {
+                    list.iter()
+                        .filter_map(|o| o.get("id").and_then(Value::as_str).map(str::to_owned))
+                        .collect()
+                };
+                let (commands, timers) = (ids(&c.commands), ids(&c.timers));
+                result = if let Some(id) = meta.commands.iter().find(|i| !commands.contains(i)) {
+                    Err(format!("command not found: {id}"))
+                } else if let Some(id) = meta.timers.iter().find(|i| !timers.contains(i)) {
+                    Err(format!("timer not found: {id}"))
+                } else {
+                    groups::set_meta(c, group, meta)
+                };
+                if result.is_ok() {
+                    // New settings start at their defaults; the ones already set stay.
+                    let values = groups::values(c, group);
+                    result = groups::set_values(c, group, values);
+                }
+            });
+            result.map(|_| json!({}))
+        }
+        "StreamerzGroupExport" => {
+            known(e)?;
+            let m = &req["meta"];
+            let get = |k| m.get(k).and_then(Value::as_str).unwrap_or("");
+            let export = crate::edit::export_group(
+                &e.config(),
+                group,
+                [
+                    if get("name").is_empty() { group } else { get("name") },
+                    get("author"),
+                    get("version"),
+                    get("description"),
+                ],
+            );
+            Ok(json!({"text": crate::model::write_export(&export), "export": export}))
+        }
+        "StreamerzSaveGroupFiles" => {
+            known(e)?;
+            let files = groups::meta(&e.config(), group).files;
+            let saved = groups::save_files(&files, std::path::Path::new(text("folder")))?;
+            Ok(json!({"files": saved}))
+        }
+        _ => Err("unknown group request".into()),
+    }
+}
 
 /// StreamerzGet {what, id?|name?}: one item, or all of them; StreamerzSave {what, item}: adds it (a new
 /// id when it has none) or replaces the one with its id; StreamerzDelete {what, id}.
@@ -886,15 +1192,84 @@ async fn websocket(e: Rc<Engine>, s: WsSettings) {
         next += 1;
         let (e, s, id) = (e.clone(), s.clone(), next);
         tokio::task::spawn_local(async move {
-            let client_inst_id = format!("remote-{id}");
-            let client_inst_name = format!("Client {id}");
-            e.remote_connected(&client_inst_id, &client_inst_name);
             if let Err(err) = connection(&e, &s, tcp, id).await {
                 crate::warn(format!("WebSocket client: {err}"));
             }
-            e.remote_disconnected(&client_inst_id, &client_inst_name);
             e.listen(id, &events::Subs::new(), &tokio::sync::mpsc::unbounded_channel().0);
         });
+    }
+}
+
+/// Each connector behind a port, without secrets: for the MCP `connectors` tool.
+pub(crate) fn connectors(e: &Rc<Engine>) -> Value {
+    let c = e.config();
+    let obs: Vec<Value> = c
+        .obs
+        .connections
+        .iter()
+        .map(crate::obs::ObsConnInfo::from_obj)
+        .map(|i| {
+            json!({"id": i.id, "name": i.name, "host": i.host, "port": i.port, "autoConnect": i.auto_connect,
+            "connected": e.obs_connected(Some(&i.id))})
+        })
+        .collect();
+    json!({
+        "obs": {"started": e.obs().is_some(), "connections": obs},
+        "spotify": {"enabled": c.spotify.enabled, "signedIn": !c.spotify.token.refresh_token.is_empty()},
+    })
+}
+
+/// A raw obs-websocket request through the OBS port (dev mode: it acts on the real OBS).
+pub(crate) async fn obs_request(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
+    let kind = req["requestType"]
+        .as_str()
+        .filter(|k| !k.is_empty())
+        .ok_or("requestType is required")?;
+    if e.obs().is_none() && e.config().obs.connections.is_empty() {
+        return Err("No OBS connection is set up".into());
+    }
+    let connection = req["connectionId"].as_str().filter(|c| !c.is_empty());
+    let data = req
+        .get("requestData")
+        .filter(|d| d.is_object())
+        .cloned()
+        .unwrap_or(json!({}));
+    let response = e.obs_start().send_request(connection, kind, data).await?;
+    Ok(json!({"responseData": response}))
+}
+
+pub(crate) async fn spotify_request(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
+    let music = e.music();
+    match req["request"].as_str().unwrap_or("") {
+        "StreamerzSpotifyLocal" => Ok(json!({"track": crate::spotify::local::current().await?, "source": "local"})),
+        "StreamerzSpotifyCurrent" => {
+            let track = music.current(e).await?;
+            let source = if track.as_ref().is_some_and(|t| t.uri.is_empty()) {
+                "local"
+            } else {
+                "api"
+            };
+            Ok(json!({"track": track, "source": source}))
+        }
+        "StreamerzSpotifyFind" => Ok(json!({"track": music.find(e, req["query"].as_str().unwrap_or("")).await?})),
+        "StreamerzSpotifyPlayer" => {
+            let player = music.player(e).await?;
+            let queue: Vec<Value> = player
+                .queue
+                .iter()
+                .map(|t| json!({"uri": t.uri, "name": t.name, "artists": t.artists}))
+                .collect();
+            Ok(
+                json!({"playing": player.playing, "progressMs": player.progress_ms, "current": player.current,
+                "queue": queue, "requests": e.song_requests()}),
+            )
+        }
+        "StreamerzSpotifyQueue" => Ok(json!({"uri": music.queue(e, req["query"].as_str().unwrap_or("")).await?})),
+        "StreamerzSpotifyPlayback" => {
+            music.playback(e, req["command"].as_str().unwrap_or("")).await?;
+            Ok(json!({}))
+        }
+        _ => Err("Unknown Spotify request".into()),
     }
 }
 
@@ -953,6 +1328,40 @@ async fn connection(e: &Rc<Engine>, s: &WsSettings, tcp: TcpStream, conn: u64) -
                         e.listen(conn, &subs, &tx);
                         ok(&id, json!({"events": ev}))
                     }
+                    "StreamerzSpotifyLocal"
+                    | "StreamerzSpotifyCurrent"
+                    | "StreamerzSpotifyQueue"
+                    | "StreamerzSpotifyFind"
+                    | "StreamerzSpotifyPlayer"
+                    | "StreamerzSpotifyPlayback" => {
+                        if s.enable_auth && !authed {
+                            error(&id, "Authentication required to use this method")
+                        } else {
+                            match spotify_request(e, &req).await {
+                                Ok(fields) => ok(&id, fields),
+                                Err(message) => {
+                                    if kind != "StreamerzSpotifyLocal" {
+                                        crate::spotify::event(e, 99806, &message);
+                                    }
+                                    error(&id, &message)
+                                },
+                            }
+                        }
+                    }
+                    "StreamerzConnectors" | "StreamerzObsRequest" => {
+                        if s.enable_auth && !authed {
+                            error(&id, "Authentication required to use this method")
+                        } else if kind == "StreamerzConnectors" {
+                            ok(&id, connectors(e))
+                        } else if !e.dev() {
+                            error(&id, "StreamerzObsRequest needs STREAMERZ_DEV=1")
+                        } else {
+                            match obs_request(e, &req).await {
+                                Ok(fields) => ok(&id, fields),
+                                Err(message) => error(&id, &message),
+                            }
+                        }
+                    }
                     // Dev mode: what the window looks like, and where things are (see ui/dev.rs).
                     "StreamerzUi" if e.dev() => {
                         let cmd = req.get("do").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -978,12 +1387,19 @@ async fn http_server(e: Rc<Engine>, s: HttpSettings) {
         Err(err) => return crate::error(format!("HTTP server: can't listen on {}:{} ({err})", s.address, s.port)),
     };
     crate::say(format!("HTTP server on http://{}:{}/", s.address, s.port));
+    // The open connections (an overlay's live feed stays open) end with the server.
+    let mut open = tokio::task::JoinSet::new();
     loop {
-        let Ok((tcp, _)) = l.accept().await else { continue };
-        let e = e.clone();
-        tokio::task::spawn_local(async move {
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(10), http_one(&e, tcp)).await;
-        });
+        tokio::select! {
+            accepted = l.accept() => {
+                let Ok((tcp, _)) = accepted else { continue };
+                let e = e.clone();
+                open.spawn_local(async move {
+                    let _ = http_one(&e, tcp).await;
+                });
+            }
+            Some(_) = open.join_next(), if !open.is_empty() => {}
+        }
     }
 }
 
@@ -1037,6 +1453,12 @@ fn http_answer(e: &Rc<Engine>, method: &str, path: &str, body: &[u8], signature:
                 ),
             }
         }
+        // A Streamerz custom webhook (Streamer.bot's are made on its website): fires Custom Webhook.
+        ("POST", path) if path.starts_with("/webhooks/") && path.len() > "/webhooks/".len() => {
+            let name = path["/webhooks/".len()..].trim_end_matches('/');
+            e.custom_webhook(&crate::donations::urlencoding_decode(name), body);
+            (200, Some(json!({"status": "ok"})))
+        }
         ("POST", path) if path.starts_with("/api/") || path.starts_with("/") => {
             let p = path.trim_start_matches("/api/").trim_start_matches("/");
             match p {
@@ -1057,11 +1479,16 @@ fn http_answer(e: &Rc<Engine>, method: &str, path: &str, body: &[u8], signature:
 async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
+    // The request must arrive in 10 seconds; an overlay's live feed then stays open as long as it wants.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let late = || std::io::Error::from(std::io::ErrorKind::TimedOut);
     let head_end = loop {
         if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
             break i;
         }
-        let n = tcp.read(&mut chunk).await?;
+        let n = tokio::time::timeout_at(deadline, tcp.read(&mut chunk))
+            .await
+            .map_err(|_| late())??;
         if n == 0 || buf.len() > 64 << 10 {
             return Ok(());
         }
@@ -1071,7 +1498,7 @@ async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
     let mut lines = head.split("\r\n");
     let mut first = lines.next().unwrap_or("").split(' ');
     let (method, target) = (first.next().unwrap_or(""), first.next().unwrap_or("/"));
-    let path = target.split('?').next().unwrap_or("/");
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
     let headers: Vec<(&str, &str)> = lines.filter_map(|l| l.split_once(':')).collect();
     let h = |k: &str| {
         headers
@@ -1090,13 +1517,22 @@ async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
             .await?;
         return tcp.shutdown().await;
     }
+    if method == "GET" && (path == "/overlays" || path.starts_with("/overlays/")) {
+        if path == "/overlays/events" {
+            return crate::overlays::events(e, tcp, query).await;
+        }
+        let (status, kind, body) = crate::overlays::file(&e.config(), path);
+        return crate::overlays::respond(&mut tcp, status, kind, &body).await;
+    }
     let len = h("content-length")
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(0)
         .min(1 << 20);
     let mut body = buf.split_off(head_end + 4);
     while body.len() < len {
-        let n = tcp.read(&mut chunk).await?;
+        let n = tokio::time::timeout_at(deadline, tcp.read(&mut chunk))
+            .await
+            .map_err(|_| late())??;
         if n == 0 {
             break;
         }
@@ -1153,6 +1589,86 @@ async fn udp_server(e: Rc<Engine>, s: UdpSettings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn action_group_requests_preserve_data_on_rename_and_export() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tokio::task::LocalSet::new().block_on(&rt, async {
+            let e = crate::engine::tests::engine(json!({"actions": []}));
+            let ask = |req: Value| answer(&e, &req, true).unwrap();
+            assert_eq!(
+                ask(json!({"request":"StreamerzManageActionGroup", "group":"one", "operation":"create"}))["status"],
+                "ok"
+            );
+            assert_eq!(
+                ask(json!({"request":"StreamerzSetGroupVariables", "group":"one", "values":{"x":1}}))["status"],
+                "ok"
+            );
+            assert_eq!(
+                ask(json!({"request":"StreamerzManageActionGroup", "group":"one", "operation":"rename", "name":"two"}))
+                    ["status"],
+                "ok"
+            );
+            assert_eq!(
+                ask(json!({"request":"StreamerzGroupVariables", "group":"two"}))["values"]["x"],
+                1
+            );
+            assert_eq!(
+                ask(json!({"request":"StreamerzActionGroups"}))["groups"],
+                json!(["two"])
+            );
+            assert_eq!(
+                ask(json!({"request":"StreamerzManageActionGroup", "group":"two", "operation":"delete"}))["status"],
+                "ok"
+            );
+            assert_eq!(ask(json!({"request":"StreamerzActionGroups"}))["groups"], json!([]));
+        });
+    }
+
+    #[test]
+    fn countdown_request_obeys_authentication() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tokio::task::LocalSet::new().block_on(&rt, async {
+            let e = crate::engine::tests::engine(json!({"actions": []}));
+            e.change(|c| {
+                c.websockets.enable_auth = true;
+                crate::templates::clock::create(c, "test", 5_000, 10_000, crate::templates::clock::now_ms());
+            });
+            let req = json!({"id": "1", "request": "StreamerzCountdown", "clockId": "test"});
+            assert_eq!(answer(&e, &req, false).unwrap()["status"], "error");
+            let response = answer(&e, &req, true).unwrap();
+            assert_eq!(response["status"], "ok");
+            assert_eq!(response["clockId"], "test");
+            assert_eq!(response["snapshot"]["maxMs"], 10_000);
+        });
+    }
+
+    #[test]
+    fn spotify_requests_require_an_enabled_login() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tokio::task::LocalSet::new().block_on(&rt, async {
+            let cfg = Arc::new(tokio::sync::watch::channel(crate::Config::default()).0);
+            let e = Engine::new(cfg, |_| {});
+            let request = json!({"request": "StreamerzSpotifyQueue", "query": "song"});
+            assert_eq!(spotify_request(&e, &request).await.unwrap_err(), "Spotify is disabled");
+            e.change(|c| c.spotify.enabled = true);
+            assert_eq!(
+                spotify_request(&e, &request).await.unwrap_err(),
+                "Spotify login is required"
+            );
+        });
+    }
 
     #[test]
     fn memory_policy_is_inspectable_and_changes_require_restart() {
@@ -1213,7 +1729,7 @@ mod tests {
     fn client_and_custom_server() {
         use crate::engine::tests::{action, engine, log};
         let in_engine = crate::engine::tests::run;
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
@@ -1280,9 +1796,291 @@ mod tests {
         }
     }
 
+    /// A WebSocket client connected to an instance's server makes it a remote instance: Remote Instance
+    /// Connected, then a Send Remote Trigger and Signal reach it (here its own server: a loopback).
+    #[test]
+    fn remote_triggers_and_signals_go_over_the_websocket() {
+        use crate::engine::tests::{action, engine, log};
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let on = |id: &str, kind: u32, extra: Value, msg: &str| {
+            let mut a = action(id, id, json!([log(msg)]));
+            let mut t = json!({"id": id, "type": kind, "enabled": true});
+            t.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            a["triggers"] = json!([t]);
+            a
+        };
+        let send = action(
+            "send",
+            "send",
+            json!([
+            {"type": 20001, "instanceId": "", "eventName": "boom", "customArgs": {"color": "blue"}},
+            {"type": 20002, "instanceId": "Any", "signalName": "go", "customArgs": {"n": "5"}}]),
+        );
+        let wait = action(
+            "wait",
+            "wait",
+            json!([
+            {"type": 20003, "instanceId": "", "signalName": "go", "timeout": 2000},
+            log("T signal n=%n% timeout=%signalTimeout%")]),
+        );
+        let e = engine(json!({"actions": [
+            on("up", 29001, json!({}), "T remote up %instanceName%"),
+            on("boom", 29003, json!({"eventName": "boom"}), "T remote boom %color%"),
+            on("sig", 29004, json!({"signalName": "go"}), "T remote signal %signalName%"),
+            on("down", 29002, json!({}), "T remote down %instanceName%"),
+            send, wait]}));
+        let out = crate::engine::tests::run(async move {
+            e.change(|c| {
+                c.instance_name = "Loop".into();
+                c.websockets.auto_start = true;
+                c.websockets.address = "127.0.0.1".into();
+                c.websockets.port = port;
+                c.websockets.endpoint = "/".into();
+            });
+            tokio::task::spawn_local(super::run(e.clone()));
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            e.change(|c| {
+                c.websockets.connections = vec![
+                    json!({"id": "c", "name": "C", "endpoint": format!("ws://127.0.0.1:{port}/"),
+                    "autoConnect": true, "reconnectOnDisconnect": false})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ];
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            e.queue("wait", Obj::new());
+            e.queue("send", Obj::new());
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            // Removing the client (its task is aborted) leaves the remote instance.
+            e.change(|c| c.websockets.connections.clear());
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        });
+        for w in [
+            "T remote up Loop",
+            "T remote boom blue",
+            "T remote signal go",
+            "T signal n=5 timeout=False",
+            "T remote down Loop",
+        ] {
+            assert!(out.iter().any(|x| x == w), "{w} missing: {out:?}");
+        }
+    }
+
+    /// The Stream Deck plugin's side, as it talked to Streamer.bot 1.0.7 (dev/ notes): no Hello, GetActions,
+    /// a button's DoAction, then the sub-actions' pushes; Connected and Disconnected around it.
+    #[test]
+    fn the_stream_deck_plugin_gets_its_pushes() {
+        use crate::engine::tests::{action, engine, log};
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let on = |id: &str, kind: u32, msg: &str| {
+            let mut a = action(id, id, json!([log(msg)]));
+            a["triggers"] = json!([{"id": id, "type": kind, "enabled": true}]);
+            a
+        };
+        let press = action(
+            "press",
+            "press",
+            json!([
+            log("T pressed %sdButtonId% %eventSource% %__source%"),
+            {"type": 11001, "buttonId": "%sdButtonId%", "title": "Hello", "state": 0},
+            {"type": 11002, "buttonId": "b1", "image": "", "color": "#FF0000", "state": 1},
+            {"type": 11004, "buttonId": "b1", "state": 1},
+            {"type": 11005, "buttonId": "b1"},
+            {"type": 11006, "buttonId": "b1"},
+            {"type": 11007, "buttonId": "b1"},
+            {"type": 11008, "buttonId": "b1", "value": "+=5"}]),
+        );
+        let e = engine(json!({"actions": [on("up", 17002, "T deck up"), on("down", 17003, "T deck down"), press]}));
+        let got = std::rc::Rc::new(std::cell::RefCell::new(Vec::<Value>::new()));
+        let got2 = got.clone();
+        let out = crate::engine::tests::run(async move {
+            e.change(|c| {
+                c.websockets.auto_start = false;
+                c.stream_deck = crate::streamdeck::Settings {
+                    auto_start: true,
+                    address: "127.0.0.1".into(),
+                    port,
+                };
+            });
+            tokio::task::spawn_local(super::run(e.clone()));
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let (mut ws, _) = crate::http::ws_connect(&format!("ws://127.0.0.1:{port}/"))
+                .await
+                .unwrap();
+            ws.send(Message::Text(r#"{"request":"GetActions","id":"ga"}"#.into()))
+                .await
+                .unwrap();
+            ws.send(Message::Text(
+                r#"{"request":"DoAction","id":"da","action":{"name":"press"},"args":{"sdButtonId":"b9"}}"#.into(),
+            ))
+            .await
+            .unwrap();
+            let until = tokio::time::Instant::now() + std::time::Duration::from_millis(600);
+            while let Ok(Some(Ok(Message::Text(t)))) = tokio::time::timeout_at(until, ws.next()).await {
+                got2.borrow_mut().push(serde_json::from_str(&t).unwrap());
+            }
+            ws.close(None).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        });
+        let got = got.borrow();
+        assert_eq!(got[0]["id"], "ga", "no Hello first: {got:?}");
+        assert_eq!(got[0]["count"], 3);
+        let pushes: Vec<&Value> = got.iter().filter(|m| m.get("request").is_some()).collect();
+        let want = [
+            json!({"request": "SetTitle", "data": {"buttonId": "b9", "text": "Hello", "state": 0}}),
+            json!({"request": "SetImage", "data": {"buttonId": "b1", "color": "#FF0000", "state": 1}}),
+            json!({"request": "SetState", "data": {"buttonId": "b1", "state": 1}}),
+            json!({"request": "ShowAlert", "data": {"buttonId": "b1"}}),
+            json!({"request": "ShowOk", "data": {"buttonId": "b1"}}),
+            json!({"request": "ToggleState", "data": {"buttonId": "b1"}}),
+            json!({"request": "SetValue", "data": {"buttonId": "b1", "value": "+=5"}}),
+        ];
+        assert_eq!(pushes, want.iter().collect::<Vec<_>>());
+        for w in ["T deck up", "T pressed b9 streamdeck 17001", "T deck down"] {
+            assert!(out.iter().any(|x| x == w), "{w} missing: {out:?}");
+        }
+    }
+
+    #[test]
+    fn overlay_requests_list_pages_and_set_topics() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(json!({"actions": []}));
+            e.change(|c| crate::templates::overlays::viewers().add_to(c).unwrap());
+            let ask = |req: Value| answer(&e, &req, true).unwrap();
+            let list = ask(json!({"request": "StreamerzOverlays", "id": "1"}));
+            assert_eq!(list["overlays"][0]["group"], "Viewer overlay");
+            assert_eq!(
+                list["overlays"][0]["url"],
+                format!(
+                    "{}/overlays/Viewer%20overlay/viewers.html",
+                    list["base"].as_str().unwrap()
+                )
+            );
+            let publish = json!({"request": "StreamerzOverlayPublish", "topic": " song ", "value": {"title": "A"}});
+            assert_eq!(ask(publish.clone())["status"], "ok");
+            assert_eq!(e.overlay_value("song"), Some(json!({"title": "A"})));
+            assert!(ask(json!({"request": "StreamerzOverlays"}))["topics"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("song")));
+            assert_eq!(
+                ask(json!({"request": "StreamerzOverlayPublish", "topic": " "}))["status"],
+                "error"
+            );
+            // With authentication on, a client that hasn't logged in can't set topics.
+            e.change(|c| c.websockets.enable_auth = true);
+            assert_eq!(answer(&e, &publish, false).unwrap()["status"], "error");
+        });
+    }
+
+    #[test]
+    fn overlays_are_served_with_a_live_feed() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tokio::task::LocalSet::new().block_on(&rt, async {
+            let publish = json!([{"type": 99880, "topic": "custom", "value": "{\"n\": 5}"}]);
+            let e =
+                crate::engine::tests::engine(json!({"actions": [crate::engine::tests::action("a1", "pub", publish)]}));
+            e.change(|c| crate::templates::overlays::ad().add_to(c).unwrap());
+            // The real server, on a free port.
+            let addr = TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap();
+            let settings = HttpSettings {
+                auto_start: true,
+                address: "127.0.0.1".into(),
+                port: addr.port(),
+            };
+            let server = tokio::task::spawn_local(http_server(e.clone(), settings));
+            let get = |path: &'static str| async move {
+                let mut t = loop {
+                    match TcpStream::connect(addr).await {
+                        Ok(t) => break t,
+                        Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+                    }
+                };
+                t.write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes())
+                    .await
+                    .unwrap();
+                t
+            };
+            let mut page = get("/overlays/Ad%20overlay/ad.html").await;
+            let mut text = String::new();
+            page.read_to_string(&mut text).await.unwrap();
+            assert!(
+                text.starts_with("HTTP/1.1 200") && text.contains("streamerz.on(\"ad\""),
+                "{text}"
+            );
+            let mut none = get("/overlays/Nope/x.html").await;
+            let mut text = String::new();
+            none.read_to_string(&mut text).await.unwrap();
+            assert!(text.starts_with("HTTP/1.1 404"));
+            // The feed starts with what a topic has, then follows changes.
+            e.overlay_publish("ad", json!({"running": false}));
+            let mut feed = get("/overlays/events?topics=ad,viewers,custom&events=Raw.ActionCompleted").await;
+            let mut seen = String::new();
+            let read = async |feed: &mut TcpStream, seen: &mut String, want: &str| {
+                let mut chunk = [0u8; 2048];
+                while !seen.contains(want) {
+                    let n = tokio::time::timeout(std::time::Duration::from_secs(5), feed.read(&mut chunk))
+                        .await
+                        .unwrap_or_else(|_| panic!("the feed went quiet waiting for {want}: {seen}"))
+                        .unwrap();
+                    assert!(n > 0, "the feed closed: {seen}");
+                    *seen += &String::from_utf8_lossy(&chunk[..n]);
+                }
+            };
+            read(&mut feed, &mut seen, "\"running\":false").await;
+            assert!(seen.contains("text/event-stream") && seen.contains("\"total\":0"));
+            // The Overlay sub-action: a JSON value arrives as JSON.
+            e.queue("a1", crate::model::Obj::new()).unwrap();
+            read(&mut feed, &mut seen, "\"n\":5").await;
+            e.overlay_publish("ad", json!({"running": true}));
+            read(&mut feed, &mut seen, "\"running\":true").await;
+            e.emit("Raw", "ActionCompleted", || json!({"name": "overlay event test"}));
+            read(&mut feed, &mut seen, "overlay event test").await;
+            assert!(e.listening("Overlay", "viewers"));
+            drop(feed);
+            for _ in 0..50 {
+                if !e.listening("Overlay", "viewers") {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            assert!(!e.listening("Overlay", "viewers"), "a closed page stops listening");
+            // Turning the server off ends the feeds that are open.
+            let mut feed = get("/overlays/events?topics=viewers").await;
+            let mut seen = String::new();
+            read(&mut feed, &mut seen, "\"total\"").await;
+            assert!(e.listening("Overlay", "viewers"));
+            server.abort();
+            let mut rest = Vec::new();
+            let closed = tokio::time::timeout(std::time::Duration::from_secs(5), feed.read_to_end(&mut rest)).await;
+            assert!(closed.is_ok(), "the feed is still open after the server stopped");
+            assert!(
+                !e.listening("Overlay", "viewers"),
+                "a stopped server leaves no listener"
+            );
+        });
+    }
+
     #[test]
     fn http_answers() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1304,6 +2102,12 @@ mod tests {
                 (418, json!("'OPTIONS /DoAction' is an invalid request"))
             );
             assert_eq!(http_answer(&e, "POST", "/DoAction", b"xx", None).0, 400);
+            // A custom webhook by name (spaces encoded); /webhooks/ alone is no webhook.
+            assert_eq!(
+                http_answer(&e, "POST", "/webhooks/my%20hook", br#"{"a":1}"#, None).0,
+                200
+            );
+            assert_eq!(http_answer(&e, "POST", "/webhooks/", b"", None).0, 418);
             assert_eq!(
                 http_answer(&e, "POST", "/api/kofi", br#"{"type":"Donation","amount":"5.00"}"#, None).0,
                 200
@@ -1319,6 +2123,79 @@ mod tests {
             let keys: Vec<&String> = r.as_object().unwrap().keys().collect();
             assert_eq!(keys, ["id", "args", "status"]);
             assert!(answer(&e, &json!({"request": "Bogus", "id": "x"}), false).is_none());
+        });
+    }
+
+    #[test]
+    fn group_settings_templates_and_export_work_over_requests() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tokio::task::LocalSet::new().block_on(&rt, async {
+            let e = crate::engine::tests::engine(json!({"actions": []}));
+            let ask = |req: Value| answer(&e, &req, true).unwrap();
+            assert_eq!(
+                ask(json!({"request": "StreamerzTemplateAdd", "name": "nope"}))["status"],
+                "error"
+            );
+            assert_eq!(
+                ask(json!({"request": "StreamerzTemplateAdd", "name": "Subathon timer"}))["status"],
+                "ok"
+            );
+            let meta = ask(json!({"request": "StreamerzGroupMeta", "group": "Subathon"}));
+            assert_eq!(meta["meta"]["variables"].as_array().unwrap().len(), 5);
+            assert_eq!(meta["meta"]["files"][0]["name"], "subathon.html");
+            let mut changed = meta["meta"].clone();
+            changed["variables"][1]["default"] = json!(7_200_000);
+            changed["variables"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"name": "bonus", "label": "Bonus", "kind": "integer", "default": 3}));
+            assert_eq!(
+                ask(json!({"request": "StreamerzSetGroupMeta", "group": "Subathon", "meta": changed}))["status"],
+                "ok"
+            );
+            let values = ask(json!({"request": "StreamerzGroupVariables", "group": "Subathon"}))["values"].clone();
+            assert_eq!(
+                (values["bonus"].clone(), values["currency"].clone()),
+                (json!(3), json!("USD"))
+            );
+            let wrong =
+                ask(json!({"request": "StreamerzSetGroupVariables", "group": "Subathon", "values": {"start": "soon"}}));
+            assert_eq!(wrong["status"], "error");
+            let mut bad = changed.clone();
+            bad["variables"][0]["default"] = json!("x");
+            assert_eq!(
+                ask(json!({"request": "StreamerzSetGroupMeta", "group": "Subathon", "meta": bad}))["status"],
+                "error"
+            );
+            let mut missing = changed.clone();
+            missing["commands"] = json!(["no-such-command"]);
+            assert_eq!(
+                ask(json!({"request": "StreamerzSetGroupMeta", "group": "Subathon", "meta": missing}))["status"],
+                "error"
+            );
+            let exported = ask(json!({"request": "StreamerzGroupExport", "group": "Subathon"}));
+            assert_eq!(
+                exported["export"]["streamerz"]["groups"]["Subathon"]["variables"][1]["default"],
+                7_200_000
+            );
+            let dir = std::env::temp_dir().join(format!("streamerz-group-files-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let saved = ask(json!({"request": "StreamerzSaveGroupFiles", "group": "Subathon", "folder": dir}));
+            assert_eq!(saved["status"], "ok");
+            assert!(dir.join("subathon.html").exists());
+            assert_eq!(
+                ask(json!({"request": "StreamerzSaveGroupFiles", "group": "Subathon", "folder": dir}))["status"],
+                "error"
+            );
+            std::fs::remove_dir_all(dir).unwrap();
+            assert_eq!(
+                ask(json!({"request": "StreamerzGroupMeta", "group": "missing"}))["status"],
+                "error"
+            );
         });
     }
 }

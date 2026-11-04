@@ -10,8 +10,6 @@ use crate::Config;
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::future::Future;
-use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,8 +21,14 @@ pub use chatlog::can_send;
 pub mod community;
 pub mod events;
 pub mod globals;
+mod midi_in;
+pub mod overlays;
 pub mod plugins;
+mod processes;
 mod rest;
+mod songs;
+mod speech;
+mod watchers;
 
 pub const DEFAULT_QUEUE: &str = "00000000-0000-0000-0000-000000000000";
 const HISTORY: usize = 100;
@@ -97,11 +101,20 @@ struct State {
     chat_lines: u64,
     /// The running timers, stopped when timers change.
     timers: Vec<tokio::task::AbortHandle>,
-    voice_commands: HashMap<String, (String, bool)>,
+    /// The speech recognizer, while an action uses Speech to Text (`speech.rs`).
+    speech: Option<(crate::speech::Listening, tokio::task::AbortHandle)>,
     voice_input: (String, String),
-    decks: HashMap<String, crate::decks::DeckState>,
-    stream_deck_items: HashMap<String, crate::decks::DeckItem>,
-    file_tails: HashMap<String, bool>,
+    /// The Stream Deck plugins connected (`streamdeck.rs`): their ids and what pushes to them.
+    stream_decks: Vec<(u64, tokio::sync::mpsc::UnboundedSender<String>)>,
+    /// The running file watchers and tails (`watchers.rs`).
+    watch_tasks: Vec<tokio::task::AbortHandle>,
+    /// The process watch, while an action uses Process Started or Stopped (`processes.rs`).
+    process_task: Option<tokio::task::AbortHandle>,
+    /// The open MIDI inputs, while an action uses MIDI Message (`midi_in.rs`).
+    midi_tasks: Vec<tokio::task::AbortHandle>,
+    /// Remote instances: WebSocket clients connected to a Streamer.bot or Streamerz server (id, name,
+    /// what sends to it).
+    remotes: Vec<(String, String, tokio::sync::mpsc::UnboundedSender<String>)>,
     /// Dev mode (`STREAMERZ_DEV=1`): chat lines kept here instead of sent, for `GetChatOut`.
     dev_out: Option<Vec<Value>>,
     /// Every platform's chat, for the chat window.
@@ -109,6 +122,22 @@ struct State {
 }
 
 pub struct Engine {
+    local_spotify: RefCell<Option<tokio::task::JoinHandle<()>>>,
+    music: &'static dyn crate::ports::MusicPort,
+    /// Song requests, and the lock that makes each look at them and change them in one turn.
+    songs: RefCell<crate::songrequests::Requests>,
+    song_turn: tokio::sync::Mutex<()>,
+    song_watching: std::cell::Cell<bool>,
+    song_pace: std::cell::Cell<Option<Duration>>,
+    /// The votes to skip the song that plays: its URI, and who voted.
+    song_votes: RefCell<(String, HashSet<String>)>,
+    song_last_skip: std::cell::Cell<Option<std::time::Instant>>,
+    /// The song that played when the engine last looked.
+    song_playing: RefCell<Option<String>>,
+    /// What Spotify's player last showed (volume, shuffle, repeat, device), to say what changed.
+    spotify_seen: RefCell<std::collections::HashMap<u32, String>>,
+    /// The last value of each overlay topic.
+    overlay_state: RefCell<std::collections::HashMap<String, Value>>,
     /// Captured at startup, independent of pending settings changes.
     pub(crate) memory_saver: bool,
     cfg: Arc<watch::Sender<Config>>,
@@ -118,7 +147,7 @@ pub struct Engine {
     /// WebSocket connections listening to events.
     hub: RefCell<Vec<events::Listener>>,
     twitch: RefCell<Option<crate::twitch::TwitchHandle>>,
-    obs: RefCell<Option<crate::obs::ObsHandle>>,
+    obs: RefCell<Option<Rc<dyn crate::ports::ObsPort>>>,
     kick: RefCell<Option<crate::kick::KickHandle>>,
     youtube: RefCell<Option<crate::youtube::YouTubeHandle>>,
     tiktok: RefCell<Option<crate::tiktok::TikTokHandle>>,
@@ -136,9 +165,29 @@ pub struct Engine {
 /// A running action's context.
 struct Ctx {
     args: Obj,
+    group: String,
 }
 
-type Fut<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
+/// The action's arguments plus its group's settings as `group.name`. A text setting with variables in
+/// it (a reply such as `@%user% added %spotifyTitle%`) is filled in once, with this run's arguments;
+/// what the variables hold is never read as variables again.
+fn group_args<'a>(ctx: &'a Ctx, c: &crate::Config) -> std::borrow::Cow<'a, Obj> {
+    let values = crate::groups::values(c, &ctx.group);
+    if values.is_empty() {
+        return std::borrow::Cow::Borrowed(&ctx.args);
+    }
+    let mut args = ctx.args.clone();
+    for (name, value) in values {
+        let value = match value {
+            Value::String(t) if t.contains('%') => Value::String(vars::expand(&t, &ctx.args, &c.globals)),
+            v => v,
+        };
+        args.insert(format!("group.{name}"), value);
+    }
+    std::borrow::Cow::Owned(args)
+}
+
+use crate::ports::Fut;
 
 fn s<'a>(o: &'a Obj, k: &str) -> &'a str {
     o.get(k).and_then(Value::as_str).unwrap_or("")
@@ -171,10 +220,48 @@ thread_local! {
 static CMDS: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<UiCmd>> = std::sync::OnceLock::new();
 
 impl Engine {
+    pub fn spotify_local_start(self: &Rc<Self>) {
+        if self
+            .local_spotify
+            .borrow()
+            .as_ref()
+            .is_some_and(|task| !task.is_finished())
+        {
+            return;
+        }
+        let engine = self.clone();
+        let task = tokio::task::spawn_local(async move {
+            if let Err(error) = crate::spotify::local::monitor(engine.clone()).await {
+                crate::warn(format!("Spotify local: {error}"));
+                engine.change(|c| c.spotify.local_monitor = false);
+                crate::spotify::event(&engine, 99806, &error);
+            }
+        });
+        *self.local_spotify.borrow_mut() = Some(task);
+    }
+
+    pub fn spotify_local_stop(&self) {
+        if let Some(task) = self.local_spotify.borrow_mut().take() {
+            task.abort();
+        }
+    }
+    /// Notify overlays after an installed countdown changes.
+    pub fn countdown_changed(&self, id: &str) {
+        let snapshot = crate::templates::clock::get(&self.config(), id, crate::templates::clock::now_ms());
+        self.emit(
+            "Misc",
+            "StreamerzCountdownChanged",
+            || json!({"clockId": id, "snapshot": snapshot}),
+        );
+    }
+
     /// Runs one sub-action of `kind` with the settings `o`, as an action would, and gives the variables
     /// it set (the Polls page drives Twitch's and YouTube's poll and prediction sub-actions so).
     pub async fn run_one(self: &Rc<Self>, kind: u64, o: Obj) -> Obj {
-        let mut ctx = Ctx { args: Obj::new() };
+        let mut ctx = Ctx {
+            args: Obj::new(),
+            group: String::new(),
+        };
         self.rest(&mut ctx, &o, kind).await;
         ctx.args
     }
@@ -190,17 +277,34 @@ pub fn set_current(e: &Rc<Engine>, cmds: tokio::sync::mpsc::UnboundedSender<UiCm
 /// it changes (Community's users and credits). On the engine's own thread directly, if its state isn't
 /// mid-change; from another thread, the engine is asked and given 2 seconds.
 pub fn save_and_wait() {
+    save_and_wait_inner(false);
+}
+
+/// Save and snapshot countdowns before orderly process shutdown.
+pub fn shutdown_and_wait() {
+    save_and_wait_inner(true);
+}
+
+fn save_and_wait_inner(shutdown: bool) {
     let here = CURRENT.try_with(|c| c.borrow().upgrade()).ok().flatten();
     if let Some(e) = here {
         if e.st.try_borrow_mut().is_ok() {
-            e.save_all();
+            if shutdown {
+                e.save_shutdown();
+            } else {
+                e.save_all();
+            }
         }
         return;
     }
     let Some(cmds) = CMDS.get() else { return };
     let (done, wait) = std::sync::mpsc::channel();
     let ask: UiCmd = Box::new(move |e| {
-        e.save_all();
+        if shutdown {
+            e.save_shutdown();
+        } else {
+            e.save_all();
+        }
         let _ = done.send(());
     });
     if cmds.send(ask).is_ok() {
@@ -213,10 +317,10 @@ pub fn supported(kind: u32) -> bool {
     matches!(
         kind,
         2 | 4 | 6 | 8 | 9 | 10..=29 | 30..=49 | 50..=52 | 120..=130 | 200..=202 | 204..=208 | 213..=215 | 251..=254 | 321..=329 | 401..=415 | 417 | 500..=513 | 550..=573 | 575..=580
-            | 3 | 5 | 1001..=1007 | 1009..=1023 | 1025 | 1028 | 1030..=1034 | 1038..=1040 | 4001..=4012 | 7001 | 8001 | 8002 | 9001..=9003 | 10001 | 11001 | 11002 | 11004..=11008 | 15001 | 20001..=20003 | 21001..=21010
+            | 3 | 5 | 1001..=1007 | 1009..=1025 | 1028 | 1030..=1034 | 1038..=1040 | 4001..=4012 | 7001 | 8001 | 8002 | 9001..=9003 | 10001 | 11001 | 11002 | 11004..=11008 | 15001 | 20001..=20003
             | 35001 | 35002 | 35010..=35012 | 35020..=35022 | 35030 | 35031
             | 35040..=35043 | 35101..=35103 | 35105..=35108 | 35113 | 43001..=43003 | 99900..=99904
-            | 1000 | 1026 | 1027 | 1035..=1037 | 99800
+            | 1000 | 1026 | 1027 | 1035..=1037 | 99800 | 99802 | 99803 | 99880 | 99810..=99824 | 99827..=99833 | 99840..=99875
     )
 }
 
@@ -317,9 +421,39 @@ impl Engine {
         self.save_community();
     }
 
+    pub fn save_shutdown(&self) {
+        if self.cfg.borrow().rest.contains_key("templateCountdowns") {
+            self.cfg
+                .send_modify(|c| crate::templates::clock::pause_all(c, crate::templates::clock::now_ms()));
+        }
+        self.save_all();
+    }
+
     pub fn new(cfg: Arc<watch::Sender<Config>>, save: fn(&Config)) -> Rc<Self> {
+        Self::with_music(cfg, save, &crate::spotify::SPOTIFY)
+    }
+
+    pub(crate) fn with_music(
+        cfg: Arc<watch::Sender<Config>>,
+        save: fn(&Config),
+        music: &'static dyn crate::ports::MusicPort,
+    ) -> Rc<Self> {
+        if cfg.borrow().rest.contains_key("templateCountdowns") {
+            cfg.send_modify(|c| crate::templates::clock::resume_all(c, crate::templates::clock::now_ms()));
+        }
         let memory_saver = cfg.borrow().memory_saver;
         Rc::new(Engine {
+            local_spotify: RefCell::new(None),
+            music,
+            songs: RefCell::default(),
+            song_turn: tokio::sync::Mutex::new(()),
+            song_watching: std::cell::Cell::new(false),
+            song_pace: std::cell::Cell::new(None),
+            song_votes: RefCell::default(),
+            song_last_skip: std::cell::Cell::new(None),
+            song_playing: RefCell::default(),
+            spotify_seen: RefCell::default(),
+            overlay_state: RefCell::default(),
             memory_saver,
             cfg,
             save,
@@ -358,6 +492,9 @@ impl Engine {
 
     /// Start or reconnect every opt-in service configured to auto-connect.
     pub fn auto_connect(self: &Rc<Self>) {
+        if self.cfg.borrow().spotify.local_monitor {
+            self.spotify_local_start();
+        }
         let (tw, obs_on, yt, kick, tt) = {
             let c = self.cfg.borrow();
             (
@@ -515,21 +652,26 @@ impl Engine {
         self.tiktok().is_some_and(|t| t.is_standby())
     }
 
-    pub fn set_obs(&self, handle: crate::obs::ObsHandle) {
-        *self.obs.borrow_mut() = Some(handle);
+    /// Plugs in the OBS adapter (the real one starts on first use; tests set a fake).
+    pub fn set_obs(&self, port: Rc<dyn crate::ports::ObsPort>) {
+        *self.obs.borrow_mut() = Some(port);
     }
 
-    pub fn obs(&self) -> Option<crate::obs::ObsHandle> {
+    pub fn obs(&self) -> Option<Rc<dyn crate::ports::ObsPort>> {
         self.obs.borrow().clone()
     }
 
-    pub fn obs_start(self: &Rc<Self>) -> crate::obs::ObsHandle {
+    pub fn obs_start(self: &Rc<Self>) -> Rc<dyn crate::ports::ObsPort> {
         if let Some(o) = self.obs() {
             return o;
         }
-        let o = crate::obs::start(self.clone(), &self.cfg);
+        let o: Rc<dyn crate::ports::ObsPort> = Rc::new(crate::obs::start(self.clone(), &self.cfg));
         self.set_obs(o.clone());
         o
+    }
+
+    pub fn music(&self) -> &'static dyn crate::ports::MusicPort {
+        self.music
     }
 
     pub fn obs_connected(&self, conn_id: Option<&str>) -> bool {
@@ -598,6 +740,11 @@ impl Engine {
             me.st.borrow_mut().save_pending = false;
             (me.save)(&me.cfg.borrow());
         });
+    }
+
+    /// The settings' sender, for code that takes it (platform event handlers in scenarios).
+    pub(crate) fn cfg_tx(&self) -> &Arc<watch::Sender<Config>> {
+        &self.cfg
     }
 
     pub fn config(&self) -> watch::Ref<'_, Config> {
@@ -719,6 +866,59 @@ impl Engine {
             .and_then(Result::ok)
     }
 
+    pub fn stream_deck_add(&self, id: u64, tx: tokio::sync::mpsc::UnboundedSender<String>) {
+        self.st.borrow_mut().stream_decks.push((id, tx));
+    }
+
+    pub fn stream_deck_remove(&self, id: u64) {
+        self.st.borrow_mut().stream_decks.retain(|d| d.0 != id);
+    }
+
+    /// Push to every connected Stream Deck plugin; how many got it.
+    pub fn stream_deck_push(&self, msg: &Value) -> usize {
+        let text = msg.to_string();
+        self.st
+            .borrow()
+            .stream_decks
+            .iter()
+            .filter(|d| d.1.send(text.clone()).is_ok())
+            .count()
+    }
+
+    /// A WebSocket client reached a Streamer.bot or Streamerz server: a remote instance.
+    pub fn remote_add(&self, id: &str, name: &str, tx: tokio::sync::mpsc::UnboundedSender<String>) {
+        let mut st = self.st.borrow_mut();
+        st.remotes.retain(|r| r.0 != id);
+        st.remotes.push((id.to_string(), name.to_string(), tx));
+    }
+
+    /// It went away; its name.
+    pub fn remote_remove(&self, id: &str) -> String {
+        let mut st = self.st.borrow_mut();
+        let name = st
+            .remotes
+            .iter()
+            .find(|r| r.0 == id)
+            .map(|r| r.1.clone())
+            .unwrap_or_default();
+        st.remotes.retain(|r| r.0 != id);
+        name
+    }
+
+    /// Send a request to the remote instance `instance` (its id or name; empty or "Any": all of them).
+    /// How many got it.
+    pub fn remote_send(&self, instance: &str, request: &Value) -> usize {
+        let text = request.to_string();
+        let all = instance.is_empty() || instance.eq_ignore_ascii_case("any");
+        self.st
+            .borrow()
+            .remotes
+            .iter()
+            .filter(|r| all || r.0 == instance || r.1.eq_ignore_ascii_case(instance))
+            .filter(|r| r.2.send(text.clone()).is_ok())
+            .count()
+    }
+
     pub fn remote_connected(self: &Rc<Self>, instance_id: &str, instance_name: &str) {
         let mut args = Obj::new();
         args.insert("instanceId".into(), instance_id.into());
@@ -743,362 +943,8 @@ impl Engine {
         });
     }
 
-    pub fn set_voice_command(self: &Rc<Self>, id: &str, phrase: &str) {
-        let mut st = self.st.borrow_mut();
-        let entry = st
-            .voice_commands
-            .entry(id.to_string())
-            .or_insert_with(|| (phrase.to_string(), true));
-        entry.0 = phrase.to_string();
-    }
-
-    pub fn set_voice_command_state(self: &Rc<Self>, id: &str, state: f64) {
-        let mut st = self.st.borrow_mut();
-        let entry = st
-            .voice_commands
-            .entry(id.to_string())
-            .or_insert_with(|| (String::new(), true));
-        entry.1 = new_state(state, entry.1);
-    }
-
     pub fn set_voice_input(self: &Rc<Self>, device_id: &str, device_name: &str) {
         self.st.borrow_mut().voice_input = (device_id.to_string(), device_name.to_string());
-    }
-
-    pub fn fire_speech_dictation(self: &Rc<Self>, text: &str, confidence: f64, culture: &str) {
-        let mut args = Obj::new();
-        args.insert("dictationText".into(), text.into());
-        args.insert("text".into(), text.into());
-        args.insert("confidence".into(), confidence.into());
-        args.insert("culture".into(), culture.into());
-        let culture_str = culture.to_string();
-        self.fire(
-            crate::inputs::T_SPEECH_DICTATION,
-            "Speech to Text Dictation",
-            "Core/Voice Control",
-            "speechtotext",
-            &args,
-            |t| {
-                let want = s(t, "culture");
-                want.is_empty() || want == culture_str
-            },
-        );
-        self.emit("SpeechToText", "Dictation", || {
-            json!({
-                "text": text,
-                "confidence": confidence,
-                "culture": culture
-            })
-        });
-    }
-
-    pub fn fire_speech_command(
-        self: &Rc<Self>,
-        command_id: &str,
-        command_name: &str,
-        phrase: &str,
-        confidence: f64,
-        culture: &str,
-    ) {
-        let mut args = Obj::new();
-        args.insert("commandId".into(), command_id.into());
-        args.insert("commandName".into(), command_name.into());
-        args.insert("command".into(), phrase.into());
-        args.insert("phrase".into(), phrase.into());
-        args.insert("confidence".into(), confidence.into());
-        args.insert("culture".into(), culture.into());
-        let id_str = command_id.to_string();
-        self.fire(
-            crate::inputs::T_SPEECH_COMMAND,
-            "Speech to Text Command",
-            "Core/Voice Control",
-            "speechtotext",
-            &args,
-            |t| {
-                let want = s(t, "commandId");
-                want.is_empty() || want == id_str
-            },
-        );
-        self.emit("SpeechToText", "Command", || {
-            json!({
-                "commandId": command_id,
-                "commandName": command_name,
-                "command": phrase,
-                "confidence": confidence,
-                "culture": culture
-            })
-        });
-    }
-
-    pub fn fire_midi_message(self: &Rc<Self>, device: &str, channel: u8, status: u8, data1: u8, data2: u8) {
-        let mut args = Obj::new();
-        args.insert("midiDevice".into(), device.into());
-        args.insert("channel".into(), (channel as u64).into());
-        args.insert("status".into(), (status as u64).into());
-        let type_name = crate::inputs::midi_type_name(status);
-        args.insert("type".into(), type_name.into());
-        args.insert("eventType".into(), type_name.into());
-        args.insert("data1".into(), (data1 as u64).into());
-        args.insert("data2".into(), (data2 as u64).into());
-        if type_name == "NoteOn" || type_name == "NoteOff" {
-            args.insert("note".into(), (data1 as u64).into());
-            args.insert("noteName".into(), crate::inputs::note_name(data1).into());
-            args.insert("velocity".into(), (data2 as u64).into());
-        } else if type_name == "ControlChange" {
-            args.insert("controller".into(), (data1 as u64).into());
-            args.insert("value".into(), (data2 as u64).into());
-        }
-        let dev_str = device.to_string();
-        let type_str = type_name.to_string();
-        self.fire(
-            crate::inputs::T_MIDI_MESSAGE,
-            "Midi Message",
-            "Core/MIDI",
-            "midi",
-            &args,
-            |t| {
-                let want_dev = s(t, "device");
-                let want_ch = n(t, "channel") as u8;
-                let want_status = s(t, "status");
-                (want_dev.is_empty() || want_dev == dev_str)
-                    && (want_ch == 0 || want_ch == channel)
-                    && (want_status.is_empty() || want_status == type_str)
-            },
-        );
-        self.emit("Midi", "Message", || {
-            json!({
-                "device": device,
-                "channel": channel,
-                "status": status,
-                "data1": data1,
-                "data2": data2,
-                "type": type_name
-            })
-        });
-    }
-
-    pub fn fire_file_watcher(self: &Rc<Self>, kind: u32, watcher_id: &str, path: &str, old_path: &str) {
-        let (name, event_type) = match kind {
-            crate::fileio::T_FILE_WATCHER_CREATED => ("File Watcher Created", "Created"),
-            crate::fileio::T_FILE_WATCHER_DELETED => ("File Watcher Deleted", "Deleted"),
-            crate::fileio::T_FILE_WATCHER_RENAMED => ("File Watcher Renamed", "Renamed"),
-            _ => ("File Watcher Changed", "Changed"),
-        };
-        let mut args = Obj::new();
-        args.insert("watcherId".into(), watcher_id.into());
-        args.insert("path".into(), path.into());
-        args.insert("fullPath".into(), path.into());
-        let file_name = std::path::Path::new(path)
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
-        args.insert("fileName".into(), file_name.into());
-        if !old_path.is_empty() {
-            args.insert("oldPath".into(), old_path.into());
-        }
-        let w_str = watcher_id.to_string();
-        let p_str = path.to_string();
-        self.fire(kind, name, "FileWatcher", "filewatcher", &args, |t| {
-            let want_w = s(t, "watcherId");
-            let want_p = s(t, "path");
-            (want_w.is_empty() || want_w == w_str) && (want_p.is_empty() || want_p == p_str)
-        });
-        self.emit("FileWatcher", event_type, || {
-            json!({
-                "watcherId": watcher_id,
-                "path": path,
-                "oldPath": old_path
-            })
-        });
-    }
-
-    pub fn fire_file_tail(self: &Rc<Self>, tail_id: &str, path: &str, line: &str, line_number: u64) {
-        let mut args = Obj::new();
-        args.insert("tailId".into(), tail_id.into());
-        args.insert("path".into(), path.into());
-        args.insert("line".into(), line.into());
-        args.insert("lineNumber".into(), line_number.into());
-        let t_str = tail_id.to_string();
-        let p_str = path.to_string();
-        self.fire(
-            crate::fileio::T_FILE_TAIL_CHANGED,
-            "File Tail Changed",
-            "FileTail",
-            "filetail",
-            &args,
-            |t| {
-                let want_t = s(t, "tailId");
-                let want_p = s(t, "path");
-                (want_t.is_empty() || want_t == t_str) && (want_p.is_empty() || want_p == p_str)
-            },
-        );
-        self.emit("FileTail", "Changed", || {
-            json!({
-                "tailId": tail_id,
-                "path": path,
-                "line": line,
-                "lineNumber": line_number
-            })
-        });
-    }
-
-    pub fn fire_process_started(self: &Rc<Self>, process_name: &str, pid: u32) {
-        let mut args = Obj::new();
-        args.insert("processName".into(), process_name.into());
-        args.insert("processId".into(), (pid as u64).into());
-        let p_str = process_name.to_string();
-        self.fire(
-            crate::fileio::T_PROCESS_STARTED,
-            "Process Started",
-            "Misc",
-            "misc",
-            &args,
-            |t| {
-                let want = s(t, "processName");
-                want.is_empty() || want.eq_ignore_ascii_case(&p_str)
-            },
-        );
-        self.emit("Misc", "ProcessStarted", || {
-            json!({
-                "processName": process_name,
-                "processId": pid
-            })
-        });
-    }
-
-    pub fn fire_process_stopped(self: &Rc<Self>, process_name: &str, pid: u32, exit_code: i32) {
-        let mut args = Obj::new();
-        args.insert("processName".into(), process_name.into());
-        args.insert("processId".into(), (pid as u64).into());
-        args.insert("exitCode".into(), (exit_code as i64).into());
-        let p_str = process_name.to_string();
-        self.fire(
-            crate::fileio::T_PROCESS_STOPPED,
-            "Process Stopped",
-            "Misc",
-            "misc",
-            &args,
-            |t| {
-                let want = s(t, "processName");
-                want.is_empty() || want.eq_ignore_ascii_case(&p_str)
-            },
-        );
-        self.emit("Misc", "ProcessStopped", || {
-            json!({
-                "processName": process_name,
-                "processId": pid,
-                "exitCode": exit_code
-            })
-        });
-    }
-
-    pub fn set_file_tail_state(self: &Rc<Self>, tail_id: &str, state: f64) {
-        let mut st = self.st.borrow_mut();
-        let entry = st.file_tails.entry(tail_id.to_string()).or_insert(true);
-        *entry = new_state(state, *entry);
-        crate::debug(format!("File Tail [{}]: Set State {}", tail_id, *entry));
-    }
-
-    pub fn fire_stream_deck_action(
-        self: &Rc<Self>,
-        button_id: &str,
-        action: &str,
-        state: f64,
-        title: &str,
-        value: &str,
-    ) {
-        let mut args = Obj::new();
-        args.insert("buttonId".into(), button_id.into());
-        args.insert("action".into(), action.into());
-        args.insert("state".into(), state.into());
-        args.insert("title".into(), title.into());
-        args.insert("value".into(), value.into());
-        let btn_str = button_id.to_string();
-        self.fire(
-            crate::decks::T_STREAM_DECK_ACTION,
-            "Stream Deck Action",
-            "StreamDeck",
-            "streamdeck",
-            &args,
-            |t| {
-                let want = s(t, "buttonId");
-                want.is_empty() || want == btn_str
-            },
-        );
-        self.emit("StreamDeck", "Action", || {
-            json!({
-                "buttonId": button_id,
-                "action": action,
-                "state": state,
-                "title": title,
-                "value": value
-            })
-        });
-    }
-
-    pub fn fire_stream_deck_connected(self: &Rc<Self>, device: &str, version: &str) {
-        let mut args = Obj::new();
-        args.insert("device".into(), device.into());
-        args.insert("version".into(), version.into());
-        let dev_str = device.to_string();
-        self.fire(
-            crate::decks::T_STREAM_DECK_CONNECTED,
-            "Stream Deck Connected",
-            "StreamDeck",
-            "streamdeck",
-            &args,
-            |t| {
-                let want = s(t, "device");
-                want.is_empty() || want == dev_str
-            },
-        );
-        self.emit(
-            "StreamDeck",
-            "Connected",
-            || json!({"device": device, "version": version}),
-        );
-    }
-
-    pub fn fire_stream_deck_disconnected(self: &Rc<Self>, device: &str) {
-        let mut args = Obj::new();
-        args.insert("device".into(), device.into());
-        let dev_str = device.to_string();
-        self.fire(
-            crate::decks::T_STREAM_DECK_DISCONNECTED,
-            "Stream Deck Disconnected",
-            "StreamDeck",
-            "streamdeck",
-            &args,
-            |t| {
-                let want = s(t, "device");
-                want.is_empty() || want == dev_str
-            },
-        );
-        self.emit("StreamDeck", "Disconnected", || json!({"device": device}));
-    }
-
-    pub fn fire_stream_deck_info(self: &Rc<Self>, device: &str, rows: u32, cols: u32) {
-        let mut args = Obj::new();
-        args.insert("device".into(), device.into());
-        args.insert("rows".into(), (rows as u64).into());
-        args.insert("columns".into(), (cols as u64).into());
-        let dev_str = device.to_string();
-        self.fire(
-            crate::decks::T_STREAM_DECK_INFO,
-            "Stream Deck Info",
-            "StreamDeck",
-            "streamdeck",
-            &args,
-            |t| {
-                let want = s(t, "device");
-                want.is_empty() || want == dev_str
-            },
-        );
-        self.emit(
-            "StreamDeck",
-            "Info",
-            || json!({"device": device, "rows": rows, "columns": cols}),
-        );
     }
 
     pub fn fire_chat_window_action(
@@ -1141,224 +987,6 @@ impl Engine {
         });
     }
 
-    pub fn set_stream_deck_title(self: &Rc<Self>, button_id: &str, title: &str, state: f64) {
-        let mut st = self.st.borrow_mut();
-        let item = st.stream_deck_items.entry(button_id.to_string()).or_default();
-        item.id = button_id.to_string();
-        item.title = title.to_string();
-        item.state = new_state(state, item.state);
-        crate::debug(format!("StreamDeck [{}]: Set Title '{}'", button_id, title));
-    }
-
-    pub fn set_stream_deck_background(self: &Rc<Self>, button_id: &str, image: &str, color: &str, state: f64) {
-        let mut st = self.st.borrow_mut();
-        let item = st.stream_deck_items.entry(button_id.to_string()).or_default();
-        item.id = button_id.to_string();
-        item.background = image.to_string();
-        item.color = color.to_string();
-        item.state = new_state(state, item.state);
-        crate::debug(format!(
-            "StreamDeck [{}]: Set Background img='{}' col='{}'",
-            button_id, image, color
-        ));
-    }
-
-    pub fn set_stream_deck_state(self: &Rc<Self>, button_id: &str, state: f64) {
-        let mut st = self.st.borrow_mut();
-        let item = st.stream_deck_items.entry(button_id.to_string()).or_default();
-        item.id = button_id.to_string();
-        item.state = new_state(state, item.state);
-        crate::debug(format!("StreamDeck [{}]: Set State {}", button_id, item.state));
-    }
-
-    pub fn toggle_stream_deck_state(self: &Rc<Self>, button_id: &str) {
-        let mut st = self.st.borrow_mut();
-        let item = st.stream_deck_items.entry(button_id.to_string()).or_default();
-        item.id = button_id.to_string();
-        item.state = !item.state;
-        crate::debug(format!("StreamDeck [{}]: Toggle State -> {}", button_id, item.state));
-    }
-
-    pub fn show_stream_deck_alert(self: &Rc<Self>, button_id: &str) {
-        crate::debug(format!("StreamDeck [{}]: Show Alert", button_id));
-    }
-
-    pub fn show_stream_deck_ok(self: &Rc<Self>, button_id: &str) {
-        crate::debug(format!("StreamDeck [{}]: Show Ok", button_id));
-    }
-
-    pub fn set_stream_deck_value(self: &Rc<Self>, button_id: &str, value: &str) {
-        let mut st = self.st.borrow_mut();
-        let item = st.stream_deck_items.entry(button_id.to_string()).or_default();
-        item.id = button_id.to_string();
-        item.value = value.to_string();
-        crate::debug(format!("StreamDeck [{}]: Set Value '{}'", button_id, value));
-    }
-
-    fn deck_key<'a>(deck_id: &'a str, deck_name: &'a str) -> String {
-        if !deck_id.is_empty() {
-            deck_id.to_string()
-        } else {
-            deck_name.to_string()
-        }
-    }
-
-    pub fn set_deck_item_state(
-        self: &Rc<Self>,
-        deck_id: &str,
-        deck_name: &str,
-        item_id: &str,
-        item_name: &str,
-        state: f64,
-    ) {
-        let key = Self::deck_key(deck_id, deck_name);
-        let mut st = self.st.borrow_mut();
-        let deck = st.decks.entry(key.clone()).or_default();
-        let item = deck.get_or_create(item_id, item_name);
-        item.state = new_state(state, item.state);
-        crate::debug(format!("Deck [{}]: Item [{}]: Set State {}", key, item_id, item.state));
-    }
-
-    pub fn toggle_deck_item_state(self: &Rc<Self>, deck_id: &str, deck_name: &str, item_id: &str, item_name: &str) {
-        let key = Self::deck_key(deck_id, deck_name);
-        let mut st = self.st.borrow_mut();
-        let deck = st.decks.entry(key.clone()).or_default();
-        let item = deck.get_or_create(item_id, item_name);
-        item.state = !item.state;
-        crate::debug(format!(
-            "Deck [{}]: Item [{}]: Toggle State -> {}",
-            key, item_id, item.state
-        ));
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn set_deck_item_title(
-        self: &Rc<Self>,
-        deck_id: &str,
-        deck_name: &str,
-        item_id: &str,
-        item_name: &str,
-        color: &str,
-        title: &str,
-        state: f64,
-    ) {
-        let key = Self::deck_key(deck_id, deck_name);
-        let mut st = self.st.borrow_mut();
-        let deck = st.decks.entry(key.clone()).or_default();
-        let item = deck.get_or_create(item_id, item_name);
-        item.title = title.to_string();
-        item.color = color.to_string();
-        item.state = new_state(state, item.state);
-        crate::debug(format!("Deck [{}]: Item [{}]: Set Title '{}'", key, item_id, title));
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn set_deck_item_background(
-        self: &Rc<Self>,
-        deck_id: &str,
-        deck_name: &str,
-        item_id: &str,
-        item_name: &str,
-        color: &str,
-        url: &str,
-        _file_id: &str,
-        state: f64,
-    ) {
-        let key = Self::deck_key(deck_id, deck_name);
-        let mut st = self.st.borrow_mut();
-        let deck = st.decks.entry(key.clone()).or_default();
-        let item = deck.get_or_create(item_id, item_name);
-        item.background = url.to_string();
-        item.color = color.to_string();
-        item.state = new_state(state, item.state);
-        crate::debug(format!("Deck [{}]: Item [{}]: Set Background '{}'", key, item_id, url));
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn set_deck_item_icon(
-        self: &Rc<Self>,
-        deck_id: &str,
-        deck_name: &str,
-        item_id: &str,
-        item_name: &str,
-        color: &str,
-        name: &str,
-        url: &str,
-        _file_id: &str,
-        state: f64,
-    ) {
-        let key = Self::deck_key(deck_id, deck_name);
-        let mut st = self.st.borrow_mut();
-        let deck = st.decks.entry(key.clone()).or_default();
-        let item = deck.get_or_create(item_id, item_name);
-        item.icon = if !url.is_empty() {
-            url.to_string()
-        } else {
-            name.to_string()
-        };
-        item.color = color.to_string();
-        item.state = new_state(state, item.state);
-        crate::debug(format!("Deck [{}]: Item [{}]: Set Icon '{}'", key, item_id, item.icon));
-    }
-
-    pub fn set_deck_item_value(
-        self: &Rc<Self>,
-        deck_id: &str,
-        deck_name: &str,
-        item_id: &str,
-        item_name: &str,
-        value: &str,
-        state: f64,
-    ) {
-        let key = Self::deck_key(deck_id, deck_name);
-        let mut st = self.st.borrow_mut();
-        let deck = st.decks.entry(key.clone()).or_default();
-        let item = deck.get_or_create(item_id, item_name);
-        item.value = value.to_string();
-        item.state = new_state(state, item.state);
-        crate::debug(format!("Deck [{}]: Item [{}]: Set Value '{}'", key, item_id, value));
-    }
-
-    pub fn deck_notify(
-        self: &Rc<Self>,
-        deck_id: &str,
-        deck_name: &str,
-        title: &str,
-        description: &str,
-        color: &str,
-        _sound_id: &str,
-    ) {
-        let key = Self::deck_key(deck_id, deck_name);
-        crate::debug(format!(
-            "Deck [{}]: Notification: '{}' - '{}' (color: {})",
-            key, title, description, color
-        ));
-    }
-
-    pub fn set_deck_page(self: &Rc<Self>, deck_id: &str, deck_name: &str, page: i64) {
-        let key = Self::deck_key(deck_id, deck_name);
-        let mut st = self.st.borrow_mut();
-        let deck = st.decks.entry(key.clone()).or_default();
-        deck.page = page;
-        crate::debug(format!("Deck [{}]: Set Page {}", key, page));
-    }
-
-    pub fn next_deck_page(self: &Rc<Self>, deck_id: &str, deck_name: &str) {
-        let key = Self::deck_key(deck_id, deck_name);
-        let mut st = self.st.borrow_mut();
-        let deck = st.decks.entry(key.clone()).or_default();
-        deck.page += 1;
-        crate::debug(format!("Deck [{}]: Next Page -> {}", key, deck.page));
-    }
-
-    pub fn prev_deck_page(self: &Rc<Self>, deck_id: &str, deck_name: &str) {
-        let key = Self::deck_key(deck_id, deck_name);
-        let mut st = self.st.borrow_mut();
-        let deck = st.decks.entry(key.clone()).or_default();
-        deck.page = (deck.page - 1).max(0);
-        crate::debug(format!("Deck [{}]: Prev Page -> {}", key, deck.page));
-    }
-
     pub fn remote_disconnected(self: &Rc<Self>, instance_id: &str, instance_name: &str) {
         let mut args = Obj::new();
         args.insert("instanceId".into(), instance_id.into());
@@ -1388,11 +1016,21 @@ impl Engine {
     }
 
     fn expand(&self, ctx: &Ctx, t: &str) -> String {
-        vars::expand(t, &ctx.args, &self.cfg.borrow().globals)
+        let c = self.cfg.borrow();
+        if !t.contains("%group.") {
+            return vars::expand(t, &ctx.args, &c.globals);
+        }
+        let args = group_args(ctx, &c);
+        vars::expand(t, &args, &c.globals)
     }
 
     fn simple(&self, ctx: &Ctx, t: &str) -> String {
-        vars::simple(t, &ctx.args, &self.cfg.borrow().globals)
+        let c = self.cfg.borrow();
+        if !t.contains("%group.") {
+            return vars::simple(t, &ctx.args, &c.globals);
+        }
+        let args = group_args(ctx, &c);
+        vars::simple(t, &args, &c.globals)
     }
 
     /// Fire a trigger: every enabled action with an enabled trigger of this type that `matches`
@@ -1582,10 +1220,12 @@ impl Engine {
 
     /// Run an action's sub-actions, with the run's arguments plus the action's own.
     async fn execute(self: &Rc<Self>, run: Run) {
-        let Some((subs, random)) = self.action(&run.action, |a| (a.sub_actions.clone(), a.random_action)) else {
+        let Some((subs, random, group)) = self.action(&run.action, |a| {
+            (a.sub_actions.clone(), a.random_action, a.group.clone())
+        }) else {
             return;
         };
-        let mut ctx = Ctx { args: run.args };
+        let mut ctx = Ctx { args: run.args, group };
         let start = ctx.args.clone();
         let started = (std::time::Instant::now(), globals::iso_now());
         self.emit(
@@ -1679,9 +1319,14 @@ impl Engine {
                 4 => {
                     let id = self.simple(ctx, s(o, "actionId"));
                     if b(o, "runImmedately", true) {
-                        if let Some((subs, random)) = self.action(&id, |a| (a.sub_actions.clone(), a.random_action)) {
+                        if let Some((subs, random, group)) =
+                            self.action(&id, |a| (a.sub_actions.clone(), a.random_action, a.group.clone()))
+                        {
                             let subs: Vec<Value> = subs.into_iter().map(Value::Object).collect();
-                            if self.list(ctx, &subs, random).await == Flow::BreakToRoot {
+                            let previous = std::mem::replace(&mut ctx.group, group);
+                            let flow = self.list(ctx, &subs, random).await;
+                            ctx.group = previous;
+                            if flow == Flow::BreakToRoot {
                                 return Flow::BreakToRoot;
                             }
                         }
@@ -1716,12 +1361,12 @@ impl Engine {
                 | 1040
                 | 1018
                 | 1019
+                | 1024
                 | 1025
                 | 9001..=9003
                 | 11001
                 | 11002
                 | 11004..=11008
-                | 21001..=21010
                 | 4001..=4012
                 | 7001
                 | 8001
@@ -1764,7 +1409,22 @@ impl Engine {
                     } else {
                         v.into()
                     };
-                    ctx.args.insert(k, v);
+                    if let Some(name) = k
+                        .strip_prefix("group.")
+                        .filter(|n| !n.is_empty() && !ctx.group.is_empty())
+                    {
+                        self.change(|c| {
+                            let group = c
+                                .action_group_variables
+                                .entry(ctx.group.clone())
+                                .or_insert_with(|| Value::Object(Obj::new()));
+                            if let Some(group) = group.as_object_mut() {
+                                group.insert(name.into(), v);
+                            }
+                        });
+                    } else {
+                        ctx.args.insert(k, v);
+                    }
                 }
                 // If/Else
                 120 => {
@@ -2060,6 +1720,110 @@ impl Engine {
                 }
                 // Group
                 99900 => return self.branch(ctx, o).await,
+                // Streamerz-only: the serialized operation is preserved by Streamer.bot but
+                // only Streamerz can execute it.
+                99802 => self.song_op(ctx, o).await,
+                99827..=99831 => {
+                    let operation = match kind {
+                        99827 => "remove",
+                        99828 => "skip",
+                        99829 => "voteskip",
+                        99830 => "bansong",
+                        _ => "like",
+                    };
+                    let mut o = o.clone();
+                    o.insert("operation".into(), operation.into());
+                    self.song_op(ctx, &o).await
+                }
+                99832 => self.song_clear(ctx),
+                99833 => self.song_list(ctx),
+                99810..=99824 | 99840..=99875 => {
+                    let value = self.expand(ctx, s(o, "value"));
+                    let value = if kind >= 99840 {
+                        crate::spotify::api::pack(&value, &self.expand(ctx, s(o, "extra")))
+                    } else {
+                        value
+                    };
+                    let result = if kind == 99810 {
+                        self.music()
+                            .current(self)
+                            .await
+                            .and_then(|track| serde_json::to_value(track).map_err(|error| error.to_string()))
+                    } else if kind == 99819 {
+                        self.music().queue(self, &value).await.map(Value::String)
+                    } else {
+                        self.music().player_action(self, kind as u32, &value).await
+                    };
+                    match result {
+                        Ok(result) => {
+                            self.spotify_done(ctx, kind as u32, &value, &result);
+                            // A true or false reads "true" or "false" in a text, not "True".
+                            let result = match result {
+                                Value::Bool(b) => Value::String(b.to_string()),
+                                other => other,
+                            };
+                            ctx.args.insert("spotifyResult".into(), result);
+                            ctx.args.insert("spotifyError".into(), "".into());
+                        }
+                        Err(error) => {
+                            let error = crate::spotify::friendly(&error);
+                            ctx.args.insert("spotifyResult".into(), Value::Null);
+                            ctx.args.insert("spotifyText".into(), "".into());
+                            ctx.args.insert("spotifyCount".into(), 0.into());
+                            ctx.args.insert("spotifyError".into(), error.clone().into());
+                            crate::spotify::event(self, 99806, &error);
+                        }
+                    }
+                }
+                // Streamerz-only countdown operations, used by configurable templates.
+                99803 => {
+                    let id = self.expand(ctx, s(o, "clockId"));
+                    let expected = self.expand(ctx, s(o, "expectedCurrency"));
+                    let actual = self.expand(ctx, "%donationCurrency%");
+                    if !expected.is_empty() && !expected.eq_ignore_ascii_case(actual.trim()) {
+                        return Flow::Continue;
+                    }
+                    let now = crate::templates::clock::now_ms();
+                    let ms =
+                        |key: &str| crate::templates::clock::field_ms(o.get(key), |t| self.expand(ctx, t)).unwrap_or(0);
+                    let (start, max) = (ms("startMs"), ms("maxMs"));
+                    let reset = match s(o, "operation") {
+                        "reset" => true,
+                        "add" => false,
+                        _ => {
+                            crate::warn("Countdown: invalid operation".to_string());
+                            return Flow::Continue;
+                        }
+                    };
+                    let units = self.expand(ctx, s(o, "units")).parse::<f64>().unwrap_or(-1.0);
+                    let per_unit = ms("perUnitMs");
+                    if !reset && (!units.is_finite() || units < 0.0) {
+                        crate::warn("Countdown: invalid amount".to_string());
+                        return Flow::Continue;
+                    }
+                    let amount = ((per_unit as f64) * units).round() as u64;
+                    let mut changed = false;
+                    self.change(|config| {
+                        use crate::templates::clock;
+                        changed = if reset {
+                            clock::reset(config, &id, start, max, now)
+                        } else {
+                            clock::set_max(config, &id, max, now) && clock::add(config, &id, amount, now)
+                        };
+                    });
+                    if changed {
+                        self.countdown_changed(&id);
+                    } else {
+                        crate::warn("Countdown: timer not found".to_string());
+                    }
+                }
+                // Streamerz-only: set an overlay topic, which the pages listening show at once.
+                99880 => {
+                    let topic = self.expand(ctx, s(o, "topic"));
+                    let text = self.expand(ctx, s(o, "value"));
+                    let value = serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text));
+                    self.overlay_publish(topic.trim(), value);
+                }
                 plugins::SUB_PLUGIN => return self.plugin_sub(ctx, o),
                 _ => self.unsupported(kind),
             }
@@ -2248,6 +2012,33 @@ pub fn spawn_secret_recovery(e: Rc<Engine>) {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn group_variables_are_shared_persistent_and_isolated() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        run(async {
+            let e = engine(json!({"actions": []}));
+            let mut first = Ctx {
+                args: Obj::new(),
+                group: "one".into(),
+            };
+            let operation = json!({"type": 123, "variableName": "group.count", "value": "12", "autoType": true});
+            e.list(&mut first, &[operation], false).await;
+            let second = Ctx {
+                args: Obj::new(),
+                group: "one".into(),
+            };
+            let other = Ctx {
+                args: Obj::new(),
+                group: "two".into(),
+            };
+            assert_eq!(e.expand(&second, "%group.count%"), "12");
+            assert_eq!(e.expand(&other, "%group.count%"), "%group.count%");
+            let saved = serde_json::to_value(&*e.config()).unwrap();
+            let restored: crate::Config = serde_json::from_value(saved).unwrap();
+            assert_eq!(restored.action_group_variables["one"]["count"], 12);
+        });
+    }
     use crate::model::ActionsFile;
 
     pub(crate) fn engine(actions: Value) -> Rc<Engine> {
@@ -2267,7 +2058,7 @@ pub(crate) mod tests {
     }
 
     /// Run a test body on a LocalSet, then return the log lines that start with "T ".
-    pub(crate) fn run(f: impl Future<Output = ()>) -> Vec<String> {
+    pub(crate) fn run(f: impl std::future::Future<Output = ()>) -> Vec<String> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -2286,13 +2077,112 @@ pub(crate) mod tests {
         out
     }
 
-    async fn settle() {
+    pub(crate) async fn settle() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
     #[test]
+    fn countdown_action_checks_currency_and_adds_fractional_units() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        run(async {
+            let e = engine(json!({"actions": []}));
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let mut subscriptions = events::Subs::new();
+            events::update(
+                &mut subscriptions,
+                &json!({"Misc": ["StreamerzCountdownChanged"]}),
+                true,
+            );
+            e.listen(1, &subscriptions, &tx);
+            let now = crate::templates::clock::now_ms();
+            e.change(|c| {
+                crate::templates::clock::create(c, "clock", 10_000, 30_000, now);
+            });
+            let mut ctx = Ctx {
+                group: String::new(),
+                args: json!({"donationCurrency": "eur", "donationAmount": 2.5})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            };
+            let mut operation = json!({"type": 99803, "clockId": "clock", "operation": "add", "maxMs": 30000,
+                "perUnitMs": 1000, "units": "%donationAmount%", "expectedCurrency": "USD"})
+            .as_object()
+            .unwrap()
+            .clone();
+            e.one(&mut ctx, &operation).await;
+            let before = crate::templates::clock::get(&e.config(), "clock", now)
+                .unwrap()
+                .remaining_ms;
+            assert_eq!(before, 10_000);
+            assert!(rx.try_recv().is_err());
+            operation.insert("expectedCurrency".into(), "EUR".into());
+            e.one(&mut ctx, &operation).await;
+            let after = crate::templates::clock::get(&e.config(), "clock", now)
+                .unwrap()
+                .remaining_ms;
+            assert!((12_490..=12_500).contains(&after));
+            let event: Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+            assert_eq!(event["event"]["type"], "StreamerzCountdownChanged");
+            assert_eq!(event["data"]["clockId"], "clock");
+            assert_eq!(event["data"]["snapshot"]["maxMs"], 30_000);
+            operation.insert("operation".into(), "reset".into());
+            operation.insert("expectedCurrency".into(), "".into());
+            operation.insert("startMs".into(), 5_000.into());
+            e.one(&mut ctx, &operation).await;
+            assert!(
+                crate::templates::clock::get(&e.config(), "clock", crate::templates::clock::now_ms())
+                    .unwrap()
+                    .remaining_ms
+                    <= 5_000
+            );
+        });
+    }
+
+    #[test]
+    fn spotify_connection_events_reach_actions_and_listeners() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        run(async {
+            let e = engine(json!({"actions": []}));
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let mut subscriptions = events::Subs::new();
+            events::update(&mut subscriptions, &json!({"Spotify": ["Connected", "Error"]}), true);
+            e.listen(1, &subscriptions, &tx);
+            crate::spotify::event(&e, 99804, "");
+            let connected: Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+            assert_eq!(connected["event"]["type"], "Connected");
+            crate::spotify::event(&e, 99806, "request failed");
+            let error: Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+            assert_eq!(error["data"]["spotifyError"], "request failed");
+        });
+    }
+
+    #[test]
+    fn spotify_action_reports_disabled_and_clears_stale_results() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        run(async {
+            let e = engine(json!({"actions": []}));
+            let mut ctx = Ctx {
+                group: String::new(),
+                args: json!({"rawInput": "a song", "spotifyQueued": "true", "spotifyUri": "old"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            };
+            let operation = json!({"type": 99802, "query": "%rawInput%"})
+                .as_object()
+                .unwrap()
+                .clone();
+            assert_eq!(e.one(&mut ctx, &operation).await, Flow::Continue);
+            assert_eq!(ctx.args["spotifyQueued"], "false");
+            assert_eq!(ctx.args["spotifyUri"], "");
+            assert!(!ctx.args["spotifyError"].as_str().unwrap().is_empty());
+        });
+    }
+
+    #[test]
     fn logic_and_flow() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let ifelse = |op: i64, input: &str, value: &str, yes: &str, no: &str| {
             json!({"type": 120, "input": input, "operation": op, "value": value, "autoType": true, "subActions": [
                 {"type": 99901, "random": false, "subActions": [log(yes)]},
@@ -2358,7 +2248,7 @@ pub(crate) mod tests {
 
     #[test]
     fn pause_clear_pending_history() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut hidden = action("h", "hidden", json!([log("T hidden")]));
         hidden["excludeFromHistory"] = json!(true);
         let quick = action("k", "quick", json!([log("T quick")]));
@@ -2385,7 +2275,7 @@ pub(crate) mod tests {
 
     #[test]
     fn queues_globals_signals_triggers() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let q = "11111111-0000-0000-0000-000000000000";
         let slow = json!({"id": "q1", "name": "slow", "enabled": true, "queue": q, "triggers": [], "subActions": [
             log("T start %n%"), {"type": 1002, "value": 30}, log("T end %n%")]});
@@ -2454,7 +2344,7 @@ pub(crate) mod tests {
 
     #[test]
     fn remote_instances_triggers_signals_and_wait() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let act = action("r1", "remote_action", json!([log("T remote_trig %eventName% %val%")]));
         let mut act_with_trig = act.clone();
         act_with_trig["triggers"] = json!([{
@@ -2490,7 +2380,7 @@ pub(crate) mod tests {
 
     #[test]
     fn inputs_hotkeys_midi_and_voice_control() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         // 1. Actions with triggers
         let a_voice_dict = json!({
@@ -2505,7 +2395,7 @@ pub(crate) mod tests {
                 "enabled": true,
                 "culture": "en-US"
             }],
-            "subActions": [log("T dictation %dictationText% %culture%")]
+            "subActions": [log("T dictation %spokenText% %spokenTextConfidencePercent%")]
         });
 
         let a_voice_cmd = json!({
@@ -2521,7 +2411,7 @@ pub(crate) mod tests {
                 "commandId": "vcmd1"
             }],
             "subActions": [
-                log("T speech_cmd %commandId% %phrase%"),
+                log("T speech_cmd %commandId% %spokenCommand%"),
                 // Change voice command state and audio device
                 json!({"type": crate::inputs::S_SET_VOICE_COMMAND, "commandId": "vcmd1", "command": "turn off the lights"}),
                 json!({"type": crate::inputs::S_SET_VOICE_COMMAND_STATE, "commandId": "vcmd1", "state": 1}),
@@ -2542,11 +2432,11 @@ pub(crate) mod tests {
                 "type": crate::inputs::T_MIDI_MESSAGE,
                 "enabled": true,
                 "channel": 1,
-                "status": "NoteOn",
+                "commandCode": "NoteOn",
                 "device": ""
             }],
             "subActions": [
-                log("T midi %midiDevice% %channel% %noteName% %velocity%"),
+                log("T midi %deviceName% %channel% %noteName% %velocity%"),
                 // MIDI subactions
                 json!({"type": crate::inputs::S_MIDI_NOTE_ON, "device": "Launchpad", "name": "L1", "channel": 1, "note": 60, "velocity": 127, "sendNoteOff": true, "duration": 100}),
                 json!({"type": crate::inputs::S_MIDI_CONTROL_CHANGE, "device": "Launchpad", "name": "L1", "channel": 1, "controller": 7, "value": 100}),
@@ -2592,11 +2482,29 @@ pub(crate) mod tests {
 
         let out = run(async {
             // Fire speech dictation
-            e.fire_speech_dictation("hello world", 0.95, "en-US");
-            // Fire speech command
-            e.fire_speech_command("vcmd1", "Lights On", "turn on the lights", 0.98, "en-US");
-            // Fire MIDI note on (0x90 = NoteOn ch 1)
-            e.fire_midi_message("Launchpad", 1, 0x90, 60, 100);
+            e.change(|c| {
+                c.voice_commands = vec![json!({"id": "vcmd1", "name": "Lights On", "enabled": true,
+                    "command": "turn on the lights", "location": 0})
+                .as_object()
+                .unwrap()
+                .clone()];
+            });
+            // What the recognizer heard: Dictation, and the command it says.
+            e.speech_heard(&crate::speech::Heard {
+                text: "turn on the lights".into(),
+                confidence: 0.95,
+            });
+            // MIDI note on (0x90 = NoteOn, channel 1)
+            e.midi_fire(
+                "Launchpad",
+                "Launchpad",
+                &crate::midi::Msg {
+                    status: 0x90,
+                    data1: 60,
+                    data2: 100,
+                },
+                0,
+            );
             // Fire key press
             // Right-hand Shift counts as Shift; another combination fires nothing.
             e.fire_hotkey(-4095, 2 | 16);
@@ -2607,24 +2515,28 @@ pub(crate) mod tests {
             settle().await;
         });
 
-        assert!(out.contains(&"T dictation hello world en-US".to_string()));
+        assert!(
+            out.contains(&"T dictation turn on the lights 95".to_string()),
+            "{out:?}"
+        );
         assert!(out.contains(&"T speech_cmd vcmd1 turn on the lights".to_string()));
-        assert!(out.contains(&"T midi Launchpad 1 C4 100".to_string()));
+        assert!(out.contains(&"T midi Launchpad 1 C5 100".to_string()), "{out:?}");
         assert_eq!(out.iter().filter(|l| l.starts_with("T key")).count(), 1, "{out:?}");
         assert!(out.contains(&"T key -4095 18 True False True".to_string()), "{out:?}");
         assert!(out.contains(&"T mouse 2 1 300 450".to_string()), "{out:?}");
 
         // Check voice command state and voice input changes
         let st = e.st.borrow();
-        assert_eq!(st.voice_commands.get("vcmd1").unwrap().0, "turn off the lights");
-        assert!(!st.voice_commands.get("vcmd1").unwrap().1);
+        let c = e.config();
+        assert_eq!(c.voice_commands[0]["command"], "turn off the lights");
+        assert_eq!(c.voice_commands[0]["enabled"], false);
         assert_eq!(st.voice_input.0, "mic1");
         assert_eq!(st.voice_input.1, "Blue Yeti");
     }
 
     #[test]
     fn decks_stream_deck_and_chat_window_actions() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let a_chat = json!({
             "id": "a_chat",
@@ -2647,32 +2559,16 @@ pub(crate) mod tests {
             "enabled": true,
             "group": "",
             "queue": crate::engine::DEFAULT_QUEUE,
-            "triggers": [{
-                "id": "t_sd",
-                "type": crate::decks::T_STREAM_DECK_ACTION,
-                "enabled": true,
-                "buttonId": "btn_1"
-            }],
+            "triggers": [],
             "subActions": [
-                log("T sd %buttonId% %action% %title%"),
+                log("T sd ran"),
                 json!({"type": crate::decks::S_STREAM_DECK_SET_TITLE, "buttonId": "btn_1", "title": "Active", "state": 0}),
                 json!({"type": crate::decks::S_STREAM_DECK_SET_BACKGROUND, "buttonId": "btn_1", "image": "bg.png", "color": "#ff0000", "state": 0}),
                 json!({"type": crate::decks::S_STREAM_DECK_SET_STATE, "buttonId": "btn_1", "state": 0}),
                 json!({"type": crate::decks::S_STREAM_DECK_SHOW_ALERT, "buttonId": "btn_1"}),
                 json!({"type": crate::decks::S_STREAM_DECK_SHOW_OK, "buttonId": "btn_1"}),
                 json!({"type": crate::decks::S_STREAM_DECK_TOGGLE_STATE, "buttonId": "btn_1"}),
-                json!({"type": crate::decks::S_STREAM_DECK_SET_VALUE, "buttonId": "btn_1", "value": "100"}),
-                // Streamer.bot Decks subactions
-                json!({"type": crate::decks::S_DECK_SET_ITEM_STATE, "deckId": "d1", "deckName": "MainDeck", "itemId": "i1", "itemName": "Play", "state": 0}),
-                json!({"type": crate::decks::S_DECK_TOGGLE_ITEM_STATE, "deckId": "d1", "deckName": "MainDeck", "itemId": "i1", "itemName": "Play"}),
-                json!({"type": crate::decks::S_DECK_SET_ITEM_TITLE, "deckId": "d1", "deckName": "MainDeck", "itemId": "i1", "itemName": "Play", "color": "#00ff00", "title": "Pause", "state": 0}),
-                json!({"type": crate::decks::S_DECK_SET_ITEM_BACKGROUND, "deckId": "d1", "deckName": "MainDeck", "itemId": "i1", "itemName": "Play", "color": "#0000ff", "url": "http://img", "fileId": "", "state": 0}),
-                json!({"type": crate::decks::S_DECK_SET_ITEM_ICON, "deckId": "d1", "deckName": "MainDeck", "itemId": "i1", "itemName": "Play", "color": "#ffff00", "name": "icon1", "url": "", "fileId": "", "state": 0}),
-                json!({"type": crate::decks::S_DECK_SET_ITEM_VALUE, "deckId": "d1", "deckName": "MainDeck", "itemId": "i1", "itemName": "Play", "value": "50", "state": 0}),
-                json!({"type": crate::decks::S_DECK_NOTIFY, "deckId": "d1", "deckName": "MainDeck", "title": "Notice", "description": "Deck alert", "color": "#ffffff", "soundId": ""}),
-                json!({"type": crate::decks::S_DECK_PAGE_SET, "deckId": "d1", "deckName": "MainDeck", "page": 2}),
-                json!({"type": crate::decks::S_DECK_PAGE_NEXT, "deckId": "d1", "deckName": "MainDeck"}),
-                json!({"type": crate::decks::S_DECK_PAGE_PREVIOUS, "deckId": "d1", "deckName": "MainDeck"})
+                json!({"type": crate::decks::S_STREAM_DECK_SET_VALUE, "buttonId": "btn_1", "value": "100"})
             ]
         });
 
@@ -2684,34 +2580,19 @@ pub(crate) mod tests {
 
         let out = run(async {
             e.fire_chat_window_action("twitch", "alice", "123", "hello", "m1", "shoutout");
-            e.fire_stream_deck_action("btn_1", "Press", 1.0, "Ready", "0");
-            e.fire_stream_deck_connected("Elgato-XL", "1.0");
-            e.fire_stream_deck_info("Elgato-XL", 4, 8);
-            e.fire_stream_deck_disconnected("Elgato-XL");
+            // The Stream Deck sub-actions push to the plugins (none here).
+            e.queue("a_sd", Obj::new());
 
             settle().await;
         });
 
         assert!(out.contains(&"T chat twitch alice shoutout".to_string()));
-        assert!(out.contains(&"T sd btn_1 Press Ready".to_string()));
-
-        let st = e.st.borrow();
-        let sd_item = st.stream_deck_items.get("btn_1").unwrap();
-        assert_eq!(sd_item.title, "Active");
-        assert_eq!(sd_item.value, "100");
-        assert_eq!(sd_item.background, "bg.png");
-
-        let deck = st.decks.get("d1").unwrap();
-        assert_eq!(deck.page, 2);
-        let deck_item = deck.items.get("i1").unwrap();
-        assert_eq!(deck_item.title, "Pause");
-        assert_eq!(deck_item.value, "50");
-        assert_eq!(deck_item.icon, "icon1");
+        assert!(out.contains(&"T sd ran".to_string()));
     }
 
     #[test]
     fn file_io_file_tail_and_process_triggers() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let dir = std::env::temp_dir().join(format!("streamerz_engine_file_test_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
@@ -2742,42 +2623,8 @@ rust
                 json!({"type": crate::fileio::S_READ_LINES, "file": test_file_str, "variableName": "all_lines", "autoType": false, "parseVariables": false}),
                 // Read Random Line
                 json!({"type": crate::fileio::S_READ_RANDOM_LINE, "file": test_file_str, "variableName": "rand_line", "autoType": false, "parseVariables": false}),
-                // Set File Tail State
-                json!({"type": crate::fileio::S_SET_FILE_TAIL_STATE, "fileTailId": "tail1", "state": 0}),
                 log("T file f_exists=%f_exists% d_exists=%d_exists% l2=%line_two% count=%all_lines.count%")
             ]
-        });
-
-        let a_watch = json!({
-            "id": "a_watch",
-            "name": "Watcher Action",
-            "enabled": true,
-            "group": "",
-            "queue": crate::engine::DEFAULT_QUEUE,
-            "triggers": [{
-                "id": "t_watch",
-                "type": crate::fileio::T_FILE_WATCHER_CHANGED,
-                "enabled": true,
-                "watcherId": "w1",
-                "path": ""
-            }],
-            "subActions": [log("T watcher %watcherId% %fileName%")]
-        });
-
-        let a_tail = json!({
-            "id": "a_tail",
-            "name": "Tail Action",
-            "enabled": true,
-            "group": "",
-            "queue": crate::engine::DEFAULT_QUEUE,
-            "triggers": [{
-                "id": "t_tail",
-                "type": crate::fileio::T_FILE_TAIL_CHANGED,
-                "enabled": true,
-                "tailId": "t1",
-                "path": ""
-            }],
-            "subActions": [log("T tail %tailId% %line% %lineNumber%")]
         });
 
         let a_proc_start = json!({
@@ -2792,7 +2639,7 @@ rust
                 "enabled": true,
                 "processName": "obs64.exe"
             }],
-            "subActions": [log("T pstart %processName% %processId%")]
+            "subActions": [log("T pstart %name% %executable% %processId% %path%")]
         });
 
         let a_proc_stop = json!({
@@ -2807,35 +2654,34 @@ rust
                 "enabled": true,
                 "processName": "obs64.exe"
             }],
-            "subActions": [log("T pstop %processName% %processId% %exitCode%")]
+            "subActions": [log("T pstop %executable% %parentProcessId%")]
         });
 
         let e = engine(json!({
             "blocking": false,
             "queues": [],
-            "actions": [a_file_sub, a_watch, a_tail, a_proc_start, a_proc_stop]
+            "actions": [a_file_sub, a_proc_start, a_proc_stop]
         }));
 
         let out = run(async {
             e.queue("a_fsub", Obj::new()).unwrap();
             settle().await;
 
-            e.fire_file_watcher(crate::fileio::T_FILE_WATCHER_CHANGED, "w1", &test_file_str, "");
-            e.fire_file_tail("t1", &test_file_str, "new appended line", 4);
-            e.fire_process_started("obs64.exe", 4321);
-            e.fire_process_stopped("obs64.exe", 4321, 0);
+            let obs = processes::Proc {
+                name: "obs64".into(),
+                executable: "obs64.exe".into(),
+                full_path: "C:/obs/obs64.exe".into(),
+                parent: 1,
+            };
+            e.process_fire(processes::T_STARTED, 4321, &obs);
+            e.process_fire(processes::T_STOPPED, 4321, &obs);
 
             settle().await;
         });
 
         assert!(out.contains(&"T file f_exists=True d_exists=True l2=world count=3".to_string()));
-        assert!(out.contains(&"T watcher w1 test_io.txt".to_string()));
-        assert!(out.contains(&"T tail t1 new appended line 4".to_string()));
-        assert!(out.contains(&"T pstart obs64.exe 4321".to_string()));
-        assert!(out.contains(&"T pstop obs64.exe 4321 0".to_string()));
-
-        let st = e.st.borrow();
-        assert_eq!(st.file_tails.get("tail1"), Some(&true));
+        assert!(out.contains(&"T pstart obs64 obs64.exe 4321 C:/obs".to_string()));
+        assert!(out.contains(&"T pstop obs64.exe 1".to_string()));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

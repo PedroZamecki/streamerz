@@ -26,9 +26,9 @@ pub struct Settings {
     pub connections: Vec<Obj>,
 }
 
-type Reply = oneshot::Sender<Result<Value, String>>;
+pub(crate) type Reply = oneshot::Sender<Result<Value, String>>;
 /// A call: resource, method, args.
-type Call = (String, String, Value, Reply);
+pub(crate) type Call = (String, String, Value, Reply);
 
 struct Conn {
     cfg: Obj,
@@ -269,15 +269,7 @@ impl Engine {
                                 let _ = reply.send(err.map_or_else(|| Ok(result.clone()), Err));
                             }
                         }
-                        None if result["_type"] == "EVENT" => {
-                            let data = &result["data"];
-                            if let Some((kind, trigger, ev)) = event(result["resourceId"].as_str().unwrap_or(""), data) {
-                                if kind == 22004 {
-                                    self.notify_stream_started();
-                                }
-                                self.slobs_fire(o, kind, trigger, ev, data["name"].as_str());
-                            }
-                        }
+                        None if result["_type"] == "EVENT" => self.slobs_heard(o, result),
                         None => {}
                     }
                 }
@@ -293,6 +285,27 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// An event Streamlabs Desktop sent (`result` of a message with no id).
+    pub(crate) fn slobs_heard(self: &Rc<Self>, o: &Obj, result: &Value) {
+        let data = &result["data"];
+        if let Some((kind, trigger, ev)) = event(result["resourceId"].as_str().unwrap_or(""), data) {
+            if kind == 22004 {
+                self.notify_stream_started();
+            }
+            self.slobs_fire(o, kind, trigger, ev, data["name"].as_str());
+        }
+    }
+
+    /// Connection `o` as up, with no socket: whoever holds the receiver answers its calls (scenarios).
+    pub(crate) fn slobs_detached(self: &Rc<Self>, o: Obj) -> mpsc::UnboundedReceiver<Call> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let task = tokio::task::spawn_local(std::future::pending::<()>()).abort_handle();
+        let up = Rc::new(Cell::new(true));
+        let id = s(&o, "id").to_string();
+        self.slobs.conns.borrow_mut().insert(id, Conn { cfg: o, tx, task, up });
+        rx
     }
 
     /// Fire a Streamlabs Desktop trigger (sd.id, sd.name, sd.host, and sd.sceneName for scene

@@ -221,6 +221,84 @@ pub fn third(platform: &str, word: &str) -> Option<String> {
     store().lock().ok()?.lookup[i].get(word).cloned()
 }
 
+/// What a chatter's own 7TV emotes are: `Some(name -> url)` once looked up, `None` while it's asked.
+type Personal = Option<HashMap<String, String>>;
+
+/// Chatters looked up before the oldest are forgotten (their sets are small, but chats are long).
+const PERSONAL_MAX: usize = 400;
+
+fn personal_store() -> &'static Mutex<HashMap<String, Personal>> {
+    static S: OnceLock<Mutex<HashMap<String, Personal>>> = OnceLock::new();
+    S.get_or_init(Mutex::default)
+}
+
+/// The emote called `word` in the personal 7TV set of chatter `uid` on `platform`, if it's known.
+pub fn personal(platform: &str, uid: &str, word: &str) -> Option<String> {
+    personal_store()
+        .lock()
+        .ok()?
+        .get(&format!("{platform}:{uid}"))?
+        .as_ref()?
+        .get(word)
+        .cloned()
+}
+
+/// Looks up the personal 7TV set of a chatter, once: their own emotes, which everyone with 7TV sees in
+/// their messages. Draws again when it arrives.
+pub fn want_personal(cmds: &UnboundedSender<UiCmd>, platform: &str, uid: &str) {
+    let plat = match platform {
+        "twitch" => "TWITCH",
+        "kick" => "KICK",
+        "youtube" => "YOUTUBE",
+        _ => return,
+    };
+    if uid.is_empty() || crate::memory_saver() {
+        return;
+    }
+    let key = format!("{platform}:{uid}");
+    {
+        let Ok(mut m) = personal_store().lock() else { return };
+        if m.contains_key(&key) {
+            return;
+        }
+        if m.len() >= PERSONAL_MAX {
+            m.clear();
+        }
+        m.insert(key.clone(), None);
+    }
+    let x: u8 = if fltk::app::screen_scale(0) > 1.25 { 2 } else { 1 };
+    let uid = uid.to_string();
+    tell(cmds, move |_| {
+        tokio::task::spawn_local(async move {
+            let set = fetch_7tv_personal(plat, &uid, x).await;
+            if let Ok(mut m) = personal_store().lock() {
+                m.insert(key, Some(set.into_iter().collect()));
+            }
+            REV.fetch_add(1, Ordering::Relaxed);
+            super::wake(Msg::Image);
+        });
+    });
+}
+
+/// 7TV's personal emote set of a chatter (only its GraphQL API has it).
+async fn fetch_7tv_personal(platform: &str, uid: &str, x: u8) -> Vec<(String, String)> {
+    let v = gql_7tv(&format!(
+        "{{ users {{ userByConnection(platform: {platform}, platformId: {}) {{ personalEmoteSet {{ emotes(perPage: 1000) {{ items {{ alias emote {{ id defaultName }} }} }} }} }} }} }}",
+        json!(uid)
+    ))
+    .await;
+    parse_7tv_personal(&v, x)
+}
+
+fn parse_7tv_personal(v: &Value, x: u8) -> Vec<(String, String)> {
+    parse_7tv_items(
+        &v.pointer("/data/users/userByConnection/personalEmoteSet/emotes/items")
+            .cloned()
+            .unwrap_or_default(),
+        x,
+    )
+}
+
 /// Kick's native `[emote:id:name]` tag for `word`, if loaded from Kick's emote catalog.
 pub fn kick_tag(word: &str) -> Option<String> {
     store().lock().ok()?.kick_tags.get(word).cloned()
@@ -447,7 +525,9 @@ impl LoadParams {
             .bot
             .as_ref()
             .map(|a| (a.user_id.clone(), a.token.access_token.clone()));
-        let tw_chan_id = tw_broadcaster.as_ref().map(|(id, _)| id.clone()).unwrap_or_default();
+        // The channel read (someone else's when one is set), not the logged-in account's: its 7TV, BTTV
+        // and FFZ sets are the ones chat uses.
+        let tw_chan_id = crate::twitch::channel_id(cfg);
         let kick_slug = kick_slug(cfg);
         let kick_uid = cfg
             .kick
@@ -463,7 +543,7 @@ impl LoadParams {
         let bot_tok = tw_bot.as_ref().map_or("", |(_, t)| t.as_str());
         let cache_key =
             format!("{tw_chan_id}:{b_id}:{b_tok}:{bot_id}:{bot_tok}:{kick_slug}:{kick_uid}:{yt_chan_id}:{x}x");
-        let file_id = format!("{b_id}-{bot_id}-{kick_slug}-{yt_chan_id}-{x}x")
+        let file_id = format!("{tw_chan_id}-{b_id}-{bot_id}-{kick_slug}-{yt_chan_id}-{x}x")
             .chars()
             .map(|c| {
                 if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
@@ -524,7 +604,9 @@ pub fn load_for_config(cmds: &UnboundedSender<UiCmd>, cfg: &tokio::sync::watch::
     tell(cmds, move |_| {
         tokio::task::spawn_local(async move {
             let cat = fetch_all(&p).await;
-            if let (false, Ok(val)) = (cat.wants_login(), serde_json::to_value(&cat)) {
+            // A catalog the network left empty isn't kept as fresh.
+            let loaded = cat.twitch_7tv[0].iter().any(|s| !s.emotes.is_empty());
+            if let (true, false, Ok(val)) = (loaded, cat.wants_login(), serde_json::to_value(&cat)) {
                 super::img::save(&p.file_name, &val);
             }
             apply_catalog(cat);
@@ -876,21 +958,55 @@ async fn fetch_kick_native(slug: &str) -> (Vec<EmoteSection>, HashMap<String, St
     }
 }
 
+/// A 7TV GraphQL answer (its REST answers carry every emote's whole description: 2 MB for a big set,
+/// where names and ids are 60 KB).
+async fn gql_7tv(query: &str) -> Value {
+    let headers = [("Content-Type".to_string(), "application/json".to_string())];
+    let body = json!({ "query": query }).to_string();
+    match crate::http::request("POST", "https://7tv.io/v4/gql", &headers, body.as_bytes()).await {
+        Ok(r) => serde_json::from_slice(&r.body).unwrap_or_default(),
+        Err(_) => Value::Null,
+    }
+}
+
+/// The emotes of a 7TV set, as `(name, url)`, from its GraphQL `items`.
+fn parse_7tv_items(items: &Value, x: u8) -> Vec<(String, String)> {
+    items
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| {
+            let id = e.pointer("/emote/id")?.as_str()?;
+            let name = e["alias"].as_str().or(e.pointer("/emote/defaultName")?.as_str())?;
+            Some((name.to_string(), format!("https://cdn.7tv.app/emote/{id}/{x}x.webp")))
+        })
+        .collect()
+}
+
+/// The name and emotes of the set a user has active on `platform` ("twitch", "kick", "youtube").
 async fn fetch_7tv_user_set(platform: &str, uid: &str, x: u8) -> (String, Vec<(String, String)>) {
     if uid.is_empty() {
         return (String::new(), Vec::new());
     }
-    let url = format!(
-        "https://7tv.io/v3/users/{platform}/{}",
-        crate::commands::url_encode(uid)
-    );
-    let (_, v) = get_json(&url, &[]).await;
-    let set_name = v
-        .pointer("/emote_set/name")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    (set_name, parse_7tv_vec(&v["emote_set"], x))
+    let (mut name, mut out) = (String::new(), Vec::new());
+    for page in 1..=10 {
+        let v = gql_7tv(&format!(
+            "{{ users {{ userByConnection(platform: {}, platformId: {}) {{ style {{ activeEmoteSet {{ name emotes(page: {page}, perPage: 1000) {{ items {{ alias emote {{ id defaultName }} }} pageCount }} }} }} }} }} }}",
+            platform.to_uppercase(),
+            json!(uid)
+        ))
+        .await;
+        let set = v.pointer("/data/users/userByConnection/style/activeEmoteSet");
+        let Some(set) = set.filter(|s| s.is_object()) else {
+            break;
+        };
+        name = set["name"].as_str().unwrap_or("").to_string();
+        out.extend(parse_7tv_items(&set["emotes"]["items"], x));
+        if page >= set["emotes"]["pageCount"].as_u64().unwrap_or(1) {
+            break;
+        }
+    }
+    (name, out)
 }
 
 async fn fetch_all(p: &LoadParams) -> Catalog {
@@ -1100,6 +1216,36 @@ mod tests {
         cfg.kick.channel = "https://kick.com/Other".into();
         assert_eq!(kick_slug(&cfg), "other");
         assert_eq!(kick_slug(&Config::default()), "");
+    }
+
+    #[test]
+    fn twitch_third_party_emotes_are_the_channel_read() {
+        let mut cfg = Config::default();
+        cfg.twitch.broadcaster = Some(crate::twitch::TwitchAccount {
+            user_id: "10".into(),
+            login: "me".into(),
+            ..Default::default()
+        });
+        assert_eq!(LoadParams::from_cfg(&cfg).tw_chan_id, "10");
+        cfg.twitch.channel = "other".into();
+        cfg.twitch.channel_id = "20".into();
+        assert_eq!(LoadParams::from_cfg(&cfg).tw_chan_id, "20");
+    }
+
+    #[test]
+    fn reads_a_chatters_personal_7tv_set() {
+        let v = json!({"data": {"users": {"userByConnection": {"personalEmoteSet": {"emotes": {"items": [
+            {"alias": "mine", "emote": {"id": "A1", "defaultName": "orig"}},
+            {"alias": null, "emote": {"id": "B2", "defaultName": "plain"}}
+        ]}}}}}});
+        assert_eq!(
+            parse_7tv_personal(&v, 2),
+            vec![
+                ("mine".into(), "https://cdn.7tv.app/emote/A1/2x.webp".into()),
+                ("plain".into(), "https://cdn.7tv.app/emote/B2/2x.webp".into())
+            ]
+        );
+        assert!(parse_7tv_personal(&json!({"data": {"users": {"userByConnection": null}}}), 1).is_empty());
     }
 
     #[test]

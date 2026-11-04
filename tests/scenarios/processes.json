@@ -1,0 +1,30 @@
+[
+  {
+    "name": "process watcher: a program started and ended fires Started and Stopped with its name and paths (Linux)",
+    "only": "linux",
+    "actions": [
+      {"name": "started", "triggers": [{"type": 703, "processName": "sleep"}], "subActions": [{"type": 1009}]},
+      {"name": "stopped", "triggers": [{"type": 704, "processName": "SLEEP.exe"}], "subActions": [{"type": 1009}]},
+      {"name": "other", "triggers": [{"type": 703, "processName": "obs64.exe"}], "subActions": [{"type": 1009}]},
+      {"name": "run", "subActions": [{"type": 6, "command": "/bin/sleep", "arguments": "2.5", "waitForExit": 0}]}
+    ],
+    "steps": [{"wait": 100}, {"run": "run", "wait": 5500}],
+    "expect": {"runs": [
+      {"action": "started", "args": {"name": "sleep", "executable": "sleep", "triggerCategory": "Core/Processes", "eventSource": "processes"}},
+      {"action": "stopped", "args": {"name": "sleep"}}],
+      "notLog": ["other"]}
+  },
+  {
+    "name": "process watcher: a program started and ended fires Started and Stopped (Windows)",
+    "only": "windows",
+    "actions": [
+      {"name": "started", "triggers": [{"type": 703, "processName": "PING.EXE"}], "subActions": [{"type": 1009}]},
+      {"name": "stopped", "triggers": [{"type": 704, "processName": "ping"}], "subActions": [{"type": 1009}]},
+      {"name": "run", "subActions": [{"type": 6, "command": "C:\\Windows\\System32\\ping.exe", "arguments": "-n 3 127.0.0.1", "waitForExit": 0}]}
+    ],
+    "steps": [{"wait": 100}, {"run": "run", "wait": 7000}],
+    "expect": {"runs": [
+      {"action": "started", "args": {"eventSource": "processes", "triggerName": "Process Started"}},
+      {"action": "stopped", "args": {"triggerName": "Process Stopped"}}]}
+  }
+]

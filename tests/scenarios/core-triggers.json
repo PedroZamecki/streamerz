@@ -1,0 +1,193 @@
+[
+  {
+    "name": "core: started, test, and custom events",
+    "actions": [
+      {"name": "on start", "triggers": [{"type": 706}], "subActions": [{"type": 1020, "logLevel": 2, "message": "started"}]},
+      {"name": "tested", "triggers": [{"type": 702}], "subActions": [{"type": 1020, "logLevel": 2, "message": "test run %isTest%"}]}
+    ],
+    "steps": [{"app": "started", "ran": 1}, {"app": "test", "action": "tested"}],
+    "expect": {"log": ["started", "test run True"]}
+  },
+  {
+    "name": "core: command cooldown fires instead of the command",
+    "config": {"commands": [{"id": "c1", "name": "hi", "command": "!hi", "globalCooldown": 60}]},
+    "actions": [
+      {"name": "hi", "triggers": [{"type": 401, "commandId": "c1"}], "subActions": [{"type": 1020, "logLevel": 2, "message": "hi ran"}]},
+      {"name": "cool", "triggers": [{"type": 402, "commandId": "c1"}], "subActions": [{"type": 1020, "logLevel": 2, "message": "cooling %cooldownLeft%"}]}
+    ],
+    "steps": [{"chat": {"platform": "twitch", "user": "ana", "text": "!hi"}}, {"chat": {"platform": "twitch", "user": "bo", "text": "!hi"}}],
+    "expect": {"log": ["hi ran", "cooling 6"], "runs": [{"action": "cool", "args": {"commandId": "c1", "user": "bo"}}]}
+  },
+  {
+    "name": "core: quote added fires its trigger",
+    "actions": [
+      {"name": "add", "subActions": [{"type": 1037, "quoteVariable": "%rawInput%"}]},
+      {"name": "on quote", "triggers": [{"type": 601}], "subActions": [{"type": 1020, "logLevel": 2, "message": "quote #%quoteId%: %quote%"}]}
+    ],
+    "steps": [{"run": "add", "args": {"rawInput": "so true", "user": "ana"}}],
+    "expect": {"log": ["quote #1: so true"]}
+  },
+  {
+    "name": "core: global variables created, updated, deleted, and user globals updated",
+    "actions": [
+      {"name": "created", "triggers": [{"type": 711}], "subActions": [{"type": 1020, "logLevel": 2, "message": "created %global.name%=%global.value%"}]},
+      {"name": "updated", "triggers": [{"type": 709}], "subActions": [{"type": 1020, "logLevel": 2, "message": "updated %global.name% %global.oldValue%>%global.newValue%"}]},
+      {"name": "deleted", "triggers": [{"type": 712}], "subActions": [{"type": 1020, "logLevel": 2, "message": "deleted %global.name%"}]},
+      {"name": "user updated", "triggers": [{"type": 710}], "subActions": [{"type": 1020, "logLevel": 2, "message": "user global %global.name%"}]},
+      {"name": "set user", "subActions": [{"type": 122, "variableName": "points", "value": "5", "persisted": true, "destination": 1}]}
+    ],
+    "steps": [
+      {"app": "setGlobal", "name": "score", "value": 1},
+      {"app": "setGlobal", "name": "score", "value": 2},
+      {"app": "deleteGlobal", "name": "score"},
+      {"run": "set user", "args": {"userId": "5", "user": "ana", "userType": "twitch"}}
+    ],
+    "expect": {"log": ["created score=1", "updated score 1>2", "deleted score", "user global points"]}
+  },
+  {
+    "name": "core: user groups added, users added and removed, group removed",
+    "fakes": {"twitch": {"resolve": {"pal": "777"}}},
+    "actions": [
+      {"name": "g+", "triggers": [{"type": 32001}], "subActions": [{"type": 1020, "logLevel": 2, "message": "group added %group.name%"}]},
+      {"name": "u+", "triggers": [{"type": 32004}], "subActions": [{"type": 1020, "logLevel": 2, "message": "users added %group.name% %group.user0.userId%"}]},
+      {"name": "u-", "triggers": [{"type": 32005}], "subActions": [{"type": 1020, "logLevel": 2, "message": "users removed %group.name%"}]},
+      {"name": "g-", "triggers": [{"type": 32002}], "subActions": [{"type": 1020, "logLevel": 2, "message": "group removed %group.name%"}]},
+      {"name": "add pal", "subActions": [{"type": 553, "userLogin": "pal", "groupName": "Crew"}]},
+      {"name": "remove pal", "subActions": [{"type": 554, "userLogin": "pal", "groupName": "Crew"}]}
+    ],
+    "steps": [{"app": "addGroup", "name": "Crew"}, {"run": "add pal"}, {"run": "remove pal"}, {"app": "removeGroup", "name": "Crew"}],
+    "expect": {"log": ["group added Crew", "users added Crew 777", "users removed Crew", "group removed Crew"]}
+  },
+  {
+    "name": "obs: events fire Scene Changed, Streaming and Recording started and stopped, any event, vendor events",
+    "config": {"obs": {"connections": [{"id": "o1", "name": "Main OBS"}]}},
+    "actions": [
+      {"name": "scene", "triggers": [{"type": 14004}], "subActions": [{"type": 1020, "logLevel": 2, "message": "scene %sceneName%"}]},
+      {"name": "stream on", "triggers": [{"type": 14005}], "subActions": [{"type": 1020, "logLevel": 2, "message": "streaming started"}]},
+      {"name": "stream off", "triggers": [{"type": 14006}], "subActions": [{"type": 1020, "logLevel": 2, "message": "streaming stopped"}]},
+      {"name": "rec on", "triggers": [{"type": 14007}], "subActions": [{"type": 1020, "logLevel": 2, "message": "recording started"}]},
+      {"name": "rec off", "triggers": [{"type": 14008}], "subActions": [{"type": 1020, "logLevel": 2, "message": "recording stopped"}]},
+      {"name": "any", "triggers": [{"type": 14003, "eventType": "InputMuteStateChanged"}], "subActions": [{"type": 1020, "logLevel": 2, "message": "event %eventType% %inputName%"}]},
+      {"name": "vendor", "triggers": [{"type": 14009}], "subActions": [{"type": 1020, "logLevel": 2, "message": "vendor %vendorName% %eventType%"}]}
+    ],
+    "steps": [
+      {"event": {"platform": "obs", "data": {"op": 5, "d": {"eventType": "CurrentProgramSceneChanged", "eventData": {"sceneName": "Brb"}}}}},
+      {"event": {"platform": "obs", "data": {"op": 5, "d": {"eventType": "StreamStateChanged", "eventData": {"outputActive": true, "outputState": "OBS_WEBSOCKET_OUTPUT_STARTED"}}}}},
+      {"event": {"platform": "obs", "data": {"op": 5, "d": {"eventType": "StreamStateChanged", "eventData": {"outputActive": false, "outputState": "OBS_WEBSOCKET_OUTPUT_STARTING"}}}}},
+      {"event": {"platform": "obs", "data": {"op": 5, "d": {"eventType": "StreamStateChanged", "eventData": {"outputActive": false, "outputState": "OBS_WEBSOCKET_OUTPUT_STOPPED"}}}}},
+      {"event": {"platform": "obs", "data": {"op": 5, "d": {"eventType": "RecordStateChanged", "eventData": {"outputActive": true, "outputState": "OBS_WEBSOCKET_OUTPUT_STARTED"}}}}},
+      {"event": {"platform": "obs", "data": {"op": 5, "d": {"eventType": "RecordStateChanged", "eventData": {"outputActive": false, "outputState": "OBS_WEBSOCKET_OUTPUT_STOPPED"}}}}},
+      {"event": {"platform": "obs", "data": {"op": 5, "d": {"eventType": "InputMuteStateChanged", "eventData": {"inputName": "Mic", "inputMuted": true}}}}},
+      {"event": {"platform": "obs", "data": {"op": 5, "d": {"eventType": "VendorEvent", "eventData": {"vendorName": "move", "eventType": "done", "eventData": {}}}}}}
+    ],
+    "expect": {"log": ["scene Brb", "streaming started", "streaming stopped", "recording started", "recording stopped", "event InputMuteStateChanged Mic", "vendor move done"]}
+  },
+  {
+    "name": "websocket requests: GetInfo, GetActions, DoAction, GetGlobals, GetCommands, GetBroadcaster",
+    "config": {"commands": [{"id": "c1", "name": "hi", "command": "!hi"}]},
+    "actions": [{"name": "ping", "subActions": [{"type": 1020, "logLevel": 2, "message": "pinged %who%"}]},
+                {"name": "code", "triggers": [{"type": 18002, "triggerName": "myEvent"}], "subActions": [{"type": 1020, "logLevel": 2, "message": "code trigger %x%"}]}],
+    "steps": [
+      {"request": {"request": "GetInfo", "id": "1"}, "reply": {"id": "1", "status": "ok", "info": {"version": "1.0.7"}}},
+      {"request": {"request": "GetActions", "id": "2"}, "reply": {"status": "ok", "count": 2}},
+      {"request": {"request": "DoAction", "id": "3", "action": {"name": "ping"}, "args": {"who": "ws"}}, "reply": {"status": "ok"}},
+      {"app": "setGlobal", "name": "g1", "value": "v"},
+      {"request": {"request": "GetGlobals", "id": "4", "persisted": true}, "reply": {"status": "ok", "count": 1}},
+      {"request": {"request": "GetGlobal", "id": "5", "variable": "g1", "persisted": true}, "reply": {"status": "ok", "variable": {"value": "v"}}},
+      {"request": {"request": "GetCommands", "id": "6"}, "reply": {"status": "ok", "count": 1}},
+      {"request": {"request": "GetCodeTriggers", "id": "7"}, "reply": {"status": "ok", "count": 0}},
+      {"request": {"request": "ExecuteCodeTrigger", "id": "8", "triggerName": "myEvent", "args": {"x": "1"}}, "reply": {"status": "ok"}, "ran": 1}
+    ],
+    "expect": {"log": ["pinged ws", "code trigger 1"]}
+  },
+  {
+    "name": "inputs: a hotkey fires only the Key Press set for that combination; a mouse click fires Mouse Click",
+    "actions": [
+      {"name": "ctrl+f1", "triggers": [{"type": 16001, "keyCode": 112, "modifierMask": 2}], "subActions": [{"type": 1020, "logLevel": 2, "message": "hotkey %key% ctrl=%hasCtrl%"}]},
+      {"name": "f2", "triggers": [{"type": 16001, "keyCode": 113, "modifierMask": 0}], "subActions": [{"type": 1020, "logLevel": 2, "message": "wrong hotkey"}]},
+      {"name": "click", "triggers": [{"type": 16002}], "subActions": [{"type": 1020, "logLevel": 2, "message": "click %mouse.button% at %mouse.x%,%mouse.y%"}]}
+    ],
+    "steps": [{"app": "hotkey", "key": 112, "modifiers": 2, "ran": 1}, {"app": "mouse", "button": 2, "clicks": 1, "x": 10, "y": 20, "ran": 1}],
+    "expect": {"log": ["hotkey 112 ctrl=True", "click 2 at 10,20"], "notLog": ["wrong hotkey"]}
+  },
+  {
+    "name": "inputs: Mouse Click with a button set fires only for that button; without one, for any",
+    "actions": [
+      {"name": "right only", "triggers": [{"type": 16002, "button": 2}], "subActions": [{"type": 1020, "logLevel": 2, "message": "right click"}]},
+      {"name": "any", "triggers": [{"type": 16002, "button": 0}], "subActions": [{"type": 1020, "logLevel": 2, "message": "any click %mouse.button% x%mouse.clicks%"}]}
+    ],
+    "steps": [{"app": "mouse", "button": 1, "clicks": 2, "x": 0, "y": 0, "ran": 1}, {"app": "mouse", "button": 2, "clicks": 1, "x": 0, "y": 0, "ran": 2}],
+    "expect": {"log": ["any click 1 x2", "right click", "any click 2 x1"]}
+  },
+  {
+    "name": "toast: Toast Notification shows it; a click fires Toast Activation with its fields",
+    "actions": [
+      {"name": "show", "subActions": [{"type": 1024, "toastId": "t1", "title": "Hi %user%", "text": "Live now", "attribution": "", "iconPath": ""}]},
+      {"name": "clicked", "triggers": [{"type": 708}], "subActions": [{"type": 1020, "logLevel": 2, "message": "clicked %toast.id% %toast.title%"}]}
+    ],
+    "steps": [{"run": "show", "args": {"user": "ana"}}, {"app": "toastClicked", "id": "t1", "title": "Hi ana", "text": "Live now", "attribution": "Streamerz", "ran": 1}],
+    "expect": {"log": ["Toast (dev mode, not shown): Hi ana | Live now", "clicked t1 Hi ana"], "runs": [{"action": "clicked", "args": {"toast.message": "Live now", "toast.attribution": "Streamerz", "toast.localIconPath": ""}}]}
+  },
+  {
+    "name": "clipboard: Clipboard Changed with its formats and text, as Streamer.bot names them",
+    "actions": [{"name": "clip", "triggers": [{"type": 42001}], "subActions": [{"type": 1009}]}],
+    "steps": [{"app": "clipboard", "text": "copied words", "ran": 1}, {"app": "clipboard", "image": true, "ran": 1}],
+    "expect": {"runs": [
+      {"action": "clip", "args": {"formats.count": 3, "formats.0": "Text", "containsText": true, "containsImage": false, "clipboard.text": "copied words", "error": false}},
+      {"action": "clip", "args": {"formats.0": "Bitmap", "containsText": false, "containsImage": true, "containsAudio": false}}]}
+  },
+  {
+    "name": "midi: MIDI Message filters by device, command, channel and note, with Streamer.bot's argument names",
+    "actions": [
+      {"name": "any", "triggers": [{"type": 15001}], "subActions": [{"type": 1009}]},
+      {"name": "pad note 48", "triggers": [{"type": 15001, "device": "pad", "commandCode": 1, "channel": 11, "data1": "48"}], "subActions": [{"type": 1009}]},
+      {"name": "knobs", "triggers": [{"type": 15001, "commandCode": 3}], "subActions": [{"type": 1009}]},
+      {"name": "out", "subActions": [{"type": 9001, "device": "No Such Synth", "channel": 1, "note": 60, "velocity": 100}]}
+    ],
+    "steps": [
+      {"app": "midi", "device": "Pad", "status": 154, "data1": 48, "data2": 80, "ran": 2},
+      {"app": "midi", "device": "Pad", "status": 176, "data1": 10, "data2": 64, "ran": 2},
+      {"app": "midi", "device": "Other", "status": 154, "data1": 48, "data2": 80, "ran": 1},
+      {"run": "out"}],
+    "expect": {"runs": [
+      {"action": "any", "args": {"name": "Pad", "deviceName": "Pad", "commandCode": "NoteOn", "commandCodeNum": 144, "channel": 11, "noteName": "C4", "noteNumber": 48, "velocity": 80, "rawMessage": "0050309A"}},
+      {"action": "pad note 48", "args": {"noteNumber": 48}},
+      {"action": "any", "args": {"commandCode": "ControlChange", "controllerName": "Pan", "controllerNumber": 10, "value": 64}},
+      {"action": "knobs", "args": {"controllerNumber": 10}}],
+      "log": ["MIDI Out: no MIDI output No Such Synth"]}
+  },
+  {
+    "name": "custom webhook: a POST to /webhooks/<name> fires Custom Webhook with its body, and its JSON under data",
+    "actions": [
+      {"name": "any", "triggers": [{"type": 34001}], "subActions": [{"type": 1009}]},
+      {"name": "deploys", "triggers": [{"type": 34001, "webhookName": "Deploy"}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [{"app": "webhook", "name": "deploy", "body": {"repo": "streamerz", "ok": true}, "ran": 2}, {"app": "webhook", "name": "other", "body": "plain text", "ran": 1}],
+    "expect": {"runs": [
+      {"action": "any", "args": {"webhook.name": "deploy", "data.repo": "streamerz", "data.ok": true}},
+      {"action": "deploys", "args": {"webhook.name": "deploy"}},
+      {"action": "any", "args": {"webhook.name": "other", "webhook.body": "plain text"}}]}
+  },
+  {
+    "name": "speech to text: dictation, and commands by location and confidence; no recognizer is a warning, not a crash",
+    "config": {"speech_confidence": 0.5, "voice_commands": [
+      {"id": "v1", "name": "Lights", "enabled": true, "command": "lights on", "location": 0},
+      {"id": "v2", "name": "Play", "enabled": true, "command": "play song", "location": 1},
+      {"id": "v3", "name": "Sure", "enabled": true, "command": "scene", "location": 2, "overrideGlobalConfidence": true, "confidenceThreshold": 0.9}]},
+    "actions": [
+      {"name": "dictation", "triggers": [{"type": 301}], "subActions": [{"type": 1009}]},
+      {"name": "command", "triggers": [{"type": 302}], "subActions": [{"type": 1009}]},
+      {"name": "play only", "triggers": [{"type": 302, "commandId": "v2"}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"app": "speech", "text": "Lights on", "confidence": 0.8, "ran": 2},
+      {"app": "speech", "text": "play song Never Gonna", "confidence": 0.7, "ran": 3},
+      {"app": "speech", "text": "next scene", "confidence": 0.7, "ran": 1},
+      {"app": "speech", "text": "lights on", "confidence": 0.2, "ran": 1}],
+    "expect": {"log": ["Speech to Text"], "runs": [
+      {"action": "dictation", "args": {"spokenText": "Lights on", "spokenTextConfidence": 0.8, "spokenTextConfidencePercent": 80, "eventSource": "voicecontrol"}},
+      {"action": "command", "args": {"spokenCommand": "lights on", "commandId": "v1", "commandName": "Lights"}},
+      {"action": "command", "args": {"spokenCommand": "play song", "spokenTextInput": "Never Gonna"}},
+      {"action": "play only", "args": {"commandId": "v2"}}]}
+  }
+]

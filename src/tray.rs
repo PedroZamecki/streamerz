@@ -327,7 +327,7 @@ fn watch_session_end() {
     unsafe extern "system" fn listen(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
         if m == WM_ENDSESSION && w != 0 {
             crate::say("Windows is ending the session: saving and quitting".into());
-            crate::engine::save_and_wait();
+            crate::engine::shutdown_and_wait();
             crate::crash::quit(0);
         }
         // SAFETY: the arguments Windows gave this procedure, passed on unchanged.

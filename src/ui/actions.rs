@@ -9,6 +9,7 @@ use super::{button, dialogs, ROW};
 use crate::edit::{self, Path};
 use crate::engine::plugins::{SUB_PLUGIN, T_PLUGIN};
 use crate::engine::{UiCmd, DEFAULT_QUEUE};
+use crate::groups;
 use crate::i18n::{tr, trf};
 use crate::model::Obj;
 use crate::types::{name, SUB_ACTION_INFO, TRIGGERS};
@@ -46,6 +47,7 @@ pub struct Actions {
     action_btns: Vec<Button>,
     trigger_btns: Vec<Button>,
     sub_btns: Vec<Button>,
+    group_pics: Vec<fltk::image::RgbImage>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -103,14 +105,24 @@ pub fn sub_label(o: &Obj, names: &Names) -> String {
     if k == SUB_PLUGIN {
         return format!("{}: {}", s(o, "plugin"), s(o, "name"));
     }
-    let what = SUB_ACTION_INFO.binary_search_by_key(&(k as u32), |x| x.0).map_or_else(
-        |_| {
-            name(crate::types::SUB_ACTIONS, k as u32)
-                .unwrap_or(tr("actions.unknown"))
-                .to_string()
-        },
-        |i| SUB_ACTION_INFO[i].1.to_string(),
-    );
+    let what = if let Some(title) = super::picker::spotify_player_title(k as u32) {
+        title.to_string()
+    } else if k == 99802 {
+        tr("spotify.action_name").to_string()
+    } else if k == 99803 {
+        tr("countdown.action_name").to_string()
+    } else if k == 99880 {
+        tr("overlay.action_name").to_string()
+    } else {
+        SUB_ACTION_INFO.binary_search_by_key(&(k as u32), |x| x.0).map_or_else(
+            |_| {
+                name(crate::types::SUB_ACTIONS, k as u32)
+                    .unwrap_or(tr("actions.unknown"))
+                    .to_string()
+            },
+            |i| SUB_ACTION_INFO[i].1.to_string(),
+        )
+    };
     let v = |k: &str| o.get(k).map(crate::vars::text).unwrap_or_default();
     let detail = match k {
         99901 => return "True".into(),
@@ -196,16 +208,16 @@ pub fn trigger_label(t: &Obj, names: &Names) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     };
-    let on = t.get("enabled").and_then(Value::as_bool).unwrap_or(true);
-    let mut out = if detail.is_empty() {
+    if detail.is_empty() {
         what.to_string()
     } else {
         format!("{what} ({})", short(&detail))
-    };
-    if !on {
-        out += tr("actions.disabled_tag");
     }
-    out
+}
+
+/// Whether a trigger is switched on.
+fn trigger_on(t: &Obj) -> bool {
+    t.get("enabled").and_then(Value::as_bool).unwrap_or(true)
 }
 
 impl Actions {
@@ -352,6 +364,7 @@ impl Actions {
         let Some(root) = self.tree.root() else { return };
         // Not clear(): that deletes the root too.
         self.tree.clear_children(&root);
+        self.group_pics.clear();
         let filter = self.search_actions.value().trim().to_lowercase();
         let mut groups: Vec<String> = c.iter().map(|a| a.group.clone()).filter(|g| !g.is_empty()).collect();
         groups.extend(
@@ -391,6 +404,31 @@ impl Actions {
                 continue;
             };
             gi.set_label_font(Font::HelveticaBold);
+            if let Some(bytes) = self
+                .cfg
+                .borrow()
+                .action_group_icons
+                .get(g)
+                .and_then(crate::group_icons::decode)
+            {
+                let image = if bytes.starts_with(b"\x89PNG") {
+                    fltk::image::PngImage::from_data(&bytes)
+                        .ok()
+                        .and_then(|i| i.to_rgb().ok())
+                } else {
+                    fltk::image::JpegImage::from_data(&bytes)
+                        .ok()
+                        .and_then(|i| i.to_rgb().ok())
+                };
+                if let Some(mut image) = image {
+                    image.scale(18, 18, true, true);
+                    gi.set_user_icon(Some(image.clone()));
+                    self.group_pics.push(image);
+                }
+            }
+            if gi.user_icon().is_none() {
+                gi.set_user_icon(super::icons::icon("folder", super::muted(), 16));
+            }
             self.items.push((gi.clone(), Node::Group(g.clone())));
             for a in in_group {
                 add(&mut self.tree, &gi, a, &mut self.items);
@@ -473,7 +511,9 @@ impl Actions {
         for t in &a.triggers {
             let lbl = trigger_label(t, &names);
             if sub_filter.is_empty() || lbl.to_lowercase().contains(&sub_filter) {
-                self.triggers.add(&lbl);
+                let code = t.get("type").and_then(Value::as_u64).unwrap_or(0) as u32;
+                self.triggers
+                    .add_icon(&lbl, !trigger_on(t), super::picker::trigger_icon(code));
             }
         }
         if keep_trigger > 0 && keep_trigger <= self.triggers.size() {
@@ -509,8 +549,14 @@ impl Actions {
                 }
                 if let Some(mut it) = t.insert(parent, &plain(&sub_label(o, names)), parent.children()) {
                     let k = edit::kind(o);
-                    if o.get("enabled").and_then(Value::as_bool) == Some(false) || !crate::engine::supported(k as u32) {
+                    let off = o.get("enabled").and_then(Value::as_bool) == Some(false);
+                    if off || !crate::engine::supported(k as u32) {
                         it.set_label_fgcolor(Color::from_rgb(130, 130, 130));
+                    }
+                    if off {
+                        it.set_user_icon(super::icons::icon("power-off", super::muted(), 16));
+                    } else {
+                        it.set_user_icon(super::picker::sub_icon(k as u32));
                     }
                     if (99901..=99904).contains(&k) {
                         it.set_label_font(Font::HelveticaItalic);
@@ -563,6 +609,7 @@ fn tree(empty: &'static str) -> Tree {
     let mut t = Tree::default();
     t.set_show_root(false);
     t.set_select_mode(TreeSelect::Single);
+    super::picker::style_tree(&mut t);
     t.draw(move |t| {
         if t.root().is_none_or(|r| r.children() == 0) {
             fltk::draw::set_font(Font::Helvetica, 13);
@@ -583,7 +630,7 @@ fn ask_name(title: &str, current: &str) -> Option<String> {
 pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<UiCmd>) -> Rc<RefCell<Actions>> {
     let mut row = Flex::new(tabs.x(), tabs.y(), tabs.w(), tabs.h(), None)
         .row()
-        .with_label("Actions");
+        .with_label(tr("actions.heading"));
     row.set_margin(8);
     row.set_pad(8);
     let mut left = Flex::default().column();
@@ -601,7 +648,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
     act_head.end();
     left.fixed(&act_head, ROW);
     let actions_tree = tree(tr("actions.empty_actions"));
-    let all = super::grid(
+    let main = super::grid(
         &mut left,
         &[
             tr("btn.add"),
@@ -609,12 +656,42 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
             tr("btn.duplicate"),
             tr("btn.delete"),
             tr("btn.test"),
+        ],
+        1,
+    );
+    let files = super::grid(
+        &mut left,
+        &[
             tr("btn.import"),
             tr("btn.export"),
             tr("btn.templates"),
+            tr("btn.add_group"),
         ],
-        3,
+        1,
     );
+    // The group's own buttons, only while a group is selected.
+    let (group_row, group) = super::grid_group(
+        &mut left,
+        &[
+            tr("btn.group_variables"),
+            tr("btn.set_group_icon"),
+            tr("btn.clear_group_icon"),
+            tr("btn.rename_group"),
+            tr("btn.delete_group"),
+        ],
+        1,
+    );
+    let mut group_row = group_row;
+    group_row.hide();
+    let mut all = main;
+    all.extend(files);
+    all.extend(group);
+    // Back in the order the handlers below index them: ..., import, export, templates, variables,
+    // set icon, clear icon, add group, rename group, delete group.
+    let all = [0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 8, 12, 13]
+        .iter()
+        .map(|&i| all[i].clone())
+        .collect::<Vec<_>>();
     let (lb, lb2, lb3) = (all[0..3].to_vec(), all[3..5].to_vec(), all[5..].to_vec());
     left.end();
     row.fixed(&left, 340);
@@ -624,7 +701,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
     title.set_label_font(Font::HelveticaBold);
     right.fixed(&title, ROW - 2);
     let t = Frame::default()
-        .with_label("Triggers")
+        .with_label(tr("actions.triggers_heading"))
         .with_align(Align::Left | Align::Inside)
         .ellipsis();
     right.fixed(&t, ROW - 4);
@@ -643,7 +720,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
     let mut sub_head = Flex::default().row();
     sub_head.set_pad(4);
     let t = Frame::default()
-        .with_label("Sub-actions")
+        .with_label(tr("actions.subactions_heading"))
         .with_align(Align::Left | Align::Inside)
         .ellipsis();
     sub_head.fixed(&t, 90);
@@ -686,6 +763,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
         action_btns: vec![lb[1].clone(), lb[2].clone(), lb2[0].clone(), lb2[1].clone()],
         trigger_btns: tb.clone(),
         sub_btns: sb.clone(),
+        group_pics: Vec::new(),
     }));
 
     let mut sa = search_actions.clone();
@@ -722,12 +800,22 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
     let mut t = actions_tree.clone();
     t.set_callback({
         let me = me.clone();
+        let (left, mut group_row) = (left.clone(), group_row.clone());
         move |t| {
             let Some(item) = t.callback_item() else { return };
             if t.callback_reason() != TreeReason::Selected {
                 return;
             }
             let Ok(mut m) = me.try_borrow_mut() else { return };
+            let is_group = matches!(m.node(&item), Some(Node::Group(_)));
+            if is_group != group_row.visible() {
+                if is_group {
+                    group_row.show();
+                } else {
+                    group_row.hide();
+                }
+                left.layout();
+            }
             match m.node(&item) {
                 Some(Node::Action(id)) => {
                     m.selected = Some(id);
@@ -756,6 +844,123 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
         let mut b = lb[1].clone();
         b.set_callback(move |_| edit_action(&me2));
     }
+    {
+        let me2 = me.clone();
+        let mut b = lb3[3].clone();
+        b.set_callback(move |_| {
+            let (cfg, group) = {
+                let m = me2.borrow();
+                (m.cfg.clone(), m.current_group())
+            };
+            if group.is_empty() {
+                dialogs::alert(tr("actions.select_group"));
+                return;
+            }
+            super::groups::settings(&cfg, &group);
+        });
+    }
+    on(
+        &lb3[4],
+        Box::new(|m| {
+            let group = m.current_group();
+            if group.is_empty() {
+                dialogs::alert(tr("actions.select_group"));
+                return;
+            }
+            let mut chooser = fltk::dialog::NativeFileChooser::new(fltk::dialog::NativeFileChooserType::BrowseFile);
+            chooser.set_filter("PNG and JPEG\t*.{png,jpg,jpeg}");
+            chooser.show();
+            let path = chooser.filename();
+            if path.as_os_str().is_empty() {
+                return;
+            }
+            let result = std::fs::read(path)
+                .map_err(|e| e.to_string())
+                .and_then(|b| crate::group_icons::encode(&b).map_err(str::to_owned));
+            match result {
+                Ok(icon) => m.edit(|c| {
+                    c.action_group_icons.insert(group, icon);
+                }),
+                Err(e) => {
+                    let message = match e.as_str() {
+                        "Image is larger than 1 MB" => tr("actions.icon_too_large"),
+                        "Choose a PNG or JPEG image" => tr("actions.icon_format"),
+                        _ => tr("actions.icon_read_error"),
+                    };
+                    dialogs::alert(message);
+                }
+            }
+        }),
+    );
+    on(
+        &lb3[5],
+        Box::new(|m| {
+            let group = m.current_group();
+            if group.is_empty() {
+                dialogs::alert(tr("actions.select_group"));
+                return;
+            }
+            m.edit(|c| {
+                c.action_group_icons.remove(&group);
+            });
+        }),
+    );
+    on(
+        &lb3[6],
+        Box::new(|m| {
+            if let Some(name) = ask_name(tr("btn.add_group"), "") {
+                if !name.is_empty() {
+                    m.edit(|c| {
+                        if !c.actions.groups.iter().any(|v| v.as_str() == Some(&name)) {
+                            c.actions.groups.push(name.into());
+                        }
+                    });
+                }
+            }
+        }),
+    );
+    on(
+        &lb3[7],
+        Box::new(|m| {
+            let old = m.current_group();
+            if old.is_empty() {
+                dialogs::alert(tr("actions.select_group"));
+                return;
+            }
+            if let Some(name) = ask_name(tr("btn.rename_group"), &old) {
+                if name.is_empty() || name == old {
+                    return;
+                }
+                if m.cfg.borrow().actions.groups.iter().any(|v| v.as_str() == Some(&name))
+                    || m.cfg.borrow().actions.actions.iter().any(|a| a.group == name)
+                {
+                    dialogs::alert(tr("actions.group_exists"));
+                    return;
+                }
+                m.edit(|c| {
+                    groups::rename(c, &old, &name);
+                });
+            }
+        }),
+    );
+    on(
+        &lb3[8],
+        Box::new(|m| {
+            let group = m.current_group();
+            if group.is_empty() {
+                dialogs::alert(tr("actions.select_group"));
+                return;
+            }
+            if !dialogs::choice(
+                &trf("actions.delete_group_confirm", &[("name", &group)]),
+                tr("dialogs.cancel"),
+                tr("btn.delete"),
+            ) {
+                return;
+            }
+            m.edit(|c| groups::remove(c, &group));
+        }),
+    );
     on(
         &lb[2],
         Box::new(|m| {
@@ -862,11 +1067,12 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
             let timers = !made.timers.is_empty();
             let mut m = me2.borrow_mut();
             m.selected = made.actions.first().map(|a| a.id.clone());
-            m.edit(|c| {
-                c.actions.actions.extend(made.actions);
-                c.commands.extend(made.commands);
-                c.timers.extend(made.timers);
-            });
+            let mut added = Ok(());
+            m.edit(|c| added = made.add_to(c));
+            if let Err(e) = added {
+                dialogs::alert(&e);
+                return;
+            }
             if timers {
                 super::tell(&m.cmds, |e| e.timers());
             }
@@ -895,9 +1101,10 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
                 });
                 l
             };
+            let groups = crate::groups::names(&m.cfg.borrow());
             let cfg = m.cfg.clone();
-            dialogs::export(&list, m.selected.as_deref(), move |ids, meta| {
-                crate::model::write_export(&edit::export(&cfg.borrow(), ids, meta))
+            dialogs::export(&list, &groups, m.selected.as_deref(), move |ids, groups, meta| {
+                crate::model::write_export(&edit::export_with(&cfg.borrow(), ids, groups, meta))
             });
         }),
     );
@@ -1401,6 +1608,18 @@ fn trigger_title(k: u64) -> &'static str {
 }
 
 fn sub_title(k: u64) -> &'static str {
+    if let Some(title) = super::picker::spotify_player_title(k as u32) {
+        return title;
+    }
+    if k == 99802 {
+        return tr("spotify.action_name");
+    }
+    if k == 99803 {
+        return tr("countdown.action_name");
+    }
+    if k == 99880 {
+        return tr("overlay.action_name");
+    }
     SUB_ACTION_INFO
         .binary_search_by_key(&(k as u32), |x| x.0)
         .map_or("Sub-action", |i| SUB_ACTION_INFO[i].1)
@@ -1555,7 +1774,11 @@ fn pick_template() -> Option<&'static crate::templates::Template> {
     col.set_pad(6);
     let mut list = Rows::new("");
     for t in TEMPLATES {
-        list.add(t.name);
+        list.add(if t.name == "Song requests (Spotify)" {
+            tr("spotify.template_name")
+        } else {
+            t.name
+        });
     }
     list.select(1);
     let mut about = Frame::default().with_align(Align::Left | Align::Inside | Align::Wrap | Align::Top);
@@ -1576,7 +1799,12 @@ fn pick_template() -> Option<&'static crate::templates::Template> {
         let a = answer.clone();
         move |l| {
             if let Some(t) = TEMPLATES.get((l.value() - 1).max(0) as usize) {
-                about.set_label(&t.about.replace('@', "@@"));
+                let text = if t.name == "Song requests (Spotify)" {
+                    tr("spotify.template_about")
+                } else {
+                    t.about
+                };
+                about.set_label(&text.replace('@', "@@"));
             }
             // Double click adds.
             if fltk::app::event_clicks() {

@@ -1,0 +1,629 @@
+[
+  {
+    "name": "twitch event: follow",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 101", "triggers": [{"type": 101}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.follow", "data": {"user_id": "5", "user_login": "ana", "user_name": "Ana"}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 101", "args": {"user": "Ana", "userName": "ana", "userId": "5", "userType": "twitch", "broadcastUserName": "streamer", "broadcastUserId": "1"}}
+    ]}
+  },
+  {
+    "name": "twitch event: chat message, cheer and its filters",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 133", "triggers": [{"type": 133}], "subActions": [{"type": 1009}]},
+      {"name": "on 102", "triggers": [{"type": 102}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.chat.message", "data": {"chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "message_id": "m1", "message": {"text": "hello there", "fragments": []}, "badges": [{"set_id": "vip", "id": "1"}], "color": "#FF0000"}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.message", "data": {"chatter_user_id": "6", "chatter_user_login": "bo", "chatter_user_name": "Bo", "message_id": "m2", "message": {"text": "Cheer100 nice", "fragments": []}, "badges": [{"set_id": "subscriber", "id": "12"}], "cheer": {"bits": 100}}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 133", "args": {"message": "hello there", "msgId": "m1", "user": "Ana", "isVip": true, "isModerator": false, "messageType": "text"}},
+      {"action": "on 102", "args": {"bits": 100, "user": "Bo", "isSubscribed": true}}
+    ]}
+  },
+  {
+    "name": "twitch event: first words fire once per user",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 120", "triggers": [{"type": 120}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.chat.message", "data": {"chatter_user_id": "7", "chatter_user_login": "cy", "chatter_user_name": "Cy", "message_id": "m3", "message": {"text": "first!", "fragments": []}, "badges": []}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 120", "args": {"user": "Cy", "firstMessage": true}}
+    ]}
+  },
+  {
+    "name": "twitch event: whisper",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 119", "triggers": [{"type": 119}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "user.whisper.message", "data": {"from_user_id": "5", "from_user_login": "ana", "from_user_name": "Ana", "to_user_id": "1", "whisper": {"text": "psst"}}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 119", "args": {"user": "Ana", "message": "psst"}}
+    ]}
+  },
+  {
+    "name": "twitch event: bot whisper",
+    "config": {"twitch": {"bot": {"userId": "2", "login": "bot", "displayName": "Bot"}}},
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 140", "triggers": [{"type": 140}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "user.whisper.message", "data": {"from_user_id": "5", "from_user_login": "ana", "from_user_name": "Ana", "to_user_id": "2", "whisper": {"text": "psst bot"}}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 140", "args": {"user": "Ana", "message": "psst bot"}}
+    ]}
+  },
+  {
+    "name": "twitch event: subscriptions",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 103", "triggers": [{"type": 103}], "subActions": [{"type": 1009}]},
+      {"name": "on 104", "triggers": [{"type": 104}], "subActions": [{"type": 1009}]},
+      {"name": "on 105", "triggers": [{"type": 105}], "subActions": [{"type": 1009}]},
+      {"name": "on 477", "triggers": [{"type": 477}], "subActions": [{"type": 1009}]},
+      {"name": "on 478", "triggers": [{"type": 478}], "subActions": [{"type": 1009}]},
+      {"name": "on 479", "triggers": [{"type": 479}], "subActions": [{"type": 1009}]},
+      {"name": "on 480", "triggers": [{"type": 480}], "subActions": [{"type": 1009}]},
+      {"name": "on 138", "triggers": [{"type": 138}], "subActions": [{"type": 1009}]},
+      {"name": "on 107", "triggers": [{"type": 107}], "subActions": [{"type": 1009}]},
+      {"name": "on 472", "triggers": [{"type": 472}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "sub", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": ""}, "system_message": "sys", "sub": {"sub_tier": "1000", "is_prime": false, "duration_months": 3}}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "resub", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": ""}, "system_message": "sys", "resub": {"sub_tier": "2000", "cumulative_months": 8, "streak_months": 4, "duration_months": 1, "is_gift": true, "gifter_is_anonymous": false, "gifter_user_id": "9", "gifter_user_login": "gg", "gifter_user_name": "GG"}}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "sub_gift", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": ""}, "system_message": "sys", "sub_gift": {"sub_tier": "3000", "recipient_user_id": "8", "recipient_user_login": "rr", "recipient_user_name": "RR", "duration_months": 1, "cumulative_total": 5}}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "prime_paid_upgrade", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": ""}, "system_message": "sys", "prime_paid_upgrade": {"sub_tier": "1000"}}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "pay_it_forward", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": ""}, "system_message": "sys", "pay_it_forward": {"gifter_is_anonymous": false, "gifter_user_id": "9", "gifter_user_login": "gg", "gifter_user_name": "GG"}}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "gift_paid_upgrade", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": ""}, "system_message": "sys", "gift_paid_upgrade": {"gifter_is_anonymous": true}}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "bits_badge_tier", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": ""}, "system_message": "sys", "bits_badge_tier": {"tier": 1000}}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "announcement", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": "hear ye"}, "system_message": "sys", "announcement": {"color": "BLUE"}}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "raid", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": ""}, "system_message": "sys", "raid": {"user_id": "11", "user_login": "raider", "user_name": "Raider", "viewer_count": 42, "profile_image_url": "https://p"}}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "watch_streak", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": ""}, "system_message": "sys", "watch_streak": {"streak_count": 5, "channel_points_awarded": 450}}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 103", "args": {"tier": "tier 1", "isMultiMonth": true, "multiMonthDuration": 3, "user": "Ana", "systemMessage": "sys"}},
+      {"action": "on 104", "args": {"tier": "tier 2", "cumulative": 8, "monthStreak": 4, "isGift": true, "gifterUser": "GG"}},
+      {"action": "on 105", "args": {"tier": "tier 3", "recipientUser": "RR", "recipientId": "8", "totalSubsGifted": 5, "fromGiftBomb": false}},
+      {"action": "on 477", "args": {"upgradeTier": "1000", "upgradeTierString": "tier 1"}},
+      {"action": "on 478", "args": {"gifterUserName": "gg"}},
+      {"action": "on 479", "args": {"anonymous": true}},
+      {"action": "on 480", "args": {"tier": 1000}},
+      {"action": "on 138", "args": {"announceColor": "BLUE", "message": "hear ye"}},
+      {"action": "on 107", "args": {"user": "Raider", "viewers": 42, "profileImageUrl": "https://p"}},
+      {"action": "on 472", "args": {"streak": 5, "pointsAwarded": 450}}
+    ]}
+  },
+  {
+    "name": "twitch event: a gift bomb fires once its gifts came, with who got them",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 106", "triggers": [{"type": 106}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "community_sub_gift", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": ""}, "system_message": "sys", "community_sub_gift": {"id": "bomb1", "total": 2, "sub_tier": "1000", "cumulative_total": 20}}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "sub_gift", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": ""}, "system_message": "sys", "sub_gift": {"sub_tier": "1000", "community_gift_id": "bomb1", "recipient_user_name": "R1"}}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "sub_gift", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": ""}, "system_message": "sys", "sub_gift": {"sub_tier": "1000", "community_gift_id": "bomb1", "recipient_user_name": "R2"}}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 106", "args": {"gifts": 2, "totalGifts": 20, "tier": "tier 1", "gift.recipientUser0": "R1", "gift.recipientUser1": "R2"}}
+    ]}
+  },
+  {
+    "name": "twitch event: pyramids made and broken",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 162", "triggers": [{"type": 162}], "subActions": [{"type": 1009}]},
+      {"name": "on 163", "triggers": [{"type": 163}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.chat.message", "data": {"chatter_user_id": "20", "chatter_user_login": "pyr", "chatter_user_name": "Pyr", "message_id": "p1", "message": {"text": "Kappa", "fragments": []}, "badges": []}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.message", "data": {"chatter_user_id": "20", "chatter_user_login": "pyr", "chatter_user_name": "Pyr", "message_id": "p2", "message": {"text": "Kappa Kappa", "fragments": []}, "badges": []}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.message", "data": {"chatter_user_id": "20", "chatter_user_login": "pyr", "chatter_user_name": "Pyr", "message_id": "p3", "message": {"text": "Kappa Kappa Kappa", "fragments": []}, "badges": []}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.message", "data": {"chatter_user_id": "20", "chatter_user_login": "pyr", "chatter_user_name": "Pyr", "message_id": "p4", "message": {"text": "Kappa Kappa", "fragments": []}, "badges": []}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.message", "data": {"chatter_user_id": "20", "chatter_user_login": "pyr", "chatter_user_name": "Pyr", "message_id": "p5", "message": {"text": "Kappa", "fragments": []}, "badges": []}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.message", "data": {"chatter_user_id": "20", "chatter_user_login": "pyr", "chatter_user_name": "Pyr", "message_id": "p6", "message": {"text": "LUL", "fragments": []}, "badges": []}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.message", "data": {"chatter_user_id": "20", "chatter_user_login": "pyr", "chatter_user_name": "Pyr", "message_id": "p7", "message": {"text": "LUL LUL", "fragments": []}, "badges": []}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.message", "data": {"chatter_user_id": "21", "chatter_user_login": "brk", "chatter_user_name": "Brk", "message_id": "p8", "message": {"text": "nope", "fragments": []}, "badges": []}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 162", "args": {"pyramidWidth": 3, "pyramidEmote": "Kappa", "userName": "pyr"}},
+      {"action": "on 163", "args": {"pyramidOwnerUsername": "pyr", "userName": "brk", "pyramidWidth": 2}}
+    ]}
+  },
+  {
+    "name": "twitch event: a raid sent, with the raided channel",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 159", "triggers": [{"type": 159}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.raid", "data": {"from_broadcaster_user_id": "1", "to_broadcaster_user_id": "7", "to_broadcaster_user_login": "pal", "to_broadcaster_user_name": "Pal", "viewers": 9}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 159", "args": {"raidUserName": "pal", "raidUserId": "7", "viewers": 9}}
+    ]}
+  },
+  {
+    "name": "twitch event: sub counter rolls over",
+    "config": {"twitch": {"subCounterRollover": 1}},
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 121", "triggers": [{"type": 121}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "sub", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": ""}, "system_message": "sys", "sub": {"sub_tier": "1000", "duration_months": 1}}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 121", "args": {"rollover": 1}}
+    ]}
+  },
+  {
+    "name": "twitch event: shared chat notices",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 481", "triggers": [{"type": 481}], "subActions": [{"type": 1009}]},
+      {"name": "on 482", "triggers": [{"type": 482}], "subActions": [{"type": 1009}]},
+      {"name": "on 483", "triggers": [{"type": 483}], "subActions": [{"type": 1009}]},
+      {"name": "on 484", "triggers": [{"type": 484}], "subActions": [{"type": 1009}]},
+      {"name": "on 485", "triggers": [{"type": 485}], "subActions": [{"type": 1009}]},
+      {"name": "on 486", "triggers": [{"type": 486}], "subActions": [{"type": 1009}]},
+      {"name": "on 487", "triggers": [{"type": 487}], "subActions": [{"type": 1009}]},
+      {"name": "on 488", "triggers": [{"type": 488}], "subActions": [{"type": 1009}]},
+      {"name": "on 489", "triggers": [{"type": 489}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "shared_chat_announcement", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": ""}, "system_message": "sys", "shared_chat_announcement": {"color": "PRIMARY"}, "source_broadcaster_user_id": "99", "source_broadcaster_user_login": "other", "source_broadcaster_user_name": "Other"}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "shared_chat_raid", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": ""}, "system_message": "sys", "shared_chat_raid": {"user_id": "11", "user_login": "raider", "user_name": "Raider", "viewer_count": 3}, "source_broadcaster_user_id": "99", "source_broadcaster_user_login": "other", "source_broadcaster_user_name": "Other"}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "shared_chat_prime_paid_upgrade", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": ""}, "system_message": "sys", "shared_chat_prime_paid_upgrade": {"sub_tier": "1000"}, "source_broadcaster_user_id": "99", "source_broadcaster_user_login": "other", "source_broadcaster_user_name": "Other"}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "shared_chat_gift_paid_upgrade", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": ""}, "system_message": "sys", "shared_chat_gift_paid_upgrade": {"gifter_is_anonymous": false, "gifter_user_name": "GG"}, "source_broadcaster_user_id": "99", "source_broadcaster_user_login": "other", "source_broadcaster_user_name": "Other"}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "shared_chat_pay_it_forward", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": ""}, "system_message": "sys", "shared_chat_pay_it_forward": {"gifter_is_anonymous": false, "gifter_user_name": "GG"}, "source_broadcaster_user_id": "99", "source_broadcaster_user_login": "other", "source_broadcaster_user_name": "Other"}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "shared_chat_sub", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": ""}, "system_message": "sys", "shared_chat_sub": {"sub_tier": "1000"}, "source_broadcaster_user_id": "99", "source_broadcaster_user_login": "other", "source_broadcaster_user_name": "Other"}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "shared_chat_resub", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": ""}, "system_message": "sys", "shared_chat_resub": {"sub_tier": "1000", "cumulative_months": 2}, "source_broadcaster_user_id": "99", "source_broadcaster_user_login": "other", "source_broadcaster_user_name": "Other"}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "shared_chat_sub_gift", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": ""}, "system_message": "sys", "shared_chat_sub_gift": {"sub_tier": "1000", "recipient_user_name": "RR"}, "source_broadcaster_user_id": "99", "source_broadcaster_user_login": "other", "source_broadcaster_user_name": "Other"}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "shared_chat_community_sub_gift", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": ""}, "system_message": "sys", "shared_chat_community_sub_gift": {"id": "bomb2", "total": 1, "sub_tier": "1000"}, "source_broadcaster_user_id": "99", "source_broadcaster_user_login": "other", "source_broadcaster_user_name": "Other"}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.notification", "data": {"notice_type": "shared_chat_sub_gift", "chatter_user_id": "5", "chatter_user_login": "ana", "chatter_user_name": "Ana", "badges": [], "message": {"text": ""}, "system_message": "sys", "shared_chat_sub_gift": {"sub_tier": "1000", "community_gift_id": "bomb2", "recipient_user_name": "R3"}, "source_broadcaster_user_id": "99", "source_broadcaster_user_login": "other", "source_broadcaster_user_name": "Other"}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 481", "args": {"fromSharedChat": true, "sourceBroadcasterUsername": "other"}},
+      {"action": "on 482", "args": {"viewers": 3}},
+      {"action": "on 483", "args": {"upgradeTier": "1000"}},
+      {"action": "on 484", "args": {"gifterUser": "GG"}},
+      {"action": "on 485", "args": {"gifterUser": "GG"}},
+      {"action": "on 486", "args": {"tier": "tier 1", "fromSharedChat": true}},
+      {"action": "on 487", "args": {"cumulative": 2}},
+      {"action": "on 488", "args": {"recipientUser": "RR"}},
+      {"action": "on 489", "args": {"gifts": 1, "gift.recipientUser0": "R3"}}
+    ]}
+  },
+  {
+    "name": "twitch event: shared chat moderation",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 490", "triggers": [{"type": 490}], "subActions": [{"type": 1009}]},
+      {"name": "on 491", "triggers": [{"type": 491}], "subActions": [{"type": 1009}]},
+      {"name": "on 492", "triggers": [{"type": 492}], "subActions": [{"type": 1009}]},
+      {"name": "on 493", "triggers": [{"type": 493}], "subActions": [{"type": 1009}]},
+      {"name": "on 494", "triggers": [{"type": 494}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.moderate", "data": {"source_broadcaster_user_id": "99", "source_broadcaster_user_login": "other", "source_broadcaster_user_name": "Other", "moderator_user_id": "3", "moderator_user_login": "mod", "moderator_user_name": "Mod", "action": "shared_chat_ban", "ban": {"user_id": "6", "user_login": "bo", "user_name": "Bo", "reason": "r"}}}},
+      {"event": {"platform": "twitch", "type": "channel.moderate", "data": {"source_broadcaster_user_id": "99", "source_broadcaster_user_login": "other", "source_broadcaster_user_name": "Other", "moderator_user_id": "3", "moderator_user_login": "mod", "moderator_user_name": "Mod", "action": "shared_chat_unban", "unban": {"user_id": "6", "user_login": "bo", "user_name": "Bo"}}}},
+      {"event": {"platform": "twitch", "type": "channel.moderate", "data": {"source_broadcaster_user_id": "99", "source_broadcaster_user_login": "other", "source_broadcaster_user_name": "Other", "moderator_user_id": "3", "moderator_user_login": "mod", "moderator_user_name": "Mod", "action": "shared_chat_timeout", "timeout": {"user_id": "6", "user_login": "bo", "user_name": "Bo", "expires_at": "2026-01-01T00:10:00Z"}}}},
+      {"event": {"platform": "twitch", "type": "channel.moderate", "data": {"source_broadcaster_user_id": "99", "source_broadcaster_user_login": "other", "source_broadcaster_user_name": "Other", "moderator_user_id": "3", "moderator_user_login": "mod", "moderator_user_name": "Mod", "action": "shared_chat_untimeout", "untimeout": {"user_id": "6", "user_login": "bo", "user_name": "Bo"}}}},
+      {"event": {"platform": "twitch", "type": "channel.moderate", "data": {"source_broadcaster_user_id": "99", "source_broadcaster_user_login": "other", "source_broadcaster_user_name": "Other", "moderator_user_id": "3", "moderator_user_login": "mod", "moderator_user_name": "Mod", "action": "shared_chat_delete", "delete": {"user_id": "6", "user_login": "bo", "user_name": "Bo", "message_id": "x1", "message_body": "oops"}}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 490", "args": {"user": "Bo", "reason": "r", "createdByUsername": "mod", "sourceBroadcasterUsername": "other"}},
+      {"action": "on 491", "args": {"userName": "bo"}},
+      {"action": "on 492", "args": {"endsAt": "2026-01-01T00:10:00Z"}},
+      {"action": "on 493", "args": {"userId": "6"}},
+      {"action": "on 494", "args": {"targetMessageId": "x1", "message": "oops"}}
+    ]}
+  },
+  {
+    "name": "twitch event: shared chat sessions",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 474", "triggers": [{"type": 474}], "subActions": [{"type": 1009}]},
+      {"name": "on 475", "triggers": [{"type": 475}], "subActions": [{"type": 1009}]},
+      {"name": "on 476", "triggers": [{"type": 476}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.shared_chat.begin", "data": {"session_id": "s1", "host_broadcaster_user_id": "1", "host_broadcaster_user_login": "streamer", "host_broadcaster_user_name": "Streamer"}}},
+      {"event": {"platform": "twitch", "type": "channel.shared_chat.update", "data": {"session_id": "s1"}}},
+      {"event": {"platform": "twitch", "type": "channel.shared_chat.end", "data": {"session_id": "s1"}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 474", "args": {"sessionId": "s1", "host.userLogin": "streamer"}},
+      {"action": "on 475", "args": {"sessionId": "s1"}},
+      {"action": "on 476", "args": {"sessionId": "s1"}}
+    ]}
+  },
+  {
+    "name": "twitch event: stream online, offline and update",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 154", "triggers": [{"type": 154}], "subActions": [{"type": 1009}]},
+      {"name": "on 118", "triggers": [{"type": 118}], "subActions": [{"type": 1009}]},
+      {"name": "on 155", "triggers": [{"type": 155}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "stream.online", "data": {"started_at": "2026-01-01T00:00:00Z"}}},
+      {"event": {"platform": "twitch", "type": "channel.update", "data": {"title": "New title", "category_id": "509658", "category_name": "Just Chatting"}}},
+      {"event": {"platform": "twitch", "type": "stream.offline", "data": {}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 154", "args": {"startedAt": "2026-01-01T00:00:00Z", "broadcastUserName": "streamer", "broadcastUserId": "1"}},
+      {"action": "on 118", "args": {"status": "New title", "game": "Just Chatting", "gameId": "509658", "statusUpdate": true}},
+      {"action": "on 155", "args": {"broadcastUserName": "streamer", "broadcastUserId": "1"}}
+    ]}
+  },
+  {
+    "name": "twitch event: channel point rewards and redemptions",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 113", "triggers": [{"type": 113}], "subActions": [{"type": 1009}]},
+      {"name": "on 114", "triggers": [{"type": 114}], "subActions": [{"type": 1009}]},
+      {"name": "on 112", "triggers": [{"type": 112}], "subActions": [{"type": 1009}]},
+      {"name": "on 171", "triggers": [{"type": 171}], "subActions": [{"type": 1009}]},
+      {"name": "on 115", "triggers": [{"type": 115}], "subActions": [{"type": 1009}]},
+      {"name": "on 194", "triggers": [{"type": 194}], "subActions": [{"type": 1009}]},
+      {"name": "on 196", "triggers": [{"type": 196}], "subActions": [{"type": 1009}]},
+      {"name": "on 496", "triggers": [{"type": 496}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.channel_points_custom_reward.add", "data": {"id": "r1", "title": "Hydrate", "prompt": "drink", "cost": 100, "background_color": "#00FF00"}}},
+      {"event": {"platform": "twitch", "type": "channel.channel_points_custom_reward.update", "data": {"id": "r1", "title": "Hydrate", "prompt": "drink", "cost": 200}}},
+      {"event": {"platform": "twitch", "type": "channel.channel_points_custom_reward_redemption.add", "data": {"id": "red1", "user_id": "5", "user_login": "ana", "user_name": "Ana", "user_input": "hi there", "status": "unfulfilled", "reward": {"id": "r1", "title": "Hydrate", "prompt": "drink", "cost": 100}, "redeemed_at": "2026-01-01T00:00:00Z"}}},
+      {"event": {"platform": "twitch", "type": "channel.channel_points_custom_reward_redemption.update", "data": {"id": "red1", "user_id": "5", "user_login": "ana", "user_name": "Ana", "user_input": "", "status": "fulfilled", "reward": {"id": "r1", "title": "Hydrate", "prompt": "drink", "cost": 100}}}},
+      {"event": {"platform": "twitch", "type": "channel.channel_points_custom_reward.remove", "data": {"id": "r1", "title": "Hydrate", "prompt": "drink", "cost": 100}}},
+      {"event": {"platform": "twitch", "type": "channel.channel_points_automatic_reward_redemption.add", "data": {"id": "ar1", "user_id": "5", "user_login": "ana", "user_name": "Ana", "reward": {"type": "gigantify_an_emote", "channel_points": 500, "emote": {"id": "25", "name": "Kappa"}}, "message": {"text": "Kappa"}}}},
+      {"event": {"platform": "twitch", "type": "channel.bits.use", "data": {"user_id": "5", "user_login": "ana", "user_name": "Ana", "type": "power_up", "bits": 50, "power_up": {"type": "message_effect", "message_effect_id": "fx"}, "message": {"text": "wow"}}}},
+      {"event": {"platform": "twitch", "type": "channel.bits.use", "data": {"user_id": "5", "user_login": "ana", "user_name": "Ana", "type": "custom_power_up", "bits": 10, "power_up": {"type": "custom"}, "custom_power_up": {"title": "Boost", "reward_id": "cp1"}, "message": {"text": ""}}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 113", "args": {"rewardId": "r1", "rewardTitle": "Hydrate", "rewardCost": 100}},
+      {"action": "on 114", "args": {"rewardCost": 200}},
+      {"action": "on 112", "args": {"redemptionId": "red1", "rewardId": "r1", "rewardName": "Hydrate", "rawInput": "hi there", "user": "Ana", "status": "unfulfilled"}},
+      {"action": "on 171", "args": {"status": "fulfilled", "redemptionId": "red1"}},
+      {"action": "on 115", "args": {"rewardId": "r1"}},
+      {"action": "on 194", "args": {"rewardType": "gigantify_an_emote", "gigantifiedEmoteName": "Kappa", "rewardCost": 500}},
+      {"action": "on 196", "args": {"bits": 50, "powerUpType": "message_effect", "message": "wow"}},
+      {"action": "on 496", "args": {"powerUpTitle": "Boost", "rewardId": "cp1"}}
+    ]}
+  },
+  {
+    "name": "twitch event: polls",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 125", "triggers": [{"type": 125}], "subActions": [{"type": 1009}]},
+      {"name": "on 126", "triggers": [{"type": 126}], "subActions": [{"type": 1009}]},
+      {"name": "on 127", "triggers": [{"type": 127}], "subActions": [{"type": 1009}]},
+      {"name": "on 161", "triggers": [{"type": 161}], "subActions": [{"type": 1009}]},
+      {"name": "on 473", "triggers": [{"type": 473}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.poll.begin", "data": {"id": "p1", "title": "Best?", "choices": [{"id": "a", "title": "Cats"}], "started_at": "2026-01-01T00:00:00Z", "ends_at": "2026-01-01T00:01:00Z"}}},
+      {"event": {"platform": "twitch", "type": "channel.poll.progress", "data": {"id": "p1", "title": "Best?", "choices": [{"id": "a", "title": "Cats", "votes": 3}]}}},
+      {"event": {"platform": "twitch", "type": "channel.poll.end", "data": {"id": "p1", "title": "Best?", "status": "completed", "choices": [{"id": "a", "title": "Cats", "votes": 3, "channel_points_votes": 1}, {"id": "b", "title": "Dogs", "votes": 1}]}}},
+      {"event": {"platform": "twitch", "type": "channel.poll.end", "data": {"id": "p2", "title": "x", "status": "terminated", "choices": []}}},
+      {"event": {"platform": "twitch", "type": "channel.poll.end", "data": {"id": "p3", "title": "x", "status": "archived", "choices": []}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 125", "args": {"pollId": "p1", "pollTitle": "Best?"}},
+      {"action": "on 126", "args": {"pollId": "p1"}},
+      {"action": "on 127", "args": {"poll.winningChoice.title": "Cats", "poll.winningChoice.totalVotes": 3, "poll.winningChoice.rewardVotes": 1, "active": false}},
+      {"action": "on 161", "args": {"status": "terminated"}},
+      {"action": "on 473", "args": {"status": "archived"}}
+    ]}
+  },
+  {
+    "name": "twitch event: predictions",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 128", "triggers": [{"type": 128}], "subActions": [{"type": 1009}]},
+      {"name": "on 129", "triggers": [{"type": 129}], "subActions": [{"type": 1009}]},
+      {"name": "on 132", "triggers": [{"type": 132}], "subActions": [{"type": 1009}]},
+      {"name": "on 130", "triggers": [{"type": 130}], "subActions": [{"type": 1009}]},
+      {"name": "on 131", "triggers": [{"type": 131}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.prediction.begin", "data": {"id": "pr1", "title": "Win?", "outcomes": [{"id": "o1", "title": "Yes", "users": 2, "channel_points": 100, "color": "blue"}, {"id": "o2", "title": "No", "users": 1, "channel_points": 50, "color": "pink"}], "started_at": "2026-01-01T00:00:00Z", "locks_at": "2026-01-01T00:02:00Z"}}},
+      {"event": {"platform": "twitch", "type": "channel.prediction.progress", "data": {"id": "pr1", "title": "Win?", "outcomes": [{"id": "o1", "title": "Yes", "users": 2, "channel_points": 100, "color": "blue"}, {"id": "o2", "title": "No", "users": 1, "channel_points": 50, "color": "pink"}]}}},
+      {"event": {"platform": "twitch", "type": "channel.prediction.lock", "data": {"id": "pr1", "title": "Win?", "outcomes": [{"id": "o1", "title": "Yes", "users": 2, "channel_points": 100, "color": "blue"}, {"id": "o2", "title": "No", "users": 1, "channel_points": 50, "color": "pink"}], "locked_at": "2026-01-01T00:02:00Z"}}},
+      {"event": {"platform": "twitch", "type": "channel.prediction.end", "data": {"id": "pr1", "title": "Win?", "status": "resolved", "winning_outcome_id": "o2", "outcomes": [{"id": "o1", "title": "Yes", "users": 2, "channel_points": 100, "color": "blue"}, {"id": "o2", "title": "No", "users": 1, "channel_points": 50, "color": "pink"}]}}},
+      {"event": {"platform": "twitch", "type": "channel.prediction.end", "data": {"id": "pr2", "title": "x", "status": "canceled", "outcomes": [{"id": "o1", "title": "Yes", "users": 2, "channel_points": 100, "color": "blue"}, {"id": "o2", "title": "No", "users": 1, "channel_points": 50, "color": "pink"}]}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 128", "args": {"predictionId": "pr1", "predictionTitle": "Win?"}},
+      {"action": "on 129", "args": {"predictionId": "pr1"}},
+      {"action": "on 132", "args": {"prediction.LockedAt": "2026-01-01T00:02:00Z"}},
+      {"action": "on 130", "args": {"prediction.winningIndex": 1, "prediction.winningOutcome.title": "No", "winningOutcomeId": "o2"}},
+      {"action": "on 131", "args": {"status": "canceled"}}
+    ]}
+  },
+  {
+    "name": "twitch event: hype train start, update, level up and end",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 108", "triggers": [{"type": 108}], "subActions": [{"type": 1009}]},
+      {"name": "on 109", "triggers": [{"type": 109}], "subActions": [{"type": 1009}]},
+      {"name": "on 110", "triggers": [{"type": 110}], "subActions": [{"type": 1009}]},
+      {"name": "on 111", "triggers": [{"type": 111}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.hype_train.begin", "data": {"id": "h1", "level": 1, "total": 100, "progress": 50, "goal": 200, "type": "regular"}}},
+      {"event": {"platform": "twitch", "type": "channel.hype_train.progress", "data": {"id": "h1", "level": 2, "total": 300, "progress": 100, "goal": 400, "type": "golden_kappa"}}},
+      {"event": {"platform": "twitch", "type": "channel.hype_train.progress", "data": {"id": "h1", "level": 3, "total": 500, "progress": 10, "goal": 500, "type": "regular"}}},
+      {"event": {"platform": "twitch", "type": "channel.hype_train.end", "data": {"id": "h1", "level": 3, "total": 600, "ended_at": "2026-01-01T00:05:00Z"}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 108", "args": {"level": 1, "percent": "25%"}},
+      {"action": "on 109", "args": {"level": 2, "isGoldenKappaTrain": true}},
+      {"action": "on 110", "args": {"prevLevel": 2, "level": 3}},
+      {"action": "on 111", "args": {"level": 3, "total": 600}}
+    ]}
+  },
+  {
+    "name": "twitch event: creator goals",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 148", "triggers": [{"type": 148}], "subActions": [{"type": 1009}]},
+      {"name": "on 149", "triggers": [{"type": 149}], "subActions": [{"type": 1009}]},
+      {"name": "on 150", "triggers": [{"type": 150}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.goal.begin", "data": {"id": "g1", "type": "follower", "description": "100!", "current_amount": 10, "target_amount": 100}}},
+      {"event": {"platform": "twitch", "type": "channel.goal.progress", "data": {"id": "g1", "type": "follower", "current_amount": 50, "target_amount": 100}}},
+      {"event": {"platform": "twitch", "type": "channel.goal.end", "data": {"id": "g1", "type": "follower", "current_amount": 100, "target_amount": 100, "ended_at": "x"}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 148", "args": {"goalId": "g1", "goal.type": "follower", "targetAmount": 100}},
+      {"action": "on 149", "args": {"currentAmount": 50}},
+      {"action": "on 150", "args": {"goal.endedAt": "x"}}
+    ]}
+  },
+  {
+    "name": "twitch event: ads",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 139", "triggers": [{"type": 139}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.ad_break.begin", "data": {"duration_seconds": 90, "is_automatic": true, "started_at": "2026-01-01T00:00:00Z"}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 139", "args": {"adLength": 90, "adLengthMs": 90000, "isAutomatic": true}}
+    ]}
+  },
+  {
+    "name": "twitch event: bans, timeouts and unbans",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 137", "triggers": [{"type": 137}], "subActions": [{"type": 1009}]},
+      {"name": "on 136", "triggers": [{"type": 136}], "subActions": [{"type": 1009}]},
+      {"name": "on 191", "triggers": [{"type": 191}], "subActions": [{"type": 1009}]},
+      {"name": "on 145", "triggers": [{"type": 145}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.ban", "data": {"user_id": "6", "user_login": "bo", "user_name": "Bo", "moderator_user_id": "3", "moderator_user_login": "mod", "moderator_user_name": "Mod", "reason": "spam", "is_permanent": true}}},
+      {"event": {"platform": "twitch", "type": "channel.ban", "data": {"user_id": "6", "user_login": "bo", "user_name": "Bo", "moderator_user_id": "3", "moderator_user_login": "mod", "moderator_user_name": "Mod", "reason": "", "is_permanent": false, "banned_at": "2026-01-01T00:00:00Z", "ends_at": "2026-01-01T00:10:00Z"}}},
+      {"event": {"platform": "twitch", "type": "channel.unban", "data": {"user_id": "6", "user_login": "bo", "user_name": "Bo", "moderator_user_id": "3", "moderator_user_login": "mod", "moderator_user_name": "Mod"}}},
+      {"event": {"platform": "twitch", "type": "channel.unban", "data": {"user_id": "6", "user_login": "bo", "user_name": "Bo", "moderator_user_id": "3", "moderator_user_login": "mod", "moderator_user_name": "Mod"}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 137", "args": {"user": "Bo", "reason": "spam", "isPermanent": true, "createdByUsername": "mod"}},
+      {"action": "on 136", "args": {"duration": 600, "endsAt": "2026-01-01T00:10:00Z"}},
+      {"action": "on 191", "args": {"userName": "bo", "createdByDisplayName": "Mod"}},
+      {"action": "on 145", "args": {"userName": "bo"}}
+    ]}
+  },
+  {
+    "name": "twitch event: moderators and VIPs",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 187", "triggers": [{"type": 187}], "subActions": [{"type": 1009}]},
+      {"name": "on 188", "triggers": [{"type": 188}], "subActions": [{"type": 1009}]},
+      {"name": "on 189", "triggers": [{"type": 189}], "subActions": [{"type": 1009}]},
+      {"name": "on 190", "triggers": [{"type": 190}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.moderator.add", "data": {"user_id": "6", "user_login": "bo", "user_name": "Bo"}}},
+      {"event": {"platform": "twitch", "type": "channel.moderator.remove", "data": {"user_id": "6", "user_login": "bo", "user_name": "Bo"}}},
+      {"event": {"platform": "twitch", "type": "channel.vip.add", "data": {"user_id": "6", "user_login": "bo", "user_name": "Bo"}}},
+      {"event": {"platform": "twitch", "type": "channel.vip.remove", "data": {"user_id": "6", "user_login": "bo", "user_name": "Bo"}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 187", "args": {"user": "Bo", "isModerator": true}},
+      {"action": "on 188", "args": {"user": "Bo", "isModerator": false}},
+      {"action": "on 189", "args": {"isVip": true}},
+      {"action": "on 190", "args": {"isVip": false}}
+    ]}
+  },
+  {
+    "name": "twitch event: shield mode, shoutouts and chat clear",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 151", "triggers": [{"type": 151}], "subActions": [{"type": 1009}]},
+      {"name": "on 152", "triggers": [{"type": 152}], "subActions": [{"type": 1009}]},
+      {"name": "on 144", "triggers": [{"type": 144}], "subActions": [{"type": 1009}]},
+      {"name": "on 156", "triggers": [{"type": 156}], "subActions": [{"type": 1009}]},
+      {"name": "on 157", "triggers": [{"type": 157}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.shield_mode.begin", "data": {"moderator_user_id": "3", "moderator_user_login": "mod", "moderator_user_name": "Mod"}}},
+      {"event": {"platform": "twitch", "type": "channel.shield_mode.end", "data": {"moderator_user_id": "3", "moderator_user_login": "mod", "moderator_user_name": "Mod"}}},
+      {"event": {"platform": "twitch", "type": "channel.shoutout.create", "data": {"to_broadcaster_user_id": "7", "to_broadcaster_user_login": "pal", "to_broadcaster_user_name": "Pal", "viewer_count": 12, "moderator_user_id": "3", "moderator_user_login": "mod", "moderator_user_name": "Mod"}}},
+      {"event": {"platform": "twitch", "type": "channel.shoutout.receive", "data": {"from_broadcaster_user_id": "7", "from_broadcaster_user_login": "pal", "from_broadcaster_user_name": "Pal", "viewer_count": 5}}},
+      {"event": {"platform": "twitch", "type": "channel.chat.clear", "data": {}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 151", "args": {"broadcastUserName": "streamer", "broadcastUserId": "1"}},
+      {"action": "on 152", "args": {"broadcastUserName": "streamer", "broadcastUserId": "1"}},
+      {"action": "on 144", "args": {"targetUserName": "pal", "viewerCount": 12, "moderator.login": "mod"}},
+      {"action": "on 156", "args": {"fromUser": "Pal", "viewerCount": 5}},
+      {"action": "on 157", "args": {"broadcastUserName": "streamer", "broadcastUserId": "1"}}
+    ]}
+  },
+  {
+    "name": "twitch event: chat modes on, changed and off",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 451", "triggers": [{"type": 451}], "subActions": [{"type": 1009}]},
+      {"name": "on 459", "triggers": [{"type": 459}], "subActions": [{"type": 1009}]},
+      {"name": "on 461", "triggers": [{"type": 461}], "subActions": [{"type": 1009}]},
+      {"name": "on 456", "triggers": [{"type": 456}], "subActions": [{"type": 1009}]},
+      {"name": "on 453", "triggers": [{"type": 453}], "subActions": [{"type": 1009}]},
+      {"name": "on 458", "triggers": [{"type": 458}], "subActions": [{"type": 1009}]},
+      {"name": "on 455", "triggers": [{"type": 455}], "subActions": [{"type": 1009}]},
+      {"name": "on 452", "triggers": [{"type": 452}], "subActions": [{"type": 1009}]},
+      {"name": "on 460", "triggers": [{"type": 460}], "subActions": [{"type": 1009}]},
+      {"name": "on 462", "triggers": [{"type": 462}], "subActions": [{"type": 1009}]},
+      {"name": "on 457", "triggers": [{"type": 457}], "subActions": [{"type": 1009}]},
+      {"name": "on 454", "triggers": [{"type": 454}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.chat_settings.update", "data": {"emote_mode": false, "follower_mode": false, "follower_mode_duration_minutes": 0, "slow_mode": false, "slow_mode_wait_time_seconds": 0, "subscriber_mode": false, "unique_chat_mode": false}}},
+      {"event": {"platform": "twitch", "type": "channel.chat_settings.update", "data": {"emote_mode": true, "follower_mode": true, "follower_mode_duration_minutes": 10, "slow_mode": true, "slow_mode_wait_time_seconds": 5, "subscriber_mode": true, "unique_chat_mode": true}}},
+      {"event": {"platform": "twitch", "type": "channel.chat_settings.update", "data": {"emote_mode": true, "follower_mode": true, "follower_mode_duration_minutes": 30, "slow_mode": true, "slow_mode_wait_time_seconds": 60, "subscriber_mode": true, "unique_chat_mode": true}}},
+      {"event": {"platform": "twitch", "type": "channel.chat_settings.update", "data": {"emote_mode": false, "follower_mode": false, "follower_mode_duration_minutes": 0, "slow_mode": false, "slow_mode_wait_time_seconds": 0, "subscriber_mode": false, "unique_chat_mode": false}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 451", "args": {"emoteMode": true}},
+      {"action": "on 459", "args": {"subscriberOnly": true}},
+      {"action": "on 461", "args": {"uniqueMode": true}},
+      {"action": "on 456", "args": {"slowMode": true}},
+      {"action": "on 453", "args": {"followerMode": true}},
+      {"action": "on 458", "args": {"slowModeWaitTime": 5}},
+      {"action": "on 455", "args": {"followerModeDuration": 10}},
+      {"action": "on 458", "args": {"slowModeWaitTime": 60}},
+      {"action": "on 455", "args": {"followerModeDuration": 30}},
+      {"action": "on 452", "args": {"emoteMode": false}},
+      {"action": "on 460", "args": {"subscriberOnly": false}},
+      {"action": "on 462", "args": {"uniqueMode": false}},
+      {"action": "on 457", "args": {"slowMode": false}},
+      {"action": "on 454", "args": {"followerMode": false}}
+    ]}
+  },
+  {
+    "name": "twitch event: charity",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 146", "triggers": [{"type": 146}], "subActions": [{"type": 1009}]},
+      {"name": "on 141", "triggers": [{"type": 141}], "subActions": [{"type": 1009}]},
+      {"name": "on 147", "triggers": [{"type": 147}], "subActions": [{"type": 1009}]},
+      {"name": "on 142", "triggers": [{"type": 142}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.charity_campaign.start", "data": {"id": "c1", "campaign_id": "camp1", "charity_name": "Good", "current_amount": {"value": 500, "decimal_places": 2, "currency": "USD"}, "target_amount": {"value": 1000, "decimal_places": 2, "currency": "USD"}}}},
+      {"event": {"platform": "twitch", "type": "channel.charity_campaign.donate", "data": {"id": "c1", "campaign_id": "camp1", "charity_name": "Good", "current_amount": {"value": 500, "decimal_places": 2, "currency": "USD"}, "target_amount": {"value": 1000, "decimal_places": 2, "currency": "USD"}, "user_id": "5", "user_login": "ana", "user_name": "Ana", "amount": {"value": 1000, "decimal_places": 2, "currency": "USD"}}}},
+      {"event": {"platform": "twitch", "type": "channel.charity_campaign.progress", "data": {"id": "c1", "campaign_id": "camp1", "charity_name": "Good", "current_amount": {"value": 500, "decimal_places": 2, "currency": "USD"}, "target_amount": {"value": 1000, "decimal_places": 2, "currency": "USD"}}}},
+      {"event": {"platform": "twitch", "type": "channel.charity_campaign.stop", "data": {"id": "c1", "campaign_id": "camp1", "charity_name": "Good", "current_amount": {"value": 500, "decimal_places": 2, "currency": "USD"}, "target_amount": {"value": 1000, "decimal_places": 2, "currency": "USD"}}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 146", "args": {"charityName": "Good", "charity.campaignId": "camp1"}},
+      {"action": "on 141", "args": {"user": "Ana", "amount": 1000}},
+      {"action": "on 147", "args": {"currentAmount": 500, "targetAmount": 1000}},
+      {"action": "on 142", "args": {"charity.name": "Good"}}
+    ]}
+  },
+  {
+    "name": "twitch event: guest star",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 165", "triggers": [{"type": 165}], "subActions": [{"type": 1009}]},
+      {"name": "on 167", "triggers": [{"type": 167}], "subActions": [{"type": 1009}]},
+      {"name": "on 169", "triggers": [{"type": 169}], "subActions": [{"type": 1009}]},
+      {"name": "on 166", "triggers": [{"type": 166}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.guest_star_session.begin", "data": {"session_id": "gs1"}}},
+      {"event": {"platform": "twitch", "type": "channel.guest_star_guest.update", "data": {"session_id": "gs1", "guest_user_login": "pal", "slot_id": "1", "state": "live"}}},
+      {"event": {"platform": "twitch", "type": "channel.guest_star_settings.update", "data": {"slot_count": 4, "group_layout": "tiled"}}},
+      {"event": {"platform": "twitch", "type": "channel.guest_star_session.end", "data": {"session_id": "gs1"}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 165", "args": {"sessionId": "gs1"}},
+      {"action": "on 167", "args": {"guestUserLogin": "pal", "state": "live"}},
+      {"action": "on 169", "args": {"slotCount": 4, "groupLayout": "tiled"}},
+      {"action": "on 166", "args": {"sessionId": "gs1"}}
+    ]}
+  },
+  {
+    "name": "twitch event: message deleted, automod and terms",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 135", "triggers": [{"type": 135}], "subActions": [{"type": 1009}]},
+      {"name": "on 463", "triggers": [{"type": 463}], "subActions": [{"type": 1009}]},
+      {"name": "on 464", "triggers": [{"type": 464}], "subActions": [{"type": 1009}]},
+      {"name": "on 465", "triggers": [{"type": 465}], "subActions": [{"type": 1009}]},
+      {"name": "on 466", "triggers": [{"type": 466}], "subActions": [{"type": 1009}]},
+      {"name": "on 469", "triggers": [{"type": 469}], "subActions": [{"type": 1009}]},
+      {"name": "on 470", "triggers": [{"type": 470}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.chat.message_delete", "data": {"target_user_id": "6", "target_user_login": "bo", "target_user_name": "Bo", "message_id": "gone1"}}},
+      {"event": {"platform": "twitch", "type": "automod.message.hold", "data": {"user_id": "6", "user_login": "bo", "user_name": "Bo", "message_id": "am1", "message": {"text": "bad words"}, "automod": {"category": "swearing", "level": 4}}}},
+      {"event": {"platform": "twitch", "type": "automod.message.update", "data": {"user_id": "6", "user_login": "bo", "user_name": "Bo", "moderator_user_id": "3", "moderator_user_login": "mod", "moderator_user_name": "Mod", "message_id": "am1", "message": {"text": "bad words"}, "status": "approved"}}},
+      {"event": {"platform": "twitch", "type": "automod.terms.update", "data": {"moderator_user_id": "3", "moderator_user_login": "mod", "moderator_user_name": "Mod", "action": "add_blocked", "terms": ["foo", "bar"]}}},
+      {"event": {"platform": "twitch", "type": "automod.terms.update", "data": {"moderator_user_id": "3", "moderator_user_login": "mod", "moderator_user_name": "Mod", "action": "remove_blocked", "terms": ["foo"]}}},
+      {"event": {"platform": "twitch", "type": "automod.terms.update", "data": {"moderator_user_id": "3", "moderator_user_login": "mod", "moderator_user_name": "Mod", "action": "add_permitted", "terms": ["ok"]}}},
+      {"event": {"platform": "twitch", "type": "automod.terms.update", "data": {"moderator_user_id": "3", "moderator_user_login": "mod", "moderator_user_name": "Mod", "action": "remove_permitted", "terms": ["ok"]}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 135", "args": {"targetMessageId": "gone1", "user": "Bo"}},
+      {"action": "on 463", "args": {"messageId": "am1", "rawInput": "bad words", "category": "swearing"}},
+      {"action": "on 464", "args": {"status": "approved", "moderator.login": "mod"}},
+      {"action": "on 465", "args": {"termCount": 2, "term.[1]": "bar", "moderatorUsername": "Mod"}},
+      {"action": "on 466", "args": {"termCount": 1}},
+      {"action": "on 469", "args": {"term.[0]": "ok"}},
+      {"action": "on 470", "args": {"termCount": 1}}
+    ]}
+  },
+  {
+    "name": "twitch event: unban requests, warnings and suspicious users",
+    "fakes": {"twitch": {"GET users": {"data": [{"id": "7", "login": "pal", "display_name": "Pal"}]}}},
+    "actions": [
+      {"name": "on 195", "triggers": [{"type": 195}], "subActions": [{"type": 1009}]},
+      {"name": "on 192", "triggers": [{"type": 192}], "subActions": [{"type": 1009}]},
+      {"name": "on 193", "triggers": [{"type": 193}], "subActions": [{"type": 1009}]},
+      {"name": "on 467", "triggers": [{"type": 467}], "subActions": [{"type": 1009}]},
+      {"name": "on 471", "triggers": [{"type": 471}], "subActions": [{"type": 1009}]},
+      {"name": "on 468", "triggers": [{"type": 468}], "subActions": [{"type": 1009}]},
+      {"name": "on 495", "triggers": [{"type": 495}], "subActions": [{"type": 1009}]}
+    ],
+    "steps": [
+      {"event": {"platform": "twitch", "type": "channel.unban_request.create", "data": {"id": "ur1", "user_id": "6", "user_login": "bo", "user_name": "Bo", "text": "sorry"}}},
+      {"event": {"platform": "twitch", "type": "channel.unban_request.resolve", "data": {"id": "ur1", "user_id": "6", "user_login": "bo", "user_name": "Bo", "moderator_user_id": "3", "moderator_user_login": "mod", "moderator_user_name": "Mod", "status": "approved", "resolution_text": "ok"}}},
+      {"event": {"platform": "twitch", "type": "channel.unban_request.resolve", "data": {"id": "ur2", "user_id": "6", "user_login": "bo", "user_name": "Bo", "moderator_user_id": "3", "moderator_user_login": "mod", "moderator_user_name": "Mod", "status": "denied", "resolution_text": "no"}}},
+      {"event": {"platform": "twitch", "type": "channel.warning.send", "data": {"user_id": "6", "user_login": "bo", "user_name": "Bo", "moderator_user_id": "3", "moderator_user_login": "mod", "moderator_user_name": "Mod", "reason": "chill"}}},
+      {"event": {"platform": "twitch", "type": "channel.warning.acknowledge", "data": {"user_id": "6", "user_login": "bo", "user_name": "Bo"}}},
+      {"event": {"platform": "twitch", "type": "channel.suspicious_user.update", "data": {"user_id": "6", "user_login": "bo", "user_name": "Bo", "moderator_user_id": "3", "moderator_user_login": "mod", "moderator_user_name": "Mod", "low_trust_status": "restricted"}}},
+      {"event": {"platform": "twitch", "type": "channel.suspicious_user.message", "data": {"user_id": "6", "user_login": "bo", "user_name": "Bo", "low_trust_status": "active_monitoring", "ban_evasion_evaluation": "likely", "message": {"message_id": "sm1", "text": "hey"}}}}
+    ],
+    "expect": {"runs": [
+      {"action": "on 195", "args": {"requestId": "ur1", "text": "sorry"}},
+      {"action": "on 192", "args": {"message": "ok"}},
+      {"action": "on 193", "args": {"message": "no"}},
+      {"action": "on 467", "args": {"reason": "chill", "user": "Bo"}},
+      {"action": "on 471", "args": {"user": "Bo"}},
+      {"action": "on 468", "args": {"lowTrustStatus": "restricted"}},
+      {"action": "on 495", "args": {"message": "hey", "banEvasionEvaluation": "likely"}}
+    ]}
+  }
+]

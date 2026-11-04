@@ -1,0 +1,67 @@
+[
+  {
+    "name": "spotify: every player, library, playlist and profile action makes its Web API request",
+    "fakes": {"spotify": {"api": "{http}"}, "http": {"GET /tracks/4uLU6hMCjMI75M1A2tKUQC?market=from_token": {"id": "4uLU6hMCjMI75M1A2tKUQC", "uri": "spotify:track:4uLU6hMCjMI75M1A2tKUQC", "name": "Pick", "artists": [{"name": "X"}], "duration_ms": 1000}, "GET /me/player": {"$seq": [{"is_playing": true, "progress_ms": 10000, "device": {"volume_percent": 40, "name": "PC"}, "shuffle_state": false, "repeat_state": "off"}, {"is_playing": true, "progress_ms": 10000, "device": {"volume_percent": 40, "name": "Phone"}, "shuffle_state": false, "repeat_state": "off"}]}, "GET /me/player/currently-playing": {"is_playing": true, "item": {"id": "t1", "uri": "spotify:track:t1", "name": "Song", "artists": [{"id": "a1", "name": "Art"}], "album": {"id": "al1"}}}, "GET /me/tracks/contains?ids=t1": [true], "GET /me/player/devices": {"devices": [{"id": "d1", "name": "PC"}]}, "GET /me/player/queue": {"queue": [{"name": "Next", "artists": [{"name": "B"}]}]}, "GET /me": {"display_name": "Me"}, "POST /me/playlists": {"id": "pl9", "name": "Fresh"}}},
+    "actions": [
+      {"name": "spotify", "subActions": [{"type": 99811, "value": ""}, {"type": 99812, "value": ""}, {"type": 99813, "value": ""}, {"type": 99814, "value": ""}, {"type": 99815, "value": ""}, {"type": 99816, "value": ""}, {"type": 99817, "value": "1234"}, {"type": 99818, "value": "80"}, {"type": 99820, "value": "d1"}, {"type": 99821, "value": "true"}, {"type": 99822, "value": "track"}, {"type": 99823, "value": ""}, {"type": 99824, "value": ""}, {"type": 99840, "value": "spotify:track:4uLU6hMCjMI75M1A2tKUQC"}, {"type": 99841, "value": ""}, {"type": 99842, "value": ""}, {"type": 99843, "value": "10"}, {"type": 99844, "value": "-5000"}, {"type": 99850, "value": ""}, {"type": 99851, "value": ""}, {"type": 99852, "value": ""}, {"type": 99853, "value": ""}, {"type": 99854, "value": ""}, {"type": 99855, "value": ""}, {"type": 99860, "value": ""}, {"type": 99861, "value": "Fresh", "extra": "made here"}, {"type": 99863, "value": "37i9dQZF1DXcBWIGoYBM5M", "extra": "spotify:track:4uLU6hMCjMI75M1A2tKUQC"}, {"type": 99862, "value": "37i9dQZF1DXcBWIGoYBM5M"}, {"type": 99864, "value": "37i9dQZF1DXcBWIGoYBM5M"}, {"type": 99865, "value": "37i9dQZF1DXcBWIGoYBM5M"}, {"type": 99866, "value": "37i9dQZF1DXcBWIGoYBM5M", "extra": "Renamed"}, {"type": 99870, "value": ""}, {"type": 99871, "value": "short"}, {"type": 99872, "value": "long"}, {"type": 99873, "value": "lofi beats", "extra": "playlist"}, {"type": 99874, "value": ""}, {"type": 99875, "value": ""}, {"type": 1020, "logLevel": 2, "message": "spotify done %spotifyError%"}, {"type": 99823}]},
+      {"name": "shuffle", "triggers": [{"type": 99837}], "subActions": [{"type": 1020, "logLevel": 2, "message": "shuffle changed"}]},
+      {"name": "repeat", "triggers": [{"type": 99838}], "subActions": [{"type": 1020, "logLevel": 2, "message": "repeat changed"}]},
+      {"name": "device", "triggers": [{"type": 99839}], "subActions": [{"type": 1020, "logLevel": 2, "message": "device changed"}]},
+      {"name": "volume", "triggers": [{"type": 99836}], "subActions": [{"type": 1020, "logLevel": 2, "message": "volume changed"}]},
+      {"name": "playlist", "triggers": [{"type": 99842}], "subActions": [{"type": 1020, "logLevel": 2, "message": "playlist changed"}]}
+    ],
+    "steps": [
+      {"run": "spotify", "wait": 2500}
+    ],
+    "expect": {"calls": [{"platform": "http", "call": "GET /me/player/devices"}, {"platform": "http", "call": "GET /me/player/queue"}, {"platform": "http", "call": "PUT /me/player/play"}, {"platform": "http", "call": "PUT /me/player/pause"}, {"platform": "http", "call": "POST /me/player/next"}, {"platform": "http", "call": "POST /me/player/previous"}, {"platform": "http", "call": "PUT /me/player/seek?position_ms=1234"}, {"platform": "http", "call": "PUT /me/player/volume?volume_percent=80"}, {"platform": "http", "call": "PUT /me/player", "body": {"device_ids": ["d1"]}}, {"platform": "http", "call": "PUT /me/player/shuffle?state=true"}, {"platform": "http", "call": "PUT /me/player/repeat?state=track"}, {"platform": "http", "call": "GET /me/player"}, {"platform": "http", "call": "GET /me/player/recently-played?limit=50"}, {"platform": "http", "call": "PUT /me/player/play", "body": {"uris": ["spotify:track:4uLU6hMCjMI75M1A2tKUQC"]}}, {"platform": "http", "call": "PUT /me/player/pause"}, {"platform": "http", "call": "PUT /me/player/seek?position_ms=0"}, {"platform": "http", "call": "PUT /me/player/volume?volume_percent=50"}, {"platform": "http", "call": "PUT /me/player/seek?position_ms=5000"}, {"platform": "http", "call": "DELETE /me/tracks?ids=t1"}, {"platform": "http", "call": "GET /me/tracks/contains?ids=t1"}, {"platform": "http", "call": "GET /me/tracks?limit=50"}, {"platform": "http", "call": "PUT /me/following?type=artist&ids=a1"}, {"platform": "http", "call": "DELETE /me/following?type=artist&ids=a1"}, {"platform": "http", "call": "GET /me/following?type=artist&limit=50"}, {"platform": "http", "call": "GET /me/playlists?limit=50"}, {"platform": "http", "call": "POST /me/playlists", "body": {"name": "Fresh", "description": "made here", "public": false}}, {"platform": "http", "call": "POST /playlists/37i9dQZF1DXcBWIGoYBM5M/tracks", "body": {"uris": ["spotify:track:4uLU6hMCjMI75M1A2tKUQC"]}}, {"platform": "http", "call": "POST /playlists/37i9dQZF1DXcBWIGoYBM5M/tracks", "body": {"uris": ["spotify:track:t1"]}}, {"platform": "http", "call": "DELETE /playlists/37i9dQZF1DXcBWIGoYBM5M/tracks"}, {"platform": "http", "call": "GET /playlists/37i9dQZF1DXcBWIGoYBM5M/tracks?limit=50"}, {"platform": "http", "call": "PUT /playlists/37i9dQZF1DXcBWIGoYBM5M", "body": {"name": "Renamed"}}, {"platform": "http", "call": "GET /me"}, {"platform": "http", "call": "GET /me/top/tracks?time_range=short_term&limit=20"}, {"platform": "http", "call": "GET /me/top/artists?time_range=long_term&limit=20"}, {"platform": "http", "call": "GET /search?q=lofi+beats&type=playlist&limit=10&market=from_token"}, {"platform": "http", "call": "GET /artists/a1"}, {"platform": "http", "call": "GET /albums/al1"}], "log": ["volume changed", "playlist changed", "spotify done ", "device changed"], "runs": [{"action": "shuffle"}, {"action": "repeat"}, {"action": "spotify", "after": {"spotifyError": ""}}]}
+  },
+  {
+    "name": "spotify: current song and add to queue; a failure sets spotifyError and fires Spotify Error",
+    "fakes": {"spotify": {"current": {"name": "Song", "artists": ["Art"], "uri": "spotify:track:t1"}}},
+    "actions": [
+      {"name": "now", "subActions": [{"type": 99810}, {"type": 99819, "value": "spotify:track:zz"}]},
+      {"name": "err", "triggers": [{"type": 99806}], "subActions": [{"type": 1020, "logLevel": 2, "message": "spotify error: %error%"}]},
+      {"name": "fail", "subActions": [{"type": 99813}]}
+    ],
+    "steps": [
+      {"run": "now"}
+    ],
+    "expect": {"calls": [{"platform": "spotify", "call": "current"}, {"platform": "spotify", "call": "find", "query": "spotify:track:zz"}, {"platform": "spotify", "call": "add"}], "runs": [{"action": "now", "after": {"spotifyError": ""}}]}
+  },
+  {
+    "name": "spotify: with no Spotify connected an action says so",
+    "actions": [
+      {"name": "fail", "subActions": [{"type": 99813}, {"type": 1020, "logLevel": 2, "message": "err=%spotifyError%"}]},
+      {"name": "on error", "triggers": [{"type": 99806}], "subActions": [{"type": 1020, "logLevel": 2, "message": "Spotify Error fired"}]}
+    ],
+    "steps": [
+      {"run": "fail"}
+    ],
+    "expect": {"log": ["err=", "Spotify Error fired"], "runs": [{"action": "fail", "after": {"spotifyResult": null}}]}
+  },
+  {
+    "name": "song requests: request, list, take back, skip, vote skip, like, block, clear",
+    "fakes": {"spotify": {"player": {"current": {"name": "Playing", "uri": "spotify:track:p1"}, "queue": [], "volume": 50}}},
+    "actions": [
+      {"name": "requests", "group": "Songs", "subActions": [{"type": 99802, "operation": "request", "query": "Song A"}, {"type": 99833}, {"type": 1020, "logLevel": 2, "message": "count=%spotifyRequestCount% list=%spotifyList%"}, {"type": 99827}, {"type": 99828}, {"type": 99829, "votesNeeded": 2}, {"type": 99831}, {"type": 99830}, {"type": 99832}]},
+      {"name": "requested", "triggers": [{"type": 99830}], "subActions": [{"type": 1020, "logLevel": 2, "message": "requested by %spotifyRequester%: %spotifyTitle% at %spotifyPosition%"}]},
+      {"name": "skipped", "triggers": [{"type": 99833}], "subActions": [{"type": 1020, "logLevel": 2, "message": "skipped"}]},
+      {"name": "voted", "triggers": [{"type": 99834}], "subActions": [{"type": 1020, "logLevel": 2, "message": "voted"}]},
+      {"name": "liked", "triggers": [{"type": 99841}], "subActions": [{"type": 1020, "logLevel": 2, "message": "liked"}]}
+    ],
+    "steps": [
+      {"run": "requests", "args": {"user": "ana", "userId": "5", "isBroadcaster": true}, "wait": 3000}
+    ],
+    "expect": {"calls": [{"platform": "spotify", "call": "find", "query": "Song A"}, {"platform": "spotify", "call": "add"}, {"platform": "spotify", "call": "playback", "command": "next"}], "log": ["count=1 list=#1 Artist - Song A (ana)", "requested by ana: Song A at 1", "skipped", "voted", "liked"], "runs": [{"action": "requests", "after": {"spotifyOk": "true"}}]}
+  },
+  {
+    "name": "countdown: reset and add time to a template countdown",
+    "actions": [
+      {"name": "clock", "subActions": [{"type": 99803, "clockId": "c1", "operation": "reset", "startMs": 60000, "maxMs": 600000}, {"type": 99803, "clockId": "c1", "operation": "add", "units": "2", "perUnitMs": 30000, "maxMs": 900000}, {"type": 99803, "clockId": "c1", "operation": "add", "units": "-1", "perUnitMs": 30000}, {"type": 99803, "clockId": "c1", "operation": "nope"}]}
+    ],
+    "steps": [
+      {"run": "clock"}
+    ],
+    "expect": {"config": {"templateCountdowns": {"c1": {"maxMs": 900000}}}, "log": ["Countdown: invalid amount", "Countdown: invalid operation"], "notLog": ["timer not found"]}
+  }
+]

@@ -344,7 +344,10 @@ mod tests {
     use fltk::prelude::SurfaceDevice;
     use fltk::surface::ImageSurface;
 
+    /// On a display, by hand (`DISPLAY=:99 cargo test grid -- --ignored`): it opens a connection to the
+    /// display that outlives it, and FLTK used on it from other tests' threads then hangs them.
     #[test]
+    #[ignore]
     fn redraw_clears_previous_grid_contents() {
         if std::env::var_os("DISPLAY").is_none() {
             return;

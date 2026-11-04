@@ -374,6 +374,13 @@ pub struct TwitchHandle {
 }
 
 impl TwitchHandle {
+    /// A connected handle with no runner: whoever holds the receiver answers it (scenarios).
+    pub fn detached() -> (Self, mpsc::UnboundedReceiver<TwitchCmd>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let connected = Arc::new(AtomicBool::new(true));
+        (TwitchHandle { tx, connected }, rx)
+    }
+
     pub fn is_connected(&self) -> bool {
         self.connected.load(Ordering::Relaxed)
     }
@@ -2391,7 +2398,7 @@ pub(crate) async fn recent_messages(login: &str, broadcaster_id: &str) -> Vec<cr
     fetch_recent_messages(login, broadcaster_id).await
 }
 
-fn handle_notification(
+pub(crate) fn handle_notification(
     engine: &Rc<Engine>,
     broadcaster: &TwitchAccount,
     cfg: &Arc<watch::Sender<Config>>,
@@ -3338,6 +3345,7 @@ fn handle_notification(
                 args.insert(k.into(), v);
             }
             go(engine, T_AD_RUN, "Ad Run", "Twitch/Ads", "AdRun", &args);
+            engine.overlay_ad(length, auto, event["started_at"].as_str().unwrap_or_default());
         }
         "channel.ban" => {
             engine.chat_remove("twitch", "", es(event, "/user_id"));
@@ -4751,7 +4759,7 @@ async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
         let want = [T_VIEWER_COUNT_UPDATE, T_PRESENT_VIEWERS, T_UPCOMING_AD].map(|t| engine.uses_trigger(t));
         let Some(tw) = engine
             .twitch()
-            .filter(|_| want.iter().any(|w| *w) || crate::ui::chat::viewers_visible())
+            .filter(|_| want.iter().any(|w| *w) || engine.viewers_wanted())
         else {
             continue;
         };
@@ -4832,6 +4840,30 @@ async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
 #[cfg(test)]
 pub(crate) mod tests {
     #[test]
+    fn an_ad_break_tells_the_overlays() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        use super::*;
+        use crate::engine::tests::{engine, run};
+        let e = engine(json!({"actions": []}));
+        let cfg = Arc::new(watch::channel(Config::default()).0);
+        let b = TwitchAccount {
+            user_id: "1".into(),
+            login: "me".into(),
+            ..Default::default()
+        };
+        run(async move {
+            let ad = json!({"duration_seconds": 90, "is_automatic": true, "started_at": "2026-01-01T00:00:00Z"});
+            handle_notification(&e, &b, &cfg, "channel.ad_break.begin", &ad);
+            let v = e.overlay_value("ad").unwrap();
+            assert_eq!(
+                (v["running"].clone(), v["duration"].clone(), v["startedAt"].clone()),
+                (json!(true), json!(90), json!("2026-01-01T00:00:00Z"))
+            );
+            assert!(v["endsAt"].as_u64().unwrap() > crate::templates::clock::now_ms() + 80_000);
+        });
+    }
+
+    #[test]
     fn a_message_with_a_null_reply_is_not_a_reply() {
         use super::*;
         assert!(reply_of(&json!({"message_id": "m", "reply": null})).is_none());
@@ -4844,7 +4876,7 @@ pub(crate) mod tests {
     fn two_refreshes_at_once_keep_the_login() {
         use super::*;
         use std::cell::Cell;
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -4925,7 +4957,7 @@ pub(crate) mod tests {
     #[test]
     fn events_fire_once_with_their_variables() {
         use crate::engine::tests::{action, engine, log, run};
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let watch: &[(u32, &str)] = &[
             (T_SUB, "%tier% %isMultiMonth%"),
             (T_SHARED_CHAT_SUB, "%sourceBroadcasterUsername%"),
@@ -5166,7 +5198,7 @@ pub(crate) mod tests {
     #[test]
     fn raid_send_notification() {
         use crate::engine::tests::{action, engine, log, run};
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut a = action("a", "a", json!([log("T send %raidUserName% %viewers%")]));
         a["triggers"] = json!([{"id": "t", "type": T_RAID_SEND, "enabled": true}]);
         let e = engine(json!({ "actions": [a] }));

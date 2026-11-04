@@ -14,12 +14,28 @@ const LINE: i32 = 28;
 /// The scrollbar's width, and the space kept for it.
 const BAR: i32 = 6;
 
+/// How a column draws its cells (text unless said).
+#[derive(Clone, Copy, PartialEq)]
+pub enum Cell {
+    /// `key|text`: a logo (or else a Lucide icon) named `key`, then the text.
+    Lead,
+    /// `icon|rrggbb|tip`: only a coloured icon; the tip shows when it is pointed at.
+    Status,
+    /// A path or address: quiet, cut with an ellipsis, underlined under the mouse (the click is the
+    /// page's to use, see `column`).
+    Link,
+}
+
 type Cb = Box<dyn FnMut(&mut Rows)>;
 type Keys = Box<dyn FnMut(&mut Rows, Key) -> bool>;
 
 #[derive(Default)]
 struct State {
     lines: Vec<String>,
+    /// Which lines are switched off: dimmed, with a power-off icon at the end.
+    off: Vec<bool>,
+    /// An icon at the start of a line.
+    icons: Vec<Option<fltk::image::SharedImage>>,
     widths: &'static [i32],
     empty: &'static str,
     /// The column holding a platform: drawn as its logo, named on hover.
@@ -27,6 +43,9 @@ struct State {
     /// The column holding a picture's address: the picture shows instead (once it's in `pics`).
     pic: Option<usize>,
     pics: std::collections::HashMap<String, fltk::image::RgbImage>,
+    cells: Vec<Option<Cell>>,
+    /// The column the last click landed in.
+    col: Option<usize>,
     sel: i32,
     hover: i32,
     /// Pixels scrolled.
@@ -56,6 +75,30 @@ impl DerefMut for Rows {
     fn deref_mut(&mut self) -> &mut Frame {
         &mut self.area
     }
+}
+
+/// `text` cut to fit `w` px with an ellipsis (in the current font).
+fn fit(text: &str, w: i32) -> String {
+    if w <= 0 {
+        return String::new();
+    }
+    if draw::width(text) as i32 <= w {
+        return text.to_string();
+    }
+    let mut t: String = text.to_string();
+    while !t.is_empty() {
+        t.pop();
+        let c = format!("{t}…");
+        if draw::width(&c) as i32 <= w {
+            return c;
+        }
+    }
+    String::new()
+}
+
+fn tone(hex: &str) -> Color {
+    let n = u32::from_str_radix(hex, 16).unwrap_or(0x999999);
+    Color::from_rgb((n >> 16) as u8, (n >> 8) as u8, n as u8)
 }
 
 impl Rows {
@@ -99,6 +142,20 @@ impl Rows {
         self.st.borrow_mut().pic = Some(c);
     }
 
+    /// How column `c` draws its cells.
+    pub fn set_cell(&mut self, c: usize, kind: Cell) {
+        let mut st = self.st.borrow_mut();
+        if st.cells.len() <= c {
+            st.cells.resize(c + 1, None);
+        }
+        st.cells[c] = Some(kind);
+    }
+
+    /// The column the last click landed in (none after the keys moved the selection).
+    pub fn column(&self) -> Option<usize> {
+        self.st.borrow().col
+    }
+
     /// The picture for an address in the picture column.
     pub fn set_pic(&mut self, url: &str, img: fltk::image::RgbImage) {
         self.st.borrow_mut().pics.insert(url.to_string(), img);
@@ -126,14 +183,31 @@ impl Rows {
     }
 
     pub fn add(&mut self, line: &str) {
-        self.st.borrow_mut().lines.push(line.to_string());
+        self.add_state(line, false);
+    }
+
+    /// A line that is switched off: dimmed, with a power-off icon at the end.
+    pub fn add_state(&mut self, line: &str, off: bool) {
+        self.add_icon(line, off, None);
+    }
+
+    /// A line with an icon at its start, and perhaps switched off.
+    pub fn add_icon(&mut self, line: &str, off: bool, icon: Option<fltk::image::SharedImage>) {
+        let mut st = self.st.borrow_mut();
+        st.lines.push(line.to_string());
+        st.off.push(off);
+        st.icons.push(icon);
+        drop(st);
         self.area.redraw();
     }
 
     pub fn clear(&mut self) {
         let mut st = self.st.borrow_mut();
         st.lines.clear();
+        st.off.clear();
+        st.icons.clear();
         (st.sel, st.hover) = (0, 0);
+        st.col = None;
         drop(st);
         self.area.redraw();
     }
@@ -141,7 +215,10 @@ impl Rows {
     /// Drop backing storage when its page is hidden, rather than retaining its high-water capacity.
     pub fn release(&mut self) {
         self.clear();
-        self.st.borrow_mut().lines = Vec::new();
+        let mut st = self.st.borrow_mut();
+        st.lines = Vec::new();
+        st.off = Vec::new();
+        st.icons = Vec::new();
     }
 
     pub fn size(&self) -> i32 {
@@ -222,27 +299,87 @@ impl Rows {
             if ly > y + h {
                 break;
             }
-            let text = if n == st.sel {
+            let (text, back) = if n == st.sel {
                 draw::set_draw_color(Color::Selection);
                 draw::draw_rounded_rectf(x + 4, ly + 1, rw, LINE - 2, 5);
-                Color::contrast(fg, Color::Selection)
+                (Color::contrast(fg, Color::Selection), Color::Selection)
             } else {
                 if n == st.hover {
                     draw::set_draw_color(Color::color_average(fg, f.color(), 0.08));
                     draw::draw_rounded_rectf(x + 4, ly + 1, rw, LINE - 2, 5);
                 }
-                fg
+                (fg, f.color())
             };
+            let off = st.off.get(i).copied().unwrap_or(false);
+            // Off: the text fades into the row, whatever its colour.
+            let text = if off {
+                Color::color_average(text, back, 0.6)
+            } else {
+                text
+            };
+            if off {
+                if let Some(mut ic) = super::icons::icon("power-off", text, 14) {
+                    ic.draw(x + 4 + rw - 22, ly + (LINE - 14) / 2, 14, 14);
+                }
+            }
             draw::set_draw_color(text);
             let base = ly + (LINE + draw::height()) / 2 - draw::descent();
             let mut cx = x + 12;
+            if let Some(mut ic) = st.icons.get(i).cloned().flatten() {
+                ic.draw(cx, ly + (LINE - 16) / 2, 16, 16);
+                cx += 24;
+            }
             let mut cols = l.split('\t').peekable();
             let mut c = 0;
             while let Some(col) = cols.next() {
                 let cw = match (st.widths.get(c), cols.peek()) {
                     (Some(&cw), Some(_)) => cw,
-                    _ => x + 4 + rw - cx,
+                    _ => x + 4 + rw - cx - if off { 24 } else { 0 },
                 };
+                let kind = st.cells.get(c).copied().flatten();
+                if let Some(kind) = kind {
+                    let hovered = n == st.hover;
+                    match kind {
+                        Cell::Lead => {
+                            let (key, label) = col.split_once('|').unwrap_or(("", col));
+                            let mut at = cx;
+                            if let Some(mut i) = super::img::logo(key, 16) {
+                                i.draw(at, ly + (LINE - 16) / 2, 16, 16);
+                                at += 24;
+                            } else if let Some(mut i) = super::icons::icon(key, text, 16) {
+                                i.draw(at, ly + (LINE - 16) / 2, 16, 16);
+                                at += 24;
+                            }
+                            draw::push_clip(at, ly, (cx + cw - 8 - at).max(0), LINE);
+                            draw::draw_text(label, at, base);
+                            draw::pop_clip();
+                        }
+                        Cell::Status => {
+                            let mut p = col.splitn(3, '|');
+                            let (icon, color) = (p.next().unwrap_or(""), tone(p.next().unwrap_or("")));
+                            if let Some(mut i) = super::icons::icon(icon, color, 16) {
+                                i.draw(cx, ly + (LINE - 16) / 2, 16, 16);
+                            }
+                        }
+                        Cell::Link => {
+                            let shown = fit(col, cw - 12);
+                            let ink = if n == st.sel {
+                                text
+                            } else {
+                                Color::color_average(text, back, 0.65)
+                            };
+                            draw::set_draw_color(ink);
+                            draw::draw_text(&shown, cx, base);
+                            if hovered {
+                                let w = draw::width(&shown) as i32;
+                                draw::draw_line(cx, base + 2, cx + w, base + 2);
+                            }
+                            draw::set_draw_color(text);
+                        }
+                    }
+                    (cx, c) = (cx + cw, c + 1);
+                    continue;
+                }
                 match super::img::logo(super::img::platform_name(col), 16).filter(|_| st.logo == Some(c)) {
                     Some(mut i) => i.draw(cx, ly + (LINE - 16) / 2, 16, 16),
                     None if st.pic == Some(c) => {
@@ -269,6 +406,18 @@ impl Rows {
             draw::draw_rounded_rectf(x + w - BAR - 4, ty, BAR, th, BAR / 2);
         }
         draw::pop_clip();
+    }
+
+    /// The column under the mouse (the last one for all that is past the widths).
+    fn column_at(&self, st: &State, f: &Frame) -> usize {
+        let mut x = f.x() + 12;
+        for (i, w) in st.widths.iter().enumerate() {
+            x += w;
+            if app::event_x() < x {
+                return i;
+            }
+        }
+        st.widths.len()
     }
 
     /// The line under the mouse, or 0.
@@ -305,6 +454,23 @@ impl Rows {
                     let line = st.lines.get(usize::try_from(n - 1).ok()?)?;
                     on.then(|| super::img::platform_name(line.split('\t').nth(c).unwrap_or("")).to_string())
                 });
+                let tip = tip.or_else(|| {
+                    let line = st.lines.get(usize::try_from(n - 1).ok()?)?;
+                    let c = self.column_at(&st, f);
+                    let cell = line.split('\t').nth(c)?;
+                    match st.cells.get(c).copied().flatten()? {
+                        Cell::Status => cell.splitn(3, '|').nth(2).map(str::to_string),
+                        Cell::Link => Some(cell.to_string()),
+                        Cell::Lead => None,
+                    }
+                });
+                let off = st.off.get(usize::try_from(n - 1).unwrap_or(usize::MAX)) == Some(&true)
+                    && app::event_x() >= f.x() + f.w() - 36 - if self.thumb(&st).is_some() { BAR + 4 } else { 0 };
+                let tip = if off {
+                    Some(crate::i18n::tr("lists.disabled").to_string())
+                } else {
+                    tip
+                };
                 f.set_tooltip(tip.as_deref().unwrap_or(""));
                 true
             }
@@ -329,6 +495,7 @@ impl Rows {
                     return true;
                 }
                 let n = self.line_at(&st);
+                st.col = (n > 0).then(|| self.column_at(&st, f));
                 if n > 0 {
                     st.sel = n;
                 }
@@ -375,6 +542,7 @@ impl Rows {
                     }
                 }
                 .clamp(1.min(len), len);
+                st.col = None;
                 if n != st.sel {
                     drop(st);
                     self.select(n);
@@ -395,5 +563,14 @@ impl Rows {
         let room = (f.h() - 8 - th).max(1);
         st.top = ((app::event_y() - grab - f.y() - 4) * max / room).clamp(0, max);
         f.redraw();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn link_text_does_not_overflow_a_zero_width_column() {
+        assert_eq!(super::fit("a long address", 0), "");
+        assert_eq!(super::fit("a long address", -1), "");
     }
 }

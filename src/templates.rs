@@ -2,6 +2,11 @@
 //! commands and timers, so they can be edited, exported and imported like any other. Nothing is added
 //! until one is picked. One action per platform where the platforms differ (each sends its own way).
 
+pub mod clock;
+pub mod overlays;
+pub mod songs;
+pub mod subathon;
+
 use crate::edit::{new_action, new_sub, new_trigger};
 use crate::model::{Action, Obj};
 use serde_json::{json, Value};
@@ -12,6 +17,32 @@ pub struct Made {
     pub actions: Vec<Action>,
     pub commands: Vec<Obj>,
     pub timers: Vec<Obj>,
+    /// Groups the template declares (settings, files), by name.
+    pub groups: Vec<(String, crate::groups::Meta)>,
+    /// Icons (PNG or JPEG bytes) of groups, by name.
+    pub icons: Vec<(String, Vec<u8>)>,
+}
+
+impl Made {
+    /// Add everything to the configuration. Settings start at their defaults, and countdowns the
+    /// actions reset start now.
+    pub fn add_to(self, c: &mut crate::Config) -> Result<(), String> {
+        for (group, meta) in self.groups {
+            crate::groups::create(c, &group);
+            crate::groups::set_meta(c, &group, meta)?;
+            // What is set stays; the rest starts at its default.
+            let values = crate::groups::values(c, &group);
+            crate::groups::set_values(c, &group, values)?;
+        }
+        for (group, bytes) in self.icons {
+            c.action_group_icons.insert(group, crate::group_icons::encode(&bytes)?);
+        }
+        clock::start_for(c, &self.actions, clock::now_ms());
+        c.actions.actions.extend(self.actions);
+        c.commands.extend(self.commands);
+        c.timers.extend(self.timers);
+        Ok(())
+    }
 }
 
 pub struct Template {
@@ -21,7 +52,7 @@ pub struct Template {
 }
 
 /// A platform's send-message sub-action, as the bot (falling back to the broadcaster).
-fn say(platform: &str, text: &str) -> Obj {
+pub(super) fn say(platform: &str, text: &str) -> Obj {
     let kind = match platform {
         "twitch" => 10,
         "youtube" => 4001,
@@ -103,6 +134,26 @@ fn command(name: &str, alias: &str, response: &str, cooldown: u64) -> Made {
 }
 
 pub const TEMPLATES: &[Template] = &[
+    Template {
+        name: "Ad break overlay",
+        about: "A badge with the time left while Twitch plays an ad: an overlay page for an OBS browser source.",
+        make: overlays::ad,
+    },
+    Template {
+        name: "Viewer counter overlay",
+        about: "The live viewers of each connected platform and the total, counting up and down: an overlay page for an OBS browser source.",
+        make: overlays::viewers,
+    },
+    Template {
+        name: "Subathon timer",
+        about: "A countdown that grows with Twitch subscriptions and donations, with an overlay. Its times are the group's settings.",
+        make: subathon::made,
+    },
+    Template {
+        name: "Song requests (Spotify)",
+        about: "Viewers request songs for your Spotify queue with !sr, and use !song, !queue, !remove and !skip. Who can request, the limits and the replies are the group's settings. Streamerz only.",
+        make: songs::made,
+    },
     Template {
         name: "Welcome first chatters",
         about: "Greets someone the first time they chat in a stream (Twitch, YouTube, Kick).",
@@ -266,7 +317,7 @@ mod tests {
         for t in TEMPLATES {
             let m = (t.make)();
             assert!(
-                !m.actions.is_empty() || !m.commands.is_empty(),
+                !m.actions.is_empty() || !m.commands.is_empty() || !m.groups.is_empty(),
                 "{} makes nothing",
                 t.name
             );

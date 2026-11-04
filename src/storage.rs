@@ -39,6 +39,7 @@ pub fn migrate_selected(source: &Path, target: &Path) -> io::Result<()> {
             .map(|n| dir.join(format!("migration-backup-{n}")))
             .find(|p| !p.exists())
             .ok_or_else(|| io::Error::other("no backup name available"))?;
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);

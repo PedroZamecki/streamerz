@@ -67,9 +67,15 @@ fn quoted_after(page: &[u8], marker: &[u8]) -> Option<String> {
 /// A channel's banner and picture, read from its public page (the API has no banner for other people's
 /// channels): what youtube.com's own channel card shows. None when it has none, or the page doesn't answer.
 pub async fn public_channel(channel: &str) -> (Option<String>, Option<String>) {
+    let (banner, picture, _) = public_profile(channel).await;
+    (banner, picture)
+}
+
+/// Banner, picture and display name of a channel's public page.
+pub async fn public_profile(channel: &str) -> (Option<String>, Option<String>, Option<String>) {
     let clean = channel.trim();
     if clean.is_empty() {
-        return (None, None);
+        return (None, None, None);
     }
     let path = channel_path(clean);
     // The cookie keeps the consent page out of the way.
@@ -80,16 +86,33 @@ pub async fn public_channel(channel: &str) -> (Option<String>, Option<String>) {
     ];
     let url = format!("https://www.youtube.com{path}");
     let Ok(r) = crate::http::request("GET", &url, &headers, b"").await else {
-        return (None, None);
+        return (None, None, None);
     };
     if r.status != 200 {
-        return (None, None);
+        return (None, None, None);
     }
+    let name = {
+        let m = br#"<meta property="og:title" content=""#;
+        r.body.windows(m.len()).position(|w| w == m).and_then(|at| {
+            let rest = &r.body[at + m.len()..];
+            let end = rest.iter().position(|b| *b == b'"')?;
+            let t = std::str::from_utf8(&rest[..end]).ok()?;
+            Some(
+                t.replace("&amp;", "&")
+                    .replace("&quot;", "\"")
+                    .replace("&#39;", "'")
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">"),
+            )
+            .filter(|t| !t.trim().is_empty())
+        })
+    };
     let avatar = quoted_after(&r.body, br#""avatar":{"thumbnails":[{"url":""#)
         .or_else(|| quoted_after(&r.body, br#""avatar":{"image":{"sources":[{"url":""#));
     (
         quoted_after(&r.body, br#""imageBannerViewModel":{"image":{"sources":[{"url":""#),
         avatar,
+        name,
     )
 }
 
@@ -148,6 +171,7 @@ pub struct YouTubeConfig {
 pub struct YouTubeAccount {
     pub channel_id: String,
     pub name: String,
+    pub handle: String,
     pub token: YouTubeToken,
 }
 
@@ -218,6 +242,14 @@ pub struct YouTubeHandle {
 }
 
 impl YouTubeHandle {
+    /// A connected handle with no runner: whoever holds the receiver answers it (scenarios).
+    pub fn detached() -> (Self, mpsc::UnboundedReceiver<YouTubeCmd>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let connected = Arc::new(AtomicBool::new(true));
+        let standby = Arc::new(AtomicBool::new(false));
+        (YouTubeHandle { tx, connected, standby }, rx)
+    }
+
     pub fn is_connected(&self) -> bool {
         self.connected.load(Ordering::Relaxed)
     }
@@ -685,6 +717,7 @@ pub async fn login(cfg: &Arc<watch::Sender<Config>>) -> Result<YouTubeAccount, S
     Ok(YouTubeAccount {
         channel_id: channel_id.into(),
         name: ch["snippet"]["title"].as_str().unwrap_or(channel_id).into(),
+        handle: ch["snippet"]["customUrl"].as_str().unwrap_or("").into(),
         token: YouTubeToken {
             access_token: t.access,
             refresh_token: t.refresh,
@@ -2178,7 +2211,7 @@ async fn while_live(engine: Rc<Engine>, cfg: Arc<watch::Sender<Config>>, video: 
     loop {
         tick.tick().await;
         n += 1;
-        if crate::ui::chat::viewers_visible() {
+        if engine.viewers_wanted() {
             let headers = [
                 ("User-Agent".to_string(), UA.to_string()),
                 ("Accept-Language".to_string(), "en".to_string()),
@@ -2376,7 +2409,7 @@ mod tests {
     #[test]
     fn pinned_banners_come_and_go() {
         use crate::engine::tests::{engine, run};
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         run(async {
             let e = engine(json!({"actions": []}));
             let msg = json!({"id": "m1", "authorName": {"simpleText": "@Ana"}, "message": {"runs": [{"text": "hi"}]}});
@@ -2407,7 +2440,7 @@ mod tests {
     #[test]
     fn items_fire_with_their_variables() {
         use crate::engine::tests::{action, engine, log, run};
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(money("$5.00"), (5_000_000, "USD".into()));
         assert_eq!(money("R$ 1.234,50"), (1_234_500_000, "BRL".into()));
         assert_eq!(money("¥500"), (500_000_000, "JPY".into()));
@@ -2640,11 +2673,22 @@ mod tests {
             });
             let mut config = Config::default();
             config.youtube.channel_id = "UCxxxxxxxxxxxxxxxxxxxxxx".into();
+            let on = |id: &str, code: u32| {
+                let mut a = crate::engine::tests::action(id, id, json!([]));
+                a["triggers"] = json!([{"id": "t", "type": code, "enabled": true}]);
+                a
+            };
+            config.actions = serde_json::from_value(json!({"actions": [
+                on("started", T_YT_BROADCAST_STARTED)]}))
+            .unwrap();
             let cfg = Arc::new(watch::channel(config).0);
             let engine = Engine::new(cfg.clone(), |_| {});
             let connected = Arc::new(AtomicBool::new(false));
             let live = Rc::new(std::cell::RefCell::new((String::new(), String::new())));
             read_chat(&engine, &cfg, &connected, &live, &format!("http://{addr}"), true).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let ran: Vec<String> = engine.history().iter().map(|r| r.name.clone()).collect();
+            assert_eq!(ran, ["started"], "Broadcast Started fires once the live is found");
             assert!(!engine.first_words("youtube", "ucpoll"));
             assert!(connected.load(Ordering::Relaxed));
             assert_eq!(live.borrow().0, "vid123");

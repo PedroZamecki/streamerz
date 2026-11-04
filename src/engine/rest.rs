@@ -224,7 +224,7 @@ pub(crate) fn prediction_args(p: &Value, args: &mut Obj) {
 
 /// A JSON value as arguments: `prefix.key.sub`, arrays as `prefix.list[0]` (as Streamer.bot puts
 /// OBS Raw and Get Scene Item Properties results).
-fn flatten(prefix: &str, v: &Value, args: &mut Obj) {
+pub(super) fn flatten(prefix: &str, v: &Value, args: &mut Obj) {
     match v {
         Value::Object(o) => {
             for (k, x) in o {
@@ -568,6 +568,43 @@ impl Engine {
                 return;
             }
         }
+    }
+
+    /// Custom Webhook (34001): a POST to the HTTP server's /webhooks/<name>. The trigger may name it.
+    pub fn custom_webhook(self: &Rc<Self>, name: &str, body: &[u8]) {
+        let text = String::from_utf8_lossy(body).into_owned();
+        let mut args = Obj::new();
+        args.insert("webhook.name".into(), name.into());
+        args.insert("webhook.body".into(), text.as_str().into());
+        if let Ok(v) = serde_json::from_str::<Value>(&text) {
+            flatten("data", &v, &mut args);
+        }
+        let n = name.to_string();
+        self.fire(
+            34001,
+            "Custom Webhook",
+            "Servers/Custom Webhooks",
+            "webhook",
+            &args,
+            |t| {
+                let want = s(t, "webhookName");
+                want.is_empty() || want.eq_ignore_ascii_case(&n)
+            },
+        );
+        self.emit("Webhook", "CustomWebhook", || Value::Object(args));
+    }
+
+    /// Clipboard Changed (from the window, `ui/clipboard.rs`).
+    pub fn clipboard_changed(self: &Rc<Self>, args: Obj) {
+        self.fire(42001, "Clipboard Changed", "Core/System", "system", &args, |_| true);
+        self.emit("Misc", "ClipboardChanged", || Value::Object(args));
+    }
+
+    /// Toast Activation: a toast from Toast Notification was clicked.
+    pub fn toast_activated(self: &Rc<Self>, t: &crate::notify::Toast) {
+        let args = t.args();
+        self.fire(708, "Toast Activation", "Core/System", "toast", &args, |_| true);
+        self.emit("Misc", "ToastActivation", || Value::Object(args));
     }
 
     /// Fire a group trigger, with group.* arguments (and group.user#.* for added/removed users).
@@ -3934,7 +3971,16 @@ impl Engine {
                     "instanceOs".into(),
                     (if cfg!(windows) { "windows" } else { "linux" }).into(),
                 );
-                self.fire_remote_trigger(&inst, &event, payload);
+                // To the remote instances (WebSocket clients connected to another instance's server),
+                // where it fires Remote Instance Trigger. Their own instanceId is ours.
+                let req = json!({"request": "ExecuteRemoteTrigger", "id": super::uuid(), "instanceId": cfg.instance_id,
+                    "instanceName": cfg.instance_name, "eventName": event, "args": payload});
+                drop(cfg);
+                if self.remote_send(&inst, &req) == 0 {
+                    crate::warn(format!(
+                        "Send Remote Trigger {event}: no remote instance {inst} is connected"
+                    ));
+                }
             }
 
             // Send Remote Signal (20002)
@@ -3958,7 +4004,14 @@ impl Engine {
                     "instanceOs".into(),
                     (if cfg!(windows) { "windows" } else { "linux" }).into(),
                 );
-                self.deliver_remote_signal(&inst, &sig, payload);
+                let req = json!({"request": "SendRemoteSignal", "id": super::uuid(), "instanceId": cfg.instance_id,
+                    "instanceName": cfg.instance_name, "signalName": sig, "args": payload});
+                drop(cfg);
+                if self.remote_send(&inst, &req) == 0 {
+                    crate::warn(format!(
+                        "Send Remote Signal {sig}: no remote instance {inst} is connected"
+                    ));
+                }
             }
 
             // Wait For Remote Signal (20003)
@@ -4010,6 +4063,27 @@ impl Engine {
                 self.set_voice_command_state(&cmd_id, state);
             }
 
+            // Toast Notification (1024): a click on it fires Toast Activation.
+            1024 => {
+                let attribution = match self.expand(ctx, s(o, "attribution")) {
+                    a if a.is_empty() => "Streamerz".to_string(),
+                    a => a,
+                };
+                let t = crate::notify::Toast {
+                    id: self.expand(ctx, s(o, "toastId")),
+                    title: self.expand(ctx, s(o, "title")),
+                    text: self.expand(ctx, s(o, "text")),
+                    attribution,
+                    icon_path: self.expand(ctx, s(o, "iconPath")),
+                };
+                // Dev mode (and scenarios) shows nothing, as it sends no chat: the log says it.
+                if self.dev() {
+                    crate::say(format!("Toast (dev mode, not shown): {} | {}", t.title, t.text));
+                } else {
+                    let me = self.clone();
+                    crate::notify::toast(t, move |t| me.toast_activated(t));
+                }
+            }
             // Set Voice Control Input (1025)
             1025 => {
                 let dev_id = self.expand(ctx, s(o, "audioDeviceId"));
@@ -4017,191 +4091,26 @@ impl Engine {
                 self.set_voice_input(&dev_id, &dev_name);
             }
 
-            // MIDI Note On (9001)
-            9001 => {
+            // MIDI Out: Note On (9001), Control Change (9002), Generic Event (9003).
+            9001..=9003 => {
                 let device = self.expand(ctx, s(o, "device"));
-                let channel = n(o, "channel") as u8;
-                let note = n(o, "note") as u8;
-                let velocity = n(o, "velocity") as u8;
-                let send_off = b(o, "sendNoteOff", false);
-                let duration = n(o, "duration") as u64;
-                crate::inputs::midi_note_on(&device, channel, note, velocity, send_off, duration);
+                self.midi_out(kind, o, &device);
             }
 
-            // MIDI Control Change (9002)
-            9002 => {
-                let device = self.expand(ctx, s(o, "device"));
-                let channel = n(o, "channel") as u8;
-                let controller = n(o, "controller") as u8;
-                let value = n(o, "value") as u8;
-                crate::inputs::midi_control_change(&device, channel, controller, value);
+            // Elgato Stream Deck (11001-11008): pushed to the connected plugins (`streamdeck.rs`).
+            11001 | 11002 | 11004..=11008 => {
+                let mut x = o.clone();
+                for k in ["buttonId", "title", "image", "color", "value"] {
+                    if let Some(t) = o.get(k).and_then(Value::as_str) {
+                        x.insert(k.into(), self.expand(ctx, t).into());
+                    }
+                }
+                if let Some(m) = crate::streamdeck::push(kind, &x) {
+                    if self.stream_deck_push(&m) == 0 {
+                        crate::debug(format!("Stream Deck: no plugin connected for {}", m["request"]));
+                    }
+                }
             }
-
-            // MIDI Generic Event (9003)
-            9003 => {
-                let device = self.expand(ctx, s(o, "device"));
-                let cmd = self.expand(ctx, s(o, "command"));
-                let channel = n(o, "channel") as u8;
-                let data1 = n(o, "data1") as u8;
-                let data2 = n(o, "data2") as u8;
-                crate::inputs::midi_generic(&device, &cmd, channel, data1, data2);
-            }
-
-            // Elgato Stream Deck Set Title (11001)
-            11001 => {
-                let button_id = self.expand(ctx, s(o, "buttonId"));
-                let title = self.expand(ctx, s(o, "title"));
-                let state = n(o, "state");
-                self.set_stream_deck_title(&button_id, &title, state);
-            }
-
-            // Elgato Stream Deck Set Background (11002)
-            11002 => {
-                let button_id = self.expand(ctx, s(o, "buttonId"));
-                let image = self.expand(ctx, s(o, "image"));
-                let color = self.expand(ctx, s(o, "color"));
-                let state = n(o, "state");
-                self.set_stream_deck_background(&button_id, &image, &color, state);
-            }
-
-            // Elgato Stream Deck Set State (11004)
-            11004 => {
-                let button_id = self.expand(ctx, s(o, "buttonId"));
-                let state = n(o, "state");
-                self.set_stream_deck_state(&button_id, state);
-            }
-
-            // Elgato Stream Deck Show Alert (11005)
-            11005 => {
-                let button_id = self.expand(ctx, s(o, "buttonId"));
-                self.show_stream_deck_alert(&button_id);
-            }
-
-            // Elgato Stream Deck Show Ok (11006)
-            11006 => {
-                let button_id = self.expand(ctx, s(o, "buttonId"));
-                self.show_stream_deck_ok(&button_id);
-            }
-
-            // Elgato Stream Deck Toggle State (11007)
-            11007 => {
-                let button_id = self.expand(ctx, s(o, "buttonId"));
-                self.toggle_stream_deck_state(&button_id);
-            }
-
-            // Elgato Stream Deck Set Value (11008)
-            11008 => {
-                let button_id = self.expand(ctx, s(o, "buttonId"));
-                let value = self.expand(ctx, s(o, "value"));
-                self.set_stream_deck_value(&button_id, &value);
-            }
-
-            // Streamer.bot Deck Set Item State (21001)
-            21001 => {
-                let deck_id = self.expand(ctx, s(o, "deckId"));
-                let deck_name = self.expand(ctx, s(o, "deckName"));
-                let item_id = self.expand(ctx, s(o, "itemId"));
-                let item_name = self.expand(ctx, s(o, "itemName"));
-                let state = n(o, "state");
-                self.set_deck_item_state(&deck_id, &deck_name, &item_id, &item_name, state);
-            }
-
-            // Streamer.bot Deck Toggle Item State (21002)
-            21002 => {
-                let deck_id = self.expand(ctx, s(o, "deckId"));
-                let deck_name = self.expand(ctx, s(o, "deckName"));
-                let item_id = self.expand(ctx, s(o, "itemId"));
-                let item_name = self.expand(ctx, s(o, "itemName"));
-                self.toggle_deck_item_state(&deck_id, &deck_name, &item_id, &item_name);
-            }
-
-            // Streamer.bot Deck Set Item Title (21003)
-            21003 => {
-                let deck_id = self.expand(ctx, s(o, "deckId"));
-                let deck_name = self.expand(ctx, s(o, "deckName"));
-                let item_id = self.expand(ctx, s(o, "itemId"));
-                let item_name = self.expand(ctx, s(o, "itemName"));
-                let color = self.expand(ctx, s(o, "color"));
-                let title = self.expand(ctx, s(o, "title"));
-                let state = n(o, "state");
-                self.set_deck_item_title(&deck_id, &deck_name, &item_id, &item_name, &color, &title, state);
-            }
-
-            // Streamer.bot Deck Set Item Background (21004)
-            21004 => {
-                let deck_id = self.expand(ctx, s(o, "deckId"));
-                let deck_name = self.expand(ctx, s(o, "deckName"));
-                let item_id = self.expand(ctx, s(o, "itemId"));
-                let item_name = self.expand(ctx, s(o, "itemName"));
-                let color = self.expand(ctx, s(o, "color"));
-                let url = self.expand(ctx, s(o, "url"));
-                let file_id = self.expand(ctx, s(o, "fileId"));
-                let state = n(o, "state");
-                self.set_deck_item_background(
-                    &deck_id, &deck_name, &item_id, &item_name, &color, &url, &file_id, state,
-                );
-            }
-
-            // Streamer.bot Deck Set Item Icon (21005)
-            21005 => {
-                let deck_id = self.expand(ctx, s(o, "deckId"));
-                let deck_name = self.expand(ctx, s(o, "deckName"));
-                let item_id = self.expand(ctx, s(o, "itemId"));
-                let item_name = self.expand(ctx, s(o, "itemName"));
-                let color = self.expand(ctx, s(o, "color"));
-                let name = self.expand(ctx, s(o, "name"));
-                let url = self.expand(ctx, s(o, "url"));
-                let file_id = self.expand(ctx, s(o, "fileId"));
-                let state = n(o, "state");
-                self.set_deck_item_icon(
-                    &deck_id, &deck_name, &item_id, &item_name, &color, &name, &url, &file_id, state,
-                );
-            }
-
-            // Streamer.bot Deck Set Item Value (21006)
-            21006 => {
-                let deck_id = self.expand(ctx, s(o, "deckId"));
-                let deck_name = self.expand(ctx, s(o, "deckName"));
-                let item_id = self.expand(ctx, s(o, "itemId"));
-                let item_name = self.expand(ctx, s(o, "itemName"));
-                let value = self.expand(ctx, s(o, "value"));
-                let state = n(o, "state");
-                self.set_deck_item_value(&deck_id, &deck_name, &item_id, &item_name, &value, state);
-            }
-
-            // Streamer.bot Deck Notify (21007)
-            21007 => {
-                let deck_id = self.expand(ctx, s(o, "deckId"));
-                let deck_name = self.expand(ctx, s(o, "deckName"));
-                let title = self.expand(ctx, s(o, "title"));
-                let description = self.expand(ctx, s(o, "description"));
-                let color = self.expand(ctx, s(o, "color"));
-                let sound_id = self.expand(ctx, s(o, "soundId"));
-                self.deck_notify(&deck_id, &deck_name, &title, &description, &color, &sound_id);
-            }
-
-            // Streamer.bot Deck Page Set (21008)
-            21008 => {
-                let deck_id = self.expand(ctx, s(o, "deckId"));
-                let deck_name = self.expand(ctx, s(o, "deckName"));
-                let page = n(o, "page") as i64;
-                self.set_deck_page(&deck_id, &deck_name, page);
-            }
-
-            // Streamer.bot Deck Page Next (21009)
-            21009 => {
-                let deck_id = self.expand(ctx, s(o, "deckId"));
-                let deck_name = self.expand(ctx, s(o, "deckName"));
-                self.next_deck_page(&deck_id, &deck_name);
-            }
-
-            // Streamer.bot Deck Page Previous (21010)
-            21010 => {
-                let deck_id = self.expand(ctx, s(o, "deckId"));
-                let deck_name = self.expand(ctx, s(o, "deckName"));
-                self.prev_deck_page(&deck_id, &deck_name);
-            }
-
             // Write To File (3)
             3 => {
                 let file = self.expand(ctx, s(o, "file"));
@@ -4435,7 +4344,8 @@ impl Engine {
             return crate::error(format!("Run a Program {prog}: didn't finish in {wait} s"));
         };
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-        let lines: Vec<&str> = stdout.split('\n').collect();
+        // Windows programs end lines with \r\n: the \r isn't part of the line.
+        let lines: Vec<&str> = stdout.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
         ctx.args.insert("outputCount".into(), lines.len().into());
         for (i, l) in lines.iter().enumerate() {
             ctx.args.insert(format!("output{i}"), (*l).into());
@@ -4444,7 +4354,7 @@ impl Engine {
             Ok(Value::Object(m)) => ctx.args.extend(m),
             _ => {
                 for l in &lines {
-                    if let Some((k, v)) = l.trim_end_matches('\r').split_once('=') {
+                    if let Some((k, v)) = l.split_once('=') {
                         let k = k.trim();
                         if !k.is_empty() && !k.contains(char::is_whitespace) {
                             ctx.args.insert(k.into(), vars::auto_type(v.trim()));
@@ -4577,7 +4487,7 @@ mod tests {
 
     #[test]
     fn platform_user_groups() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let a = action(
             "a1",
             "groups",
@@ -4617,7 +4527,7 @@ mod tests {
 
     #[test]
     fn file_read_variables() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("szt-files-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("l.txt");
@@ -4667,7 +4577,14 @@ mod tests {
 
     #[test]
     fn commands_timers_groups_programs() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        // The same program on both systems: it reads its input to the end, then prints two lines (ended
+        // with \r\n, as Windows programs do, which the variables don't keep).
+        let run_program = if cfg!(windows) {
+            json!({"type": 6, "command": "cmd", "arguments": "/c \"more >nul & echo first& echo a=1\"", "waitForExit": 5})
+        } else {
+            json!({"type": 6, "command": "sh", "arguments": "-c \"cat >/dev/null; printf 'first\\r\\na=1\\n'\"", "waitForExit": 5})
+        };
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut hello = action(
             "a1",
             "hello",
@@ -4693,7 +4610,7 @@ mod tests {
                 log("T state %commandState%"),
                 {"type": 9, "commandId": "c1", "state": 2},
                 {"type": 10001, "groupId": "g1"},
-                {"type": 6, "command": "sh", "arguments": "-c \"cat >/dev/null; echo first; echo a=1\"", "waitForExit": 5},
+                run_program,
                 log("T run %outputCount% %output0% %a%")
             ]),
         );
@@ -4761,7 +4678,7 @@ mod tests {
 
     #[test]
     fn per_platform_commands_dev_outbox() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut reply = action(
             "a1",
             "reply",
@@ -4800,7 +4717,7 @@ mod tests {
 
     #[test]
     fn templates_run() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let e = engine(json!({"actions": []}));
         e.st.borrow_mut().dev_out = Some(Vec::new());
         e.cfg.send_modify(|c| {

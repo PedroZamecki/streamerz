@@ -126,6 +126,40 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
             });
             "ok".into()
         }
+        "form" => {
+            let Some(kind) = a.and_then(|s| s.parse::<u64>().ok()) else {
+                return "usage: form CODE [trigger]".into();
+            };
+            // `form CODE trigger`: a trigger's form.
+            let trigger = b == Some("trigger");
+            let fields = if trigger {
+                super::forms::trigger_fields(kind)
+            } else {
+                super::forms::sub_fields(kind)
+            };
+            let Some(fields) = fields else {
+                return "no form for that code".into();
+            };
+            app::add_timeout3(0.05, move |_| {
+                let item = if trigger {
+                    crate::edit::new_trigger(kind as u32)
+                } else {
+                    crate::edit::new_sub(kind)
+                };
+                let lists = super::forms::Lists::default();
+                let title =
+                    super::picker::spotify_player_title(kind as u32).unwrap_or(crate::i18n::tr("actions.unknown"));
+                let _ = super::forms::form(title, fields, &item, &lists);
+            });
+            "ok".into()
+        }
+        // The Mouse Click trigger's button picker.
+        "mousebutton" => {
+            app::add_timeout3(0.05, |_| {
+                let _ = super::dialogs::capture_button(2);
+            });
+            "ok".into()
+        }
         // Hides or shows the window, as a click on the tray icon does.
         "toggle" => {
             crate::ui::toggle();

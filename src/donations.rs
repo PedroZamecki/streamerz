@@ -388,12 +388,67 @@ pub fn handle_patreon(engine: &Rc<Engine>, event: &str, data: &Value) {
     }
 }
 
+/// `v` flattened into `args` under `prefix` (`fw.offer.name`, `shopify.line_items[0].title`), as
+/// Streamer.bot passes webhook payloads.
+fn prefixed(args: &mut Obj, prefix: &str, v: &Value) {
+    match v {
+        Value::Object(o) => o.iter().for_each(|(k, x)| prefixed(args, &format!("{prefix}.{k}"), x)),
+        Value::Array(a) => a
+            .iter()
+            .enumerate()
+            .for_each(|(i, x)| prefixed(args, &format!("{prefix}[{i}]"), x)),
+        x => drop(args.insert(prefix.to_string(), x.clone())),
+    }
+}
+
+/// A webhook's payload: its `data` object when it has one, else itself.
+fn payload(data: &Value) -> &Value {
+    data.get("data").filter(|d| d.is_object()).unwrap_or(data)
+}
+
 pub fn handle_fourthwall(engine: &Rc<Engine>, event: &str, data: &Value) {
     let mut args = Obj::new();
     for (k, v) in data.as_object().into_iter().flatten() {
         args.insert(k.clone(), v.clone());
     }
+    // Streamer.bot's fw.* names: the payload's data, with the shop and time from around it.
+    let body = payload(data);
+    prefixed(&mut args, "fw", body);
+    for k in ["shopId", "createdAt"] {
+        if !args.contains_key(&format!("fw.{k}")) {
+            if let Some(v) = data.get(k) {
+                args.insert(format!("fw.{k}"), v.clone());
+            }
+        }
+    }
+    if event.eq_ignore_ascii_case("donation") {
+        args.insert("fw.donationId".into(), body["id"].clone());
+    }
 
+    // Fourthwall sends DONATION, ORDER_PLACED...; older or hand-made ones order:placed, OrderPlaced.
+    let key: String = event
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_lowercase();
+    let event = [
+        "ProductCreated",
+        "ProductUpdated",
+        "GiftPurchase",
+        "OrderPlaced",
+        "OrderUpdated",
+        "Donation",
+        "SubscriptionPurchased",
+        "SubscriptionExpired",
+        "SubscriptionChanged",
+        "ThankYouSent",
+        "NewsletterSubscribed",
+        "GiftDrawStarted",
+        "GiftDrawEnded",
+    ]
+    .into_iter()
+    .find(|c| c.to_lowercase() == key)
+    .unwrap_or(event);
     match event {
         "product:created" | "ProductCreated" => {
             engine.fire(
@@ -547,6 +602,7 @@ pub fn handle_throne(engine: &Rc<Engine>, event: &str, data: &Value) {
     for (k, v) in data.as_object().into_iter().flatten() {
         args.insert(k.clone(), v.clone());
     }
+    prefixed(&mut args, "throne", payload(data));
 
     match event {
         "contribution:purchased" | "ContributionPurchased" => {
@@ -712,6 +768,32 @@ pub fn handle_pallygg(engine: &Rc<Engine>, event: &str, data: &Value) {
     for (k, v) in data.as_object().into_iter().flatten() {
         args.insert(k.clone(), v.clone());
     }
+    // Streamer.bot's names for a tip: the campaign tip and its page.
+    let tip = data
+        .pointer("/payload/campaignTip")
+        .or(data.get("campaignTip"))
+        .cloned()
+        .unwrap_or_default();
+    let page = data
+        .pointer("/payload/page")
+        .or(data.get("page"))
+        .cloned()
+        .unwrap_or_default();
+    if tip.is_object() {
+        let cap = |k: &str| format!("{}{}", k[..1].to_uppercase(), &k[1..]);
+        for (k, v) in tip.as_object().into_iter().flatten() {
+            args.insert(format!("tip{}", cap(k)), v.clone());
+        }
+        args.insert("createdAt".into(), tip["createdAt"].clone());
+        for (k, f) in [
+            ("campaignId", "id"),
+            ("campaignTitle", "title"),
+            ("campaignSlug", "slug"),
+            ("campaignUrl", "url"),
+        ] {
+            args.insert(k.into(), page[f].clone());
+        }
+    }
 
     match event.to_ascii_lowercase().as_str() {
         "connected" => {
@@ -755,6 +837,8 @@ pub fn handle_shopify(engine: &Rc<Engine>, topic: &str, data: &Value) {
     for (k, v) in data.as_object().into_iter().flatten() {
         args.insert(k.clone(), v.clone());
     }
+    prefixed(&mut args, "shopify", data);
+    args.insert("shopify.event".into(), topic.into());
 
     match topic {
         "orders/paid" | "OrderPaid" => {
@@ -1273,7 +1357,7 @@ impl Engine {
     }
 }
 
-fn urlencoding_decode(s: &str) -> String {
+pub(crate) fn urlencoding_decode(s: &str) -> String {
     let mut res = String::new();
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
@@ -1530,7 +1614,7 @@ mod tests {
     #[test]
     fn socket_events_fire_with_their_variables() {
         use crate::engine::tests::{action, engine, log, run};
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let watch: &[(u32, &str, Value)] = &[
             (
                 T_SE_TIP,

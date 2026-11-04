@@ -401,7 +401,27 @@ enum EmbedProbe {
     Transient,
 }
 
-async fn probe_embed(user: &str) -> (EmbedProbe, Option<String>) {
+/// The `"key":"value"` string in a page, JSON escapes decoded.
+fn json_string(page: &str, key: &str) -> Option<String> {
+    let rest = page.split(&format!("\"{key}\":\"")).nth(1)?;
+    let mut end = 0;
+    let mut escaped = false;
+    for (i, c) in rest.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '"' {
+            end = i;
+            break;
+        }
+    }
+    serde_json::from_str::<String>(&format!("\"{}\"", &rest[..end]))
+        .ok()
+        .filter(|n| !n.trim().is_empty())
+}
+
+async fn probe_embed(user: &str) -> (EmbedProbe, Option<String>, Option<String>) {
     let url = format!("https://www.tiktok.com/embed/@{}", crate::commands::url_encode(user));
     let mut saw_not_found = false;
     for attempt in 0..3 {
@@ -416,19 +436,19 @@ async fn probe_embed(user: &str) -> (EmbedProbe, Option<String>) {
                     let avatar = raw.replace("\\u0026", "&").replace("\\/", "/");
                     if avatar.starts_with("https://") {
                         remember_existing_user(user);
-                        return (EmbedProbe::Exists, Some(avatar));
+                        return (EmbedProbe::Exists, Some(avatar), json_string(&page, "nickname"));
                     }
                 }
                 if page.contains("\"uniqueId\":\"") {
                     remember_existing_user(user);
-                    return (EmbedProbe::Exists, None);
+                    return (EmbedProbe::Exists, None, json_string(&page, "nickname"));
                 }
                 if page.contains("Couldn't find this account") || page.contains("user-not-found") {
                     saw_not_found = true;
                     break;
                 }
                 // Likely a bot-check / challenge HTML page rather than a missing user.
-                return (EmbedProbe::Transient, None);
+                return (EmbedProbe::Transient, None, None);
             }
             Ok(r) if r.status == 404 => {
                 saw_not_found = true;
@@ -439,11 +459,11 @@ async fn probe_embed(user: &str) -> (EmbedProbe, Option<String>) {
         }
     }
     if saw_not_found && !has_existed(user) {
-        (EmbedProbe::NotFound, None)
+        (EmbedProbe::NotFound, None, None)
     } else if has_existed(user) {
-        (EmbedProbe::Exists, None)
+        (EmbedProbe::Exists, None, None)
     } else {
-        (EmbedProbe::Transient, None)
+        (EmbedProbe::Transient, None, None)
     }
 }
 
@@ -451,6 +471,12 @@ async fn probe_embed(user: &str) -> (EmbedProbe, Option<String>) {
 /// like `user/room`, and it works when they're not live).
 pub async fn avatar(user: &str) -> Option<String> {
     probe_embed(user).await.1
+}
+
+/// A TikTok user's profile picture and display name, from the same embed page.
+pub async fn profile(user: &str) -> (Option<String>, Option<String>) {
+    let p = probe_embed(user).await;
+    (p.1, p.2)
 }
 
 /// Structured reason why a TikTok channel currently has no active live room.
@@ -567,6 +593,14 @@ pub fn ws_url(room: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_string_decodes_escapes() {
+        let page = r#"{"uniqueId":"x","nickname":"Nan\u00e1 \"uma\"","a":1}"#;
+        assert_eq!(json_string(page, "nickname").as_deref(), Some("Naná \"uma\""));
+        assert_eq!(json_string(page, "missing"), None);
+        assert_eq!(json_string(r#"{"nickname":" "}"#, "nickname"), None);
+    }
 
     fn chat_frame(gzip: bool, ack: bool) -> Vec<u8> {
         let mut badge_img = Vec::new();

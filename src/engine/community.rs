@@ -1139,7 +1139,10 @@ mod tests {
             let q = e.add_quote("hi there", "Ana", "1", "twitch");
             assert_eq!(q["id"], 1);
             e.add_quote("second", "Bo", "2", "kick");
-            let mut ctx = Ctx { args: Obj::new() };
+            let mut ctx = Ctx {
+                args: Obj::new(),
+                group: String::new(),
+            };
             let o = |v: Value| v.as_object().cloned().unwrap();
             e.community_sub(&mut ctx, &o(json!({"quoteType": 1, "quoteId": 2})), 1000);
             assert_eq!((s(&ctx.args, "quote"), s(&ctx.args, "quoteUser")), ("second", "Bo"));

@@ -188,6 +188,13 @@ pub struct KickHandle {
 }
 
 impl KickHandle {
+    /// A connected handle with no runner: whoever holds the receiver answers it (scenarios).
+    pub fn detached() -> (Self, mpsc::UnboundedReceiver<KickCmd>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let connected = Arc::new(AtomicBool::new(true));
+        (KickHandle { tx, connected }, rx)
+    }
+
     pub fn is_connected(&self) -> bool {
         self.connected.load(Ordering::Relaxed)
     }
@@ -1835,7 +1842,7 @@ pub async fn kick_extras(engine: Rc<Engine>, channel: String, user_id: Option<u6
             engine.uses_trigger(T_KICK_VIEWER_COUNT_UPDATE),
             engine.uses_trigger(T_KICK_PRESENT_VIEWERS),
         );
-        if !want.0 && !want.1 && !crate::ui::chat::viewers_visible() {
+        if !want.0 && !want.1 && !engine.viewers_wanted() {
             continue;
         }
         let h = [("Accept".to_string(), "application/json".to_string())];
@@ -1939,7 +1946,7 @@ mod tests {
 
     #[test]
     fn test_mock_pusher_protocol() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::engine::tests::run(mock_pusher_protocol());
     }
 
@@ -2011,6 +2018,20 @@ mod tests {
         config.kick.channel = "kicktester".into();
         config.kick.channel_id = Some(10);
         config.kick.chatroom_id = Some(42);
+        config.kick.broadcaster = Some(KickAccount {
+            user_id: 7,
+            username: "KickTester".into(),
+            token: KickToken::default(),
+        });
+        // Connected, Authenticated and Disconnected fire as the socket opens and closes.
+        let on = |id: &str, code: u32| {
+            let mut a = crate::engine::tests::action(id, id, json!([]));
+            a["triggers"] = json!([{"id": "t", "type": code, "enabled": true}]);
+            a
+        };
+        config.actions = serde_json::from_value(json!({"actions": [
+            on("authed", T_KICK_AUTHENTICATED), on("up", T_KICK_CONNECTED), on("down", T_KICK_DISCONNECTED)]}))
+        .unwrap();
 
         let (tx, _rx) = watch::channel(config);
         let cfg_sender = Arc::new(tx);
@@ -2022,6 +2043,10 @@ mod tests {
 
         assert!(!engine.first_words("kick", "1234"));
         assert!(!connected.load(Ordering::Relaxed));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut ran: Vec<String> = engine.history().iter().map(|r| r.name.clone()).collect();
+        ran.sort();
+        assert_eq!(ran, ["authed", "down", "up"]);
     }
 
     /// A socket that goes quiet (no close, no pong) is dropped and opened again: chat didn't just stop.
@@ -2072,7 +2097,7 @@ mod tests {
     #[test]
     fn events_fire_with_their_variables() {
         use crate::engine::tests::{action, engine, log, run};
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let watch: &[(u32, &str)] = &[
             (
                 T_KICK_CHAT_MESSAGE,
@@ -2284,7 +2309,7 @@ mod tests {
 
     #[test]
     fn a_kick_reward_shows_what_it_cost() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::engine::tests::run(async {
             let engine = crate::engine::tests::engine(json!({"actions": []}));
             known_rewards(&json!({"data": [

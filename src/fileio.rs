@@ -38,13 +38,22 @@ pub const T_FILE_TAIL_CHANGED: u32 = 511;
 pub const T_PROCESS_STARTED: u32 = 703;
 pub const T_PROCESS_STOPPED: u32 = 704;
 
-/// Write or append text to a file.
+/// The line break Append puts before its text: Windows' own there (as Streamer.bot writes it), `\n` here.
+const NEWLINE: &str = if cfg!(windows) { "\r\n" } else { "\n" };
+
+/// Write or append text to a file. Append starts a new line when the file is already there (even
+/// empty), as Streamer.bot does; a file it makes starts with the text.
 pub fn write_to_file(path: &Path, text: &str, append: bool) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             let _ = std::fs::create_dir_all(parent);
         }
     }
+    let text = if append && path.exists() {
+        format!("{NEWLINE}{text}")
+    } else {
+        text.to_string()
+    };
     let mut file = OpenOptions::new()
         .create(true)
         .write(true)
@@ -96,6 +105,22 @@ pub fn folder_exists(path: &Path) -> bool {
 mod tests {
     use super::*;
 
+    /// Checked against Streamer.bot 1.0.7: append to a new file "x", then "y": `x\r\ny`; to an empty
+    /// file: `\r\nz`.
+    #[test]
+    fn append_starts_a_new_line_only_in_a_file_already_there() {
+        let d = std::env::temp_dir().join(format!("streamerz-append-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        let (new, empty) = (d.join("new.txt"), d.join("empty.txt"));
+        write_to_file(&new, "x", true).unwrap();
+        write_to_file(&new, "y", true).unwrap();
+        write_to_file(&empty, "", false).unwrap();
+        write_to_file(&empty, "z", true).unwrap();
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), format!("x{NEWLINE}y"));
+        assert_eq!(std::fs::read_to_string(&empty).unwrap(), format!("{NEWLINE}z"));
+        let _ = std::fs::remove_dir_all(d);
+    }
+
     #[test]
     fn file_write_and_read_lines() {
         let dir = std::env::temp_dir().join(format!("streamerz_fileio_test_{}", std::process::id()));
@@ -105,7 +130,7 @@ mod tests {
         assert!(!file_exists(&file));
         assert!(folder_exists(&dir));
 
-        assert!(write_to_file(&file, "line1\nline2\nline3\n", false).is_ok());
+        assert!(write_to_file(&file, "line1\nline2\nline3", false).is_ok());
         assert!(file_exists(&file));
 
         let lines = read_lines(&file).unwrap();
@@ -121,8 +146,8 @@ mod tests {
         assert!(rand.is_some());
         assert!(lines.contains(&rand.unwrap()));
 
-        // Append
-        assert!(write_to_file(&file, "line4\n", true).is_ok());
+        // Append: on a new line, as Streamer.bot writes it.
+        assert!(write_to_file(&file, "line4", true).is_ok());
         let lines2 = read_lines(&file).unwrap();
         assert_eq!(lines2.len(), 4);
         assert_eq!(lines2[3], "line4");

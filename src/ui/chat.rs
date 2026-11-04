@@ -443,7 +443,7 @@ thread_local! {
     /// How many lines the panes keep, for how long, and how they fade (the config's).
     static LIMITS: Cell<crate::ChatLimits> = const {
         Cell::new(crate::ChatLimits {
-            save_history: true,
+            save_history: false,
             per_platform: 400,
             total: 1000,
             lifetime: 0,
@@ -511,15 +511,7 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
             v.push(It::Svg(s));
             v.push(It::Gap(4));
         }
-        let mut said: String = r.text.chars().take(60).collect();
-        if said.len() < r.text.len() {
-            said.push('…');
-        }
-        v.push(It::Text(
-            format!("Replying to @{}: {said}", r.user),
-            Font::Helvetica,
-            gray,
-        ));
+        reply_preview(r, gray, &mut v);
         v.push(It::Break);
     }
     if pinned(l) {
@@ -594,12 +586,27 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
     v
 }
 
+/// Text on one line: line breaks and other control characters (a "\r" draws as "^M" and a "\n" as
+/// overlapping rows) become spaces.
+fn flat(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.chars().any(char::is_control) {
+        s.chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect::<String>()
+            .into()
+    } else {
+        s.into()
+    }
+}
+
 /// What a line's sender wrote: its words, the emotes as pictures (struck through when deleted).
 fn words(cmds: &Cmds, l: &Line, v: &mut Vec<It>) {
+    let text = flat(&l.text);
     let fg = Color::Foreground;
     let pic = |url: &str| img::get(cmds, url, EMOTE, false);
+    emotes::want_personal(cmds, &l.platform, &l.user_id);
     if l.deleted {
-        for w in l.text.split(' ') {
+        for w in text.split(' ') {
             v.push(It::Space);
             v.push(It::Struck(w.to_string()));
         }
@@ -623,7 +630,7 @@ fn words(cmds: &Cmds, l: &Line, v: &mut Vec<It>) {
     } else {
         None
     };
-    for (i, w) in l.text.split(' ').enumerate() {
+    for (i, w) in text.split(' ').enumerate() {
         v.push(It::Space);
         if last == Some(i) {
             if let Some((_, u)) = l.emotes.iter().find(|e| e.0 == w) {
@@ -644,6 +651,7 @@ fn words(cmds: &Cmds, l: &Line, v: &mut Vec<It>) {
         }
         let known = l.emotes.iter().find(|e| e.0 == w).map(|e| e.1.clone());
         if let Some((p, u)) = known
+            .or_else(|| emotes::personal(&l.platform, &l.user_id, w))
             .or_else(|| emotes::third(&l.platform, w))
             .and_then(|u| pic(&u).map(|p| (p, u)))
         {
@@ -655,6 +663,26 @@ fn words(cmds: &Cmds, l: &Line, v: &mut Vec<It>) {
                 Some((p, u)) => v.push(It::Pic(p, Some(emote_tip(&l.platform, part, &u)))),
                 None => v.push(It::Text(part.to_string(), font, fg)),
             }
+        }
+    }
+}
+
+/// Add a reply preview as separate words so it can wrap beside its icon.
+fn reply_preview(r: &crate::engine::chatlog::Reply, gray: Color, v: &mut Vec<It>) {
+    let reply = flat(&r.text);
+    let mut said: String = reply.chars().take(60).collect();
+    if said.len() < reply.len() {
+        said.push('…');
+    }
+    let preview = trf("chat.replying_to", &[("user", &r.user), ("said", &said)]);
+    for (i, word) in preview.split_whitespace().enumerate() {
+        if i > 0 {
+            v.push(It::Space);
+        }
+        if mentions_me(word) {
+            v.push(It::Mention(word.to_string()));
+        } else {
+            v.push(It::Text(word.to_string(), Font::Helvetica, gray));
         }
     }
 }
@@ -878,6 +906,8 @@ struct State {
     /// Scrolled to (px from the top); following the newest lines when at the bottom.
     top: i32,
     follow: bool,
+    /// Lines that came while scrolled up (the pill at the bottom counts them).
+    unread: usize,
     /// An animation frame is due.
     ticking: bool,
     /// Where the emotes that move are drawn (in the pane), so a frame redraws only those.
@@ -916,7 +946,7 @@ const CHOICE_H: i32 = 26;
 
 /// The same bounds are used to draw cards and shield the chat beneath them.
 fn card_contains(x: i32, y: i32, width: i32, top: i32, height: i32, px: i32, py: i32) -> bool {
-    (x + CARD_GAP..x + width - CARD_GAP).contains(&px) && (y + top..y + top + height).contains(&py)
+    (x + CARD_GAP..x + width - 2).contains(&px) && (y + top..y + top + height).contains(&py)
 }
 
 impl Card<'_> {
@@ -1015,11 +1045,18 @@ pub(super) struct Pane {
     cmds: Cmds,
     pub(super) on_reply: OnReply,
     disconnected: Rc<Cell<bool>>,
+    /// The "disconnected" is because no chat is connected at all (so the text says that).
+    nothing: Rc<Cell<bool>>,
 }
 
 impl Pane {
     fn set_disconnected(&self, disconnected: bool) {
         if self.disconnected.replace(disconnected) != disconnected {
+            self.area.clone().redraw();
+        }
+    }
+    fn set_nothing(&self, nothing: bool) {
+        if self.nothing.replace(nothing) != nothing {
             self.area.clone().redraw();
         }
     }
@@ -1059,6 +1096,7 @@ impl Pane {
                 tag: false,
                 top: 0,
                 follow: true,
+                unread: 0,
                 ticking: false,
                 moving: Vec::new(),
                 born: VecDeque::new(),
@@ -1074,6 +1112,7 @@ impl Pane {
             cmds: cmds.clone(),
             on_reply: Rc::default(),
             disconnected: Rc::default(),
+            nothing: Rc::default(),
         };
         area.draw({
             let p = p.clone();
@@ -1155,6 +1194,7 @@ impl Pane {
         let max = (total - h).max(0);
         if st.follow {
             st.top = max;
+            st.unread = 0;
         }
         st.top = st.top.clamp(0, max);
         bar.set_bounds(0.0, f64::from(max));
@@ -1173,7 +1213,11 @@ impl Pane {
             draw::set_font(Font::HelveticaBold, 13);
             draw::set_draw_color(super::muted());
             draw::draw_text2(
-                tr("chat.disconnected"),
+                if self.nothing.get() {
+                    tr("chat.no_connection")
+                } else {
+                    tr("chat.disconnected")
+                },
                 f.x() + 4,
                 f.y(),
                 (f.w() - 8).max(1),
@@ -1333,6 +1377,19 @@ impl Pane {
             }
         }
         let counting = self.draw_cards(f, &st);
+        if let Some((x, y, w, h)) = self.pill(f, &st) {
+            let (fg, bg) = (Color::Foreground, Color::Background);
+            draw::set_draw_color(Color::color_average(fg, bg, 0.12));
+            draw::draw_rounded_rectf(x, y, w, h, h / 2);
+            draw::set_draw_color(Color::color_average(fg, bg, 0.3));
+            draw::draw_rounded_rect(x, y, w, h, h / 2);
+            if let Some(mut i) = icons::icon("chevron-down", fg, 14) {
+                i.draw(x + 10, y + (h - 14) / 2, 14, 14);
+            }
+            draw::set_font(Font::HelveticaBold, 12);
+            draw::set_draw_color(fg);
+            draw::draw_text2(&self.pill_text(&st), x + 28, y, w - 36, h, Align::Left | Align::Inside);
+        }
         draw::pop_clip();
         // A pin's countdown: a redraw a second, only while one with an end is shown.
         if counting && !st.pin_tick {
@@ -1368,6 +1425,24 @@ impl Pane {
         }
     }
 
+    fn pill_text(&self, st: &State) -> String {
+        match st.unread {
+            1 => tr("chat.new_message").to_string(),
+            n => trf("chat.new_messages", &[("n", &n.to_string())]),
+        }
+    }
+
+    /// The "new messages" pill (x, y, w, h), when scrolled up and lines came.
+    fn pill(&self, f: &Frame, st: &State) -> Option<(i32, i32, i32, i32)> {
+        if st.follow || st.unread == 0 {
+            return None;
+        }
+        draw::set_font(Font::HelveticaBold, 12);
+        let w = (draw::width(&self.pill_text(st)) as i32 + 44).min(f.w() - 16);
+        let h = 28;
+        Some((f.x() + (f.w() - w) / 2, f.y() + f.h() - h - 8, w, h))
+    }
+
     /// The cards over the top of the chat. Whether one counts down (a redraw a second).
     fn draw_cards(&self, f: &Frame, st: &State) -> bool {
         let (fg, bg) = (Color::Foreground, Color::Background);
@@ -1378,7 +1453,7 @@ impl Pane {
             let (x, y, w, h) = (
                 f.x() + CARD_GAP,
                 f.y() + top,
-                (f.w() - 2 * CARD_GAP).max(0),
+                (f.w() - CARD_GAP - 2).max(0),
                 card.height(),
             );
             let platform = match &card {
@@ -1749,7 +1824,15 @@ impl Pane {
                     }
                 }
                 let act = self.act_at(f);
-                f.set_tooltip(act.as_ref().map_or("", |a| a.1 .2));
+                // A deleted message the moderator can still read: its words show on hover.
+                let old = {
+                    let st = self.st.borrow();
+                    st.hover
+                        .and_then(|i| st.lines.get(i))
+                        .filter(|l| l.deleted && l.text != "message deleted")
+                        .map(|l| flat(&l.text).to_string())
+                };
+                f.set_tooltip(act.as_ref().map_or(old.as_deref().unwrap_or(""), |a| a.1 .2));
                 let over = if act.is_some() { None } else { self.tip_at(f) };
                 tip::point(&self.cmds, f, over);
                 let hand = act.is_some() || self.name_at(f).is_some();
@@ -1772,6 +1855,14 @@ impl Pane {
                 if let Some(mut w) = f.window() {
                     w.set_cursor(fltk::enums::Cursor::Default);
                 }
+                true
+            }
+            Event::Push if super::left_button() && self.on_pill(f) => {
+                let mut st = self.st.borrow_mut();
+                st.follow = true;
+                self.settle(&mut st);
+                drop(st);
+                f.redraw();
                 true
             }
             // The menu is also available by right-clicking the card.
@@ -1890,6 +1981,14 @@ impl Pane {
         }
     }
 
+    fn on_pill(&self, f: &Frame) -> bool {
+        let st = self.st.borrow();
+        self.pill(f, &st).is_some_and(|(x, y, w, h)| {
+            let (mx, my) = (app::event_x(), app::event_y());
+            mx >= x && mx < x + w && my >= y && my < y + h
+        })
+    }
+
     /// Names don't open user cards (the pane is in one).
     pub(super) fn no_cards(&self) {
         self.st.borrow_mut().cards = false;
@@ -1912,6 +2011,9 @@ impl Pane {
     pub(super) fn add(&self, l: &Line) {
         let mut st = self.st.borrow_mut();
         st.lines.push_back(l.clone());
+        if !st.follow {
+            st.unread += 1;
+        }
         let born = if st.ages { epoch_ms() } else { 0 };
         st.born.push_back(born);
         if st.width > 0 && st.laid.len() + 1 == st.lines.len() {
@@ -1957,6 +2059,7 @@ impl Pane {
         st.hover = None;
         st.top = 0;
         st.follow = true;
+        st.unread = 0;
         drop(st);
         self.area.clone().redraw();
     }
@@ -3034,8 +3137,11 @@ impl Chat {
             Some(i) => vec![i],
             None => self.plats.borrow().clone(),
         };
+        let none = self.shown().is_none() && shown.is_empty();
+        self.main.pane.set_nothing(none);
         self.main.pane.set_disconnected(
-            self.shown()
+            none || self
+                .shown()
                 .and_then(|p| PLATFORMS.iter().position(|x| *x == p))
                 .is_some_and(|i| state(i) == ChatState::Down),
         );
@@ -3412,7 +3518,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
             fltk::enums::Shortcut::None,
             flag,
             move |m| {
-                let on = m.at(3 + i as i32).is_some_and(|x| x.value());
+                let on = m.at(4 + i as i32).is_some_and(|x| x.value());
                 cfg.send_modify(|c| {
                     let h = &mut c.window.chat_hidden;
                     h.retain(|x| x != PLATFORMS[i]);
@@ -4417,6 +4523,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn control_characters_never_reach_the_chat() {
+        assert_eq!(flat("a\r\nb\rc\td"), "a  b c d");
+        assert_eq!(flat("plain"), "plain");
+    }
+
+    #[test]
     fn viewer_counts_are_compact_without_rounding_up() {
         assert_eq!(compact_viewers(999), "999");
         assert_eq!(compact_viewers(1_234), "1.2k");
@@ -4444,10 +4556,26 @@ mod tests {
     }
 
     #[test]
+    fn reply_preview_wraps_by_word_and_marks_our_name() {
+        ME.set(vec!["target".into()]);
+        let reply = crate::engine::chatlog::Reply {
+            user: "Target".into(),
+            text: "a long message that needs to wrap beside the reply icon".into(),
+        };
+        let mut items = Vec::new();
+        reply_preview(&reply, Color::Foreground, &mut items);
+        assert!(items.iter().any(|it| matches!(it, It::Mention(t) if t == "@Target:")));
+        assert!(items.iter().any(|it| matches!(it, It::Space)));
+        assert!(items.iter().filter(|it| matches!(it, It::Text(..))).count() > 2);
+        ME.set(Vec::new());
+    }
+
+    #[test]
     fn card_hit_test_matches_its_visible_edges() {
         assert!(card_contains(10, 20, 300, 8, 70, 18, 28));
         assert!(card_contains(10, 20, 300, 8, 70, 301, 97));
-        assert!(!card_contains(10, 20, 300, 8, 70, 302, 97));
+        assert!(card_contains(10, 20, 300, 8, 70, 307, 97));
+        assert!(!card_contains(10, 20, 300, 8, 70, 308, 97));
         assert!(!card_contains(10, 20, 300, 8, 70, 18, 98));
     }
 

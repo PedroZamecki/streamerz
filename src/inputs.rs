@@ -26,30 +26,6 @@ pub const S_MIDI_NOTE_ON: u32 = 9001;
 pub const S_MIDI_CONTROL_CHANGE: u32 = 9002;
 pub const S_MIDI_GENERIC: u32 = 9003;
 
-const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-
-/// Convert a MIDI note number (0..=127) to standard note name with octave (e.g. 60 -> "C4").
-pub fn note_name(note: u8) -> String {
-    let name = NOTE_NAMES[(note % 12) as usize];
-    let octave = (note as i32 / 12) - 1;
-    format!("{name}{octave}")
-}
-
-/// Convert a MIDI status byte to standard event type name.
-pub fn midi_type_name(status: u8) -> &'static str {
-    match status & 0xF0 {
-        0x80 => "NoteOff",
-        0x90 => "NoteOn",
-        0xA0 => "PolyPressure",
-        0xB0 => "ControlChange",
-        0xC0 => "ProgramChange",
-        0xD0 => "ChannelPressure",
-        0xE0 => "PitchBend",
-        0xF0 => "SysEx",
-        _ => "Unknown",
-    }
-}
-
 /// Format modifier flags (1 = Alt, 2 = Control, 4 = Shift, 8 = Windows) into a human string.
 pub fn format_modifiers(modifiers: u32) -> String {
     let mut parts = Vec::new();
@@ -128,68 +104,9 @@ pub fn simulate_keyboard_press(key: &str, modifiers: u32) -> Result<(), String> 
     }
 }
 
-/// Dispatch MIDI Note On message.
-pub fn midi_note_on(device: &str, channel: u8, note: u8, velocity: u8, send_note_off: bool, duration: u64) {
-    let name = note_name(note);
-    crate::debug(format!(
-        "MIDI Out [{}]: Note On ch={} note={}({}) vel={}{}",
-        if device.is_empty() { "default" } else { device },
-        channel,
-        note,
-        name,
-        velocity,
-        if send_note_off {
-            format!(" (off after {duration}ms)")
-        } else {
-            String::new()
-        }
-    ));
-}
-
-/// Dispatch MIDI Control Change message.
-pub fn midi_control_change(device: &str, channel: u8, controller: u8, value: u8) {
-    crate::debug(format!(
-        "MIDI Out [{}]: CC ch={} cc={} val={}",
-        if device.is_empty() { "default" } else { device },
-        channel,
-        controller,
-        value
-    ));
-}
-
-/// Dispatch generic MIDI message.
-pub fn midi_generic(device: &str, command: &str, channel: u8, data1: u8, data2: u8) {
-    crate::debug(format!(
-        "MIDI Out [{}]: Generic cmd={} ch={} d1={} d2={}",
-        if device.is_empty() { "default" } else { device },
-        command,
-        channel,
-        data1,
-        data2
-    ));
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn midi_note_conversion() {
-        assert_eq!(note_name(60), "C4"); // Middle C
-        assert_eq!(note_name(69), "A4"); // A440
-        assert_eq!(note_name(0), "C-1");
-        assert_eq!(note_name(127), "G9");
-    }
-
-    #[test]
-    fn midi_types() {
-        assert_eq!(midi_type_name(0x90), "NoteOn");
-        assert_eq!(midi_type_name(0x93), "NoteOn");
-        assert_eq!(midi_type_name(0x80), "NoteOff");
-        assert_eq!(midi_type_name(0xB0), "ControlChange");
-        assert_eq!(midi_type_name(0xE0), "PitchBend");
-        assert_eq!(midi_type_name(0xF0), "SysEx");
-    }
 
     #[test]
     fn modifier_formatting() {
