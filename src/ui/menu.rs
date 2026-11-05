@@ -314,8 +314,11 @@ fn draw_rows(f: &Frame, items: &[Row], st: &State) {
     } else {
         0
     };
-    // Inside the rounded border: the rows never paint over it.
+    // Inside the rounded border: the rows never paint over it. A hover repaints only this frame, so it
+    // clears the old highlight itself (the panel under it is painted only when the popover opens).
     draw::push_clip(x + 1, y + 2, w - 2, h - 4);
+    draw::set_draw_color(back);
+    draw::draw_rounded_rectf(x + 1, y + 1, w - 2, h - 2, RADIUS - 1);
     draw::set_font(Font::Helvetica, FONT);
     for r in items {
         let ry = y + r.y - st.top;

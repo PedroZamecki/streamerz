@@ -31,12 +31,22 @@ raw FLTK widget for something a block covers.
 | A right-click or any popup menu | `menu::Menu` (`context_menu()` for a list's buttons, `pick`, `tick_menu`) | `MenuButton::popup`, `menu_at_pointer` |
 | A dropdown | `fit::choice()`; `menu::dropdown` on a MenuButton; `menu::input_choice` on an InputChoice | FLTK's own pulldown |
 | Something floating over the window | `popover::Popover` (rounded, closed by Escape or a click outside) | a borderless window |
+| A dialog | `dialogs::window` (or `window_tone`), then `dialogs::run`, or `open`/`close` for a live one | a window of its own, `make_modal` |
+| A message or a question | `dialogs::message`, `success`, `alert` (warning), `error`, `choice`, `danger` (can't be undone), `pick_one` | `fltk::dialog::alert_default` and the like |
+| A short form in a dialog | `fields::field` (icon and hint, no label column), `fields::Growing` (grows as it's filled), `fields::chip` (a platform to pick) | a column of labels and empty fields |
 | A row of buttons | `grid()` | buttons placed by hand |
 | A list | `Rows` with `header()` | `Browser` |
 | A connection's state | `Health::show` | a coloured label |
 
 Scrolling: the wheel scrolls what is under the pointer when it can scroll (a list, a text view), else the
 page. A list that has nothing to scroll passes the wheel on. A page never has blank room to scroll into.
+
+Dialogs: always inside the app's window, in its middle, over the window blurred and dimmed, never a
+window of their own (those land anywhere on Wayland and tiling desktops, and could be opened twice). Only one
+can be in front: nothing behind it takes clicks, the wheel or keys until it closes. A title row with a
+close button (X, and Escape, cancel), a rounded panel with a soft shadow, and its contents. A tone colours
+the border and the icon: plain, info, question, success, warning, error. A dialog grows or shrinks with its
+contents (`Dialog::resizer`). Only when the window is hidden in the tray does a dialog get a window of its own.
 
 Menus: a rounded panel with a quiet border, roomy rows, a Lucide icon per item when any has one (a tick for
 toggles and a dropdown's current choice), dividing lines between groups, greyed items that can't be picked.
@@ -106,9 +116,12 @@ buttons visible and let each tab scroll when needed. When a value accepts expres
 values in an editable choice so selecting a value is easy and expressions remain available. Preserve an
 unchanged value and its stored type.
 
-Keep a page for what is happening and what can be done to it; put a long form (starting a poll, a
-prediction) in a dialog its button opens, with a short note on top and the action's own name on its main
-button (Start poll, not OK).
+Keep a page for what is happening and what can be done to it; put a form (starting a poll, a
+prediction) in a dialog its button opens, with the action's own name on its main button (Start poll, not
+OK). Ask the least: one field per thing asked, its icon and hint saying what goes in it, and more fields
+only as they're needed (a list of answers shows two, then one more as the last is filled). Show choices
+with their logos or icons (a platform is a chip with its logo), and grey out with a reason what can't be
+picked now.
 
 Prefer forms and tables for ordinary editing. When raw data is useful, provide JSON one button away with
 the existing editor. Ask for confirmation before an irreversible destructive action, with text that names
@@ -138,12 +151,23 @@ Active chat restrictions appear above the composer. Name the platform when more 
 and include the slow mode interval when it is known. Hide the indicator when the mode is off or its chat
 is disconnected.
 
+## Set it up for the user
+
+Streamerz configures everything it can itself, so setting something up takes the fewest clicks: it finds
+what's installed (browsers, apps), reads what's already set up, fills in what it knows, and moves on by
+itself when a step is done. When the setting lives in another program (a browser's extensions, another
+app's settings), it asks first: one button that says what it will do, and a note explaining all of it
+(what it writes, where, what it opens). The steps only the user can take there are shown in order, and
+each is ticked off as it happens. Never change another program's files or settings behind the user's back.
+
 ## Browser accounts
 
 When an integration uses a browser extension as its account, show one Browser account row with the
 shared Health state and Set up action. Do not also show independent account or bot logins. Distinguish
 extension unavailable, page loading, login required and account ready. Disable sending while the account
-is unavailable. Setup explains installation and offers Log in for the one explicit sign-in window;
+is unavailable. Setup lists the Chromium browsers found (and whether the extension is in them), and Set up on one writes
+the extension, copies its folder and opens that browser's extensions page; the steps then tick themselves
+off, and Log in opens once the extension connects. It offers Log in for the one explicit sign-in window;
 ordinary requests must not open helper tabs or windows. A channel picker shows search failures plainly
 and still accepts a pasted handle or link.
 

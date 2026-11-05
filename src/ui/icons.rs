@@ -8,6 +8,14 @@ use std::collections::HashMap;
 
 const ICONS: &[(&str, &str)] = &[
     (
+        "circle-x",
+        r#"<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>"#,
+    ),
+    (
+        "message-circle-question",
+        r#"<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>"#,
+    ),
+    (
         "circle-pause",
         r#"<circle cx="12" cy="12" r="10"/><path d="M10 15V9"/><path d="M14 15V9"/>"#,
     ),

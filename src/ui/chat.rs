@@ -27,7 +27,6 @@ use fltk::input::Input;
 use fltk::menu::Choice;
 use fltk::prelude::*;
 use fltk::valuator::Slider;
-use fltk::window::DoubleWindow;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
@@ -1737,7 +1736,7 @@ impl Pane {
             }
             Act::Mod(Moderate::Ban) => {
                 let q = trf("chat.ban_confirm", &[("user", &l.user), ("platform", &l.platform)]).replace('@', "@@");
-                if super::dialogs::choice(&q, tr("dialogs.cancel"), tr("btn.ban")) {
+                if super::dialogs::danger(&q, tr("dialogs.cancel"), tr("btn.ban")) {
                     let l = l.clone();
                     tell(&self.cmds, move |e| e.moderate(&l, Moderate::Ban));
                 }
@@ -3771,6 +3770,16 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
             },
         );
     }
+    // How much the chat keeps and how lines come and go: in a dialog, last.
+    opts.add(
+        tr("chat.opt_settings"),
+        fltk::enums::Shortcut::None,
+        fltk::menu::MenuFlag::Normal,
+        {
+            let (cfg, cmds) = (cfg.clone(), cmds.clone());
+            move |_| super::settings::chat_dialog(&cfg, &cmds)
+        },
+    );
     clear.set_callback({
         let me = me.clone();
         move |_| {
@@ -3791,13 +3800,9 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
 fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accounts: Rc<dyn Fn()>) {
     let browser = PLATFORMS[col_ui.target_plat.get().min(3)] == "tiktok";
     let h = if browser { 180 } else { 236 } + i32::from(crate::secrets::is_locked()) * 34;
-    let mut win = DoubleWindow::default()
-        .with_size(430, h)
-        .with_label(tr("chat.acct_win_title"));
-    win.set_xclass("streamerz");
-    win.make_modal(true);
+    let (mut win, _) = super::dialogs::window(430, h - 10, tr("chat.acct_win_title"));
 
-    let mut root = Flex::new(10, 10, 410, h - 20, None).column();
+    let mut root = Flex::new(10, 0, 410, h - 20, None).column();
     root.set_pad(8);
 
     if crate::secrets::is_locked() {
@@ -4049,15 +4054,14 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
     });
 
     populate();
-    win.show();
+    win.open();
     while win.shown() && !done.get() {
         super::nested_wait(None);
         if win.shown() && !done.get() {
             populate();
         }
     }
-    win.hide();
-    app::delete_widget(win);
+    win.close();
 }
 
 /// Popup opened by the discrete `"Message all"` button in the top bar:
@@ -4080,12 +4084,8 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
     set_up[3] &= query(cmds, |e| e.tiktok_bridge.ready() && !e.tiktok_bridge.user().is_empty()).unwrap_or(false);
     let conn_states: [bool; 4] = std::array::from_fn(|i| conn_states[i] && set_up[i]);
 
-    let mut win = DoubleWindow::default()
-        .with_size(580, 210)
-        .with_label(tr("chat.msg_all_title"));
-    win.set_xclass("streamerz");
-    win.make_modal(true);
-    let mut col = Flex::new(12, 12, 556, 186, None).column();
+    let (mut win, _) = super::dialogs::window(580, 190, tr("chat.msg_all_title"));
+    let mut col = Flex::new(12, 0, 556, 186, None).column();
     col.set_pad(8);
 
     let mut title = Frame::default()
@@ -4281,13 +4281,12 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
         move |_| done.set(true)
     });
 
-    win.show();
+    win.open();
     let _ = input.take_focus();
     while win.shown() && !done.get() {
         super::nested_wait(Some(0.1));
     }
-    win.hide();
-    app::delete_widget(win);
+    win.close();
 }
 
 fn provider_icon(prov: Provider, platform: &str, size: i32) -> Option<SvgImage> {
@@ -4619,37 +4618,22 @@ fn emote_picker_popup(
 
     let providers = emotes::providers_for(platform);
     let default_tab = providers.iter().position(|&p| p == Provider::Platform).unwrap_or(0);
-    // A popover over the chat, above its box. Where the box is in a small dialog (no room) it gets a
-    // window of its own, as before.
-    let Some(parent) = target_input.top_window() else {
+    // A popover over the app's window, above the box (or below it when there's no room above). The box
+    // may be in a dialog: its place is counted from the app's window.
+    let Some(host) = target_input.top_window() else {
         return;
     };
-    let own = parent.h() < 520;
-    let mut own_win = own.then(|| {
-        let mut w = DoubleWindow::default().with_size(380, 480).with_label("Streamerz");
-        w.set_xclass("streamerz");
-        w.make_modal(true);
-        w
-    });
-    let host: Box<dyn WindowExt> = match &own_win {
-        Some(w) => Box::new(w.clone()),
-        None => parent,
-    };
-    let (x, y) = if own {
-        (0, 0)
-    } else {
-        // Above the box, or below it when there's no room above.
-        let above = target_input.y() - 460.min(host.h() - 16) - 8;
-        (
-            target_input.x(),
-            if above >= 8 {
-                above
-            } else {
-                target_input.y() + target_input.h() + 8
-            },
-        )
-    };
-    let mut pop = super::popover::Popover::start(host, x, y, 380, if own { 480 } else { 460 });
+    let (mut ox, mut oy) = (0, 0);
+    let mut w = target_input.window();
+    while let Some(win) = w.filter(|w| w.parent().is_some()) {
+        ox += win.x();
+        oy += win.y();
+        w = win.window();
+    }
+    let (tx, ty) = (target_input.x() + ox, target_input.y() + oy);
+    let above = ty - 460.min(host.h() - 16) - 8;
+    let (x, y) = (tx, if above >= 8 { above } else { ty + target_input.h() + 8 });
+    let mut pop = super::popover::Popover::start(host, x, y, 380, 460);
     let (pw, ph) = pop.size();
     let done = pop.done.clone();
     let mut col = Flex::new(0, 0, pw, ph, None).column();
@@ -4787,16 +4771,13 @@ fn emote_picker_popup(
         move |_| fill(false)
     });
     style_tabs(default_tab);
-    if let Some(w) = &mut own_win {
-        w.show();
-    }
     fill(false);
     let _ = search.take_focus();
 
     let mut pics = img::ARRIVED.load(std::sync::atomic::Ordering::Relaxed);
     let mut seen_rev = emotes::REV.load(std::sync::atomic::Ordering::Relaxed);
     let mut picked = false;
-    while !done.get() && own_win.as_ref().is_none_or(|w| w.shown()) {
+    while !done.get() {
         super::nested_wait(Some(0.25));
         let asked: Vec<super::grid::Asked> = grid.asked.borrow_mut().drain(..).collect();
         let mut refill = false;
@@ -4841,10 +4822,6 @@ fn emote_picker_popup(
         }
     }
     pop.close();
-    if let Some(mut w) = own_win {
-        w.hide();
-        app::delete_widget(w);
-    }
     if picked {
         let _ = target_input.take_focus();
     }

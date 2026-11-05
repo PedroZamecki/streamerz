@@ -3,16 +3,16 @@
 //! page and the actions behave alike. Kick and TikTok have no API for either.
 
 use super::dialogs;
+use super::fit::Ellipsis;
 use super::lists::{bar, browser, line, Cmds};
 use super::rows::Rows;
 use super::{tell, ROW};
 use crate::i18n::{tr, trf};
 use crate::model::Obj;
-use fltk::button::{Button, CheckButton};
+use fltk::button::Button;
 use fltk::enums::{Align, Color, Font, Key, Shortcut};
 use fltk::frame::Frame;
 use fltk::group::{Flex, Wizard};
-use fltk::input::Input;
 use fltk::menu::Choice;
 use fltk::prelude::*;
 use serde_json::{json, Value};
@@ -36,6 +36,9 @@ struct Seen {
     /// Something asked last didn't go through (the note says what).
     trouble: bool,
     ready: [bool; 2],
+    /// Logged in to Twitch but reading someone else's channel: the account and the channel. Polls and
+    /// predictions need the owner's login, so Twitch isn't ready.
+    guest: Option<(String, String)>,
     prediction_known: bool,
     requested: u64,
     received: u64,
@@ -195,23 +198,31 @@ impl Polls {
             } else {
                 button.deactivate();
             }
-            button.set_tooltip(if !seen.ready[0] {
-                tr("polls.twitch_unavailable")
+            button.set_tooltip(&if !seen.ready[0] {
+                twitch_why(seen)
             } else if !seen.prediction_known {
-                tr("polls.refresh_prediction")
+                tr("polls.refresh_prediction").to_string()
             } else {
-                ""
+                String::new()
             });
         }
-        self.prediction_buttons[0].set_tooltip(if !seen.ready[0] {
-            tr("polls.twitch_unavailable")
+        self.prediction_buttons[0].set_tooltip(&if !seen.ready[0] {
+            twitch_why(seen)
         } else if !seen.prediction_known {
-            tr("polls.refresh_prediction")
+            tr("polls.refresh_prediction").to_string()
         } else if !prediction_actions[0] {
-            tr("polls.prediction_exists")
+            tr("polls.prediction_exists").to_string()
         } else {
-            ""
+            String::new()
         });
+    }
+}
+
+/// Why Twitch can't run polls and predictions now.
+fn twitch_why(seen: &Seen) -> String {
+    match &seen.guest {
+        Some((_, channel)) => trf("polls.guest_short", &[("channel", channel)]),
+        None => tr("polls.twitch_unavailable").to_string(),
     }
 }
 
@@ -229,6 +240,15 @@ fn note(seen: &Seen) -> (super::Health, String) {
         (Health::Busy, tr("polls.checking").into())
     } else if !seen.note.is_empty() {
         (if seen.trouble { Health::Down } else { Health::Up }, seen.note.clone())
+    } else if let Some((account, channel)) = &seen.guest {
+        let guest = trf("polls.guest", &[("account", account), ("channel", channel)]);
+        match ready.is_empty() {
+            true => (Health::Off, guest),
+            false => (
+                Health::Up,
+                format!("{} {guest}", trf("polls.ready_on", &[("where", &ready.join(", "))])),
+            ),
+        }
     } else if ready.is_empty() {
         (Health::Off, tr("polls.accounts_needed").into())
     } else {
@@ -315,10 +335,17 @@ fn ask(cmds: &Cmds, seen: &Arc<Mutex<Seen>>, steps: Option<Vec<(u64, Value, Stri
             let obj = |v: Value| v.as_object().cloned().unwrap_or_default();
             let mut notes = Vec::new();
             let mut trouble = false;
-            let ready = {
+            let (ready, guest) = {
                 let c = e.config();
-                [
-                    e.twitch().is_some()
+                let guest = c
+                    .twitch
+                    .broadcaster
+                    .as_ref()
+                    .filter(|_| crate::twitch::other_channel(&c))
+                    .map(|a| (a.display_name.clone(), c.twitch.channel.trim().to_string()));
+                let ready = [
+                    guest.is_none()
+                        && e.twitch().is_some()
                         && c.twitch.broadcaster.as_ref().is_some_and(|a| {
                             token_ready(&a.token.access_token, &a.token.refresh_token, a.token.expires_at)
                         }),
@@ -327,12 +354,16 @@ fn ask(cmds: &Cmds, seen: &Arc<Mutex<Seen>>, steps: Option<Vec<(u64, Value, Stri
                             && (!crate::oauth::stale(a.token.expires_at)
                                 || (!c.youtube.client_id.is_empty() && !c.youtube.client_secret.is_empty()))
                     }),
-                ]
+                ];
+                (ready, guest)
             };
             for (kind, settings, what) in steps.unwrap_or_default() {
                 // Twitch's sub-actions do nothing without Twitch (and don't say so).
                 if (561..=572).contains(&kind) && !ready[0] {
-                    notes.push(trf("polls.twitch_off", &[("what", &what)]));
+                    notes.push(match &guest {
+                        Some((_, channel)) => format!("{what}: {}", trf("polls.guest_short", &[("channel", channel)])),
+                        None => trf("polls.twitch_off", &[("what", &what)]),
+                    });
                     trouble = true;
                     continue;
                 }
@@ -381,7 +412,10 @@ fn ask(cmds: &Cmds, seen: &Arc<Mutex<Seen>>, steps: Option<Vec<(u64, Value, Stri
                         trouble = true;
                         notes.push(trf(
                             "polls.lookup_failed",
-                            &[("what", tr("polls.prediction")), ("error", &error)],
+                            &[
+                                ("what", tr("polls.prediction")),
+                                ("error", &crate::twitch::plain_error(&error)),
+                            ],
                         ))
                     }
                 }
@@ -394,6 +428,7 @@ fn ask(cmds: &Cmds, seen: &Arc<Mutex<Seen>>, steps: Option<Vec<(u64, Value, Stri
                 s.prediction = prediction;
                 s.youtube_poll = crate::youtube::current_poll();
                 s.ready = ready;
+                s.guest = guest;
                 s.prediction_known = prediction_known;
                 if !notes.is_empty() {
                     s.note = notes.join("  ");
@@ -403,15 +438,6 @@ fn ask(cmds: &Cmds, seen: &Arc<Mutex<Seen>>, steps: Option<Vec<(u64, Value, Stri
             crate::ui::changed();
         });
     });
-}
-
-/// The non-empty texts of `inputs`.
-fn texts(inputs: &[Input]) -> Vec<String> {
-    inputs
-        .iter()
-        .map(|i| i.value().trim().to_string())
-        .filter(|t| !t.is_empty())
-        .collect()
 }
 
 fn lasts_choice(default: usize) -> Choice {
@@ -458,15 +484,6 @@ fn cancel_go(bar: &mut Flex, answer: &dialogs::Answer, go: &str) {
     });
 }
 
-/// A short note at the top of a dialog.
-fn about(col: &mut Flex, text: &str) {
-    let mut f = Frame::default()
-        .with_label(text)
-        .with_align(Align::Left | Align::Inside | Align::Wrap);
-    f.set_label_color(super::muted());
-    col.fixed(&f, 38);
-}
-
 /// What a new poll asks: its question, its choices, how long (Twitch), and where.
 pub(super) struct NewPoll {
     question: String,
@@ -475,130 +492,167 @@ pub(super) struct NewPoll {
     on: [bool; 2],
 }
 
-/// Asks for a new poll on the platforms that are `ready`.
-pub(super) fn new_poll(ready: [bool; 2]) -> Option<NewPoll> {
-    let (w, h) = (500, 14 + 38 + 8 * (ROW + 6) + 12 + ROW + 4 + 14);
-    let (mut win, answer) = dialogs::window(w, h, tr("btn.new_poll"));
-    let mut col = Flex::new(14, 14, w - 28, h - 28, None).column();
-    col.set_pad(6);
-    about(&mut col, tr("polls.poll_about"));
-    let r = dialogs::row(tr("polls.question"));
-    let question = Input::default();
-    r.end();
-    col.fixed(&r, ROW);
-    let mut choices = Vec::new();
-    for i in 1..=5 {
-        let r = dialogs::row(&trf("polls.choice_n", &[("n", &i.to_string())]));
-        choices.push(Input::default());
-        r.end();
-        col.fixed(&r, ROW);
-    }
-    let mut r = dialogs::row(tr("polls.lasts"));
-    let lasts = lasts_choice(1);
-    r.fixed(&lasts, 120);
-    Frame::default();
-    r.end();
-    col.fixed(&r, ROW);
-    let mut r = dialogs::row(tr("polls.where"));
-    let mut targets = Vec::new();
-    for (i, (name, tip)) in [
-        (tr("polls.platform_twitch"), tr("polls.twitch_unavailable")),
-        (tr("polls.platform_youtube"), tr("polls.youtube_unavailable")),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let mut c = CheckButton::default().with_label(name);
-        r.fixed(&c, 100);
-        c.set_checked(ready[i]);
-        if !ready[i] {
-            c.deactivate();
-            c.set_tooltip(tip);
+/// What a question form asks.
+struct Form {
+    title: &'static str,
+    go: &'static str,
+    question: &'static str,
+    /// The hint in answer `n`'s field.
+    answer: fn(usize) -> String,
+    most: usize,
+    /// The duration's tooltip, and the one picked at first.
+    lasts: (&'static str, usize),
+    /// Where it can run (Twitch, YouTube): chips to pick from. None: Twitch only, no chips.
+    ready: Option<[bool; 2]>,
+}
+
+/// A question, its answers (two fields at first, one more as the last is filled), how long it lasts,
+/// and where it runs (each platform a chip with its logo). What was asked, when started; `check` may
+/// refuse it (it says why).
+fn ask_form(f: Form, check: impl Fn(&str, &[String], [bool; 2]) -> Option<&'static str>) -> Option<NewPoll> {
+    const W: i32 = 460;
+    const PAD: i32 = 16;
+    let (mut win, answer) = dialogs::window(W, 200, f.title);
+    let mut col = Flex::new(PAD, 4, W - PAD * 2, 200, None).column();
+    col.set_pad(8);
+    let mut question = super::fields::field(&mut col, "message-circle-question", f.question);
+    let answers = super::fields::Growing::new(&mut col, 2, f.most, f.answer);
+    let mut opts = Flex::default().row();
+    opts.set_pad(8);
+    let mut chips = Vec::new();
+    if let Some(ready) = f.ready {
+        for (i, (name, why)) in [
+            ("Twitch", tr("polls.twitch_unavailable")),
+            ("YouTube", tr("polls.youtube_unavailable")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut c = super::fields::chip(&mut opts, name, super::img::logo(name, 16), ready[i]);
+            if !ready[i] {
+                c.deactivate();
+                c.set_tooltip(why);
+            }
+            chips.push(c);
         }
-        targets.push(c);
     }
     Frame::default();
-    r.end();
-    col.fixed(&r, ROW);
-    Frame::default();
+    let mut timer = super::fields::lead_icon(&mut opts, "timer");
+    let mut lasts = lasts_choice(f.lasts.1);
+    lasts.set_tooltip(f.lasts.0);
+    timer.set_tooltip(f.lasts.0);
+    opts.fixed(&lasts, 100);
+    opts.end();
+    col.fixed(&opts, ROW);
     let mut bar = Flex::default().row();
     bar.set_pad(8);
-    cancel_go(&mut bar, &answer, tr("btn.start_poll"));
+    cancel_go(&mut bar, &answer, f.go);
     bar.end();
     col.fixed(&bar, ROW + 4);
     col.end();
     win.end();
-    let on = || [targets[0].is_checked(), targets[1].is_checked()];
-    let ok = dialogs::run(&mut win, &answer, || {
-        let (q, c) = (question.value(), texts(&choices));
-        let problem = if q.trim().is_empty() || c.len() < 2 {
-            Some(tr("polls.need_two"))
-        } else if !on().iter().any(|on| *on) {
-            Some(tr("polls.pick_where"))
-        } else if on()[1] && c.len() > 4 {
-            Some(tr("polls.youtube_limit"))
-        } else {
-            None
-        };
-        if let Some(p) = problem {
-            dialogs::message(p);
+    // As tall as the fields shown.
+    let fit = {
+        let (resize, answers, col) = (win.resizer(), answers.clone(), col.clone());
+        move || {
+            let mut col = col.clone();
+            let rows = 1 + answers.shown() as i32 + 1;
+            let h = 4 + rows * ROW + (ROW + 4) + rows * 8 + 8;
+            col.resize(PAD, 4, W - PAD * 2, h - 12);
+            col.layout();
+            resize(h);
         }
-        problem.is_none()
+    };
+    fit();
+    answers.on_change(fit.clone());
+    // YouTube takes four answers, and has no duration (it runs until it's ended).
+    let on = {
+        let chips = chips.clone();
+        move || match chips.as_slice() {
+            [t, y] => [t.value() && t.active(), y.value() && y.active()],
+            _ => [true, false],
+        }
+    };
+    let follow = {
+        let (answers, on, most) = (answers.clone(), on.clone(), f.most);
+        let (timer, lasts) = (timer.clone(), lasts.clone());
+        move || {
+            let (mut timer, mut lasts) = (timer.clone(), lasts.clone());
+            let [twitch, youtube] = on();
+            answers.set_max(if youtube { 4 } else { most });
+            for w in [&mut timer as &mut dyn WidgetExt, &mut lasts as &mut dyn WidgetExt] {
+                if twitch {
+                    w.activate();
+                } else {
+                    w.deactivate();
+                }
+            }
+        }
+    };
+    follow();
+    for c in &chips {
+        let follow = follow.clone();
+        c.clone().set_callback(move |_| follow());
+    }
+    let ok = dialogs::run(&mut win, &answer, || {
+        match check(&question.value(), &answers.values(), on()) {
+            Some(why) => {
+                dialogs::alert(why);
+                false
+            }
+            None => true,
+        }
     });
+    let _ = question.take_focus();
     ok.then(|| NewPoll {
         question: question.value().trim().to_string(),
-        choices: texts(&choices),
+        choices: answers.values(),
         secs: LASTS[lasts.value().clamp(0, 5) as usize],
         on: on(),
     })
 }
 
+/// Asks for a new poll on the platforms that are `ready`.
+pub(super) fn new_poll(ready: [bool; 2]) -> Option<NewPoll> {
+    ask_form(
+        Form {
+            title: tr("btn.new_poll"),
+            go: tr("btn.start_poll"),
+            question: tr("polls.ask_hint"),
+            answer: |n| trf("polls.choice_n", &[("n", &n.to_string())]),
+            most: 5,
+            lasts: (tr("polls.lasts"), 1),
+            ready: Some(ready),
+        },
+        |q, choices, on| {
+            if q.trim().is_empty() || choices.len() < 2 {
+                Some(tr("polls.need_two"))
+            } else if !on.iter().any(|on| *on) {
+                Some(tr("polls.pick_where"))
+            } else if on[1] && choices.len() > 4 {
+                Some(tr("polls.youtube_limit"))
+            } else {
+                None
+            }
+        },
+    )
+}
+
 /// Asks for a new prediction: its question, its outcomes and how long people can bet.
 pub(super) fn new_prediction() -> Option<(String, Vec<String>, u64)> {
-    let (w, h) = (500, 14 + 38 + 6 * (ROW + 6) + 12 + ROW + 4 + 14);
-    let (mut win, answer) = dialogs::window(w, h, tr("btn.new_prediction"));
-    let mut col = Flex::new(14, 14, w - 28, h - 28, None).column();
-    col.set_pad(6);
-    about(&mut col, tr("polls.prediction_about"));
-    let r = dialogs::row(tr("polls.question"));
-    let question = Input::default();
-    r.end();
-    col.fixed(&r, ROW);
-    let mut outcomes = Vec::new();
-    for i in 1..=4 {
-        let r = dialogs::row(&trf("polls.outcome_n", &[("n", &i.to_string())]));
-        outcomes.push(Input::default());
-        r.end();
-        col.fixed(&r, ROW);
-    }
-    let mut r = dialogs::row(tr("polls.voting_time"));
-    let window = lasts_choice(0);
-    r.fixed(&window, 120);
-    Frame::default();
-    r.end();
-    col.fixed(&r, ROW);
-    Frame::default();
-    let mut bar = Flex::default().row();
-    bar.set_pad(8);
-    cancel_go(&mut bar, &answer, tr("btn.start_prediction"));
-    bar.end();
-    col.fixed(&bar, ROW + 4);
-    col.end();
-    win.end();
-    let ok = dialogs::run(&mut win, &answer, || {
-        let enough = !question.value().trim().is_empty() && texts(&outcomes).len() >= 2;
-        if !enough {
-            dialogs::message(tr("polls.need_two"));
-        }
-        enough
-    });
-    ok.then(|| {
-        (
-            question.value().trim().to_string(),
-            texts(&outcomes),
-            LASTS[window.value().clamp(0, 5) as usize],
-        )
-    })
+    ask_form(
+        Form {
+            title: tr("btn.new_prediction"),
+            go: tr("btn.start_prediction"),
+            question: tr("polls.predict_hint"),
+            answer: |n| trf("polls.outcome_n", &[("n", &n.to_string())]),
+            most: 10,
+            lasts: (tr("polls.voting_time"), 0),
+            ready: None,
+        },
+        |q, outcomes, _| (q.trim().is_empty() || outcomes.len() < 2).then_some(tr("polls.need_two")),
+    )
+    .map(|p| (p.question, p.choices, p.secs))
 }
 
 pub fn tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<Polls>> {
@@ -606,7 +660,9 @@ pub fn tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<Polls>> {
 
     super::hint(&mut col, tr("polls.hint"), 36);
     // How the accounts are, and how the last thing asked went.
-    let note = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+    let note = Frame::default()
+        .with_align(Align::Left | Align::Inside | Align::Clip)
+        .ellipsis();
     col.fixed(&note, ROW);
 
     // What's running: each list shows it, with what can be done to it below.
@@ -870,6 +926,23 @@ mod tests {
         seen.note = "x".into();
         seen.trouble = true;
         assert!(matches!(note(&seen).0, crate::ui::Health::Down));
+    }
+
+    #[test]
+    fn reading_someone_elses_channel_says_why_twitch_is_off() {
+        let mut seen = Seen {
+            received: 1,
+            guest: Some(("Me".into(), "friend".into())),
+            ..Seen::default()
+        };
+        let (health, text) = note(&seen);
+        assert!(matches!(health, crate::ui::Health::Off));
+        assert!(text.contains("Me") && text.contains("friend"), "{text}");
+        seen.ready = [false, true];
+        let (health, text) = note(&seen);
+        assert!(matches!(health, crate::ui::Health::Up));
+        assert!(text.contains("YouTube") && text.contains("friend"), "{text}");
+        assert!(twitch_why(&seen).contains("friend"));
     }
 
     #[test]

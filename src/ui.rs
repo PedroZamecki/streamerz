@@ -12,6 +12,7 @@ mod conns;
 mod dev;
 pub(crate) mod dialogs;
 pub(crate) mod emotes;
+mod fields;
 mod find;
 pub(crate) mod fit;
 pub(crate) mod forms;
@@ -340,9 +341,8 @@ pub fn restart() {
 /// A modal text question. Not dialog::input: on Wayland it focuses its input before the window
 /// exists and crashes FLTK.
 fn ask(title: &str, prompt: &str, text: &str) -> Option<String> {
-    let mut win = DoubleWindow::default().with_size(420, 130).with_label(title);
-    win.set_xclass("streamerz");
-    let mut col = Flex::new(10, 10, 400, 110, None).column();
+    let (mut win, answer) = dialogs::window(420, 120, title);
+    let mut col = Flex::new(10, 0, 400, 110, None).column();
     col.set_pad(6);
     Frame::default()
         .with_label(&prompt.replace('@', "@@"))
@@ -359,8 +359,7 @@ fn ask(title: &str, prompt: &str, text: &str) -> Option<String> {
     col.fixed(&bar, ROW + 4);
     col.end();
     win.end();
-    win.make_modal(true);
-    let answer = Rc::new(Cell::new(None::<bool>));
+    cancel.set_shortcut(Shortcut::from_key(fltk::enums::Key::Escape));
     ok.set_shortcut(Shortcut::from_key(fltk::enums::Key::Enter));
     ok.set_callback({
         let a = answer.clone();
@@ -370,20 +369,7 @@ fn ask(title: &str, prompt: &str, text: &str) -> Option<String> {
         let a = answer.clone();
         move |_| a.set(Some(false))
     });
-    win.set_callback({
-        let a = answer.clone();
-        move |_| a.set(Some(false))
-    });
-    win.show();
-    while win.shown() && answer.get().is_none() {
-        if !nested_wait(None) {
-            break;
-        }
-    }
-    win.hide();
-    let val = answer.get().unwrap_or(false).then(|| input.value());
-    app::delete_widget(win);
-    val
+    dialogs::run(&mut win, &answer, || true).then(|| input.value())
 }
 
 /// Run `f` on the engine's thread.
@@ -579,12 +565,13 @@ impl Health {
 }
 
 /// `text` in an empty field that isn't being typed in, saying what goes there.
-fn placeholder(i: &mut fltk::input::Input, text: &'static str) {
+fn placeholder(i: &mut fltk::input::Input, text: &str) {
+    let text = text.to_string();
     i.draw(move |i| {
         if i.value().is_empty() && !i.has_focus() {
             draw::set_font(Font::Helvetica, i.text_size());
             draw::set_draw_color(muted());
-            let shown = fit::ellipsize(text, i.w() - 12, |t| draw::width(t) as i32);
+            let shown = fit::ellipsize(&text, i.w() - 12, |t| draw::width(t) as i32);
             draw::draw_text2(&shown, i.x() + 6, i.y(), i.w() - 12, i.h(), Align::Left | Align::Clip);
         }
     });
@@ -798,7 +785,7 @@ fn icon_for(label: &str) -> Option<&'static str> {
         "run_again" => "rotate-ccw",
         "variables_when_queued" => "list-ordered",
         "variables_after_run" => "braces",
-        "configure" => "sliders-horizontal",
+        "configure" | "chat_settings" => "sliders-horizontal",
         "templates" | "manage_templates" => "layout-template",
         "change_value" => "pencil",
         "add_setting" | "add_file" => "plus",
@@ -1162,6 +1149,8 @@ pub fn run(
     fltk::image::Image::set_scaling_algorithm(fltk::image::RgbScaling::Bilinear);
     let mut win = DoubleWindow::default().with_size(W, H).with_label(&crate::version());
     win.set_xclass("streamerz");
+    // Dialogs open inside it (over it, blurred), never as windows of their own.
+    dialogs::set_host(&win);
     if let Ok(icon) = RgbImage::new(brand::app(c_dark), brand::SIZE, brand::SIZE, ColorDepth::Rgba8) {
         win.set_icon(Some(icon));
     }

@@ -110,7 +110,7 @@ pub(super) fn channel(cmds: &Cmds, platform: &str) -> Option<String> {
 
     let (tx, rx) = std::sync::mpsc::channel::<(u64, Result<Vec<Found>, String>)>();
     let asked = Cell::new(0u64);
-    win.show();
+    win.open();
     let _ = input.take_focus();
     while win.shown() && answer.get().is_none() {
         nested_wait(Some(0.15));
@@ -181,8 +181,8 @@ pub(super) fn channel(cmds: &Cmds, platform: &str) -> Option<String> {
         None
     };
     let own = use_own.get();
-    win.hide();
-    app::delete_widget(win);
+    win.close();
+    drop(win);
     if !ok {
         return None;
     }

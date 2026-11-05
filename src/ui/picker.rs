@@ -14,7 +14,6 @@ use fltk::input::Input;
 use fltk::prelude::*;
 use fltk::text::{TextBuffer, TextDisplay, WrapMode};
 use fltk::tree::{Tree, TreeConnectorStyle, TreeItem, TreeReason, TreeSelect};
-use fltk::window::DoubleWindow;
 use fltk::{app, draw};
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -28,18 +27,7 @@ pub struct PickItem {
     pub description: String,
 }
 
-/// A dialog window: centred, modal, closing it cancels.
-fn window(w: i32, h: i32, title: &str) -> (DoubleWindow, Rc<Cell<Option<bool>>>) {
-    let mut win = DoubleWindow::default().with_size(w, h).with_label(title);
-    win.set_xclass("streamerz");
-    win.make_modal(true);
-    let answer = Rc::new(Cell::new(None));
-    win.set_callback({
-        let a = answer.clone();
-        move |_| a.set(Some(false))
-    });
-    (win, answer)
-}
+use super::dialogs::window;
 
 /// Split PascalCase into words.
 pub fn split_pascal(s: &str) -> String {
@@ -1142,9 +1130,11 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
 
     let _ = filter.take_focus();
     let ok = super::dialogs::run(&mut win, &answer, || selected_id.get().is_some());
-    let res = if ok { selected_id.get() } else { None };
-    app::delete_widget(win);
-    res
+    if ok {
+        selected_id.get()
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

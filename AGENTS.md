@@ -66,10 +66,15 @@
   lists, `context_menu()` (or `menu::Menu`) for right clicks, `scroll::page` for a page that scrolls. Reuse these; don't style a widget by hand.
 - Every list and tree with actions gets a right-click menu with the same actions as its buttons.
 - The UI is modular: one look, one module. Scrolling is `ui/scroll.rs`, menus and dropdowns `ui/menu.rs`,
-  floating panels `ui/popover.rs` (see "Building blocks" in `docs/UI.md`). Never style FLTK's raw widget
+  floating panels `ui/popover.rs`, dialogs and messages `ui/dialogs.rs` (inside the app's window, never a
+  window of their own), short forms `ui/fields.rs` (see "Building blocks" in `docs/UI.md`). Never style FLTK's raw widget
   for one screen: change or extend the shared block so every screen gets it, and `ui/rules.rs` fails the
   tests when a screen bypasses one.
-- Raw JSON is for power users: show values as forms or tables, with JSON one button away.
+- Set it up for the user: configure everything possible by itself (find what's installed, read what's
+  already set, fill in what's known, move on when a step is done). What lives in another program (a
+  browser's extensions) is changed only after the user agrees, with everything it will do explained, and
+  the steps only the user can take are shown and ticked off. See "Set it up for the user" in `docs/UI.md`.
+- - Raw JSON is for power users: show values as forms or tables, with JSON one button away.
 - Dates and times on screen go through `fmt::shown_date`, `shown_time`, `shown_iso` or `shown_clock`
   (the user's pick in Settings, else the system's). Never format a date by hand for display.
 - Check every UI change on the hidden display (`DISPLAY=:99`) with a screenshot, narrow and wide. Use the

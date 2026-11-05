@@ -409,7 +409,7 @@ pub(super) fn unlock_logins_interactive(cmds: &Cmds) {
                 }
                 Ok(false) => {}
                 Err(err) => {
-                    super::dialogs::alert(&trf("accounts.keyring_unlock_failed", &[("error", &err.to_string())]));
+                    super::dialogs::error(&trf("accounts.keyring_unlock_failed", &[("error", &err.to_string())]));
                 }
             }
             break;
@@ -695,11 +695,18 @@ fn picture(cmds: &Cmds, cfg: &Cfg, p: P, bot: bool, name: &str, size: i32) -> Op
             );
             a.push((key.clone(), url.clone()));
             if now.saturating_sub(at) >= FRESH {
-                let cfg = cfg.clone();
+                let (cfg, name) = (cfg.clone(), name.to_string());
                 tell(cmds, move |e| {
                     let e = e.clone();
                     tokio::task::spawn_local(async move {
-                        let Some(url) = avatar(&e, &cfg, p, bot).await else {
+                        // With the login (expired, or the keyring locked) it can't ask as the account: the
+                        // public profile has the same picture.
+                        let url = match avatar(&e, &cfg, p, bot).await {
+                            Some(url) => Some(url),
+                            None if p != P::TikTok => channel_profile(&cfg, p, &name).await.0,
+                            None => None,
+                        };
+                        let Some(url) = url else {
                             return;
                         };
                         if let Ok(mut a) = AVATARS.lock() {
@@ -842,15 +849,27 @@ impl Accounts {
             super::with_icon(&mut r.connect);
             // Reading your own channel shows an empty box (the same on every platform): the name is kept,
             // but it isn't something typed.
-            let shown = r.p.typed_channel(&c);
-            r.channel.set_label(
-                &if shown.is_empty() {
-                    tr("accounts.channel_placeholder")
-                } else {
-                    shown
+            let shown = r.p.typed_channel(&c).to_string();
+            // A channel set shows who it is: their picture and their name as the platform writes it. The
+            // search icon says the button picks one.
+            let (label, pic) = if shown.is_empty() {
+                (tr("accounts.channel_placeholder").to_string(), None)
+            } else {
+                let (name, pic) = room(&self.cmds, &self.cfg, r.p.slug(), 18);
+                (if name.is_empty() { shown } else { name }, pic)
+            };
+            match pic {
+                Some(pic) => {
+                    r.channel.set_image(Some(pic));
+                    r.channel.set_label(&format!("  {}", label.replace('@', "@@")));
                 }
-                .replace('@', "@@"),
-            );
+                None => {
+                    r.channel
+                        .set_image(super::icons::before_label("search", super::button_ink(), 14));
+                    r.channel.set_label(&label.replace('@', "@@"));
+                }
+            }
+            r.channel.redraw();
             // Someone else's channel: what we are there, once the platform says (roles.rs).
             let (role, _) = crate::roles::get(&r.p.name().to_lowercase());
             let whose = if r.p.channel(&c).is_empty() || r.p.raw_account_name(&c, false).is_none() {
@@ -887,6 +906,8 @@ impl Accounts {
                 }
                 let raw_name = r.p.raw_account_name(&c, bot == 1);
                 pic.set_image(raw_name.and_then(|n| picture(&self.cmds, &self.cfg, r.p, bot == 1, &n, ROW - 4)));
+                // It comes in after the page was drawn (a download): show it when it does.
+                pic.redraw();
             }
         }
         let spotify_on = c.spotify.enabled && !c.spotify.token.access_token.is_empty();
@@ -1263,78 +1284,121 @@ fn login(cfg: &Cfg, cmds: &Cmds, p: P, bot: bool) {
 
 /// Sending to TikTok through the browser: sets it up (writes the extension), says how to load it, and
 /// turns it off.
+/// Sending to TikTok goes through the user's own browser, with a small extension in it. Streamerz does
+/// all it can: it finds the Chromium browsers here and whether the extension is in them, and on a click
+/// (the consent) writes the extension, copies its folder, and opens that browser's extensions page. The
+/// one step left is the browser's own (they let only the user add an extension): it's shown, and each
+/// step is ticked off as it happens, up to logging in to TikTok.
 fn tiktok_sending(cmds: &Cmds) {
-    // The files are written every time: the folder may have been deleted since.
-    let folder = match query(cmds, crate::tiktok_bridge::install) {
-        Some(Ok(folder)) => folder.display().to_string(),
-        Some(Err(err)) => return dialogs::message(&err),
-        None => return,
-    };
-    let (mut win, answer) = dialogs::window(640, 380, tr("accounts.tiktok_sending.title"));
-    let mut col = Flex::new(10, 10, 620, 360, None).column();
+    use super::Health as H;
+    const W: i32 = 640;
+    let browsers = crate::browsers::installed();
+    // What's in it, top to bottom (with 6 between each): the why, the title, a row per browser, a gap,
+    // the four steps, the note and the buttons.
+    const STEP: i32 = 38;
+    let n = browsers.len().max(1) as i32;
+    let h = 70 + 22 + n * ROW + 8 + 4 * STEP + 18 + ROW + (n + 9) * 6 + 8;
+    let (mut win, answer) = dialogs::window(W, h, tr("accounts.tiktok_sending.title"));
+    let mut col = Flex::new(16, 0, W - 32, h - 8, None).column();
     col.set_pad(6);
-    let help = Frame::default()
-        .with_label(tr("accounts.tiktok_sending.help"))
+    let mut why = Frame::default()
+        .with_label(tr("accounts.tiktok_sending.why"))
+        .with_align(Align::Left | Align::Inside | Align::Wrap | Align::Top);
+    why.set_label_color(super::muted());
+    col.fixed(&why, 70);
+    let mut title = Frame::default()
+        .with_label(tr("accounts.tiktok_sending.browsers"))
+        .with_align(Align::Left | Align::Inside);
+    title.set_label_font(fltk::enums::Font::HelveticaBold);
+    col.fixed(&title, 22);
+    // Which step the guide is at (none until a browser is picked), and in which browser.
+    let picked: Rc<RefCell<Option<crate::browsers::Browser>>> = Rc::default();
+    let mut states = Vec::new();
+    if browsers.is_empty() {
+        let mut none = Frame::default().with_align(Align::Left | Align::Inside | Align::Wrap);
+        H::Off.show(&mut none, tr("accounts.tiktok_sending.no_browser"));
+        col.fixed(&none, ROW);
+    }
+    for b in &browsers {
+        let mut row = Flex::default().row();
+        row.set_pad(8);
+        let mut logo = Frame::default();
+        logo.set_image(super::icons::icon("globe", super::muted(), 16));
+        row.fixed(&logo, 22);
+        let mut name = Frame::default()
+            .with_label(b.name)
+            .with_align(Align::Left | Align::Inside);
+        name.set_label_font(fltk::enums::Font::HelveticaBold);
+        row.fixed(&name, 150);
+        let state = Frame::default()
+            .with_align(Align::Left | Align::Inside | Align::Clip)
+            .ellipsis();
+        let mut go = button(&mut row, tr("btn.set_up"), 100);
+        row.end();
+        col.fixed(&row, ROW);
+        go.set_callback({
+            let (cmds, b, picked) = (cmds.clone(), b.clone(), picked.clone());
+            move |_| {
+                // Written every time: the folder may have been deleted since.
+                let folder = match query(&cmds, crate::tiktok_bridge::install) {
+                    Some(Ok(folder)) => folder.display().to_string(),
+                    Some(Err(err)) => return dialogs::error(&err),
+                    None => return,
+                };
+                fltk::app::copy(&folder);
+                if let Err(err) = b.open_extensions() {
+                    dialogs::error(&trf(
+                        "accounts.tiktok_sending.cant_open",
+                        &[("browser", b.name), ("error", &err.to_string())],
+                    ));
+                }
+                *picked.borrow_mut() = Some(b.clone());
+            }
+        });
+        states.push((b.clone(), state, go));
+    }
+    let sep = Frame::default();
+    col.fixed(&sep, 8);
+    // The steps, each ticked off when it's done.
+    let mut steps = Vec::new();
+    for _ in 0..4 {
+        let f = Frame::default().with_align(Align::Left | Align::Inside | Align::Wrap | Align::ImageNextToText);
+        col.fixed(&f, STEP);
+        steps.push(f);
+    }
+    let mut note = Frame::default()
+        .with_label(tr("accounts.tiktok_sending.careful"))
         .with_align(Align::Left | Align::Inside | Align::Wrap);
-    col.fixed(&help, 150);
-    let mut path_row = Flex::default().row();
-    path_row.set_pad(8);
-    let mut path = fltk::output::Output::default();
-    path.set_value(&folder);
-    let mut copy = button(&mut path_row, tr("btn.copy_path"), 100);
-    let mut open = button(&mut path_row, tr("btn.open_folder"), 110);
-    path_row.end();
-    col.fixed(&path_row, ROW);
-    copy.set_callback({
-        let folder = folder.clone();
-        move |_| fltk::app::copy(&folder)
-    });
-    open.set_callback({
-        let folder = folder.clone();
-        move |_| crate::oauth::open_browser(&folder)
-    });
-    let after = Frame::default()
-        .with_label(tr("accounts.tiktok_sending.after"))
-        .with_align(Align::Left | Align::Inside | Align::Wrap);
-    col.fixed(&after, 96);
-    Frame::default();
+    note.set_label_color(super::muted());
+    note.set_label_size(12);
+    col.fixed(&note, 18);
     let mut bar = Flex::default().row();
     bar.set_pad(8);
     let mut remove = button(&mut bar, tr("btn.remove_streamerz"), 90);
-    let mut login = button(&mut bar, tr("btn.login"), 90);
-    login.set_callback({
-        let cmds = cmds.clone();
-        move |_| {
-            if !query(&cmds, |e| e.tiktok_bridge.is_connected()).unwrap_or(false) {
-                dialogs::message(tr("accounts.tiktok_sending.waiting"));
-                return;
-            }
-
-            tell(&cmds, |e| {
-                let e = e.clone();
-                tokio::task::spawn_local(async move {
-                    if let Err(err) = e.tiktok_bridge.login().await {
-                        crate::warn(format!("TikTok: {err}"));
-                    }
-                });
-            })
-        }
-    });
+    let mut folder_btn = button(&mut bar, tr("btn.open_folder"), 110);
     Frame::default();
-    let mut ok = button(&mut bar, tr("dialogs.ok"), 90);
+    let mut close = button(&mut bar, tr("dialogs.close"), 90);
     bar.end();
     col.fixed(&bar, ROW);
     col.end();
     win.end();
-    ok.set_shortcut(fltk::enums::Shortcut::from_key(fltk::enums::Key::Enter));
-    ok.set_callback({
+    close.set_shortcut(fltk::enums::Shortcut::from_key(fltk::enums::Key::Escape));
+    close.set_callback({
         let a = answer.clone();
         move |_| a.set(Some(true))
+    });
+    folder_btn.set_callback({
+        let cmds = cmds.clone();
+        move |_| {
+            if let Some(Ok(folder)) = query(&cmds, crate::tiktok_bridge::install) {
+                crate::oauth::open_browser(&folder.display().to_string());
+            }
+        }
     });
     remove.set_callback({
         let (cmds, a) = (cmds.clone(), answer.clone());
         move |_| {
-            if dialogs::choice(
+            if dialogs::danger(
                 tr("accounts.tiktok_sending.remove_confirm"),
                 tr("dialogs.cancel"),
                 tr("btn.remove_streamerz"),
@@ -1344,7 +1408,96 @@ fn tiktok_sending(cmds: &Cmds) {
             }
         }
     });
-    dialogs::run(&mut win, &answer, || true);
+    // Logging in is asked once, when the extension is there and nobody is logged in.
+    let mut asked_login = false;
+    let mut update = |steps: &mut Vec<Frame>| {
+        let (connected, user, ready) = query(cmds, |e| {
+            (
+                e.tiktok_bridge.is_connected(),
+                e.tiktok_bridge.user(),
+                e.tiktok_bridge.ready(),
+            )
+        })
+        .unwrap_or_default();
+        for (b, state, go) in states.iter_mut() {
+            let has = b.has_extension(crate::tiktok_bridge::EXTENSION_ID);
+            if has {
+                H::Up.show(state, tr("accounts.tiktok_sending.installed"));
+                go.set_label(tr("btn.open"));
+            } else {
+                H::Off.show(state, tr("accounts.tiktok_sending.not_installed"));
+            }
+            super::with_icon(go);
+        }
+        let browser = picked.borrow().as_ref().map(|b| b.name);
+        let installed = connected
+            || states
+                .iter()
+                .any(|(b, ..)| b.has_extension(crate::tiktok_bridge::EXTENSION_ID));
+        let logged = connected && !user.is_empty();
+        let step = |done: bool, now: bool| match (done, now) {
+            (true, _) => H::Up,
+            (false, true) => H::Busy,
+            _ => H::Off,
+        };
+        let lines = [
+            (
+                step(browser.is_some() || installed, browser.is_none() && !installed),
+                match browser {
+                    Some(b) => trf("accounts.tiktok_sending.step_open_done", &[("browser", b)]),
+                    None => tr("accounts.tiktok_sending.step_open").to_string(),
+                },
+            ),
+            (
+                step(installed, browser.is_some() && !installed),
+                trf(
+                    "accounts.tiktok_sending.step_load",
+                    &[("browser", browser.unwrap_or(tr("accounts.tiktok_sending.your_browser")))],
+                ),
+            ),
+            (
+                step(connected, installed && !connected),
+                tr("accounts.tiktok_sending.step_connect").to_string(),
+            ),
+            (
+                step(logged, connected && !logged),
+                if logged {
+                    trf("accounts.tiktok_sending.step_login_done", &[("user", &user)])
+                } else {
+                    tr("accounts.tiktok_sending.step_login").to_string()
+                },
+            ),
+        ];
+        for ((health, text), f) in lines.into_iter().zip(steps.iter_mut()) {
+            // Wrapped here: FLTK doesn't wrap a label with an icon beside it.
+            fltk::draw::set_font(f.label_font(), f.label_size());
+            let lines = dialogs::wrap(&text, (f.w() - 30).max(100), |t| fltk::draw::width(t) as i32);
+            health.show(f, &lines.join("\n"));
+            f.set_align(Align::Left | Align::Inside | Align::ImageNextToText);
+            f.set_tooltip(&text.replace('@', "@@"));
+        }
+        if connected && ready && user.is_empty() && !asked_login {
+            asked_login = true;
+            tell(cmds, |e| {
+                let e = e.clone();
+                tokio::task::spawn_local(async move {
+                    if let Err(err) = e.tiktok_bridge.login().await {
+                        crate::warn(format!("TikTok: {err}"));
+                    }
+                });
+            });
+        }
+    };
+    update(&mut steps);
+    win.open();
+    while win.shown() && answer.get().is_none() {
+        if !super::nested_wait(Some(0.5)) {
+            break;
+        }
+        update(&mut steps);
+        win.redraw();
+    }
+    win.close();
     crate::ui::changed();
 }
 
@@ -1526,7 +1679,7 @@ fn spotify_configure(cfg: &Cfg, cmds: &Cmds) {
     if ok {
         set_client();
     }
-    fltk::app::delete_widget(win);
+    drop(win);
 }
 
 /// Run a browser login on the engine's thread, with a dialog to cancel it; the account.
@@ -1571,13 +1724,13 @@ fn browser_login<T: Send + 'static>(
     col.fixed(&bar, ROW);
     col.end();
     win.end();
-    win.show();
+    win.open();
     let mut out = None;
     while win.shown() && answer.get().is_none() {
         if let Ok(res) = rx.try_recv() {
             match res {
                 Ok(a) => out = Some(a),
-                Err(e) => super::dialogs::alert(&trf(
+                Err(e) => super::dialogs::error(&trf(
                     "accounts.browser_login_failed",
                     &[("what", what), ("error", &e.to_string())],
                 )),
@@ -1586,8 +1739,8 @@ fn browser_login<T: Send + 'static>(
         }
         super::nested_wait(Some(0.1));
     }
-    win.hide();
-    fltk::app::delete_widget(win);
+    win.close();
+    drop(win);
     if out.is_none() {
         // Cancelled: stop listening, so the port is free for the next try.
         if let Ok(h) = hrx.try_recv() {
@@ -1669,13 +1822,13 @@ fn advanced(cfg: &Cfg, p: P) {
     col.fixed(&bar, ROW);
     col.end();
     win.end();
-    win.show();
+    win.open();
     while win.shown() && answer.get().is_none() {
         if !super::nested_wait(None) {
             break;
         }
     }
-    win.hide();
+    win.close();
     let ok = answer.get() == Some(true);
     let v: Vec<String> = if ok {
         inputs.iter().map(|i| i().trim().to_string()).collect()
@@ -1683,7 +1836,7 @@ fn advanced(cfg: &Cfg, p: P) {
         Vec::new()
     };
     let on_start = start.is_checked();
-    fltk::app::delete_widget(win);
+    drop(win);
     if !ok {
         return;
     }
@@ -1722,7 +1875,7 @@ fn device_login(cfg: &Cfg, cmds: &Cmds, as_bot: bool) {
     let code_resp = match rx.recv() {
         Ok(Ok(resp)) => resp,
         Ok(Err(e)) => {
-            super::dialogs::alert(&trf(
+            super::dialogs::error(&trf(
                 "accounts.twitch_device.start_failed",
                 &[("error", &e.to_string())],
             ));
@@ -1843,18 +1996,18 @@ fn device_login(cfg: &Cfg, cmds: &Cmds, as_bot: bool) {
         });
     });
 
-    win.show();
+    win.open();
     while win.shown() && answer.get().is_none() {
         if let Ok(res) = done_rx.try_recv() {
             match res {
                 Ok(name) => {
-                    win.hide();
+                    win.close();
                     super::dialogs::message(&trf("accounts.twitch_device.success", &[("who", who), ("name", &name)]));
                     break;
                 }
                 Err(e) => {
-                    win.hide();
-                    super::dialogs::alert(&trf("accounts.twitch_device.failed", &[("error", &e.to_string())]));
+                    win.close();
+                    super::dialogs::error(&trf("accounts.twitch_device.failed", &[("error", &e.to_string())]));
                     break;
                 }
             }
@@ -1862,8 +2015,8 @@ fn device_login(cfg: &Cfg, cmds: &Cmds, as_bot: bool) {
         super::nested_wait(None);
     }
     cancelled.store(true, Ordering::Relaxed);
-    win.hide();
-    fltk::app::delete_widget(win);
+    win.close();
+    drop(win);
 }
 
 #[cfg(test)]

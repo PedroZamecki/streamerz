@@ -260,7 +260,7 @@ impl Agents {
         match r {
             Ok(()) => true,
             Err(e) => {
-                super::dialogs::alert(&trf("agents.cant_write", &[("name", kind.name), ("error", &e)]));
+                super::dialogs::error(&trf("agents.cant_write", &[("name", kind.name), ("error", &e)]));
                 false
             }
         }
@@ -281,7 +281,7 @@ impl Agents {
         let r = agents::workspace(&self.server()).and_then(|dir| agents::chat(&cli, &dir));
         match r {
             Ok(()) => crate::say(format!("Opened {name} in a terminal")),
-            Err(e) => super::dialogs::alert(&trf("agents.cant_open", &[("name", name), ("error", &e)])),
+            Err(e) => super::dialogs::error(&trf("agents.cant_open", &[("name", name), ("error", &e)])),
         }
     }
 }

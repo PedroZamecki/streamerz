@@ -374,136 +374,21 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
         let cfg = cfg.clone();
         move |b| put(&cfg, |c| c.memory_saver = b.value())
     });
+    // The chat's own settings are on the Chat page (Options, Chat settings): here, a way to them.
     section(&mut col, tr("settings.chat"), "message-square");
-    let r = setting(
+    let mut right = setting(
         &mut col,
         &mut rows,
-        tr("settings.chat.keep_history"),
-        if crate::memory_saver() {
-            tr("settings.chat.keep_history.memory_saver")
-        } else {
-            tr("settings.chat.keep_history.about")
-        },
-        44,
+        tr("settings.chat.moved"),
+        tr("settings.chat.moved.about"),
+        150,
     );
-    let mut check = switch(history_enabled(
-        cfg.borrow().window.chat.save_history,
-        crate::memory_saver(),
-    ));
-    if crate::memory_saver() {
-        check.deactivate();
-    }
-    done(r, &check);
-
-    let r = setting(
-        &mut col,
-        &mut rows,
-        tr("settings.chat.youtube_tag"),
-        tr("settings.chat.youtube_tag.about"),
-        44,
-    );
-    let mut yt_check = switch(cfg.borrow().window.chat_youtube_tag);
-    done(r, &yt_check);
-    yt_check.set_callback({
-        let cfg = cfg.clone();
-        move |b| {
-            let on = b.value();
-            put(&cfg, |c| c.window.chat_youtube_tag = on);
-            super::chat();
-        }
+    let mut open_chat = button(&mut right, tr("btn.chat_settings"), 150);
+    open_chat.set_callback({
+        let (cfg, cmds) = (cfg.clone(), cmds.clone());
+        move |_| chat_dialog(&cfg, &cmds)
     });
-
-    // What the chat keeps and how it comes and goes: a number each, read and set in the limits.
-    type Limit = (
-        &'static str,
-        &'static str,
-        fn(&crate::ChatLimits) -> u64,
-        fn(&mut crate::ChatLimits, u64),
-    );
-    let numbers: [Limit; 5] = [
-        (
-            "settings.chat.per_platform",
-            "settings.chat.per_platform.about",
-            |l| l.per_platform as u64,
-            |l, v| l.per_platform = v as usize,
-        ),
-        (
-            "settings.chat.total",
-            "settings.chat.total.about",
-            |l| l.total as u64,
-            |l, v| l.total = v as usize,
-        ),
-        (
-            "settings.chat.lifetime",
-            "settings.chat.lifetime.about",
-            |l| l.lifetime,
-            |l, v| l.lifetime = v,
-        ),
-        (
-            "settings.chat.fade_in",
-            "settings.chat.fade_in.about",
-            |l| u64::from(l.fade_in),
-            |l, v| l.fade_in = v.min(u64::from(u32::MAX)) as u32,
-        ),
-        (
-            "settings.chat.fade_out",
-            "settings.chat.fade_out.about",
-            |l| u64::from(l.fade_out),
-            |l, v| l.fade_out = v.min(u64::from(u32::MAX)) as u32,
-        ),
-    ];
-    let mut inputs = Vec::new();
-    for (key, about, get, set) in numbers {
-        let r = setting(&mut col, &mut rows, tr(key), tr(about), 90);
-        let mut input = fltk::input::IntInput::default();
-        input.set_value(&get(&cfg.borrow().window.chat).to_string());
-        if crate::memory_saver() || !cfg.borrow().window.chat.save_history {
-            input.deactivate();
-        }
-        done(r, &input);
-        // Applied as it changes or Enter is pressed.
-        input.set_trigger(fltk::enums::CallbackTrigger::Changed | fltk::enums::CallbackTrigger::EnterKey);
-        input.set_callback({
-            let (cfg, cmds) = (cfg.clone(), cmds.clone());
-            move |i| {
-                if let Ok(val) = i.value().trim().parse::<u64>() {
-                    let mut limits = cfg.borrow().window.chat;
-                    set(&mut limits, val);
-                    let limits = limits.clamped();
-                    put(&cfg, |c| c.window.chat = limits);
-                    if fltk::app::event_key() == fltk::enums::Key::Enter {
-                        i.set_value(&get(&limits).to_string());
-                    }
-                    tell(&cmds, |e| e.chat_trim());
-                    super::chat();
-                }
-            }
-        });
-        inputs.push(input);
-    }
-    let inputs = Rc::new(RefCell::new(inputs));
-    check.set_callback({
-        let (cfg, cmds, inputs) = (cfg.clone(), cmds.clone(), inputs.clone());
-        move |b| {
-            if crate::memory_saver() {
-                return;
-            }
-            let keep_history = b.value();
-            for inp in inputs.borrow_mut().iter_mut() {
-                if keep_history {
-                    inp.activate();
-                } else {
-                    inp.deactivate();
-                }
-            }
-            let mut limits = cfg.borrow().window.chat;
-            limits.save_history = keep_history;
-            let limits = limits.clamped();
-            put(&cfg, |c| c.window.chat = limits);
-            tell(&cmds, |e| e.chat_trim());
-            super::chat();
-        }
-    });
+    done(right, &open_chat);
 
     section(&mut col, tr("settings.startup"), "power");
     let r = setting(
@@ -746,6 +631,151 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
         }
         false
     });
+}
+
+/// The chat's settings: whether it keeps lines, how many and how long, and how they come and go.
+fn chat_rows(col: &mut Flex, rows: &mut Vec<SettingRow>, cfg: &Cfg, cmds: &Cmds) {
+    let r = setting(
+        col,
+        rows,
+        tr("settings.chat.keep_history"),
+        if crate::memory_saver() {
+            tr("settings.chat.keep_history.memory_saver")
+        } else {
+            tr("settings.chat.keep_history.about")
+        },
+        44,
+    );
+    let mut check = switch(history_enabled(
+        cfg.borrow().window.chat.save_history,
+        crate::memory_saver(),
+    ));
+    if crate::memory_saver() {
+        check.deactivate();
+    }
+    done(r, &check);
+
+    // What the chat keeps and how it comes and goes: a number each, read and set in the limits.
+    type Limit = (
+        &'static str,
+        &'static str,
+        fn(&crate::ChatLimits) -> u64,
+        fn(&mut crate::ChatLimits, u64),
+    );
+    let numbers: [Limit; 5] = [
+        (
+            "settings.chat.per_platform",
+            "settings.chat.per_platform.about",
+            |l| l.per_platform as u64,
+            |l, v| l.per_platform = v as usize,
+        ),
+        (
+            "settings.chat.total",
+            "settings.chat.total.about",
+            |l| l.total as u64,
+            |l, v| l.total = v as usize,
+        ),
+        (
+            "settings.chat.lifetime",
+            "settings.chat.lifetime.about",
+            |l| l.lifetime,
+            |l, v| l.lifetime = v,
+        ),
+        (
+            "settings.chat.fade_in",
+            "settings.chat.fade_in.about",
+            |l| u64::from(l.fade_in),
+            |l, v| l.fade_in = v.min(u64::from(u32::MAX)) as u32,
+        ),
+        (
+            "settings.chat.fade_out",
+            "settings.chat.fade_out.about",
+            |l| u64::from(l.fade_out),
+            |l, v| l.fade_out = v.min(u64::from(u32::MAX)) as u32,
+        ),
+    ];
+    let mut inputs = Vec::new();
+    for (key, about, get, set) in numbers {
+        let r = setting(col, rows, tr(key), tr(about), 90);
+        let mut input = fltk::input::IntInput::default();
+        input.set_value(&get(&cfg.borrow().window.chat).to_string());
+        if crate::memory_saver() || !cfg.borrow().window.chat.save_history {
+            input.deactivate();
+        }
+        done(r, &input);
+        // Applied as it changes or Enter is pressed.
+        input.set_trigger(fltk::enums::CallbackTrigger::Changed | fltk::enums::CallbackTrigger::EnterKey);
+        input.set_callback({
+            let (cfg, cmds) = (cfg.clone(), cmds.clone());
+            move |i| {
+                if let Ok(val) = i.value().trim().parse::<u64>() {
+                    let mut limits = cfg.borrow().window.chat;
+                    set(&mut limits, val);
+                    let limits = limits.clamped();
+                    put(&cfg, |c| c.window.chat = limits);
+                    if fltk::app::event_key() == fltk::enums::Key::Enter {
+                        i.set_value(&get(&limits).to_string());
+                    }
+                    tell(&cmds, |e| e.chat_trim());
+                    super::chat();
+                }
+            }
+        });
+        inputs.push(input);
+    }
+    let inputs = Rc::new(RefCell::new(inputs));
+    check.set_callback({
+        let (cfg, cmds, inputs) = (cfg.clone(), cmds.clone(), inputs.clone());
+        move |b| {
+            if crate::memory_saver() {
+                return;
+            }
+            let keep_history = b.value();
+            for inp in inputs.borrow_mut().iter_mut() {
+                if keep_history {
+                    inp.activate();
+                } else {
+                    inp.deactivate();
+                }
+            }
+            let mut limits = cfg.borrow().window.chat;
+            limits.save_history = keep_history;
+            let limits = limits.clamped();
+            put(&cfg, |c| c.window.chat = limits);
+            tell(&cmds, |e| e.chat_trim());
+            super::chat();
+        }
+    });
+}
+
+/// The chat's settings in a dialog (from the Chat page's Options, or from Settings).
+pub(super) fn chat_dialog(cfg: &Cfg, cmds: &Cmds) {
+    const W: i32 = 620;
+    let (mut win, answer) = super::dialogs::window(W, 400, tr("btn.chat_settings"));
+    let mut rows = Vec::new();
+    let mut col = Flex::new(0, 0, W, 400, None).column();
+    col.set_margin(10);
+    col.set_pad(2);
+    chat_rows(&mut col, &mut rows, cfg, cmds);
+    let mut bar = Flex::default().row();
+    Frame::default();
+    let mut close = button(&mut bar, tr("dialogs.close"), 90);
+    close.set_shortcut(fltk::enums::Shortcut::from_key(fltk::enums::Key::Escape));
+    close.set_callback({
+        let a = answer.clone();
+        move |_| a.set(Some(false))
+    });
+    bar.end();
+    col.fixed(&bar, ROW + 4);
+    col.end();
+    win.end();
+    // Measured a little narrower than drawn: wrapped text never needs a line more than it got.
+    layout_settings(&mut col, &mut rows, W - 24, 0);
+    let h = col.h();
+    let resize = win.resizer();
+    col.resize(0, 0, W, h);
+    resize(h);
+    super::dialogs::run(&mut win, &answer, || true);
 }
 
 #[cfg(test)]

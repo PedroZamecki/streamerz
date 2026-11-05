@@ -685,7 +685,7 @@ impl List {
     fn delete(&mut self) {
         let Some(id) = self.selected() else { return };
         let q = trf("lists.delete_confirm", &[("what", &tr(self.kind.what).to_lowercase())]);
-        if super::dialogs::choice(&q.replace('@', "@@"), tr("dialogs.cancel"), tr("btn.delete")) {
+        if super::dialogs::danger(&q.replace('@', "@@"), tr("dialogs.cancel"), tr("btn.delete")) {
             self.change(|l| l.retain(|o| s(o, "id") != id));
         }
     }
@@ -1266,7 +1266,7 @@ fn queues_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Queues>> {
                 return;
             };
             let q = tr("lists.queues.delete_confirm");
-            if super::dialogs::choice(q, tr("dialogs.cancel"), tr("btn.delete")) {
+            if super::dialogs::danger(q, tr("dialogs.cancel"), tr("btn.delete")) {
                 save(&m.cfg, |c| {
                     c.actions.queues.retain(|q| s(q, "id") != id);
                     for a in c.actions.actions.iter_mut().filter(|a| a.queue.as_deref() == Some(&id)) {
@@ -1655,7 +1655,7 @@ fn globals_tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<Globals>> {
         Box::new(move |m| {
             let Some((name, _, persisted)) = global(m) else { return };
             let q = trf("lists.globals.delete_confirm", &[("name", &name)]);
-            if super::dialogs::choice(&q, tr("dialogs.cancel"), tr("btn.delete")) {
+            if super::dialogs::danger(&q, tr("dialogs.cancel"), tr("btn.delete")) {
                 let _ = query(&m.cmds, move |e| e.delete_global(&name, persisted));
                 m.refresh();
             }
@@ -2274,7 +2274,7 @@ impl Servers {
             bad = r.err();
         });
         if let Some(e) = bad {
-            super::dialogs::alert(&e.to_string());
+            super::dialogs::error(&e.to_string());
         }
         self.refresh();
     }
@@ -2460,29 +2460,56 @@ impl Groups {
 
     fn members(&self) {
         let Some(id) = self.selected() else { return };
-        let config = self.cfg.borrow();
-        let Some(group) = config.groups.iter().find(|group| s(group, "id") == id) else {
-            return;
+        // Each member: their platform, their name as last seen, and their key (platform-id).
+        let read = {
+            let (cfg, id) = (self.cfg.clone(), id.clone());
+            move || -> (String, Vec<(String, String, String)>) {
+                let config = cfg.borrow();
+                let Some(group) = config.groups.iter().find(|group| s(group, "id") == id) else {
+                    return (String::new(), Vec::new());
+                };
+                let people = crate::usergroups::members(group)
+                    .into_iter()
+                    .map(|key| {
+                        let (platform, uid) = crate::usergroups::split(&key).unwrap_or(("twitch", key.as_str()));
+                        let name = crate::usergroups::name(group, &key).unwrap_or(uid).to_string();
+                        (platform.to_string(), name, key.clone())
+                    })
+                    .collect();
+                (s(group, "name").to_string(), people)
+            }
         };
-        let title = s(group, "name").to_string();
-        let ids: Vec<String> = group
-            .get("userIds")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .map(crate::vars::text)
-            .collect();
-        drop(config);
-        let (mut window, answer) = dialogs::window(500, 360, &title);
-        let mut column = Flex::new(10, 10, 480, 340, None).column();
+        let (title, _) = read();
+        let (mut window, answer) = dialogs::window(520, 380, &title);
+        let mut column = Flex::new(16, 0, 488, 372, None).column();
         column.set_pad(6);
-        super::hint(&mut column, tr("lists.groups.guide"), 48);
-        super::header(&mut column, &[], &[tr("lists.groups.user_id")]);
+        super::header(
+            &mut column,
+            &[34, 260],
+            &[tr("lists.groups.platform"), tr("lists.groups.user_id"), ""],
+        );
         let mut members = Rows::new(tr("lists.groups.members_empty"));
-        for id in ids {
-            members.add(&line(&[id]));
-        }
+        members.set_column_widths(&[34, 260]);
+        members.set_logo_column(0);
+        let keys: Rc<RefCell<Vec<String>>> = Rc::default();
+        let fill = {
+            let (members, keys, read) = (members.clone(), keys.clone(), read.clone());
+            move || {
+                let mut members = members.clone();
+                let (_, people) = read();
+                members.clear();
+                keys.borrow_mut().clear();
+                for (platform, name, key) in people {
+                    let uid = crate::usergroups::split(&key).map_or(key.as_str(), |k| k.1).to_string();
+                    members.add(&line(&[platform, name, uid]));
+                    keys.borrow_mut().push(key);
+                }
+            }
+        };
+        fill();
         let mut row = Flex::default().row();
+        row.set_pad(8);
+        let mut remove = button(&mut row, tr("btn.remove_streamerz"), 100);
         Frame::default();
         let mut close = button(&mut row, tr("dialogs.close"), 90);
         close.set_shortcut(fltk::enums::Shortcut::from_key(fltk::enums::Key::Escape));
@@ -2494,9 +2521,27 @@ impl Groups {
         column.fixed(&row, ROW + 4);
         column.end();
         window.end();
-        window.resizable(&column);
+        members.set_menu(std::slice::from_ref(&remove));
+        remove.set_callback({
+            let (members, keys, cmds, gid) = (members.clone(), keys.clone(), self.cmds.clone(), id.clone());
+            let fill = fill.clone();
+            move |_| {
+                let Some(at) = usize::try_from(members.value() - 1).ok() else {
+                    return;
+                };
+                let Some(key) = keys.borrow().get(at).cloned() else {
+                    return;
+                };
+                let (platform, uid) = crate::usergroups::split(&key).unwrap_or(("twitch", key.as_str()));
+                let mut u = crate::model::Obj::new();
+                u.insert("userId".into(), uid.into());
+                u.insert("userType".into(), platform.into());
+                let gid = gid.clone();
+                let _ = query(&cmds, move |e| e.group_users(&gid, &[u], false));
+                fill();
+            }
+        });
         dialogs::run(&mut window, &answer, || true);
-        fltk::app::delete_widget(window);
     }
 }
 

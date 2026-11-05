@@ -117,6 +117,7 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
                     if w.visible() { "shown" } else { "hidden" }
                 )
             })
+            .chain(dialogs_in(&windows))
             .collect::<Vec<_>>()
             .join("\n"),
         "shot" => {
@@ -257,16 +258,50 @@ fn capture(win: &impl WindowExt) -> Option<fltk::image::RgbImage> {
         let Some(g) = g else { return };
         for i in 0..g.children() {
             let Some(c) = g.child(i) else { continue };
-            if c.as_window().is_some() {
+            if c.as_window().is_some() && c.visible() {
                 c.clone().redraw();
                 surface.draw(&c, at.0 + c.x(), at.1 + c.y());
             }
-            inside(&c.as_group(), at, surface);
+            inside(&c.as_group(), inner(&c, at), surface);
         }
     }
     inside(&win.as_base_widget().as_group(), (0, 0), &surface);
     ImageSurface::pop_current();
     surface.image()
+}
+
+/// The dialogs open in the windows (windows inside them, with a title): they're drawn in a window's
+/// shot, and `find` finds what's in them.
+fn dialogs_in(windows: &[impl WindowExt]) -> Vec<String> {
+    let mut out = Vec::new();
+    for w in windows {
+        let Some(g) = w.as_base_widget().as_group() else {
+            continue;
+        };
+        for i in 0..g.children() {
+            let Some(c) = g.child(i) else { continue };
+            if c.as_window().is_some() && c.visible() && !c.label().is_empty() {
+                out.push(format!(
+                    "dialog '{}' at {},{} {}x{} shown",
+                    c.label(),
+                    w.x() + c.x(),
+                    w.y() + c.y(),
+                    c.w(),
+                    c.h()
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// Where `w`'s children are counted from: a window inside the window starts its own.
+fn inner(w: &fltk::widget::Widget, at: (i32, i32)) -> (i32, i32) {
+    if w.as_window().is_some() {
+        (at.0 + w.x(), at.1 + w.y())
+    } else {
+        at
+    }
 }
 
 fn walk(g: &Option<fltk::group::Group>, depth: usize, out: &mut String) {
@@ -305,7 +340,7 @@ fn bounds(group: &Option<fltk::group::Group>, text: &str, at: (i32, i32), out: &
             out.push(serde_json::json!({"label":if label.is_empty() { &tooltip } else { &label }, "tooltip":tooltip,
                 "x":at.0+child.x(), "y":at.1+child.y(), "w":child.w(), "h":child.h(), "enabled":child.active_r(), "focused":child.has_focus()}));
         }
-        bounds(&child.as_group(), text, at, out);
+        bounds(&child.as_group(), text, inner(&child, at), out);
     }
 }
 
@@ -324,7 +359,7 @@ fn find(g: &Option<fltk::group::Group>, text: &str, at: (i32, i32), out: &mut St
                 at.1 + c.y() + c.h() / 2
             );
         }
-        find(&c.as_group(), text, at, out);
+        find(&c.as_group(), text, inner(&c, at), out);
     }
 }
 

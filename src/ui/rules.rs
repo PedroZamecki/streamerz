@@ -127,3 +127,40 @@ fn overlays_are_popovers() {
         "a floating panel is a popover::Popover"
     );
 }
+
+#[test]
+fn dialogs_open_inside_the_window() {
+    // A window of its own can be opened twice, lands anywhere (Wayland, tiling desktops) and leaves the
+    // app clickable behind it: every dialog is a `dialogs::window`, drawn in the app's window over it
+    // blurred. Only the app's own window is made here (in ui.rs), and tests may make theirs.
+    let made: Vec<String> = ["DoubleWindow::default()", "Window::default()", "make_modal("]
+        .iter()
+        .flat_map(|raw| uses(raw, &["dialogs.rs"]))
+        .filter(|at| !at.starts_with("ui.rs:") || !main_window(at))
+        .collect();
+    assert_eq!(made, Vec::<String>::new(), "a dialog is dialogs::window (or a popover)");
+    for raw in [
+        "dialog::alert",
+        "dialog::message",
+        "dialog::choice",
+        "dialog::input",
+        "dialog::password",
+    ] {
+        assert_eq!(
+            uses(raw, &[]),
+            Vec::<String>::new(),
+            "{raw}: use dialogs::alert, error, success, message, choice or danger"
+        );
+    }
+}
+
+/// Whether `at` (ui.rs:LINE) makes the app's own window.
+fn main_window(at: &str) -> bool {
+    let Some(line) = at.split(':').nth(1).and_then(|l| l.parse::<usize>().ok()) else {
+        return false;
+    };
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui.rs")).unwrap_or_default();
+    text.lines()
+        .nth(line - 1)
+        .is_some_and(|l| l.contains("crate::version()"))
+}

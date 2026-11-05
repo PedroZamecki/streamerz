@@ -519,6 +519,40 @@ def main():
             if f"'{title}'" in ui("windows"):
                 failures.append(f"{title}: Cancel didn't close the dialog")
             check(title)
+        # Dialogs open inside the window, over it, one at a time: a click on what's behind reaches nothing,
+        # so a second one can't open. Escape closes it.
+        ui("page Chat")
+        time.sleep(.5)
+        opener = widget("Options", exact=True)
+        click_widget(opener)
+        time.sleep(.5)
+        xdo("key", "End")
+        xdo("key", "Return")
+        time.sleep(.8)
+        click_widget(opener)
+        time.sleep(.6)
+        shown = ui("windows")
+        if shown.count("dialog 'Chat settings'") != 1:
+            failures.append(f"Chat settings: not one dialog in the window ({shown})")
+        ui(f"shot {OUT}/chat-settings.png")
+        xdo("key", "Escape")
+        time.sleep(.4)
+        if "dialog 'Chat settings'" in ui("windows"):
+            failures.append("Chat settings: Escape didn't close the dialog")
+        check("chat settings dialog")
+        # TikTok's setup lists the browsers found and the steps; nothing is opened until Set up.
+        ui("page Accounts")
+        time.sleep(.5)
+        set_up = [item for item in widgets("Set up", exact=True) if fits_window(item)]
+        if set_up:
+            click_widget(set_up[-1])
+        time.sleep(1)
+        if "dialog 'TikTok account'" not in ui("windows") or not widgets("Your browsers"):
+            failures.append(f"TikTok setup: the dialog didn't open with its browsers ({set_up}, {ui('windows')})")
+        ui(f"shot {OUT}/tiktok-setup.png")
+        xdo("key", "Escape")
+        time.sleep(.4)
+        check("tiktok setup dialog")
         # A list's menu has its buttons' actions and states, from a right click and from the keyboard.
         ui("page Commands")
         time.sleep(.3)

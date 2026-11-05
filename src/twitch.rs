@@ -268,6 +268,40 @@ pub fn other_channel(c: &Config) -> bool {
             .is_none_or(|b| !b.login.eq_ignore_ascii_case(ch))
 }
 
+/// A Twitch error (as `helix` and the logins return it) in a person's words: what happened, not the
+/// HTTP status and JSON. The raw text stays in the Log.
+pub fn plain_error(error: &str) -> String {
+    let message = error
+        .find('{')
+        .and_then(|at| serde_json::from_str::<Value>(&error[at..]).ok())
+        .and_then(|v| v.get("message").and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_default();
+    let status = error
+        .split("HTTP ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|code| code.parse::<u16>().ok());
+    let lower = message.to_lowercase();
+    let key = if lower.contains("broadcaster_id must match") || lower.contains("must be the broadcaster") {
+        "twitch.error.owner_only"
+    } else if lower.contains("missing scope") || lower.contains("scope") && status == Some(401) {
+        "twitch.error.scope"
+    } else {
+        match status {
+            Some(401) => "twitch.error.login",
+            Some(403) if lower.contains("affiliate") || lower.contains("partner") => "twitch.error.affiliate",
+            Some(403) => "twitch.error.forbidden",
+            Some(404) => "twitch.error.not_found",
+            Some(429) => "twitch.error.busy",
+            Some(500..=599) => "twitch.error.down",
+            _ if error.contains("No broadcaster account") => "twitch.error.no_login",
+            _ if message.is_empty() => return error.to_string(),
+            _ => return message,
+        }
+    };
+    crate::i18n::tr(key).to_string()
+}
+
 /// The id of the channel read: the one set, else the logged-in account's.
 pub fn channel_id(c: &Config) -> String {
     if other_channel(c) {
@@ -4879,6 +4913,25 @@ async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn twitch_errors_read_as_plain_words() {
+        let owner = r#"Helix GET predictions failed: HTTP 401 {"error":"Unauthorized","status":401,"message":"The ID in broadcaster_id must match the user ID found in the request's OAuth token."}"#;
+        assert_eq!(plain_error(owner), crate::i18n::tr("twitch.error.owner_only"));
+        assert_eq!(
+            plain_error(r#"Helix GET x failed: HTTP 401 {"message":"Invalid OAuth token"}"#),
+            crate::i18n::tr("twitch.error.login")
+        );
+        assert_eq!(
+            plain_error("Helix GET x failed: HTTP 503 "),
+            crate::i18n::tr("twitch.error.down")
+        );
+        assert_eq!(
+            plain_error(r#"Helix POST x failed: HTTP 400 {"message":"Bad title"}"#),
+            "Bad title"
+        );
+        assert_eq!(plain_error("timed out"), "timed out");
+    }
+
     #[test]
     fn chat_modes_read_helix_and_eventsub_settings() {
         use super::*;

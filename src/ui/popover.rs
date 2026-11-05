@@ -27,7 +27,7 @@ pub struct Popover {
 pub const RADIUS: i32 = 8;
 
 /// The part of `host` at `(x, y, w, h)`, as it is drawn now.
-fn backdrop(host: &dyn WindowExt, x: i32, y: i32, w: i32, h: i32) -> Option<RgbImage> {
+pub(super) fn backdrop(host: &dyn WindowExt, x: i32, y: i32, w: i32, h: i32) -> Option<RgbImage> {
     let surface = ImageSurface::new(w, h, false);
     ImageSurface::push_current(&surface);
     draw::set_draw_color(Color::Background);
@@ -90,7 +90,8 @@ impl Popover {
         pop.set_color(Color::Background);
         pop.super_draw_first(false);
         pop.draw(move |c| {
-            if !c.damage_type().contains(Damage::All) {
+            // Only a child to repaint: it paints itself (as FLTK's group does, which then skips the box).
+            if c.damage_type() == Damage::Child {
                 return;
             }
             panel(c.w(), c.h(), under.as_ref());

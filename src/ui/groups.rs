@@ -70,7 +70,7 @@ fn ask_value(def: &Def, current: &Value) -> Option<Value> {
         text = super::ask(&def.label, &prompt, &text)?;
         match def.parse(&text) {
             Ok(v) => return Some(v),
-            Err(_) => dialogs::alert(&trf("group.invalid", &[("hint", kind_hint(def.kind))])),
+            Err(_) => dialogs::error(&trf("group.invalid", &[("hint", kind_hint(def.kind))])),
         }
     }
 }
@@ -181,12 +181,12 @@ fn edit_def(old: Option<&Def>, taken: &[String]) -> Option<Def> {
                 true
             }
             Err(_) => {
-                dialogs::alert(&trf("group.invalid", &[("hint", kind_hint(k))]));
+                dialogs::error(&trf("group.invalid", &[("hint", kind_hint(k))]));
                 false
             }
         }
     });
-    app::delete_widget(win);
+    drop(win);
     ok.then(|| result.borrow_mut().take()).flatten()
 }
 
@@ -280,12 +280,12 @@ fn files_dialog(cfg: &Config, group: &str, files: &mut Vec<File>) {
                 return;
             }
             let Some(html) = crate::overlays::standalone_at(&base, &values, &group, &f) else {
-                return dialogs::alert(tr("group.page_failed"));
+                return dialogs::error(tr("group.page_failed"));
             };
             let page = groups::text_file(&f.name, &html);
             match groups::save_files(&[page], &folder) {
-                Ok(_) => dialogs::message(&trf("group.page_saved", &[("folder", &folder.display().to_string())])),
-                Err(e) => dialogs::alert(&e),
+                Ok(_) => dialogs::success(&trf("group.page_saved", &[("folder", &folder.display().to_string())])),
+                Err(e) => dialogs::error(&e),
             }
         }
     });
@@ -314,7 +314,7 @@ fn files_dialog(cfg: &Config, group: &str, files: &mut Vec<File>) {
                     working.borrow_mut().push(File { name, content });
                     fill();
                 }
-                Err(e) => dialogs::alert(&e.to_string()),
+                Err(e) => dialogs::error(&e.to_string()),
             }
         }
     });
@@ -339,21 +339,21 @@ fn files_dialog(cfg: &Config, group: &str, files: &mut Vec<File>) {
                 return;
             }
             match groups::save_files(&working.borrow(), &folder) {
-                Ok(saved) => dialogs::message(&trf(
+                Ok(saved) => dialogs::success(&trf(
                     "group.files_saved",
                     &[
                         ("count", &saved.len().to_string()),
                         ("folder", &folder.display().to_string()),
                     ],
                 )),
-                Err(e) => dialogs::alert(&e),
+                Err(e) => dialogs::error(&e),
             }
         }
     });
     if dialogs::run(&mut win, &answer, || true) {
         *files = working.borrow().clone();
     }
-    app::delete_widget(win);
+    drop(win);
 }
 
 /// Tick the commands and timers the group uses. Those that name the group as theirs stay ticked.
@@ -409,7 +409,7 @@ fn members_dialog(c: &Config, group: &str, meta: &mut Meta) {
             }
         }
     }
-    app::delete_widget(win);
+    drop(win);
 }
 
 /// The group's settings: change values, and declare settings, files and members.
@@ -599,12 +599,12 @@ pub fn settings(cfg: &Arc<watch::Sender<Config>>, group: &str) {
         match s.0.validate() {
             Ok(()) => true,
             Err(e) => {
-                dialogs::alert(&e);
+                dialogs::error(&e);
                 false
             }
         }
     });
-    app::delete_widget(win);
+    drop(win);
     if ok {
         let (meta, values) = state.borrow().clone();
         cfg.send_modify(|c| {

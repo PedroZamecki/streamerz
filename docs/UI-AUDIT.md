@@ -95,3 +95,20 @@ verification recorded at the end; unchecked items remain work to do.
   36.1 / 20.7, idle CPU 0% for both, 4 threads.
 - [ ] Not checked: Wayland (menus and popovers are windows inside the window, as popovers were, but were
   only seen on X11), Windows, live Twitch/OBS, and starting a real poll or prediction.
+
+## Third pass: dialogs, short forms, groups, setup
+
+- Dialogs open inside the app's window (`dialogs::window`), over it blurred and dimmed, one at a time,
+  with a title row, a close button and a tone (info, question, success, warning, error). No screen makes
+  a window of its own or uses FLTK's message boxes (`rules.rs` checks).
+- New poll and New prediction ask the least: the question, two answers that grow as they're filled, the
+  platforms as chips with their logos, and the duration with a timer icon (`ui/fields.rs`).
+- Menus and popovers clear what a hover drew before (no highlight left behind).
+- Polls says in plain words why Twitch can't run polls on someone else's channel; Twitch errors are
+  translated (`twitch::plain_error`).
+- Accounts shows the account's and the channel's pictures once they load.
+- User groups keep members as `platform-id` (old bare ids migrated), with the name beside it; the user
+  card has a Groups menu, and Members shows names and platforms with Remove.
+- The chat's settings moved to the Chat page (Options, Chat settings); Settings keeps a row to them.
+- TikTok setup finds the Chromium browsers and whether the extension is in them; Set up (the consent)
+  writes it, copies its folder and opens the browser's extensions page, and the steps tick themselves off.

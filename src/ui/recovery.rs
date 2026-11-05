@@ -173,7 +173,7 @@ pub fn crashes_tab(tabs: &Wizard) -> Rc<RefCell<Crashes>> {
     });
     click(&me, &b[2], |m| {
         let Some(r) = m.selected() else { return };
-        if !dialogs::choice(tr("crashes.delete_ask"), tr("dialogs.cancel"), tr("btn.delete")) {
+        if !dialogs::danger(tr("crashes.delete_ask"), tr("dialogs.cancel"), tr("btn.delete")) {
             return;
         }
         if let Err(e) = crash::delete(r) {
@@ -326,7 +326,7 @@ pub fn backups_tab(tabs: &Wizard, cfg: &super::lists::Cfg, cmds: &super::lists::
     });
     click(&me, &b[3], |m| {
         let Some(b) = m.selected() else { return };
-        if !dialogs::choice(tr("backups.delete_ask"), tr("dialogs.cancel"), tr("btn.delete")) {
+        if !dialogs::danger(tr("backups.delete_ask"), tr("dialogs.cancel"), tr("btn.delete")) {
             return;
         }
         if let Err(e) = backup::delete(b) {

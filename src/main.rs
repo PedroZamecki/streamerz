@@ -4,6 +4,7 @@
 mod agents;
 mod backup;
 mod brand;
+mod browsers;
 mod catalog;
 mod commands;
 mod crash;
@@ -57,6 +58,7 @@ pub mod twitch;
 pub mod types;
 mod ui;
 mod update;
+mod usergroups;
 mod vars;
 mod webcast;
 #[cfg(not(windows))]
@@ -919,6 +921,7 @@ fn load_from(path: &Path) -> Config {
         }
     };
     c.own_channels();
+    usergroups::migrate(&mut c.groups);
     let _ = save_to(path, &c);
     c
 }

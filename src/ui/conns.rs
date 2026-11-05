@@ -6,7 +6,6 @@ use super::fit::Ellipsis;
 use super::{button, img, query, tell, ROW};
 use crate::i18n::{tr, trf};
 use crate::Config;
-use fltk::app;
 use fltk::enums::{Align, Font};
 use fltk::frame::Frame;
 use fltk::group::Flex;
@@ -254,11 +253,9 @@ pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: im
     let conns = list(cfg, cmds);
     let extra_lock = i32::from(crate::secrets::is_locked()) * (ROW + 8);
     let rows_h = conns.len().max(1) as i32 * (ROW + 8) + extra_lock;
-    let mut win = Window::default()
-        .with_size(780, rows_h + 60)
-        .with_label(tr("conns.title"));
-    win.set_xclass("streamerz");
-    let mut col = Flex::new(10, 10, 760, rows_h + 40, None).column();
+    // A dialog in the window: only one can be open, and nothing behind it is clicked meanwhile.
+    let (mut win, answer) = super::dialogs::window(780, rows_h + ROW + 6, tr("conns.title"));
+    let mut col = Flex::new(16, 0, 748, rows_h + ROW, None).column();
     col.set_pad(8);
 
     if crate::secrets::is_locked() {
@@ -344,11 +341,12 @@ pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: im
     col.fixed(&bottom, ROW);
     col.end();
     win.end();
+    close.set_shortcut(fltk::enums::Shortcut::from_key(fltk::enums::Key::Escape));
     close.set_callback({
-        let mut win = win.clone();
-        move |_| win.hide()
+        let a = answer.clone();
+        move |_| a.set(Some(false))
     });
-    win.show();
+    win.open();
 
     let (cfg, cmds) = (cfg.clone(), cmds.clone());
     let mut show = move |win: &Window| {
@@ -382,12 +380,19 @@ pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: im
         win.clone().redraw();
     };
     show(&win);
-    app::add_timeout3(1.0, move |h| {
-        if win.shown() {
-            show(&win);
-            app::repeat_timeout3(1.0, h);
+    // Kept up to date once a second while it's open.
+    let mut next = Instant::now() + std::time::Duration::from_secs(1);
+    while win.shown() && answer.get().is_none() {
+        let left = next.saturating_duration_since(Instant::now()).as_secs_f64();
+        if !super::nested_wait(Some(left.max(0.05))) {
+            break;
         }
-    });
+        if Instant::now() >= next {
+            show(&win);
+            next = Instant::now() + std::time::Duration::from_secs(1);
+        }
+    }
+    win.close();
 }
 
 #[cfg(test)]

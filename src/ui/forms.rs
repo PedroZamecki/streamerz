@@ -1440,7 +1440,7 @@ fn access_note(col: &mut Flex, mouse: bool) {
         match got {
             Ok(()) if !install => super::dialogs::alert(crate::i18n::tr("input.removed")),
             Ok(()) => {}
-            Err(e) => super::dialogs::alert(&e),
+            Err(e) => super::dialogs::error(&e),
         }
         show();
     });
@@ -1789,7 +1789,7 @@ pub fn form_validated(
                 true
             }
             Err(error) => {
-                super::dialogs::alert(&error);
+                super::dialogs::error(&error);
                 false
             }
         }

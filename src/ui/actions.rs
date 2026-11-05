@@ -1093,7 +1093,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
                     crate::warn(msg.clone());
                     super::dialogs::message(&plain(&msg));
                 }
-                Err(e) => super::dialogs::alert(&plain(&e)),
+                Err(e) => super::dialogs::error(&plain(&e)),
             }
         }),
     );
@@ -1125,7 +1125,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
             let mut added = Ok(());
             m.edit(|c| added = made.add_to(c));
             if let Err(e) = added {
-                dialogs::alert(&e);
+                dialogs::error(&e);
                 return;
             }
             if timers {
@@ -1826,12 +1826,8 @@ fn edit_sub(me: &Rc<RefCell<Actions>>) {
 /// The template picker: each one's name and what it does. The one picked.
 fn pick_template() -> Option<&'static crate::templates::Template> {
     use crate::templates::TEMPLATES;
-    let mut win = fltk::window::DoubleWindow::default()
-        .with_size(560, 380)
-        .with_label(tr("actions.template_title"));
-    win.set_xclass("streamerz");
-    win.make_modal(true);
-    let mut col = Flex::new(10, 10, 540, 360, None).column();
+    let (mut win, answer) = dialogs::window(560, 370, tr("actions.template_title"));
+    let mut col = Flex::new(10, 0, 540, 360, None).column();
     col.set_pad(6);
     let mut list = Rows::new("");
     for t in TEMPLATES {
@@ -1854,7 +1850,6 @@ fn pick_template() -> Option<&'static crate::templates::Template> {
     col.fixed(&row, ROW + 4);
     col.end();
     win.end();
-    let answer = Rc::new(std::cell::Cell::new(None::<bool>));
     list.set_callback({
         let mut about = about.clone();
         let a = answer.clone();
@@ -1881,21 +1876,8 @@ fn pick_template() -> Option<&'static crate::templates::Template> {
         let a = answer.clone();
         move |_| a.set(Some(false))
     });
-    win.set_callback({
-        let a = answer.clone();
-        move |_| a.set(Some(false))
-    });
-    win.show();
-    while win.shown() && answer.get().is_none() {
-        if !super::nested_wait(None) {
-            break;
-        }
-    }
-    win.hide();
-    let picked = answer.get() == Some(true) && list.value() > 0;
-    let res = picked.then(|| &TEMPLATES[(list.value() - 1) as usize]);
-    app::delete_widget(win);
-    res
+    let picked = dialogs::run(&mut win, &answer, || true) && list.value() > 0;
+    picked.then(|| &TEMPLATES[(list.value() - 1) as usize])
 }
 
 #[cfg(test)]

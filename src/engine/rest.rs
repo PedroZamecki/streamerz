@@ -328,7 +328,7 @@ impl Engine {
                 continue;
             };
 
-            if !commands::permitted(c, chat, &|g| self.user_in_group(g, &chat.user_id)) {
+            if !commands::permitted(c, chat, &|g| self.user_in_group(g, &chat.platform, &chat.user_id)) {
                 continue;
             }
             let id = s(c, "id").to_string();
@@ -521,13 +521,30 @@ impl Engine {
         looked.unwrap_or_else(|| login.to_string())
     }
 
-    fn user_in_group(&self, group: &str, user_id: &str) -> bool {
-        self.cfg.borrow().groups.iter().any(|g| {
-            s(g, "name").eq_ignore_ascii_case(group)
-                && g.get("userIds")
-                    .and_then(Value::as_array)
-                    .is_some_and(|u| u.iter().any(|x| x == user_id))
-        })
+    fn user_in_group(&self, group: &str, platform: &str, user_id: &str) -> bool {
+        let key = crate::usergroups::key(platform, user_id);
+        self.cfg
+            .borrow()
+            .groups
+            .iter()
+            .any(|g| s(g, "name").eq_ignore_ascii_case(group) && crate::usergroups::has(g, &key))
+    }
+
+    /// The user groups, each with whether `platform`'s user `user_id` is in it: (id, name, in).
+    pub fn groups_of(&self, platform: &str, user_id: &str) -> Vec<(String, String, bool)> {
+        let key = crate::usergroups::key(platform, user_id);
+        self.cfg
+            .borrow()
+            .groups
+            .iter()
+            .map(|g| {
+                (
+                    s(g, "id").to_string(),
+                    s(g, "name").to_string(),
+                    crate::usergroups::has(g, &key),
+                )
+            })
+            .collect()
     }
 
     /// (Re)start the timed actions: one task per enabled timer, none for disabled ones.
@@ -674,8 +691,8 @@ impl Engine {
     }
 
     /// Add (or remove) users to a group; each user is {userId, user, userName, userType,
-    /// isSubscribed}. Only users that weren't (or were) in it count.
-    #[allow(dead_code)] // ponytail: called by the platforms' user group sub-actions (phase 6+).
+    /// isSubscribed} (userType: their platform, Twitch when missing). They're kept as
+    /// `platform-id` (usergroups.rs). Only users that weren't (or were) in it count.
     pub fn group_users(self: &Rc<Self>, id: &str, users: &[Obj], add: bool) {
         let mut changed = Vec::new();
         let mut group = None;
@@ -683,18 +700,26 @@ impl Engine {
             let Some(g) = c.groups.iter_mut().find(|g| s(g, "id") == id) else {
                 return;
             };
-            let ids = g.entry("userIds").or_insert_with(|| Value::Array(vec![]));
-            if let Some(ids) = ids.as_array_mut() {
-                for u in users {
-                    let uid = u.get("userId").map(text).unwrap_or_default();
-                    let has = ids.iter().any(|x| text(x) == uid);
-                    if add && !has {
-                        ids.push(uid.into());
-                        changed.push(u.clone());
-                    } else if !add && has {
-                        ids.retain(|x| text(x) != uid);
-                        changed.push(u.clone());
-                    }
+            for u in users {
+                let uid = u.get("userId").map(text).unwrap_or_default();
+                let platform = u
+                    .get("userType")
+                    .or_else(|| u.get("platform"))
+                    .map(text)
+                    .unwrap_or_default();
+                let key = crate::usergroups::key(&platform, &uid);
+                let shown = u
+                    .get("userName")
+                    .or_else(|| u.get("user"))
+                    .map(text)
+                    .unwrap_or_default();
+                let did = if add {
+                    crate::usergroups::add(g, &key, &shown)
+                } else {
+                    crate::usergroups::remove(g, &key)
+                };
+                if did {
+                    changed.push(u.clone());
                 }
             }
             group = Some(g.clone());
@@ -2384,11 +2409,13 @@ impl Engine {
                     .map(|g| s(g, "id").to_string());
                 match op {
                     Some(2) => {
+                        let member = crate::usergroups::key(platform, &id);
                         let found = gid.as_ref().is_some_and(|gid| {
-                            self.cfg.borrow().groups.iter().any(|g| {
-                                s(g, "id") == gid
-                                    && g["userIds"].as_array().is_some_and(|u| u.iter().any(|x| text(x) == id))
-                            })
+                            self.cfg
+                                .borrow()
+                                .groups
+                                .iter()
+                                .any(|g| s(g, "id") == gid && crate::usergroups::has(g, &member))
                         });
                         ctx.args.insert("inGroup".into(), found.into());
                         if found {
@@ -2407,7 +2434,7 @@ impl Engine {
                             u.insert("userId".into(), id.into());
                             u.insert("user".into(), login.as_str().into());
                             u.insert("userName".into(), login.as_str().into());
-                            u.insert("platform".into(), platform.into());
+                            u.insert("userType".into(), platform.into());
                             self.group_users(&gid, &[u], add);
                         }
                     }
@@ -2589,7 +2616,7 @@ impl Engine {
                         continue;
                     }
                     if b(o, "hasPermission", false)
-                        && !commands::permitted(c, &chat, &|x| self.user_in_group(x, &chat.user_id))
+                        && !commands::permitted(c, &chat, &|x| self.user_in_group(x, &chat.platform, &chat.user_id))
                     {
                         continue;
                     }
@@ -4540,7 +4567,7 @@ mod tests {
         );
         let e = engine(json!({"actions": [a]}));
         e.cfg.send_modify(|c| {
-            c.groups = vec![json!({"id": "g1", "name": "Regulars", "userIds": ["123"]})
+            c.groups = vec![json!({"id": "g1", "name": "Regulars", "userIds": ["twitch-123"]})
                 .as_object()
                 .unwrap()
                 .clone()];
@@ -4548,7 +4575,11 @@ mod tests {
         let out = run(async move {
             e.queue("a1", Obj::new());
             tokio::time::sleep(Duration::from_millis(200)).await;
-            assert_eq!(e.cfg.borrow().groups[0]["userIds"], json!(["UCabc"]));
+            // Kick's 123 is someone else than Twitch's 123: removing it on Kick leaves Twitch's.
+            assert_eq!(
+                e.cfg.borrow().groups[0]["userIds"],
+                json!(["twitch-123", "youtube-UCabc"])
+            );
         });
         for w in [
             "T add True",
