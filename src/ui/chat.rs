@@ -2683,7 +2683,10 @@ impl ChatColumn {
                 let p_idx = target_plat.get().min(3);
                 let plat = PLATFORMS[p_idx];
                 if plat == "tiktok" {
-                    if let Err(error) = crate::tiktok_bridge::validate_message(&text) {
+                    let (draft, target) = (text.clone(), reply.borrow().clone());
+                    let outgoing = query(&cmds, move |e| e.chat_reply_text(plat, draft, target.as_ref()))
+                        .unwrap_or_else(|| text.clone());
+                    if let Err(error) = crate::tiktok_bridge::validate_message(&outgoing) {
                         super::dialogs::message(&error);
                         return;
                     }
@@ -4231,7 +4234,10 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
                 return;
             }
             if targets.contains(&"tiktok") {
-                if let Err(error) = crate::tiktok_bridge::validate_message(&text) {
+                let (draft, target) = (text.clone(), reply.clone());
+                let outgoing = query(&cmds, move |e| e.chat_reply_text("tiktok", draft, target.as_ref()))
+                    .unwrap_or_else(|| text.clone());
+                if let Err(error) = crate::tiktok_bridge::validate_message(&outgoing) {
                     super::dialogs::message(&error);
                     return;
                 }

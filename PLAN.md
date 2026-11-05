@@ -562,6 +562,13 @@ platform handles through channels, never through shared locks held across awaits
   Hide internal sticker IDs in tips and fallback text, and prevent unsupported native sticker sends.
   Refresh account pictures on change without continuously redrawing an idle popup.
 
+- [x] TikTok capability audit: receive message deletions, user-history deletions, pins and pin
+  cancellations; report pause/resume without dropping chat. Expose observed state and development
+  event injection through WebSocket requests. Recover room lookup through the browser after a public
+  lookup failure, accept pasted LIVE links, and reject oversized messages before clearing the draft.
+  Reuse the browser device cookie, recheck signing state when reopening setup after a transient error,
+  and never replay a send. Keep validation notices readable when the window is resized.
+
 ## UI and UX review
 
 The agreed scope is to fix the issues cited in the UI/UX reviews and verify the affected screens.

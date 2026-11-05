@@ -3930,7 +3930,9 @@ impl Engine {
             // Sent as the browser's account (useBot and fallback don't apply).
             43001 => {
                 let text = self.expand(ctx, s(o, "text"));
-                if !self.dev_out("tiktok", &text, false) {
+                if let Err(err) = crate::tiktok_bridge::validate_message(&text) {
+                    crate::error(format!("TikTok: {err}"));
+                } else if !self.dev_out("tiktok", &text, false) {
                     if let Err(err) = crate::tiktok_bridge::send_message(self, &text).await {
                         crate::error(format!("TikTok: {err}"));
                     }

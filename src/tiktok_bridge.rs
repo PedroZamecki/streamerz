@@ -404,7 +404,11 @@ fn answer(status: u64, body: &Value) -> Result<(), String> {
 
 /// Native sticker encoding is not implemented. Never post an internal picture ID as chat text.
 pub(crate) fn validate_message(text: &str) -> Result<(), String> {
-    if text.split("[tiktok:").skip(1).any(|tail| tail.contains(']')) {
+    if text.trim().is_empty() {
+        Err(crate::i18n::tr("chat.tiktok_empty").to_string())
+    } else if text.chars().count() > MAX_CHARS {
+        Err(crate::i18n::tr("chat.tiktok_too_long").to_string())
+    } else if text.split("[tiktok:").skip(1).any(|tail| tail.contains(']')) {
         Err(crate::i18n::tr("chat.tiktok_stickers_unavailable").to_string())
     } else {
         Ok(())
@@ -414,15 +418,17 @@ pub(crate) fn validate_message(text: &str) -> Result<(), String> {
 /// Sends `text` to the live being read, as the browser's TikTok account.
 pub async fn send_message(e: &Rc<Engine>, text: &str) -> Result<(), String> {
     validate_message(text)?;
+    if !e.tiktok_connected() {
+        return Err("TikTok isn't connected to a live".into());
+    }
     let room = e
         .tiktok()
         .and_then(|t| t.room_id())
         .ok_or("TikTok isn't connected to a live")?;
     let channel = crate::tiktok::clean_tiktok_channel(&e.config().tiktok.channel);
-    let text: String = text.chars().take(MAX_CHARS).collect();
     let b = &e.tiktok_bridge;
     let params = b.params().await?;
-    let (url, body) = chat_request(&params, &channel, &room, &text, crate::templates::clock::now_ms());
+    let (url, body) = chat_request(&params, &channel, &room, text, crate::templates::clock::now_ms());
     let init = json!({"method": "POST", "headers": {"content-type": "application/json; charset=UTF-8"}, "body": body});
     let (status, json) = b.fetch(&url, init).await?;
     let r = answer(status, &json);
@@ -431,6 +437,18 @@ pub async fn send_message(e: &Rc<Engine>, text: &str) -> Result<(), String> {
         b.params.borrow_mut().take();
     }
     r
+}
+
+/// The public reader's room endpoint, signed by the browser when public lookup fails.
+pub(crate) async fn room_id(e: &Rc<Engine>, channel: &str) -> Result<u64, crate::webcast::RoomLookupError> {
+    use crate::webcast::RoomLookupError;
+    let b = &e.tiktok_bridge;
+    let url = crate::webcast::user_room_url(channel).replace("user_is_login=false", "user_is_login=true");
+    let (status, body) = b.fetch(&url, json!({})).await.map_err(RoomLookupError::Transient)?;
+    if status != 200 {
+        return Err(RoomLookupError::Transient(format!("TikTok answered HTTP {status}")));
+    }
+    crate::webcast::room_from_response(channel, &body, b.user().eq_ignore_ascii_case(channel)).await
 }
 
 /// Search uses TikTok's signed web request, in the same hidden context as sending.
@@ -443,6 +461,15 @@ pub async fn search(e: &Rc<Engine>, query: &str) -> Result<Vec<crate::search::Fo
         .map_err(|_| "TikTok's search didn't answer. Try again.".to_string())?;
     answer(v["status"].as_u64().unwrap_or(0), &body)?;
     Ok(crate::search::tiktok_found(&body))
+}
+
+/// Explicit recovery reloads identity and signing state, never a chat send.
+pub(crate) fn retry(e: &Rc<Engine>) -> Result<(), String> {
+    if !e.tiktok_bridge.is_connected() {
+        return Err(NOT_CONNECTED.into());
+    }
+    warm(e, e.tiktok_bridge.serial.get());
+    Ok(())
 }
 
 fn warm(e: &Rc<Engine>, serial: u64) {
@@ -629,6 +656,15 @@ mod tests {
         assert!(validate_message("hello 🙂 :)").is_ok());
         assert!(validate_message("[tiktok:123]").is_err());
         assert!(validate_message("hello[tiktok:123]!").is_err());
+    }
+
+    #[test]
+    fn messages_are_validated_without_truncating_unicode() {
+        assert!(validate_message("").is_err());
+        assert!(validate_message(" \n ").is_err());
+        assert!(validate_message(&"🙂".repeat(150)).is_ok());
+        assert!(validate_message(&"🙂".repeat(151)).is_err());
+        assert!(validate_message(&format!("@creator {}", "a".repeat(150))).is_err());
     }
 
     #[test]

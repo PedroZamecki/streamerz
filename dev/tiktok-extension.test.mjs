@@ -73,6 +73,14 @@ test("reader only receives session cookies, and login alone opens a visible tab"
   assert.equal(state.tabs[0].url, "https://www.tiktok.com/login");
 });
 
+test("the reader can reuse TikTok's device cookie without unrelated browser cookies", async () => {
+  const { state, call } = worker();
+  state.cookies.push({ name: "ttwid", value: "device" });
+  assert.equal((await call({ op: "session" })).cookie, "sessionid=session; ttwid=device");
+  assert.equal(state.creates, 0);
+  assert.equal(state.tabs.length, 0);
+});
+
 test("login redirects report sign-in immediately, without an idle loading loop", () => {
   const messages = [];
   const parent = { postMessage(m, origin) { messages.push({ m, origin }); } };

@@ -47,8 +47,8 @@ Dialogs: always inside the app's window, in its middle, over the window blurred 
 window of their own (those land anywhere on Wayland and tiling desktops, and could be opened twice). Only one
 can be in front: nothing behind it takes clicks, the wheel or keys until it closes. A title row with a
 close button (X, and Escape, cancel), a rounded panel with a soft shadow, and its contents. A tone colours
-the border and the icon: plain, info, question, success, warning, error. A dialog grows or shrinks with its
-contents (`Dialog::resizer`). Only when the window is hidden in the tray does a dialog get a window of its own.
+the border and the icon: plain, info, question, success, warning, error. Messages rewrap and stay centered
+when the app is resized. A dialog grows or shrinks with its contents (`Dialog::resizer`). Only when the window is hidden in the tray does a dialog get a window of its own.
 
 Motion: a dialog rises into place while the window behind it fades from sharp to blurred, and sinks as it
 closes; a menu or a popover unrolls from the top. Everything moves through `anim::play` (eased out, under a

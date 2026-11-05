@@ -58,6 +58,11 @@ Unicode emoji can be sent. Native TikTok stickers are shown when received, with 
 internal IDs in their tooltip, but their outgoing encoding is not implemented. The picker hides these
 unsendable entries and a pasted sticker token produces an explanation before anything is posted.
 
+TikTok also follows incoming message and user-history deletions, pinned comments and explicit pin
+cancellations. Pause and resume updates appear in chat without disconnecting it. The 150-character
+limit includes a reply's @mention; an oversized draft stays in the composer so it can be shortened.
+See [TikTok capabilities](TIKTOK.md) for the supported paths and verification limits.
+
 ## Twitch chat commands
 
 Twitch's chat API sends text as text, so Streamerz turns a command typed in the box into the call it

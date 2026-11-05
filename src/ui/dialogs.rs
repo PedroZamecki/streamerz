@@ -669,12 +669,24 @@ pub fn ok_cancel(bar: &mut Flex, answer: &Answer, enter: bool) {
 
 /// Show and wait for an answer; `check` may refuse an OK (it says why itself). Hides the dialog.
 pub fn run(win: &mut Dialog, answer: &Answer, mut check: impl FnMut() -> bool) -> bool {
+    run_layout(win, answer, &mut check, |_| {})
+}
+
+/// Reflow responsive contents on existing UI events, without an idle timer.
+fn run_layout(
+    win: &mut Dialog,
+    answer: &Answer,
+    mut check: impl FnMut() -> bool,
+    mut layout: impl FnMut(&mut Dialog),
+) -> bool {
+    layout(win);
     win.open();
     loop {
         while win.shown() && answer.get().is_none() {
             if !super::nested_wait(None) {
                 break;
             }
+            layout(win);
         }
         match answer.get() {
             Some(true) if !check() => answer.set(None),
@@ -768,7 +780,7 @@ fn notice_of(tone: Tone, text: &str, buttons: &[&str], default: usize, escapable
     });
     top.fixed(&pic, PIC);
     // Wrapped here, not by FLTK, so the dialog is sized for exactly these lines.
-    Frame::default()
+    let mut words = Frame::default()
         .with_label(&lines.join("\n").replace('@', "@@"))
         .with_align(Align::Left | Align::Inside | Align::Top);
     top.end();
@@ -795,7 +807,33 @@ fn notice_of(tone: Tone, text: &str, buttons: &[&str], default: usize, escapable
     col.fixed(&bar, ROW);
     col.end();
     win.end();
-    run(&mut win, &answer, || true).then(|| picked.get())
+    let mut size = None;
+    run_layout(
+        &mut win,
+        &answer,
+        || true,
+        |win| {
+            let available = host().map(|host| (host.w(), host.h()));
+            if size == Some(available) {
+                return;
+            }
+            size = Some(available);
+            let width = available.map_or(w, |(width, _)| w.min((width - MARGIN * 2).max(200)));
+            draw::set_font(Font::Helvetica, 14);
+            let lines = wrap(text, (width - PAD * 2 - PIC - GAP).max(1), |s| draw::width(s) as i32);
+            let body = (lines.len() as i32 * LINE).max(PIC);
+            let inset = PAD - head_for("");
+            let height = inset + body + 18 + ROW + bottom;
+            words.set_label(&lines.join("\n").replace('@', "@@"));
+            let (x, y) = (win.x(), win.y());
+            win.resize(x, y, width, height);
+            col.resize(PAD, inset, width - PAD * 2, body + 18 + ROW);
+            col.layout();
+            top.layout();
+            win.resizer()(height);
+        },
+    )
+    .then(|| picked.get())
 }
 
 /// Asks what to do among `choices` (each a button): the index picked, or None when it is closed. The

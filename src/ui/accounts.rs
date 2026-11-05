@@ -1367,6 +1367,12 @@ fn login(cfg: &Cfg, cmds: &Cmds, p: P, bot: bool) {
 /// step is ticked off as it happens, up to logging in to TikTok.
 fn tiktok_sending(cmds: &Cmds) {
     use super::Health as H;
+    tell(cmds, |e| {
+        let b = &e.tiktok_bridge;
+        if b.is_connected() && !b.ready() && !b.user().is_empty() {
+            let _ = crate::tiktok_bridge::retry(e);
+        }
+    });
     const W: i32 = 640;
     let browsers = crate::browsers::installed();
     // What's in it, top to bottom (with 6 between each): the why, the title, a row per browser, a gap,

@@ -20,9 +20,9 @@ puts it in the chat, whatever reads it. Try them without a live channel: `FireTr
 | Emotes (platform, 7TV, BTTV, FFZ) | Shown | Shown | Shown | Shown |
 | Animated emotes (Options > Animated emotes) | Shown | Shown | Shown | Shown |
 | Replies ("Replying to") | Shown | Shown | No | No |
-| Deleted message (struck through, or removed elsewhere) | Shown | Shown | Shown | No |
+| Deleted message (struck through, or removed elsewhere) | Shown | Shown | Shown | Shown |
 | User timed out / banned (their lines go) | Shown + Event | Shown + Event | Shown | No |
-| Pinned message, who pinned, time left | Shown | Shown | Shown (no end) | No |
+| Pinned message, who pinned, time left | Shown | Shown | Shown (no end) | Shown (explicit cancellation) |
 | Chat cleared | Not yet | Not yet | No | No |
 
 ## Twitch

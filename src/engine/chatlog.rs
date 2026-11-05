@@ -1049,7 +1049,7 @@ impl Engine {
     }
 
     /// A line from Streamerz itself (a failed send, a dev-mode send).
-    fn chat_note(&self, platform: &str, text: String) {
+    pub(crate) fn chat_note(&self, platform: &str, text: String) {
         self.chat_log_mut().push(Line {
             platform: platform.into(),
             time: crate::fmt::shown_time(&crate::fmt::now()),
@@ -1481,7 +1481,17 @@ impl Engine {
         let own = self.own_channel(platform) || crate::roles::get(platform).0.moderates();
         let mut st = self.st.borrow_mut();
         let log = &mut st.chat_log;
-        let mut changed = false;
+        let before = log.pins.len();
+        log.pins.retain(|pin| {
+            pin.platform != platform
+                || !((!msg_id.is_empty() && pin.msg_id == msg_id)
+                    || (!user_id.is_empty()
+                        && log
+                            .lines
+                            .iter()
+                            .any(|l| l.platform == platform && l.msg_id == pin.msg_id && l.user_id == user_id)))
+        });
+        let mut changed = before != log.pins.len();
         for l in log.lines.iter_mut().filter(|l| {
             l.platform == platform
                 && !l.note
@@ -1489,6 +1499,7 @@ impl Engine {
                 && ((!msg_id.is_empty() && l.msg_id == msg_id) || (!user_id.is_empty() && l.user_id == user_id))
         }) {
             l.deleted = true;
+            l.pinned = None;
             if !own {
                 l.text = "message deleted".into();
                 l.emotes.clear();
@@ -2100,6 +2111,27 @@ impl Engine {
             .any(|p| p == platform)
     }
 
+    /// The outgoing mention, using TikTok's handle even when the display name differs.
+    pub(crate) fn chat_reply_text(&self, platform: &str, text: String, reply: Option<&Line>) -> String {
+        let Some(line) =
+            reply.filter(|l| l.platform == platform && (l.msg_id.is_empty() || !matches!(platform, "twitch" | "kick")))
+        else {
+            return text;
+        };
+        let remembered = (platform == "tiktok" && line.handle.is_none())
+            .then(|| self.chatter(platform, &line.user_id))
+            .flatten()
+            .and_then(|s| s.args.get("uniqueId").and_then(Value::as_str).map(str::to_string));
+        format!(
+            "@{} {text}",
+            line.handle
+                .as_deref()
+                .or(remembered.as_deref())
+                .unwrap_or(&line.user)
+                .trim_start_matches('@')
+        )
+    }
+
     /// Send `text` to an explicit list of platforms with configurable account fallback.
     pub fn send_chat_list(
         self: &Rc<Self>,
@@ -2119,23 +2151,16 @@ impl Engine {
             .collect();
         for &p in to {
             let bot = bot && p != "tiktok";
-            let mut text = for_platform(text, p, &kick_known);
+            let text = for_platform(text, p, &kick_known);
             // A reply where the platform has them; a mention elsewhere.
             let reply_target = reply.filter(|l| l.platform == p);
             let reply_id = reply_target.filter(|l| !l.msg_id.is_empty() && matches!(p, "twitch" | "kick"));
-            if let (Some(l), None) = (reply_target, reply_id) {
-                let remembered = (p == "tiktok" && l.handle.is_none())
-                    .then(|| self.chatter(p, &l.user_id))
-                    .flatten()
-                    .and_then(|s| s.args.get("uniqueId").and_then(Value::as_str).map(str::to_string));
-                text = format!(
-                    "@{} {text}",
-                    l.handle
-                        .as_deref()
-                        .or(remembered.as_deref())
-                        .unwrap_or(&l.user)
-                        .trim_start_matches('@')
-                );
+            let text = self.chat_reply_text(p, text, reply_target);
+            if p == "tiktok" {
+                if let Err(error) = crate::tiktok_bridge::validate_message(&text) {
+                    self.chat_note(p, error);
+                    continue;
+                }
             }
             let to = reply_id.map(|l| format!(", reply to @{}", l.user)).unwrap_or_default();
             let reply_id = reply_id.map(|l| l.msg_id.clone());
@@ -2867,6 +2892,13 @@ mod tests {
                 assert_eq!(message["text"], "@actual.handle :)");
                 assert_eq!(message["bot"], false);
             }
+            e.send_chat_list(&["tiktok"], &"a".repeat(140), false, true, Some(line));
+            assert!(
+                e.dev_take().unwrap().is_empty(),
+                "the mention must count towards the limit"
+            );
+            e.send_chat_list(&["tiktok"], &"a".repeat(135), false, true, Some(line));
+            assert_eq!(e.dev_take().unwrap()[0]["text"].as_str().unwrap().chars().count(), 150);
         });
     }
 

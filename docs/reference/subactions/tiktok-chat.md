@@ -27,6 +27,6 @@ None set.
 ### Notes
 
 - TikTok has no official way to send LIVE chat. The extension uses an offscreen TikTok frame while Streamerz runs; no helper tab is visible. TikTok's own scripts sign the message.
-- The message goes to the live Streamerz is reading (Accounts > TikTok > Channel). TikTok takes up to 150 characters; the rest is cut.
+- The message goes to the live Streamerz is reading (Accounts > TikTok > Channel). TikTok takes up to 150 characters. Longer messages are rejected with a reason, without sending a shortened copy.
 - When the extension isn't connected, TikTok isn't live, or TikTok refuses the message (too fast, muted, comments off), nothing is sent and the reason is logged.
 - In development mode (`STREAMERZ_DEV=1`) the message is kept for `GetChatOut` instead of sent.

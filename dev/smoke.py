@@ -332,6 +332,15 @@ def main():
         if "Delete them" not in json.dumps(ws.ask({"request": "StreamerzUi", "id": "f", "do": "find Delete them"})):
             failures.append("the question about the old channel's people didn't open")
         ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/room.png"})
+        if not WINE:
+            # Open notices rewrap when their host shrinks, then regain their natural width.
+            for width in (540, 1100):
+                xdo("windowsize", window, str(width), "700")
+                time.sleep(0.3)
+                words = widgets("You were reading")
+                if len(words) != 1 or not fits_window(words[0]):
+                    failures.append(f"the open channel question clips its text at {width}px")
+                ui(f"shot {OUT}/room-{width}.png")
         # This question has three explicit choices, so answer it before navigating away.
         keep = ws.ask({"request": "StreamerzUi", "id": "keep", "do": "find Keep them apart"})["result"]
         where = re.search(r" at (\d+),(\d+)", keep)

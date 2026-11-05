@@ -241,3 +241,35 @@ It refreshes only when account data or pictures change.
 The final hidden, disconnected optimized development sample held at 28,724 KiB RSS for 30 seconds,
 with zero CPU ticks (100 Hz). This does not verify authenticated browser usage or the Twitch + OBS
 budget. Windows runtime checks and authenticated background memory profiling remain pending.
+
+### TikTok capability audit
+
+Linux, 2026-11-05: the optimized serial suite passed 500 tests (13 ignored); nine extension tests
+passed. Formatting, clippy with warnings denied, locale validation and the full UI smoke passed.
+The first parallel debug run saw a locale catalog mismatch while another checkout shared its build
+artifacts and a Twitch timeout assertion; the optimized serial run passed both.
+
+Wire fixtures verify packed and unpacked 64-bit deletion IDs, chat pins, pause/resume and numeric room
+IDs. Handler tests verify deletion and pin synchronization, stale cancellation rejection, pause event
+deduplication and stream state. A WebSocket fixture verifies the browser room endpoint and its signed
+lookup routing. Request tests cover dev-only event injection and authenticated state access. The extension
+fixture checks that only the allowed session/device cookies reach the native reader, without a page load.
+
+An isolated native UI fixture on DISPLAY=:99 verified pins and pause notices at 1100 and 540 pixels,
+deleting the pinned message, resuming, an oversized draft retained after validation, and an accepted
+`:)` captured only in development output. No real chat message was posted during this audit.
+Artifacts are in /tmp/ttlab/possibilities-*.png; the complete smoke is in /tmp/szsmoke.
+
+The new incoming event types and the browser fallback have fixture coverage. Live moderator deletion,
+pin duration units, a real pause/resume and public-challenge fallback remain unverified. Windows runtime
+and the hidden Twitch + OBS resource budget remain pending. See [TIKTOK.md](TIKTOK.md) for capabilities
+and unsupported operations.
+
+The shared notice helper now rewraps on host resize using existing UI events. Five focused dialog
+tests passed (one ignored), and the smoke checks an open question at 540 and 1100 pixels. The TikTok
+validation notice was also inspected at both widths with its draft intact.
+
+Hidden, disconnected optimized development samples (30 seconds, 100 Hz): before this audit,
+37,852 KiB RSS; final build, 38,820 KiB RSS. Both stayed stable and used zero CPU ticks. The final
+workspace also contains concurrent MCP changes, so this comparison does not isolate the TikTok code.
+The existing integration budget is not established by these disconnected samples.

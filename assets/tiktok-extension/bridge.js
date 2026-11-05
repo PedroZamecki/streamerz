@@ -46,7 +46,7 @@ async function handle(m) {
     return {};
   }
   if (m.op === "session") {
-    const keep = new Set(["sessionid", "sessionid_ss", "sid_tt", "sid_guard", "uid_tt", "tt-target-idc"]);
+    const keep = new Set(["ttwid", "sessionid", "sessionid_ss", "sid_tt", "sid_guard", "uid_tt", "tt-target-idc"]);
     const cookies = await chrome.cookies.getAll({ url: "https://www.tiktok.com/" });
     return { cookie: cookies.filter(c => keep.has(c.name)).map(c => c.name + "=" + c.value).join("; ") };
   }

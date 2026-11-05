@@ -686,6 +686,7 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
         | "StreamerzSaveGroupFiles"
         | "StreamerzSearchChannels"
         | "StreamerzTikTokBridge"
+        | "StreamerzTikTokState"
             if !authed && e.config().websockets.enable_auth =>
         {
             error(&id, "Authentication required to use this method")
@@ -833,6 +834,7 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
             let done = match get("action") {
                 "" | "status" => Ok(()),
                 "install" => crate::tiktok_bridge::install(e).map(drop),
+                "retry" => crate::tiktok_bridge::retry(e),
 
                 "remove" => {
                     crate::tiktok_bridge::remove(e);
@@ -852,7 +854,41 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
                 None => error(&id, "Countdown not found"),
             }
         }
-        // Dev mode only (STREAMERZ_DEV=1): fake chat in, and the chat that would have gone out.
+        "StreamerzTikTokState" => ok(
+            &id,
+            json!({
+                "stream": crate::tiktok::stream_info(e.chat_connected("tiktok")),
+                "topGifters": crate::tiktok::top_gifters(req["count"].as_u64().unwrap_or(10).clamp(1, 100) as usize),
+                "pins": e.chat_pins().into_iter().filter(|p| p.platform == "tiktok")
+                    .map(|p| json!({"msgId": p.msg_id, "user": p.user, "text": p.text, "by": p.by})).collect::<Vec<_>>()
+            }),
+        ),
+        // Dev mode only: run the same handler as an incoming LIVE event.
+        "InjectTikTokEvent" if e.dev() => {
+            let event = get("event");
+            if !matches!(
+                event,
+                "chat"
+                    | "gift"
+                    | "like"
+                    | "follow"
+                    | "share"
+                    | "subscribe"
+                    | "member"
+                    | "roomUser"
+                    | "messageDelete"
+                    | "roomPin"
+                    | "streamPaused"
+                    | "streamResumed"
+            ) {
+                error(&id, "Unknown TikTok event")
+            } else if !req["data"].is_object() {
+                error(&id, "data must be an object")
+            } else {
+                crate::tiktok::handle_tiktok_event(e, &e.config().tiktok.channel, event, &req["data"]);
+                ok(&id, json!({}))
+            }
+        }
         "InjectChat" if e.dev() => match e.inject_chat(
             get("platform"),
             get("user"),
@@ -1670,6 +1706,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tiktok_state_and_event_injection_use_the_real_handler() {
+        let _guard = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(json!({"actions": []}));
+            let inject = json!({"request": "InjectTikTokEvent", "event": "streamPaused", "data": {}});
+            assert!(answer(&e, &inject, true).is_none());
+            e.dev_mode();
+            e.change(|c| c.window.chat.save_history = true);
+            e.simulate_chat_connection("tiktok", Some(true));
+            assert_eq!(answer(&e, &inject, true).unwrap()["status"], "ok");
+            let state = answer(&e, &json!({"request": "StreamerzTikTokState"}), true).unwrap();
+            assert_eq!(state["stream"]["isPaused"], true);
+            assert_eq!(state["stream"]["isLive"], true);
+            assert_eq!(
+                answer(
+                    &e,
+                    &json!({"request": "InjectTikTokEvent", "event": "missing", "data": {}}),
+                    true
+                )
+                .unwrap()["status"],
+                "error"
+            );
+            assert_eq!(
+                answer(
+                    &e,
+                    &json!({"request": "InjectTikTokEvent", "event": "chat", "data": []}),
+                    true
+                )
+                .unwrap()["status"],
+                "error"
+            );
+            let retry = json!({"request": "StreamerzTikTokBridge", "action": "retry"});
+            assert_eq!(answer(&e, &retry, true).unwrap()["status"], "error");
+            e.change(|c| c.websockets.enable_auth = true);
+            assert_eq!(
+                answer(&e, &json!({"request": "StreamerzTikTokState"}), false).unwrap()["status"],
+                "error"
+            );
+        });
+    }
+
+    #[test]
     fn action_group_requests_preserve_data_on_rename_and_export() {
         let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -1870,6 +1948,20 @@ mod tests {
                 "user_list": [{"user_info": {"unique_id": "tester", "nickname": "Tester"}}]}).to_string()});
             ws.send(Message::Text(reply.to_string().into())).await.unwrap();
             assert_eq!(search.await.unwrap().unwrap()["channels"][0]["handle"], "tester");
+            let room_engine = e.clone();
+            let room =
+                tokio::task::spawn_local(async move { crate::tiktok_bridge::room_id(&room_engine, "creator").await });
+            let request = match ws.next().await.unwrap().unwrap() {
+                Message::Text(t) => serde_json::from_str::<Value>(&t).unwrap(),
+                _ => panic!("room request"),
+            };
+            assert_eq!(request["op"], "fetch");
+            assert!(request["url"].as_str().unwrap().contains("uniqueId=creator"));
+            assert!(request["url"].as_str().unwrap().contains("user_is_login=true"));
+            let reply = json!({"id": request["id"], "status": 200, "body": json!({"statusCode": 0,
+                "data": {"user": {"roomId": "777"}, "liveRoom": {"status": 2}}}).to_string()});
+            ws.send(Message::Text(reply.to_string().into())).await.unwrap();
+            assert_eq!(room.await.unwrap(), Ok(777));
             ws.send(Message::Text(json!({"op": "session_changed"}).to_string().into()))
                 .await
                 .unwrap();
