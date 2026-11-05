@@ -2221,6 +2221,19 @@ fn effective_sender_role(
     cmds: &Cmds,
     plat_idx: usize,
 ) -> (bool, Option<String>, Option<fltk::image::RgbImage>) {
+    // TikTok sends as whoever is logged in to the browser with the extension.
+    if PLATFORMS[plat_idx] == "tiktok" {
+        if !crate::engine::can_send(&cfg.borrow(), "tiktok") {
+            return (false, None, None);
+        }
+        let user = query(cmds, |e| e.tiktok_bridge.user()).unwrap_or_default();
+        let name = if user.is_empty() {
+            tr("chat.tiktok_browser").to_string()
+        } else {
+            user
+        };
+        return (false, Some(name), None);
+    }
     let want_broadcaster = cfg
         .borrow()
         .window
@@ -2921,7 +2934,8 @@ impl ChatColumn {
         let mut bar = self.bar.clone();
         let mut space = self.down_bar.clone();
         let mut read_only = self.read_only.clone();
-        let show_read_only = connected && plat == "tiktok";
+        // TikTok reads without a login; sending needs the browser set up (Accounts > TikTok).
+        let show_read_only = connected && plat == "tiktok" && !crate::engine::can_send(&cfg.borrow(), plat);
         let show_bar = connected && !show_read_only;
         if show_bar {
             bar.show();
@@ -2943,8 +2957,11 @@ impl ChatColumn {
         col.fixed(&read_only, if show_read_only { ROW + 4 } else { 0 });
         col.fixed(&space, if connected { 0 } else { ROW + 4 });
         col.layout();
-        let tip = if plat == "tiktok" {
+        let tip = if show_read_only {
             tr("chat.tiktok_read_only_tip").to_string()
+        } else if plat == "tiktok" {
+            let name = sender_name.clone().unwrap_or_default();
+            trf("chat.tiktok_sending_as_tip", &[("name", &name.replace('@', "@@"))])
         } else {
             match &sender_name {
                 Some(name) => trf(
@@ -2970,8 +2987,11 @@ impl ChatColumn {
             }
         }
         let mut inp = self.input.clone();
-        let placeholder_tip = if plat == "tiktok" {
+        let placeholder_tip = if show_read_only {
             tr("chat.tiktok_read_only").to_string()
+        } else if plat == "tiktok" {
+            let name = sender_name.clone().unwrap_or_default();
+            trf("chat.tiktok_sending_as_tip", &[("name", &name.replace('@', "@@"))])
         } else {
             match &sender_name {
                 Some(name) => trf(
@@ -3804,7 +3824,7 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
                 }
                 if slug == "tiktok" {
                     btn.deactivate();
-                    btn.set_tooltip(tr("chat.tiktok_read_only_tip"));
+                    btn.set_tooltip(tr("chat.tiktok_browser_tip"));
                 }
                 pic_f.redraw();
                 info_f.redraw();

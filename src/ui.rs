@@ -805,6 +805,7 @@ fn icon_for(label: &str) -> Option<&'static str> {
         "settings" => "settings",
         "fill_with_test_names" => "users",
         "open" | "open_folder" => "folder-open",
+        "set_up" => "puzzle",
         "open_github" => "external-link",
         "browse" => "folder-open",
         "user_info" => "user-round",

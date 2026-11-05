@@ -275,6 +275,29 @@ def main():
         ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Accounts"})
         if "Bot (optional)" not in json.dumps(ws.ask({"request": "StreamerzUi", "id": "f", "do": "find optional"})):
             failures.append("the Accounts page didn't fill in its accounts")
+        # TikTok reads without setup; sending goes through the browser extension once it's set up.
+        find = lambda text: json.dumps(ws.ask({"request": "StreamerzUi", "id": "f", "do": "find " + text}))
+        def tiktok_chat():
+            ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Chat"})
+            ws.ask({"request": "StreamerzUi", "id": "v", "do": "chatview TikTok"})
+            time.sleep(0.5)
+            return find("set up sending")
+        if "set up sending" not in tiktok_chat():
+            failures.append("TikTok's chat doesn't say how to send before sending is set up")
+        ws.ask({"request": "StreamerzTikTokBridge", "id": "tb", "action": "install"})
+        ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Accounts"})
+        time.sleep(0.5)
+        if "Waiting for the browser extension" not in find("Waiting for the browser"):
+            failures.append("Accounts doesn't show TikTok sending waiting for the extension")
+        ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/tiktok_sending.png"})
+        if "set up sending" in tiktok_chat():
+            failures.append("TikTok's chat stays read-only once sending is set up")
+        ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/tiktok_chat_box.png"})
+        ws.ask({"request": "StreamerzTikTokBridge", "id": "tb", "action": "remove"})
+        if "set up sending" not in tiktok_chat():
+            failures.append("TikTok's chat isn't read-only again after removing sending")
+        ws.ask({"request": "StreamerzUi", "id": "together", "do": "chatview All together"})
+        check("TikTok sending setup")
         # New chatters show up on an open Community tab.
         ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Community"})
         before = json.dumps(ws.ask({"request": "StreamerzUi", "id": "c", "do": "community"}))

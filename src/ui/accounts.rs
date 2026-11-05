@@ -732,6 +732,8 @@ struct Row {
     who: [(Frame, Frame, Button); 2],
     /// The rows they sit in: Login and Logout have different words, so the button's width follows them.
     rows: [Flex; 2],
+    /// TikTok only: sending through the browser, its state and Set up.
+    sending: Option<Frame>,
 }
 
 pub struct Accounts {
@@ -749,6 +751,8 @@ impl Accounts {
     pub fn refresh(&mut self) {
         // Before borrowing the config: the engine may be waiting to write it.
         let (on, standby, tiktok) = states(&self.cmds);
+        let bridge =
+            query(&self.cmds, |e| (e.tiktok_bridge.is_connected(), e.tiktok_bridge.user())).unwrap_or_default();
         let locked = crate::secrets::is_locked();
         if locked {
             let detail = match crate::secrets::locked_reason() {
@@ -792,6 +796,20 @@ impl Accounts {
             };
             h.show(&mut r.status, &text);
             r.status.set_tooltip(&text.replace('@', "@@"));
+            if let Some(status) = &mut r.sending {
+                let (h, text) = match &bridge {
+                    _ if !crate::tiktok_bridge::set_up(&c) => {
+                        (H::Off, tr("accounts.tiktok_sending.not_set_up").to_string())
+                    }
+                    (false, _) => (H::Standby, tr("accounts.tiktok_sending.waiting").to_string()),
+                    (true, user) if user.is_empty() => {
+                        (H::Up, tr("accounts.tiktok_sending.connected_anon").to_string())
+                    }
+                    (true, user) => (H::Up, trf("accounts.tiktok_sending.connected", &[("user", user)])),
+                };
+                h.show(status, &text);
+                status.set_tooltip(&text.replace('@', "@@"));
+            }
             r.connect.set_label(if active {
                 tr("btn.disconnect")
             } else {
@@ -952,6 +970,27 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
 
         let row = account_row(tr("accounts.row_bot"), &mut who, &mut people);
         col.fixed(&row, ROW);
+        // TikTok sends through the user's browser (tiktok_bridge.rs).
+        let sending = (p == P::TikTok).then(|| {
+            let mut row = Flex::default().row();
+            row.set_pad(8);
+            let mut l = Frame::default()
+                .with_label(tr("accounts.row_sending"))
+                .with_align(Align::Right | Align::Inside);
+            l.set_label_color(super::muted());
+            row.fixed(&l, 110);
+            let status = Frame::default()
+                .with_align(Align::Left | Align::Inside | Align::Clip)
+                .ellipsis();
+            let mut set_up = button(&mut row, tr("btn.set_up"), 80);
+            row.end();
+            col.fixed(&row, ROW);
+            set_up.set_callback({
+                let cmds = cmds.clone();
+                move |_| tiktok_sending(&cmds)
+            });
+            status
+        });
         let sep = Frame::default();
         col.fixed(&sep, 14);
         let who: [(Frame, Frame, Button); 2] = [who.remove(0), who.remove(0)];
@@ -965,6 +1004,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
             connect,
             who,
             rows: rows_of,
+            sending,
         });
     }
     let guide = Frame::default()
@@ -1178,6 +1218,74 @@ fn login(cfg: &Cfg, cmds: &Cmds, p: P, bot: bool) {
             }
         }
     }
+}
+
+/// Sending to TikTok through the browser: sets it up (writes the extension), says how to load it, and
+/// turns it off.
+fn tiktok_sending(cmds: &Cmds) {
+    // The files are written every time: the folder may have been deleted since.
+    let folder = match query(cmds, crate::tiktok_bridge::install) {
+        Some(Ok(folder)) => folder.display().to_string(),
+        Some(Err(err)) => return dialogs::message(&err),
+        None => return,
+    };
+    let (mut win, answer) = dialogs::window(640, 380, tr("accounts.tiktok_sending.title"));
+    let mut col = Flex::new(10, 10, 620, 360, None).column();
+    col.set_pad(6);
+    let help = Frame::default()
+        .with_label(tr("accounts.tiktok_sending.help"))
+        .with_align(Align::Left | Align::Inside | Align::Wrap);
+    col.fixed(&help, 150);
+    let mut path_row = Flex::default().row();
+    path_row.set_pad(8);
+    let mut path = fltk::output::Output::default();
+    path.set_value(&folder);
+    let mut copy = button(&mut path_row, tr("btn.copy_path"), 100);
+    let mut open = button(&mut path_row, tr("btn.open_folder"), 110);
+    path_row.end();
+    col.fixed(&path_row, ROW);
+    copy.set_callback({
+        let folder = folder.clone();
+        move |_| fltk::app::copy(&folder)
+    });
+    open.set_callback({
+        let folder = folder.clone();
+        move |_| crate::oauth::open_browser(&folder)
+    });
+    let after = Frame::default()
+        .with_label(tr("accounts.tiktok_sending.after"))
+        .with_align(Align::Left | Align::Inside | Align::Wrap);
+    col.fixed(&after, 96);
+    Frame::default();
+    let mut bar = Flex::default().row();
+    bar.set_pad(8);
+    let mut remove = button(&mut bar, tr("btn.remove_streamerz"), 90);
+    Frame::default();
+    let mut ok = button(&mut bar, tr("dialogs.ok"), 90);
+    bar.end();
+    col.fixed(&bar, ROW);
+    col.end();
+    win.end();
+    ok.set_shortcut(fltk::enums::Shortcut::from_key(fltk::enums::Key::Enter));
+    ok.set_callback({
+        let a = answer.clone();
+        move |_| a.set(Some(true))
+    });
+    remove.set_callback({
+        let (cmds, a) = (cmds.clone(), answer.clone());
+        move |_| {
+            if dialogs::choice(
+                tr("accounts.tiktok_sending.remove_confirm"),
+                tr("dialogs.cancel"),
+                tr("btn.remove_streamerz"),
+            ) {
+                tell(&cmds, crate::tiktok_bridge::remove);
+                a.set(Some(false));
+            }
+        }
+    });
+    dialogs::run(&mut win, &answer, || true);
+    crate::ui::changed();
 }
 
 /// Everything about the Spotify connection, in one place: the app's client ID (changing it forgets the
