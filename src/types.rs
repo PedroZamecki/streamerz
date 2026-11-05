@@ -2372,12 +2372,7 @@ pub const SUB_ACTION_INFO: &[(u32, &str, &str, &[&str])] = &[
         &["connectionId", "sceneName", "layerName", "url"],
     ),
     (41017, "Take Vertical Screenshot", "Meld Studio", &["connectionId"]),
-    (
-        43001,
-        "Send Message to Live Chat",
-        "TikTok/Chat",
-        &["text", "useBot", "fallback"],
-    ),
+    (43001, "Send Message to Live Chat", "TikTok/Chat", &["text"]),
     (43002, "Get Top Gifters", "TikTok/Gifts", &["count"]),
     (43003, "Get Stream Info", "TikTok", &[]),
     (44001, "Spin Wheel", "Integrations/Streamlabs", &[]),

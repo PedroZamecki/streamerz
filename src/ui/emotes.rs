@@ -71,7 +71,7 @@ pub fn providers_for(platform: &str) -> &'static [Provider] {
             Provider::Emoji,
         ],
         "youtube" => &[Provider::Favorites, Provider::SevenTv, Provider::Bttv, Provider::Emoji],
-        "tiktok" => &[Provider::Favorites, Provider::Platform, Provider::Emoji],
+        "tiktok" => &[Provider::Favorites, Provider::Emoji],
         _ => &[
             Provider::Favorites,
             Provider::SevenTv,
@@ -319,7 +319,9 @@ pub fn sections(
             note: favorites.is_empty().then(|| tr("emotes.favorites_hint").into()),
             emotes: favorites
                 .iter()
-                .filter(|(_, url)| !matches!(platform, "youtube" | "all") || !youtube_image(url))
+                .filter(|(name, url)| {
+                    (!matches!(platform, "youtube" | "all") || !youtube_image(url)) && !name.starts_with("[tiktok:")
+                })
                 .cloned()
                 .collect(),
         }],
@@ -389,13 +391,7 @@ pub fn sections(
                         emotes: seen.to_vec(),
                     });
                 }
-                "tiktok" => {
-                    out.push(EmoteSection {
-                        title: tr("emotes.tiktok_seen").into(),
-                        note: seen.is_empty().then(|| tr("emotes.tiktok_seen_hint").into()),
-                        emotes: seen.to_vec(),
-                    });
-                }
+
                 _ => {
                     if !seen.is_empty() {
                         out.push(EmoteSection {
@@ -1193,6 +1189,18 @@ async fn fetch_all(p: &LoadParams) -> Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tiktok_only_offers_sendable_emoji_and_favorites() {
+        assert!(!providers_for("tiktok").contains(&Provider::Platform));
+        let favorites = vec![
+            ("[tiktok:123]".into(), "https://example.test/sticker.png".into()),
+            ("🙂".into(), "https://example.test/emoji.png".into()),
+        ];
+        let sections = sections("tiktok", Provider::Favorites, true, &[], &favorites);
+        assert_eq!(sections[0].emotes.len(), 1);
+        assert_eq!(sections[0].emotes[0].0, "🙂");
+    }
 
     #[test]
     fn youtube_native_emotes_are_not_offered_for_sending() {

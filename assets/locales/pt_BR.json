@@ -648,8 +648,6 @@
   "emotes.platform": "Plataforma",
   "emotes.seen_across_chats": "Vistos em chats conectados",
   "emotes.seen_in_chat": "Vistos recentemente no chat",
-  "emotes.tiktok_seen": "Emotes do TikTok Live vistos",
-  "emotes.tiktok_seen_hint": "Figurinhas/emotes personalizados de inscritos do TikTok aparecem aqui conforme são usados na live.",
   "emotes.twitch_emotes": "Emotes da Twitch",
   "emotes.twitch_global_emotes": "Emotes globais da Twitch",
   "emotes.twitch_loading": "Carregando emotes da Twitch… (certifique-se de que uma conta esteja conectada)",
@@ -1073,5 +1071,7 @@
   "relogin.now": "Entrar",
   "accounts.tiktok_sending.loading": "Conectando ao TikTok…",
   "accounts.tiktok_sending.login_needed": "Entre no TikTok no seu navegador",
-  "find.tiktok_login": "Entre pela opção Contas > TikTok > Configurar primeiro."
+  "find.tiktok_login": "Entre pela opção Contas > TikTok > Configurar primeiro.",
+  "tip.tiktok_emote": "Emote do TikTok",
+  "chat.tiktok_stickers_unavailable": "Ainda não é possível enviar figurinhas do TikTok. Escolha um emoji ou digite uma mensagem."
 }

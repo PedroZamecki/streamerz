@@ -547,7 +547,7 @@ pub fn tiktok_badges_and_color(channel: &str, d: &Value) -> (Vec<(String, String
     (badges, color.to_string())
 }
 
-fn tiktok_emotes(d: &Value) -> Vec<(String, String)> {
+pub(crate) fn tiktok_emotes(d: &Value) -> Vec<(String, String)> {
     d["emotes"]
         .as_array()
         .into_iter()
@@ -585,6 +585,7 @@ fn tiktok_chat_line(channel: &str, d: &Value) -> Option<Line> {
         ts: ts as i64 * 1000,
         user,
         user_id: s("userId"),
+        handle: d["uniqueId"].as_str().filter(|s| !s.is_empty()).map(Box::<str>::from),
         text,
         emotes,
         broadcaster: s("uniqueId").eq_ignore_ascii_case(channel),

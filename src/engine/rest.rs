@@ -473,6 +473,8 @@ impl Engine {
             text: text.into(),
             emotes: if platform == "kick" {
                 crate::kick::kick_emotes(text)
+            } else if platform == "tiktok" {
+                crate::tiktok::tiktok_emotes(with.unwrap_or(extra))
             } else {
                 Vec::new()
             },

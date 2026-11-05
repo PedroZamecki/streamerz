@@ -32,6 +32,15 @@ pub(super) enum Tip {
     },
 }
 
+/// Synthetic wire tokens identify pictures; they are never names shown to people.
+pub(super) fn emote_name<'a>(platform: &str, name: &'a str) -> &'a str {
+    if platform == "tiktok" && name.starts_with("[tiktok:") && name.ends_with(']') {
+        crate::i18n::tr("tip.tiktok_emote")
+    } else {
+        name
+    }
+}
+
 /// The picture's side.
 const PIC: i32 = 56;
 const PAD: i32 = 10;
@@ -181,7 +190,7 @@ fn content(cmds: &Cmds, tip: &Tip) -> Content {
                 Some("tiktok") => "TikTok",
                 _ => "",
             };
-            if !from.is_empty() {
+            if !from.is_empty() && emote_name(platform, name) == name {
                 rows.extend(row("smile").map(|i| (i, format!("{from} {}", crate::i18n::tr("tip.emote")))));
             }
             if pic.as_ref().is_some_and(img::Pic::animated) {
@@ -189,7 +198,7 @@ fn content(cmds: &Cmds, tip: &Tip) -> Content {
             }
             Content {
                 pic: pic.map(|p| p.first()),
-                title: name.clone(),
+                title: emote_name(platform, name).to_string(),
                 source: src.and_then(|k| picture(k, 16)),
                 rows,
             }
@@ -310,5 +319,18 @@ pub(super) fn hide() {
                 h.redraw();
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn wire_ids_are_not_emote_names() {
+        assert_eq!(
+            super::emote_name("tiktok", "[tiktok:12345]"),
+            crate::i18n::tr("tip.tiktok_emote")
+        );
+        assert_eq!(super::emote_name("tiktok", "Happy"), "Happy");
+        assert_eq!(super::emote_name("twitch", "Kappa"), "Kappa");
     }
 }

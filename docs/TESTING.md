@@ -222,3 +222,22 @@ Final verification: 420 Rust tests passed, 10 ignored; eight extension lifecycle
 clippy, locale validation, documentation tests, narrow and wide Accounts screenshots, populated channel
 search, setup cancellation and the full UI smoke passed. Screenshot and live-test artifacts remain
 outside the repository.
+
+### TikTok account and chat audit
+
+Linux, 2026-11-05: 426 Rust tests passed, 10 ignored; eight extension lifecycle tests passed. Formatting,
+clippy, locale validation and the full UI smoke passed. The smoke checks the single browser-account
+popup, idle popup CPU, TikTok in Message all, and the Send Message form without bot or fallback controls.
+
+Narrow and wide screenshots verified browser-account pictures, the channel picture, the account popup,
+Message all, mention replies and native sticker previews. A development reply captured
+`@actual.handle :)` with `bot: false`; this follow-up sent nothing to a real chat. The WebSocket test
+covers a missing passport avatar filled through signed search and clearing the picture and role when
+the session changes. Native stickers remain receive-only; Unicode emoji can be sent.
+
+The open account popup used three CPU ticks over 10 idle seconds after its avatar loaded (100 Hz).
+It refreshes only when account data or pictures change.
+
+The final hidden, disconnected optimized development sample held at 28,724 KiB RSS for 30 seconds,
+with zero CPU ticks (100 Hz). This does not verify authenticated browser usage or the Twitch + OBS
+budget. Windows runtime checks and authenticated background memory profiling remain pending.

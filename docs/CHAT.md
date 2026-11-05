@@ -27,6 +27,9 @@ supplies search, authenticated reading and sending. Old separate account and bot
 used. An old account's own channel is preserved when loading its settings; its saved cookies are not
 carried into the new settings. Ordinary public LIVE reading still works without the extension.
 
+The browser account picture appears in Accounts, the composer and its single-account popup. Channel
+pictures use the same cache, with signed search when the extension is ready and a public lookup otherwise.
+
 The channel picker searches TikTok through the extension, with names, pictures, follower counts and
 live state. A pasted link or @handle still works when search is unavailable. Use my own channel selects
 the browser account. A new setup with no chosen channel uses that account's channel automatically.
@@ -46,6 +49,14 @@ the browser too if you no longer use it.
 To measure usage while other tabs are open, use the browser's Task Manager. Include Streamerz for TikTok
 and its hidden TikTok frame. Shared browser, network and GPU costs are separate. Developer tools and an
 open Task Manager can affect CPU readings; allow the context to settle before measuring it.
+
+TikTok replies add `@handle` to the message, using the chatter's handle rather than their display name.
+The same handle is used in mention suggestions and profile links. Message all includes TikTok and uses
+its browser account regardless of the account chosen for other platforms.
+
+Unicode emoji can be sent. Native TikTok stickers are shown when received, with a preview instead of
+internal IDs in their tooltip, but their outgoing encoding is not implemented. The picker hides these
+unsendable entries and a pasted sticker token produces an explanation before anything is posted.
 
 ## Twitch chat commands
 

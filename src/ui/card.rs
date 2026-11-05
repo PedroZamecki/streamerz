@@ -39,6 +39,7 @@ pub struct Who {
     pub platform: String,
     pub user_id: String,
     pub name: String,
+    pub login: String,
     pub color: Color,
     /// Already in the user's words (broadcaster, moderator...): shown when there are no badges.
     pub roles: Vec<&'static str>,
@@ -56,6 +57,7 @@ impl Who {
             platform: l.platform.clone(),
             user_id: l.user_id.clone(),
             name: l.user.clone(),
+            login: l.handle.as_deref().unwrap_or(&l.user).to_string(),
             color,
             roles: roles.iter().filter(|r| r.0).map(|r| r.1).collect(),
         }
@@ -82,6 +84,11 @@ impl Who {
             platform: s("type"),
             user_id: s("id"),
             name: s("display"),
+            login: u
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_else(|| u.get("display").and_then(serde_json::Value::as_str).unwrap_or_default())
+                .to_string(),
             color,
             roles,
         }
@@ -403,9 +410,13 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
 
     let login = seen
         .args
-        .get("userName")
+        .get(if who.platform == "tiktok" {
+            "uniqueId"
+        } else {
+            "userName"
+        })
         .map(text_of)
-        .unwrap_or_else(|| who.name.clone());
+        .unwrap_or_else(|| who.login.clone());
     let url = Rc::new(RefCell::new(profile_url(&who.platform, &login, &who.user_id)));
     open_profile.set_callback({
         let url = url.clone();

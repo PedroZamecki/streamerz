@@ -926,11 +926,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         ],
         1036 => &[("quoteId", "Quote ID", Int)],
         1037 => &[("quoteVariable", "Quote", Text)],
-        43001 => &[
-            ("text", "Message", Text),
-            ("useBot", "Use Bot Account", Bool),
-            ("fallback", "Fallback to Broadcaster", Bool),
-        ],
+        43001 => &[("text", "Message", Text)],
         7001 => &[
             ("name", "Name", Text),
             ("username", "Username", Text),

@@ -294,8 +294,24 @@ pub(super) struct AccountSlot {
     pub pic: Option<fltk::image::RgbImage>,
 }
 
-/// Look up `[broadcaster, bot]` account info and round avatars for `platform` (`"twitch"`, `"youtube"`, `"kick"`, `"tiktok"`).
+/// The extension's single account and the existing image cache, shared by every account indicator.
+pub(super) fn browser_account(cmds: &Cmds, size: i32) -> Option<AccountSlot> {
+    let (name, url) = query(cmds, |e| (e.tiktok_bridge.user(), e.tiktok_bridge.avatar()))?;
+    if name.is_empty() {
+        return None;
+    }
+    let pic = (!url.is_empty())
+        .then(|| super::img::get(cmds, &url, size, true))
+        .flatten()
+        .map(|p| p.first());
+    Some(AccountSlot { name, note: None, pic })
+}
+
+/// Account slots and round pictures. TikTok uses only the first slot, for its browser account.
 pub(super) fn platform_accounts(cmds: &Cmds, cfg: &Cfg, platform: &str, size: i32) -> [Option<AccountSlot>; 2] {
+    if platform == "tiktok" {
+        return [browser_account(cmds, size), None];
+    }
     let Some(p) = P::from_slug(platform) else {
         return [None, None];
     };
@@ -321,12 +337,19 @@ pub(super) fn room(cmds: &Cmds, cfg: &Cfg, platform: &str, size: i32) -> (String
     let Some(p) = P::from_slug(platform) else {
         return (String::new(), None);
     };
+    let browser = (platform == "tiktok").then(|| browser_account(cmds, size)).flatten();
     let (set, own, mine) = {
         let c = cfg.borrow();
         (
             p.channel(&c).trim().trim_start_matches('@').to_string(),
-            p.own(&c),
-            p.raw_account_name(&c, false),
+            browser
+                .as_ref()
+                .is_some_and(|b| p.channel(&c).is_empty() || b.name.eq_ignore_ascii_case(p.channel(&c)))
+                || p.own(&c),
+            browser
+                .as_ref()
+                .map(|b| b.name.clone())
+                .or_else(|| p.raw_account_name(&c, false)),
         )
     };
     let name = if set.is_empty() {
@@ -338,7 +361,7 @@ pub(super) fn room(cmds: &Cmds, cfg: &Cfg, platform: &str, size: i32) -> (String
     // already keep theirs.
     // The channel box may hold a typed lowercase login even when it is the account's own, so the
     // account's own display name wins there.
-    let shown = match (&mine, own && matches!(p, P::Twitch | P::YouTube)) {
+    let shown = match (&mine, own && matches!(p, P::Twitch | P::YouTube | P::TikTok)) {
         _ if name.is_empty() => name.clone(),
         (Some(m), true) if !m.is_empty() => m.clone(),
         _ => {
@@ -348,7 +371,9 @@ pub(super) fn room(cmds: &Cmds, cfg: &Cfg, platform: &str, size: i32) -> (String
                 .unwrap_or_else(|| name.clone())
         }
     };
-    let pic = if own {
+    let pic = if own && platform == "tiktok" {
+        browser.and_then(|b| b.pic)
+    } else if own {
         mine.as_ref()
             .and_then(|m| picture(cmds, cfg, p, false, m, size))
             .or_else(|| {
@@ -561,11 +586,13 @@ static NAMES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 fn channel_name(p: P, name: &str) -> Option<String> {
     let norm = name.trim().trim_start_matches('@').to_lowercase();
     let key = format!("{}:chan:{}", p.slug(), norm);
+    let browser_key = (p == P::TikTok).then(|| format!("{key}:browser"));
     NAMES
         .lock()
         .ok()?
         .iter()
-        .find(|(k, _)| *k == key)
+        .filter(|(k, _)| *k == key || browser_key.as_ref().is_some_and(|browser| k == browser))
+        .max_by_key(|(k, _)| k.ends_with(":browser"))
         .map(|(_, n)| n.clone())
         .filter(|n| !n.is_empty())
 }
@@ -578,7 +605,8 @@ fn channel_url(cmds: &Cmds, cfg: &Cfg, p: P, name: &str) -> String {
     if norm.is_empty() {
         return String::new();
     }
-    let key = format!("{}:chan:{}", p.slug(), norm);
+    let signed = p == P::TikTok && query(cmds, |e| e.tiktok_bridge.ready()).unwrap_or(false);
+    let key = format!("{}:chan:{}{}", p.slug(), norm, if signed { ":browser" } else { "" });
     let Ok(mut a) = AVATARS.lock() else {
         return String::new();
     };
@@ -598,9 +626,22 @@ fn channel_url(cmds: &Cmds, cfg: &Cfg, p: P, name: &str) -> String {
     }
     if now.saturating_sub(at) >= FRESH || known.is_empty() {
         let cfg = cfg.clone();
-        tell(cmds, move |_| {
+        tell(cmds, move |e| {
+            let e = e.clone();
             tokio::task::spawn_local(async move {
-                let (pic, shown) = channel_profile(&cfg, p, &norm).await;
+                let signed = if p == P::TikTok && e.tiktok_bridge.is_connected() {
+                    crate::tiktok_bridge::search(&e, &norm)
+                        .await
+                        .ok()
+                        .and_then(|found| found.into_iter().find(|f| f.handle.eq_ignore_ascii_case(&norm)))
+                } else {
+                    None
+                };
+                let (pic, shown) = if let Some(f) = signed {
+                    (Some(f.picture), Some(f.name))
+                } else {
+                    channel_profile(&cfg, p, &norm).await
+                };
                 let (url, shown) = (pic.unwrap_or_default(), shown.unwrap_or_default());
                 if url.is_empty() && shown.is_empty() {
                     return;
@@ -702,6 +743,7 @@ struct Row {
     rows: [Flex; 2],
     /// TikTok only: sending through the browser, its state and Set up.
     sending: Option<Frame>,
+    browser_pic: Option<Frame>,
 }
 
 pub struct Accounts {
@@ -728,6 +770,7 @@ impl Accounts {
             )
         })
         .unwrap_or_default();
+        let browser = browser_account(&self.cmds, ROW - 4);
         let locked = crate::secrets::is_locked();
         if locked {
             let detail = match crate::secrets::locked_reason() {
@@ -771,6 +814,10 @@ impl Accounts {
             };
             h.show(&mut r.status, &text);
             r.status.set_tooltip(&text.replace('@', "@@"));
+            if let Some(pic) = &mut r.browser_pic {
+                pic.set_image(browser.as_ref().and_then(|b| b.pic.clone()));
+                pic.redraw();
+            }
             if let Some(status) = &mut r.sending {
                 let (h, text) = match &bridge {
                     _ if !crate::tiktok_bridge::set_up(&c) => {
@@ -954,6 +1001,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
             row.clone().hide();
         }
         // TikTok sends through the user's browser (tiktok_bridge.rs).
+        let mut browser_pic = None;
         let sending = (p == P::TikTok).then(|| {
             let mut row = Flex::default().row();
             row.set_pad(8);
@@ -962,12 +1010,19 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
                 .with_align(Align::Right | Align::Inside);
             l.set_label_color(super::muted());
             row.fixed(&l, 110);
+            let pic = Frame::default();
+            row.fixed(&pic, ROW);
+            browser_pic = Some(pic);
             let status = Frame::default()
                 .with_align(Align::Left | Align::Inside | Align::Clip)
                 .ellipsis();
             let mut set_up = button(&mut row, tr("btn.set_up"), 80);
             row.end();
             col.fixed(&row, ROW);
+            row.resize_callback({
+                let set_up = set_up.clone();
+                move |r, _, _, w, _| r.fixed(&set_up, if w < 520 { 36 } else { 100 })
+            });
             set_up.set_callback({
                 let cmds = cmds.clone();
                 move |_| tiktok_sending(&cmds)
@@ -988,6 +1043,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
             who,
             rows: rows_of,
             sending,
+            browser_pic,
         });
     }
     let guide = Frame::default()

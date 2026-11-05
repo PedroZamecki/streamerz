@@ -677,7 +677,11 @@ fn words(cmds: &Cmds, l: &Line, v: &mut Vec<It>) {
         for (part, url) in emotes::split(w) {
             match url.and_then(|u| pic(&u).map(|p| (p, u))) {
                 Some((p, u)) => v.push(It::Pic(p, Some(emote_tip(&l.platform, part, &u)))),
-                None => v.push(It::Text(part.to_string(), font, fg)),
+                None => v.push(It::Text(
+                    super::tip::emote_name(&l.platform, part).to_string(),
+                    font,
+                    fg,
+                )),
             }
         }
     }
@@ -1020,7 +1024,7 @@ fn acts(l: &Line, reply: bool) -> Vec<(Act, &'static str, &'static str)> {
     );
     let mut v = vec![(Act::Copy, "copy", tr("chat.act_copy"))];
     // An event isn't a message to answer, and a pane with no box under it has nowhere to answer.
-    if reply && p != "tiktok" && may.reply && l.event.is_empty() {
+    if reply && may.reply && l.event.is_empty() {
         v.insert(0, (Act::Reply, "corner-up-left", tr("chat.act_reply")));
     }
     if may.pin && !l.msg_id.is_empty() {
@@ -2222,7 +2226,8 @@ fn effective_sender_role(
             return (false, None, None);
         }
         let (ready, user) = query(cmds, |e| (e.tiktok_bridge.ready(), e.tiktok_bridge.user())).unwrap_or_default();
-        return (false, (ready && !user.is_empty()).then_some(user), None);
+        let pic = super::accounts::browser_account(cmds, 22).and_then(|a| a.pic);
+        return (false, (ready && !user.is_empty()).then_some(user), pic);
     }
     let want_broadcaster = cfg
         .borrow()
@@ -2685,6 +2690,12 @@ impl ChatColumn {
                 }
                 let p_idx = target_plat.get().min(3);
                 let plat = PLATFORMS[p_idx];
+                if plat == "tiktok" {
+                    if let Err(error) = crate::tiktok_bridge::validate_message(&text) {
+                        super::dialogs::message(&error);
+                        return;
+                    }
+                }
                 if !crate::engine::can_send(&cfg.borrow(), plat)
                     || !query(&cmds, move |e| e.chat_connected(plat)).unwrap_or(false)
                 {
@@ -3688,7 +3699,8 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
 /// shows account details, connection status, and lets the user switch between Broadcaster and Bot
 /// (and in `"All together"` mode, pick which platform the single input sends to).
 fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accounts: Rc<dyn Fn()>) {
-    let h = 236 + i32::from(crate::secrets::is_locked()) * 34;
+    let browser = PLATFORMS[col_ui.target_plat.get().min(3)] == "tiktok";
+    let h = if browser { 180 } else { 236 } + i32::from(crate::secrets::is_locked()) * 34;
     let mut win = DoubleWindow::default()
         .with_size(430, h)
         .with_label(tr("chat.acct_win_title"));
@@ -3728,9 +3740,9 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
     head.end();
     root.fixed(&head, ROW);
 
-    // Two account cards: [0] Broadcaster, [1] Bot
+    // One browser account on TikTok; broadcaster and bot on other platforms.
     let mut slot_uis = Vec::new();
-    for _ in 0..2 {
+    for _ in 0..if browser { 1 } else { 2 } {
         let mut row = Flex::default().row();
         row.set_pad(8);
         let pic = Frame::default();
@@ -3738,6 +3750,11 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
         let info = Frame::default().with_align(Align::Left | Align::Inside | Align::Wrap);
         let mut pick_btn = button(&mut row, tr("btn.select"), 96);
         pick_btn.set_frame(FrameType::RFlatBox);
+        if browser {
+            row.fixed(&pick_btn, 0);
+            pick_btn.hide();
+        }
+
         row.end();
         root.fixed(&row, 48);
         slot_uis.push((pic, info, pick_btn));
@@ -3766,6 +3783,7 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
         let mut note = note.clone();
         let slot_uis: Vec<_> = slot_uis.clone();
         let target_plat = col_ui.target_plat.clone();
+        let mut last = None;
         move || {
             let p_idx = target_plat.get().min(3);
             let slug = PLATFORMS[p_idx];
@@ -3781,15 +3799,64 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
                 )
             })
             .unwrap_or((false, false));
+            let bridge = (slug == "tiktok").then(|| {
+                query(&cmds, |e| {
+                    (
+                        e.tiktok_bridge.ready(),
+                        e.tiktok_bridge.user(),
+                        e.tiktok_bridge.error(),
+                        e.tiktok_bridge.is_connected(),
+                        e.tiktok_bridge.avatar(),
+                    )
+                })
+                .unwrap_or_default()
+            });
+            let want_broadcaster = cfg.borrow().window.chat_as_broadcaster.iter().any(|s| s == slug);
+            let slots = platform_accounts(&cmds, &cfg, slug, 32);
+            let (eff_bot, _, _) = effective_sender_role(&cfg, &cmds, p_idx);
+            let state = (
+                p_idx,
+                conn,
+                standby,
+                want_broadcaster,
+                eff_bot,
+                bridge.clone(),
+                slots
+                    .each_ref()
+                    .map(|s| s.as_ref().map(|a| (a.name.clone(), a.note, a.pic.is_some()))),
+                img::ARRIVED.load(std::sync::atomic::Ordering::Relaxed),
+            );
+            // Redrawing on each wait wakes this loop again. Only changed account data or pictures
+            // need a refresh; decoded pictures are observed by platform_accounts above.
+            if last.as_ref() == Some(&state) {
+                return;
+            }
+            last = Some(state);
             head_logo.set_image(img::logo(pname, 18));
             let (h, st_txt) = if conn {
-                (super::Health::Up, "Connected")
+                (super::Health::Up, tr("conns.connected"))
             } else if standby {
-                (super::Health::Standby, "Standby")
+                (super::Health::Standby, tr("accounts.standby_default"))
             } else {
-                (super::Health::Off, "Off")
+                (super::Health::Off, tr("conns.off"))
             };
-            h.show(&mut head_title, &format!("{pname}: {st_txt}"));
+            if let Some((ready, user, error, connected, _)) = bridge {
+                let (health, detail) = if !error.is_empty() {
+                    (super::Health::Off, error)
+                } else if !connected {
+                    (super::Health::Off, tr("accounts.tiktok_sending.waiting").to_string())
+                } else if ready && !user.is_empty() {
+                    (super::Health::Up, tr("conns.connected").to_string())
+                } else {
+                    (
+                        super::Health::Standby,
+                        tr("accounts.tiktok_sending.login_needed").to_string(),
+                    )
+                };
+                health.show(&mut head_title, &format!("{pname}: {detail}"));
+            } else {
+                h.show(&mut head_title, &format!("{pname}: {st_txt}"));
+            }
             head_title.set_label_font(Font::HelveticaBold);
             note.set_label(if slug == "tiktok" {
                 tr("chat.tiktok_account_note")
@@ -3797,15 +3864,13 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
                 tr("chat.acct_note")
             });
 
-            let want_broadcaster = cfg.borrow().window.chat_as_broadcaster.iter().any(|s| s == slug);
-            let slots = platform_accounts(&cmds, &cfg, slug, 32);
-            let (eff_bot, _, _) = effective_sender_role(&cfg, &cmds, p_idx);
-
             for (bot_i, ((mut pic_f, mut info_f, mut btn), slot)) in
                 slot_uis.iter().cloned().zip(slots.iter()).enumerate()
             {
                 let is_bot = bot_i == 1;
-                let role = if is_bot {
+                let role = if slug == "tiktok" {
+                    tr("accounts.row_sending")
+                } else if is_bot {
                     tr("chat.role_bot")
                 } else {
                     tr("chat.role_broadcaster")
@@ -3837,7 +3902,11 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
                     None => {
                         pic_f.set_image(icons::icon("circle-user-round", super::muted(), 28));
                         let suffix = if is_pref { tr("chat.preferred_other_suffix") } else { "" };
-                        info_f.set_label(&trf("chat.role_not_logged_in", &[("role", role), ("suffix", suffix)]));
+                        info_f.set_label(&if slug == "tiktok" {
+                            tr("accounts.not_logged_in").to_string()
+                        } else {
+                            trf("chat.role_not_logged_in", &[("role", role), ("suffix", suffix)])
+                        });
                         btn.set_label(tr("chat.btn_not_logged_in"));
                         btn.set_color(Color::Background);
                         btn.deactivate();
@@ -3892,7 +3961,10 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
     populate();
     win.show();
     while win.shown() && !done.get() {
-        super::nested_wait(Some(0.1));
+        super::nested_wait(None);
+        if win.shown() && !done.get() {
+            populate();
+        }
     }
     win.hide();
     app::delete_widget(win);
@@ -3942,7 +4014,7 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
     let mut plat_row = Flex::default().row();
     plat_row.set_pad(8);
     let mut checks = Vec::new();
-    for i in 0..3 {
+    for i in 0..PLATFORMS.len() {
         let suffix = if conn_states[i] { "" } else { tr("chat.offline_suffix") };
         let mut c = CheckButton::default().with_label(&format!("{}{suffix}", NAMES[i]));
         let any_conn = conn_states.iter().any(|&x| x);
@@ -3981,6 +4053,28 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
     fallback.set_checked(true);
     acct_row.end();
     col.fixed(&acct_row, ROW);
+    let update_accounts: Rc<dyn Fn()> = Rc::new({
+        let (checks, row, col) = (checks.clone(), acct_row.clone(), col.clone());
+        move || {
+            let (mut row, mut col) = (row.clone(), col.clone());
+            let only_browser = checks[3].is_checked() && !checks[..3].iter().any(CheckButton::is_checked);
+            if only_browser {
+                row.hide();
+            } else {
+                row.show();
+            }
+            col.fixed(&row, if only_browser { 0 } else { ROW });
+            col.layout();
+        }
+    });
+    for (i, mut check) in checks.iter().cloned().enumerate() {
+        if i == 3 {
+            check.set_tooltip(tr("chat.tiktok_browser_tip"));
+        }
+        let update = update_accounts.clone();
+        check.set_callback(move |_| update());
+    }
+    update_accounts();
 
     let mut bar = Flex::default().row();
     bar.set_pad(4);
@@ -4031,6 +4125,12 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
                 status.set_label_color(Color::from_rgb(0xe0, 0x60, 0x50));
                 status.redraw();
                 return;
+            }
+            if targets.contains(&"tiktok") {
+                if let Err(error) = crate::tiktok_bridge::validate_message(&text) {
+                    super::dialogs::message(&error);
+                    return;
+                }
             }
             let use_bot = who.value() == 0;
             let fb = fallback.is_checked();
@@ -4662,6 +4762,24 @@ fn shown_platforms(cmds: &Cmds) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tiktok_offers_replies_without_exposing_moderation() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::roles::set("tiktok", crate::roles::Role::Viewer, "42");
+        let line = Line {
+            platform: "tiktok".into(),
+            user_id: "43".into(),
+            user: "Other".into(),
+            ..Default::default()
+        };
+        let actions = acts(&line, true);
+        assert!(actions.iter().any(|a| matches!(a.0, Act::Reply)));
+        assert!(!actions.iter().any(|a| matches!(a.0, Act::Mod(_))));
+        assert!(!acts(&line, false).iter().any(|a| matches!(a.0, Act::Reply)));
+        crate::roles::clear("tiktok");
+        assert!(!acts(&line, true).iter().any(|a| matches!(a.0, Act::Reply)));
+    }
 
     #[test]
     fn control_characters_never_reach_the_chat() {

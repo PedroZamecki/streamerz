@@ -17,8 +17,8 @@ Sends a message to the TikTok Live chat, as the TikTok account logged in to the 
 | Field | Key | What it holds |
 | --- | --- | --- |
 | Message | `text` | The text to send. Variables like `%user%` are filled in first. |
-| Use Bot Account | `useBot` | Kept for Streamer.bot imports; TikTok always sends as the browser's account. |
-| Fallback to Broadcaster | `fallback` | Kept for Streamer.bot imports; not used. |
+
+Older imported account-selection fields are preserved but ignored. The browser account always sends.
 
 ### Arguments
 

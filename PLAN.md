@@ -556,6 +556,12 @@ platform handles through channels, never through shared locks held across awaits
   and never automatically retry a send with an ambiguous outcome. Keep public reading independent.
 
 
+- [x] TikTok account audit: one account in the chat popup, profile pictures across Accounts and chat,
+  signed channel-picture lookup, handle-based mention replies and suggestions, and TikTok in Message all.
+  Retire obsolete account-selection form fields and profile migration; preserve imported action data.
+  Hide internal sticker IDs in tips and fallback text, and prevent unsupported native sticker sends.
+  Refresh account pictures on change without continuously redrawing an idle popup.
+
 ## Open points (decide when the phase starts, ask first)
 
 - Points: its sub-actions are new in Streamer.bot 1.1.0, unreleased (1.0.7 is the latest). When it's out,

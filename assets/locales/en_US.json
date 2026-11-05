@@ -648,8 +648,6 @@
   "emotes.platform": "Platform",
   "emotes.seen_across_chats": "Seen Across Connected Chats",
   "emotes.seen_in_chat": "Recently Seen in Chat",
-  "emotes.tiktok_seen": "Seen TikTok Live Emotes",
-  "emotes.tiktok_seen_hint": "Custom TikTok subscriber stickers/emotes appear here as they are used in the live room.",
   "emotes.twitch_emotes": "Twitch Emotes",
   "emotes.twitch_global_emotes": "Twitch Global Emotes",
   "emotes.twitch_loading": "Loading Twitch emotes… (make sure an account is logged in)",
@@ -1073,5 +1071,7 @@
   "relogin.now": "Log in",
   "accounts.tiktok_sending.loading": "Connecting to TikTok…",
   "accounts.tiktok_sending.login_needed": "Log in to TikTok in your browser",
-  "find.tiktok_login": "Log in through Accounts > TikTok > Set up first."
+  "find.tiktok_login": "Log in through Accounts > TikTok > Set up first.",
+  "tip.tiktok_emote": "TikTok emote",
+  "chat.tiktok_stickers_unavailable": "TikTok stickers cannot be sent yet. Choose an emoji or type a message."
 }

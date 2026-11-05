@@ -298,10 +298,54 @@ def main():
         if "set up sending" in tiktok_chat():
             failures.append("TikTok's chat stays read-only once sending is set up")
         ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/tiktok_chat_box.png"})
+        # The account indicator is one browser account, not broadcaster and bot cards.
+        location = re.search(r" at (\d+),(\d+)", ws.ask({"request": "StreamerzUi", "id": "tf", "do": "find Waiting for the browser extension"})["result"])
+        if location:
+            xdo("mousemove", location.group(1), location.group(2), found=True)
+            xdo("click", "1")
+            time.sleep(0.5)
+            tree = ws.ask({"request": "StreamerzUi", "id": "tt", "do": "tree"})["result"]
+            if "Bot:" in tree or "Broadcaster:" in tree or "preferred" in tree:
+                failures.append("TikTok's account popup still offers separate logins")
+            ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/tiktok_account.png"})
+            if not WINE:
+                # A late avatar must refresh the popup without continuously redrawing while idle.
+                def cpu_ticks():
+                    with open(f"/proc/{app.pid}/stat") as stat:
+                        fields = stat.read().split(") ", 1)[1].split()
+                    return int(fields[11]) + int(fields[12])
+                time.sleep(1)
+                ticks, started = cpu_ticks(), time.monotonic()
+                time.sleep(2)
+                cpu = (cpu_ticks() - ticks) / os.sysconf("SC_CLK_TCK")
+                if cpu / (time.monotonic() - started) > 0.25:
+                    failures.append("TikTok's account popup keeps redrawing while idle")
+            xdo("key", "Escape")
+        else:
+            failures.append("TikTok's account indicator is missing")
+        location = re.search(r" at (\d+),(\d+)", ws.ask({"request": "StreamerzUi", "id": "mf", "do": "find Message all"})["result"])
+        if location:
+            xdo("mousemove", location.group(1), location.group(2), found=True)
+            xdo("click", "1")
+            time.sleep(0.5)
+            tree = ws.ask({"request": "StreamerzUi", "id": "mt", "do": "tree"})["result"]
+            if "TikTok" not in tree:
+                failures.append("Message all leaves TikTok out")
+            ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/message_all_tiktok.png"})
+            xdo("key", "Escape")
+        else:
+            failures.append("Message all is missing")
+
         ws.ask({"request": "StreamerzTikTokBridge", "id": "tb", "action": "remove"})
         if "set up sending" not in tiktok_chat():
             failures.append("TikTok's chat isn't read-only again after removing sending")
         ws.ask({"request": "StreamerzUi", "id": "together", "do": "chatview All together"})
+        ws.ask({"request": "StreamerzUi", "id": "form-tiktok", "do": "form 43001"})
+        time.sleep(0.5)
+        tree = ws.ask({"request": "StreamerzUi", "id": "form-tree", "do": "tree"})["result"]
+        if "Use Bot Account" in tree or "Fallback to Broadcaster" in tree:
+            failures.append("TikTok's Send Message form still exposes retired account selection")
+        xdo("key", "Escape")
         check("TikTok sending setup")
         # New chatters show up on an open Community tab.
         ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Community"})

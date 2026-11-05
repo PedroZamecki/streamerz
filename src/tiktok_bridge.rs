@@ -168,7 +168,7 @@ pub fn remove(e: &Rc<Engine>) {
 /// For the MCP tool and the WebSocket request.
 pub fn status(e: &Engine) -> Value {
     let b = &e.tiktok_bridge;
-    json!({"setUp": set_up(&e.config()), "connected": b.is_connected(), "user": b.user(), "ready": b.ready(), "error": b.error(),
+    json!({"setUp": set_up(&e.config()), "connected": b.is_connected(), "user": b.user(), "avatar": b.avatar(), "ready": b.ready(), "error": b.error(),
         "folder": folder().display().to_string(), "extensionId": EXTENSION_ID})
 }
 
@@ -190,6 +190,7 @@ pub struct Bridge {
     /// The browser's TikTok account (its @handle), once known.
     user: RefCell<String>,
     uid: RefCell<String>,
+    avatar: RefCell<String>,
     ready: std::cell::Cell<bool>,
     error: RefCell<String>,
     warming: std::cell::Cell<bool>,
@@ -204,6 +205,10 @@ impl Bridge {
     /// The TikTok account logged in to the browser ("" until known).
     pub fn user(&self) -> String {
         self.user.borrow().clone()
+    }
+
+    pub fn avatar(&self) -> String {
+        self.avatar.borrow().clone()
     }
 
     pub fn ready(&self) -> bool {
@@ -243,6 +248,8 @@ impl Bridge {
         self.params.borrow_mut().take();
         self.user.borrow_mut().clear();
         self.uid.borrow_mut().clear();
+        self.avatar.borrow_mut().clear();
+        crate::roles::clear("tiktok");
         self.ready.set(false);
         self.warming.set(false);
         self.refresh_pending.set(false);
@@ -395,8 +402,18 @@ fn answer(status: u64, body: &Value) -> Result<(), String> {
     }
 }
 
+/// Native sticker encoding is not implemented. Never post an internal picture ID as chat text.
+pub(crate) fn validate_message(text: &str) -> Result<(), String> {
+    if text.split("[tiktok:").skip(1).any(|tail| tail.contains(']')) {
+        Err(crate::i18n::tr("chat.tiktok_stickers_unavailable").to_string())
+    } else {
+        Ok(())
+    }
+}
+
 /// Sends `text` to the live being read, as the browser's TikTok account.
 pub async fn send_message(e: &Rc<Engine>, text: &str) -> Result<(), String> {
+    validate_message(text)?;
     let room = e
         .tiktok()
         .and_then(|t| t.room_id())
@@ -438,6 +455,8 @@ fn warm(e: &Rc<Engine>, serial: u64) {
     let previous = b.user();
     b.user.borrow_mut().clear();
     b.uid.borrow_mut().clear();
+    b.avatar.borrow_mut().clear();
+    crate::roles::clear("tiktok");
     b.params.borrow_mut().take();
     b.error.borrow_mut().clear();
     crate::ui::changed();
@@ -458,11 +477,34 @@ fn warm(e: &Rc<Engine>, serial: u64) {
         if b.serial.get() != serial || !b.is_connected() {
             return;
         }
-        b.warming.set(false);
         match r {
             Ok(v) => {
                 *b.user.borrow_mut() = v["data"]["username"].as_str().unwrap_or_default().to_string();
                 *b.uid.borrow_mut() = v["data"]["user_id_str"].as_str().unwrap_or_default().to_string();
+                *b.avatar.borrow_mut() = v["data"]["avatar_url"]
+                    .as_str()
+                    .filter(|u| u.starts_with("https://"))
+                    .unwrap_or_default()
+                    .to_string();
+                let user = b.user();
+                if user.is_empty() {
+                    b.uid.borrow_mut().clear();
+                }
+                // Passport sometimes omits the avatar. Reuse signed search once, not an idle poll.
+                if b.avatar().is_empty() && !user.is_empty() {
+                    let picture = search(&e, &user)
+                        .await
+                        .ok()
+                        .and_then(|found| found.into_iter().find(|p| p.handle.eq_ignore_ascii_case(&user)))
+                        .map(|p| p.picture)
+                        .filter(|url| url.starts_with("https://"))
+                        .unwrap_or_default();
+                    if b.serial.get() != serial || !b.is_connected() {
+                        return;
+                    }
+                    *b.avatar.borrow_mut() = picture;
+                }
+                b.error.borrow_mut().clear();
                 b.ready.set(true);
                 e.settle_role("tiktok");
                 let user = b.user();
@@ -490,6 +532,7 @@ fn warm(e: &Rc<Engine>, serial: u64) {
             }
         }
         crate::ui::changed();
+        b.warming.set(false);
         if b.refresh_pending.replace(false) {
             warm(&e, serial);
         }
@@ -579,6 +622,13 @@ mod tests {
             "is_page_visible": "false", "browser_version": "5.0 (X11; Linux x86_64)",
             "msToken": "m", "X-Bogus": "b", "X-Gnarly": "g", "X-Dynosaur": "d"});
         common_params(&page)
+    }
+
+    #[test]
+    fn native_sticker_tokens_cannot_leak_into_outgoing_text() {
+        assert!(validate_message("hello 🙂 :)").is_ok());
+        assert!(validate_message("[tiktok:123]").is_err());
+        assert!(validate_message("hello[tiktok:123]!").is_err());
     }
 
     #[test]

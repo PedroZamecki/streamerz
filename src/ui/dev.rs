@@ -103,16 +103,13 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
             .load(std::sync::atomic::Ordering::Relaxed)
             .to_string(),
         // `relogin Twitch [bot]`: the popup that asks to log in again.
-        "relogin" => match ["Twitch", "YouTube", "Kick", "TikTok"]
-            .into_iter()
-            .find(|p| Some(*p) == a)
-        {
+        "relogin" => match ["Twitch", "YouTube", "Kick"].into_iter().find(|p| Some(*p) == a) {
             Some(p) => {
                 crate::ui::relogin_done(p, b == Some("bot"));
                 crate::ui::relogin(p, b == Some("bot"));
                 "ok".into()
             }
-            None => "relogin Twitch|YouTube|Kick|TikTok [bot]".into(),
+            None => "relogin Twitch|YouTube|Kick [bot]".into(),
         },
         // The question asked when a channel is changed (it waits for an answer, so it opens a moment later).
         "room" => {

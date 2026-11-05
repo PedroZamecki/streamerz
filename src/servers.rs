@@ -1834,11 +1834,28 @@ mod tests {
             };
             assert_eq!(who["op"], "fetch");
             assert!(who["url"].as_str().unwrap().contains("/passport/web/account/info/"));
-            let body = json!({"data": {"username": "tester"}}).to_string();
+            let body = json!({"data": {"username": "tester", "user_id_str": "42", "avatar_url": ""}}).to_string();
             let reply = json!({"id": who["id"], "status": 200, "body": body});
             ws.send(Message::Text(reply.to_string().into())).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            // Passport's missing avatar is filled from the existing signed search endpoint.
+            let avatar_request = match tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+            {
+                Message::Text(t) => serde_json::from_str::<Value>(&t).unwrap(),
+                _ => panic!("avatar search"),
+            };
+            assert_eq!(avatar_request["op"], "search");
+            assert_eq!(avatar_request["query"], "tester");
+            let reply = json!({"id": avatar_request["id"], "status": 200, "body": json!({"status_code": 0,
+                "user_list": [{"user_info": {"unique_id": "tester", "avatar_thumb": {"url_list": ["https://example.test/avatar.png"]}}}]}).to_string()});
+            ws.send(Message::Text(reply.to_string().into())).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             assert_eq!(e.tiktok_bridge.user(), "tester");
+            assert_eq!(e.tiktok_bridge.avatar(), "https://example.test/avatar.png");
             assert!(e.tiktok_bridge.ready());
             let search_engine = e.clone();
             let search = tokio::task::spawn_local(async move {
@@ -1867,6 +1884,8 @@ mod tests {
             };
             assert_eq!(reload["op"], "page");
             assert!(e.tiktok_bridge.user().is_empty());
+            assert!(e.tiktok_bridge.avatar().is_empty());
+            assert_eq!(crate::roles::get("tiktok").0, crate::roles::Role::Anonymous);
             assert!(!e.tiktok_bridge.ready());
             ws.send(Message::Text(
                 json!({"id": reload["id"], "error": "Log in to TikTok"})
