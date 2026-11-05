@@ -159,6 +159,12 @@ pub fn sub_label(o: &Obj, names: &Names) -> String {
         123 | 122 => format!("{} = {}", v("variableName"), v("value")),
         121 => format!("{} -> {}", v("variableName"), v("destinationVariable")),
         1002 => format!("{} ms", v("value")),
+        // Its clock is an ID nobody reads: say what it does to the clock instead.
+        99803 => match v("operation").as_str() {
+            "add" => tr("countdown.op_add").to_string(),
+            "reset" => tr("countdown.op_reset").to_string(),
+            other => other.to_string(),
+        },
         1009 => v("value"),
         1020 => v("message"),
         _ => o
@@ -301,15 +307,15 @@ impl Actions {
         if let Some(ref id) = self.selected {
             let cfg = self.cfg.borrow();
             if let Some(a) = cfg.actions.actions.iter().find(|a| &a.id == id) {
-                let grp = if a.group.is_empty() {
-                    tr("actions.none_group")
+                let title = if a.group.is_empty() {
+                    a.name.clone()
                 } else {
-                    &a.group
+                    trf(
+                        "actions.action_details_title",
+                        &[("name", &a.name), ("group", &a.group)],
+                    )
                 };
-                self.detail_title.set_label(&trf(
-                    "actions.action_details_title",
-                    &[("name", &a.name), ("group", grp)],
-                ));
+                self.detail_title.set_label(&title.replace('@', "@@"));
                 self.detail_desc.set_label(&trf(
                     "actions.action_details_desc",
                     &[
@@ -382,7 +388,7 @@ impl Actions {
             |tree: &mut Tree, parent: &TreeItem, a: &crate::model::Action, items: &mut Vec<(TreeItem, Node)>| {
                 if let Some(mut i) = tree.insert(parent, &plain(&a.name), parent.children()) {
                     if !a.enabled {
-                        i.set_label_fgcolor(Color::from_rgb(130, 130, 130));
+                        i.set_label_fgcolor(super::muted());
                     }
                     if self.selected.as_deref() == Some(&a.id) {
                         keep = Some(i.clone());
@@ -551,7 +557,7 @@ impl Actions {
                     let k = edit::kind(o);
                     let off = o.get("enabled").and_then(Value::as_bool) == Some(false);
                     if off || !crate::engine::supported(k as u32) {
-                        it.set_label_fgcolor(Color::from_rgb(130, 130, 130));
+                        it.set_label_fgcolor(super::muted());
                     }
                     if off {
                         it.set_user_icon(super::icons::icon("power-off", super::muted(), 16));
@@ -616,6 +622,7 @@ fn tree(empty: &'static str) -> Tree {
             fltk::draw::set_draw_color(super::muted());
             fltk::draw::draw_text2(empty, t.x() + 10, t.y(), t.w() - 20, t.h(), Align::Center | Align::Wrap);
         }
+        super::picker::focus_ring(t);
     });
     t
 }
@@ -1539,6 +1546,10 @@ fn drag(
                 return true;
             }
             false
+        }
+        Event::KeyDown if super::menu_key() => {
+            super::context_menu(&menu);
+            true
         }
         Event::KeyDown => {
             let key = app::event_key();

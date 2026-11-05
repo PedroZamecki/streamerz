@@ -7,11 +7,10 @@ use super::{button, icons, tell, ROW};
 use crate::i18n::{self, tr, trf};
 use crate::update::Updates;
 use crate::Config;
-use fltk::button::Button;
 use fltk::button::ToggleButton;
-use fltk::enums::{Align, Color, Event, Font, FrameType};
+use fltk::enums::{Align, Color, Event, Font};
 use fltk::frame::Frame;
-use fltk::group::{Flex, Wizard};
+use fltk::group::{Flex, FlexType, Wizard};
 use fltk::prelude::*;
 use fltk::{app, draw};
 use std::cell::RefCell;
@@ -54,149 +53,154 @@ fn section(col: &mut Flex, title: &str, icon: &str) {
     col.fixed(&f, 34);
 }
 
-/// A setting's line: its name and what it does on the left; returns the row, open for its control
-/// (`w` wide) on the right.
-fn setting(col: &mut Flex, name: &str, about: &str, w: i32) -> Flex {
+/// The existing widgets of one setting, measured together when the page width changes.
+struct SettingRow {
+    row: Flex,
+    text: Flex,
+    name: Frame,
+    about: Frame,
+    right: Flex,
+    requested: i32,
+    logo: Option<Frame>,
+}
+
+/// Large controls move below their description; compact switches and numbers stay alongside it.
+fn setting_geometry(width: i32, requested: i32, text_height: i32, logo: bool) -> (bool, i32, i32) {
+    let stacked = width < 560 && requested > 90;
+    let control_width = if stacked {
+        width.max(0)
+    } else {
+        requested.min(width.max(0))
+    };
+    let height = if stacked {
+        text_height + ROW + 8 + if logo { 64 } else { 0 }
+    } else {
+        text_height.max(if logo { 56 } else { ROW })
+    };
+    (stacked, control_width, height + 8)
+}
+
+fn measured_height(frame: &mut Frame, width: i32) -> i32 {
+    // The tooltip keeps the full value, independent of wrapping at the previous width.
+    let text = frame.tooltip().unwrap_or_else(|| frame.label()).replace("@@", "@");
+    if text.is_empty() {
+        return 0;
+    }
+    // Measuring fonts before the window is shown would load the display and font caches while hidden.
+    let shown = super::SHOWN.load(std::sync::atomic::Ordering::Relaxed);
+    let line_height = if shown {
+        draw::set_font(frame.label_font(), frame.label_size());
+        draw::height()
+    } else {
+        frame.label_size() + 3
+    };
+    let lines = super::dialogs::wrap(&text, (width - 4).max(1), |s| {
+        if shown {
+            draw::width(s) as i32
+        } else {
+            s.chars().count() as i32 * (frame.label_size() / 2 + 1)
+        }
+    });
+    frame.set_label(&lines.join("\n").replace('@', "@@"));
+    lines.len() as i32 * line_height + 2
+}
+
+fn layout_settings(col: &mut Flex, rows: &mut [SettingRow], width: i32, viewport_height: i32) {
+    let inner = width.saturating_sub(20).max(0);
+    for setting in rows {
+        let (stacked, control_width, _) = setting_geometry(inner, setting.requested, 0, setting.logo.is_some());
+        let text_width = if stacked {
+            inner
+        } else {
+            (inner - control_width - 16 - if setting.logo.is_some() { 72 } else { 0 }).max(1)
+        };
+        let name_height = measured_height(&mut setting.name, text_width);
+        let about_height = measured_height(&mut setting.about, text_width);
+        let text_height = name_height + about_height + 4;
+        let (_, _, height) = setting_geometry(inner, setting.requested, text_height, setting.logo.is_some());
+        setting
+            .row
+            .set_type(if stacked { FlexType::Column } else { FlexType::Row });
+        setting.row.set_pad(if stacked { 8 } else { 16 });
+        setting.text.fixed(&setting.name, name_height);
+        // An empty description still receives a fixed pixel, since fixed(0) means flexible in FLTK.
+        setting.text.fixed(&setting.about, about_height.max(1));
+        setting.row.fixed(&setting.text, if stacked { text_height } else { 0 });
+        setting
+            .row
+            .fixed(&setting.right, if stacked { ROW } else { control_width });
+        if let Some(logo) = &setting.logo {
+            setting.row.fixed(logo, 56);
+        }
+        col.fixed(&setting.row, height);
+    }
+    let count = col.children();
+    let content = 20
+        + (count - 1).max(0) * col.pad()
+        + (0..count)
+            .filter_map(|i| col.child(i))
+            .map(|child| child.h().max(0))
+            .sum::<i32>();
+    col.resize(col.x(), col.y(), width, content.max(viewport_height));
+}
+
+/// A setting's name and full description, with its existing control alongside or below them.
+fn setting(col: &mut Flex, rows: &mut Vec<SettingRow>, name: &str, about: &str, w: i32) -> Flex {
     let mut row = Flex::default().row();
     row.set_pad(16);
     let mut text = Flex::default().column();
     text.set_pad(0);
     let mut n = Frame::default()
-        .with_label(name)
-        .with_align(Align::Left | Align::Inside | Align::Bottom)
-        .ellipsis();
+        .with_label(&name.replace('@', "@@"))
+        .with_align(Align::Left | Align::Inside | Align::Top | Align::Wrap | Align::Clip);
     n.set_label_size(14);
+    n.set_tooltip(&name.replace('@', "@@"));
     let mut a = Frame::default()
         .with_label(&about.replace('@', "@@"))
-        .with_align(Align::Left | Align::Inside | Align::Top | Align::Clip)
-        .ellipsis();
+        .with_align(Align::Left | Align::Inside | Align::Top | Align::Wrap | Align::Clip);
     a.set_label_size(12);
     a.set_label_color(super::muted());
-    // Too long for the line: cut, and whole when pointed at.
     a.set_tooltip(&about.replace('@', "@@"));
     text.end();
     col.fixed(&row, 44);
-    // The control, centred in the line's height.
     let mut right = Flex::default().column();
     Frame::default();
-    WidgetExt::set_size(&mut right, w, ROW);
     row.fixed(&right, w);
     right.set_pad(0);
+    rows.push(SettingRow {
+        row,
+        text,
+        name: n,
+        about: a,
+        right: right.clone(),
+        requested: w,
+        logo: None,
+    });
     right
 }
 
-/// A setting whose description is a file's path: pointing at it shows buttons to open the file and to
-/// copy the path, right after it. Returns the row, open for its control (`w` wide) on the right.
-fn path_setting(col: &mut Flex, name: &str, path: &std::path::Path, w: i32) -> Flex {
-    let shown = path.display().to_string();
-    let mut row = Flex::default().row();
-    row.set_pad(16);
-    let mut text = Flex::default().column();
-    text.set_pad(0);
-    let mut n = Frame::default()
-        .with_label(name)
-        .with_align(Align::Left | Align::Inside | Align::Bottom)
-        .ellipsis();
-    n.set_label_size(14);
-    let mut line = Flex::default().row();
-    line.set_pad(2);
-    let mut about = Frame::default()
-        .with_label(&shown.replace('@', "@@"))
-        .with_align(Align::Left | Align::Inside | Align::Top | Align::Clip)
-        .ellipsis();
-    about.set_label_size(12);
-    about.set_label_color(super::muted());
-    about.set_tooltip(&shown.replace('@', "@@"));
-    let small = |icon: &str, tip: &str| {
-        let mut b = Button::default();
-        b.set_frame(FrameType::NoBox);
-        b.set_image(super::icons::icon(icon, super::muted(), 14));
-        // Level with the path's text, which sits at the top of its line.
-        b.set_align(Align::Top | Align::Inside);
-        b.set_tooltip(tip);
-        b.clear_visible_focus();
-        b.hide();
-        b
-    };
-    let mut open = small("external-link", tr("btn.open_file"));
-    let mut copy = small("copy", tr("btn.copy_path"));
-    line.fixed(&open, 18);
-    line.fixed(&copy, 18);
-    Frame::default();
-    line.end();
-    text.end();
-    // The path as wide as its text (up to what's left), so the buttons sit right after it.
-    line.resize_callback({
-        let (about, open) = (about.clone(), open.clone());
-        move |l, _, _, w, _| {
-            let text = if super::SHOWN.load(std::sync::atomic::Ordering::Relaxed) {
-                draw::set_font(Font::Helvetica, 12);
-                draw::width(&shown) as i32 + 6
-            } else {
-                shown.len() as i32 * 7
-            };
-            l.fixed(&about, text.min(w - 2 * 20).max(0));
-            l.fixed(&open, 18);
-        }
-    });
-    // Shown while the pointer is on the setting's text (FLTK tells the group it left only when the
-    // pointer leaves all of it, buttons included).
-    text.handle({
-        let (open, copy, line) = (open.clone(), copy.clone(), line.clone());
-        move |t, ev| {
-            let on = match ev {
-                Event::Enter | Event::Move => true,
-                Event::Leave => false,
-                _ => return false,
-            };
-            if open.visible() != on {
-                for mut b in [open.clone(), copy.clone()] {
-                    if on {
-                        b.show();
-                    } else {
-                        b.hide();
-                    }
-                }
-                // A Flex leaves out hidden widgets: place them again.
-                line.layout();
-                t.redraw();
-            }
-            false
-        }
-    });
-    open.set_callback({
-        let p = path.display().to_string();
-        move |_| crate::oauth::open_browser(&p)
-    });
-    copy.set_callback({
-        let p = path.display().to_string();
-        move |_| {
-            app::copy(&p);
-            crate::say("Copied the settings file's path".into());
-        }
-    });
-    col.fixed(&row, 44);
-    let mut right = Flex::default().column();
-    Frame::default();
-    WidgetExt::set_size(&mut right, w, ROW);
-    row.fixed(&right, w);
-    right.set_pad(0);
-    right
-}
-
-/// Ends a setting's control column.
+/// Ends a setting's control column and names otherwise unlabelled controls for keyboard users.
 fn done(mut right: Flex, control: &impl WidgetExt) {
     right.fixed(control, ROW);
     Frame::default();
     right.end();
-    if let Some(mut row) = right.parent().and_then(|p| fltk::group::Flex::from_dyn_widget(&p)) {
-        // The control gives way before the text does: at most what it asked for, at least a stub.
-        let want = right.w();
-        row.resize_callback(move |r, _, _, w, _| {
-            r.fixed(&right, want.min((w - 190).max(64)));
-        });
+    if let Some(row) = right.parent().and_then(|p| Flex::from_dyn_widget(&p)) {
+        if let Some(name) = row
+            .child(0)
+            .and_then(|text| text.as_group())
+            .and_then(|text| text.child(0))
+        {
+            let mut control = control.as_base_widget();
+            if control.tooltip().is_none_or(|tip| tip.is_empty()) {
+                control.set_tooltip(&name.label());
+            }
+        }
         row.end();
     }
+}
+
+fn history_enabled(saved: bool, memory_saver: bool) -> bool {
+    saved && !memory_saver
 }
 
 /// An on/off switch: a pill with a knob, lit when on.
@@ -212,15 +216,29 @@ fn switch(on: bool) -> ToggleButton {
         } else {
             Color::color_average(Color::Foreground, bg, 0.25)
         };
+        let track = if b.active_r() { track } else { track.inactive() };
         draw::draw_rect_fill(b.x(), b.y(), b.w(), b.h(), bg);
         draw::set_draw_color(track);
         draw::draw_rounded_rectf(x, y, w, h, h / 2);
-        draw::set_draw_color(Color::White);
+        draw::set_draw_color(if b.active_r() {
+            Color::White
+        } else {
+            Color::White.inactive()
+        });
         let k = h - 6;
         let kx = if b.value() { x + w - k - 3 } else { x + 3 };
         draw::draw_pie(kx, y + 3, k, k, 0.0, 360.0);
+        if b.has_focus() && b.active_r() {
+            draw::set_draw_color(Color::Foreground);
+            draw::draw_rounded_rect(x - 3, y - 3, w + 6, h + 6, 12);
+        }
     });
-    b.clear_visible_focus();
+    b.handle(|b, event| {
+        if matches!(event, Event::Focus | Event::Unfocus) {
+            b.redraw();
+        }
+        false
+    });
     b
 }
 
@@ -234,7 +252,8 @@ fn items(names: &[String]) -> String {
 }
 
 pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
-    let (scroll, mut col) = super::tab_scrolled(tabs, "Settings", 1450);
+    let (mut scroll, mut col) = super::tab_scrolled(tabs, "Settings", 1450);
+    let mut rows = Vec::new();
     col.set_pad(2);
     let c = cfg.borrow();
     let chosen = c.theme.unwrap_or(if c.dark { Theme::Dark } else { Theme::Light });
@@ -244,42 +263,39 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     drop(c);
 
     section(&mut col, tr("settings.about"), "info");
-    let mut row = Flex::default().row();
-    row.set_pad(14);
-    let mut logo = Frame::default();
-    logo.draw(|f| {
-        if let Some(mut l) = icons::logo(icons::is_dark(), 56) {
-            l.draw(f.x(), f.y() + (f.h() - 56) / 2, 56, 56);
-        }
-    });
-    row.fixed(&logo, 56);
-    let mut text = Flex::default().column();
-    text.set_pad(0);
-    let mut name = Frame::default()
-        .with_label(&trf("settings.about.version", &[("version", crate::brand::VERSION)]))
-        .with_align(Align::Left | Align::Inside | Align::Bottom)
-        .ellipsis();
-    name.set_label_font(Font::HelveticaBold);
-    name.set_label_size(16);
-    let mut tag = Frame::default()
-        .with_label(tr("settings.about.tagline"))
-        .with_align(Align::Left | Align::Inside | Align::Top)
-        .ellipsis();
-    tag.set_label_color(super::muted());
-    text.end();
-    let mut right = Flex::default().column();
-    Frame::default();
+    let mut right = setting(
+        &mut col,
+        &mut rows,
+        &trf("settings.about.version", &[("version", crate::brand::VERSION)]),
+        tr("settings.about.tagline"),
+        150,
+    );
     let mut github = button(&mut right, tr("btn.open_github"), 130);
-    right.fixed(&github, ROW);
-    Frame::default();
-    right.end();
-    row.fixed(&right, 150);
     github.set_callback(|_| crate::oauth::open_browser(&format!("https://github.com/{}", crate::brand::REPO)));
-    row.end();
-    col.fixed(&row, 64);
+    done(right, &github);
+    if let Some(about) = rows.last_mut() {
+        about.name.set_label_font(Font::HelveticaBold);
+        about.name.set_label_size(16);
+        about.row.begin();
+        let mut logo = Frame::default();
+        logo.draw(|frame| {
+            if let Some(mut image) = icons::logo(icons::is_dark(), 56) {
+                image.draw(frame.x(), frame.y() + (frame.h() - 56) / 2, 56, 56);
+            }
+        });
+        about.row.insert(&logo, 0);
+        about.row.end();
+        about.logo = Some(logo);
+    }
 
     section(&mut col, tr("settings.appearance"), "sun");
-    let r = setting(&mut col, tr("settings.theme"), tr("settings.theme.about"), 200);
+    let r = setting(
+        &mut col,
+        &mut rows,
+        tr("settings.theme"),
+        tr("settings.theme.about"),
+        200,
+    );
     let mut theme = super::fit::choice();
     let system = if super::system_is_dark() {
         tr("settings.theme.dark")
@@ -308,7 +324,13 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
         }
     });
 
-    let r = setting(&mut col, tr("settings.language"), tr("settings.language.about"), 200);
+    let r = setting(
+        &mut col,
+        &mut rows,
+        tr("settings.language"),
+        tr("settings.language.about"),
+        200,
+    );
     let mut language = super::fit::choice();
     let languages: Vec<(&str, String)> = i18n::all().map(|(code, name)| (code, name.to_string())).collect();
     let detected = languages
@@ -335,8 +357,15 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     section(&mut col, tr("settings.memory"), "power");
     let r = setting(
         &mut col,
+        &mut rows,
         tr("settings.memory.saver"),
-        tr("settings.memory.saver.about"),
+        &[
+            tr("settings.memory.saver.about"),
+            tr("settings.memory.effects"),
+            tr("settings.memory.first_words"),
+            tr("settings.memory.files"),
+        ]
+        .join("\n"),
         44,
     );
     let mut saver = switch(cfg.borrow().memory_saver);
@@ -345,28 +374,22 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
         let cfg = cfg.clone();
         move |b| put(&cfg, |c| c.memory_saver = b.value())
     });
-    for key in [
-        "settings.memory.effects",
-        "settings.memory.first_words",
-        "settings.memory.files",
-    ] {
-        let mut text = Frame::default()
-            .with_label(tr(key))
-            .with_align(Align::Left | Align::Inside)
-            .ellipsis();
-        text.set_label_color(super::muted());
-        col.fixed(&text, 26);
-    }
-
     section(&mut col, tr("settings.chat"), "message-square");
     let r = setting(
         &mut col,
-        tr("settings.chat.save_memory"),
-        tr("settings.chat.save_memory.about"),
+        &mut rows,
+        tr("settings.chat.keep_history"),
+        if crate::memory_saver() {
+            tr("settings.chat.keep_history.memory_saver")
+        } else {
+            tr("settings.chat.keep_history.about")
+        },
         44,
     );
-    let mut check = fltk::button::CheckButton::default();
-    check.set_value(crate::memory_saver() || !cfg.borrow().window.chat.save_history);
+    let mut check = switch(history_enabled(
+        cfg.borrow().window.chat.save_history,
+        crate::memory_saver(),
+    ));
     if crate::memory_saver() {
         check.deactivate();
     }
@@ -374,12 +397,12 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
 
     let r = setting(
         &mut col,
+        &mut rows,
         tr("settings.chat.youtube_tag"),
         tr("settings.chat.youtube_tag.about"),
         44,
     );
-    let mut yt_check = fltk::button::CheckButton::default();
-    yt_check.set_value(cfg.borrow().window.chat_youtube_tag);
+    let mut yt_check = switch(cfg.borrow().window.chat_youtube_tag);
     done(r, &yt_check);
     yt_check.set_callback({
         let cfg = cfg.clone();
@@ -431,7 +454,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     ];
     let mut inputs = Vec::new();
     for (key, about, get, set) in numbers {
-        let r = setting(&mut col, tr(key), tr(about), 90);
+        let r = setting(&mut col, &mut rows, tr(key), tr(about), 90);
         let mut input = fltk::input::IntInput::default();
         input.set_value(&get(&cfg.borrow().window.chat).to_string());
         if crate::memory_saver() || !cfg.borrow().window.chat.save_history {
@@ -462,16 +485,19 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     check.set_callback({
         let (cfg, cmds, inputs) = (cfg.clone(), cmds.clone(), inputs.clone());
         move |b| {
-            let save_memory = b.value();
+            if crate::memory_saver() {
+                return;
+            }
+            let keep_history = b.value();
             for inp in inputs.borrow_mut().iter_mut() {
-                if save_memory {
-                    inp.deactivate();
-                } else {
+                if keep_history {
                     inp.activate();
+                } else {
+                    inp.deactivate();
                 }
             }
             let mut limits = cfg.borrow().window.chat;
-            limits.save_history = !save_memory;
+            limits.save_history = keep_history;
             let limits = limits.clamped();
             put(&cfg, |c| c.window.chat = limits);
             tell(&cmds, |e| e.chat_trim());
@@ -482,6 +508,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     section(&mut col, tr("settings.startup"), "power");
     let r = setting(
         &mut col,
+        &mut rows,
         tr("settings.start_hidden"),
         tr("settings.start_hidden.about"),
         44,
@@ -500,7 +527,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     } else {
         tr("settings.autostart.about_linux")
     };
-    let r = setting(&mut col, tr("settings.autostart"), about, 44);
+    let r = setting(&mut col, &mut rows, tr("settings.autostart"), about, 44);
     let auto = switch(autostart);
     done(r, &auto);
     auto.clone().set_callback({
@@ -518,7 +545,13 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     let now = crate::fmt::now();
     let system = crate::fmt::locale_patterns();
     let example = |d: &str, fallback: &str| crate::fmt::date(&now, if d.is_empty() { fallback } else { d });
-    let r = setting(&mut col, tr("settings.dates"), tr("settings.dates.about"), 200);
+    let r = setting(
+        &mut col,
+        &mut rows,
+        tr("settings.dates"),
+        tr("settings.dates.about"),
+        200,
+    );
     let mut dates = super::fit::choice();
     let names: Vec<String> = DATES
         .iter()
@@ -530,7 +563,13 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     dates.add_choice(&items(&names));
     dates.set_value(DATES.iter().position(|d| *d == date_f).unwrap_or(0) as i32);
     done(r, &dates);
-    let r = setting(&mut col, tr("settings.times"), tr("settings.times.about"), 200);
+    let r = setting(
+        &mut col,
+        &mut rows,
+        tr("settings.times"),
+        tr("settings.times.about"),
+        200,
+    );
     let mut times = super::fit::choice();
     let names: Vec<String> = TIMES
         .iter()
@@ -561,6 +600,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     let version = crate::version();
     let r = setting(
         &mut col,
+        &mut rows,
         tr("settings.new_versions"),
         &match crate::update::found() {
             Some(tag) => trf("settings.new_versions.found", &[("version", &tag)]),
@@ -609,7 +649,13 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     });
 
     section(&mut col, tr("settings.log"), "scroll-text");
-    let r = setting(&mut col, tr("settings.debug_log"), tr("settings.debug_log.about"), 44);
+    let r = setting(
+        &mut col,
+        &mut rows,
+        tr("settings.debug_log"),
+        tr("settings.debug_log.about"),
+        44,
+    );
     let debug = switch(debug_log);
     done(r, &debug);
     debug.clone().set_callback({
@@ -623,22 +669,42 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
 
     section(&mut col, tr("settings.files"), "folder");
     let path = crate::config_path();
-    let r = path_setting(&mut col, tr("settings.settings_file"), &path, 210);
-    let mut row = Flex::default().row();
-    row.set_pad(8);
-    // Right-aligned: the space before the buttons takes what they don't.
-    Frame::default();
-    let mut open = button(&mut row, tr("btn.open"), 90);
-    row.end();
-    done(r, &row);
-    open.set_callback({
-        let dir = path.parent().map(|d| d.display().to_string()).unwrap_or_default();
-        move |_| crate::oauth::open_browser(&dir)
+    let mut r = setting(
+        &mut col,
+        &mut rows,
+        tr("settings.settings_file"),
+        &path.display().to_string(),
+        360,
+    );
+    let (actions, buttons) = super::grid_group(
+        &mut r,
+        &[tr("btn.open_file"), tr("btn.copy_path"), tr("btn.open_folder")],
+        1,
+    );
+    done(r, &actions);
+    buttons[0].clone().set_callback({
+        let file = path.display().to_string();
+        move |_| crate::oauth::open_browser(&file)
+    });
+    buttons[1].clone().set_callback({
+        let file = path.display().to_string();
+        move |_| {
+            app::copy(&file);
+            crate::say(tr("settings.path_copied").into());
+        }
+    });
+    buttons[2].clone().set_callback({
+        let folder = path
+            .parent()
+            .map(|directory| directory.display().to_string())
+            .unwrap_or_default();
+        move |_| crate::oauth::open_browser(&folder)
     });
 
     section(&mut col, tr("settings.tools"), "plug");
     let r = setting(
         &mut col,
+        &mut rows,
         tr("settings.instance_name"),
         tr("settings.instance_name.about"),
         200,
@@ -654,7 +720,49 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
             put(&cfg, |c| c.instance_name = v);
         }
     });
-    Frame::default();
+    let spacer = Frame::default();
+    col.fixed(&spacer, 10);
     col.end();
     scroll.end();
+    let mut page = col.clone();
+    let mut place = move |scroll: &mut fltk::group::Scroll, x: i32, y: i32, width: i32, height: i32| {
+        let width = (width - 14).max(50);
+        page.set_pos(x - scroll.xposition(), y - scroll.yposition());
+        layout_settings(&mut page, &mut rows, width, height);
+        let top = scroll.yposition().clamp(0, (page.h() - height).max(0));
+        scroll.scroll_to(0, top);
+        scroll.redraw();
+    };
+    let (x, y, width, height) = (scroll.x(), scroll.y(), scroll.w(), scroll.h());
+    place(&mut scroll, x, y, width, height);
+    scroll.resize_callback(move |scroll, x, y, width, height| place(scroll, x, y, width, height));
+    scroll.handle(|scroll, event| {
+        if event == Event::Show && super::SHOWN.load(std::sync::atomic::Ordering::Relaxed) {
+            // Re-measure the initial font-free layout when this page becomes visible.
+            scroll.resize(scroll.x(), scroll.y(), scroll.w(), scroll.h());
+        }
+        false
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_switch_matches_the_saved_preference_and_active_memory_policy() {
+        assert!(history_enabled(true, false));
+        assert!(!history_enabled(false, false));
+        assert!(!history_enabled(true, true));
+        assert!(!history_enabled(false, true));
+    }
+
+    #[test]
+    fn wide_controls_stack_but_small_controls_keep_their_text_space() {
+        assert_eq!(setting_geometry(320, 200, 68, false), (true, 320, 110));
+        assert_eq!(setting_geometry(900, 200, 36, false), (false, 200, 44));
+        assert_eq!(setting_geometry(320, 44, 100, false), (false, 44, 108));
+        assert_eq!(setting_geometry(320, 90, 68, false), (false, 90, 76));
+        assert_eq!(setting_geometry(320, 150, 40, true), (true, 320, 146));
+    }
 }

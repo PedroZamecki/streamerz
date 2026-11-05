@@ -9,6 +9,8 @@ use fltk::enums::{Align, Color};
 use fltk::frame::Frame;
 use fltk::menu::Choice;
 use fltk::prelude::*;
+use std::cell::Cell;
+use std::rc::Rc;
 
 /// `text` cut to `room` wide by `width`, with "..." where it was cut.
 pub fn ellipsize(text: &str, room: i32, width: impl Fn(&str) -> i32) -> String {
@@ -41,10 +43,17 @@ fn plain(label: &str) -> String {
 /// Tooltip of a widget that cut its text: the whole text; cleared again when it fits.
 fn tip(w: &mut impl WidgetExt, full: &str, cut: bool) {
     let shown = w.tooltip().unwrap_or_default();
-    if cut && shown != full {
-        w.set_tooltip(&full.replace('@', "@@"));
-    } else if !cut && shown == full.replace('@', "@@") {
-        w.set_tooltip("");
+    let escaped = full.replace('@', "@@");
+    if let Some(next) = tooltip_change(&shown, &escaped, cut) {
+        w.set_tooltip(next);
+    }
+}
+
+fn tooltip_change<'a>(current: &str, label: &'a str, cut: bool) -> Option<&'a str> {
+    match (cut, current.is_empty(), current == label) {
+        (true, true, _) => Some(label),
+        (false, _, true) => Some(""),
+        _ => None,
     }
 }
 
@@ -116,23 +125,37 @@ pub fn choice() -> Choice {
 /// A button that fits its room: icon and words, only the icon (the words as its tooltip), or, with no
 /// icon, the words cut with "...". The icon is the button's image (`with_icon` sets it).
 pub fn adaptive(b: &mut Button) {
+    adaptive_mode(b, None);
+}
+
+pub(super) fn adaptive_with_fold(b: &mut Button, folded: Rc<Cell<bool>>) {
+    adaptive_mode(b, Some(folded));
+}
+
+fn adaptive_mode(b: &mut Button, folded: Option<Rc<Cell<bool>>>) {
     b.set_label_type(fltk::enums::LabelType::None);
-    b.draw(|b| {
+    b.draw(move |b| {
         let frame = if b.value() { b.down_frame() } else { b.frame() };
         draw::draw_box(frame, b.x(), b.y(), b.w(), b.h(), b.color());
-        let ink = if b.active() {
+        let ink = if b.active_r() {
             b.label_color()
         } else {
             b.label_color().inactive()
         };
         let label = plain(&b.label());
         draw::set_font(b.label_font(), b.label_size());
-        let img = b.image();
+        let img = if b.active_r() {
+            b.image()
+        } else {
+            b.deimage().or_else(|| b.image())
+        };
         // The image carries a gap after it (before_label); the icon itself is the 14 px before it.
         let (icon_w, lead) = img.as_ref().map_or((0, 0), |i| (14, i.w()));
         let room = b.w() - 12;
         let words = measure(&label);
-        let (text, icon_only) = if lead + words <= room || label.is_empty() {
+        let (text, icon_only) = if icon_w > 0 && folded.as_ref().is_some_and(|folded| folded.get()) {
+            (String::new(), true)
+        } else if lead + words <= room || label.is_empty() {
             (label.clone(), false)
         } else if icon_w > 0 {
             (String::new(), true)
@@ -161,6 +184,15 @@ pub fn grown(want: i32, label: &str, icon: bool) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folding_and_unfolding_keep_an_action_explanation() {
+        let why = "Turn on chat history before sending.";
+        assert_eq!(tooltip_change(why, "Message all", true), None);
+        assert_eq!(tooltip_change(why, "Message all", false), None);
+        assert_eq!(tooltip_change("", "Message all", true), Some("Message all"));
+        assert_eq!(tooltip_change("Message all", "Message all", false), Some(""));
+    }
 
     fn w(t: &str) -> i32 {
         t.chars().count() as i32 * 7

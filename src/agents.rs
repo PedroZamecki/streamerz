@@ -263,10 +263,7 @@ impl Server {
     /// This Streamerz, its WebSocket at `url` (written only for a development build: a release reads
     /// its config). The AppImage itself, not its mount, which moves each run.
     pub fn this(url: String) -> Server {
-        let exe = std::env::var_os("APPIMAGE")
-            .map(PathBuf::from)
-            .or_else(|| std::env::current_exe().ok())
-            .unwrap_or_default();
+        let exe = crate::update::exe().unwrap_or_default();
         let dev = crate::brand::IS_DEV;
         Server {
             name: if dev { "streamerz-dev" } else { "streamerz" }.into(),

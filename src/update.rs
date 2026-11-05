@@ -30,8 +30,19 @@ pub fn exe() -> Option<PathBuf> {
 }
 
 /// The AppImage this runs from, if it does.
-fn appimage() -> Option<PathBuf> {
-    std::env::var_os("APPIMAGE").map(PathBuf::from).filter(|p| p.is_file())
+pub(crate) fn appimage() -> Option<PathBuf> {
+    own_appimage(
+        &std::env::current_exe().ok()?,
+        Path::new(&std::env::var_os("APPDIR")?),
+        Path::new(&std::env::var_os("APPIMAGE")?),
+    )
+}
+
+/// AppImage environment variables can belong to a parent application launching this binary.
+fn own_appimage(executable: &Path, directory: &Path, image: &Path) -> Option<PathBuf> {
+    let executable = executable.canonicalize().ok()?;
+    let directory = directory.canonicalize().ok()?;
+    (directory.is_dir() && executable.starts_with(directory) && image.is_file()).then(|| image.to_path_buf())
 }
 
 /// "v1.2.3" as numbers; None for "dev" and the like.
@@ -285,6 +296,24 @@ mod tests {
     use super::{beside, semver, sound};
     use sha2::{Digest, Sha256};
     use std::path::Path;
+
+    #[test]
+    fn an_inherited_appimage_cannot_replace_the_running_program() {
+        let root = std::env::temp_dir().join(format!("streamerz-appimage-{}", crate::engine::uuid()));
+        let mount = root.join("mount");
+        std::fs::create_dir_all(mount.join("usr/bin")).unwrap();
+        let own = mount.join("usr/bin/Streamerz");
+        let child = root.join("Streamerz");
+        let image = root.join("parent.AppImage");
+        for path in [&own, &child, &image] {
+            std::fs::write(path, b"test").unwrap();
+        }
+        assert_eq!(super::own_appimage(&own, &mount, &image), Some(image.clone()));
+        assert_eq!(super::own_appimage(&child, &mount, &image), None);
+        assert_eq!(super::own_appimage(&own, &root.join("missing"), &image), None);
+        assert_eq!(super::own_appimage(&own, &mount, &root.join("missing")), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn versions_compare() {

@@ -1,11 +1,26 @@
 """Test the isolation gates without starting Streamerz or contacting another instance."""
 import socket
+import os
 import unittest
 
 import smoke
 
 
 class InstanceIsolation(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "Unix listeners reuse addresses after their connections close")
+    def test_closed_connection_does_not_block_the_next_isolated_run(self):
+        with socket.socket() as server:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind(("127.0.0.1", 0))
+            port = server.getsockname()[1]
+            server.listen()
+            with socket.create_connection(("127.0.0.1", port)) as client:
+                connection, _ = server.accept()
+                connection.shutdown(socket.SHUT_WR)
+                connection.close()
+                self.assertEqual(client.recv(1), b"")
+        smoke.require_free_port(port)
+
     def test_occupied_port_is_refused_without_contacting_it(self):
         with socket.socket() as other:
             other.bind(("127.0.0.1", 0))

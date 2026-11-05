@@ -212,7 +212,7 @@ pub fn pick_one(text: &str, choices: &[&str]) -> Option<usize> {
 pub fn alert(text: &str) {
     notice(
         "triangle-alert",
-        Color::from_rgb(0xe0, 0xa8, 0x30),
+        super::Health::Busy.color(),
         text,
         None,
         tr("dialogs.ok"),
@@ -758,7 +758,14 @@ fn name_value(title: &str, name: &str, value: &str) -> Option<(String, String)> 
     } else {
         v.take_focus()
     };
-    let ok = run(&mut win, &answer, || !n.value().trim().is_empty());
+    let ok = run(&mut win, &answer, || {
+        if n.value().trim().is_empty() {
+            alert(tr("dialogs.name_required"));
+            false
+        } else {
+            true
+        }
+    });
     ok.then(|| (n.value().trim().to_string(), v.value()))
 }
 

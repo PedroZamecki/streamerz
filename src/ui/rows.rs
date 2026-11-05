@@ -110,6 +110,11 @@ fn tone(hex: &str) -> Color {
     Color::from_rgb((n >> 16) as u8, (n >> 8) as u8, n as u8)
 }
 
+/// A selected row or tree item: the background `back` with a little of the text colour, like shadcn's accent.
+pub fn selected(back: Color) -> Color {
+    Color::color_average(Color::Foreground, back, 0.14)
+}
+
 impl Rows {
     /// `empty` is what it says in the middle while it has no lines.
     pub fn new(empty: &'static str) -> Rows {
@@ -140,6 +145,14 @@ impl Rows {
 
     pub fn set_column_widths(&mut self, w: &'static [i32]) {
         self.st.borrow_mut().widths = w;
+    }
+
+    pub fn set_empty(&mut self, text: &'static str) {
+        let mut state = self.st.borrow_mut();
+        if state.empty != text {
+            state.empty = text;
+            self.area.redraw();
+        }
     }
 
     /// Column `c` holds a platform ("twitch"...): its logo shows instead of the text.
@@ -317,13 +330,15 @@ impl Rows {
                 break;
             }
             let (text, back) = if n == st.sel {
-                draw::set_draw_color(Color::Selection);
+                // The same soft zinc selection as the trees, ringed while the list has the keys.
+                let picked = selected(f.color());
+                draw::set_draw_color(picked);
                 draw::draw_rounded_rectf(x + 4, ly + 1, rw, LINE - 2, 5);
                 if f.has_focus() {
-                    draw::set_draw_color(Color::contrast(fg, Color::Selection));
+                    draw::set_draw_color(Color::color_average(fg, f.color(), 0.5));
                     draw::draw_rounded_rect(x + 4, ly + 1, rw, LINE - 2, 5);
                 }
-                (Color::contrast(fg, Color::Selection), Color::Selection)
+                (fg, picked)
             } else {
                 if n == st.hover {
                     draw::set_draw_color(Color::color_average(fg, f.color(), 0.08));
@@ -526,6 +541,12 @@ impl Rows {
                 if st.grab.take().is_some() {
                     f.redraw();
                 }
+                true
+            }
+            Event::KeyDown if super::menu_key() => {
+                drop(st);
+                let menu = self.menu.borrow().clone();
+                super::context_menu(&menu);
                 true
             }
             Event::KeyDown => {

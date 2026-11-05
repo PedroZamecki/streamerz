@@ -21,7 +21,7 @@ use fltk::button::{Button, CheckButton};
 use fltk::draw;
 use fltk::enums::{Align, CallbackTrigger, Color, Damage, Event, Font, FrameType, Key};
 use fltk::frame::Frame;
-use fltk::group::{Flex, Wizard};
+use fltk::group::{Flex, FlexType, Wizard};
 use fltk::image::SvgImage;
 use fltk::input::Input;
 use fltk::menu::Choice;
@@ -2262,6 +2262,8 @@ struct ChatColumn {
     chat_stack: Wizard,
     chat_group: Flex,
     down_group: Flex,
+    empty: Frame,
+    setup: Flex,
     acct_btn: Button,
     input: Input,
     target_plat: Rc<Cell<usize>>,
@@ -2394,7 +2396,24 @@ impl ChatColumn {
         let mut down_group = Flex::default().column();
         down_group.set_frame(FrameType::DownBox);
         down_group.set_color(Color::Background2);
-        let _empty_chat = Frame::default();
+        Frame::default();
+        let mut empty = Frame::default()
+            .with_label(tr("chat.no_connection"))
+            .with_align(Align::Center | Align::Inside | Align::Wrap);
+        empty.set_label_color(super::muted());
+        down_group.fixed(&empty, 72);
+        let mut setup = Flex::default().row();
+        Frame::default();
+        let mut accounts = super::button(&mut setup, tr("btn.accounts"), 120);
+        Frame::default();
+        setup.end();
+        down_group.fixed(&setup, ROW + 4);
+        accounts.set_callback({
+            let go = go_accounts.clone();
+            move |_| go()
+        });
+        setup.hide();
+        Frame::default();
         down_group.end();
         chat_stack.end();
         chat_stack.resize_callback({
@@ -2611,6 +2630,8 @@ impl ChatColumn {
             chat_stack,
             chat_group,
             down_group,
+            empty,
+            setup,
             acct_btn: acct_btn.clone(),
             input: input.clone(),
             target_plat: target_plat.clone(),
@@ -2794,6 +2815,19 @@ impl ChatColumn {
 
     /// Shows what is wrong with `platform`'s chat (`state`), or takes the notice away.
     fn show_notice(&self, platform: Option<&'static str>, state: ChatState) {
+        let nothing = self.pane.nothing.get();
+        self.empty
+            .clone()
+            .set_label(if nothing { tr("chat.no_connection") } else { "" });
+        let mut setup = self.setup.clone();
+        if setup.visible() != nothing {
+            if nothing {
+                setup.show();
+            } else {
+                setup.hide();
+            }
+            self.down_group.clone().layout();
+        }
         self.notice_targets
             .replace(platform.filter(|_| state != ChatState::Connected).into_iter().collect());
         let mut stack = self.chat_stack.clone();
@@ -3046,6 +3080,8 @@ pub struct Chat {
     cmds: Cmds,
     view: Choice,
     viewers: Frame,
+    message_all: Button,
+    history_note: Frame,
     /// The set-up platforms (indexes in PLATFORMS), as the view list shows them.
     plats: Rc<RefCell<Vec<usize>>>,
     /// All together / single platform column, plus one individual column per platform for side by side.
@@ -3323,6 +3359,32 @@ impl Chat {
             )
         })
         .unwrap_or(([None; 4], [ChatState::Down; 4], [false; 4]));
+        let history = self.cfg.borrow().window.chat.save_history && !crate::memory_saver();
+        let connected = states.contains(&ChatState::Connected);
+        let mut message = self.message_all.clone();
+        if history && connected {
+            message.activate();
+        } else {
+            message.deactivate();
+        }
+        message.set_tooltip(if !history {
+            tr("chat.sending_disabled")
+        } else if !connected {
+            tr("chat.no_connection")
+        } else {
+            tr("chat.message_all_tooltip")
+        });
+        let mut history_note = self.history_note.clone();
+        if history_note.visible() == history {
+            if history {
+                history_note.hide();
+            } else {
+                history_note.show();
+            }
+            let mut tab = self.tab.clone();
+            tab.fixed(&history_note, if history { 0 } else { 40 });
+            tab.layout();
+        }
         let shown = self.plats.borrow();
         let format_count = |i: usize| counts[i].map_or_else(|| "?".to_string(), |n| n.to_string());
         for (i, col) in self.side.iter().enumerate() {
@@ -3498,11 +3560,13 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
     let mut col = super::tab(tabs, "Chat");
     let mut top = Flex::default().row();
     top.set_pad(6);
+    let mut navigation = Flex::default().row();
+    navigation.set_pad(6);
     let l = Frame::default().with_label(tr("chat.show"));
-    top.fixed(&l, 46);
+    navigation.fixed(&l, 46);
     let mut view = super::fit::choice();
     view.set_tooltip(tr("chat.view_label"));
-    top.fixed(&view, 136);
+    navigation.fixed(&view, 136);
     let mut hint = Frame::default()
         .with_label(tr("chat.hint"))
         .with_align(Align::Right | Align::Inside | Align::Clip)
@@ -3511,37 +3575,84 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
     hint.set_label_color(super::muted());
 
     let viewers = viewer_counter();
-    top.fixed(&viewers, 58);
+    navigation.fixed(&viewers, 58);
+    navigation.end();
+
+    let mut actions = Flex::default().row();
+    actions.set_pad(6);
 
     // Discrete "Message all" button with broadcast icon
     let mut msg_all = Button::default().with_label(tr("chat.message_all_btn"));
     msg_all.set_image(icons::before_label("megaphone", Color::Foreground, 14));
+    msg_all.set_deimage(icons::before_label("megaphone", Color::Foreground.inactive(), 14));
     super::fit::adaptive(&mut msg_all);
     msg_all.set_tooltip(tr("chat.message_all_tooltip"));
     let msg_all_w = super::fit::grown(114, tr("chat.message_all_btn"), true);
-    top.fixed(&msg_all, msg_all_w);
+    actions.fixed(&msg_all, msg_all_w);
+    if crate::memory_saver() || !cfg.borrow().window.chat.save_history {
+        msg_all.deactivate();
+        msg_all.set_tooltip(tr("chat.sending_disabled"));
+    }
 
     let mut opts = fltk::menu::MenuButton::default().with_label(tr("chat.options"));
-    top.fixed(&opts, 84);
-    let mut clear = button(&mut top, tr("btn.clear"), 64);
+    actions.fixed(&opts, 84);
+    let mut clear = button(&mut actions, tr("btn.clear"), 64);
+    let clear_w = clear.w();
+    actions.end();
+    let actions_w = msg_all_w + 84 + clear_w + 12;
+    top.fixed(&actions, actions_w);
     top.end();
     col.fixed(&top, ROW);
-    // Narrow: the buttons keep only their icons, and the hint goes.
+    // Narrow: navigation and actions keep their own row, so every control remains reachable.
     top.resize_callback({
-        let (msg_all, clear, mut hint) = (msg_all.clone(), clear.clone(), hint.clone());
-        // As wide as `button` makes them.
-        let clear_w = super::fit::grown(84, tr("btn.clear"), true);
+        let (mut navigation, actions, view, msg_all, clear, mut hint, mut parent) = (
+            navigation.clone(),
+            actions.clone(),
+            view.clone(),
+            msg_all.clone(),
+            clear.clone(),
+            hint.clone(),
+            col.clone(),
+        );
+        let mut actions = actions;
         move |t, _, _, w, _| {
-            let narrow = w < 600;
-            t.fixed(&msg_all, if narrow { 36 } else { msg_all_w });
-            t.fixed(&clear, if narrow { 36 } else { clear_w });
-            if narrow {
+            let stacked = w < 700;
+            let compact = w < actions_w;
+            actions.fixed(&msg_all, if compact { 36 } else { msg_all_w });
+            actions.fixed(&clear, if compact { 36 } else { clear_w });
+            t.set_type(if stacked { FlexType::Column } else { FlexType::Row });
+            t.set_pad(if stacked { 4 } else { 6 });
+            if stacked {
                 hint.hide();
+                navigation.fixed(&view, 0);
+                t.fixed(&navigation, ROW);
+                t.fixed(&actions, ROW);
             } else {
                 hint.show();
+                navigation.fixed(&view, 136);
+                t.fixed(&navigation, 0);
+                t.fixed(&actions, actions_w);
+            }
+            let height = if stacked { ROW * 2 + 4 } else { ROW };
+            if t.h() != height {
+                parent.fixed(t, height);
+                let mut parent = parent.clone();
+                fltk::app::awake_callback(move || {
+                    if !parent.was_deleted() {
+                        parent.recalc();
+                        parent.redraw();
+                    }
+                });
             }
         }
     });
+
+    let mut history_note = Frame::default()
+        .with_label(tr("chat.sending_disabled"))
+        .with_align(Align::Left | Align::Inside | Align::Wrap);
+    history_note.set_label_color(super::muted());
+    col.fixed(&history_note, 40);
+    history_note.hide();
 
     let go_accounts: Rc<dyn Fn()> = {
         let tabs = tabs.clone();
@@ -3569,6 +3680,8 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
         cmds: cmds.clone(),
         view: view.clone(),
         viewers,
+        message_all: msg_all.clone(),
+        history_note,
         plats: Rc::default(),
         main,
         side,
@@ -3583,9 +3696,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
         let was = cfg.borrow().window.chat_view.clone();
         let at = m.view.find_index(&was);
         m.view.set_value(at.max(0));
-        if at > 0 {
-            m.rebuild(false);
-        }
+        m.rebuild(false);
     }
 
     view.set_callback({
@@ -3717,7 +3828,7 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
             .with_label(tr("chat.acct_keyring_locked"))
             .with_align(Align::Left | Align::Inside)
             .ellipsis();
-        lbl.set_label_color(Color::from_rgb(0xe0, 0xa8, 0x30));
+        lbl.set_label_color(super::Health::Busy.color());
         let mut ubtn = button(&mut lrow, tr("btn.unlock"), 80);
         lrow.end();
         root.fixed(&lrow, ROW);
@@ -3991,11 +4102,11 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
     let conn_states: [bool; 4] = std::array::from_fn(|i| conn_states[i] && set_up[i]);
 
     let mut win = DoubleWindow::default()
-        .with_size(520, 210)
+        .with_size(580, 210)
         .with_label(tr("chat.msg_all_title"));
     win.set_xclass("streamerz");
     win.make_modal(true);
-    let mut col = Flex::new(12, 12, 496, 186, None).column();
+    let mut col = Flex::new(12, 12, 556, 186, None).column();
     col.set_pad(8);
 
     let mut title = Frame::default()
@@ -4028,6 +4139,11 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
         );
         if !set_up[i] {
             c.deactivate();
+            if PLATFORMS[i] == "tiktok" {
+                c.set_tooltip(tr("chat.msg_all_needs_tiktok"));
+            } else {
+                c.set_tooltip(&trf("chat.msg_all_needs_login", &[("platform", NAMES[i])]));
+            }
         }
         checks.push(c);
     }
@@ -4068,7 +4184,7 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
         }
     });
     for (i, mut check) in checks.iter().cloned().enumerate() {
-        if i == 3 {
+        if i == 3 && set_up[3] {
             check.set_tooltip(tr("chat.tiktok_browser_tip"));
         }
         let update = update_accounts.clone();
@@ -4095,12 +4211,21 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
 
     let mut foot = Flex::default().row();
     foot.set_pad(8);
-    let status = Frame::default().with_align(Align::Left | Align::Inside).ellipsis();
+    let mut status = Frame::default().with_align(Align::Left | Align::Inside).ellipsis();
     let mut close = button(&mut foot, tr("dialogs.cancel"), 80);
     foot.end();
     col.fixed(&foot, ROW);
     col.end();
     win.end();
+    // Nowhere to send: say why, and what to do, instead of a Send that does nothing.
+    if !set_up.iter().any(|&on| on) {
+        super::Health::Off.show(&mut status, tr("chat.msg_all_nowhere"));
+        status.set_tooltip(tr("chat.msg_all_nowhere"));
+        send_btn.set_image(icons::icon("send-horizontal", super::muted(), 18));
+        send_btn.deactivate();
+        input.deactivate();
+        emote_btn.deactivate();
+    }
 
     let done = Rc::new(Cell::new(false));
     let do_send = {
@@ -4122,7 +4247,7 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
                 .collect();
             if targets.is_empty() {
                 status.set_label(tr("chat.check_at_least_one"));
-                status.set_label_color(Color::from_rgb(0xe0, 0x60, 0x50));
+                status.set_label_color(super::Health::Down.color());
                 status.redraw();
                 return;
             }

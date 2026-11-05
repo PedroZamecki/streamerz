@@ -17,12 +17,12 @@ type Cfg = Arc<tokio::sync::watch::Sender<crate::Config>>;
 /// Wide, and folded to its icons.
 const WIDE: i32 = 176;
 const MINI: i32 = 52;
-const ITEM: i32 = 27;
-const SECTION: i32 = 24;
+const ITEM: i32 = 25;
+const SECTION: i32 = 18;
 /// The fold button's line.
-const TOP: i32 = 36;
+const TOP: i32 = 32;
 /// The footer's: the logo and the version.
-const FOOT: i32 = 44;
+const FOOT: i32 = 40;
 
 /// Sections and their pages: (page label, icon).
 type Page = (&'static str, &'static str, &'static str);
@@ -169,6 +169,10 @@ fn resize_sidebar(mut f: Frame, mut pages: Wizard, target: i32) {
     }
 }
 
+pub(super) fn fit_window(f: Frame, pages: Wizard, cfg: &Cfg, window_width: i32) {
+    resize_sidebar(f, pages, if window_width < 760 { MINI } else { width(cfg) });
+}
+
 fn wide(f: &Frame) -> bool {
     f.w() > (WIDE + MINI) / 2
 }
@@ -182,6 +186,7 @@ pub fn sidebar(h: i32, pages: &Wizard, cfg: &Cfg) -> Frame {
     let scroll_y: Rc<Cell<i32>> = Rc::new(Cell::new(0));
     f.draw({
         let (pages, hover, scroll_y) = (pages.clone(), hover.clone(), scroll_y.clone());
+        let mut last_page = String::new();
         move |f| {
             let bg = Color::color_average(Color::Background, Color::Background2, 0.5);
             let fg = Color::Foreground;
@@ -203,20 +208,25 @@ pub fn sidebar(h: i32, pages: &Wizard, cfg: &Cfg) -> Frame {
 
             let tot = total_height();
             let max_s = (tot - f.h() + FOOT).max(0);
-            let sy = scroll_y.get().min(max_s);
+            let up = pages.try_current_widget().map(|w| w.label()).unwrap_or_default();
+            let sy = if up != last_page {
+                last_page.clone_from(&up);
+                reveal_page(&up, scroll_y.get(), f.h())
+            } else {
+                scroll_y.get().min(max_s)
+            };
             if sy != scroll_y.get() {
                 scroll_y.set(sy);
             }
 
             draw::push_clip(f.x(), f.y() + TOP, f.w() - 1, f.h() - TOP - FOOT);
-            let up = pages.try_current_widget().map(|w| w.label()).unwrap_or_default();
             for (ly, (id, tr_key), icon_name) in lines(f.y() - sy) {
                 let Some(icon_name) = icon_name else {
                     if wide(f) {
                         draw::set_font(Font::HelveticaBold, 11);
                         draw::set_draw_color(super::muted());
                         let t = tr(tr_key).to_uppercase();
-                        draw::draw_text2(&t, f.x() + 16, ly + 8, WIDE - 24, SECTION - 8, Align::Left);
+                        draw::draw_text2(&t, f.x() + 16, ly + 4, WIDE - 24, SECTION - 4, Align::Left);
                     } else {
                         draw::set_draw_color(lit(true));
                         let y = ly + SECTION / 2 + 2;
@@ -359,8 +369,9 @@ pub fn sidebar(h: i32, pages: &Wizard, cfg: &Cfg) -> Frame {
                     let _ = f.take_focus();
                     match under(f) {
                         Some("") => {
+                            let collapsed = wide(f);
                             cfg.send_if_modified(|c| {
-                                c.window.nav_collapsed = !c.window.nav_collapsed;
+                                c.window.nav_collapsed = collapsed;
                                 false
                             });
                             resize_sidebar(f.clone(), pages.clone(), width(&cfg));
@@ -374,12 +385,25 @@ pub fn sidebar(h: i32, pages: &Wizard, cfg: &Cfg) -> Frame {
             }
         }
     });
+    f.resize_callback({
+        let (pages, scroll) = (pages.clone(), scroll_y.clone());
+        move |frame, _, _, _, height| {
+            let page = pages.try_current_widget().map(|w| w.label()).unwrap_or_default();
+            scroll.set(reveal_page(&page, scroll.get(), height));
+            frame.redraw();
+        }
+    });
     f
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_page_fits_above_the_footer_in_a_standard_tall_window() {
+        assert!(total_height() + FOOT <= 800 - 46);
+    }
 
     #[test]
     fn refocusing_reveals_the_current_page_without_changing_it() {

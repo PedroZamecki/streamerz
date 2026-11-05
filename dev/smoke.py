@@ -82,6 +82,8 @@ def dev_dirs(pid):
 
 def require_free_port(port):
     with socket.socket() as probe:
+        if os.name != "nt":
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             probe.bind(("127.0.0.1", port))
         except OSError as error:
@@ -121,6 +123,99 @@ def main():
             failures.append(f"{step}: the app is gone (exit {app.poll()}) {crashed[:1]}")
             raise SystemExit(print("\n".join(failures), f"\nthe app's files (logs/crash-*.txt) are in {tmp}") or 1)
         return True
+
+    def ui(command):
+        return ws.ask({"request": "StreamerzUi", "id": "smoke-ui", "do": command}).get("result", "")
+
+    def ui_data(command):
+        result = ui(command)
+        try:
+            data = json.loads(result)
+        except (TypeError, json.JSONDecodeError) as error:
+            raise RuntimeError(f"{command}: expected UI metadata, got {result!r}") from error
+        if not isinstance(data, list):
+            raise RuntimeError(f"{command}: expected a list of UI metadata")
+        return data
+
+    def window_rect():
+        windows = ui("windows")
+        geometry = re.search(r"^0: .* at (-?\d+),(-?\d+) (\d+)x(\d+) shown$", windows, re.MULTILINE)
+        if geometry is None:
+            raise RuntimeError(f"the current app window has no geometry ({windows})")
+        return tuple(map(int, geometry.groups()))
+
+    def fits_window(widget):
+        x, y, width, height = window_rect()
+        return (widget["w"] > 0 and widget["h"] > 0 and widget["x"] >= x and widget["y"] >= y
+                and widget["x"] + widget["w"] <= x + width
+                and widget["y"] + widget["h"] <= y + height)
+
+    def widgets(text="", exact=False):
+        return [widget for widget in ui_data("bounds " + text)
+                if not exact or widget["label"].strip() == text]
+
+    def widget(text, exact=False, field=False):
+        found = widgets(text, exact)
+        if field:
+            found = [item for item in found if item.get("tooltip") and item["h"] >= 24]
+        found = [item for item in found if fits_window(item)]
+        if not found:
+            raise RuntimeError(f"no usable {text!r} control in the current window")
+        # The input follows its label, and a choice follows its section's label.
+        return found[-1]
+
+    def click_widget(item, button="1"):
+        if not fits_window(item):
+            raise RuntimeError(f"refusing to click an off-window widget ({item})")
+        xdo("mousemove", str(item["x"] + item["w"] // 2), str(item["y"] + item["h"] // 2), found=True)
+        xdo("click", button)
+
+    def fill_field(label, text):
+        click_widget(widget(label, field=True))
+        xdo("key", "ctrl+a")
+        xdo("type", "--clearmodifiers", "--delay", "1", text)
+
+    def list_area(name):
+        # A list is named for screen readers by what it holds ("Command", "Voice command").
+        areas = [item for item in widgets(name, exact=True) if item["w"] >= 200 and item["h"] > 60
+                 and fits_window(item)]
+        if not areas:
+            raise RuntimeError(f"the current page has no usable {name!r} list")
+        return areas[-1]
+
+    def expect_actions(actions, enabled):
+        for action in actions:
+            states = widgets(action, exact=True)
+            if not states or any(item["enabled"] != enabled for item in states):
+                failures.append(f"{action}: expected enabled={enabled}, got {states}")
+
+    def community_view(delta):
+        click_widget(widget("Show:", exact=True))
+        xdo("key", *(["Down"] * delta if delta > 0 else ["Up"] * -delta), "Return")
+        time.sleep(.2)
+
+    def expect_context_menu(name, actions, artifact):
+        # The list's own buttons are the first ones with these labels below it.
+        area = list_area(name)
+        expected = [(action, min((item for item in widgets(action, exact=True) if item["y"] > area["y"]),
+                                 key=lambda item: item["y"])["enabled"]) for action in actions]
+        ui("menu clear")
+        click_widget(area, "3")
+        time.sleep(.2)
+        xdo("key", "Escape")
+        items = ui_data("menu")
+        actual = [(item["label"].strip(), item["enabled"]) for item in items]
+        if actual != expected or any(not item.get("icon") for item in items):
+            failures.append(f"{artifact}: menu differs from its buttons ({items})")
+        with open(f"{OUT}/{artifact}.json", "w") as saved:
+            json.dump(items, saved, indent=2)
+
+    def saved_quotes():
+        folders = dev_dirs(app.pid)
+        if len(folders) != 1:
+            raise RuntimeError("cannot identify the smoke instance's private settings folder")
+        with open(os.path.join(folders[0], "streamerz.json")) as settings:
+            return json.load(settings).get("quotes", [])
 
     try:
         time.sleep(5)
@@ -336,6 +431,62 @@ def main():
             time.sleep(0.4)
             xdo("key", "Escape")
             check(f"page {page}")
+        # Narrow toolbars keep their controls inside the window, including unavailable actions.
+        if not WINE:
+            xdo("windowsize", window, "540", "700")
+            for page, labels in (("Chat", ("Message all", "Options", "Clear")),
+                                 ("Community", ("Search users",)),
+                                 ("MCP", ("Address", "Port", "Route")),
+                                 ("Polls", ("Twitch", "YouTube")),
+                                 ("Log", ("Search the log",))):
+                ws.ask({"request": "StreamerzUi", "id": "narrow-page", "do": "page " + page})
+                time.sleep(.2)
+                for label in labels:
+                    found = ws.ask({"request": "StreamerzUi", "id": "narrow-find", "do": "find " + label}).get("result", "")
+                    points = re.findall(r' at (\d+),(\d+)', found)
+                    if not points or any(not 0 <= int(x) < 541 for x, y in points):
+                        failures.append(f"{page}: {label} is missing or outside the narrow window ({found})")
+                ws.ask({"request": "StreamerzUi", "id": "narrow-shot", "do": f"shot {OUT}/{page.replace(' ', '_')}-narrow.png"})
+                if page == "Community":
+                    found = ws.ask({"request": "StreamerzUi", "id": "quotes-show", "do": "find Show:"}).get("result", "")
+                    choices = re.findall(r' at (\d+),(\d+)', found)
+                    if choices:
+                        x, y = choices[-1]
+                        xdo("mousemove", x, y, found=True)
+                        xdo("click", "1")
+                        xdo("key", "Home", "Down", "Return")
+                        time.sleep(.2)
+                        tree = ws.ask({"request": "StreamerzUi", "id": "quotes-state", "do": "tree"}).get("result", "")
+                        for action in ("Edit", "Delete"):
+                            controls = [line for line in tree.splitlines() if line.strip().startswith(f'"{action}" ')
+                                        and "(hidden)" not in line]
+                            if not controls or any("(disabled)" not in line for line in controls):
+                                failures.append(f"empty Quotes leaves {action} available")
+                        ws.ask({"request": "StreamerzUi", "id": "quotes-shot", "do": f"shot {OUT}/quotes-empty-narrow.png"})
+                        xdo("mousemove", x, y, found=True)
+                        xdo("click", "1")
+                        xdo("key", "Up", "Return")
+                        time.sleep(.2)
+                        users = ws.ask({"request": "StreamerzUi", "id": "users-restored", "do": "find Search users"}).get("result", "")
+                        if "Search users" not in users:
+                            raise RuntimeError("Community did not return to Users after checking Quotes")
+                    else:
+                        failures.append("Community's view selector is missing")
+            xdo("windowsize", window, "1100", "700")
+        # A list's menu has its buttons' actions and states, from a right click and from the keyboard.
+        ui("page Commands")
+        time.sleep(.3)
+        commands_menu = ["Add", "Edit", "On/Off", "Delete"]
+        expect_context_menu("Command", commands_menu, "commands-menu")
+        ui("menu clear")
+        click_widget(list_area("Command"))
+        xdo("key", "shift+F10")
+        time.sleep(.2)
+        xdo("key", "Escape")
+        keyboard = [item["label"].strip() for item in ui_data("menu")]
+        if keyboard != commands_menu:
+            failures.append(f"Shift+F10 on a list opened {keyboard}, not {commands_menu}")
+        check("keyboard menu")
         # The Spotify request form keeps the main action, rules and replies in separate tabs.
         ws.ask({"request": "StreamerzUi", "id": "f", "do": "form 99802"})
         time.sleep(0.4)

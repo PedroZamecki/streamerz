@@ -7,7 +7,7 @@ use super::{button, img, query, tell, ROW};
 use crate::i18n::{tr, trf};
 use crate::Config;
 use fltk::app;
-use fltk::enums::{Align, Color, Font};
+use fltk::enums::{Align, Font};
 use fltk::frame::Frame;
 use fltk::group::Flex;
 use fltk::prelude::*;
@@ -268,7 +268,7 @@ pub fn popup(cfg: &Cfg, cmds: &Cmds, go: impl Fn(&str) + 'static, status_bar: im
             .with_label(tr("conns.keyring_hint"))
             .with_align(Align::Left | Align::Inside | Align::Clip)
             .ellipsis();
-        msg.set_label_color(Color::from_rgb(0xe0, 0xa8, 0x30));
+        msg.set_label_color(super::Health::Busy.color());
         let mut ubtn = button(&mut lrow, tr("ui.unlock_now"), 110);
         lrow.end();
         col.fixed(&lrow, ROW);

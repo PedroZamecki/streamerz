@@ -1,10 +1,12 @@
 //! The emote picker's grid, drawn by hand in one widget: section titles that fold, emotes in rows (the
-//! animated ones play), a highlight under the mouse, and a thin scrollbar.
+//! animated ones play), a highlight under the mouse or the keyboard's cursor, and a thin scrollbar. A right
+//! click or the Menu key opens a menu to insert or (un)favorite the emote.
 
 use super::icons::icon;
 use super::img;
 use crate::engine::UiCmd;
-use fltk::enums::{Align, Color, Event, Font, FrameType};
+use crate::i18n::tr;
+use fltk::enums::{Align, Color, Event, Font, FrameType, Key};
 use fltk::frame::Frame;
 use fltk::prelude::*;
 use fltk::{app, draw};
@@ -38,7 +40,7 @@ pub enum Item {
 pub enum Asked {
     /// Left click; true with Shift held (pick several).
     Pick(String, String, bool),
-    /// Right click.
+    /// From the menu (a right click or the Menu key).
     Favorite(String, String),
     /// A section's title.
     Fold(String),
@@ -70,6 +72,7 @@ impl Grid {
         let mut area = Frame::default();
         area.set_frame(FrameType::FlatBox);
         area.set_color(Color::Background2);
+        area.visible_focus(true);
         let g = Grid {
             area: area.clone(),
             st: Rc::default(),
@@ -168,6 +171,10 @@ impl Grid {
                 continue;
             }
             let hover = st.hover == Some(k);
+            if hover && f.has_focus() {
+                draw::set_draw_color(Color::color_average(fg, bg, 0.5));
+                draw::draw_rounded_rect(x, y, w, h, 6);
+            }
             match it {
                 Item::Head {
                     title,
@@ -268,10 +275,7 @@ impl Grid {
                 if h != st.hover {
                     st.hover = h;
                     let tip = match h.and_then(|k| st.items.get(k)) {
-                        Some(Item::Emote { name, fav, .. }) => {
-                            let what = if *fav { "unfavorite" } else { "favorite" };
-                            format!("{} (right-click to {what})", name.replace('@', "@@"))
-                        }
+                        Some(Item::Emote { name, .. }) => name.replace('@', "@@"),
                         _ => String::new(),
                     };
                     f.set_tooltip(&tip);
@@ -293,17 +297,54 @@ impl Grid {
                     self.drag(f);
                     return true;
                 }
-                let right = super::right_button();
-                let asked = match self.under(&st).and_then(|k| st.items.get(k)) {
-                    Some(Item::Head { title, .. }) => Asked::Fold(title.clone()),
-                    Some(Item::Emote { name, url, .. }) if right => Asked::Favorite(name.clone(), url.clone()),
-                    Some(Item::Emote { name, url, .. }) => {
-                        let shift = app::event_state().contains(fltk::enums::Shortcut::Shift);
-                        Asked::Pick(name.clone(), url.clone(), shift)
-                    }
-                    None => return true,
+                let _ = f.take_focus();
+                let Some(k) = self.under(&st) else { return true };
+                st.hover = Some(k);
+                drop(st);
+                if super::right_button() {
+                    self.menu(k);
+                } else {
+                    self.act(k, app::event_state().contains(fltk::enums::Shortcut::Shift));
+                }
+                true
+            }
+            Event::Focus | Event::Unfocus => {
+                f.redraw();
+                true
+            }
+            Event::KeyDown => {
+                let Some(k) = st
+                    .hover
+                    .filter(|&k| k < st.items.len())
+                    .or((!st.items.is_empty()).then_some(0))
+                else {
+                    return false;
                 };
-                self.asked.borrow_mut().push(asked);
+                if super::menu_key() {
+                    drop(st);
+                    self.menu(k);
+                    return true;
+                }
+                let key = app::event_key();
+                if key == Key::Enter || key == Key::KPEnter || key == Key::from_char(' ') {
+                    drop(st);
+                    self.act(k, app::is_event_shift());
+                    return true;
+                }
+                let per = ((f.w() - BAR - 6 - 8) / CELL).max(1) as usize;
+                let Some(next) = step(&st.items, k, key, per) else {
+                    return false;
+                };
+                st.hover = Some(next);
+                // Keep the cursor in sight.
+                if let Some(&(_, y, _, h)) = st.at.get(next) {
+                    if y < st.top {
+                        st.top = (y - 4).max(0);
+                    } else if y + h > st.top + f.h() {
+                        st.top = (y + h + 4 - f.h()).clamp(0, self.max(&st));
+                    }
+                }
+                f.redraw();
                 true
             }
             Event::Drag if st.grab.is_some() => {
@@ -319,6 +360,56 @@ impl Grid {
             }
             _ => false,
         }
+    }
+
+    /// What a click or Enter does on item `k`: fold a section or pick an emote (`several` keeps the
+    /// picker open).
+    fn act(&self, k: usize, several: bool) {
+        let asked = match self.st.borrow().items.get(k) {
+            Some(Item::Head { title, .. }) => Asked::Fold(title.clone()),
+            Some(Item::Emote { name, url, .. }) => Asked::Pick(name.clone(), url.clone(), several),
+            None => return,
+        };
+        self.asked.borrow_mut().push(asked);
+    }
+
+    /// The emote's menu: insert it, or add it to (remove it from) the favorites.
+    fn menu(&self, k: usize) {
+        use fltk::menu::{MenuButton, MenuFlag};
+        let Some((name, url, fav)) = (match self.st.borrow().items.get(k) {
+            Some(Item::Emote { name, url, fav }) => Some((name.clone(), url.clone(), *fav)),
+            _ => None,
+        }) else {
+            return;
+        };
+        let mut m = super::menu_at_pointer();
+        let ink = super::button_ink();
+        let entries = [
+            (
+                tr("emotes.insert"),
+                "plus",
+                Asked::Pick(name.clone(), url.clone(), false),
+            ),
+            if fav {
+                (tr("emotes.remove_favorite"), "star-off", Asked::Favorite(name, url))
+            } else {
+                (tr("emotes.add_favorite"), "star", Asked::Favorite(name, url))
+            },
+        ];
+        for (label, icon_name, asked) in entries {
+            let asked = RefCell::new(Some(asked));
+            let queue = self.asked.clone();
+            let i = m.add(label, fltk::enums::Shortcut::None, MenuFlag::Normal, move |_| {
+                if let Some(a) = asked.borrow_mut().take() {
+                    queue.borrow_mut().push(a);
+                }
+            });
+            if let (Some(mut item), Some(img)) = (m.at(i), super::icons::before_label(icon_name, ink, 14)) {
+                item.add_image(Some(img), true);
+            }
+        }
+        m.popup();
+        MenuButton::delete(m);
     }
 
     fn drag(&self, f: &mut Frame) {
@@ -390,5 +481,93 @@ mod tests {
         grid.draw(&frame, &cmds);
         assert!(grid.st.borrow().visible.is_empty());
         ImageSurface::pop_current();
+    }
+}
+
+/// Where the keyboard's cursor goes from item `k` with `key`, `per` emotes to a row: left and right
+/// through every item, up and down a row (a section's title is a row of its own).
+fn step(items: &[Item], k: usize, key: Key, per: usize) -> Option<usize> {
+    let last = items.len().checked_sub(1)?;
+    // Each item's row and column, as laid out.
+    let mut place = Vec::with_capacity(items.len());
+    let (mut row, mut col) = (0usize, 0usize);
+    for (i, it) in items.iter().enumerate() {
+        match it {
+            Item::Head { .. } => {
+                if i > 0 {
+                    row += 1;
+                }
+                place.push((row, 0));
+                row += 1;
+                col = 0;
+            }
+            Item::Emote { .. } => {
+                if col == per {
+                    row += 1;
+                    col = 0;
+                }
+                place.push((row, col));
+                col += 1;
+            }
+        }
+    }
+    let (r, c) = place[k];
+    let near = |want: usize| {
+        let row: Vec<usize> = (0..items.len()).filter(|&i| place[i].0 == want).collect();
+        row.iter().copied().min_by_key(|&i| place[i].1.abs_diff(c))
+    };
+    match key {
+        Key::Left => k.checked_sub(1),
+        Key::Right => (k < last).then_some(k + 1),
+        Key::Home => Some(0),
+        Key::End => Some(last),
+        Key::Up => (0..r).rev().find_map(near),
+        Key::Down => (r + 1..=place[last].0).find_map(near),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod keys {
+    use super::*;
+
+    fn emote(n: &str) -> Item {
+        Item::Emote {
+            name: n.into(),
+            url: n.into(),
+            fav: false,
+        }
+    }
+    fn head() -> Item {
+        Item::Head {
+            title: "t".into(),
+            open: true,
+            count: 0,
+            note: None,
+        }
+    }
+
+    #[test]
+    fn arrows_walk_rows_and_sections() {
+        // A title, five emotes three to a row, another title, one emote.
+        let items = vec![
+            head(),
+            emote("a"),
+            emote("b"),
+            emote("c"),
+            emote("d"),
+            emote("e"),
+            head(),
+            emote("f"),
+        ];
+        assert_eq!(step(&items, 0, Key::Down, 3), Some(1));
+        assert_eq!(step(&items, 2, Key::Down, 3), Some(5));
+        assert_eq!(step(&items, 5, Key::Up, 3), Some(2));
+        assert_eq!(step(&items, 4, Key::Down, 3), Some(6));
+        assert_eq!(step(&items, 6, Key::Down, 3), Some(7));
+        assert_eq!(step(&items, 1, Key::Up, 3), Some(0));
+        assert_eq!(step(&items, 0, Key::Up, 3), None);
+        assert_eq!(step(&items, 7, Key::Right, 3), None);
+        assert_eq!(step(&items, 3, Key::Right, 3), Some(4));
     }
 }

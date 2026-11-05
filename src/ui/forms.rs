@@ -1449,6 +1449,16 @@ fn access_note(col: &mut Flex, mouse: bool) {
 }
 
 pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
+    form_validated(title, fields, o, lists, |_| Ok(()))
+}
+
+pub fn form_validated(
+    title: &str,
+    fields: &[F],
+    o: &Obj,
+    lists: &Lists,
+    valid: impl Fn(&Obj) -> Result<(), String>,
+) -> Done {
     let tall = |w: &W| matches!(w, Multi | Map | Lines);
     let check = |w: &W| matches!(w, Bool | Bit(_));
     // Check boxes go two to a row: a check box right after one that opened a row shares it.
@@ -1689,12 +1699,32 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
             }
             Bool | Bit(_) | Access(_) => unreachable!(),
         };
+        if let Some(mut input) = r.child(1) {
+            if input.tooltip().is_none_or(|tip| tip.is_empty()) {
+                input.set_tooltip(label);
+            }
+        }
         r.end();
         col.fixed(&r, if tall(w) { 80 } else { ROW });
         ws.push(widget);
     }
     // The sub-action and trigger pickers follow the action picked above them.
     let at = |k: &str| fields.iter().position(|f| f.0 == k);
+    // A random delay's upper bound only counts with Random on.
+    if let (Some(r), Some(m)) = (at("random"), at("maxValue")) {
+        if let (Widget::Bool(random), Widget::Int(upper)) = (&ws[r], &ws[m]) {
+            let mut upper = upper.clone();
+            let follow = move |on: bool, upper: &mut IntInput| {
+                if on {
+                    upper.activate();
+                } else {
+                    upper.deactivate();
+                }
+            };
+            follow(random.is_checked(), &mut upper);
+            random.clone().set_callback(move |c| follow(c.is_checked(), &mut upper));
+        }
+    }
     if let (Some(a), Some(d)) = (at("actionId"), at("subActionId").or(at("triggerId"))) {
         if let (Widget::Id(ac, aids), Widget::Id(dc, dids)) = (&ws[a], &ws[d]) {
             let (aids, dids, mut dc) = (aids.clone(), dids.clone(), dc.clone());
@@ -1751,7 +1781,7 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
     let ok = run(&mut win, &answer, || {
         // Consume the intent before validation, so a later normal OK cannot inherit it.
         let requested_json = json.replace(false);
-        match collect_draft(fields, &ws, o) {
+        match collect_draft(fields, &ws, o).and_then(|draft| valid(&draft).map(|()| draft)) {
             Ok(draft) => {
                 out = draft;
                 show_json = requested_json;

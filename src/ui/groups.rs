@@ -429,6 +429,9 @@ pub fn settings(cfg: &Arc<watch::Sender<Config>>, group: &str) {
     let r = dialogs::row(tr("group.description"));
     let mut description = Input::default();
     description.set_value(&state.borrow().0.description);
+    // Show a long description from its start, not scrolled to its end.
+    let _ = description.set_position(0);
+    let _ = description.set_mark(0);
     r.end();
     col.fixed(&r, ROW);
     super::header(

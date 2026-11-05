@@ -6,13 +6,45 @@ use super::nav;
 use fltk::group::Wizard;
 use fltk::prelude::*;
 use fltk::{app, draw};
+use std::cell::RefCell;
 use std::fmt::Write;
+
+#[derive(serde::Serialize)]
+struct MenuEntry {
+    label: String,
+    enabled: bool,
+    icon: Option<&'static str>,
+}
+thread_local! { static LAST_MENU: RefCell<Vec<MenuEntry>> = const { RefCell::new(Vec::new()) }; }
+
+pub(super) fn record_menu(buttons: &[fltk::button::Button]) {
+    LAST_MENU.with_borrow_mut(|menu| {
+        *menu = buttons
+            .iter()
+            .map(|button| {
+                let label = button.label();
+                let label = if label.is_empty() {
+                    button.tooltip().unwrap_or_default()
+                } else {
+                    label
+                };
+                MenuEntry {
+                    icon: super::icon_for(&label),
+                    label,
+                    enabled: button.active_r(),
+                }
+            })
+            .collect();
+    });
+}
 
 /// Runs one command and says what happened.
 ///   shot PATH [N]   saves window N (0, the top one, by default) as a PNG
 ///   windows         the windows: index, title, position and size
 ///   tree [N]        the widgets of window N: depth, label, x y w h (in the window), hidden ones marked
 ///   find TEXT [N]   where widgets with TEXT in their label are, as screen coordinates to click
+///   bounds TEXT     matching visible widget rectangles as JSON (all if empty)
+///   menu [clear]    last shared context-menu labels, states and icons as JSON, or reset it
 ///   page LABEL      goes to a page (Chat, Settings...)
 ///   currentpage     the current page's identifier
 ///   chatview LABEL  selects a chat view (All together, Side by side, Twitch...)
@@ -27,6 +59,25 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
     let mut windows = app::windows().unwrap_or_default();
     let at = |i: Option<&str>| i.and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
     match what {
+        "menu" => LAST_MENU.with_borrow_mut(|menu| {
+            if a == Some("clear") {
+                menu.clear();
+            }
+            serde_json::to_string(menu).unwrap_or_default()
+        }),
+        "bounds" => {
+            let Some(window) = windows.first() else {
+                return "[]".into();
+            };
+            let mut entries = Vec::new();
+            bounds(
+                &window.as_base_widget().as_group(),
+                &cmd.trim_start_matches("bounds").trim().to_lowercase(),
+                (window.x(), window.y()),
+                &mut entries,
+            );
+            serde_json::to_string(&entries).unwrap_or_default()
+        }
         "chatview" => {
             if super::chat::dev_select_view(cmd.trim_start_matches("chatview").trim()) {
                 "ok".into()
@@ -214,6 +265,26 @@ fn walk(g: &Option<fltk::group::Group>, depth: usize, out: &mut String) {
             if c.active_r() { "" } else { " (disabled)" }
         );
         walk(&c.as_group(), depth + 1, out);
+    }
+}
+
+fn bounds(group: &Option<fltk::group::Group>, text: &str, at: (i32, i32), out: &mut Vec<serde_json::Value>) {
+    let Some(group) = group else {
+        return;
+    };
+    for index in 0..group.children() {
+        let Some(child) = group.child(index) else {
+            continue;
+        };
+        if !child.visible_r() {
+            continue;
+        }
+        let (label, tooltip) = (child.label(), child.tooltip().unwrap_or_default());
+        if text.is_empty() || label.to_lowercase().contains(text) || tooltip.to_lowercase().contains(text) {
+            out.push(serde_json::json!({"label":if label.is_empty() { &tooltip } else { &label }, "tooltip":tooltip,
+                "x":at.0+child.x(), "y":at.1+child.y(), "w":child.w(), "h":child.h(), "enabled":child.active_r(), "focused":child.has_focus()}));
+        }
+        bounds(&child.as_group(), text, at, out);
     }
 }
 

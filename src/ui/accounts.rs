@@ -1056,6 +1056,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
     scroll.end();
 
     let mut integrations_tab = super::tab(tabs, "Integrations");
+    super::hint(&mut integrations_tab, tr("accounts.integrations.intro"), 36);
     let mut spotify_row = Flex::default().row();
     spotify_row.set_pad(8);
     let mut spotify_logo = Frame::default();
@@ -1072,6 +1073,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
     let mut spotify_setup = button(&mut spotify_row, tr("btn.configure"), 100);
     spotify_row.end();
     integrations_tab.fixed(&spotify_row, ROW);
+    super::hint(&mut integrations_tab, tr("accounts.spotify.about"), 36);
     Frame::default();
     integrations_tab.end();
 

@@ -1,123 +1,75 @@
-# UI and UX review
+# UI and UX fixes
 
-The target is at least 9 out of 10 for both UI and UX on every page. No page has passed yet.
-Scores below are an independent code review of the initial implementation. They are provisional,
-not proof of the current implementation's quality. Changes require fresh visual and task reviews.
+The agreed scope is to fix the issues cited in the independent reviews, verify the affected screens,
+and report the result. The earlier 9/10 target is retired. There is no further scoring loop.
 
-The existing native design has a useful foundation: zinc colors, rounded controls, Lucide SVG icons,
-brand assets and searchable trees. Improve its consistency and usability without a new framework.
+Streamerz keeps its native zinc theme, Lucide icons, brand assets and shared controls. The checklist
+below consolidates the code audit and both visual reviews. Completed implementation still needs the
+verification recorded at the end; unchecked items remain work to do.
 
-## Initial scores
+## Shared controls and navigation
 
-| Page | UI | UX | Main obstacle |
-|---|---:|---:|---|
-| Chat | 8 | 8 | Narrow toolbar and keyboard access |
-| Accounts | 7 | 7 | Fixed widths and repeated tall sections |
-| Community | 7 | 7 | Fixed search row and columns; credits menu parity |
-| Polls | 7 | 6 | Long form and unclear unavailable operations |
-| Actions | 7 | 6 | Fixed split hides editor panes when narrow |
-| Commands | 7 | 6 | Columns, long form and selection action availability |
-| Timers | 7 | 7 | Columns, selection actions and finding items |
-| Files | 6 | 6 | Competing lists and guides in short windows |
-| Queues | 6 | 6 | Crowded action bar and fixed pending pane |
-| Groups | 7 | 6 | Membership discovery and selection availability |
-| Plugins | 7 | 7 | Fixed description and columns; selection actions |
-| Servers | 6 | 6 | Server controls and two lists compete for height |
-| Stream Apps | 6 | 6 | Repeated lists and weak connection state hierarchy |
-| Integrations | 7 | 6 | Little context or next-step guidance |
-| Donations | 6 | 6 | Connection states bypass shared Health presentation |
-| Globals | 6 | 5 | Read-only distinction and validation after form closes |
-| History | 7 | 7 | Fixed columns, finding records and selection actions |
-| Settings | 8 | 7 | Fixed controls and hover-only path actions |
-| MCP | 7 | 6 | Fixed address, port and route row |
-| Log | 7 | 7 | Fixed filter row when narrow |
-| Crashes | 7 | 7 | Fixed list geometry and operation failure feedback |
-| Backups | 7 | 7 | Selection availability and operation failure feedback |
+- [x] Visible keyboard focus, keyboard sidebar navigation, and focus on empty lists.
+- [x] Shared responsive columns, matching headers and pointer targets, readable overflow tooltips.
+- [x] Wrapped help without overlapping following controls.
+- [x] Form edits retained on JSON transfer and failed validation; unchanged types and fields preserved.
+- [x] Compact button labels retained, inactive icons dimmed, and related action icons distinguished.
+- [x] One fold decision per grid (every button labelled or every one an icon), with readable wide rows
+  and preserved explanation tooltips.
+- [x] Responsive sidebar folding below 760 px and selected-page visibility at both review heights.
+- [x] Consistent zinc selection in lists and trees (rounded ring for keyboard focus, no dotted box), and
+  muted disabled items.
+- [x] Connection states use Health, with darker light-theme inks; warning labels use Health colours.
+- [x] Right-click menus match their buttons and also open with the Menu key or Shift+F10; credits have a
+  menu; emote favorites have an Insert / Add to favorites menu and arrow-key navigation.
+- [x] Narrow footer leaves room for connection state and save feedback.
 
-## Shared work
+## Pages
 
-The initial visual review independently scored every page at both target sizes. Its scores are
-lower in several places because screenshots show failures that code inspection alone cannot prove.
+- [x] Chat: fitting toolbar, centered Accounts action, unavailable Message all explained.
+- [x] Accounts: shorter status that fits narrow rows, and "Log in" wording.
+- [x] Community: fitting search; quote selection states and validation; credits menu.
+- [x] Polls: fitting platform controls, a checking state before the first read, ordered reads and
+  mutations, locked predictions, account readiness, unavailable targets unticked, YouTube's four-answer
+  limit explained.
+- [x] Actions: responsive panes, plain status text ("Triggers: 1. Sub-actions: 1."), theme colours.
+- [x] Commands and Timers: clear headers and a search field.
+- [x] Files and Servers: usable sections in short and narrow windows; server states explained.
+- [x] Queues: distinct controls, selection-aware actions, a Status column in the pending pane.
+- [x] Groups: guidance on what groups are for, selection actions and a Members view.
+- [x] Plugins: selection actions, a wrapped description and no gap above the buttons.
+- [x] Stream Apps: readable guides, Connect all states and Health.
+- [x] Integrations and Donations: an intro and a description per integration, Health states.
+- [x] Globals: read-only user globals marked; eligible actions and validation keeping the form open.
+- [x] History: eligible actions, distinct variable views and search.
+- [x] Settings: "Keep chat history", consistent switches, wrapping descriptions, sentence case.
+- [x] MCP: fitting fields, an inline port error (an alert only on Enter), the correct executable.
+- [x] Log: usable search and filter when narrow.
+- [x] Crashes and Backups: selection actions, empty detail hint, Unknown version, visible failures.
 
-| Page | UI | UX |
-|---|---:|---:|
-| Chat | 6 | 4 |
-| Accounts | 7 | 7 |
-| Community | 7 | 6 |
-| Polls | 6 | 5 |
-| Actions | 7 | 5 |
-| Commands | 7 | 7 |
-| Timers | 5 | 6 |
-| Files | 7 | 7 |
-| Queues | 5 | 5 |
-| Groups | 6 | 5 |
-| Plugins | 7 | 6 |
-| Servers | 6 | 6 |
-| Stream Apps | 5 | 6 |
-| Integrations | 6 | 5 |
-| Donations | 5 | 6 |
-| Globals | 7 | 7 |
-| History | 6 | 6 |
-| Settings | 7 | 6 |
-| MCP | 6 | 5 |
-| Log | 8 | 7 |
-| Crashes | 7 | 7 |
-| Backups | 7 | 7 |
+## Dialogs and text
 
-Initial captures and the detailed visual report are in `/tmp/streamerz-ui-baseline/`. The baseline
-uses the fast-profile binary built before these changes, with isolated English settings and no live
-connections. After visiting every page and hiding the window, it used 44.3 MB RSS (9.1 MB anonymous),
-25.1 MB PSS and zero CPU ticks over 30 seconds. This is only a comparable disconnected development
-baseline, not proof of the release budget with Twitch and OBS connected.
+- [x] Picker: search focused on open, the intro shown once, OK disabled until something is picked.
+- [x] Property forms: translated labels, Spotify Operation as a choice, Delay's "Up to (ms)" disabled
+  until Random is on.
+- [x] Group settings: the description opens at its start; typed validation and cancellation.
+- [x] Message all: wider layout, a reason on each unavailable platform, and Send disabled with a visible
+  note when no account can send.
+- [x] Countdown shows its operation instead of a clock ID.
+- [x] Shared name/value and Globals validation explain blank names while keeping the form open.
+- [x] Every text key the code uses exists in English and Portuguese (several were missing and showed
+  raw keys such as `lists.search`).
+- [x] AppImage identity checks also cover portable configuration and crash reports.
 
-## Implementation and verification
+## Verification
 
-First implementation pass:
-
-- Restored keyboard focus and sidebar arrow/Home/End navigation with automatic reveal.
-- Disabled generic list selection actions until a row is selected, including right-click menus.
-- Shared responsive column geometry across headers, row drawing and pointer targets. Values truncate
-  with full display text on hover; disabled icons keep reserved space.
-- Stacked Actions panes at narrow widths without replacing the widgets or losing selection.
-- Preserved form drafts on transfer to JSON and through failed validation.
-- Measured wrapped help on resize and recalculated remaining list space after the layout pass.
-- Added missing compact action icons and replaced the timer header's raw interpolation template.
-
-The current capture matrix in `/tmp/streamerz-ui-current/` covers all 22 pages in both themes at
-both sizes, plus a populated Actions editor selected with the keyboard. The full smoke suite passes,
-including sidebar keyboard navigation and generic list selection-state checks. Shared UI tests,
-the hidden-display draft collection test and the wrapped-help layout test pass. Formatting and
-clippy pass. Updated independent scores are still required.
-
-Disconnected development samples after this pass: 51,744 KiB RSS in dark mode and 52,024 KiB in
-light mode, each with zero CPU ticks over five seconds. These samples are not a matched performance
-comparison: the earlier binary predates the current base commit, and retained chat also differs.
-Establish a matched baseline and investigate RSS before concluding that the performance gate passes.
-
-- [ ] Visible keyboard focus, sidebar keyboard navigation and automatic reveal of selected pages.
-- [ ] Selection actions disabled when no eligible item is selected, including context menus.
-- [ ] Shared column geometry for headers, values and hit testing, with readable overflow access.
-- [ ] Responsive Actions panes and page-level controls.
-- [ ] Preserve unsaved fields when switching to JSON; keep invalid entries in the open form.
-- [ ] Consistent translated text, Health states, error feedback and right-click actions.
-
-## Evidence required for a passing score
-
-UI needs readable hierarchy, consistent shared tokens and icons, alignment, contrast and usable
-content at narrow and wide sizes. UX needs discoverable primary tasks, visible keyboard focus,
-appropriate selection actions, useful empty/loading/error states, reversible cancellation,
-clear validation and safe destructive operations. Simplicity alone is not a defect.
-
-Review each page in dark and light themes, at 540 by 700 and 1100 by 800, with empty and populated
-content where relevant. Inspect app-window captures from the development `ui` tool and exercise
-the main task, keyboard navigation, context menus, cancellation and invalid input. Record each
-remaining issue before assigning updated scores. Unverified pages remain open.
-
-Major secondary surfaces also need review: action editor, trigger/sub-action picker, property form,
-JSON editor, import/export, group settings/files/membership, arguments, channel search, account setup,
-connection popup, user card, chat account picker, message-all composer, emote picker, templates,
-hotkey capture and notices. Passing page screenshots do not establish that these workflows pass.
-
-Run meaningful regression tests for fixed bugs, the full smoke test and the required Rust checks.
-Record comparable hidden RSS and idle CPU before and after. A disconnected test instance cannot
-establish the Twitch and OBS performance budget.
+- [x] Unit tests: 458 passed, 13 ignored (new: emote grid arrow keys, tooltip kept while folded).
+- [x] All 22 pages captured at 540x700 and 1100x800 in both themes, plus populated Actions, and
+  checked by eye.
+- [x] Smoke suite passes, including a Commands list menu from a right click and from Shift+F10, compared
+  with its buttons. Harness tests (3), formatting, clippy and locale checks pass.
+- [x] Hidden RSS and idle CPU (release builds, nothing connected, every page visited, 15 s settle, 30 s
+  sampled): main 35.4 MiB RSS / 20.2 MiB PSS, this branch 35.9 / 20.7, idle CPU 0% for both, 4 threads.
+- [ ] Not checked: live Twitch/OBS (the 25 MB budget is about a connected release build), Windows, and
+  hand walkthroughs of the changed dialogs (picker, Message all, Delay form, emote menu) beyond build,
+  tests and smoke.

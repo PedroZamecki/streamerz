@@ -564,15 +564,17 @@ platform handles through channels, never through shared locks held across awaits
 
 ## UI and UX review
 
-- [ ] Inventory every page and major dialog against `docs/UI.md`, using independent reviews and
-  separate UI and UX scores from 1 to 10. Record evidence and unresolved problems per page.
-- [ ] Improve shared controls and page layouts using the existing native zinc theme, Lucide icons,
-  brand assets and shadcn-inspired patterns. Keep dependencies and idle work unchanged.
-- [ ] Verify every page at narrow and wide sizes, including useful empty states, populated lists,
-  right-click actions, forms, cancellation and validation where applicable. Cover fixed bugs.
-- [ ] Repeat independent reviews until every page scores at least 9 for both UI and UX, with visual
-  and task evidence. Do not count unverified pages as passing.
-- [ ] Run the smoke test and required Rust checks, and record before and after hidden RSS and idle CPU.
+The agreed scope is to fix the issues cited in the UI/UX reviews and verify the affected screens.
+There is no per-page score threshold or repeated scoring requirement. Track the finite checklist in
+[docs/UI-AUDIT.md](docs/UI-AUDIT.md); scores from earlier reviews are historical context only.
+
+- [x] Inventory pages and major dialogs using independent code and visual reviews.
+- [x] Complete the cited shared-control, page-layout, state, accessibility and workflow fixes.
+- [x] Verify affected pages at narrow and wide sizes, including relevant populated, unavailable,
+  error, context-menu, cancellation and validation cases. Cover fixed bugs with regression checks.
+- [x] Run the smoke suite, formatting, clippy and relevant tests. Record comparable hidden memory
+  and idle CPU measurements, and state any live-service or Windows verification limits plainly.
+- [x] Commit locally and report the completed checklist. Keep the version open until asked to close it.
 
 ## Open points (decide when the phase starts, ask first)
 

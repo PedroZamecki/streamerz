@@ -749,7 +749,7 @@ fn location_file() -> PathBuf {
 /// system folder.
 fn portable_config() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    if std::env::var_os("APPIMAGE").is_some() || exe.starts_with("/tmp") || exe.starts_with("/usr") {
+    if update::appimage().is_some() || exe.starts_with("/tmp") || exe.starts_with("/usr") {
         return None;
     }
     Some(exe.parent()?.join("streamerz.json")).filter(|p| p.is_file())

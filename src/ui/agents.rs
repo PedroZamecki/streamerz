@@ -10,7 +10,7 @@ use fltk::app;
 use fltk::button::Button;
 use fltk::enums::{Align, CallbackTrigger, Font};
 use fltk::frame::Frame;
-use fltk::group::{Flex, Wizard};
+use fltk::group::{Flex, FlexType, Wizard};
 use fltk::input::Input;
 use fltk::prelude::*;
 use std::cell::RefCell;
@@ -23,11 +23,13 @@ pub struct Agents {
     pub tab: Flex,
     cfg: Cfg,
     view: Rows,
+    detail: Frame,
     /// Where the agents connect: what the inputs below say, in full.
     about: Frame,
     inputs: [Input; 3],
     buttons: Vec<Button>,
     shown: Vec<Found>,
+    connection_error: bool,
 }
 
 /// Where an agent's MCP server reaches this Streamerz (what `Streamerz --mcp` reads from the config).
@@ -55,20 +57,63 @@ fn lead(name: &str) -> String {
     format!("{key}|{name}")
 }
 
-/// A column's cell for an agent's state: its icon and colour (the same as a connection's), and what it means.
-fn status(f: &Found) -> String {
-    let (h, icon, tip) = match f.state {
+/// The connection fields share one row when each has room for its label and value.
+fn connection_layout(content_width: i32) -> (FlexType, i32) {
+    if content_width < 720 {
+        (FlexType::Column, 3 * ROW + 16)
+    } else {
+        (FlexType::Row, ROW)
+    }
+}
+
+/// Selection actions depend only on the selected item; copying setup and refreshing do not.
+fn available(selected: Option<State>, cli: bool, file: bool, folder: bool) -> [bool; 7] {
+    let present = selected.is_some();
+    [
+        selected.is_some_and(|state| state != State::Added),
+        selected.is_some_and(|state| state != State::Ready),
+        present && cli,
+        present && file,
+        present && folder,
+        true,
+        true,
+    ]
+}
+
+/// Setup states share one colour and explanation in the table and selected-item detail.
+fn state_details(state: State) -> (Health, &'static str, &'static str) {
+    match state {
         State::Added => (Health::Up, "circle-check", tr("agents.tip.added")),
         State::Ready => (Health::Off, "circle-dashed", tr("agents.tip.ready")),
         State::Outdated => (Health::Busy, "triangle-alert", tr("agents.outdated")),
-    };
-    let c = h.color().to_rgb();
-    let mut tip = format!("{}: {tip}", state(f.state));
+    }
+}
+
+/// A column's cell for an agent's state: its icon, colour and explanation.
+fn status(f: &Found) -> String {
+    let (health, icon, explanation) = state_details(f.state);
+    let color = health.color().to_rgb();
+    let mut tip = format!("{}: {explanation}", state(f.state));
     if f.cli.is_none() {
         tip += " ";
         tip += tr("agents.no_cli");
     }
-    format!("{icon}|{:02x}{:02x}{:02x}|{tip}", c.0, c.1, c.2)
+    format!("{icon}|{:02x}{:02x}{:02x}|{tip}", color.0, color.1, color.2)
+}
+
+/// The same address and route normalization as the WebSocket connection form.
+fn connection_values(address: &str, port: &str, route: &str) -> Option<(String, u16, String)> {
+    let port = port.trim().parse::<u16>().ok().filter(|port| *port > 0)?;
+    let address = match address.trim() {
+        "" => "127.0.0.1",
+        address => address,
+    };
+    let route = match route.trim() {
+        "" => "/".to_string(),
+        route if route.starts_with('/') => route.to_string(),
+        route => format!("/{route}"),
+    };
+    Some((address.to_string(), port, route))
 }
 
 impl Agents {
@@ -102,6 +147,10 @@ impl Agents {
 
     /// The connection's inputs and the line under them, from the config.
     fn connection(&mut self) {
+        if self.connection_error {
+            self.connection_warning();
+            return;
+        }
         let (w, url) = {
             let c = self.cfg.borrow();
             (c.websockets.clone(), url(&c))
@@ -118,30 +167,29 @@ impl Agents {
         );
         self.about.set_tooltip(&text.replace('@', "@@"));
         self.about.set_label(&text.replace('@', "@@"));
+        self.about.set_image(None::<fltk::image::SvgImage>);
+        self.about.set_label_color(super::muted());
+    }
+
+    fn connection_warning(&mut self) {
+        let text = tr("lists.servers.port_range_warning");
+        Health::Down.show(&mut self.about, text);
+        self.about.set_tooltip(text);
     }
 
     /// Applies what was typed in the connection's inputs (the WebSocket server's own settings).
-    fn apply(&mut self) {
+    fn apply(&mut self, explicit: bool) {
         let [address, port, route] = &self.inputs;
-        let (address, port, route) = (address.value().trim().to_string(), port.value(), route.value());
-        let port = match port.trim().parse::<u16>() {
-            Ok(p) if p > 0 => p,
-            _ => {
+        let Some((address, port, route)) = connection_values(&address.value(), &port.value(), &route.value()) else {
+            self.connection_error = true;
+            self.connection_warning();
+            if explicit {
                 super::dialogs::alert(tr("lists.servers.port_range_warning"));
-                self.connection();
-                return;
+                let _ = self.inputs[1].take_focus();
             }
+            return;
         };
-        let route = match route.trim() {
-            "" => "/".to_string(),
-            r if r.starts_with('/') => r.to_string(),
-            r => format!("/{r}"),
-        };
-        let address = if address.is_empty() {
-            "127.0.0.1".to_string()
-        } else {
-            address
-        };
+        self.connection_error = false;
         let same = {
             let w = &self.cfg.borrow().websockets;
             (w.address.as_str(), w.port, w.endpoint.as_str()) == (address.as_str(), port, route.as_str())
@@ -167,13 +215,18 @@ impl Agents {
         let (added, cli) = (sel.map(|f| f.state), sel.is_some_and(|f| f.cli.is_some()));
         let file = sel.is_some_and(|f| f.file.is_file());
         let folder = sel.is_some_and(|f| f.file.parent().is_some_and(|d| d.is_dir()));
-        let on = [
-            added.is_some_and(|s| s != State::Added),
-            added.is_some_and(|s| s != State::Ready),
-            cli,
-            file,
-            folder,
-        ];
+        let on = available(added, cli, file, folder);
+        let (health, detail) = match sel {
+            Some(found) => {
+                let (health, _, explanation) = state_details(found.state);
+                (health, format!("{}: {explanation}", state(found.state)))
+            }
+            None => (Health::Off, tr("agents.selection_hint").to_string()),
+        };
+        health.show(&mut self.detail, &detail);
+        self.detail
+            .set_align(Align::Left | Align::Inside | Align::Wrap | Align::ImageNextToText);
+        self.detail.set_tooltip(&detail.replace('@', "@@"));
         for (b, on) in self.buttons.iter_mut().zip(on) {
             if on {
                 b.activate();
@@ -260,6 +313,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg) -> Rc<RefCell<Agents>> {
     view.set_cell(1, Cell::Lead);
     view.set_cell(2, Cell::Status);
     view.set_cell(3, Cell::Link);
+    let detail = super::hint(&mut col, tr("agents.selection_hint"), 60);
 
     let mut title = Frame::default()
         .with_label(tr("agents.cfg.title"))
@@ -271,20 +325,18 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg) -> Rc<RefCell<Agents>> {
     col.fixed(&title, 30);
     let mut line = Flex::default().row();
     line.set_pad(8);
-    let mut field = |label: &str, w: i32| {
-        let l = Frame::default()
-            .with_label(label)
-            .with_align(Align::Left | Align::Inside)
-            .ellipsis();
-        line.fixed(&l, 56);
+    let field = |label: &str| {
+        let mut row = super::dialogs::row(label);
+        if let Some(label) = row.child(0) {
+            row.fixed(&label, 64);
+        }
         let input = Input::default();
-        line.fixed(&input, w);
+        row.end();
         input
     };
-    let mut address = field(tr("agents.cfg.address"), 170);
-    let mut port = field(tr("agents.cfg.port"), 90);
-    let mut route = field(tr("agents.cfg.route"), 170);
-    Frame::default();
+    let mut address = field(tr("agents.cfg.address"));
+    let mut port = field(tr("agents.cfg.port"));
+    let mut route = field(tr("agents.cfg.route"));
     line.end();
     col.fixed(&line, ROW);
     for (i, tip) in [
@@ -315,14 +367,26 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg) -> Rc<RefCell<Agents>> {
     );
     view.set_menu(&b);
     col.end();
+    let mut place = move |col: &mut Flex, width: i32| {
+        // The page's two 10px margins are outside the connection fields.
+        let (direction, height) = connection_layout(width.saturating_sub(20));
+        line.set_type(direction);
+        col.fixed(&line, height);
+        col.redraw();
+    };
+    let width = col.w();
+    place(&mut col, width);
+    col.resize_callback(move |col, _, _, width, _| place(col, width));
     let me = Rc::new(RefCell::new(Agents {
         tab: col,
         cfg: cfg.clone(),
         view: view.clone(),
+        detail,
         about,
         inputs: [address.clone(), port.clone(), route.clone()],
         buttons: b.clone(),
         shown: Vec::new(),
+        connection_error: false,
     }));
     view.set_callback({
         let me = me.clone();
@@ -341,7 +405,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg) -> Rc<RefCell<Agents>> {
         let me = me.clone();
         i.set_callback(move |_| {
             if let Ok(mut m) = me.try_borrow_mut() {
-                m.apply();
+                m.apply(app::event() == fltk::enums::Event::KeyDown && app::event_key() == fltk::enums::Key::Enter);
             }
         });
     }
@@ -367,12 +431,61 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg) -> Rc<RefCell<Agents>> {
         super::dialogs::message(tr("agents.copied"));
     });
     click(&b[6], Agents::refresh);
+    me.borrow_mut().describe();
     me
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connection_fields_stack_before_labels_and_values_become_cramped() {
+        assert_eq!(connection_layout(344), (FlexType::Column, 94));
+        assert_eq!(connection_layout(719), (FlexType::Column, 94));
+        assert_eq!(connection_layout(720), (FlexType::Row, ROW));
+        assert_eq!(connection_layout(904), (FlexType::Row, ROW));
+        assert_eq!(connection_layout(0), (FlexType::Column, 94));
+    }
+
+    #[test]
+    fn selection_actions_match_setup_state_and_available_targets() {
+        assert_eq!(
+            available(None, true, true, true),
+            [false, false, false, false, false, true, true]
+        );
+        assert_eq!(
+            available(Some(State::Ready), false, false, false),
+            [true, false, false, false, false, true, true]
+        );
+        assert_eq!(
+            available(Some(State::Added), true, true, true),
+            [false, true, true, true, true, true, true]
+        );
+        assert_eq!(
+            available(Some(State::Outdated), true, false, true),
+            [true, true, true, false, true, true, true]
+        );
+    }
+
+    #[test]
+    fn connection_validation_retains_existing_normalization_and_rejects_invalid_ports() {
+        assert_eq!(
+            connection_values("  ", " 8090 ", " path "),
+            Some(("127.0.0.1".into(), 8090, "/path".into()))
+        );
+        assert_eq!(
+            connection_values(" localhost ", "65535", ""),
+            Some(("localhost".into(), 65535, "/".into()))
+        );
+        assert_eq!(
+            connection_values("0.0.0.0", "1", "/mcp"),
+            Some(("0.0.0.0".into(), 1, "/mcp".into()))
+        );
+        for port in ["", "0", "65536", "-1", "no"] {
+            assert_eq!(connection_values("localhost", port, "/"), None);
+        }
+    }
 
     #[test]
     fn every_agent_has_a_logo_or_an_icon() {

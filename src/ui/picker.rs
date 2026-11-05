@@ -5,7 +5,6 @@ use super::fit::Ellipsis;
 use super::picker_icons;
 use super::{button, icons, ROW};
 use crate::types::{SUB_ACTION_INFO, TRIGGERS};
-use fltk::app;
 use fltk::enums::FrameType;
 use fltk::enums::{Align, Color, Event, Font, Key, Shortcut};
 use fltk::frame::Frame;
@@ -16,6 +15,7 @@ use fltk::prelude::*;
 use fltk::text::{TextBuffer, TextDisplay, WrapMode};
 use fltk::tree::{Tree, TreeConnectorStyle, TreeItem, TreeReason, TreeSelect};
 use fltk::window::DoubleWindow;
+use fltk::{app, draw};
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -697,7 +697,41 @@ pub fn style_tree(tree: &mut Tree) {
     tree.set_user_icon_margin_left(2);
     tree.set_label_margin_left(4);
     tree.set_select_frame(FrameType::RFlatBox);
-    tree.set_selection_color(Color::color_average(Color::Background, Color::Foreground, 0.88));
+    tree.set_selection_color(super::rows::selected(tree.color()));
+}
+
+/// Over FLTK's dotted focus box on a tree's focused item: the rounded ring the lists draw. Call it
+/// last in the tree's draw.
+pub fn focus_ring(t: &Tree) {
+    if !t.has_focus() {
+        return;
+    }
+    let Some(item) = t.get_item_focus() else { return };
+    // Its place is only fresh when it was drawn: every group above it is open.
+    let mut up = item.parent();
+    while let Some(p) = up {
+        if !p.is_open() {
+            return;
+        }
+        up = p.parent();
+    }
+    // Where FLTK put the dots: the label box inset by one, one pixel short on the right and bottom.
+    let (x, y, w, h) = (
+        item.label_x() + 1,
+        item.label_y() + 1,
+        item.label_w() - 1,
+        item.label_h() - 1,
+    );
+    if w <= 4 || h <= 4 {
+        return;
+    }
+    draw::push_clip(t.x() + 1, t.y() + 1, t.w() - 2, t.h() - 2);
+    draw::set_draw_color(t.color());
+    draw::draw_rect(x, y, w, h);
+    draw::draw_rect(x, y, w - 1, h - 1);
+    draw::set_draw_color(Color::color_average(Color::Foreground, t.color(), 0.5));
+    draw::draw_rounded_rect(x, y, w, h, 5);
+    draw::pop_clip();
 }
 
 /// The size of every icon in the tree.
@@ -876,6 +910,7 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
     tree.set_show_root(false);
     tree.set_select_mode(TreeSelect::Single);
     style_tree(&mut tree);
+    tree.draw(|t| focus_ring(t));
 
     let mut detail_col = Flex::default().column();
     detail_col.set_pad(4);
@@ -925,7 +960,7 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
         path: d_path,
         text: desc_buf,
     };
-    detail.show(tr("picker.title"), tr("picker.browse"), tr("picker.intro"), None);
+    detail.show(tr("picker.title"), "", tr("picker.intro"), None);
 
     let selected_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
     let node_map: Rc<RefCell<Vec<(TreeItem, usize)>>> = Rc::default();
@@ -939,11 +974,15 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
         let selected_id = selected_id.clone();
         let mut count_label = count_label.clone();
         let mut detail = detail.clone();
+        let mut ok_btn = ok_btn.clone();
         move |q: &str, force_expand: Option<bool>| {
             let q = q.trim().to_lowercase();
             let Some(root) = tree.root() else { return };
             tree.clear_children(&root);
             node_map.borrow_mut().clear();
+            // The tree is new: nothing in it is picked until a search selects its first match.
+            selected_id.set(None);
+            ok_btn.deactivate();
 
             let mut matched = 0;
             let mut root_node = CategoryNode::default();
@@ -979,6 +1018,7 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
                 if !q.is_empty() {
                     let _ = tree.select_only(&first_item, false);
                     selected_id.set(Some(id));
+                    ok_btn.activate();
                     if let Some(it) = items.iter().find(|x| x.id == id) {
                         detail.item(it);
                     }
@@ -990,7 +1030,6 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
                     crate::i18n::tr("picker.try_other"),
                     None,
                 );
-                selected_id.set(None);
             }
             tree.redraw();
         }
@@ -1022,6 +1061,7 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
         let selected_id = selected_id.clone();
         let items = items_vec.clone();
         let mut detail = detail.clone();
+        let mut ok_btn = ok_btn.clone();
         move |t| {
             let Some(mut item) = t.callback_item() else { return };
             if t.callback_reason() != TreeReason::Selected {
@@ -1034,11 +1074,13 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
                 .map(|(_, id)| *id);
             if let Some(id) = id {
                 selected_id.set(Some(id));
+                ok_btn.activate();
                 if let Some(it) = items.iter().find(|x| x.id == id) {
                     detail.item(it);
                 }
             } else if let Some(name) = item.label() {
                 selected_id.set(None);
+                ok_btn.deactivate();
                 detail.group(&name);
                 if item.is_open() {
                     item.close();
@@ -1094,6 +1136,7 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
         move |_| answer.set(Some(false))
     });
 
+    let _ = filter.take_focus();
     let ok = super::dialogs::run(&mut win, &answer, || selected_id.get().is_some());
     let res = if ok { selected_id.get() } else { None };
     app::delete_widget(win);

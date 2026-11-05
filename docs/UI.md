@@ -21,8 +21,15 @@ put its identifying value first and keep secondary details brief. Give an empty 
 explains what belongs there or how to add it. Use search when it helps users find items in a long list.
 
 Put related actions together using `grid()`, which fills the available width and folds to icons when narrow.
+On a wide page, a long button row wraps to two rows before folding. A grid folds as one: every button
+shows its words, or every one only its icon, never a mix. Keep each button's label on the widget when
+it shows only an icon, keep any explanation tooltip while folded, and dim both its text and icon when
+unavailable. Related actions in the same grid need distinct icons when their meaning differs.
 An action on a selection must operate on that selection; make unavailable actions clearly unavailable.
-Every actionable list or tree must offer the same actions in its right-click menu using `context_menu()`.
+Every actionable list or tree must offer the same actions in its right-click menu using `context_menu()`;
+the Menu key and Shift+F10 open the same menu from the keyboard. Lists and trees show their selection the
+same way: a soft zinc fill (`rows::selected`), ringed while the list has keyboard focus, never FLTK's
+dotted box. Unavailable items use `muted()`, never a hard-coded grey.
 Keep action names and icons consistent between the buttons and menu.
 
 Show a switched off item (a trigger or sub-action) with dimmed text and the Lucide `power-off` icon, never
@@ -79,6 +86,12 @@ Write short, natural English and translate all UI text through `i18n::tr` and th
 object or action instead of relying on an icon or color alone. Show useful empty, loading, error and
 connection states when they apply; an error should say what happened and, when possible, what to do next.
 Keep disabled integrations inactive, as required by the project rules.
+
+Keep filter fields and toolbar actions inside narrow pages. Let search take the remaining width;
+stack navigation and actions when one row cannot fit. A chat with no configured channel offers
+Accounts in its empty state. When chat history is off, disable sending controls with an explanation.
+The Polls page keeps locked predictions available for resolution and distinguishes an unknown result
+from confirmed success or failure.
 
 A stream ending and a chat disconnecting are separate states. A stream end gets a desktop notification
 and leaves an available chat usable. For a disconnected chat, hide its messages and replace the composer
