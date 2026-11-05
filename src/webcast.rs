@@ -467,12 +467,6 @@ async fn probe_embed(user: &str) -> (EmbedProbe, Option<String>, Option<String>)
     }
 }
 
-/// A TikTok user's profile picture, from their public creator embed (no cookie, not rate limited
-/// like `user/room`, and it works when they're not live).
-pub async fn avatar(user: &str) -> Option<String> {
-    probe_embed(user).await.1
-}
-
 /// A TikTok user's profile picture and display name, from the same embed page.
 pub async fn profile(user: &str) -> (Option<String>, Option<String>) {
     let p = probe_embed(user).await;
@@ -509,24 +503,6 @@ async fn fetch_user_room_raw(channel: &str, ttwid: &str) -> Result<Value, String
         return Err("TikTok rate limit reached; backing off".into());
     }
     serde_json::from_slice(&r.body).map_err(|_| format!("TikTok answered HTTP {}", r.status))
-}
-
-/// The channel's `user/room` answer (user, live room). TikTok rate limits this lookup much less with a
-/// `ttwid`.
-pub async fn user_room(channel: &str, ttwid: &str) -> Result<Value, String> {
-    let v = fetch_user_room_raw(channel, ttwid).await?;
-    match v["statusCode"].as_i64() {
-        Some(0) => {
-            remember_existing_user(channel);
-            Ok(v)
-        }
-        Some(19881007) => match probe_embed(channel).await.0 {
-            EmbedProbe::Exists => Err(format!("@{channel} has never gone live yet")),
-            EmbedProbe::Transient => Err(format!("@{channel} is offline")),
-            EmbedProbe::NotFound => Err(format!("@{channel} not found")),
-        },
-        c => Err(format!("TikTok error {}", c.unwrap_or(-1))),
-    }
 }
 
 /// The channel's live room ID, distinguishing normal offline/standby states from missing handles or

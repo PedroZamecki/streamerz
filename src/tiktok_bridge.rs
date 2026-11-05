@@ -1,8 +1,8 @@
-//! TikTok sending through the user's own browser. The "Streamerz for TikTok" extension keeps one light
-//! TikTok tab open while Streamerz runs and makes requests inside it, so TikTok's own scripts sign them
+//! TikTok through the user's browser. The extension loads one offscreen TikTok frame and makes
+//! requests inside it, so TikTok's own scripts sign them
 //! (msToken, X-Bogus, X-Gnarly, X-Dynosaur, ticket guard, csrf) exactly as when the user types in chat.
 //! Streamerz opens nothing for it: the extension connects to the WebSocket server on [`PATH`] with the
-//! token Streamerz wrote next to it, and its tab closes when Streamerz does.
+//! token Streamerz wrote next to it, and its hidden context closes when Streamerz does.
 
 use crate::engine::Engine;
 use futures_util::{SinkExt, StreamExt};
@@ -20,19 +20,28 @@ pub const PATH: &str = "/streamerz/tiktok";
 /// Fixed by the public key in the extension's manifest.
 pub const EXTENSION_ID: &str = "lhijoeeghjcohapolkfkacipklhbnecc";
 /// The messages this side speaks; an extension with another needs reinstalling.
-const PROTOCOL: u64 = 1;
+const PROTOCOL: u64 = 2;
 /// How long one request in the tab may take (the first one opens and loads it).
 const CALL: Duration = Duration::from_secs(45);
 /// TikTok's chat box takes this many characters.
 const MAX_CHARS: usize = 150;
 
-const FILES: [(&str, &[u8]); 3] = [
+const FILES: [(&str, &[u8]); 6] = [
     (
         "manifest.json",
         include_bytes!("../assets/tiktok-extension/manifest.json"),
     ),
     ("bridge.js", include_bytes!("../assets/tiktok-extension/bridge.js")),
     ("icon.png", include_bytes!("../assets/tiktok-extension/icon.png")),
+    (
+        "offscreen.html",
+        include_bytes!("../assets/tiktok-extension/offscreen.html"),
+    ),
+    (
+        "offscreen.js",
+        include_bytes!("../assets/tiktok-extension/offscreen.js"),
+    ),
+    ("frame.js", include_bytes!("../assets/tiktok-extension/frame.js")),
 ];
 
 /// The query keys TikTok's page sends with every webcast request (browser, device, region...), as seen
@@ -159,7 +168,7 @@ pub fn remove(e: &Rc<Engine>) {
 /// For the MCP tool and the WebSocket request.
 pub fn status(e: &Engine) -> Value {
     let b = &e.tiktok_bridge;
-    json!({"setUp": set_up(&e.config()), "connected": b.is_connected(), "user": b.user(),
+    json!({"setUp": set_up(&e.config()), "connected": b.is_connected(), "user": b.user(), "ready": b.ready(), "error": b.error(),
         "folder": folder().display().to_string(), "extensionId": EXTENSION_ID})
 }
 
@@ -180,6 +189,11 @@ pub struct Bridge {
     params: RefCell<Option<Vec<(String, String)>>>,
     /// The browser's TikTok account (its @handle), once known.
     user: RefCell<String>,
+    uid: RefCell<String>,
+    ready: std::cell::Cell<bool>,
+    error: RefCell<String>,
+    warming: std::cell::Cell<bool>,
+    refresh_pending: std::cell::Cell<bool>,
 }
 
 impl Bridge {
@@ -192,11 +206,47 @@ impl Bridge {
         self.user.borrow().clone()
     }
 
+    pub fn ready(&self) -> bool {
+        self.ready.get()
+    }
+    pub fn error(&self) -> String {
+        self.error.borrow().clone()
+    }
+    pub fn uid(&self) -> String {
+        self.uid.borrow().clone()
+    }
+    #[cfg(test)]
+    pub(crate) fn test_account(&self, user: &str, uid: &str) {
+        *self.user.borrow_mut() = user.into();
+        *self.uid.borrow_mut() = uid.into();
+    }
+
+    /// Browser cookies stay in memory and are requested only when the reader connects.
+    pub async fn session(&self) -> String {
+        if !self.is_connected() {
+            return String::new();
+        }
+        self.call(json!({"op": "session"}))
+            .await
+            .ok()
+            .and_then(|v| v["cookie"].as_str().map(str::to_string))
+            .unwrap_or_default()
+    }
+
+    pub async fn login(&self) -> Result<(), String> {
+        self.call(json!({"op": "login"})).await.map(drop)
+    }
+
     fn disconnect(&self) {
         // Dropping the sender ends the connection's task, which closes the socket.
         self.link.borrow_mut().take();
         self.params.borrow_mut().take();
         self.user.borrow_mut().clear();
+        self.uid.borrow_mut().clear();
+        self.ready.set(false);
+        self.warming.set(false);
+        self.refresh_pending.set(false);
+        self.error.borrow_mut().clear();
         crate::ui::changed();
     }
 
@@ -216,15 +266,34 @@ impl Bridge {
         let v = match tokio::time::timeout(CALL, rx).await {
             Ok(Ok(v)) => v,
             Ok(Err(_)) => return Err(NOT_CONNECTED.into()),
-            Err(_) => return Err("the browser's TikTok tab didn't answer".into()),
+            Err(_) => {
+                if let Some(l) = self.link.borrow_mut().as_mut() {
+                    l.pending.retain(|_, tx| !tx.is_closed());
+                }
+                self.ready.set(false);
+                crate::ui::changed();
+                return Err("TikTok didn't answer. Try again, or check Accounts > TikTok.".into());
+            }
         };
         match v.get("error").and_then(Value::as_str) {
-            Some(err) => Err(err.to_string()),
-            None => Ok(v),
+            Some(err) => {
+                self.ready.set(false);
+                *self.error.borrow_mut() = err.to_string();
+                crate::ui::changed();
+                Err(err.to_string())
+            }
+            None => {
+                if v.get("params").is_some() || v.get("status").is_some() {
+                    self.ready.set(true);
+                    self.error.borrow_mut().clear();
+                    crate::ui::changed();
+                }
+                Ok(v)
+            }
         }
     }
 
-    /// The page's common query: read once from the tab (opening it), then kept.
+    /// The page's common query, kept until the session changes or a send fails.
     async fn params(&self) -> Result<Vec<(String, String)>, String> {
         if let Some(p) = self.params.borrow().clone() {
             return Ok(p);
@@ -238,7 +307,7 @@ impl Bridge {
         Ok(p)
     }
 
-    /// A request made inside the tab: (HTTP status, body as JSON).
+    /// A request made inside the hidden frame: (HTTP status, body as JSON).
     async fn fetch(&self, url: &str, init: Value) -> Result<(u64, Value), String> {
         let v = self.call(json!({"op": "fetch", "url": url, "init": init})).await?;
         let status = v["status"].as_u64().unwrap_or(0);
@@ -347,12 +416,84 @@ pub async fn send_message(e: &Rc<Engine>, text: &str) -> Result<(), String> {
     r
 }
 
-/// The browser's TikTok account, asked through the tab.
-async fn who(b: &Bridge) -> Result<String, String> {
-    let (_, v) = b
-        .fetch("https://www.tiktok.com/passport/web/account/info/?aid=1988", json!({}))
+/// Search uses TikTok's signed web request, in the same hidden context as sending.
+pub async fn search(e: &Rc<Engine>, query: &str) -> Result<Vec<crate::search::Found>, String> {
+    let v = e
+        .tiktok_bridge
+        .call(json!({"op": "search", "query": query.trim()}))
         .await?;
-    Ok(v["data"]["username"].as_str().unwrap_or_default().to_string())
+    let body: Value = serde_json::from_str(v["body"].as_str().unwrap_or_default())
+        .map_err(|_| "TikTok's search didn't answer. Try again.".to_string())?;
+    answer(v["status"].as_u64().unwrap_or(0), &body)?;
+    Ok(crate::search::tiktok_found(&body))
+}
+
+fn warm(e: &Rc<Engine>, serial: u64) {
+    let b = &e.tiktok_bridge;
+    if b.warming.replace(true) {
+        b.refresh_pending.set(true);
+        return;
+    }
+    b.ready.set(false);
+    let previous = b.user();
+    b.user.borrow_mut().clear();
+    b.uid.borrow_mut().clear();
+    b.params.borrow_mut().take();
+    b.error.borrow_mut().clear();
+    crate::ui::changed();
+    let e = e.clone();
+    tokio::task::spawn_local(async move {
+        let b = &e.tiktok_bridge;
+        let r = async {
+            b.params().await?;
+            let (status, v) = b
+                .fetch("https://www.tiktok.com/passport/web/account/info/?aid=1988", json!({}))
+                .await?;
+            if status != 200 {
+                return Err(format!("TikTok answered HTTP {status}"));
+            }
+            Ok(v)
+        }
+        .await;
+        if b.serial.get() != serial || !b.is_connected() {
+            return;
+        }
+        b.warming.set(false);
+        match r {
+            Ok(v) => {
+                *b.user.borrow_mut() = v["data"]["username"].as_str().unwrap_or_default().to_string();
+                *b.uid.borrow_mut() = v["data"]["user_id_str"].as_str().unwrap_or_default().to_string();
+                b.ready.set(true);
+                e.settle_role("tiktok");
+                let user = b.user();
+                if !user.is_empty() && e.config().tiktok.channel.trim().is_empty() {
+                    e.change(|c| c.tiktok.channel = user);
+                    if !e.dev() && !e.config().tiktok.manual_connect {
+                        e.tiktok_start().send(crate::tiktok::TikTokCmd::Connect);
+                    }
+                }
+                if previous != b.user() && (e.tiktok_connected() || e.tiktok_standby()) {
+                    if let Some(t) = e.tiktok() {
+                        t.send(crate::tiktok::TikTokCmd::Connect);
+                    }
+                }
+            }
+            Err(err) => {
+                b.ready.set(false);
+                crate::warn(format!("TikTok extension: {err}"));
+                *b.error.borrow_mut() = err;
+                if !previous.is_empty() && (e.tiktok_connected() || e.tiktok_standby()) {
+                    if let Some(t) = e.tiktok() {
+                        t.send(crate::tiktok::TikTokCmd::Connect);
+                    }
+                }
+            }
+        }
+        crate::ui::changed();
+        if b.refresh_pending.replace(false) {
+            warm(&e, serial);
+        }
+    });
 }
 
 fn same(a: &str, b: &str) -> bool {
@@ -399,23 +540,7 @@ where
     });
     crate::say("TikTok: the browser extension connected".into());
     crate::ui::changed();
-    // Ready for the first message: the tab opens and the account is known.
-    let warm = e.clone();
-    tokio::task::spawn_local(async move {
-        let b = &warm.tiktok_bridge;
-        let r = async {
-            b.params().await?;
-            who(b).await
-        }
-        .await;
-        match r {
-            Ok(user) => {
-                *b.user.borrow_mut() = user;
-                crate::ui::changed();
-            }
-            Err(err) => crate::warn(format!("TikTok extension: {err}")),
-        }
-    });
+    warm(&e, serial);
     loop {
         tokio::select! {
             out = rx.recv() => match out {
@@ -425,6 +550,7 @@ where
             m = stream.next() => match m {
                 Some(Ok(Message::Text(t))) => {
                     let Ok(v) = serde_json::from_str::<Value>(&t) else { continue };
+                    if v["op"] == "session_changed" { warm(&e, serial); continue; }
                     let Some(id) = v["id"].as_u64() else { continue };
                     let waiting = b.link.borrow_mut().as_mut().and_then(|l| l.pending.remove(&id));
                     if let Some(w) = waiting {

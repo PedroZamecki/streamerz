@@ -1,5 +1,5 @@
 //! TikTok Live, read natively (see webcast.rs): chat, gifts, likes, follows, shares, subscriptions
-//! and joins fire the TikTok triggers (41001..=41009) and chat commands. Chat is read-only.
+//! and joins fire the TikTok triggers and chat commands. The browser extension handles account access.
 
 use crate::commands::Chat;
 use crate::engine::chatlog::{local_hhmm, normalize_line_emotes, Line};
@@ -10,7 +10,6 @@ use crate::Config;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -77,32 +76,43 @@ pub fn top_gifters(count: usize) -> Obj {
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(default, rename_all = "camelCase")]
-pub struct TikTokAccount {
-    /// TikTok username / handle (@handle or nickname).
-    pub username: String,
-    /// Session cookie string (must contain sessionid=...).
-    pub session_cookie: String,
-    /// Profile picture URL, seen at login (TikTok's profile pages are behind a bot check).
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub avatar: String,
-}
-
-#[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(default, rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase", from = "StoredTikTokConfig")]
 pub struct TikTokConfig {
-    /// Channel name or @handle to watch.
     pub channel: String,
-    /// Not connected at start (it is by default, once there is a channel).
     pub manual_connect: bool,
-    /// Broadcaster account credentials
-    pub broadcaster: Option<TikTokAccount>,
-    /// Bot account credentials
-    pub bot: Option<TikTokAccount>,
-    /// Sending through the browser is set up: the Streamerz for TikTok extension must show this to
-    /// connect (see tiktok_bridge.rs).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub bridge_token: String,
+}
+
+/// Old logins are read only to preserve the chosen channel, never their credentials.
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+struct StoredTikTokConfig {
+    channel: String,
+    manual_connect: bool,
+    bridge_token: String,
+    broadcaster: Option<LegacyAccount>,
+}
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct LegacyAccount {
+    username: String,
+}
+impl From<StoredTikTokConfig> for TikTokConfig {
+    fn from(old: StoredTikTokConfig) -> Self {
+        let channel = if old.channel.trim().is_empty() {
+            old.broadcaster
+                .map(|a| clean_tiktok_channel(&a.username))
+                .unwrap_or_default()
+        } else {
+            old.channel
+        };
+        Self {
+            channel,
+            manual_connect: old.manual_connect,
+            bridge_token: old.bridge_token,
+        }
+    }
 }
 
 /// Strip URLs, @ signs, and slashes from a TikTok channel input.
@@ -122,92 +132,6 @@ pub fn clean_tiktok_channel(input: &str) -> String {
         }
     }
     s.trim_start_matches('@').trim_end_matches('/').trim().to_string()
-}
-
-/// The browser profile per account, next to streamerz.json, so logging in again is one click and
-/// sending uses the same session. Log out deletes it.
-pub fn profile(bot: bool) -> PathBuf {
-    crate::config_path().with_file_name(if bot { "tiktok-bot" } else { "tiktok-broadcaster" })
-}
-
-/// The profile, without what the old TikTok window (WebKit) left in it: a browser starts it afresh.
-fn browser_profile(bot: bool) -> PathBuf {
-    let p = profile(bot);
-    if p.is_dir() && !p.join("Local State").exists() {
-        let _ = std::fs::remove_dir_all(&p);
-    }
-    p
-}
-
-/// The cookies that make a session.
-const KEEP: [&str; 6] = [
-    "sessionid",
-    "sessionid_ss",
-    "sid_tt",
-    "sid_guard",
-    "uid_tt",
-    "tt-target-idc",
-];
-
-/// Logged-in user and profile picture, from the data TikTok's own page loads with.
-const WHO: &str = r#"(() => { try {
-  const d = JSON.parse(document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__').textContent);
-  const u = d.__DEFAULT_SCOPE__['webapp.app-context'].user;
-  return [u.uniqueId || '', (u.avatarUri || [])[0] || u.avatarThumb || ''];
-} catch (e) { return ['', '']; } })()"#;
-
-/// Opens TikTok's login in a browser window; blocks until the user logged in or closed it.
-pub fn login(bot: bool) -> Result<TikTokAccount, String> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| e.to_string())?
-        .block_on(login_in_browser(bot))
-}
-
-async fn login_in_browser(bot: bool) -> Result<TikTokAccount, String> {
-    let profile = browser_profile(bot);
-    let mut b = crate::cdp::Browser::launch(&profile, false, "https://www.tiktok.com/login").await?;
-    // Logged in: the session cookie is there.
-    let cookies = loop {
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        if b.gone() {
-            crate::cdp::reclaim_profile(&profile);
-            return Err("the login window was closed".into());
-        }
-        let jar = b.cookies("https://www.tiktok.com/").await.unwrap_or_default();
-        if jar.iter().any(|(k, v)| k == "sessionid" && !v.is_empty()) {
-            break jar
-                .iter()
-                .filter(|(k, _)| KEEP.contains(&k.as_str()))
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect::<Vec<_>>()
-                .join("; ");
-        }
-    };
-    // The login page doesn't say who you are; the home page does.
-    let _ = b.navigate("https://www.tiktok.com/").await;
-    let (mut user, mut avatar) = (String::new(), String::new());
-    for _ in 0..20 {
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        let who: (String, String) = b
-            .eval(WHO)
-            .await
-            .ok()
-            .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default();
-        if !who.0.is_empty() {
-            (user, avatar) = who;
-            break;
-        }
-    }
-    b.close().await;
-    crate::cdp::reclaim_profile(&profile);
-    Ok(TikTokAccount {
-        username: user,
-        session_cookie: cookies,
-        avatar,
-    })
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -295,20 +219,6 @@ struct Runner {
     read_task: Option<tokio::task::JoinHandle<()>>,
 }
 
-fn account_matches_channel(acct: &Option<TikTokAccount>, channel: &str) -> bool {
-    let Some(a) = acct else { return false };
-    let norm = |s: &str| {
-        clean_tiktok_channel(s)
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect::<String>()
-            .to_lowercase()
-    };
-    let u = norm(&a.username);
-    let ch = norm(channel);
-    !ch.is_empty() && u == ch
-}
-
 enum LiveEnd {
     Standby { never_live: bool },
     NotFound,
@@ -352,8 +262,7 @@ impl Runner {
                 let (channel, known_account) = {
                     let c = cfg.borrow();
                     let ch = clean_tiktok_channel(&c.tiktok.channel);
-                    let known = account_matches_channel(&c.tiktok.broadcaster, &ch)
-                        || account_matches_channel(&c.tiktok.bot, &ch);
+                    let known = engine.tiktok_bridge.user().eq_ignore_ascii_case(&ch);
                     (ch, known)
                 };
                 if channel.is_empty() {
@@ -432,7 +341,7 @@ impl Runner {
 /// One connection to the channel's live, until it drops or the stream ends.
 async fn live(
     engine: &Rc<Engine>,
-    cfg: &watch::Sender<Config>,
+    _cfg: &watch::Sender<Config>,
     channel: &str,
     known_account: bool,
     shared: &Shared,
@@ -452,15 +361,10 @@ async fn live(
         *r = Some(room.to_string());
     }
     let mut cookie = format!("ttwid={ttwid}");
-    // A login lets 18+ rooms in.
-    if let Some(a) = cfg
-        .borrow()
-        .tiktok
-        .broadcaster
-        .as_ref()
-        .filter(|a| !a.session_cookie.is_empty())
-    {
-        cookie = format!("{cookie}; {}", a.session_cookie);
+    let session = engine.tiktok_bridge.session().await;
+    if !session.is_empty() {
+        cookie.push_str("; ");
+        cookie.push_str(&session);
     }
     let mut req = crate::webcast::ws_url(room)
         .into_client_request()
@@ -792,6 +696,20 @@ pub fn handle_tiktok_event(engine: &Rc<Engine>, channel: &str, event: &str, d: &
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    #[test]
+    fn old_accounts_preserve_the_channel_but_not_their_credentials() {
+        let old = json!({"broadcaster": {"username": "@creator", "sessionCookie": "old"},
+            "bot": {"username": "old_bot", "sessionCookie": "old"}, "bridgeToken": "pairing"});
+        let config: TikTokConfig = serde_json::from_value(old).unwrap();
+        assert_eq!(config.channel, "creator");
+        assert_eq!(config.bridge_token, "pairing");
+        let saved = serde_json::to_value(&config).unwrap();
+        assert!(saved.get("broadcaster").is_none() && saved.get("bot").is_none());
+        let chosen: TikTokConfig =
+            serde_json::from_value(json!({"channel": "other", "broadcaster": {"username": "creator"}})).unwrap();
+        assert_eq!(chosen.channel, "other");
+    }
 
     #[test]
     fn test_clean_tiktok_channel() {

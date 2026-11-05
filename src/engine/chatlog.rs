@@ -1783,7 +1783,7 @@ impl Engine {
         match platform {
             "kick" => c.kick.broadcaster.as_ref().map(|b| b.user_id.to_string()),
             "youtube" => c.youtube.broadcaster.as_ref().map(|b| b.channel_id.clone()),
-            "tiktok" => c.tiktok.broadcaster.as_ref().map(|b| b.username.clone()),
+            "tiktok" => Some(self.tiktok_bridge.uid()),
             _ => None,
         }
         .unwrap_or_default()
@@ -1857,7 +1857,7 @@ impl Engine {
         // TikTok sends as the browser's account.
         let browser = Some(self.tiktok_bridge.user())
             .filter(|u| platform == "tiktok" && !u.is_empty())
-            .map(|u| (u.clone(), u));
+            .map(|u| (u, self.tiktok_bridge.uid()));
         let (name, id) = if let Some(b) = browser {
             b
         } else {
@@ -1887,9 +1887,7 @@ impl Engine {
                             };
                             (name, a.channel_id.clone())
                         }),
-                    "tiktok" => (if b { &c.tiktok.bot } else { &c.tiktok.broadcaster })
-                        .as_ref()
-                        .map(|a| (a.username.trim_start_matches('@').to_string(), a.username.clone())),
+                    "tiktok" => None,
                     _ => None,
                 }
             };
@@ -1994,11 +1992,7 @@ impl Engine {
                 .broadcaster
                 .as_ref()
                 .is_none_or(|b| b.channel_id == c.youtube.channel_id),
-            "tiktok" => c.tiktok.broadcaster.as_ref().is_none_or(|b| {
-                b.username
-                    .trim_start_matches('@')
-                    .eq_ignore_ascii_case(&c.tiktok.channel)
-            }),
+            "tiktok" => self.tiktok_bridge.user().eq_ignore_ascii_case(&c.tiktok.channel),
             "twitch" => !crate::twitch::other_channel(&c),
             _ => true,
         }
@@ -2402,15 +2396,12 @@ mod tests {
         let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::engine::tests::run(async {
             let mut c = crate::Config::default();
-            c.tiktok.broadcaster = Some(crate::tiktok::TikTokAccount {
-                username: "pedrozamecki".into(),
-                ..Default::default()
-            });
             c.window.chat.total = 100;
             let (tx, _rx) = tokio::sync::watch::channel(c);
             let cfg = std::sync::Arc::new(tx);
             let e = crate::engine::Engine::new(cfg, |_| {});
 
+            e.tiktok_bridge.test_account("pedrozamecki", "7034185239447077894");
             // Optimistic TikTok local message
             let seq = e.chat_local("tiktok", "tap tap", false, None).unwrap();
             let (_, _, lines) = e.chat_sync(999, 0);
@@ -2784,9 +2775,7 @@ mod tests {
         assert!(can_send(&c, "kick"));
         assert!(!can_send(&c, "twitch"));
         assert!(!can_send(&c, "tiktok"));
-        // A TikTok login only reads: sending goes through the browser, once set up.
-        c.tiktok.broadcaster = Some(Default::default());
-        assert!(!can_send(&c, "tiktok"));
+        // Sending needs the browser extension, not a separate account login.
         c.tiktok.bridge_token = "t".into();
         assert!(can_send(&c, "tiktok"));
     }

@@ -16,24 +16,36 @@ How the chat page behaves. For what each trigger and sub-action does, see the re
 - An `@name` that names one of our logged-in accounts sits on a chip, so it stands out. The chip follows
   the theme (light and dark).
 
-## TikTok sending
+## TikTok account and search
 
-In Accounts > TikTok > Sending, choose Set up. Open your Chromium browser's extensions page, turn on
-Developer mode, choose Load unpacked, and select the folder shown by Streamerz. Log in to TikTok in that
-browser. Accounts shows the browser account once the extension connects. Streamerz sends to the live
-channel it is reading, using that browser account; the optional broadcaster and bot logins help with
-reading restricted rooms and do not select who sends.
+In Accounts > TikTok > Browser account, choose Set up. Open your Chromium browser's extensions page,
+turn on Developer mode, choose Load unpacked, and select the folder shown by Streamerz. When updating
+an existing installation, reload the extension after Streamerz writes its new files.
 
-The extension keeps a pinned, muted TikTok tab open while Streamerz runs. It blocks pictures, video,
-fonts and some background requests. Closing Streamerz closes the tab. Remove in the Sending dialog turns
-sending off; remove the extension from the browser too.
+Log in opens TikTok in that browser. This is the only TikTok login Streamerz uses: the browser account
+supplies search, authenticated reading and sending. Old separate account and bot logins are no longer
+used. An old account's own channel is preserved when loading its settings; its saved cookies are not
+carried into the new settings. Ordinary public LIVE reading still works without the extension.
 
-To measure its usage while other tabs are open, open the browser's Task Manager. Look for both
-Streamerz for TikTok (the extension worker) and the pinned TikTok tab. Watch their CPU and memory for at
-least a minute after the page finishes loading. The tab does most of the work, so measuring only the
-extension worker misses most of the cost. Shared browser, network and GPU costs are separate; these rows
-do not measure the entire browser overhead. Developer tools and an open Task Manager can affect CPU
-readings, so close developer tools and allow the tab to settle first.
+The channel picker searches TikTok through the extension, with names, pictures, follower counts and
+live state. A pasted link or @handle still works when search is unavailable. Use my own channel selects
+the browser account. A new setup with no chosen channel uses that account's channel automatically.
+
+The extension loads TikTok inside a hidden browser document, with pictures, video, fonts, telemetry
+and feed refreshes blocked. No helper tab or window opens. Browser background mode lets it work after
+all browser windows close; explicitly quitting the browser disconnects it. Log in may require a visible
+browser window, but ordinary use never requires navigating to a helper page. A discarded context is
+recreated on the next request. A send with a lost reply is never retried automatically.
+
+Accounts distinguishes an extension connection, a loading context, a ready account and a required
+login. Sending stays disabled until the browser account is ready. Session changes refresh the identity
+and reconnect an active reader with the new session. Reader cookies stay in memory and are never saved.
+Closing Streamerz or removing the integration releases the hidden context. Remove the extension from
+the browser too if you no longer use it.
+
+To measure usage while other tabs are open, use the browser's Task Manager. Include Streamerz for TikTok
+and its hidden TikTok frame. Shared browser, network and GPU costs are separate. Developer tools and an
+open Task Manager can affect CPU readings; allow the context to settle before measuring it.
 
 ## Twitch chat commands
 

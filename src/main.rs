@@ -5,7 +5,6 @@ mod agents;
 mod backup;
 mod brand;
 mod catalog;
-mod cdp;
 mod commands;
 mod crash;
 pub mod decks;
@@ -427,11 +426,6 @@ impl Config {
         if self.kick.channel.trim().is_empty() {
             if let Some(b) = &self.kick.broadcaster {
                 self.kick.channel = b.username.to_lowercase();
-            }
-        }
-        if self.tiktok.channel.trim().is_empty() {
-            if let Some(b) = &self.tiktok.broadcaster {
-                self.tiktok.channel = b.username.trim_start_matches('@').to_string();
             }
         }
     }
@@ -1092,7 +1086,8 @@ fn prepare_dev(source: &Path) -> std::io::Result<PathBuf> {
                         }
                     }
                 }
-                for name in ["plugins", "tiktok-bot", "tiktok-broadcaster"] {
+                {
+                    let name = "plugins";
                     let from = source.with_file_name(name);
                     if from.exists() {
                         if let Err(e) = storage::copy_tree(&from, &dir.join(name)) {

@@ -74,9 +74,7 @@ impl P {
             P::Kick => if bot { &c.kick.bot } else { &c.kick.broadcaster }
                 .as_ref()
                 .map(|a| a.username.clone()),
-            P::TikTok => if bot { &c.tiktok.bot } else { &c.tiktok.broadcaster }
-                .as_ref()
-                .map(|a| a.username.clone()),
+            P::TikTok => None,
         }
         .filter(|s| !s.is_empty())
     }
@@ -114,10 +112,7 @@ impl P {
                 (a.token.access_token.is_empty() && a.token.refresh_token.is_empty() && locked)
                     .then_some(tr("accounts.note.keyring_locked"))
             }
-            P::TikTok => {
-                let a = if bot { &c.tiktok.bot } else { &c.tiktok.broadcaster }.as_ref()?;
-                (a.session_cookie.is_empty() && locked).then_some(tr("accounts.note.keyring_locked"))
-            }
+            P::TikTok => None,
         }
     }
 
@@ -160,11 +155,7 @@ impl P {
                     e(&a.token.access_token)
                 )
             }),
-            // A cookie: only TikTok's own logout ends the session; forget the window's copy of it.
-            P::TikTok => {
-                let _ = std::fs::remove_dir_all(crate::tiktok::profile(bot));
-                None
-            }
+            P::TikTok => None,
         };
         match (self, bot) {
             (P::Twitch, false) => c.twitch.broadcaster = None,
@@ -173,8 +164,7 @@ impl P {
             (P::YouTube, true) => c.youtube.bot = None,
             (P::Kick, false) => c.kick.broadcaster = None,
             (P::Kick, true) => c.kick.bot = None,
-            (P::TikTok, false) => c.tiktok.broadcaster = None,
-            (P::TikTok, true) => c.tiktok.bot = None,
+            (P::TikTok, _) => {}
         }
         revoke
     }
@@ -201,11 +191,7 @@ impl P {
                 .as_ref()
                 .map(|b| [norm(&b.channel_id), norm(&b.name)]),
             P::Kick => c.kick.broadcaster.as_ref().map(|b| [norm(&b.username), String::new()]),
-            P::TikTok => c
-                .tiktok
-                .broadcaster
-                .as_ref()
-                .map(|b| [norm(&b.username), String::new()]),
+            P::TikTok => None,
         };
         ch.is_empty() || mine.is_some_and(|m| m.contains(&ch))
     }
@@ -478,25 +464,7 @@ async fn avatar(e: &Rc<Engine>, cfg: &Cfg, p: P, bot: bool) -> Option<String> {
                 "/items/0/snippet/thumbnails/default/url",
             )
         }
-        P::TikTok => {
-            let (name, seen) = {
-                let c = cfg.borrow();
-                let a = if bot { &c.tiktok.bot } else { &c.tiktok.broadcaster }.clone()?;
-                (a.username, a.avatar)
-            };
-            if seen.starts_with("http") {
-                return Some(seen);
-            }
-            let name = name.trim_start_matches('@').to_string();
-            if let Some(url) = crate::webcast::avatar(&name).await {
-                return Some(url);
-            }
-            let ttwid = crate::webcast::ttwid().await.ok()?;
-            at(
-                crate::webcast::user_room(&name, &ttwid).await.ok(),
-                "/data/user/avatarThumb",
-            )
-        }
+        P::TikTok => None,
     };
     v?.as_str().filter(|u| u.starts_with("http")).map(str::to_string)
 }
@@ -751,8 +719,15 @@ impl Accounts {
     pub fn refresh(&mut self) {
         // Before borrowing the config: the engine may be waiting to write it.
         let (on, standby, tiktok) = states(&self.cmds);
-        let bridge =
-            query(&self.cmds, |e| (e.tiktok_bridge.is_connected(), e.tiktok_bridge.user())).unwrap_or_default();
+        let bridge = query(&self.cmds, |e| {
+            (
+                e.tiktok_bridge.is_connected(),
+                e.tiktok_bridge.user(),
+                e.tiktok_bridge.ready(),
+                e.tiktok_bridge.error(),
+            )
+        })
+        .unwrap_or_default();
         let locked = crate::secrets::is_locked();
         if locked {
             let detail = match crate::secrets::locked_reason() {
@@ -801,11 +776,13 @@ impl Accounts {
                     _ if !crate::tiktok_bridge::set_up(&c) => {
                         (H::Off, tr("accounts.tiktok_sending.not_set_up").to_string())
                     }
-                    (false, _) => (H::Standby, tr("accounts.tiktok_sending.waiting").to_string()),
-                    (true, user) if user.is_empty() => {
-                        (H::Up, tr("accounts.tiktok_sending.connected_anon").to_string())
+                    (false, _, _, _) => (H::Standby, tr("accounts.tiktok_sending.waiting").to_string()),
+                    (_, _, _, error) if !error.is_empty() => (H::Off, error.clone()),
+                    (_, _, false, _) => (H::Standby, tr("accounts.tiktok_sending.loading").to_string()),
+                    (true, user, _, _) if user.is_empty() => {
+                        (H::Standby, tr("accounts.tiktok_sending.login_needed").to_string())
                     }
-                    (true, user) => (H::Up, trf("accounts.tiktok_sending.connected", &[("user", user)])),
+                    (true, user, _, _) => (H::Up, trf("accounts.tiktok_sending.connected", &[("user", user)])),
                 };
                 h.show(status, &text);
                 status.set_tooltip(&text.replace('@', "@@"));
@@ -945,7 +922,10 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
             row
         };
         let row = account_row(tr("accounts.row_account"), &mut who, &mut people);
-        col.fixed(&row, ROW);
+        col.fixed(&row, if p == P::TikTok { 0 } else { ROW });
+        if p == P::TikTok {
+            row.clone().hide();
+        }
 
         // Whose chat: yours, or someone else's that you moderate with your account.
         let mut mid = Flex::default().row();
@@ -969,7 +949,10 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
         col.fixed(&mid, ROW);
 
         let row = account_row(tr("accounts.row_bot"), &mut who, &mut people);
-        col.fixed(&row, ROW);
+        col.fixed(&row, if p == P::TikTok { 0 } else { ROW });
+        if p == P::TikTok {
+            row.clone().hide();
+        }
         // TikTok sends through the user's browser (tiktok_bridge.rs).
         let sending = (p == P::TikTok).then(|| {
             let mut row = Flex::default().row();
@@ -1196,7 +1179,7 @@ fn login(cfg: &Cfg, cmds: &Cmds, p: P, bot: bool) {
     crate::ui::relogin_done(p.name(), bot);
     match p {
         P::Twitch => device_login(cfg, cmds, bot),
-        P::TikTok => tiktok_login(cfg, bot),
+        P::TikTok => tiktok_sending(cmds),
         P::Kick => {
             let c = cfg.clone();
             if let Some(a) = browser_login(cmds, "Kick", bot, async move { crate::kick::login(&c, bot).await }) {
@@ -1260,6 +1243,25 @@ fn tiktok_sending(cmds: &Cmds) {
     let mut bar = Flex::default().row();
     bar.set_pad(8);
     let mut remove = button(&mut bar, tr("btn.remove_streamerz"), 90);
+    let mut login = button(&mut bar, tr("btn.login"), 90);
+    login.set_callback({
+        let cmds = cmds.clone();
+        move |_| {
+            if !query(&cmds, |e| e.tiktok_bridge.is_connected()).unwrap_or(false) {
+                dialogs::message(tr("accounts.tiktok_sending.waiting"));
+                return;
+            }
+
+            tell(&cmds, |e| {
+                let e = e.clone();
+                tokio::task::spawn_local(async move {
+                    if let Err(err) = e.tiktok_bridge.login().await {
+                        crate::warn(format!("TikTok: {err}"));
+                    }
+                });
+            })
+        }
+    });
     Frame::default();
     let mut ok = button(&mut bar, tr("dialogs.ok"), 90);
     bar.end();
@@ -1641,45 +1643,6 @@ fn advanced(cfg: &Cfg, p: P) {
         P::Twitch => c.twitch.sub_counter_rollover = v[0].parse().unwrap_or(0),
         P::TikTok => {}
     });
-}
-
-/// TikTok: the TikTok window (its own browser profile per account) returns the cookies.
-fn tiktok_login(cfg: &Cfg, bot: bool) {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || drop(tx.send(crate::tiktok::login(bot))));
-    let who_s = if bot {
-        tr("accounts.who_bot").to_lowercase()
-    } else {
-        tr("accounts.who_broadcaster").to_lowercase()
-    };
-    let (mut win, answer) = dialogs::window(420, 110, &trf("accounts.tiktok_login_title", &[("who", &who_s)]));
-    let mut col = Flex::new(10, 10, 400, 90, None).column();
-    let msg = Frame::default()
-        .with_label(&trf("accounts.tiktok_login_msg", &[("who", &who_s)]))
-        .with_align(Align::Left | Align::Inside | Align::Wrap);
-    col.fixed(&msg, 50);
-    col.end();
-    win.end();
-    win.show();
-    while win.shown() && answer.get().is_none() {
-        if let Ok(res) = rx.try_recv() {
-            match res {
-                Ok(a) => save(cfg, |c| {
-                    let a = Some(a);
-                    *if bot {
-                        &mut c.tiktok.bot
-                    } else {
-                        &mut c.tiktok.broadcaster
-                    } = a;
-                }),
-                Err(e) => super::dialogs::alert(&trf("accounts.tiktok_login_failed", &[("error", &e.to_string())])),
-            }
-            break;
-        }
-        super::nested_wait(Some(0.1));
-    }
-    win.hide();
-    fltk::app::delete_widget(win);
 }
 
 fn device_login(cfg: &Cfg, cmds: &Cmds, as_bot: bool) {

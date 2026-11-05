@@ -39,7 +39,7 @@ fn server() -> crate::agents::Server {
 const TOOLS: &[(&str, &str, &str, &[&str])] = &[
     ("status", "What's connected (Twitch, YouTube, Kick, TikTok, OBS, Streamlabs Desktop, StreamElements, Streamlabs), the version, and how many actions, commands and timers are set up.", "{}", &[]),
     ("log", "The last lines of streamerz's log.", r#"{"lines": {"type": "integer", "description": "How many (default 50)"}}"#, &[]),
-    ("search_channels", "Channels by name on Twitch, Kick or YouTube, as the Accounts page's search shows them: handle (what goes in the channel box), name, followers, live. No login.", r#"{"platform": {"type": "string", "enum": ["twitch", "kick", "youtube"]}, "query": {"type": "string"}}"#, &["platform", "query"]),
+    ("search_channels", "Channels by name on Twitch, Kick, YouTube or TikTok. TikTok needs its browser extension. Returns handle, name, followers and live state.", r#"{"platform": {"type": "string", "enum": ["twitch", "kick", "youtube", "tiktok"]}, "query": {"type": "string"}}"#, &["platform", "query"]),
     ("list_actions", "Every action: id, name, group, enabled, trigger and sub-action counts.", "{}", &[]),
     ("run_action", "Run an action by name or id, with arguments, as its Test does.", r#"{"action": {"type": "string", "description": "Name or id"}, "args": {"type": "object"}}"#, &["action"]),
     ("list_triggers", "Trigger type codes and names (e.g. 101 TwitchFollow), filtered by a word.", r#"{"filter": {"type": "string"}}"#, &[]),
@@ -72,7 +72,7 @@ const TOOLS: &[(&str, &str, &str, &[&str])] = &[
     ("spotify_local", "Read Spotify's local Windows media session without an API login. Local information cannot control the Spotify API queue.", r#"{}"#, &[]),
     ("overlays", "The overlays (HTML files in action groups) with their URLs for an OBS browser source, and the topics that have a value. An overlay page reads its group's settings from streamerz.settings, a topic with streamerz.on(topic, fn) (built in: viewers, ad) and any event with streamerz.event('Source.Type', fn).", "{}", &[]),
     ("overlay_publish", "Set an overlay topic: the pages listening show it at once. The value is any JSON. The Overlay sub-action (type 99880, fields topic and value) does the same from an action.", r#"{"topic": {"type": "string"}, "value": {}}"#, &["topic"]),
-    ("tiktok_bridge", "Sending to TikTok LIVE chat through the user's browser (the Streamerz for TikTok extension): status (set up, connected, the browser's TikTok account, the extension folder to load unpacked), install (sets it up and writes the extension) or remove. Messages then go out with the chat tools and the TikTok Send Message sub-action (43001).", r#"{"action": {"type": "string", "enum": ["status", "install", "remove"]}}"#, &[]),
+    ("tiktok_bridge", "Sending to TikTok LIVE chat through the user's browser (the Streamerz for TikTok extension): status (set up, connected, the browser's TikTok account, the extension folder to load unpacked), install (sets it up and writes the extension) or remove. Messages then go out with the chat tools and the TikTok Send Message sub-action (43001).", r#"{"action": {"type": "string", "enum": ["status", "install", "login", "remove"]}}"#, &[]),
     ("countdown", "Read a template countdown by its clock ID.", r#"{"clockId": {"type": "string"}}"#, &["clockId"]),
     ("spotify_find", "The track a song name or Spotify link would be: what a viewer's !sr would queue. Adds nothing.", r#"{"query": {"type": "string"}}"#, &["query"]),
     ("spotify_player", "What Spotify plays and has queued, and the song requests (who asked, and whether each is with Spotify or still waiting).", "{}", &[]),
@@ -136,7 +136,12 @@ impl Client {
             }
             None
         };
-        match tokio::time::timeout(Duration::from_secs(10), wait).await {
+        let seconds = if req["request"] == "StreamerzSearchChannels" {
+            60
+        } else {
+            10
+        };
+        match tokio::time::timeout(Duration::from_secs(seconds), wait).await {
             Ok(Some(v)) if v["status"] == "error" => Err(v["error"].as_str().unwrap_or("error").to_string()),
             // Unknown requests are answered with just their id.
             Ok(Some(v)) if v.get("status").is_none() => Err(format!(
@@ -161,12 +166,7 @@ impl Client {
                     .await
             }
             "search_channels" => {
-                let found = crate::search::channels(&s("platform"), &s("query")).await;
-                let list: Vec<Value> = found
-                    .iter()
-                    .map(|f| json!({"handle": f.handle, "name": f.name, "detail": f.detail, "live": f.live}))
-                    .collect();
-                Ok(json!({"channels": list}))
+                self.ask(json!({"request": "StreamerzSearchChannels", "platform": s("platform"), "query": s("query")})).await
             }
             "list_actions" => self.ask(json!({"request": "GetActions"})).await,
             "run_action" => {

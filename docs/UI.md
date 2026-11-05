@@ -85,6 +85,15 @@ Active chat restrictions appear above the composer. Name the platform when more 
 and include the slow mode interval when it is known. Hide the indicator when the mode is off or its chat
 is disconnected.
 
+## Browser accounts
+
+When an integration uses a browser extension as its account, show one Browser account row with the
+shared Health state and Set up action. Do not also show independent account or bot logins. Distinguish
+extension unavailable, page loading, login required and account ready. Disable sending while the account
+is unavailable. Setup explains installation and offers Log in for the one explicit sign-in window;
+ordinary requests must not open helper tabs or windows. A channel picker shows search failures plainly
+and still accepts a pasted handle or link.
+
 ## Check before finishing
 
 - Reuse the shared helpers before adding a new control or pattern. If a reusable helper is missing, extend

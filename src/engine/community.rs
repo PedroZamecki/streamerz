@@ -506,10 +506,13 @@ impl Engine {
                 c.youtube.channel_id.trim(),
                 c.youtube.broadcaster.as_ref().map(|b| b.channel_id.as_str()),
             ),
-            "tiktok" => (
-                c.tiktok.channel.trim().trim_start_matches('@'),
-                c.tiktok.broadcaster.as_ref().map(|b| b.username.as_str()),
-            ),
+            "tiktok" => {
+                return if c.tiktok.channel.trim().is_empty() {
+                    self.tiktok_bridge.user().to_lowercase()
+                } else {
+                    c.tiktok.channel.trim().trim_start_matches('@').to_lowercase()
+                }
+            }
             _ => return String::new(),
         };
         if set.is_empty() {

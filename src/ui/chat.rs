@@ -724,11 +724,6 @@ fn my_names(c: &crate::Config) -> Vec<String> {
         c.youtube.bot.as_ref().map(|a| (a.name.clone(), String::new())),
         c.kick.broadcaster.as_ref().map(|a| (a.username.clone(), String::new())),
         c.kick.bot.as_ref().map(|a| (a.username.clone(), String::new())),
-        c.tiktok
-            .broadcaster
-            .as_ref()
-            .map(|a| (a.username.clone(), String::new())),
-        c.tiktok.bot.as_ref().map(|a| (a.username.clone(), String::new())),
     ]
     .into_iter()
     .flatten()
@@ -2226,13 +2221,8 @@ fn effective_sender_role(
         if !crate::engine::can_send(&cfg.borrow(), "tiktok") {
             return (false, None, None);
         }
-        let user = query(cmds, |e| e.tiktok_bridge.user()).unwrap_or_default();
-        let name = if user.is_empty() {
-            tr("chat.tiktok_browser").to_string()
-        } else {
-            user
-        };
-        return (false, Some(name), None);
+        let (ready, user) = query(cmds, |e| (e.tiktok_bridge.ready(), e.tiktok_bridge.user())).unwrap_or_default();
+        return (false, (ready && !user.is_empty()).then_some(user), None);
     }
     let want_broadcaster = cfg
         .borrow()
@@ -2930,7 +2920,31 @@ impl ChatColumn {
         };
         let plat = PLATFORMS[p_idx];
         let connected = query(cmds, move |e| e.chat_connected(plat)).unwrap_or(false);
-        let can_send_plat = crate::engine::can_send(&cfg.borrow(), plat) && connected;
+        let (browser_ready, browser_connected, browser_user, browser_error) = if plat == "tiktok" {
+            query(cmds, |e| {
+                (
+                    e.tiktok_bridge.ready(),
+                    e.tiktok_bridge.is_connected(),
+                    e.tiktok_bridge.user(),
+                    e.tiktok_bridge.error(),
+                )
+            })
+            .unwrap_or_default()
+        } else {
+            (true, true, String::new(), String::new())
+        };
+        let browser_hint = if !browser_error.is_empty() {
+            browser_error
+        } else if !browser_connected {
+            tr("accounts.tiktok_sending.waiting").to_string()
+        } else if !browser_ready {
+            tr("accounts.tiktok_sending.loading").to_string()
+        } else if browser_user.is_empty() {
+            tr("accounts.tiktok_sending.login_needed").to_string()
+        } else {
+            String::new()
+        };
+        let can_send_plat = crate::engine::can_send(&cfg.borrow(), plat) && connected && browser_ready;
         let mut bar = self.bar.clone();
         let mut space = self.down_bar.clone();
         let mut read_only = self.read_only.clone();
@@ -2959,6 +2973,8 @@ impl ChatColumn {
         col.layout();
         let tip = if show_read_only {
             tr("chat.tiktok_read_only_tip").to_string()
+        } else if plat == "tiktok" && !browser_hint.is_empty() {
+            browser_hint.clone()
         } else if plat == "tiktok" {
             let name = sender_name.clone().unwrap_or_default();
             trf("chat.tiktok_sending_as_tip", &[("name", &name.replace('@', "@@"))])
@@ -2989,6 +3005,8 @@ impl ChatColumn {
         let mut inp = self.input.clone();
         let placeholder_tip = if show_read_only {
             tr("chat.tiktok_read_only").to_string()
+        } else if plat == "tiktok" && !browser_hint.is_empty() {
+            browser_hint.clone()
         } else if plat == "tiktok" {
             let name = sender_name.clone().unwrap_or_default();
             trf("chat.tiktok_sending_as_tip", &[("name", &name.replace('@', "@@"))])
@@ -3057,7 +3075,10 @@ impl Chat {
                 p.pane.apply_limits();
             }
         }
-        let me = my_names(&self.cfg.borrow());
+        let mut me = my_names(&self.cfg.borrow());
+        if let Some(user) = query(&self.cmds, |e| e.tiktok_bridge.user()).filter(|u| !u.is_empty()) {
+            me.push(user.to_lowercase());
+        }
         if ME.with_borrow(|m| *m != me) {
             ME.set(me);
             self.main.pane.remeasure();
@@ -3893,7 +3914,8 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
     })
     .unwrap_or_default();
     // Only where an account is logged in: a chat read without one can't be sent to.
-    let set_up = PLATFORMS.map(|p| crate::engine::can_send(&cfg.borrow(), p));
+    let mut set_up = PLATFORMS.map(|p| crate::engine::can_send(&cfg.borrow(), p));
+    set_up[3] &= query(cmds, |e| e.tiktok_bridge.ready() && !e.tiktok_bridge.user().is_empty()).unwrap_or(false);
     let conn_states: [bool; 4] = std::array::from_fn(|i| conn_states[i] && set_up[i]);
 
     let mut win = DoubleWindow::default()

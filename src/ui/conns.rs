@@ -72,7 +72,7 @@ fn list(cfg: &Cfg, cmds: &Cmds) -> Vec<Conn> {
             c.twitch.broadcaster.is_some(),
             c.youtube.broadcaster.is_some() || !c.youtube.channel_id.is_empty(),
             c.kick.broadcaster.is_some() || !c.kick.channel.is_empty(),
-            c.tiktok.broadcaster.is_some() || !c.tiktok.channel.is_empty(),
+            crate::tiktok_bridge::set_up(&c) || !c.tiktok.channel.is_empty(),
         ]
     };
     let (o, s) = (obs.clone(), slobs.clone());

@@ -36,7 +36,7 @@ phase, following `CLAUDE.md`.
 | OS | Windows + Linux (Wayland, ksni tray). CI releases a Windows exe and the Linux AppImage on every release. |
 | Budget | Hidden window, Twitch + OBS connected: < 25 MB RSS and ~0% idle CPU, measured and written in every PR. Streamer.bot uses ~300 MB. |
 | Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, fltk, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only). No webview (wry/tao were removed in 1.1.0: TikTok uses the user's own browser). **image-webp** (WebP emotes and avatars; FLTK decodes the other formats itself). HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. **tokio-native-tls** (the crate tokio-tungstenite's native-tls feature uses, for HTTPS), **regex-lite** (If/Else, While, Switch and regex commands; .NET's backreferences and lookaround aren't supported). Anything else needs a question first. |
-| TikTok | Read LIVE chat and events natively through `webcast.rs`, without a bridge. Sending goes through the user's own browser (`tiktok_bridge.rs`): the Streamerz for TikTok extension keeps one light TikTok tab open while Streamerz runs and makes requests in it, so TikTok's own scripts sign them (msToken, X-Bogus, X-Gnarly, X-Dynosaur, ticket guard, csrf); Streamerz reimplements none of that signing. Messages go out as the browser's TikTok account. An optional login can help with restricted rooms; it uses an installed Chromium-based browser in a separate profile. |
+| TikTok | Public LIVE reading is native through `webcast.rs`. The optional extension is the single account for signed search, authenticated reading and sending (`tiktok_bridge.rs`). It uses TikTok's own scripts in an offscreen browser frame, with no visible helper tab, and recovers discarded contexts on demand. Chromium background mode permits use with all browser windows closed. Separate broadcaster and bot logins are retired; reader cookies are requested from the browser only when connecting and remain in memory. |
 | Chat commands | Commands keep Streamer.bot's `sources` bitmask (Twitch 1/2/8, YouTube 1024, Kick 2097152, TikTok 4194304), so each command chooses its platforms. Built-in commands (`!commands`, `!command add/edit/remove`, `!command platforms`, `!so`, `!uptime`, `!title`) are normal commands created on first run, editable and disable-able. Replies go to the platform the command came from; a command can opt in to reply on all connected platforms. |
 | Not in scope | Meld, PolyPop, Elgato, VTube Studio/Voicemod/Speaker.bot/TITS/Crowd Control/HypeRate/Pulsoid/Lumia/Streamfog/mtion, the Streamer.bot website integration/cloud, C# and plugins. |
 | Later (own phases, after phase 14) | Quotes, credits, points, users/first words; sounds and TTS; file I/O, file tail, folder watcher, process triggers; hotkeys/inputs, MIDI, voice control; Decks, HTML overlay, multi-platform chat window. |
@@ -341,8 +341,8 @@ platform handles through channels, never through shared locks held across awaits
 - [x] Hover details: pointing at an emote or a badge in any chat shows its picture big, its name, where it
   comes from (the source's icon: 7TV, BTTV, FFZ, the platform) and its id (`ui/tip.rs`).
 - [x] Pinned messages over the chat, with who pinned them and the time left (Twitch, Kick, YouTube).
-- [x] TikTok without a webview: login and sending through the user's own Chromium-based browser over its
-  DevTools port (`cdp.rs`); wry, tao, WebKitGTK and the helper binary are gone (390 crates down to 199).
+- [x] TikTok without a webview: the user's Chromium browser supplies the account through the extension.
+  The older DevTools login driver is retired; wry, tao, WebKitGTK and the helper binary remain removed.
 - [x] Accounts: the channel to read is on the page, for every platform; Twitch reads someone else's
   channel too, as a moderator (the subscriptions a moderator can't have are left out).
 - [x] Accounts, simpler: a platform connects at start by itself once set up (Advanced turns that off);
@@ -546,13 +546,15 @@ platform handles through channels, never through shared locks held across awaits
 - [x] Active emote-only and slow modes above the composer, with the platform named in combined chat.
 - [x] TikTok sending through the user's own browser. The Streamerz for TikTok extension
   (`assets/tiktok-extension`, loaded unpacked from the folder Streamerz writes next to `streamerz.json`)
-  connects to the WebSocket server on `/streamerz/tiktok`: only its fixed extension ID, only with the token
-  Streamerz wrote, and the path doesn't exist until sending is set up. It keeps one pinned, muted TikTok tab
-  (`/live/history/center`) with pictures, video, fonts, telemetry and feed refreshes blocked (96 to 106 MiB PSS
-  for the TikTok tab, 0.33 to 0.57% of one CPU core in local idle samples, with browser and extension
-  overhead separate), closed when Streamerz closes, and runs requests inside it. Chat,
-  `SendMessage` and the TikTok Send Message sub-action (43001) send as the browser's account, and the reader
-  confirms each message. Accounts > TikTok > Sending sets it up and removes it; MCP tool `tiktok_bridge`.
+  connects to the WebSocket server on `/streamerz/tiktok`: only its fixed extension ID and the pairing
+  token are accepted. The route does not exist before setup. Chat, SendMessage and sub-action 43001 use
+  the browser account. MCP tool `tiktok_bridge` manages setup and login.
+- [x] TikTok convenience: replace separate logins with the extension's account, preserve the chosen
+  channel during migration, and use browser session cookies only in memory for authenticated reading.
+  Search channels through the extension from the picker and MCP `search_channels`. Use an offscreen
+  frame instead of a pinned tab, recover discarded contexts, distinguish loading, ready and login states,
+  and never automatically retry a send with an ambiguous outcome. Keep public reading independent.
+
 
 ## Open points (decide when the phase starts, ask first)
 

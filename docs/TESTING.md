@@ -197,3 +197,28 @@ A scenario is JSON (see the top of `src/scenario.rs` for every key). What it can
 
 Every sub-action the engine runs is in a scenario; the others are checked to be skipped. Every trigger is
 in a scenario, a named unit test, or `tests/excluded.json` with why.
+
+### TikTok convenience follow-up
+
+The separate TikTok login and DevTools browser driver were removed. The browser extension supplies the
+account, transient reader cookies, signed channel search and sending. Its own offscreen frame replaces
+the visible helper tab. `node --test dev/tiktok-extension.test.mjs` checks context sharing, read recovery,
+cleanup, session-cookie filtering, login redirects, logged-out resource use and no automatic send retry.
+The lint workflow runs these checks alongside the Rust suite. The WebSocket integration test covers
+pairing, signed search routing, readiness, session invalidation and disconnection.
+
+Live Linux checks: signed search returned real users through Streamerz, and the offscreen frame's chat
+request posted `:)` with HTTP 200 and TikTok status code 0. There were zero visible TikTok tabs. Search
+recovered after deliberately discarding the offscreen document. Closing all lab browser windows left
+its extension running in the background. The lab session subsequently became unavailable; the new checks report a
+required login and avoid loading a full page while logged out. The accepted send was not independently
+confirmed through retained chat, which was off in that scratch configuration. Windows runtime checks
+and authenticated background memory profiling remain pending.
+
+Final disconnected optimized development sample: 29,564 KiB RSS, unchanged over 30 seconds, with zero
+CPU ticks (100 Hz). This does not establish the authenticated browser cost or the Twitch + OBS budget.
+
+Final verification: 420 Rust tests passed, 10 ignored; eight extension lifecycle tests passed. Formatting,
+clippy, locale validation, documentation tests, narrow and wide Accounts screenshots, populated channel
+search, setup cancellation and the full UI smoke passed. Screenshot and live-test artifacts remain
+outside the repository.

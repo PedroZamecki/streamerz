@@ -289,6 +289,11 @@ def main():
         time.sleep(0.5)
         if "Waiting for the browser extension" not in find("Waiting for the browser"):
             failures.append("Accounts doesn't show TikTok sending waiting for the extension")
+        if "Browser account" not in find("Browser account"):
+            failures.append("TikTok doesn't show its single browser account")
+        search = ws.ask({"request": "StreamerzSearchChannels", "id": "ts", "platform": "tiktok", "query": "creator"})
+        if search.get("status") != "error" or "isn't connected" not in search.get("error", ""):
+            failures.append(f"TikTok search without an extension didn't explain the missing connection ({search})")
         ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/tiktok_sending.png"})
         if "set up sending" in tiktok_chat():
             failures.append("TikTok's chat stays read-only once sending is set up")
