@@ -851,6 +851,21 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
                 ok(&id, json!({}))
             }
         }
+        "SimulateChatModes" if e.dev() => {
+            let platform = get("platform");
+            if !["twitch", "kick"].contains(&platform) {
+                error(&id, "Unknown platform")
+            } else {
+                e.set_chat_modes(
+                    platform,
+                    Some(crate::engine::ChatModes {
+                        emote_only: req.get("emote_only").and_then(Value::as_bool).unwrap_or(false),
+                        slow_seconds: req.get("slow_seconds").and_then(Value::as_u64),
+                    }),
+                );
+                ok(&id, json!({}))
+            }
+        }
         "SimulateChatViewers" if e.dev() => {
             let platform = get("platform");
             if !crate::engine::chatlog::PLATFORMS.contains(&platform) {

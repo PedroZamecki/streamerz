@@ -295,7 +295,8 @@ platform handles through channels, never through shared locks held across awaits
   chat in the log, and follows connections as they come and go; the emote picker fills its grid after it's
   shown (it was one emote a row on first open).
 - [x] 35. Real badges: Twitch's own badge pictures (sharp) instead of drawn role badges, the ones the
-  chatter wears, with spacing; chat settings: timestamps on/off, badges on/off.
+  chatter wears, with spacing; chat settings: timestamps on/off, badges on/off. Active emote-only and slow modes
+  appear above the composer, with the platform named in combined chat.
 - [x] 36. Message actions on hover (Twitch-like): reply, copy, pin (Twitch), delete (Twitch, Kick), timeout and
   ban (Twitch, Kick, YouTube); lines deleted or banned anywhere leave the chat.
 - [x] 37. Emote picker like 7TV's: per-platform and per-account provider tabs (Favorites, platform native

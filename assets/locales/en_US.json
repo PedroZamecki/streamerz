@@ -281,6 +281,8 @@
   "slash.timeout": "Time a user out (10 minutes unless you say)",
   "slash.ban": "Ban a user from the channel",
   "slash.unban": "Lift a ban or a timeout",
+  "chat.emote_only": "Emote-only mode",
+  "chat.slow_mode_seconds": "Slow mode ({seconds}s)",
   "slash.slow": "Slow mode: how often each person may chat",
   "slash.slowoff": "Turn slow mode off",
   "slash.followers": "Followers-only chat, for those who followed this long",

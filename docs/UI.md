@@ -81,6 +81,10 @@ and leaves an available chat usable. For a disconnected chat, hide its messages 
 with a compact disconnected state and reconnect and hide actions; keep its history in memory. In a combined chat, keep other chats
 usable and identify disconnected platforms in the notice.
 
+Active chat restrictions appear above the composer. Name the platform when more than one chat is shown,
+and include the slow mode interval when it is known. Hide the indicator when the mode is off or its chat
+is disconnected.
+
 ## Check before finishing
 
 - Reuse the shared helpers before adding a new control or pattern. If a reusable helper is missing, extend

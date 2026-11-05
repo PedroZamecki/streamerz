@@ -120,8 +120,16 @@ struct State {
     dev_out: Option<Vec<Value>>,
     /// Every platform's chat, for the chat window.
     chat_log: chatlog::Log,
+    chat_modes: [Option<ChatModes>; 2],
     kick_chatters: Option<chatters::Chatters>,
     kick_chatters_failed: bool,
+}
+
+/// Known chat restrictions. Unknown settings are not presented as disabled.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChatModes {
+    pub emote_only: bool,
+    pub slow_seconds: Option<u64>,
 }
 
 pub struct Engine {
@@ -163,6 +171,25 @@ pub struct Engine {
     streaming_since: std::cell::Cell<Option<std::time::Instant>>,
     /// The plugins that are on.
     plugins: RefCell<Vec<plugins::Loaded>>,
+}
+
+impl Engine {
+    pub fn set_chat_modes(&self, platform: &str, modes: Option<ChatModes>) {
+        let index = match platform {
+            "twitch" => 0,
+            "kick" => 1,
+            _ => return,
+        };
+        let mut state = self.st.borrow_mut();
+        if state.chat_modes[index] != modes {
+            state.chat_modes[index] = modes;
+            crate::ui::changed();
+        }
+    }
+
+    pub fn chat_modes(&self) -> [Option<ChatModes>; 2] {
+        self.st.borrow().chat_modes
+    }
 }
 
 /// A running action's context.

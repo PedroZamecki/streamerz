@@ -1573,6 +1573,7 @@ async fn run_eventsub_loop(
                 let refused = auth_refused.clone();
                 let (bans, cfg_c, channel) = (bans_task.clone(), cfg.clone(), broadcaster.clone());
                 // The welcome waits only for the history: the ~40 subscriptions take seconds.
+                engine.set_chat_modes("twitch", None);
                 let setup = tokio::task::spawn_local(async move {
                     let hist_fut = async {
                         if custom_eventsub || login.is_empty() {
@@ -3590,6 +3591,7 @@ pub(crate) fn handle_notification(
             engine.emit("Twitch", "ChatCleared", || json!(args));
         }
         "channel.chat_settings.update" => {
+            engine.set_chat_modes("twitch", twitch_chat_modes(event));
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
             let f = |k: &str| event[k].as_bool().unwrap_or(false);
@@ -4697,6 +4699,19 @@ fn publish_rewards() {
 }
 
 /// Remember what later events compare against (chat settings, title and game, the custom rewards).
+fn twitch_chat_modes(settings: &Value) -> Option<crate::engine::ChatModes> {
+    Some(crate::engine::ChatModes {
+        emote_only: settings["emote_mode"].as_bool()?,
+        slow_seconds: if settings["slow_mode"].as_bool()? {
+            settings["slow_mode_wait_time_seconds"]
+                .as_u64()
+                .or_else(|| settings["slow_mode_wait_time"].as_u64())
+        } else {
+            None
+        },
+    })
+}
+
 async fn seed(engine: &Rc<Engine>) {
     let Some(tw) = engine.twitch() else { return };
     let b = vec![("broadcaster_id", "{broadcaster_id}")];
@@ -4704,6 +4719,11 @@ async fn seed(engine: &Rc<Engine>) {
     // The badge pictures first and without a login's help; Helix's below adds what it knows.
     load_public_badges(&chan).await;
     let settings = tw.helix("GET", "chat/settings", b.clone(), None, false, false).await;
+    if let Ok(v) = &settings {
+        if engine.chat_modes()[0].is_none() {
+            engine.set_chat_modes("twitch", twitch_chat_modes(&v["data"][0]));
+        }
+    }
     let channel = tw.helix("GET", "channels", b.clone(), None, false, false).await;
     let rewards = tw
         .helix("GET", "channel_points/custom_rewards", b.clone(), None, false, false)
@@ -4859,6 +4879,28 @@ async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn chat_modes_read_helix_and_eventsub_settings() {
+        use super::*;
+        let initial = json!({"emote_mode": true, "slow_mode": true, "slow_mode_wait_time": 30});
+        let update = json!({"emote_mode": false, "slow_mode": true, "slow_mode_wait_time_seconds": 10});
+        assert_eq!(
+            twitch_chat_modes(&initial),
+            Some(crate::engine::ChatModes {
+                emote_only: true,
+                slow_seconds: Some(30)
+            })
+        );
+        assert_eq!(
+            twitch_chat_modes(&update),
+            Some(crate::engine::ChatModes {
+                emote_only: false,
+                slow_seconds: Some(10)
+            })
+        );
+        assert_eq!(twitch_chat_modes(&json!({})), None);
+    }
+
     #[test]
     fn an_ad_break_tells_the_overlays() {
         let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());

@@ -123,6 +123,24 @@ def main():
         # Rewards, power-ups and gifts are lines of the chat (each takes a line), and a message sent with a
         # reward has it over it.
         ws.ask({"request": "StreamerzUi", "id": "p", "do": "page Chat"})
+        for platform in ("twitch", "kick"):
+            ws.ask({"request": "SimulateChatModes", "id": "mode-" + platform, "platform": platform,
+                    "emote_only": True, "slow_seconds": 30})
+        time.sleep(1)
+        for platform in ("Twitch", "Kick"):
+            if platform not in ws.ask({"request": "StreamerzUi", "id": "modes", "do": "find " + platform + ": Emote-only mode"})["result"]:
+                failures.append(f"{platform} chat modes are missing")
+        ws.ask({"request": "StreamerzUi", "id": "modes-wide", "do": f"shot {OUT}/modes-wide.png"})
+        if not WINE:
+            window = subprocess.check_output(["xdotool", "search", "--pid", str(app.pid), "--onlyvisible", "--name", "Streamerz"], env=env).decode().splitlines()[0]
+            xdo("windowsize", window, "540", "700")
+            time.sleep(1)
+            ws.ask({"request": "StreamerzUi", "id": "modes-narrow", "do": f"shot {OUT}/modes-narrow.png"})
+            xdo("windowsize", window, "1100", "700")
+        ws.ask({"request": "SimulateChatModes", "id": "mode-off", "platform": "kick"})
+        time.sleep(1)
+        if "Kick: Emote-only mode" in ws.ask({"request": "StreamerzUi", "id": "modes-off", "do": "find Kick: Emote-only mode"})["result"]:
+            failures.append("Kick chat mode indicator did not clear")
         # Stream end leaves connected chat visible; a disconnect hides only that platform's messages,
         # and reconnecting restores them from the retained history.
         time.sleep(1)

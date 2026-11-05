@@ -2261,6 +2261,7 @@ struct ChatColumn {
     bar: Flex,
     down_bar: Flex,
     read_only: Frame,
+    modes: Frame,
     set_reply: SetReply,
     /// What is wrong with the chat (the stream ended, not connected), with what to do about it.
     notice: Flex,
@@ -2278,6 +2279,34 @@ struct ChatColumn {
 }
 
 impl ChatColumn {
+    fn show_modes(&self, text: &str) {
+        let mut frame = self.modes.clone();
+        let changed = frame.label() != text;
+        if changed {
+            frame.set_label(text);
+        }
+        let height = if text.is_empty() {
+            0
+        } else {
+            draw::set_font(frame.label_font(), frame.label_size());
+            let width = frame.w().max(1);
+            let (_, h) = draw::measure(text, true);
+            // Allow space for wrapped text even before the first layout.
+            let lines = (draw::width(text) / f64::from(width)).ceil() as i32;
+            h.max(lines * 16).max(20)
+        };
+        if changed || frame.h() != height {
+            let mut col = self.col.clone();
+            if height == 0 {
+                frame.hide();
+            } else {
+                frame.show();
+            }
+            col.fixed(&frame, height);
+            col.layout();
+        }
+    }
+
     fn show_viewers(&self, count: Option<u64>, state: ChatState, ended: bool) {
         let mut frame = self.viewers.clone();
         let show = !ended && (state == ChatState::Down || (state == ChatState::Connected && count.is_some()));
@@ -2425,6 +2454,12 @@ impl ChatColumn {
         notice.end();
         col.fixed(&notice, 0);
         notice.hide();
+
+        let mut modes = Frame::default().with_align(Align::Left | Align::Inside | Align::Wrap);
+        modes.set_label_size(12);
+        modes.set_label_color(super::muted());
+        col.fixed(&modes, 0);
+        modes.hide();
 
         let mut bar = Flex::default().row();
         bar.set_pad(4);
@@ -2574,6 +2609,7 @@ impl ChatColumn {
             bar: bar.clone(),
             down_bar: down_row,
             read_only,
+            modes,
             set_reply: set_reply.clone(),
             notice: notice.clone(),
             notice_icon: notice_icon.clone(),
@@ -3178,8 +3214,55 @@ impl Chat {
         }
     }
 
+    fn refresh_modes(&self) {
+        let (modes, connected) = query(&self.cmds, |e| (e.chat_modes(), PLATFORMS.map(|p| e.chat_connected(p))))
+            .unwrap_or(([None; 2], [false; 4]));
+        let hidden = self.cfg.borrow().window.chat_hidden.clone();
+        let label = |platform: &str| -> String {
+            let Some(i) = ["twitch", "kick"].iter().position(|p| *p == platform) else {
+                return String::new();
+            };
+            let Some(m) = modes[i] else { return String::new() };
+            let Some(p) = PLATFORMS.iter().position(|p| *p == platform) else {
+                return String::new();
+            };
+            if !connected[p] || hidden.contains(&platform.to_string()) {
+                return String::new();
+            }
+            let mut labels = Vec::new();
+            if m.emote_only {
+                labels.push(tr("chat.emote_only").to_string());
+            }
+            if let Some(seconds) = m.slow_seconds {
+                labels.push(trf("chat.slow_mode_seconds", &[("seconds", &seconds.to_string())]));
+            }
+            if labels.is_empty() {
+                String::new()
+            } else {
+                format!("{}: {}", NAMES[p], labels.join(", "))
+            }
+        };
+        if self.view.value() == 1 {
+            for (i, col) in self.side.iter().enumerate() {
+                col.show_modes(&label(PLATFORMS[i]));
+            }
+        } else if let Some(platform) = self.shown() {
+            self.main.show_modes(&label(platform));
+        } else {
+            let labels: Vec<_> = self
+                .plats
+                .borrow()
+                .iter()
+                .map(|i| label(PLATFORMS[*i]))
+                .filter(|s| !s.is_empty())
+                .collect();
+            self.main.show_modes(&labels.join("  "));
+        }
+    }
+
     fn refresh_senders(&self) {
         self.refresh_notices();
+        self.refresh_modes();
         let (counts, states, ended) = query(&self.cmds, |e| {
             (
                 e.chat_viewers(),
