@@ -443,6 +443,12 @@ def main():
             time.sleep(0.4)
             xdo("key", "Escape")
             check(f"page {page}")
+        # Animations can be turned off; a connection list connects its selection alone.
+        for page, label in (("Settings", "Animations"), ("Stream Apps", "Connect")):
+            ws.ask({"request": "StreamerzUi", "id": "p", "do": f"page {page}"})
+            found = ws.ask({"request": "StreamerzUi", "id": "f", "do": f"find {label}"}).get("result", "")
+            if f'"{label}"' not in found:
+                failures.append(f"{page}: {label} is missing ({found})")
         # Narrow toolbars keep their controls inside the window, including unavailable actions.
         if not WINE:
             xdo("windowsize", window, "540", "700")

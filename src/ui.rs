@@ -4,6 +4,7 @@
 mod accounts;
 mod actions;
 mod agents;
+mod anim;
 mod card;
 pub(crate) mod chat;
 pub(crate) mod clipboard;
@@ -1151,6 +1152,7 @@ pub fn run(
     win.set_xclass("streamerz");
     // Dialogs open inside it (over it, blurred), never as windows of their own.
     dialogs::set_host(&win);
+    anim::set(cfg.borrow().animations);
     if let Ok(icon) = RgbImage::new(brand::app(c_dark), brand::SIZE, brand::SIZE, ColorDepth::Rgba8) {
         win.set_icon(Some(icon));
     }

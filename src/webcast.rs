@@ -467,10 +467,32 @@ async fn probe_embed(user: &str) -> (EmbedProbe, Option<String>, Option<String>)
     }
 }
 
-/// A TikTok user's profile picture and display name, from the same embed page.
+/// A TikTok user's profile picture and display name, from the same embed page, or from their live
+/// room's page when the embed page answers with a bot check.
 pub async fn profile(user: &str) -> (Option<String>, Option<String>) {
     let p = probe_embed(user).await;
-    (p.1, p.2)
+    if p.1.is_some() {
+        return (p.1, p.2);
+    }
+    match fetch_user_room_raw(user, "").await {
+        Ok(v) => {
+            let (pic, name) = room_profile(&v);
+            (pic, name.or(p.2))
+        }
+        Err(_) => (p.1, p.2),
+    }
+}
+
+/// The picture and name in a live room's page (`api-live/user/room`), which has them live or not.
+fn room_profile(v: &Value) -> (Option<String>, Option<String>) {
+    let user = &v["data"]["user"];
+    let text = |k: &str| user[k].as_str().filter(|t| !t.trim().is_empty()).map(str::to_string);
+    (
+        ["avatarThumb", "avatarMedium", "avatarLarger"]
+            .iter()
+            .find_map(|k| text(k).filter(|u| u.starts_with("https://"))),
+        text("nickname"),
+    )
 }
 
 /// Structured reason why a TikTok channel currently has no active live room.
@@ -569,6 +591,23 @@ pub fn ws_url(room: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rooms_page_gives_the_picture_and_name_live_or_not() {
+        let v = serde_json::json!({"data": {"user": {"avatarThumb": "https://p19.tiktokcdn.com/a.webp?x-expires=1",
+            "avatarLarger": "https://p16.tiktokcdn.com/big.webp", "nickname": "Naná", "uniqueId": "umananaai"}}});
+        assert_eq!(
+            super::room_profile(&v),
+            (
+                Some("https://p19.tiktokcdn.com/a.webp?x-expires=1".into()),
+                Some("Naná".into())
+            )
+        );
+        assert_eq!(
+            super::room_profile(&serde_json::json!({"statusCode": 19881007})),
+            (None, None)
+        );
+    }
 
     #[test]
     fn json_string_decodes_escapes() {

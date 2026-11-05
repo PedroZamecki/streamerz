@@ -19,6 +19,8 @@ use std::rc::Rc;
 /// What a field is, and so how it's edited.
 pub enum W {
     Text,
+    /// A password or a token: hidden until its eye is clicked.
+    Secret,
     /// Suggested values, with expressions still accepted.
     Expression(&'static [&'static str]),
     /// Several lines.
@@ -72,6 +74,7 @@ impl W {
     pub fn about(&self) -> String {
         match self {
             Text => "text".into(),
+            Secret => "text (a password or token)".into(),
             Expression(values) => format!("text or expression (suggested: {values:?})"),
             Multi => "text (several lines)".into(),
             Bool => "true/false".into(),
@@ -1562,6 +1565,7 @@ pub fn form_validated(
                 }
                 Widget::Text(i)
             }
+            Secret => Widget::Text(super::fields::secret(&mut r, &text(v))),
             Expression(values) => {
                 let mut c = InputChoice::default();
                 super::menu::input_choice(&mut c);

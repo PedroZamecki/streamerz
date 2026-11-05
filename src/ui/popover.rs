@@ -21,6 +21,8 @@ pub struct Popover {
     catcher: Frame,
     /// Set by a click outside, Escape, or `close_now`.
     pub done: Rc<Cell<bool>>,
+    /// Its full height, while it waits to unroll to it (it opens shorter when animations are on).
+    full: Cell<Option<i32>>,
 }
 
 /// The corner radius of everything that floats (popovers, menus).
@@ -101,6 +103,7 @@ impl Popover {
             pop,
             catcher,
             done,
+            full: Cell::new(None),
         }
     }
 
@@ -114,17 +117,44 @@ impl Popover {
         (self.pop.w(), self.pop.h())
     }
 
-    /// The widgets are all in.
+    /// The widgets are all in: it opens (shorter, when animations are on: `run` unrolls it, once what
+    /// takes the keyboard has it, so keys pressed meanwhile go there).
     pub fn finish(&mut self) {
         self.pop.end();
         self.host.end();
+        if super::anim::on() {
+            // Its widgets stay where they are while it grows: it uncovers them.
+            let (x, y, w, h) = (self.pop.x(), self.pop.y(), self.pop.w(), self.pop.h());
+            self.full.set(Some(h));
+            self.pop.make_resizable(false);
+            self.pop.resize(x, y, w, h * 3 / 5);
+        }
         // A window made after its parent was shown has to be shown itself.
         self.pop.show();
         self.host.redraw();
     }
 
+    /// Unrolls it down to its full height (`run` does it; a popover waiting in a loop of its own calls it
+    /// once its keyboard focus is set).
+    pub fn unroll(&self) {
+        let Some(h) = self.full.take() else { return };
+        let mut pop = self.pop.clone();
+        let (x, y, w) = (pop.x(), pop.y(), pop.w());
+        super::anim::play(super::anim::POP, |p| {
+            if !pop.was_deleted() {
+                pop.resize(x, y, w, super::anim::mix(h * 3 / 5, h, p));
+                pop.redraw();
+            }
+        });
+        if !pop.was_deleted() {
+            pop.make_resizable(true);
+            pop.init_sizes();
+        }
+    }
+
     /// Waits until it's closed, calling `tick` a few times a second (and on every event).
     pub fn run(&self, mut tick: impl FnMut()) {
+        self.unroll();
         while !self.done.get() {
             super::nested_wait(Some(0.2));
             tick();

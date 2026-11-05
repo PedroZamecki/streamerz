@@ -3,7 +3,8 @@
 
 use super::fit::Ellipsis;
 use super::forms::{self, Done, Lists, F, W::*};
-use super::rows::Rows;
+use super::rows::Cell::{Badge, Lead, Link, Logos, Note, State, Switch};
+use super::rows::{Cell as Look, Rows};
 use super::{button, dialogs, query, tell, Health, ROW};
 use crate::engine::{Engine, Record, DEFAULT_QUEUE};
 use crate::i18n::{tr, trf};
@@ -161,10 +162,113 @@ pub struct Kind {
     columns: &'static [i32],
     /// The columns' titles, and what an empty list says.
     titles: &'static [&'static str],
+    /// How each column draws (text when None).
+    cells: &'static [Option<Look>],
+    /// Connections: each one's state (`LIVE` in its column), from the engine.
+    live: Option<Live>,
     empty: &'static str,
     label: fn(&Obj) -> Vec<String>,
     /// What the engine does after a change (restart the timers...).
     after: Option<fn(&Rc<Engine>)>,
+}
+
+/// What a connection list asks the engine about each connection.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Live {
+    Obs,
+    Slobs,
+}
+
+/// A connection's state goes in this cell (the engine is asked when the list is filled).
+const LIVE: &str = "\u{1}live";
+
+/// A switch's cell: whether `key` is on.
+fn switch(o: &Obj, key: &str) -> String {
+    if on(o, key) { "1" } else { "0" }.into()
+}
+
+/// A detail's cell: a Lucide icon and its words.
+fn note(icon: &str, words: impl AsRef<str>) -> String {
+    format!("{icon}|{}", words.as_ref())
+}
+
+/// A state's cell: its health's icon and colour, and its words.
+fn state(health: Health, words: &str) -> String {
+    let (r, g, b) = health.color().to_rgb();
+    format!("{}|{r:02x}{g:02x}{b:02x}|{words}", health.icon())
+}
+
+/// Whether a file or folder a list points at is there.
+fn found(path: &str) -> String {
+    if path.trim().is_empty() {
+        state(Health::Off, tr("lists.not_set"))
+    } else if std::path::Path::new(path.trim()).exists() {
+        state(Health::Up, tr("lists.found"))
+    } else {
+        state(Health::Down, tr("lists.missing"))
+    }
+}
+
+/// How a connection reconnects (`key` on: every retry interval).
+fn retry(o: &Obj, key: &str) -> String {
+    if on(o, key) {
+        let every = o.get("retryInterval").and_then(Value::as_u64).unwrap_or(5);
+        note(
+            "refresh-cw",
+            trf("lists.retry_every", &[("seconds", &every.to_string())]),
+        )
+    } else {
+        note("circle-off", tr("lists.no_retry"))
+    }
+}
+
+/// Whether a password or token is set.
+fn locked(set: bool) -> String {
+    if set {
+        note("lock", tr("lists.secret_set"))
+    } else {
+        note("lock-open", tr("lists.secret_none"))
+    }
+}
+
+/// Who may use a command: everyone, the groups it allows, or all but those it denies.
+fn who(o: &Obj) -> String {
+    let groups: Vec<String> = o
+        .get("permittedGroups")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect();
+    let users = o.get("permittedUsers").and_then(Value::as_array).map_or(0, Vec::len);
+    let deny = o.get("grantType").and_then(Value::as_u64) == Some(1);
+    let mut named = groups.join(", ");
+    if users > 0 {
+        let people = trf("lists.commands.people", &[("count", &users.to_string())]);
+        named = if named.is_empty() {
+            people
+        } else {
+            format!("{named}, {people}")
+        };
+    }
+    match (named.is_empty(), deny) {
+        (true, _) => note("users", tr("lists.commands.everyone")),
+        (false, false) => note("shield", named),
+        (false, true) => note("shield-off", trf("lists.commands.all_but", &[("who", &named)])),
+    }
+}
+
+/// The platforms a command listens on (`twitch,youtube`), from its sources.
+fn source_platforms(bits: u64) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for (name, bit) in SOURCES {
+        let platform = name.split(' ').next().unwrap_or("").to_lowercase();
+        if bits & bit != 0 && !out.contains(&platform) {
+            out.push(platform);
+        }
+    }
+    out.join(",")
 }
 
 const SOURCES: &[(&str, u64)] = &[
@@ -214,24 +318,59 @@ pub static COMMANDS: Kind = Kind {
             "persistUserCounter": false, "caseSensitive": false, "globalCooldown": 0, "userCooldown": 0,
             "group": "", "grantType": 0, "response": "", "replyAll": false})
     },
-    columns: &[180, 280, 120, 260],
+    columns: &[52, 160, 200, 140, 100, 120, 120],
     titles: &[
+        "lists.on",
         "lists.commands.name",
         "lists.commands.commands",
-        "lists.commands.group",
+        "lists.commands.who",
         "lists.commands.sources",
+        "lists.commands.cooldown",
+        "lists.commands.group",
     ],
+    cells: &[
+        Some(Switch),
+        None,
+        None,
+        Some(Note),
+        Some(Logos),
+        Some(Note),
+        Some(Note),
+    ],
+    live: None,
     empty: "lists.commands.empty",
     label: |o| {
-        let aliases = crate::commands::aliases(o).join(", ");
+        let n = |k: &str| o.get(k).and_then(Value::as_u64).unwrap_or(0);
+        let cooldown = match (n("globalCooldown"), n("userCooldown")) {
+            (0, 0) => String::new(),
+            (all, 0) => note(
+                "timer",
+                trf("lists.commands.cooldown_all", &[("seconds", &all.to_string())]),
+            ),
+            (0, each) => note(
+                "timer",
+                trf("lists.commands.cooldown_each", &[("seconds", &each.to_string())]),
+            ),
+            (all, each) => note(
+                "timer",
+                trf(
+                    "lists.commands.cooldown_both",
+                    &[("all", &all.to_string()), ("each", &each.to_string())],
+                ),
+            ),
+        };
+        let group = s(o, "group");
         vec![
+            switch(o, "enabled"),
             s(o, "name").into(),
-            aliases,
-            s(o, "group").into(),
-            if on(o, "enabled") {
-                crate::engine::builtins::sources_text(o.get("sources").and_then(Value::as_u64).unwrap_or(1))
+            crate::commands::aliases(o).join(", "),
+            who(o),
+            source_platforms(n("sources")),
+            cooldown,
+            if group.is_empty() {
+                String::new()
             } else {
-                tr("lists.disabled").into()
+                note("folder", group)
             },
         ]
     },
@@ -255,14 +394,17 @@ pub static TIMERS: Kind = Kind {
         json!({"id": "", "name": "New timer", "enabled": false, "repeat": true, "interval": 60,
             "randomInterval": false, "upperInterval": 0, "lines": 0, "counter": 0})
     },
-    columns: &[220, 180, 120, 120, 80],
+    columns: &[52, 200, 160, 120, 120, 100],
     titles: &[
+        "lists.on",
         "lists.timers.name",
         "lists.timers.interval",
+        "lists.timers.repeat",
         "lists.timers.lines",
         "lists.timers.runs",
-        "",
     ],
+    cells: &[Some(Switch), None, Some(Note), Some(Note), Some(Note), Some(Note)],
+    live: None,
     empty: "lists.timers.empty",
     label: |o| {
         let n = |k: &str| o.get(k).and_then(Value::as_i64).unwrap_or(0);
@@ -278,15 +420,26 @@ pub static TIMERS: Kind = Kind {
             trf("lists.timers.every", &[("seconds", &n("interval").to_string())])
         };
         vec![
+            switch(o, "enabled"),
             s(o, "name").into(),
-            every,
+            note(if on(o, "randomInterval") { "shuffle" } else { "timer" }, every),
+            if on(o, "repeat") {
+                note("repeat", tr("lists.timers.repeats"))
+            } else {
+                note("play", tr("lists.timers.once"))
+            },
             if n("lines") > 0 {
-                trf("lists.timers.lines_count", &[("count", &n("lines").to_string())])
+                note(
+                    "message-square",
+                    trf("lists.timers.lines_count", &[("count", &n("lines").to_string())]),
+                )
             } else {
                 String::new()
             },
-            trf("lists.timers.ran_count", &[("count", &n("counter").to_string())]),
-            yes(!on(o, "enabled"), tr("lists.disabled")),
+            note(
+                "hash",
+                trf("lists.timers.ran_count", &[("count", &n("counter").to_string())]),
+            ),
         ]
     },
     after: Some(|e| e.timers()),
@@ -312,8 +465,16 @@ pub static VOICE_COMMANDS: Kind = Kind {
         json!({"id": "", "name": "New voice command", "enabled": true, "command": "", "location": 0,
             "overrideGlobalConfidence": false, "confidenceThreshold": 0.0})
     },
-    columns: &[200, 360, 140, 80],
-    titles: &["lists.voice.name", "lists.voice.phrases", "lists.voice.where", ""],
+    columns: &[52, 180, 300, 140, 120],
+    titles: &[
+        "lists.on",
+        "lists.voice.name",
+        "lists.voice.phrases",
+        "lists.voice.where",
+        "lists.voice.confidence",
+    ],
+    cells: &[Some(Switch), None, None, Some(Note), Some(Note)],
+    live: None,
     empty: "lists.voice.empty",
     label: |o| {
         let at = match o.get("location").and_then(Value::as_u64).unwrap_or(0) {
@@ -321,11 +482,18 @@ pub static VOICE_COMMANDS: Kind = Kind {
             2 => tr("lists.voice.anywhere"),
             _ => tr("lists.voice.whole"),
         };
+        let confidence = if on(o, "overrideGlobalConfidence") {
+            let c = o.get("confidenceThreshold").and_then(Value::as_f64).unwrap_or(0.0);
+            format!("{}%", (c * 100.0).round())
+        } else {
+            tr("lists.voice.default_confidence").into()
+        };
         vec![
+            switch(o, "enabled"),
             s(o, "name").into(),
             s(o, "command").lines().collect::<Vec<_>>().join(", "),
-            at.into(),
-            yes(!on(o, "enabled"), tr("lists.disabled")),
+            note("mic", at),
+            note("gauge", confidence),
         ]
     },
     after: None,
@@ -348,20 +516,30 @@ pub static FILE_WATCHERS: Kind = Kind {
         json!({"id": "", "name": "New watcher", "enabled": true, "folderPath": "", "filter": "*.*",
             "includeSubdirectories": false, "addChangedData": false, "asJson": false})
     },
-    columns: &[200, 360, 100, 80],
+    columns: &[52, 180, 120, 300, 100, 140],
     titles: &[
+        "lists.on",
         "lists.watchers.name",
+        "lists.state",
         "lists.watchers.folder",
         "lists.watchers.filter",
-        "",
+        "lists.watchers.subfolders",
     ],
+    cells: &[Some(Switch), None, Some(State), Some(Link), Some(Badge), Some(Note)],
+    live: None,
     empty: "lists.watchers.empty",
     label: |o| {
         vec![
+            switch(o, "enabled"),
             s(o, "name").into(),
+            found(s(o, "folderPath")),
             s(o, "folderPath").into(),
             s(o, "filter").into(),
-            yes(!on(o, "enabled"), tr("lists.disabled")),
+            if on(o, "includeSubdirectories") {
+                note("folder-tree", tr("lists.watchers.with_subfolders"))
+            } else {
+                String::new()
+            },
         ]
     },
     after: Some(|e| e.watchers()),
@@ -377,14 +555,17 @@ pub static FILE_TAILS: Kind = Kind {
         ("filePath", "File", Text),
     ],
     new: || json!({"id": "", "name": "New file tail", "enabled": true, "filePath": ""}),
-    columns: &[200, 440, 80],
-    titles: &["lists.tails.name", "lists.tails.file", ""],
+    columns: &[52, 200, 120, 400],
+    titles: &["lists.on", "lists.tails.name", "lists.state", "lists.tails.file"],
+    cells: &[Some(Switch), None, Some(State), Some(Link)],
+    live: None,
     empty: "lists.tails.empty",
     label: |o| {
         vec![
+            switch(o, "enabled"),
             s(o, "name").into(),
+            found(s(o, "filePath")),
             s(o, "filePath").into(),
-            yes(!on(o, "enabled"), tr("lists.disabled")),
         ]
     },
     after: Some(|e| e.watchers()),
@@ -405,14 +586,22 @@ pub static CLIENTS: Kind = Kind {
         json!({"id": "", "name": "New client", "endpoint": "ws://127.0.0.1:8080/", "autoConnect": false,
             "reconnectOnDisconnect": true, "retryInterval": 5})
     },
-    columns: &[200, 400, 120],
-    titles: &["lists.clients.name", "lists.clients.endpoint", ""],
+    columns: &[72, 200, 320, 140],
+    titles: &[
+        "lists.on_start",
+        "lists.clients.name",
+        "lists.clients.endpoint",
+        "lists.reconnect",
+    ],
+    cells: &[Some(Switch), None, Some(Link), Some(Note)],
+    live: None,
     empty: "lists.clients.empty",
     label: |o| {
         vec![
+            switch(o, "autoConnect"),
             s(o, "name").into(),
             s(o, "endpoint").into(),
-            yes(!on(o, "autoConnect"), tr("lists.manual")),
+            retry(o, "reconnectOnDisconnect"),
         ]
     },
     after: None,
@@ -426,7 +615,7 @@ pub static OBS_CONNECTIONS: Kind = Kind {
         ("name", "Name", Text),
         ("host", "Host", Text),
         ("port", "Port", Int),
-        ("password", "Password", Text),
+        ("password", "Password", Secret),
         ("autoConnect", "Connect on start", Bool),
         ("reconnect", "Reconnect", Bool),
         ("retryInterval", "Retry interval (s)", Int),
@@ -434,7 +623,7 @@ pub static OBS_CONNECTIONS: Kind = Kind {
     new: || {
         json!({
             "id": crate::engine::uuid(),
-            "name": "OBS",
+            "name": "Local",
             "host": "127.0.0.1",
             "port": 4455,
             "password": "",
@@ -444,16 +633,34 @@ pub static OBS_CONNECTIONS: Kind = Kind {
             "version": 5,
         })
     },
-    columns: &[150, 150, 80, 100],
-    titles: &["lists.obs.name", "lists.obs.address", "", ""],
+    columns: &[72, 170, 140, 170, 140, 120],
+    titles: &[
+        "lists.on_start",
+        "lists.obs.name",
+        "lists.state",
+        "lists.obs.address",
+        "lists.reconnect",
+        "lists.password",
+    ],
+    cells: &[
+        Some(Switch),
+        Some(Lead),
+        Some(State),
+        Some(Link),
+        Some(Note),
+        Some(Note),
+    ],
+    live: Some(Live::Obs),
     empty: "lists.obs.empty",
     label: |o| {
         let port = o.get("port").and_then(Value::as_u64).unwrap_or(4455);
         vec![
-            s(o, "name").into(),
+            switch(o, "autoConnect"),
+            format!("OBS Studio|{}", s(o, "name")),
+            LIVE.into(),
             format!("{}:{}", s(o, "host"), port),
-            yes(!on(o, "autoConnect"), tr("lists.manual")),
-            yes(!on(o, "reconnect"), tr("lists.no_retry")),
+            retry(o, "reconnect"),
+            locked(!s(o, "password").is_empty()),
         ]
     },
     after: Some(|e| e.obs_start().reload()),
@@ -467,7 +674,7 @@ pub static SLOBS_CONNECTIONS: Kind = Kind {
         ("name", "Name", Text),
         ("host", "Host", Text),
         ("port", "Port", Int),
-        ("token", "Token", Text),
+        ("token", "Token", Secret),
         ("autoConnect", "Connect on start", Bool),
         ("reconnectOnDisconnect", "Reconnect", Bool),
         ("retryInterval", "Retry interval (s)", Int),
@@ -475,18 +682,36 @@ pub static SLOBS_CONNECTIONS: Kind = Kind {
     ],
     // Streamer.bot's field order (its settings.json).
     new: || {
-        json!({"id": "", "name": "Streamlabs Desktop", "host": "127.0.0.1", "port": 59650, "autoConnect": true,
+        json!({"id": "", "name": "Local", "host": "127.0.0.1", "port": 59650, "autoConnect": true,
             "reconnectOnDisconnect": true, "token": "", "retryInterval": 30, "default": false})
     },
-    columns: &[200, 200, 100, 100],
-    titles: &["lists.slobs.name", "lists.slobs.address", "", ""],
+    columns: &[72, 190, 140, 170, 120, 100],
+    titles: &[
+        "lists.on_start",
+        "lists.slobs.name",
+        "lists.state",
+        "lists.slobs.address",
+        "lists.slobs.token",
+        "",
+    ],
+    cells: &[
+        Some(Switch),
+        Some(Lead),
+        Some(State),
+        Some(Link),
+        Some(Note),
+        Some(Badge),
+    ],
+    live: Some(Live::Slobs),
     empty: "lists.slobs.empty",
     label: |o| {
         let port = o.get("port").and_then(Value::as_u64).unwrap_or(59650);
         vec![
-            s(o, "name").into(),
+            switch(o, "autoConnect"),
+            format!("Streamlabs Desktop|{}", s(o, "name")),
+            LIVE.into(),
             format!("{}:{port}", s(o, "host")),
-            yes(!on(o, "autoConnect"), tr("lists.manual")),
+            locked(!s(o, "token").is_empty()),
             yes(on(o, "default"), tr("lists.default_badge")),
         ]
     },
@@ -508,15 +733,21 @@ pub static SERVERS: Kind = Kind {
         json!({"id": "", "name": "New server", "address": "127.0.0.1", "port": 9090, "endpoint": "/",
             "autoStart": false})
     },
-    columns: &[200, 400, 120],
-    titles: &["lists.custom_servers.name", "lists.custom_servers.address", ""],
+    columns: &[72, 200, 400],
+    titles: &[
+        "lists.on_start",
+        "lists.custom_servers.name",
+        "lists.custom_servers.address",
+    ],
+    cells: &[Some(Switch), None, Some(Link)],
+    live: None,
     empty: "lists.custom_servers.empty",
     label: |o| {
         let port = o.get("port").and_then(Value::as_u64).unwrap_or(0);
         vec![
+            switch(o, "autoStart"),
             s(o, "name").into(),
             format!("ws://{}:{port}{}", s(o, "address"), s(o, "endpoint")),
-            yes(!on(o, "autoStart"), tr("lists.off_badge")),
         ]
     },
     after: None,
@@ -533,11 +764,16 @@ pub struct List {
     menu_buttons: Vec<Button>,
     search: Option<fltk::input::Input>,
     connection: Option<ConnectionControls>,
+    /// The flag its switches (and On/Off) turn.
+    toggle: Option<&'static str>,
+    /// Which connections are up, for the selection's Connect or Disconnect.
+    up: Vec<bool>,
 }
 
 struct ConnectionControls {
     obs: bool,
     status: Frame,
+    /// Connect (or Disconnect) the selection, Connect all, Disconnect all, Refresh.
     buttons: Vec<Button>,
 }
 
@@ -557,15 +793,39 @@ impl List {
             tr("lists.no_matches")
         });
         let c = self.cfg.borrow();
-        for o in (self.kind.get)(&c) {
-            let columns = (self.kind.label)(o);
+        let objects = (self.kind.get)(&c).clone();
+        drop(c);
+        // Connections: which are up (one question to the engine for all).
+        let up: Option<Vec<bool>> = self.kind.live.and_then(|live| {
+            let ids: Vec<String> = objects.iter().map(|o| s(o, "id").to_string()).collect();
+            super::query(&self.cmds, move |engine: &Rc<Engine>| {
+                ids.iter()
+                    .map(|id| match live {
+                        Live::Obs => engine.obs_connected(Some(id)),
+                        Live::Slobs => engine.slobs_up(id),
+                    })
+                    .collect()
+            })
+        });
+        self.up.clear();
+        for (i, o) in objects.iter().enumerate() {
+            let mut columns = (self.kind.label)(o);
+            let connected = up.as_ref().and_then(|u| u.get(i).copied());
+            for cell in columns.iter_mut().filter(|c| *c == LIVE) {
+                *cell = match connected {
+                    Some(true) => state(Health::Up, tr("lists.live.connected")),
+                    Some(false) => state(Health::Off, tr("lists.live.disconnected")),
+                    None => state(Health::Busy, tr("lists.stream_apps.unknown")),
+                };
+            }
             if !matches_query(&columns, &query) {
                 continue;
             }
-            self.view.add(&line(&columns));
+            let off = self.toggle.is_some_and(|key| !on(o, key)) && self.kind.live.is_none();
+            self.view.add_state(&line(&columns), off);
             self.ids.push(s(o, "id").into());
+            self.up.push(connected.unwrap_or(false));
         }
-        drop(c);
         if let Some(i) = sel.and_then(|id| self.ids.iter().position(|x| *x == id)) {
             self.view.select(i as i32 + 1);
         }
@@ -574,7 +834,27 @@ impl List {
     }
 
     fn connection_changed(&mut self) {
+        let picked = self.view.value() - 1;
+        let picked_up = usize::try_from(picked).ok().and_then(|i| self.up.get(i).copied());
         let Some(connection) = &mut self.connection else { return };
+        // The selection's own button: Connect, or Disconnect when it's up.
+        if let Some(b) = connection.buttons.first_mut() {
+            let label = if picked_up == Some(true) {
+                tr("btn.disconnect")
+            } else {
+                tr("btn.connect")
+            };
+            if b.label() != label {
+                b.set_label(label);
+                super::with_icon(b);
+                b.redraw();
+            }
+            if picked_up.is_some() {
+                b.activate();
+            } else {
+                b.deactivate();
+            }
+        }
         let ids: Vec<String> = (self.kind.get)(&self.cfg.borrow())
             .iter()
             .map(|object| s(object, "id").to_string())
@@ -592,7 +872,10 @@ impl List {
                 })
                 .count()
         });
-        set_available(&connection.buttons, &stream_actions(configured, connected.unwrap_or(0)));
+        set_available(
+            &connection.buttons[1..],
+            &stream_actions(configured, connected.unwrap_or(0)),
+        );
         let (health, text) = match connected {
             None => (Health::Busy, tr("lists.stream_apps.unknown").to_string()),
             Some(_) if configured == 0 => (Health::Off, tr("lists.stream_apps.not_configured").to_string()),
@@ -614,6 +897,9 @@ impl List {
     }
 
     fn selection_changed(&mut self) {
+        if self.connection.is_some() {
+            self.connection_changed();
+        }
         let selected = self.selected().is_some();
         for button in &mut self.selection_buttons {
             if selected {
@@ -737,6 +1023,11 @@ fn list(
     });
     let mut view = browser(col, kind.columns, kind.titles, kind.empty);
     view.set_label(tr(kind.what));
+    for (c, look) in kind.cells.iter().enumerate() {
+        if let Some(look) = look {
+            view.set_cell(c, *look);
+        }
+    }
     let mut labels = vec![tr("btn.add"), tr("btn.edit")];
     labels.extend(toggle.map(|_| tr("btn.on_off")));
     labels.push(tr("btn.delete"));
@@ -752,6 +1043,8 @@ fn list(
         menu_buttons: b.clone(),
         search: search.clone(),
         connection: None,
+        toggle,
+        up: Vec::new(),
     }));
     if let Some(mut search) = search {
         let me = me.clone();
@@ -778,16 +1071,30 @@ fn list(
     click(&b[b.len() - 1], Box::new(List::delete));
     view.clone().set_callback({
         let me = me.clone();
-        move |_| {
+        move |v| {
             if let Ok(mut m) = me.try_borrow_mut() {
                 m.selection_changed();
-                if fltk::app::event() == fltk::enums::Event::Push && fltk::app::event_clicks() && !super::right_button()
+                if fltk::app::event() == fltk::enums::Event::Push
+                    && fltk::app::event_clicks()
+                    && !super::right_button()
+                    && !v.clicked_switch()
                 {
                     m.edit();
                 }
             }
         }
     });
+    if let Some(key) = toggle {
+        // A line's switch turns it on or off where it is.
+        view.clone().on_switch({
+            let me = me.clone();
+            move |_, _| {
+                if let Ok(mut m) = me.try_borrow_mut() {
+                    m.toggle(key);
+                }
+            }
+        });
+    }
     me
 }
 
@@ -1014,7 +1321,12 @@ fn connection_controls(col: &mut Flex, list: &Rc<RefCell<List>>, obs: bool) {
     col.fixed(&status, ROW);
     let buttons = bar(
         col,
-        &[tr("btn.connect_all"), tr("btn.disconnect_all"), tr("btn.refresh")],
+        &[
+            tr("btn.connect"),
+            tr("btn.connect_all"),
+            tr("btn.disconnect_all"),
+            tr("btn.refresh"),
+        ],
     );
     {
         let mut list = list.borrow_mut();
@@ -1027,28 +1339,42 @@ fn connection_controls(col: &mut Flex, list: &Rc<RefCell<List>>, obs: bool) {
             buttons: buttons.clone(),
         });
         // There are no configured rows before refresh, so connection actions start unavailable.
-        set_available(&buttons, &stream_actions(0, 0));
+        set_available(&buttons[1..], &stream_actions(0, 0));
+        let mut first = buttons[0].clone();
+        first.deactivate();
     }
     for (index, mut button) in buttons.into_iter().enumerate() {
         let list = list.clone();
         button.set_callback(move |_| {
             let Ok(mut list) = list.try_borrow_mut() else { return };
-            if index != 2 {
-                let connect = index == 0;
-                tell(&list.cmds, move |engine| {
-                    if obs {
-                        if connect {
-                            engine.obs_start().connect(None);
-                        } else if let Some(handle) = engine.obs() {
-                            handle.disconnect(None);
-                        }
-                    } else if connect {
-                        engine.slobs_connect("");
-                    } else {
-                        engine.slobs_disconnect("");
+            // The selection alone (index 0), all of them (1, 2), or only a look again (3).
+            let (connect, one) = match index {
+                0 => {
+                    let Some(id) = list.selected() else { return };
+                    let i = (list.view.value() - 1).max(0) as usize;
+                    (!list.up.get(i).copied().unwrap_or(false), Some(id))
+                }
+                1 => (true, None),
+                2 => (false, None),
+                _ => {
+                    list.refresh();
+                    return;
+                }
+            };
+            tell(&list.cmds, move |engine| {
+                let id = one.as_deref();
+                if obs {
+                    if connect {
+                        engine.obs_start().connect(id);
+                    } else if let Some(handle) = engine.obs() {
+                        handle.disconnect(id);
                     }
-                });
-            }
+                } else if connect {
+                    engine.slobs_connect(id.unwrap_or(""));
+                } else {
+                    engine.slobs_disconnect(id.unwrap_or(""));
+                }
+            });
             list.refresh();
         });
     }
@@ -2236,7 +2562,7 @@ impl Servers {
             ("endpoint", "Endpoint", Text),
             ("enableAuth", "Password required", Bool),
             ("authEnforce", "Password for every request", Bool),
-            ("authPassword", "Password", Text),
+            ("authPassword", "Password", Secret),
             ("allowedOrigins", "Websites allowed (also HTTP), one per line", Multi),
         ];
         let http: &[F] = &[
@@ -2354,8 +2680,8 @@ impl Donations {
 
     fn edit(&mut self, which: usize) {
         let fields: &[F] = match which {
-            0 => &[("streamelementsToken", "JWT token", Text)],
-            1 => &[("streamlabsToken", "Socket API token", Text)],
+            0 => &[("streamelementsToken", "JWT token", Secret)],
+            1 => &[("streamlabsToken", "Socket API token", Secret)],
             _ => &[
                 ("donordriveInstance", "Site", Text),
                 (
@@ -2632,6 +2958,59 @@ fn users_click(me: &Rc<RefCell<Community>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_list_says_how_each_of_its_columns_draws() {
+        for kind in [
+            &COMMANDS,
+            &TIMERS,
+            &VOICE_COMMANDS,
+            &FILE_WATCHERS,
+            &FILE_TAILS,
+            &CLIENTS,
+            &OBS_CONNECTIONS,
+            &SLOBS_CONNECTIONS,
+            &SERVERS,
+        ] {
+            let Value::Object(o) = (kind.new)() else {
+                panic!("{}", kind.what)
+            };
+            let cells = (kind.label)(&o);
+            assert_eq!(cells.len(), kind.titles.len(), "{}: a title per column", kind.what);
+            assert_eq!(cells.len(), kind.cells.len(), "{}: a look per column", kind.what);
+            assert_eq!(cells.len(), kind.columns.len(), "{}: a width per column", kind.what);
+            // The switch comes first, and says what the flag is.
+            assert_eq!(kind.cells[0], Some(Switch), "{}", kind.what);
+            assert!(cells[0] == "1" || cells[0] == "0", "{}: {:?}", kind.what, cells[0]);
+            assert_eq!(kind.live.is_some(), cells.iter().any(|c| c == LIVE), "{}", kind.what);
+        }
+    }
+
+    #[test]
+    fn a_commands_row_says_who_where_and_how_often() {
+        let o = json!({"permittedGroups": ["Moderators"], "grantType": 0, "sources": 1 | 2 | 1024,
+            "globalCooldown": 30, "userCooldown": 10})
+        .as_object()
+        .cloned()
+        .unwrap();
+        assert_eq!(who(&o), "shield|Moderators");
+        assert_eq!(source_platforms(1 | 2 | 1024), "twitch,youtube");
+        let deny = json!({"permittedGroups": ["VIP"], "permittedUsers": ["a"], "grantType": 1})
+            .as_object()
+            .cloned()
+            .unwrap();
+        assert!(who(&deny).starts_with("shield-off|") && who(&deny).contains("VIP"));
+        assert!(who(&Obj::new()).starts_with("users|"));
+        let row = (COMMANDS.label)(&o);
+        assert!(row[5].starts_with("timer|"), "{row:?}");
+    }
+
+    #[test]
+    fn a_files_row_says_whether_the_file_is_there() {
+        assert!(found(env!("CARGO_MANIFEST_DIR")).contains(tr("lists.found")));
+        assert!(found("/no/such/streamerz/file").contains(tr("lists.missing")));
+        assert!(found("  ").contains(tr("lists.not_set")));
+    }
 
     #[test]
     fn list_headers_do_not_contain_row_format_parameters() {

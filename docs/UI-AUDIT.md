@@ -112,3 +112,21 @@ verification recorded at the end; unchecked items remain work to do.
 - The chat's settings moved to the Chat page (Options, Chat settings); Settings keeps a row to them.
 - TikTok setup finds the Chromium browsers and whether the extension is in them; Set up (the consent)
   writes it, copies its folder and opens the browser's extensions page, and the steps tick themselves off.
+
+## Fourth pass: tables, secrets, motion
+
+- Lists show what each row is, not only its name (`Rows` cells, see `docs/UI.md`): a switch per row for
+  its on/off flag (click or Space), live states in colour, quiet details with icons, badges and platform
+  logos. Commands show who can use them, where and their cooldown; timers how often and how many runs;
+  files whether the path is there; connections their state, address, reconnect and password.
+- OBS and Streamlabs connect or disconnect the selected connection, not only all of them; a new one is
+  named Local.
+- Passwords and tokens are `fields::secret`: dots, with an eye that shows what's typed.
+- A notice with no title kept its top border and round corners hidden under its contents: fixed, and a
+  test checks the panel shows its border all round.
+- Dialogs fade the window behind from sharp to blurred while they rise into place, and back as they
+  close; menus and popovers unroll (`ui/anim.rs`). Settings, Appearance, Animations turns it off. The
+  blur is softer.
+- Channel pictures are kept under one key per channel, looked up again when a lookup failed (not more
+  than every two minutes) or the address is about to expire, and TikTok's come from the live room's page
+  when its profile page answers with a bot check.

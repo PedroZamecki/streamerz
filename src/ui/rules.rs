@@ -164,3 +164,15 @@ fn main_window(at: &str) -> bool {
         .nth(line - 1)
         .is_some_and(|l| l.contains("crate::version()"))
 }
+
+#[test]
+fn secrets_can_be_shown() {
+    // A password or a token is fields::secret: hidden, with the eye that shows what was typed.
+    for raw in ["SecretInput::", "InputType::Secret"] {
+        assert_eq!(
+            uses(raw, &["fields.rs"]),
+            Vec::<String>::new(),
+            "{raw}: a password field is fields::secret (forms: W::Secret)"
+        );
+    }
+}

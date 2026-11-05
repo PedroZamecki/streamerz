@@ -13,7 +13,7 @@ use fltk::button::{Button, CheckButton};
 use fltk::enums::Align;
 use fltk::frame::Frame;
 use fltk::group::{Flex, Wizard};
-use fltk::input::{Input, SecretInput};
+use fltk::input::Input;
 use fltk::prelude::*;
 use serde_json::{json, Value};
 use std::cell::RefCell;
@@ -450,6 +450,44 @@ fn states(cmds: &Cmds) -> ([bool; 4], [bool; 4], String) {
 /// Profile picture URLs by "platform:bot:name", looked up once a run; "" while looking (or failed).
 static AVATARS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
+/// When each picture was last looked up this run (unix seconds): a failed one is tried again, not
+/// more often than every `RETRY` seconds.
+static LOOKED: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
+const RETRY: u64 = 120;
+
+/// Whether a picture's saved address (found `at`, unix seconds) is to be looked up again `now`: none
+/// was found, it's a day old, or it stops working soon (TikTok signs theirs for a few days).
+fn stale(url: &str, at: u64, now: u64) -> bool {
+    const FRESH: u64 = 24 * 60 * 60;
+    url.is_empty() || now.saturating_sub(at) >= FRESH || expiring(url, now)
+}
+
+/// Whether a signed address (`x-expires=` in it) stops working within ten minutes of `now`.
+fn expiring(url: &str, now: u64) -> bool {
+    url.split(['?', '&'])
+        .find_map(|kv| kv.strip_prefix("x-expires="))
+        .and_then(|v| v.parse::<u64>().ok())
+        .is_some_and(|at| at <= now + 600)
+}
+
+/// Whether the lookup of `key` may start `now` (once every `RETRY` seconds at most); it's noted.
+fn may_look(key: &str, now: u64) -> bool {
+    let Ok(mut looked) = LOOKED.lock() else {
+        return false;
+    };
+    match looked.iter_mut().find(|(k, _)| k == key) {
+        Some((_, at)) if now.saturating_sub(*at) < RETRY => false,
+        Some((_, at)) => {
+            *at = now;
+            true
+        }
+        None => {
+            looked.push((key.to_string(), now));
+            true
+        }
+    }
+}
+
 /// The account's profile picture URL, from the platform (on the engine's thread).
 async fn avatar(e: &Rc<Engine>, cfg: &Cfg, p: P, bot: bool) -> Option<String> {
     let get = |url: String, h: Vec<(String, String)>| async move {
@@ -584,47 +622,63 @@ static NAMES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
 /// The channel's display name when the platform has told it (looked up with its picture).
 fn channel_name(p: P, name: &str) -> Option<String> {
-    let norm = name.trim().trim_start_matches('@').to_lowercase();
-    let key = format!("{}:chan:{}", p.slug(), norm);
-    let browser_key = (p == P::TikTok).then(|| format!("{key}:browser"));
+    let key = channel_key(p, name);
     NAMES
         .lock()
         .ok()?
         .iter()
-        .filter(|(k, _)| *k == key || browser_key.as_ref().is_some_and(|browser| k == browser))
-        .max_by_key(|(k, _)| k.ends_with(":browser"))
+        .find(|(k, _)| *k == key)
         .map(|(_, n)| n.clone())
         .filter(|n| !n.is_empty())
 }
 
+/// What a channel's picture and name are kept by: one key for the channel, however it was looked up
+/// (TikTok's through the browser account or not).
+fn channel_key(p: P, name: &str) -> String {
+    format!(
+        "{}:chan:{}",
+        p.slug(),
+        name.trim().trim_start_matches('@').to_lowercase()
+    )
+}
+
 /// The channel's profile picture URL (cached for 24h), and its display name once known. Looks both up in
-/// the background when missing or old.
+/// the background when missing, old or about to stop working, and again later when that failed.
 fn channel_url(cmds: &Cmds, cfg: &Cfg, p: P, name: &str) -> String {
-    const FRESH: u64 = 24 * 60 * 60;
     let norm = name.trim().trim_start_matches('@').to_lowercase();
     if norm.is_empty() {
         return String::new();
     }
-    let signed = p == P::TikTok && query(cmds, |e| e.tiktok_bridge.ready()).unwrap_or(false);
-    let key = format!("{}:chan:{}{}", p.slug(), norm, if signed { ":browser" } else { "" });
+    let key = channel_key(p, &norm);
+    let now = crate::fmt::unix_now().as_secs();
     let Ok(mut a) = AVATARS.lock() else {
         return String::new();
     };
-    if let Some((_, url)) = a.iter().find(|(k, _)| *k == key) {
-        return url.clone();
-    }
-    let now = crate::fmt::unix_now().as_secs();
-    let saved = super::img::saved("avatars").map(|v| v.1).unwrap_or_default();
-    let (url, at, known) = (
-        saved[&key][0].as_str().unwrap_or("").to_string(),
-        saved[&key][1].as_u64().unwrap_or(0),
-        saved[&key][2].as_str().unwrap_or("").to_string(),
-    );
-    a.push((key.clone(), url.clone()));
-    if let Ok(mut n) = NAMES.lock() {
-        n.push((key.clone(), known.clone()));
-    }
-    if now.saturating_sub(at) >= FRESH || known.is_empty() {
+    let (url, look) = match a.iter().find(|(k, _)| *k == key) {
+        Some((_, url)) => (url.clone(), url.is_empty() || expiring(url, now)),
+        None => {
+            let saved = super::img::saved("avatars").map(|v| v.1).unwrap_or_default();
+            // TikTok's used to be kept apart when found through the browser account.
+            let entry = [key.clone(), format!("{key}:browser")]
+                .iter()
+                .map(|k| saved[k].clone())
+                .find(|v| v[0].as_str().is_some_and(|u| !u.is_empty()))
+                .unwrap_or_default();
+            let (url, at, known) = (
+                entry[0].as_str().unwrap_or("").to_string(),
+                entry[1].as_u64().unwrap_or(0),
+                entry[2].as_str().unwrap_or("").to_string(),
+            );
+            a.push((key.clone(), url.clone()));
+            if let Ok(mut n) = NAMES.lock() {
+                n.push((key.clone(), known.clone()));
+            }
+            let look = stale(&url, at, now) || known.is_empty();
+            (url, look)
+        }
+    };
+    drop(a);
+    if look && may_look(&key, now) {
         let cfg = cfg.clone();
         tell(cmds, move |e| {
             let e = e.clone();
@@ -637,30 +691,46 @@ fn channel_url(cmds: &Cmds, cfg: &Cfg, p: P, name: &str) -> String {
                 } else {
                     None
                 };
-                let (pic, shown) = if let Some(f) = signed {
-                    (Some(f.picture), Some(f.name))
-                } else {
-                    channel_profile(&cfg, p, &norm).await
+                let (pic, shown) = match signed {
+                    Some(f) if !f.picture.is_empty() => (Some(f.picture), Some(f.name)),
+                    _ => channel_profile(&cfg, p, &norm).await,
                 };
                 let (url, shown) = (pic.unwrap_or_default(), shown.unwrap_or_default());
+                // Nothing found (TikTok answered with a bot check...): what was known stays, and it's
+                // asked again later.
                 if url.is_empty() && shown.is_empty() {
                     return;
                 }
                 if let Ok(mut a) = AVATARS.lock() {
                     if let Some(slot) = a.iter_mut().find(|(k, _)| *k == key) {
-                        slot.1.clone_from(&url);
+                        if !url.is_empty() {
+                            slot.1.clone_from(&url);
+                        }
                     }
                 }
                 if let Ok(mut n) = NAMES.lock() {
                     if let Some(slot) = n.iter_mut().find(|(k, _)| *k == key) {
-                        slot.1.clone_from(&shown);
+                        if !shown.is_empty() {
+                            slot.1.clone_from(&shown);
+                        }
                     }
                 }
                 let mut all = super::img::saved("avatars").map(|v| v.1).unwrap_or_default();
                 if !all.is_object() {
                     all = serde_json::json!({});
                 }
-                all[&key] = serde_json::json!([url, crate::fmt::unix_now().as_secs(), shown]);
+                let was = all[&key].clone();
+                let keep = |new: &str, i: usize| {
+                    if new.is_empty() {
+                        was[i].as_str().unwrap_or("").to_string()
+                    } else {
+                        new.to_string()
+                    }
+                };
+                all[&key] = serde_json::json!([keep(&url, 0), crate::fmt::unix_now().as_secs(), keep(&shown, 2)]);
+                if let Some(o) = all.as_object_mut() {
+                    o.remove(&format!("{key}:browser"));
+                }
                 super::img::save("avatars", &all);
                 super::wake(super::Msg::Image);
             });
@@ -681,20 +751,26 @@ fn channel_picture(cmds: &Cmds, cfg: &Cfg, p: P, name: &str, size: i32) -> Optio
 /// The account's profile picture, `size` px and round. Its URL is kept in the cache: used at once,
 /// looked up again (in the background) when older than a day or not known yet.
 fn picture(cmds: &Cmds, cfg: &Cfg, p: P, bot: bool, name: &str, size: i32) -> Option<fltk::image::RgbImage> {
-    const FRESH: u64 = 24 * 60 * 60;
     let key = format!("{}:{bot}:{name}", p.name());
+    let now = crate::fmt::unix_now().as_secs();
     let mut a = AVATARS.lock().ok()?;
     let url = match a.iter().find(|(k, _)| *k == key) {
-        Some((_, url)) => url.clone(),
-        None => {
-            let now = crate::fmt::unix_now().as_secs();
-            let saved = super::img::saved("avatars").map(|v| v.1).unwrap_or_default();
-            let (url, at) = (
-                saved[&key][0].as_str().unwrap_or("").to_string(),
-                saved[&key][1].as_u64().unwrap_or(0),
-            );
-            a.push((key.clone(), url.clone()));
-            if now.saturating_sub(at) >= FRESH {
+        Some((_, url)) if !url.is_empty() && !expiring(url, now) => url.clone(),
+        found => {
+            let (url, at) = match found {
+                // Not found, or about to stop working: looked up again (not too often).
+                Some((_, url)) => (url.clone(), 0),
+                None => {
+                    let saved = super::img::saved("avatars").map(|v| v.1).unwrap_or_default();
+                    let (url, at) = (
+                        saved[&key][0].as_str().unwrap_or("").to_string(),
+                        saved[&key][1].as_u64().unwrap_or(0),
+                    );
+                    a.push((key.clone(), url.clone()));
+                    (url, at)
+                }
+            };
+            if stale(&url, at, now) && may_look(&key, now) {
                 let (cfg, name) = (cfg.clone(), name.to_string());
                 tell(cmds, move |e| {
                     let e = e.clone();
@@ -1798,10 +1874,9 @@ fn advanced(cfg: &Cfg, p: P) {
     col.fixed(&start, ROW);
     let mut inputs: Vec<Box<dyn Fn() -> String>> = Vec::new();
     for (label, value, secret) in &fields {
-        let r = dialogs::row(label);
+        let mut r = dialogs::row(label);
         if *secret {
-            let mut i = SecretInput::default();
-            i.set_value(value);
+            let i = super::fields::secret(&mut r, value);
             inputs.push(Box::new(move || i.value()));
         } else {
             let mut i = Input::default();
@@ -2021,6 +2096,38 @@ fn device_login(cfg: &Cfg, cmds: &Cmds, as_bot: bool) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pictures_are_looked_up_again_when_missing_old_or_expiring() {
+        use super::{expiring, stale};
+        let now = 1_800_000_000;
+        let signed = |at: u64| format!("https://p16.tiktokcdn.com/a.jpeg?dr=1&x-expires={at}&x-signature=z");
+        assert!(stale("", now, now), "a lookup that found nothing is tried again");
+        assert!(!stale("https://x/a.png", now - 60, now));
+        assert!(stale("https://x/a.png", now - 25 * 3600, now), "a day old");
+        assert!(!stale(&signed(now + 2 * 86400), now - 60, now));
+        assert!(stale(&signed(now + 60), now - 60, now), "it stops working in a minute");
+        assert!(expiring(&signed(now - 1), now) && !expiring("https://x/a.png?x-expiresnot=1", now));
+    }
+
+    #[test]
+    fn a_failed_lookup_is_tried_again_but_not_too_often() {
+        use super::{may_look, RETRY};
+        let now = 1_800_000_000;
+        assert!(may_look("test:chan:retry", now));
+        assert!(!may_look("test:chan:retry", now + 5));
+        assert!(may_look("test:chan:retry", now + RETRY));
+    }
+
+    #[test]
+    fn a_channel_has_one_picture_however_it_was_found() {
+        use super::{channel_key, P};
+        assert_eq!(channel_key(P::TikTok, "@UmaNanaAi "), "tiktok:chan:umananaai");
+        assert_eq!(
+            channel_key(P::TikTok, "umananaai"),
+            channel_key(P::TikTok, "@umananaai")
+        );
+    }
+
     #[test]
     fn a_twitch_channel_from_what_was_typed() {
         assert_eq!(super::clean_twitch_channel("https://www.twitch.tv/Umanana/"), "umanana");

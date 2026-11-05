@@ -18,7 +18,7 @@ use fltk::text::{TextBuffer, TextEditor};
 use fltk::window::{DoubleWindow, Window};
 use fltk::{app, dialog, draw};
 use serde_json::Value;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// The dialog's answer: None while open, then OK (true) or cancel (false).
@@ -80,8 +80,40 @@ pub struct Dialog {
     scrim: Option<Window>,
     /// What had the keyboard before it opened: it gets it back.
     focus: Option<fltk::widget::Widget>,
-    /// Its title row's height (0 with no title).
+    /// The room above its contents: its title row, or (with no title) the panel's top edge.
     head: i32,
+    /// What the scrim shows behind the panel, and the window as it was, to fade from and to.
+    fade: Rc<RefCell<Fade>>,
+}
+
+/// The window behind a dialog: blurred once it's open, and as it was (to fade from as it opens and to
+/// as it closes, kept only while animations are on).
+#[derive(Default)]
+struct Fade {
+    /// The window blurred and dimmed.
+    under: Option<RgbImage>,
+    /// The window as it was (RGB, `size` pixels).
+    sharp: Option<Vec<u8>>,
+    size: (i32, i32),
+    /// What shows while it fades (None: `under`).
+    now: Option<RgbImage>,
+}
+
+impl Fade {
+    /// Shows the window `blur` of the way (0 to 1) from as it was to blurred; `frost` is `under`'s
+    /// pixels, `buf` room for the mix.
+    fn at(&mut self, blur: f32, frost: &[u8], buf: &mut Vec<u8>, shown: (i32, i32)) {
+        let Some(sharp) = self.sharp.as_ref().filter(|s| s.len() == frost.len()) else {
+            return;
+        };
+        super::anim::blend(sharp, frost, blur, buf);
+        self.now = RgbImage::new(buf, self.size.0, self.size.1, fltk::enums::ColorDepth::Rgb8)
+            .ok()
+            .map(|mut i| {
+                i.scale(shown.0, shown.1, false, true);
+                i
+            });
+    }
 }
 
 impl std::ops::Deref for Dialog {
@@ -110,15 +142,48 @@ impl Dialog {
                 host.add(&self.win);
                 let head = self.head;
                 place(&host, &mut self.win, head);
-                let (px, py, pw, _) = panel(&self.win, head);
-                if let Some(mut b) = s.child(0) {
-                    b.resize(px + pw - 38, py + 8, 28, 28);
-                }
+                place_close(s, &self.win, head);
             }
         }
         s.show();
         self.win.show();
+        self.animate(true);
+        // Closing fades back to the window as it is then, not as it was.
+        if !super::anim::on() {
+            self.fade.borrow_mut().sharp = None;
+        }
         let _ = first_focus(&self.win.as_group().expect("a window is a group"));
+    }
+
+    /// Fades the window behind in (blurred) as the panel rises into place, or out as it sinks away.
+    fn animate(&mut self, opening: bool) {
+        let Some(scrim) = self.scrim.clone() else { return };
+        if !super::anim::on() || self.win.parent().is_none() {
+            return;
+        }
+        let Some(frost) = self.fade.borrow().under.as_ref().map(RgbImage::to_rgb_data) else {
+            return;
+        };
+        let (fade, head, mut win, mut scrim) = (self.fade.clone(), self.head, self.win.clone(), scrim);
+        let (x, y) = (win.x(), win.y());
+        let mut buf = Vec::new();
+        super::anim::play(if opening { super::anim::IN } else { super::anim::OUT }, |p| {
+            let blur = if opening { p } else { 1.0 - p };
+            fade.borrow_mut().at(blur, &frost, &mut buf, (scrim.w(), scrim.h()));
+            let drop = if opening {
+                super::anim::mix(16, 0, p)
+            } else {
+                super::anim::mix(0, 10, p)
+            };
+            win.set_pos(x, y + drop);
+            place_close(&mut scrim, &win, head);
+            scrim.redraw();
+        });
+        fade.borrow_mut().now = None;
+        if !opening {
+            win.set_pos(x, y);
+            place_close(&mut scrim, &win, head);
+        }
     }
 
     /// What makes it `h` high later (its contents grew or shrank), kept in the middle of the window.
@@ -131,10 +196,7 @@ impl Dialog {
                 place(&host, &mut win, head);
             }
             if let Some(mut s) = scrim.clone() {
-                let (px, py, pw, _) = panel(&win, head);
-                if let Some(mut b) = s.child(0) {
-                    b.resize(px + pw - 38, py + 8, 28, 28);
-                }
+                place_close(&mut s, &win, head);
                 s.redraw();
             }
             win.redraw();
@@ -143,6 +205,9 @@ impl Dialog {
 
     /// Hides it (and what it covers comes back).
     pub fn close(&mut self) {
+        if self.win.shown() {
+            self.animate(false);
+        }
         self.win.hide();
         if let Some(s) = &mut self.scrim {
             s.hide();
@@ -168,6 +233,14 @@ impl Drop for Dialog {
         if let Some(h) = host() {
             h.clone().redraw();
         }
+    }
+}
+
+/// The close button (the scrim's first child) at the panel's top right corner.
+fn place_close(scrim: &mut Window, win: &DoubleWindow, head: i32) {
+    let (px, py, pw, _) = panel(win, head);
+    if let Some(mut b) = scrim.child(0) {
+        b.resize(px + pw - 38, py + 8, 28, 28);
     }
 }
 
@@ -202,24 +275,49 @@ fn focusable(g: &fltk::group::Group, last: bool) -> bool {
     false
 }
 
-/// The app's window as drawn now, blurred and dimmed: what a dialog sits on.
-fn frosted(host: &DoubleWindow) -> Option<RgbImage> {
-    let shot = super::popover::backdrop(host, 0, 0, host.w(), host.h())?;
+/// The app's window as drawn now, blurred and dimmed (what a dialog sits on), and as it is (RGB, to fade
+/// from; only while animations are on).
+fn frosted(host: &DoubleWindow) -> Fade {
+    let Some(shot) = super::popover::backdrop(host, 0, 0, host.w(), host.h()) else {
+        return Fade::default();
+    };
     let (w, h) = (shot.data_w() as usize, shot.data_h() as usize);
     let depth = shot.depth() as usize;
     let data = shot.to_rgb_data();
     let (r, g, b) = Color::Background.to_rgb();
     let dark = u32::from(r) + u32::from(g) + u32::from(b) < 384;
     let out = frost(&data, w, h, depth, if dark { 0.34 } else { 0.22 });
-    let mut img = RgbImage::new(&out, w as i32, h as i32, fltk::enums::ColorDepth::Rgb8).ok()?;
-    img.scale(host.w(), host.h(), false, true);
-    Some(img)
+    let under = RgbImage::new(&out, w as i32, h as i32, fltk::enums::ColorDepth::Rgb8)
+        .ok()
+        .map(|mut img| {
+            img.scale(host.w(), host.h(), false, true);
+            img
+        });
+    let sharp = super::anim::on().then(|| match depth {
+        3 => data,
+        _ => data
+            .chunks(depth.max(1))
+            .flat_map(|px| {
+                [
+                    px[0],
+                    px.get(1).copied().unwrap_or(px[0]),
+                    px.get(2).copied().unwrap_or(px[0]),
+                ]
+            })
+            .collect(),
+    });
+    Fade {
+        under,
+        sharp,
+        size: (w as i32, h as i32),
+        now: None,
+    }
 }
 
 /// `data` (`w` x `h`, `depth` bytes a pixel) blurred and darkened by `dim` (0 to 1): made small, blurred
 /// there and made big again, so it costs little however big the window is. RGB out.
 pub(super) fn frost(data: &[u8], w: usize, h: usize, depth: usize, dim: f32) -> Vec<u8> {
-    const F: usize = 6;
+    const F: usize = 8;
     let (sw, sh) = ((w / F).max(1), (h / F).max(1));
     // Small: each pixel the average of the block it stands for.
     let mut small = vec![0f32; sw * sh * 3];
@@ -243,9 +341,9 @@ pub(super) fn frost(data: &[u8], w: usize, h: usize, depth: usize, dim: f32) -> 
             }
         }
     }
-    // Blurred: a box across and down, three times (close to a Gaussian).
+    // Blurred: a box across and down, four times (close to a Gaussian, with no edges left).
     let mut tmp = small.clone();
-    for _ in 0..3 {
+    for _ in 0..4 {
         box_pass(&small, &mut tmp, sw, sh, true);
         box_pass(&tmp, &mut small, sw, sh, false);
     }
@@ -271,9 +369,9 @@ pub(super) fn frost(data: &[u8], w: usize, h: usize, depth: usize, dim: f32) -> 
     out
 }
 
-/// One box blur (radius 2) along rows (`across`) or columns.
+/// One box blur (radius 3) along rows (`across`) or columns.
 fn box_pass(src: &[f32], dst: &mut [f32], w: usize, h: usize, across: bool) {
-    const R: isize = 2;
+    const R: isize = 3;
     let (len, lines) = if across { (w, h) } else { (h, w) };
     let at = |line: usize, i: usize| if across { line * w + i } else { i * w + line };
     for line in 0..lines {
@@ -341,6 +439,7 @@ pub fn window_tone(w: i32, h: i32, title: &str, tone: Tone) -> (Dialog, Answer) 
                 scrim: None,
                 focus,
                 head: 0,
+                fade: Rc::default(),
             },
             answer,
         );
@@ -355,8 +454,8 @@ pub fn window_tone(w: i32, h: i32, title: &str, tone: Tone) -> (Dialog, Answer) 
         }
         _ => false,
     });
-    let head = if title.is_empty() { 0 } else { HEAD };
-    let under = frosted(&host);
+    let head = head_for(title);
+    let fade = Rc::new(RefCell::new(frosted(&host)));
     let shade: Rc<std::cell::RefCell<Option<Shade>>> = Rc::default();
     let (tint, _) = tone.look();
     let title = title.to_string();
@@ -372,7 +471,7 @@ pub fn window_tone(w: i32, h: i32, title: &str, tone: Tone) -> (Dialog, Answer) 
     x.set_down_frame(FrameType::NoBox);
     x.clear_visible_focus();
     x.set_tooltip(tr("dialogs.close"));
-    if head == 0 {
+    if title.is_empty() {
         x.hide();
     }
     x.draw(|b| {
@@ -404,13 +503,14 @@ pub fn window_tone(w: i32, h: i32, title: &str, tone: Tone) -> (Dialog, Answer) 
     host.end();
     fltk::group::Group::set_current(was.as_ref());
     scrim.draw({
-        let (title, win) = (title.clone(), win.clone());
+        let (title, win, fade) = (title.clone(), win.clone(), fade.clone());
         move |s| {
             if s.damage_type() == Damage::Child {
                 return;
             }
             let (sw, sh) = (s.w(), s.h());
-            match &under {
+            let f = fade.borrow();
+            match f.now.as_ref().or(f.under.as_ref()) {
                 Some(img) if img.w() == sw && img.h() == sh => img.clone().draw(0, 0, sw, sh),
                 Some(img) => {
                     let mut i = img.clone();
@@ -489,10 +589,7 @@ pub fn window_tone(w: i32, h: i32, title: &str, tone: Tone) -> (Dialog, Answer) 
                 return;
             }
             place(&host, &mut win, head);
-            let (px, py, pw, _) = panel(&win, head);
-            if let Some(mut b) = s.child(0) {
-                b.resize(px + pw - 38, py + 8, 28, 28);
-            }
+            place_close(s, &win, head);
             s.redraw();
         }
     });
@@ -502,6 +599,7 @@ pub fn window_tone(w: i32, h: i32, title: &str, tone: Tone) -> (Dialog, Answer) 
             scrim: Some(scrim),
             focus,
             head,
+            fade,
         },
         answer,
     )
@@ -513,11 +611,26 @@ type Shade = ((i32, i32), RgbImage);
 /// How far a dialog's shadow spreads.
 const SHADOW: i32 = 22;
 
+/// The room above a dialog's contents: its title row, or with no title as much as below them, so the
+/// panel's top edge and round corners show (the contents are square and would cover them).
+fn head_for(title: &str) -> i32 {
+    if title.is_empty() {
+        RADIUS
+    } else {
+        HEAD
+    }
+}
+
 /// The panel a dialog's contents sit in (x, y, w, h): its title row above them, and room below them
 /// for its round corners.
 fn panel(win: &DoubleWindow, head: i32) -> (i32, i32, i32, i32) {
-    // A pixel wider on each side than its contents: they never cover its border.
-    (win.x() - 1, win.y() - head, win.w() + 2, win.h() + head + RADIUS)
+    panel_around((win.x(), win.y(), win.w(), win.h()), head)
+}
+
+/// `panel` for contents at `(x, y, w, h)`. A pixel wider on each side than them: they never cover its
+/// border.
+fn panel_around((x, y, w, h): (i32, i32, i32, i32), head: i32) -> (i32, i32, i32, i32) {
+    (x - 1, y - head, w + 2, h + head + RADIUS)
 }
 
 /// Puts `win` in the middle of `host` (below its title row), made smaller to fit when it doesn't.
@@ -637,9 +750,11 @@ fn notice_of(tone: Tone, text: &str, buttons: &[&str], default: usize, escapable
     let lines = wrap(text, room, |t| draw::width(t) as i32);
     let w = PAD * 2 + PIC + GAP + room;
     let body = (lines.len() as i32 * LINE).max(PIC);
-    let h = PAD * 2 + body + 18 + ROW;
+    // The panel has room above and below the contents already (for its corners): PAD in all.
+    let (top, bottom) = (PAD - head_for(""), PAD - RADIUS);
+    let h = top + body + 18 + ROW + bottom;
     let (mut win, answer) = window_tone(w, h, "", tone);
-    let mut col = Flex::new(PAD, PAD, w - PAD * 2, h - PAD * 2, None).column();
+    let mut col = Flex::new(PAD, top, w - PAD * 2, h - top - bottom, None).column();
     col.set_pad(18);
     let mut top = Flex::default().row();
     top.set_pad(GAP);
@@ -1463,6 +1578,33 @@ mod wrap_tests {
     #[test]
     fn a_room_narrower_than_a_letter_still_ends() {
         assert_eq!(wrap("abc", 1, w).concat(), "abc");
+    }
+}
+
+#[cfg(test)]
+mod panel_tests {
+    use super::{head_for, panel_around, RADIUS};
+
+    /// Whether the point `(x, y)` is at least `gap` px inside the rounded rect `(px, py, pw, ph)`.
+    fn inside((x, y): (i32, i32), (px, py, pw, ph): (i32, i32, i32, i32), r: i32, gap: f32) -> bool {
+        let cx = x.clamp(px + r, px + pw - r);
+        let cy = y.clamp(py + r, py + ph - r);
+        let from_centre = ((x - cx) as f32).hypot((y - cy) as f32);
+        x >= px && y >= py && x <= px + pw && y <= py + ph && from_centre <= r as f32 - gap
+    }
+
+    #[test]
+    fn a_dialogs_border_shows_all_round_with_or_without_a_title() {
+        // The contents are square and painted over the panel: none of their corners may reach its
+        // border (a notice, with no title, covered its top edge and its round corners).
+        for title in ["", "OBS connection"] {
+            let (x, y, w, h) = (300, 200, 400, 120);
+            let p = panel_around((x, y, w, h), head_for(title));
+            assert!(p.1 < y, "{title:?}: the panel's top edge is above the contents");
+            for corner in [(x, y), (x + w - 1, y), (x, y + h - 1), (x + w - 1, y + h - 1)] {
+                assert!(inside(corner, p, RADIUS + 2, 0.5), "{title:?}: {corner:?} covers {p:?}");
+            }
+        }
     }
 }
 

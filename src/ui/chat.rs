@@ -4773,6 +4773,7 @@ fn emote_picker_popup(
     style_tabs(default_tab);
     fill(false);
     let _ = search.take_focus();
+    pop.unroll();
 
     let mut pics = img::ARRIVED.load(std::sync::atomic::Ordering::Relaxed);
     let mut seen_rev = emotes::REV.load(std::sync::atomic::Ordering::Relaxed);

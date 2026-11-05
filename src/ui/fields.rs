@@ -1,13 +1,15 @@
 //! Form pieces for dialogs that ask for a few things: a field with an icon and a hint in it (no label
-//! column), a list of fields that grows as it's filled, and a chip (a platform's logo and name, on or
-//! off). Short forms ask only what's needed, and show a field only when it's needed.
+//! column), a list of fields that grows as it's filled, a chip (a platform's logo and name, on or
+//! off), and a secret (a password or a token, hidden until asked). Short forms ask only what's needed,
+//! and show a field only when it's needed.
 
 use super::ROW;
-use fltk::button::ToggleButton;
+use crate::i18n::tr;
+use fltk::button::{Button, ToggleButton};
 use fltk::enums::{Align, Color, Event, Font, FrameType};
 use fltk::frame::Frame;
 use fltk::group::Flex;
-use fltk::input::Input;
+use fltk::input::{Input, InputType};
 use fltk::prelude::*;
 use fltk::{app, draw};
 use std::cell::{Cell, RefCell};
@@ -198,6 +200,45 @@ pub fn chip(row: &mut Flex, label: &str, logo: Option<fltk::image::SvgImage>, on
     });
     row.fixed(&b, w);
     b
+}
+
+/// A password or a token: dots until the eye after it is clicked (clicked again, dots again). Put in a
+/// row (`row`); it takes the room left there.
+pub fn secret(row: &mut Flex, value: &str) -> Input {
+    let mut input = Input::default();
+    input.set_type(InputType::Secret);
+    input.set_value(value);
+    let mut eye = Button::default();
+    row.fixed(&eye, ROW + 4);
+    show_eye(&mut eye, false);
+    eye.set_callback({
+        let mut input = input.clone();
+        move |b| {
+            let shown = !revealed(&input);
+            input.set_type(if shown { InputType::Normal } else { InputType::Secret });
+            input.redraw();
+            show_eye(b, shown);
+        }
+    });
+    input
+}
+
+/// Whether a secret's text shows.
+pub fn revealed(input: &Input) -> bool {
+    input.get_type::<InputType>() != InputType::Secret
+}
+
+/// The eye says what a click does: show the text (an open eye) or hide it again (crossed out).
+fn show_eye(b: &mut Button, shown: bool) {
+    let (icon, tip) = if shown {
+        ("eye-off", tr("fields.hide_secret"))
+    } else {
+        ("eye", tr("fields.show_secret"))
+    };
+    b.set_image(super::icons::icon(icon, super::button_ink(), 16));
+    b.set_align(Align::Center | Align::Inside);
+    b.set_tooltip(tip);
+    b.redraw();
 }
 
 /// A small icon before a control in a row (a timer before a duration...).

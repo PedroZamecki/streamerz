@@ -67,7 +67,7 @@
 - Every list and tree with actions gets a right-click menu with the same actions as its buttons.
 - The UI is modular: one look, one module. Scrolling is `ui/scroll.rs`, menus and dropdowns `ui/menu.rs`,
   floating panels `ui/popover.rs`, dialogs and messages `ui/dialogs.rs` (inside the app's window, never a
-  window of their own), short forms `ui/fields.rs` (see "Building blocks" in `docs/UI.md`). Never style FLTK's raw widget
+  window of their own), short forms and secret fields `ui/fields.rs`, tables `ui/rows.rs`, motion `ui/anim.rs` (see "Building blocks" in `docs/UI.md`). Never style FLTK's raw widget
   for one screen: change or extend the shared block so every screen gets it, and `ui/rules.rs` fails the
   tests when a screen bypasses one.
 - Set it up for the user: configure everything possible by itself (find what's installed, read what's

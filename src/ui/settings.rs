@@ -354,6 +354,24 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
         }
     });
 
+    let r = setting(
+        &mut col,
+        &mut rows,
+        tr("settings.animations"),
+        tr("settings.animations.about"),
+        44,
+    );
+    let mut moving = switch(cfg.borrow().animations);
+    done(r, &moving);
+    moving.set_callback({
+        let cfg = cfg.clone();
+        move |b| {
+            let on = b.value();
+            put(&cfg, |c| c.animations = on);
+            super::anim::set(on);
+        }
+    });
+
     section(&mut col, tr("settings.memory"), "power");
     let r = setting(
         &mut col,

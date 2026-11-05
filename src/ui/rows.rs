@@ -16,7 +16,7 @@ const LINE: i32 = 28;
 const BAR: i32 = super::scroll::BAR;
 
 /// How a column draws its cells (text unless said).
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Cell {
     /// `key|text`: a logo (or else a Lucide icon) named `key`, then the text.
     Lead,
@@ -25,9 +25,23 @@ pub enum Cell {
     /// A path or address: quiet, cut with an ellipsis, underlined under the mouse (the click is the
     /// page's to use, see `column`).
     Link,
+    /// `1` or `0`: a switch, turned by a click on it or Space (see `on_switch`). Empty: none.
+    Switch,
+    /// `icon|rrggbb|text`: a state (Connected...), its icon and its words in its colour.
+    State,
+    /// `icon|text` (or just `text`): a detail, quiet, with a Lucide icon before it.
+    Note,
+    /// `text`: a small label in a rounded outline (default, manual...). Empty: none.
+    Badge,
+    /// Platforms (`twitch,youtube`): their logos side by side, named on hover.
+    Logos,
 }
 
+/// A switch in a row: its size.
+const SWITCH: (i32, i32) = (28, 16);
+
 type Cb = Box<dyn FnMut(&mut Rows)>;
+type Switched = Box<dyn FnMut(&mut Rows, i32)>;
 type Keys = Box<dyn FnMut(&mut Rows, Key) -> bool>;
 
 #[derive(Default)]
@@ -62,6 +76,8 @@ pub struct Rows {
     st: Rc<RefCell<State>>,
     cb: Rc<RefCell<Option<Cb>>>,
     keys: Rc<RefCell<Option<Keys>>>,
+    /// What a click on a line's switch (or Space) does, given the line.
+    switched: Rc<RefCell<Option<Switched>>>,
     /// What a right click offers.
     menu: Rc<RefCell<Vec<fltk::button::Button>>>,
 }
@@ -99,10 +115,16 @@ fn cell_text(value: &str, kind: Option<Cell>, picture: bool) -> Option<&str> {
         return None;
     }
     match kind {
-        Some(Cell::Status) => value.splitn(3, '|').nth(2),
-        Some(Cell::Lead) => Some(value.split_once('|').map_or(value, |(_, label)| label)),
+        Some(Cell::Status | Cell::State) => value.splitn(3, '|').nth(2),
+        Some(Cell::Lead | Cell::Note) => Some(value.split_once('|').map_or(value, |(_, label)| label)),
+        Some(Cell::Switch) => None,
         _ => Some(value),
     }
+}
+
+/// The platforms in a `Logos` cell, named.
+fn platforms(value: &str) -> impl Iterator<Item = &str> {
+    value.split(',').map(str::trim).filter(|p| !p.is_empty())
 }
 
 fn tone(hex: &str) -> Color {
@@ -130,6 +152,7 @@ impl Rows {
             })),
             cb: Rc::default(),
             keys: Rc::default(),
+            switched: Rc::default(),
             menu: Rc::default(),
         };
         area.draw({
@@ -198,6 +221,26 @@ impl Rows {
     /// The keys it doesn't use itself (all but the arrows, Page Up/Down, Home and End); true if used.
     pub fn set_keys(&mut self, f: impl FnMut(&mut Rows, Key) -> bool + 'static) {
         *self.keys.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Runs when the switch of line `n` is clicked (after the line is selected), or Space is pressed.
+    pub fn on_switch(&mut self, f: impl FnMut(&mut Rows, i32) + 'static) {
+        *self.switched.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Whether the last click landed on a switch (a page doesn't open the line for it).
+    pub fn clicked_switch(&self) -> bool {
+        let st = self.st.borrow();
+        st.col
+            .is_some_and(|c| st.cells.get(c).copied().flatten() == Some(Cell::Switch))
+    }
+
+    fn switch(&mut self, n: i32) {
+        let f = self.switched.borrow_mut().take();
+        if let Some(mut f) = f {
+            f(self, n);
+            self.switched.borrow_mut().get_or_insert(f);
+        }
     }
 
     /// A right click selects the line under it and offers these buttons' actions.
@@ -317,6 +360,8 @@ impl Rows {
         draw::push_clip(x + 2, y + 2, w - 4, h - 4);
         let fg = Color::Foreground;
         let first = st.top / LINE;
+        // A line's switch says it's off already.
+        let switches = st.cells.contains(&Some(Cell::Switch));
         for (i, l) in st.lines.iter().enumerate().skip(first as usize) {
             let n = i as i32 + 1;
             let ly = y + 2 + i as i32 * LINE - st.top;
@@ -352,7 +397,8 @@ impl Rows {
             for (c, col) in l.split('\t').enumerate() {
                 let (offset, cw) = columns.cell(c);
                 let cx = x + INSET + offset;
-                let trailing = 8 + if off && c + 1 == st.columns { 24 } else { 0 };
+                let marked = off && !switches && c + 1 == st.columns;
+                let trailing = 8 + if marked { 24 } else { 0 };
                 let mut at = cx;
                 draw::push_clip(cx, ly, cw.max(0), LINE);
                 if c == 0 {
@@ -395,6 +441,81 @@ impl Rows {
                         }
                         draw::set_draw_color(text);
                     }
+                    Some(Cell::Switch) if !col.is_empty() => {
+                        let on = col == "1";
+                        let (sw, sh) = SWITCH;
+                        let sy = ly + (LINE - sh) / 2;
+                        let track = if on {
+                            Color::Selection
+                        } else {
+                            Color::color_average(fg, back, 0.28)
+                        };
+                        draw::set_draw_color(track);
+                        draw::draw_rounded_rectf(at, sy, sw, sh, sh / 2);
+                        let knob = sh - 4;
+                        let kx = if on { at + sw - knob - 2 } else { at + 2 };
+                        draw::set_draw_color(if on { Color::White } else { back });
+                        draw::draw_pie(kx, sy + 2, knob, knob, 0.0, 360.0);
+                        draw::set_draw_color(text);
+                    }
+                    Some(Cell::Switch) => {}
+                    Some(Cell::State) => {
+                        let mut parts = col.splitn(3, '|');
+                        let (name, color) = (parts.next().unwrap_or(""), tone(parts.next().unwrap_or("")));
+                        let words = parts.next().unwrap_or("");
+                        let color = if off {
+                            Color::color_average(color, back, 0.6)
+                        } else {
+                            color
+                        };
+                        if let Some(mut icon) = super::icons::icon(name, color, 16) {
+                            icon.draw(at, ly + (LINE - 16) / 2, 16, 16);
+                            at += 22;
+                        }
+                        draw::set_draw_color(color);
+                        let shown = fit(words, columns.text_room(c, at - cx, trailing));
+                        draw::draw_text(&shown, at, base);
+                        draw::set_draw_color(text);
+                    }
+                    Some(Cell::Note) => {
+                        let (icon, words) = col.split_once('|').unwrap_or(("", col));
+                        let quiet = if n == st.sel {
+                            Color::color_average(text, back, 0.8)
+                        } else {
+                            Color::color_average(text, back, 0.62)
+                        };
+                        if !words.is_empty() {
+                            if let Some(mut i) = super::icons::icon(icon, quiet, 14) {
+                                i.draw(at, ly + (LINE - 14) / 2, 14, 14);
+                                at += 20;
+                            }
+                        }
+                        draw::set_draw_color(quiet);
+                        let shown = fit(words, columns.text_room(c, at - cx, trailing));
+                        draw::draw_text(&shown, at, base);
+                        draw::set_draw_color(text);
+                    }
+                    Some(Cell::Badge) if !col.is_empty() => {
+                        draw::set_font(Font::Helvetica, 12);
+                        let shown = fit(col, columns.text_room(c, at - cx, trailing) - 14);
+                        let bw = draw::width(&shown) as i32 + 14;
+                        let (bh, by) = (18, ly + (LINE - 18) / 2);
+                        draw::set_draw_color(Color::color_average(text, back, 0.35));
+                        draw::draw_rounded_rect(at, by, bw, bh, bh / 2);
+                        draw::set_draw_color(Color::color_average(text, back, 0.8));
+                        draw::draw_text2(&shown, at, by, bw, bh, Align::Center);
+                        draw::set_font(Font::Helvetica, 14);
+                        draw::set_draw_color(text);
+                    }
+                    Some(Cell::Badge) => {}
+                    Some(Cell::Logos) => {
+                        for p in platforms(col) {
+                            if let Some(mut icon) = super::img::logo(super::img::platform_name(p), 16) {
+                                icon.draw(at, ly + (LINE - 16) / 2, 16, 16);
+                                at += 22;
+                            }
+                        }
+                    }
                     None if st.logo == Some(c) => {
                         if let Some(mut icon) = super::img::logo(super::img::platform_name(col), 16) {
                             icon.draw(at, ly + (LINE - 16) / 2, 16, 16);
@@ -414,7 +535,7 @@ impl Rows {
                         draw::draw_text(&shown, at, base);
                     }
                 }
-                if off && c + 1 == st.columns {
+                if marked {
                     if let Some(mut icon) = super::icons::icon("power-off", text, 14) {
                         icon.draw((cx + cw - 20).max(cx), ly + (LINE - 14) / 2, 14, 14);
                     }
@@ -470,10 +591,28 @@ impl Rows {
                     if st.logo == Some(c) && st.pic != Some(c) {
                         return Some(super::img::platform_name(value).to_string());
                     }
+                    match st.cells.get(c).copied().flatten() {
+                        Some(Cell::Switch) if !value.is_empty() => {
+                            return Some(
+                                crate::i18n::tr(if value == "1" {
+                                    "rows.switch_on"
+                                } else {
+                                    "rows.switch_off"
+                                })
+                                .to_string(),
+                            );
+                        }
+                        Some(Cell::Logos) => {
+                            let names: Vec<&str> = platforms(value).map(super::img::platform_name).collect();
+                            return (!names.is_empty()).then(|| names.join(", "));
+                        }
+                        _ => {}
+                    }
                     cell_text(value, st.cells.get(c).copied().flatten(), st.pic == Some(c)).map(str::to_string)
                 });
                 let columns = layout(st.widths, st.columns, f.w());
                 let off = st.off.get(usize::try_from(n - 1).unwrap_or(usize::MAX)) == Some(&true)
+                    && !st.cells.contains(&Some(Cell::Switch))
                     && self.column_at(&st, f) == st.columns.checked_sub(1)
                     && app::event_x() >= f.x() + INSET + columns.width() - 24;
                 let tip = if off {
@@ -511,11 +650,23 @@ impl Rows {
                 if n > 0 {
                     st.sel = n;
                 }
+                let switch = n > 0
+                    && !super::right_button()
+                    && st.col.is_some_and(|c| {
+                        st.cells.get(c).copied().flatten() == Some(Cell::Switch)
+                            && st.lines[(n - 1) as usize]
+                                .split('\t')
+                                .nth(c)
+                                .is_some_and(|v| !v.is_empty())
+                    });
                 // Not held over what follows: the menu going away moves the focus, which comes back here.
                 drop(st);
                 if n > 0 {
                     f.redraw();
                     self.fire();
+                }
+                if switch {
+                    self.switch(n);
                 }
                 if super::right_button() {
                     let menu = self.menu.borrow().clone();
@@ -550,6 +701,12 @@ impl Rows {
                     Key::PageDown => st.sel + page,
                     Key::Home => 1,
                     Key::End => len,
+                    k if k == Key::from_char(' ') && st.sel > 0 && st.cells.contains(&Some(Cell::Switch)) => {
+                        let n = st.sel;
+                        drop(st);
+                        self.switch(n);
+                        return true;
+                    }
                     k => {
                         drop(st);
                         let f = self.keys.borrow_mut().take();
@@ -597,6 +754,16 @@ mod tests {
         );
         assert_eq!(cell_text("circle-alert|e06050", Some(Cell::Status), false), None);
         assert_eq!(cell_text("https://example.com/avatar.png", None, true), None);
+        assert_eq!(cell_text("1", Some(Cell::Switch), false), None);
+        assert_eq!(
+            cell_text("circle-check|3cb371|Connected", Some(Cell::State), false),
+            Some("Connected")
+        );
+        assert_eq!(cell_text("timer|10 s each", Some(Cell::Note), false), Some("10 s each"));
+        assert_eq!(
+            super::platforms("twitch, youtube,").collect::<Vec<_>>(),
+            ["twitch", "youtube"]
+        );
     }
 
     #[test]

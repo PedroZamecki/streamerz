@@ -118,6 +118,8 @@ pub struct Config {
     start_hidden: bool,
     /// Aggressive background mode, applied on restart. Existing Community files stay untouched.
     memory_saver: bool,
+    /// Dialogs, menus and floating panels move as they come and go (Settings, Appearance).
+    animations: bool,
     autostart: bool,
     /// Keep [DEBUG] lines in the log.
     debug_log: bool,
@@ -216,6 +218,7 @@ impl Default for Config {
             locale: String::new(),
             start_hidden: true,
             memory_saver: false,
+            animations: true,
             autostart: false,
             debug_log: false,
             actions: model::ActionsFile::default(),

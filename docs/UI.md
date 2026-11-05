@@ -34,8 +34,10 @@ raw FLTK widget for something a block covers.
 | A dialog | `dialogs::window` (or `window_tone`), then `dialogs::run`, or `open`/`close` for a live one | a window of its own, `make_modal` |
 | A message or a question | `dialogs::message`, `success`, `alert` (warning), `error`, `choice`, `danger` (can't be undone), `pick_one` | `fltk::dialog::alert_default` and the like |
 | A short form in a dialog | `fields::field` (icon and hint, no label column), `fields::Growing` (grows as it's filled), `fields::chip` (a platform to pick) | a column of labels and empty fields |
+| A password or a token | `fields::secret` (forms: `W::Secret`): dots, and an eye that shows what's typed | `SecretInput`, or a plain field |
+| Something that comes and goes | `anim::play` (eased, short, off in Settings); popovers and dialogs already animate | a timer of its own, or a delay |
 | A row of buttons | `grid()` | buttons placed by hand |
-| A list | `Rows` with `header()` | `Browser` |
+| A list | `Rows` with `header()`, each column's look set with `set_cell` (see Lists and actions) | `Browser` |
 | A connection's state | `Health::show` | a coloured label |
 
 Scrolling: the wheel scrolls what is under the pointer when it can scroll (a list, a text view), else the
@@ -48,6 +50,11 @@ close button (X, and Escape, cancel), a rounded panel with a soft shadow, and it
 the border and the icon: plain, info, question, success, warning, error. A dialog grows or shrinks with its
 contents (`Dialog::resizer`). Only when the window is hidden in the tray does a dialog get a window of its own.
 
+Motion: a dialog rises into place while the window behind it fades from sharp to blurred, and sinks as it
+closes; a menu or a popover unrolls from the top. Everything moves through `anim::play` (eased out, under a
+fifth of a second, events still handled), and nothing moves when Animations is off in Settings or with the
+memory saver.
+
 Menus: a rounded panel with a quiet border, roomy rows, a Lucide icon per item when any has one (a tick for
 toggles and a dropdown's current choice), dividing lines between groups, greyed items that can't be picked.
 They take the mouse and the keyboard: arrows, Home, End, Enter, Space, Escape, and first letters. From the
@@ -57,7 +64,23 @@ room) and lines up with its right edge when it would leave the window.
 ## Lists and actions
 
 Use `Rows` for lists and `header()` for column titles when columns need names. Make each row easy to scan:
-put its identifying value first and keep secondary details brief. Give an empty list a useful hint that
+put its identifying value first and keep secondary details brief. Show what a row is, not only its name:
+each column says how it draws (`Rows::set_cell`), and the MCP and Stream Apps pages show the pattern:
+
+| Cell | Holds | For |
+|---|---|---|
+| `Switch` | `1` or `0` | the row's on/off flag, turned in place (a click or Space, see `on_switch`); first column |
+| `Lead` | `logo-or-icon\|text` | what the row is (an app's logo and its name) |
+| `State` | `icon\|rrggbb\|text` | a live state in its colour (Connected, Found, Not found) |
+| `Status` | `icon\|rrggbb\|tip` | a state as an icon alone, explained on hover |
+| `Note` | `icon\|text` | a quiet detail (every 5 s, 10 s each, Moderators) |
+| `Badge` | `text` | a short tag in an outline (default, *.png) |
+| `Link` | a path or address | quiet, underlined on hover |
+| `Logos` | `twitch,youtube` | the platforms something applies to |
+
+A list of things that can be turned off gives each row a switch (and dims the row when off) instead of
+writing "disabled" in a column. A list of connections shows each one's live state and connects or
+disconnects the selected one, not only all of them. Give an empty list a useful hint that
 explains what belongs there or how to add it. Use search when it helps users find items in a long list.
 
 Put related actions together using `grid()`, which fills the available width and folds to icons when narrow.
