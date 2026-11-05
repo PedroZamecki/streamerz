@@ -36,7 +36,7 @@ phase, following `CLAUDE.md`.
 | OS | Windows + Linux (Wayland, ksni tray). CI releases a Windows exe and the Linux AppImage on every release. |
 | Budget | Hidden window, Twitch + OBS connected: < 25 MB RSS and ~0% idle CPU, measured and written in every PR. Streamer.bot uses ~300 MB. |
 | Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, fltk, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only). No webview (wry/tao were removed in 1.1.0: TikTok uses the user's own browser). **image-webp** (WebP emotes and avatars; FLTK decodes the other formats itself). HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. **tokio-native-tls** (the crate tokio-tungstenite's native-tls feature uses, for HTTPS), **regex-lite** (If/Else, While, Switch and regex commands; .NET's backreferences and lookaround aren't supported). Anything else needs a question first. |
-| TikTok | Read LIVE chat and events natively through `webcast.rs`, without a bridge. Streamerz does not send TikTok messages: TikTok has no public LIVE chat sending API and its private requests require browser signing. An optional broadcaster login can help with restricted rooms. Login uses an installed Chromium-based browser in a separate profile, with no browser kept running for chat. Imported TikTok send sub-actions are kept for compatibility but do not send. |
+| TikTok | Read LIVE chat and events natively through `webcast.rs`, without a bridge. Sending goes through the user's own browser (`tiktok_bridge.rs`): the Streamerz for TikTok extension keeps one light TikTok tab open while Streamerz runs and makes requests in it, so TikTok's own scripts sign them (msToken, X-Bogus, X-Gnarly, X-Dynosaur, ticket guard, csrf); Streamerz reimplements none of that signing. Messages go out as the browser's TikTok account. An optional login can help with restricted rooms; it uses an installed Chromium-based browser in a separate profile. |
 | Chat commands | Commands keep Streamer.bot's `sources` bitmask (Twitch 1/2/8, YouTube 1024, Kick 2097152, TikTok 4194304), so each command chooses its platforms. Built-in commands (`!commands`, `!command add/edit/remove`, `!command platforms`, `!so`, `!uptime`, `!title`) are normal commands created on first run, editable and disable-able. Replies go to the platform the command came from; a command can opt in to reply on all connected platforms. |
 | Not in scope | Meld, PolyPop, Elgato, VTube Studio/Voicemod/Speaker.bot/TITS/Crowd Control/HypeRate/Pulsoid/Lumia/Streamfog/mtion, the Streamer.bot website integration/cloud, C# and plugins. |
 | Later (own phases, after phase 14) | Quotes, credits, points, users/first words; sounds and TTS; file I/O, file tail, folder watcher, process triggers; hotkeys/inputs, MIDI, voice control; Decks, HTML overlay, multi-platform chat window. |
@@ -539,6 +539,20 @@ platform handles through channels, never through shared locks held across awaits
 - [ ] Complete Windows and real Twitch + OBS profiling. Linux release-profile synthetic, restart,
   sustained SSD, allocation, and UI reclamation comparisons are recorded in the experiment report.
 
+## Version 1.4.1
+
+- [x] Twitch standalone GIF messages: show the animated picture below the sender in live chat and history,
+  with the title as fallback.
+- [x] Active emote-only and slow modes above the composer, with the platform named in combined chat.
+- [x] TikTok sending through the user's own browser. The Streamerz for TikTok extension
+  (`assets/tiktok-extension`, loaded unpacked from the folder Streamerz writes next to `streamerz.json`)
+  connects to the WebSocket server on `/streamerz/tiktok`: only its fixed extension ID, only with the token
+  Streamerz wrote, and the path doesn't exist until sending is set up. It keeps one pinned, muted TikTok tab
+  (`/live/history/center`) with pictures, video, fonts, telemetry and feed refreshes blocked (about 110 MB
+  in the browser, about 1% idle CPU), closed when Streamerz closes, and runs requests inside it. Chat,
+  `SendMessage` and the TikTok Send Message sub-action (43001) send as the browser's account, and the reader
+  confirms each message. Accounts > TikTok > Sending sets it up and removes it; MCP tool `tiktok_bridge`.
+
 ## Open points (decide when the phase starts, ask first)
 
 - Points: its sub-actions are new in Streamer.bot 1.1.0, unreleased (1.0.7 is the latest). When it's out,
@@ -555,5 +569,3 @@ platform handles through channels, never through shared locks held across awaits
 - Phase 10: Kick Pusher app key and chatroom id lookup (kick.com's v2 channel endpoint may sit behind
   Cloudflare). Check, and fall back to the official API ids.
 - Phase 13: integrations whose only transport is Streamer.bot's website relay.
-
-- [x] Twitch standalone GIF messages: show the animated picture below the sender in live chat and history, with the title as fallback.
