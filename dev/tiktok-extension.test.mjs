@@ -9,16 +9,24 @@ function worker() {
   const chrome = {
     runtime: { id: "lhijoeeghjcohapolkfkacipklhbnecc", getContexts: async () => state.contexts,
       getManifest: () => ({ version: "1.1.0" }), sendMessage: async m => { state.messages.push(m); return state.reply(m); },
-      onStartup: { addListener() {} }, onInstalled: { addListener() {} } },
+      getURL: path => "chrome-extension://test/" + path, onStartup: { addListener() {} }, onInstalled: { addListener() {} } },
     offscreen: { createDocument: async () => { state.creates++; state.contexts = [{}]; },
       closeDocument: async () => { state.closes++; state.contexts = []; } },
     declarativeNetRequest: { updateSessionRules: async r => { state.rules.push(r); } },
-    tabs: { create: async t => { state.tabs.push(t); } },
+    tabs: { create: async t => { state.tabs.push({ ...t, id: (state.nextTabId = (state.nextTabId || 0) + 1), windowId: t.windowId ?? 1 }); },
+      query: async q => state.tabs.filter(t => (q?.windowId == null || t.windowId === q.windowId) && (!q?.url || (t.url || "").startsWith(q.url.replace(/\*$/, "")))),
+      update: async (id, changes) => { Object.assign(state.tabs.find(t => t.id === id), changes); },
+      remove: async id => { state.tabs = state.tabs.filter(t => t.id !== id); },
+      onUpdated: { addListener(f) { state.tabUpdated = f; } } },
+    windows: { update: async () => {} },
     cookies: { getAll: async () => state.cookies,
       onChanged: { addListener(f) { state.cookieChanged = f; } } },
     alarms: { create() {}, onAlarm: { addListener() {} } },
   };
-  const context = vm.createContext({ chrome, self: { STREAMERZ: {} }, importScripts() {}, setInterval() {}, WebSocket: { OPEN: 1 }, console });
+  state.settings = {};
+  state.sockets = [];
+  class Socket { static OPEN = 1; constructor(url) { this.url = url; this.readyState = 1; state.sockets.push(this); } send() {} }
+  const context = vm.createContext({ chrome, fetch: async () => ({ ok: true, json: async () => ({ ...state.settings }) }), self: { STREAMERZ: {} }, importScripts() {}, setInterval() {}, WebSocket: Socket, console });
   vm.runInContext(readFileSync(new URL("../assets/tiktok-extension/bridge.js", import.meta.url), "utf8"), context);
   const call = request => vm.runInContext(`handle(${JSON.stringify(request)})`, context);
   return { state, context, call };
@@ -97,7 +105,7 @@ test("login redirects report sign-in immediately, without an idle loading loop",
 test("logged-out accounts do not load an expensive context or open a window", async () => {
   const { state, call } = worker();
   state.cookies = [];
-  await assert.rejects(call({ op: "page" }), /Log in/);
+  await assert.rejects(call({ op: "page" }), error => error.code === "login_required");
   assert.equal(state.creates, 0);
   assert.equal(state.tabs.length, 0);
 });
@@ -118,4 +126,35 @@ test("disconnect during creation cannot reopen an orphaned context", async () =>
   await closing;
   assert.equal(state.contexts.length, 0);
   assert.equal(state.messages.length, 0);
+});
+
+
+test("repeated login requests reuse the existing TikTok sign-in tab", async () => {
+  const { state, call } = worker();
+  await call({ op: "login" });
+  await call({ op: "login" });
+  assert.equal(state.tabs.length, 1);
+  assert.equal(state.tabs[0].active, true);
+});
+
+test("reconnecting rereads pairing settings, wakes on setup tab, and cleans up setup tabs on pair", async () => {
+  const { state, context } = worker();
+  await new Promise(resolve => setImmediate(resolve));
+  state.settings = { url: "ws://127.0.0.1:8090/streamerz/tiktok", token: "first" };
+  await vm.runInContext("connect()", context);
+  assert.equal(state.sockets.length, 1);
+  state.sockets[0].onclose();
+
+  // Opening tiktok-setup.html wakes connect() immediately, and pairing closes the setup tab while keeping the window alive.
+  state.tabs = [{ id: 10, windowId: 1, url: "file:///tmp/tiktok-setup.html" }];
+  state.settings = { url: "ws://127.0.0.1:8091/streamerz/tiktok", token: "second" };
+  state.tabUpdated(10, { url: "file:///tmp/tiktok-setup.html" });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(state.sockets.length, 2);
+  assert.equal(state.sockets[1].url, state.settings.url);
+
+  await state.sockets[1].onmessage({ data: JSON.stringify({ id: 1, op: "session" }) });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(state.tabs.some(t => (t.url || "").includes("tiktok-setup.html")), false);
+  assert.equal(state.tabs.length, 1);
 });

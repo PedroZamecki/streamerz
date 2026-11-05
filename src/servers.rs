@@ -1988,6 +1988,7 @@ mod tests {
             .unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             assert_eq!(e.tiktok_bridge.error(), "Log in to TikTok");
+            assert!(e.tiktok_bridge.login_required());
             assert!(!e.tiktok_bridge.ready());
             // It goes away with its socket.
             ws.close(None).await.unwrap();

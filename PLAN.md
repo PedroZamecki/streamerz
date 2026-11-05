@@ -569,6 +569,11 @@ platform handles through channels, never through shared locks held across awaits
   Reuse the browser device cookie, recheck signing state when reopening setup after a transient error,
   and never replay a send. Keep validation notices readable when the window is resized.
 
+- [x] Repair TikTok browser setup: reuse the existing browser profile and window, keep the
+  dialog open, preserve development pairing in a stable cache, and open login when required.
+  Verify running-browser reuse, cold start, pairing, login and narrow/wide layouts with
+  `dev/tiktok-setup.py`. Browser-controlled extension installation remains a manual step.
+
 ## UI and UX review
 
 The agreed scope is to fix the issues cited in the UI/UX reviews and verify the affected screens.

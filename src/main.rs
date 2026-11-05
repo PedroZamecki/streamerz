@@ -999,6 +999,43 @@ fn autostart(on: bool) -> std::io::Result<()> {
 }
 
 static DEV_DIR: OnceLock<PathBuf> = OnceLock::new();
+static DEV_SOURCE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Where the TikTok extension's files go: next to streamerz.json. A browser keeps loading them after a
+/// development process (and its disposable settings) is gone, so a development build's go to the user's
+/// cache instead, one folder per settings it cloned: stable across its restarts, apart from a test's
+/// scratch settings, and never next to the production settings.
+pub(crate) fn extension_folder() -> PathBuf {
+    extension_folder_for(
+        &config_path(),
+        DEV_SOURCE.get().map(PathBuf::as_path),
+        dev_cache_dir().as_deref(),
+    )
+}
+
+fn extension_folder_for(config: &Path, source: Option<&Path>, cache: Option<&Path>) -> PathBuf {
+    match (source, cache) {
+        (Some(source), Some(cache)) => {
+            use sha2::Digest;
+            let id = sha2::Sha256::digest(source.to_string_lossy().as_bytes());
+            let id: String = id[..6].iter().map(|b| format!("{b:02x}")).collect();
+            cache.join(id).join("tiktok-extension")
+        }
+        _ => config.with_file_name("tiktok-extension"),
+    }
+}
+
+/// The cache folder development builds keep across runs.
+fn dev_cache_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    #[cfg(not(windows))]
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")));
+    base.map(|b| b.join("streamerz-dev"))
+}
 static DEV_LOCK: Mutex<Option<std::fs::File>> = Mutex::new(None);
 static DEV_LISTENER: Mutex<Option<std::net::TcpListener>> = Mutex::new(None);
 
@@ -1178,6 +1215,7 @@ fn main() {
     if brand::IS_DEV {
         // Resolve the source before selecting the private path. The source is only read.
         let source = default_config_path();
+        let _ = DEV_SOURCE.set(source.clone());
         let dir = match prepare_dev(&source) {
             Ok(dir) => dir,
             Err(e) => {
@@ -1216,6 +1254,7 @@ fn main() {
     }
     backup::on_start();
     let mut cfg = load_from(&config_path());
+    tiktok_bridge::restore_pairing(&mut cfg);
     MEMORY_SAVER.store(cfg.memory_saver, std::sync::atomic::Ordering::Relaxed);
     cleanup_first_words();
     if brand::IS_DEV {
@@ -1343,6 +1382,29 @@ fn under_wine() -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn development_extensions_outlive_disposable_settings_and_keep_release_separate() {
+        use std::path::Path;
+        let (source, cache) = (
+            Path::new("/settings/streamerz.json"),
+            Some(Path::new("/cache/streamerz-dev")),
+        );
+        let a = super::extension_folder_for(Path::new("/scratch/run-a/streamerz.json"), Some(source), cache);
+        let b = super::extension_folder_for(Path::new("/scratch/run-b/streamerz.json"), Some(source), cache);
+        // Every run of the same settings: one folder, in the cache, never beside the production settings.
+        assert_eq!(a, b);
+        assert!(a.starts_with("/cache/streamerz-dev") && a.ends_with("tiktok-extension"));
+        assert!(!a.starts_with("/settings"));
+        // A test's scratch settings get another.
+        let scratch = Path::new("/tmp/scratch/streamerz.json");
+        assert_ne!(a, super::extension_folder_for(scratch, Some(scratch), cache));
+        // A release build: beside its settings.
+        assert_eq!(
+            super::extension_folder_for(source, None, cache),
+            Path::new("/settings/tiktok-extension")
+        );
+    }
+
     #[test]
     fn shutdown_waits_for_the_pending_save() {
         let queue = std::sync::Arc::new(std::sync::Mutex::new(super::SaveQueue {

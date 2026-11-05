@@ -191,10 +191,10 @@ When an integration uses a browser extension as its account, show one Browser ac
 shared Health state and Set up action. Do not also show independent account or bot logins. Distinguish
 extension unavailable, page loading, login required and account ready. Disable sending while the account
 is unavailable. Setup lists the Chromium browsers found (and whether the extension is in them), and Set up on one writes
-the extension, copies its folder and opens that browser's extensions page; the steps then tick themselves
-off, and Log in opens once the extension connects. It offers Log in for the one explicit sign-in window;
-ordinary requests must not open helper tabs or windows. A channel picker shows search failures plainly
-and still accepts a pasted handle or link.
+the extension, copies its folder and opens a setup tab in that browser's existing window (closing itself
+once connected); the steps then tick themselves off, and Log in opens once the extension connects. It
+offers Log in for the one explicit sign-in window; ordinary requests must not open helper tabs or windows.
+A channel picker shows search failures plainly and still accepts a pasted handle or link.
 
 ## Check before finishing
 

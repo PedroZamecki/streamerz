@@ -252,12 +252,17 @@ pub(crate) fn pump_chat() {
 /// commands are answered). False when the app is closing.
 pub(crate) fn nested_wait(secs: Option<f64>) -> bool {
     let go = match secs {
-        Some(s) => app::wait_for(s).is_ok(),
+        // A launched browser can exit after forwarding to its existing process. SIGCHLD may
+        // interrupt FLTK's timed wait; that is not a request to close the dialog.
+        Some(s) => {
+            let _ = app::wait_for(s);
+            !app::should_program_quit() && app::first_window().is_some()
+        }
         None => app::wait(),
     };
     pump_dev();
     pump_chat();
-    go
+    go && !app::should_program_quit()
 }
 
 /// Yes/no questions from the engine: the text, the two buttons (no, yes), and where the answer goes.

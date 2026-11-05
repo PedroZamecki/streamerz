@@ -4,7 +4,7 @@
   const parentOrigin = "chrome-extension://lhijoeeghjcohapolkfkacipklhbnecc";
   const send = data => parent.postMessage({ streamerz: true, ...data }, parentOrigin);
   if (location.pathname.startsWith("/login")) {
-    send({ ready: true, error: "Log in to TikTok from Accounts > TikTok > Set up." });
+    send({ ready: true, error: "Log in to TikTok from Accounts > TikTok > Set up.", code: "login_required" });
     return;
   }
   const common = () => {

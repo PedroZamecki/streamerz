@@ -1358,49 +1358,51 @@ fn login(cfg: &Cfg, cmds: &Cmds, p: P, bot: bool) {
     }
 }
 
-/// Sending to TikTok through the browser: sets it up (writes the extension), says how to load it, and
-/// turns it off.
 /// Sending to TikTok goes through the user's own browser, with a small extension in it. Streamerz does
 /// all it can: it finds the Chromium browsers here and whether the extension is in them, and on a click
-/// (the consent) writes the extension, copies its folder, and opens that browser's extensions page. The
-/// one step left is the browser's own (they let only the user add an extension): it's shown, and each
-/// step is ticked off as it happens, up to logging in to TikTok.
+/// (the consent) writes the extension, copies its folder, and opens a setup tab in that browser's
+/// existing window. Each step is ticked off as it happens, up to logging in to TikTok.
+fn tiktok_login(cmds: &Cmds) {
+    tell(cmds, |e| {
+        let e = e.clone();
+        tokio::task::spawn_local(async move {
+            if let Err(error) = e.tiktok_bridge.login().await {
+                crate::warn(format!("TikTok: {error}"));
+            }
+        });
+    });
+}
+
 fn tiktok_sending(cmds: &Cmds) {
     use super::Health as H;
     tell(cmds, |e| {
         let b = &e.tiktok_bridge;
-        if b.is_connected() && !b.ready() && !b.user().is_empty() {
+        if b.is_connected() && !b.ready() && !b.login_required() && !b.error().is_empty() {
             let _ = crate::tiktok_bridge::retry(e);
         }
     });
     const W: i32 = 640;
     let browsers = crate::browsers::installed();
-    // What's in it, top to bottom (with 6 between each): the why, the title, a row per browser, a gap,
-    // the four steps, the note and the buttons.
-    const STEP: i32 = 38;
-    let n = browsers.len().max(1) as i32;
-    let h = 70 + 22 + n * ROW + 8 + 4 * STEP + 18 + ROW + (n + 9) * 6 + 8;
-    let (mut win, answer) = dialogs::window(W, h, tr("accounts.tiktok_sending.title"));
-    let mut col = Flex::new(16, 0, W - 32, h - 8, None).column();
+    let (mut win, answer) = dialogs::window(W, 440, tr("accounts.tiktok_sending.title"));
+    let mut col = Flex::new(16, 0, W - 32, 432, None).column();
     col.set_pad(6);
-    let mut why = Frame::default()
-        .with_label(tr("accounts.tiktok_sending.why"))
-        .with_align(Align::Left | Align::Inside | Align::Wrap | Align::Top);
+    let mut why = Frame::default().with_align(Align::Left | Align::Inside | Align::Top);
     why.set_label_color(super::muted());
-    col.fixed(&why, 70);
+    col.fixed(&why, 56);
     let mut title = Frame::default()
         .with_label(tr("accounts.tiktok_sending.browsers"))
         .with_align(Align::Left | Align::Inside);
     title.set_label_font(fltk::enums::Font::HelveticaBold);
     col.fixed(&title, 22);
-    // Which step the guide is at (none until a browser is picked), and in which browser.
     let picked: Rc<RefCell<Option<crate::browsers::Browser>>> = Rc::default();
     let mut states = Vec::new();
-    if browsers.is_empty() {
-        let mut none = Frame::default().with_align(Align::Left | Align::Inside | Align::Wrap);
-        H::Off.show(&mut none, tr("accounts.tiktok_sending.no_browser"));
-        col.fixed(&none, ROW);
-    }
+    let mut none_row = if browsers.is_empty() {
+        let f = Frame::default().with_align(Align::Left | Align::Inside | Align::ImageNextToText);
+        col.fixed(&f, ROW);
+        Some(f)
+    } else {
+        None
+    };
     for b in &browsers {
         let mut row = Flex::default().row();
         row.set_pad(8);
@@ -1411,53 +1413,69 @@ fn tiktok_sending(cmds: &Cmds) {
             .with_label(b.name)
             .with_align(Align::Left | Align::Inside);
         name.set_label_font(fltk::enums::Font::HelveticaBold);
-        row.fixed(&name, 150);
+        row.fixed(&name, 136);
         let state = Frame::default()
             .with_align(Align::Left | Align::Inside | Align::Clip)
             .ellipsis();
         let mut go = button(&mut row, tr("btn.set_up"), 100);
+        go.set_tooltip(&b.data.display().to_string());
         row.end();
         col.fixed(&row, ROW);
         go.set_callback({
             let (cmds, b, picked) = (cmds.clone(), b.clone(), picked.clone());
             move |_| {
-                // Written every time: the folder may have been deleted since.
+                if query(&cmds, |e| {
+                    e.tiktok_bridge.is_connected() && e.tiktok_bridge.login_required()
+                })
+                .unwrap_or(false)
+                {
+                    tiktok_login(&cmds);
+                    return;
+                }
                 let folder = match query(&cmds, crate::tiktok_bridge::install) {
-                    Some(Ok(folder)) => folder.display().to_string(),
-                    Some(Err(err)) => return dialogs::error(&err),
-                    None => return,
+                    Some(Ok(folder)) => folder,
+                    Some(Err(error)) => return dialogs::error(&error),
+                    None => return dialogs::error(tr("accounts.tiktok_sending.busy")),
                 };
-                fltk::app::copy(&folder);
-                if let Err(err) = b.open_extensions() {
-                    dialogs::error(&trf(
+                fltk::app::copy(&folder.display().to_string());
+                let setup_page = match crate::tiktok_bridge::write_setup_page(b.name, b.extensions_page, &folder) {
+                    Ok(page) => page,
+                    Err(error) => return dialogs::error(&error),
+                };
+                if let Err(error) = b.open_setup(&setup_page) {
+                    return dialogs::error(&trf(
                         "accounts.tiktok_sending.cant_open",
-                        &[("browser", b.name), ("error", &err.to_string())],
+                        &[("browser", b.name), ("error", &error.to_string())],
                     ));
                 }
                 *picked.borrow_mut() = Some(b.clone());
             }
         });
-        states.push((b.clone(), state, go));
+        let installed = b.has_extension_from(crate::tiktok_bridge::EXTENSION_ID, &crate::tiktok_bridge::folder());
+        states.push((b.clone(), state, go, installed, row));
     }
     let sep = Frame::default();
-    col.fixed(&sep, 8);
-    // The steps, each ticked off when it's done.
+    col.fixed(&sep, 6);
     let mut steps = Vec::new();
     for _ in 0..4 {
-        let f = Frame::default().with_align(Align::Left | Align::Inside | Align::Wrap | Align::ImageNextToText);
-        col.fixed(&f, STEP);
+        let f = Frame::default().with_align(Align::Left | Align::Inside | Align::ImageNextToText);
+        col.fixed(&f, 36);
         steps.push(f);
     }
-    let mut note = Frame::default()
-        .with_label(tr("accounts.tiktok_sending.careful"))
-        .with_align(Align::Left | Align::Inside | Align::Wrap);
-    note.set_label_color(super::muted());
+    let mut note = Frame::default().with_align(Align::Left | Align::Inside | Align::ImageNextToText);
     note.set_label_size(12);
-    col.fixed(&note, 18);
+    col.fixed(&note, 28);
+    let mut buttons = super::grid(
+        &mut col,
+        &[tr("btn.remove_streamerz"), tr("btn.copy_path"), tr("btn.retry")],
+        1,
+    )
+    .into_iter();
+    let mut remove = buttons.next().unwrap();
+    let mut copy_btn = buttons.next().unwrap();
+    let mut retry = buttons.next().unwrap();
     let mut bar = Flex::default().row();
     bar.set_pad(8);
-    let mut remove = button(&mut bar, tr("btn.remove_streamerz"), 90);
-    let mut folder_btn = button(&mut bar, tr("btn.open_folder"), 110);
     Frame::default();
     let mut close = button(&mut bar, tr("dialogs.close"), 90);
     bar.end();
@@ -1469,11 +1487,23 @@ fn tiktok_sending(cmds: &Cmds) {
         let a = answer.clone();
         move |_| a.set(Some(true))
     });
-    folder_btn.set_callback({
+    copy_btn.set_callback({
         let cmds = cmds.clone();
         move |_| {
             if let Some(Ok(folder)) = query(&cmds, crate::tiktok_bridge::install) {
-                crate::oauth::open_browser(&folder.display().to_string());
+                fltk::app::copy(&folder.display().to_string());
+            }
+        }
+    });
+    retry.set_callback({
+        let cmds = cmds.clone();
+        move |_| {
+            if query(&cmds, |e| e.tiktok_bridge.login_required()).unwrap_or(false) {
+                tiktok_login(&cmds);
+            } else {
+                tell(&cmds, |e| {
+                    let _ = crate::tiktok_bridge::retry(e);
+                });
             }
         }
     });
@@ -1490,33 +1520,94 @@ fn tiktok_sending(cmds: &Cmds) {
             }
         }
     });
-    // Logging in is asked once, when the extension is there and nobody is logged in.
     let mut asked_login = false;
-    let mut update = |steps: &mut Vec<Frame>| {
-        let (connected, user, ready) = query(cmds, |e| {
+    let mut last = None;
+    let mut update = |win: &mut dialogs::Dialog, steps: &mut Vec<Frame>| {
+        let Some((set_up, connected, user, ready, login_required, error)) = query(cmds, |e| {
+            let b = &e.tiktok_bridge;
             (
-                e.tiktok_bridge.is_connected(),
-                e.tiktok_bridge.user(),
-                e.tiktok_bridge.ready(),
+                crate::tiktok_bridge::set_up(&e.config()),
+                b.is_connected(),
+                b.user(),
+                b.ready(),
+                b.login_required(),
+                b.error(),
             )
-        })
-        .unwrap_or_default();
-        for (b, state, go) in states.iter_mut() {
-            let has = b.has_extension(crate::tiktok_bridge::EXTENSION_ID);
-            if has {
-                H::Up.show(state, tr("accounts.tiktok_sending.installed"));
-                go.set_label(tr("btn.open"));
-            } else {
-                H::Off.show(state, tr("accounts.tiktok_sending.not_installed"));
+        }) else {
+            return;
+        };
+        let available = win
+            .parent()
+            .map(|p| (p.w(), p.h()))
+            .or_else(|| fltk::app::first_window().map(|w| (w.w(), w.h())));
+        let browser = picked.borrow().as_ref().map(|b| b.name);
+        let snapshot = (
+            set_up,
+            connected,
+            user.clone(),
+            ready,
+            login_required,
+            error.clone(),
+            browser,
+            available,
+        );
+        if last.as_ref() == Some(&snapshot) {
+            return;
+        }
+        last = Some(snapshot);
+        let width = available.map_or(W, |(hw, _)| W.min((hw - 48).max(240)));
+        let inner = width - 32;
+        fltk::draw::set_font(why.label_font(), why.label_size());
+        let why_lines = dialogs::wrap(tr("accounts.tiktok_sending.why"), inner.max(100), |t| {
+            fltk::draw::width(t) as i32
+        });
+        let why_h = (why_lines.len() as i32 * 19 + 4).max(24);
+        why.set_label(&why_lines.join("\n").replace('@', "@@"));
+        col.fixed(&why, why_h);
+        let mut browsers_h = states.len() as i32 * ROW;
+        if let Some(none) = none_row.as_mut() {
+            fltk::draw::set_font(none.label_font(), none.label_size());
+            let wrapped = dialogs::wrap(tr("accounts.tiktok_sending.no_browser"), (inner - 30).max(100), |t| {
+                fltk::draw::width(t) as i32
+            });
+            let nh = (wrapped.len() as i32 * 18 + 6).max(ROW);
+            browsers_h = nh;
+            col.fixed(none, nh);
+            H::Off.show(none, &wrapped.join("\n"));
+            none.set_align(Align::Left | Align::Inside | Align::ImageNextToText);
+        }
+        let single = states.len() == 1;
+        let ext_folder = crate::tiktok_bridge::folder();
+        for (b, state, go, known, _) in &mut states {
+            if connected
+                && !*known
+                && (single
+                    || browser == Some(b.name)
+                    || b.has_extension_from(crate::tiktok_bridge::EXTENSION_ID, &ext_folder))
+            {
+                *known = true;
             }
+            let installed = *known;
+            H::show(
+                if installed { H::Up } else { H::Off },
+                state,
+                tr(if installed {
+                    "accounts.tiktok_sending.installed"
+                } else {
+                    "accounts.tiktok_sending.not_installed"
+                }),
+            );
+            go.set_label(tr(if connected && login_required && installed {
+                "btn.login"
+            } else if installed {
+                "btn.open"
+            } else {
+                "btn.set_up"
+            }));
             super::with_icon(go);
         }
-        let browser = picked.borrow().as_ref().map(|b| b.name);
-        let installed = connected
-            || states
-                .iter()
-                .any(|(b, ..)| b.has_extension(crate::tiktok_bridge::EXTENSION_ID));
-        let logged = connected && !user.is_empty();
+        let installed = connected || states.iter().any(|(_, _, _, known, _)| *known);
+        let logged = connected && ready && !user.is_empty();
         let step = |done: bool, now: bool| match (done, now) {
             (true, _) => H::Up,
             (false, true) => H::Busy,
@@ -1550,34 +1641,67 @@ fn tiktok_sending(cmds: &Cmds) {
                 },
             ),
         ];
+        let mut steps_h = 0;
         for ((health, text), f) in lines.into_iter().zip(steps.iter_mut()) {
-            // Wrapped here: FLTK doesn't wrap a label with an icon beside it.
             fltk::draw::set_font(f.label_font(), f.label_size());
-            let lines = dialogs::wrap(&text, (f.w() - 30).max(100), |t| fltk::draw::width(t) as i32);
-            health.show(f, &lines.join("\n"));
+            let wrapped = dialogs::wrap(&text, (inner - 30).max(100), |t| fltk::draw::width(t) as i32);
+            let sh = (wrapped.len() as i32 * 18 + 8).max(28);
+            steps_h += sh;
+            col.fixed(f, sh);
+            health.show(f, &wrapped.join("\n"));
             f.set_align(Align::Left | Align::Inside | Align::ImageNextToText);
             f.set_tooltip(&text.replace('@', "@@"));
         }
-        if connected && ready && user.is_empty() && !asked_login {
+        let (health, text) = if logged {
+            (H::Up, tr("accounts.tiktok_sending.complete").to_string())
+        } else if login_required {
+            (H::Standby, tr("accounts.tiktok_sending.login_needed").to_string())
+        } else if !error.is_empty() {
+            (H::Down, error)
+        } else if connected {
+            (H::Busy, tr("accounts.tiktok_sending.loading").to_string())
+        } else {
+            (H::Standby, tr("accounts.tiktok_sending.waiting").to_string())
+        };
+        fltk::draw::set_font(note.label_font(), note.label_size());
+        let note_lines = dialogs::wrap(&text, (inner - 30).max(100), |t| fltk::draw::width(t) as i32);
+        let note_h = (note_lines.len() as i32 * 17 + 8).max(26);
+        col.fixed(&note, note_h);
+        health.show(&mut note, &note_lines.join("\n"));
+        note.set_align(Align::Left | Align::Inside | Align::ImageNextToText);
+        let rows_in_col = states.len().max(1) as i32 + 9;
+        let col_h = why_h + 22 + browsers_h + 6 + steps_h + note_h + (ROW + 2) + ROW + (rows_in_col - 1) * 6;
+        let height = col_h + 8;
+        let (x, y) = (win.x(), win.y());
+        win.resize(x, y, width, height);
+        col.resize(16, 0, inner, col_h);
+        col.layout();
+        for (_, _, _, _, row) in &mut states {
+            row.layout();
+        }
+        win.resizer()(height);
+        if set_up {
+            remove.activate();
+        } else {
+            remove.deactivate();
+        }
+        if connected && (!ready || login_required) {
+            retry.activate();
+        } else {
+            retry.deactivate();
+        }
+        if connected && login_required && !asked_login {
             asked_login = true;
-            tell(cmds, |e| {
-                let e = e.clone();
-                tokio::task::spawn_local(async move {
-                    if let Err(err) = e.tiktok_bridge.login().await {
-                        crate::warn(format!("TikTok: {err}"));
-                    }
-                });
-            });
+            tiktok_login(cmds);
         }
     };
-    update(&mut steps);
+    update(&mut win, &mut steps);
     win.open();
     while win.shown() && answer.get().is_none() {
-        if !super::nested_wait(Some(0.5)) {
+        if !super::nested_wait(None) {
             break;
         }
-        update(&mut steps);
-        win.redraw();
+        update(&mut win, &mut steps);
     }
     win.close();
     crate::ui::changed();

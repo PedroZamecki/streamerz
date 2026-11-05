@@ -60,3 +60,21 @@ The wire additions use the field numbers and enum values in
 room replies. These additions have fixture coverage; a live moderator deletion, timed pin, pause and
 public-challenge fallback have not been observed in this audit. Earlier real chat sending and signed
 search results are recorded in [TESTING.md](TESTING.md).
+
+## Browser setup verification
+
+Set up opens a local guide as a tab in the selected browser's last-used profile. A running browser
+keeps its existing window. Chromium refuses internal extension-page URLs opened from another
+program, so the guide offers the address and extension folder to copy. Enable Developer mode and
+choose Load unpacked in the browser. Streamerz then detects pairing and opens login only if needed.
+The guide closes after pairing; the Streamerz dialog stays open and shows progress.
+
+Development builds keep the unpacked extension and pairing in a stable cache folder, separate from
+production settings. Reopening setup refreshes the files without requiring an extension reload just
+for a changed port or pairing token.
+
+Run `python3 -P dev/tiktok-setup.py path/to/Streamerz` with a development binary. It uses a scratch
+Chromium profile on DISPLAY=:99 and checks browser reuse, cold start with a stale lock, dialog
+persistence, pairing, automatic login and narrow/wide screenshots. No chat messages are sent.
+The 2026-11-05 check reached the login prompt with an empty profile; it did not enter credentials or
+verify Windows browser behavior. Live Twitch + OBS resource profiling remains required before release.

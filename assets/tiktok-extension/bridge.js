@@ -1,10 +1,10 @@
 // The browser owns the account. TikTok runs in an offscreen frame, never a visible helper tab.
-importScripts("config.js");
 const PAGE = "https://www.tiktok.com/live/history/center";
 const PROTOCOL = 2;
 let ws = null;
 let creating = null;
 let generation = 0;
+let connecting = false;
 
 async function closeContext() {
   if (creating) await creating.catch(() => {});
@@ -19,7 +19,7 @@ async function context() {
   creating = (async () => {
     if ((await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] })).length) return;
     const cookies = await chrome.cookies.getAll({ url: "https://www.tiktok.com/" });
-    if (!cookies.some(c => c.name === "sessionid" && c.value)) throw new Error("Log in to TikTok from Accounts > TikTok > Set up.");
+    if (!cookies.some(c => c.name === "sessionid" && c.value)) throw Object.assign(new Error("Log in to TikTok from Accounts > TikTok > Set up."), { code: "login_required" });
     const block = { type: "block" };
     await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [1, 2, 3, 4], addRules: [
       { id: 1, priority: 1, action: block, condition: { tabIds: [-1],
@@ -42,6 +42,12 @@ async function handle(m) {
   const epoch = generation;
   if (m.op === "close") { await closeContext(); return {}; }
   if (m.op === "login") {
+    const existing = (await chrome.tabs.query({ url: "https://www.tiktok.com/login*" })).find(t => !t.incognito);
+    if (existing) {
+      await chrome.tabs.update(existing.id, { active: true });
+      await chrome.windows.update(existing.windowId, { focused: true });
+      return {};
+    }
     await chrome.tabs.create({ url: "https://www.tiktok.com/login", active: true });
     return {};
   }
@@ -70,20 +76,40 @@ async function handle(m) {
 
 }
 
-function connect() {
-  if (ws) return;
-  const s = self.STREAMERZ || {};
+const SETUP_RE = /^file:\/\/.*\/tiktok-setup\.html([?#]|$)/;
+
+async function closeSetupTabs() {
+  const tabs = (await chrome.tabs.query({})).filter(t => SETUP_RE.test(t.url || ""));
+  for (const tab of tabs) {
+    const sameWindow = await chrome.tabs.query({ windowId: tab.windowId });
+    if (sameWindow.length <= 1) await chrome.tabs.create({ windowId: tab.windowId });
+    await chrome.tabs.remove(tab.id).catch(() => {});
+  }
+}
+
+async function connect() {
+  if (ws || connecting) return;
+  connecting = true;
+  let s;
+  try {
+    const response = await fetch(chrome.runtime.getURL("config.json"), { cache: "no-store" });
+    if (!response.ok) return;
+    s = await response.json();
+  } catch { return; }
+  finally { connecting = false; }
   if (!s.url || !s.token) return;
   const socket = new WebSocket(s.url);
   ws = socket;
+  let paired = false;
   socket.onopen = () => socket.send(JSON.stringify({ op: "hello", token: s.token, protocol: PROTOCOL,
     version: chrome.runtime.getManifest().version }));
   socket.onmessage = async e => {
     let m;
     try { m = JSON.parse(e.data); } catch { return; }
     if (m.id == null) return;
+    if (!paired) { paired = true; closeSetupTabs().catch(() => {}); }
     let reply;
-    try { reply = await handle(m); } catch (err) { reply = { error: String(err.message || err) }; }
+    try { reply = await handle(m); } catch (err) { reply = { error: String(err.message || err), code: err.code }; }
     if (ws === socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ id: m.id, ...reply }));
   };
   socket.onerror = () => {};
@@ -102,6 +128,10 @@ setInterval(() => { if (ws?.readyState === WebSocket.OPEN) ws.send('{"op":"ping"
 chrome.alarms.create("streamerz", { periodInMinutes: 1 });
 chrome.alarms.onAlarm.addListener(connect);
 chrome.runtime.onStartup.addListener(connect);
+// Set up opens its tab in the user's existing profile. Retry there immediately, not a minute later.
+chrome.tabs.onUpdated.addListener((_id, change) => {
+  if (/^(chrome|edge|brave|vivaldi|opera):\/\/extensions\/?/.test(change.url || "") || SETUP_RE.test(change.url || "")) connect();
+});
 chrome.runtime.onInstalled.addListener(async () => {
   // Upgrade from the visible-tab version: close only the exact tab it recorded as its own.
   const { tabId } = await chrome.storage.session.get("tabId");

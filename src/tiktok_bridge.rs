@@ -84,9 +84,25 @@ pub fn from_extension(origin: Option<&str>) -> bool {
     origin.is_some_and(|o| o.trim_end_matches('/') == format!("chrome-extension://{EXTENSION_ID}"))
 }
 
-/// The extension's folder, next to streamerz.json (the browser loads it from there).
+/// The extension's folder (the browser loads it from there): see `extension_folder`.
 pub fn folder() -> PathBuf {
-    crate::config_path().with_file_name("tiktok-extension")
+    crate::extension_folder()
+}
+
+/// A development restart reuses only the pairing explicitly created by Set up.
+pub(crate) fn restore_pairing(c: &mut crate::Config) {
+    if c.tiktok.bridge_token.is_empty() {
+        if let Ok(bytes) = std::fs::read(folder().join("config.json")) {
+            if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
+                if let Some(token) = v["token"]
+                    .as_str()
+                    .filter(|t| t.len() == 64 && t.bytes().all(|b| b.is_ascii_hexdigit()))
+                {
+                    c.tiktok.bridge_token = token.into();
+                }
+            }
+        }
+    }
 }
 
 /// Whether sending through the browser is set up.
@@ -108,14 +124,142 @@ fn server_url(c: &crate::Config) -> String {
     format!("ws://{host}:{}{PATH}", w.port)
 }
 
-/// Sets sending up (a token, if there's none yet) and writes the extension, with its settings, to
-/// [`folder`]. Returns the folder.
+/// Sets sending up (a token, if there's none yet, and the local WebSocket server it connects to) and
+/// writes the extension, with its settings, to [`folder`]. Returns the folder.
 pub fn install(e: &Rc<Engine>) -> Result<PathBuf, String> {
-    if !set_up(&e.config()) {
+    let need_change = {
+        let c = e.config();
+        !set_up(&c) || !c.websockets.auto_start
+    };
+    if need_change {
         let token = new_token();
-        e.change(|c| c.tiktok.bridge_token = token);
+        e.change(|c| {
+            if c.tiktok.bridge_token.is_empty() {
+                c.tiktok.bridge_token = token;
+            }
+            c.websockets.auto_start = true;
+        });
     }
     write_files(&e.config())
+}
+
+/// The local setup guide opened as a tab in the chosen browser (and closed by the extension on pair).
+pub fn setup_path() -> PathBuf {
+    folder().with_file_name("tiktok-setup.html")
+}
+
+fn escape_html(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn escape_js(s: &str) -> String {
+    serde_json::to_string(s)
+        .unwrap_or_default()
+        .replace('&', r"\u0026")
+        .replace('<', r"\u003c")
+        .replace('>', r"\u003e")
+}
+
+fn setup_html(browser: &str, extensions_page: &str, ext_folder: &std::path::Path) -> String {
+    use crate::i18n::{tr, trf};
+    let folder_str = ext_folder.display().to_string();
+    let title = escape_html(&trf("accounts.tiktok_sending.page_title", &[("browser", browser)]));
+    let lead = escape_html(tr("accounts.tiktok_sending.page_lead"));
+    let step1 = escape_html(&trf("accounts.tiktok_sending.page_step_open", &[("browser", browser)]));
+    let step2 = escape_html(tr("accounts.tiktok_sending.page_step_load"));
+    let copy_addr = escape_html(tr("accounts.tiktok_sending.page_copy_address"));
+    let copy_dir = escape_html(tr("accounts.tiktok_sending.page_copy_folder"));
+    let page_html = escape_html(extensions_page);
+    let folder_html = escape_html(&folder_str);
+    let page_js = escape_js(extensions_page);
+    let folder_js = escape_js(&folder_str);
+    let copied_js = escape_js(tr("accounts.tiktok_sending.page_copied"));
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title}</title>
+<style>
+  :root {{ color-scheme: dark light; --bg:#09090b; --card:#18181b; --line:#27272a; --ink:#fafafa; --muted:#a1a1aa; --btn:#27272a; --btn-hover:#3f3f46; }}
+  @media (prefers-color-scheme: light) {{
+    :root {{ --bg:#fafafa; --card:#ffffff; --line:#e4e4e7; --ink:#09090b; --muted:#52525b; --btn:#f4f4f5; --btn-hover:#e4e4e7; }}
+  }}
+  * {{ box-sizing:border-box; }}
+  body {{ margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; background:var(--bg); color:var(--ink); font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }}
+  main {{ width:100%; max-width:620px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:24px; }}
+  h1 {{ margin:0 0 6px; font-size:18px; font-weight:600; }}
+  p.lead {{ margin:0 0 20px; color:var(--muted); }}
+  section {{ border-top:1px solid var(--line); padding-top:16px; margin-top:16px; }}
+  p.step {{ margin:0 0 10px; }}
+  .bar {{ display:flex; gap:8px; align-items:center; }}
+  code {{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:8px 10px; background:var(--bg); border:1px solid var(--line); border-radius:6px; font:13px/1.3 ui-monospace,SFMono-Regular,Consolas,monospace; }}
+  button {{ flex:none; padding:8px 14px; background:var(--btn); color:var(--ink); border:1px solid var(--line); border-radius:6px; font:inherit; font-weight:500; cursor:pointer; }}
+  button:hover {{ background:var(--btn-hover); }}
+</style>
+</head>
+<body>
+<main>
+  <h1>{title}</h1>
+  <p class="lead">{lead}</p>
+  <section>
+    <p class="step">{step1}</p>
+    <div class="bar"><code title="{page_html}">{page_html}</code><button type="button" id="copy-page">{copy_addr}</button></div>
+  </section>
+  <section>
+    <p class="step">{step2}</p>
+    <div class="bar"><code title="{folder_html}">{folder_html}</code><button type="button" id="copy-folder">{copy_dir}</button></div>
+  </section>
+</main>
+<script>
+  const copied = {copied_js};
+  function bind(id, text) {{
+    const btn = document.getElementById(id);
+    const label = btn.textContent;
+    btn.addEventListener("click", async () => {{
+      try {{
+        await navigator.clipboard.writeText(text);
+      }} catch {{
+        const t = document.createElement("textarea");
+        t.value = text;
+        document.body.appendChild(t);
+        t.select();
+        document.execCommand("copy");
+        t.remove();
+      }}
+      btn.textContent = copied;
+      setTimeout(() => {{ btn.textContent = label; }}, 1400);
+    }});
+  }}
+  bind("copy-page", {page_js});
+  bind("copy-folder", {folder_js});
+</script>
+</body>
+</html>
+"#
+    )
+}
+
+pub fn write_setup_page(browser: &str, extensions_page: &str, ext_folder: &std::path::Path) -> Result<PathBuf, String> {
+    let path = setup_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| format!("can't create {}: {err}", parent.display()))?;
+    }
+    let html = setup_html(browser, extensions_page, ext_folder);
+    write_private(&path, html.as_bytes()).map_err(|err| format!("can't write {}: {err}", path.display()))?;
+    Ok(path)
 }
 
 fn write_files(c: &crate::Config) -> Result<PathBuf, String> {
@@ -123,10 +267,11 @@ fn write_files(c: &crate::Config) -> Result<PathBuf, String> {
     std::fs::create_dir_all(&dir).map_err(|err| format!("can't create {}: {err}", dir.display()))?;
     let settings = json!({"url": server_url(c), "token": c.tiktok.bridge_token});
     let config = format!("self.STREAMERZ = {settings};\n");
-    let files = FILES
-        .iter()
-        .map(|(n, b)| (*n, *b))
-        .chain([("config.js", config.as_bytes())]);
+    let config_json = settings.to_string();
+    let files = FILES.iter().map(|(n, b)| (*n, *b)).chain([
+        ("config.js", config.as_bytes()),
+        ("config.json", config_json.as_bytes()),
+    ]);
     for (name, bytes) in files {
         let path = dir.join(name);
         // Unchanged files stay as they are: the browser notices nothing.
@@ -163,12 +308,13 @@ pub fn remove(e: &Rc<Engine>) {
     e.change(|c| c.tiktok.bridge_token.clear());
     e.tiktok_bridge.disconnect();
     let _ = std::fs::remove_dir_all(folder());
+    let _ = std::fs::remove_file(setup_path());
 }
 
 /// For the MCP tool and the WebSocket request.
 pub fn status(e: &Engine) -> Value {
     let b = &e.tiktok_bridge;
-    json!({"setUp": set_up(&e.config()), "connected": b.is_connected(), "user": b.user(), "avatar": b.avatar(), "ready": b.ready(), "error": b.error(),
+    json!({"setUp": set_up(&e.config()), "connected": b.is_connected(), "user": b.user(), "avatar": b.avatar(), "ready": b.ready(), "loginRequired": b.login_required(), "error": b.error(),
         "folder": folder().display().to_string(), "extensionId": EXTENSION_ID})
 }
 
@@ -192,6 +338,7 @@ pub struct Bridge {
     uid: RefCell<String>,
     avatar: RefCell<String>,
     ready: std::cell::Cell<bool>,
+    login_required: std::cell::Cell<bool>,
     error: RefCell<String>,
     warming: std::cell::Cell<bool>,
     refresh_pending: std::cell::Cell<bool>,
@@ -213,6 +360,9 @@ impl Bridge {
 
     pub fn ready(&self) -> bool {
         self.ready.get()
+    }
+    pub fn login_required(&self) -> bool {
+        self.login_required.get()
     }
     pub fn error(&self) -> String {
         self.error.borrow().clone()
@@ -251,6 +401,7 @@ impl Bridge {
         self.avatar.borrow_mut().clear();
         crate::roles::clear("tiktok");
         self.ready.set(false);
+        self.login_required.set(false);
         self.warming.set(false);
         self.refresh_pending.set(false);
         self.error.borrow_mut().clear();
@@ -285,6 +436,8 @@ impl Bridge {
         match v.get("error").and_then(Value::as_str) {
             Some(err) => {
                 self.ready.set(false);
+                self.login_required
+                    .set(v["code"] == "login_required" || err.starts_with("Log in to TikTok"));
                 *self.error.borrow_mut() = err.to_string();
                 crate::ui::changed();
                 Err(err.to_string())
@@ -479,6 +632,7 @@ fn warm(e: &Rc<Engine>, serial: u64) {
         return;
     }
     b.ready.set(false);
+    b.login_required.set(false);
     let previous = b.user();
     b.user.borrow_mut().clear();
     b.uid.borrow_mut().clear();
@@ -516,6 +670,7 @@ fn warm(e: &Rc<Engine>, serial: u64) {
                 let user = b.user();
                 if user.is_empty() {
                     b.uid.borrow_mut().clear();
+                    b.login_required.set(true);
                 }
                 // Passport sometimes omits the avatar. Reuse signed search once, not an idle poll.
                 if b.avatar().is_empty() && !user.is_empty() {
@@ -755,5 +910,18 @@ mod tests {
         c.websockets.address = "0.0.0.0".into();
         c.websockets.port = 8090;
         assert_eq!(server_url(&c), "ws://127.0.0.1:8090/streamerz/tiktok");
+    }
+
+    #[test]
+    fn setup_page_escapes_paths_and_includes_both_copy_targets() {
+        let html = setup_html(
+            "Chromium",
+            "chrome://extensions",
+            std::path::Path::new(r"/tmp/a&b<c>\tiktok-extension"),
+        );
+        assert!(html.contains("chrome://extensions"));
+        assert!(html.contains("/tmp/a&amp;b&lt;c&gt;\\tiktok-extension"));
+        assert!(!html.contains("/tmp/a&b<c>"));
+        assert!(html.contains(r#"bind("copy-folder", "/tmp/a\u0026b\u003cc\u003e\\tiktok-extension");"#));
     }
 }
