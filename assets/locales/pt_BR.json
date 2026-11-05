@@ -282,6 +282,8 @@
   "slash.timeout": "Dá um timeout em um usuário (10 minutos se não disser)",
   "slash.ban": "Bane um usuário do canal",
   "slash.unban": "Remove um banimento ou timeout",
+  "chat.emote_only": "Modo só emotes",
+  "chat.slow_mode_seconds": "Modo lento ({seconds}s)",
   "slash.slow": "Modo lento: de quanto em quanto tempo cada pessoa pode falar",
   "slash.slowoff": "Desliga o modo lento",
   "slash.followers": "Chat só para seguidores, com esse tempo de seguimento",
