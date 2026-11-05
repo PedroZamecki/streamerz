@@ -1359,7 +1359,7 @@ pub enum Done {
     Ok(Obj),
     Cancel,
     /// Edit it as JSON instead.
-    Json,
+    Json(Obj),
 }
 
 fn text(v: Option<&Value>) -> String {
@@ -1720,7 +1720,7 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
         }
     }
     if fields.is_empty() {
-        let f = Frame::default().with_label("Nothing to set.");
+        let f = Frame::default().with_label(crate::i18n::tr("forms.empty"));
         col.fixed(&f, ROW);
     }
     Frame::default();
@@ -1735,105 +1735,36 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
     let mut bar = Flex::new(10, visible_h - ROW - 14, 540, ROW + 4, None).row();
     bar.set_pad(8);
     let json = Rc::new(Cell::new(false));
-    let mut j = button(&mut bar, "Edit JSON", 100);
+    let mut j = button(&mut bar, crate::i18n::tr("btn.edit_json"), 100);
     j.set_callback({
         let (json, a) = (json.clone(), answer.clone());
         move |_| {
             json.set(true);
-            a.set(Some(false));
+            a.set(Some(true));
         }
     });
     ok_cancel(&mut bar, &answer, !fields.iter().any(|f| tall(&f.2)));
     bar.end();
     win.end();
     let mut out = o.clone();
+    let mut show_json = false;
     let ok = run(&mut win, &answer, || {
-        for ((key, label, _), w) in fields.iter().zip(&ws) {
-            let v = match w {
-                Widget::Text(i) => i.value().into(),
-                // Line breaks as Streamer.bot's text boxes write them (it splits aliases on \r\n only).
-                Widget::Multi(i) => i.value().replace('\n', "\r\n").into(),
-                Widget::Bool(c) => c.is_checked().into(),
-                // Bits not on the form are kept.
-                Widget::Bit(c, bit) => {
-                    let old = out.get(*key).and_then(Value::as_u64).unwrap_or(0) & !bit;
-                    (if c.is_checked() { old | bit } else { old }).into()
-                }
-                Widget::Int(i) => match i.value().trim() {
-                    "" => 0.into(),
-                    t => match t.parse::<i64>() {
-                        Ok(n) => n.into(),
-                        Err(_) => {
-                            super::dialogs::alert(&format!("{label}: a whole number, please."));
-                            return false;
-                        }
-                    },
-                },
-                Widget::Num(i) => match i.value().trim() {
-                    "" => json!(0.0),
-                    t => match t.parse::<f64>() {
-                        Ok(n) => json!(n),
-                        Err(_) => {
-                            super::dialogs::alert(&format!("{label}: a number, please."));
-                            return false;
-                        }
-                    },
-                },
-                Widget::Pick(c) if c.value() < 0 => continue,
-                Widget::Pick(c) => c.value().into(),
-                Widget::Id(c, ids) => match ids.borrow().get(c.value().max(0) as usize) {
-                    Some(id) if !id.is_empty() => id.as_str().into(),
-                    // ponytail: no id, no field, rather than an empty string where Streamer.bot wants a Guid.
-                    _ => {
-                        out.shift_remove(*key);
-                        continue;
-                    }
-                },
-                Widget::Name(c) => c.value().unwrap_or_default().trim().into(),
-                Widget::Expression(c, original) => {
-                    let value = c.value().unwrap_or_default();
-                    if &value == original {
-                        continue;
-                    }
-                    value.trim().into()
-                }
-                Widget::Map(i) => Value::Object(
-                    i.value()
-                        .lines()
-                        .filter_map(|l| l.split_once('='))
-                        .map(|(k, v)| (k.trim().to_string(), Value::from(v)))
-                        .filter(|(k, _)| !k.is_empty())
-                        .collect(),
-                ),
-                Widget::Lines(i) => i.value().lines().map(Value::from).collect(),
-                Widget::Note => continue,
-                Widget::MouseButton(c) => c.get().into(),
-                Widget::Keys(c) => {
-                    let (k, m) = c.get();
-                    if k == 0 {
-                        super::dialogs::alert("Keys: click it and press the key combination.");
-                        return false;
-                    }
-                    out.insert("modifierMask".into(), m.into());
-                    k.into()
-                }
-            };
-            match out.get_mut(*key) {
-                Some(x) => *x = v,
-                // New fields go before the base ones, as Streamer.bot writes them.
-                None => {
-                    let at = out
-                        .keys()
-                        .position(|k| ["subActions", "id"].contains(&k.as_str()))
-                        .unwrap_or(out.len());
-                    out.shift_insert(at, (*key).into(), v);
-                }
+        // Consume the intent before validation, so a later normal OK cannot inherit it.
+        let requested_json = json.replace(false);
+        match collect_draft(fields, &ws, o) {
+            Ok(draft) => {
+                out = draft;
+                show_json = requested_json;
+                true
+            }
+            Err(error) => {
+                super::dialogs::alert(&error);
+                false
             }
         }
-        true
     });
-    if json.get() {
-        Done::Json
+    if ok && show_json {
+        Done::Json(out)
     } else if ok {
         Done::Ok(out)
     } else {
@@ -1841,9 +1772,154 @@ pub fn form(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Done {
     }
 }
 
+/// Collect a fresh draft for either submit action; a failed attempt never changes the original.
+fn collect_draft(fields: &[F], ws: &[Widget], original: &Obj) -> Result<Obj, String> {
+    let mut out = original.clone();
+    for ((key, label, _), w) in fields.iter().zip(ws) {
+        let v = match w {
+            Widget::Text(i) => i.value().into(),
+            // Line breaks as Streamer.bot's text boxes write them (it splits aliases on \r\n only).
+            Widget::Multi(i) => i.value().replace('\n', "\r\n").into(),
+            Widget::Bool(c) => c.is_checked().into(),
+            // Bits not on the form are kept.
+            Widget::Bit(c, bit) => {
+                let old = out.get(*key).and_then(Value::as_u64).unwrap_or(0) & !bit;
+                (if c.is_checked() { old | bit } else { old }).into()
+            }
+            Widget::Int(i) => match i.value().trim() {
+                "" => 0.into(),
+                t => match t.parse::<i64>() {
+                    Ok(n) => n.into(),
+                    Err(_) => {
+                        return Err(crate::i18n::trf("forms.whole_number", &[("label", field_label(label))]));
+                    }
+                },
+            },
+            Widget::Num(i) => match i.value().trim() {
+                "" => json!(0.0),
+                t => match t.parse::<f64>() {
+                    Ok(n) => json!(n),
+                    Err(_) => {
+                        return Err(crate::i18n::trf("forms.number", &[("label", field_label(label))]));
+                    }
+                },
+            },
+            Widget::Pick(c) if c.value() < 0 => continue,
+            Widget::Pick(c) => c.value().into(),
+            Widget::Id(c, ids) => match ids.borrow().get(c.value().max(0) as usize) {
+                Some(id) if !id.is_empty() => id.as_str().into(),
+                // ponytail: no id, no field, rather than an empty string where Streamer.bot wants a Guid.
+                _ => {
+                    out.shift_remove(*key);
+                    continue;
+                }
+            },
+            Widget::Name(c) => c.value().unwrap_or_default().trim().into(),
+            Widget::Expression(c, original) => {
+                let value = c.value().unwrap_or_default();
+                if &value == original {
+                    continue;
+                }
+                value.trim().into()
+            }
+            Widget::Map(i) => Value::Object(
+                i.value()
+                    .lines()
+                    .filter_map(|l| l.split_once('='))
+                    .map(|(k, v)| (k.trim().to_string(), Value::from(v)))
+                    .filter(|(k, _)| !k.is_empty())
+                    .collect(),
+            ),
+            Widget::Lines(i) => i.value().lines().map(Value::from).collect(),
+            Widget::Note => continue,
+            Widget::MouseButton(c) => c.get().into(),
+            Widget::Keys(c) => {
+                let (k, m) = c.get();
+                if k == 0 {
+                    return Err(crate::i18n::tr("forms.capture_keys").into());
+                }
+                out.insert("modifierMask".into(), m.into());
+                k.into()
+            }
+        };
+        match out.get_mut(*key) {
+            Some(x) => *x = v,
+            // New fields go before the base ones, as Streamer.bot writes them.
+            None => {
+                let at = out
+                    .keys()
+                    .position(|k| ["subActions", "id"].contains(&k.as_str()))
+                    .unwrap_or(out.len());
+                out.shift_insert(at, (*key).into(), v);
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Run separately on the hidden display; FLTK must stay on this test's thread.
+    #[test]
+    #[ignore]
+    fn form_json_draft_keeps_edits_and_retries_validation() {
+        let _app = fltk::app::App::default();
+        let mut window = fltk::window::DoubleWindow::new(0, 0, 560, 300, None);
+        let mut name = Input::default();
+        name.set_value("Edited name");
+        let mut lines = MultilineInput::default();
+        lines.set_value("first\nsecond");
+        let mut count = IntInput::default();
+        count.set_value("invalid");
+        let mut expression = InputChoice::default();
+        expression.set_value("7");
+        let enabled = CheckButton::default();
+        enabled.set_checked(true);
+        let bit = CheckButton::default();
+        bit.set_checked(true);
+        window.end();
+        let fields: &[F] = &[
+            ("name", "Name", Text),
+            ("lines", "Lines", Multi),
+            ("count", "Count", Int),
+            ("expression", "Expression", Expression(&[])),
+            ("enabled", "Enabled", Bool),
+            ("sources", "Source", Bit(1)),
+        ];
+        let original = json!({"name": "Original", "count": 2, "expression": 7,
+            "enabled": false, "sources": 8, "unknown": {"retained": true}, "type": 99, "id": "original"})
+        .as_object()
+        .unwrap()
+        .clone();
+        let untouched = original.clone();
+        let widgets = vec![
+            Widget::Text(name),
+            Widget::Multi(lines),
+            Widget::Int(count.clone()),
+            Widget::Expression(expression, "7".into()),
+            Widget::Bool(enabled),
+            Widget::Bit(bit, 1),
+        ];
+        assert!(collect_draft(fields, &widgets, &original).is_err());
+        assert_eq!(original, untouched);
+        count.set_value("12");
+        let draft = collect_draft(fields, &widgets, &original).unwrap();
+        assert_eq!(draft["name"], "Edited name");
+        assert_eq!(draft["lines"], "first\r\nsecond");
+        assert_eq!(draft["count"], 12);
+        assert_eq!(draft["expression"], 7);
+        assert!(draft["expression"].is_number());
+        assert_eq!(draft["enabled"], true);
+        assert_eq!(draft["sources"], 9);
+        assert_eq!(draft["unknown"], original["unknown"]);
+        assert_eq!(draft["type"], original["type"]);
+        assert_eq!(draft["id"], original["id"]);
+        assert_eq!(original, untouched);
+        window.hide();
+        fltk::app::delete_widget(window);
+    }
 
     #[test]
     fn spotify_song_form_groups_and_expression_suggestions() {

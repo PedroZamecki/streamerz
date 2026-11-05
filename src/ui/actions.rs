@@ -17,7 +17,7 @@ use crate::Config;
 use fltk::button::Button;
 use fltk::enums::{Align, Color, Cursor, Event, Font, Key};
 use fltk::frame::Frame;
-use fltk::group::{Flex, Wizard};
+use fltk::group::{Flex, FlexType, Wizard};
 use fltk::input::Input;
 use fltk::prelude::*;
 use fltk::tree::{Tree, TreeItem, TreeReason, TreeSelect};
@@ -627,6 +627,22 @@ fn ask_name(title: &str, current: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Keep enough room for the editor beside the action tree; otherwise stack the same panes.
+fn pane_layout(width: i32, height: i32) -> (bool, i32) {
+    let stacked = width < 860;
+    if !stacked {
+        return (false, 340);
+    }
+    // The page has 8px margins and an 8px gap between panes.
+    let available = height.saturating_sub(24).max(0);
+    let actions = if available < 480 {
+        available / 3
+    } else {
+        (available / 3).clamp(160, 220)
+    };
+    (true, actions)
+}
+
 pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<UiCmd>) -> Rc<RefCell<Actions>> {
     let mut row = Flex::new(tabs.x(), tabs.y(), tabs.w(), tabs.h(), None)
         .row()
@@ -638,7 +654,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
     let mut act_head = Flex::default().row();
     act_head.set_pad(4);
     let t = Frame::default()
-        .with_label("Actions")
+        .with_label(tr("actions.heading"))
         .with_align(Align::Left | Align::Inside)
         .ellipsis();
     act_head.fixed(&t, 60);
@@ -737,14 +753,32 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
 
     let mut detail_title = Frame::default().with_align(Align::Left | Align::Inside).ellipsis();
     detail_title.set_label_font(Font::HelveticaBold);
-    detail_title.set_label_color(Color::from_u32(0x5599ff));
+    detail_title.set_label_color(Color::Foreground);
     right.fixed(&detail_title, 18);
     let mut detail_desc = Frame::default().with_align(Align::Left | Align::Inside | Align::Wrap);
-    detail_desc.set_label_color(Color::from_u32(0x888888));
+    detail_desc.set_label_color(super::muted());
     right.fixed(&detail_desc, 38);
 
     right.end();
     row.end();
+
+    let mut place = {
+        let (left, mut right, triggers, description) =
+            (left.clone(), right.clone(), triggers.clone(), detail_desc.clone());
+        move |row: &mut Flex, width: i32, height: i32| {
+            let (stacked, actions_size) = pane_layout(width, height);
+            row.set_type(if stacked { FlexType::Column } else { FlexType::Row });
+            row.fixed(&left, actions_size);
+            right.fixed(&*triggers, if stacked { 56 } else { 120 });
+            right.fixed(&description, if stacked { 32 } else { 38 });
+            // fixed() marks the Flex layouts dirty. Their next draw lays out the existing widgets;
+            // calling row.layout() here would re-enter this resize callback.
+            row.redraw();
+        }
+    };
+    let (width, height) = (row.w(), row.h());
+    place(&mut row, width, height);
+    row.resize_callback(move |row, _, _, width, height| place(row, width, height));
 
     let me = Rc::new(RefCell::new(Actions {
         cfg,
@@ -1582,16 +1616,18 @@ fn edit_action(me: &Rc<RefCell<Actions>>) {
 
 /// Edit a sub-action or trigger: in its form, or as JSON (no form, or asked for). The type stays.
 fn edit_obj(m: &Actions, title: &str, fields: Option<&[forms::F]>, o: &Obj, hint: &str) -> Option<Obj> {
-    if let Some(fields) = fields {
+    let draft = if let Some(fields) = fields {
         let lists = Lists::new(&m.cfg.borrow());
         match forms::form(title, fields, o, &lists) {
             Done::Ok(x) => return Some(x),
             Done::Cancel => return None,
-            Done::Json => {}
+            Done::Json(draft) => draft,
         }
-    }
+    } else {
+        o.clone()
+    };
     let k = edit::kind(o);
-    let new = dialogs::json_editor(title, hint, &Value::Object(o.clone()), |v| {
+    let new = dialogs::json_editor(title, hint, &Value::Object(draft), |v| {
         match v.get("type").and_then(Value::as_u64) {
             Some(x) if x == k => Ok(()),
             _ => Err(trf("actions.json_editor_hint", &[("type", &k.to_string())])),
@@ -1835,4 +1871,31 @@ fn pick_template() -> Option<&'static crate::templates::Template> {
     let res = picked.then(|| &TEMPLATES[(list.value() - 1) as usize]);
     app::delete_widget(win);
     res
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pane_layout;
+
+    #[test]
+    fn action_editor_stacks_before_the_two_panes_become_cramped() {
+        assert_eq!(pane_layout(859, 654), (true, 210));
+        assert_eq!(pane_layout(860, 654), (false, 340));
+        assert_eq!(pane_layout(924, 754), (false, 340));
+        assert_eq!(pane_layout(364, 654), (true, 210));
+    }
+
+    #[test]
+    fn stacked_action_pane_reserves_the_editor_and_bounds_its_height() {
+        for height in [-100, 0, 20, 100, 354, 654, 900, 1600] {
+            let (stacked, actions) = pane_layout(364, height);
+            let available = height.saturating_sub(24).max(0);
+            assert!(stacked);
+            assert!((0..=available).contains(&actions));
+            assert!(actions <= 220);
+            assert!(available - actions >= actions);
+        }
+        assert_eq!(pane_layout(364, 0), (true, 0));
+        assert_eq!(pane_layout(364, 1600), (true, 220));
+    }
 }

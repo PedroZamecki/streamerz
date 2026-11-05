@@ -14,6 +14,7 @@ use std::fmt::Write;
 ///   tree [N]        the widgets of window N: depth, label, x y w h (in the window), hidden ones marked
 ///   find TEXT [N]   where widgets with TEXT in their label are, as screen coordinates to click
 ///   page LABEL      goes to a page (Chat, Settings...)
+///   currentpage     the current page's identifier
 ///   chatview LABEL  selects a chat view (All together, Side by side, Twitch...)
 ///   chat            the last chat line the chat page took in (its seq)
 ///   chatlines       how many lines the chat page holds
@@ -33,6 +34,10 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
                 "chat view not found".into()
             }
         }
+        "currentpage" => pages
+            .and_then(|p| p.try_current_widget())
+            .map(|p| p.label())
+            .unwrap_or_default(),
         "page" => match pages {
             Some(p) => {
                 nav::go(p, cmd.trim_start_matches("page").trim());
@@ -198,14 +203,15 @@ fn walk(g: &Option<fltk::group::Group>, depth: usize, out: &mut String) {
         let Some(c) = g.child(i) else { continue };
         let _ = writeln!(
             out,
-            "{}{:?} {},{} {}x{}{}",
+            "{}{:?} {},{} {}x{}{}{}",
             "  ".repeat(depth),
             c.label(),
             c.x(),
             c.y(),
             c.w(),
             c.h(),
-            if c.visible() { "" } else { " (hidden)" }
+            if c.visible_r() { "" } else { " (hidden)" },
+            if c.active_r() { "" } else { " (disabled)" }
         );
         walk(&c.as_group(), depth + 1, out);
     }

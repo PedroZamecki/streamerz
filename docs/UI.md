@@ -53,6 +53,10 @@ Group settings is one dialog: a table of settings (label, value, type) with the 
 (Change value, Add, Edit and Delete setting, Files, Commands and timers). A value is typed by its
 kind: a time takes `h:mm:ss`, an on or off setting asks for yes or no.
 
+Keep the Actions tree and its trigger/sub-action editor visible together. Below 860px of content
+width, stack the existing panes, with about one third of the height for the action tree. Use compact,
+scrollable trigger rows to keep the sub-action editor usable. Preserve selection and filters on resize.
+
 ## Forms and dialogs
 
 Use `dialogs::window`, `dialogs::row`, `dialogs::ok_cancel` and the existing form helpers where they fit.
@@ -101,5 +105,8 @@ and still accepts a pasted handle or link.
 - Check the changed screen on the hidden display at narrow and wide sizes with the MCP `ui` tool. Inspect
   the screenshots for clipping, readable labels, alignment and usable actions; check relevant empty,
   populated, error and disabled states, including the right-click menu.
+- Run input-driven checks serially on the shared hidden display so one test cannot send input to
+  another instance. `python3 dev/ui-review.py` captures every page in both themes and sizes with
+  isolated settings; its disconnected memory sample is separate from the live integration budget.
 - Exercise the main task, cancellation and validation by hand. Add a regression test for each bug fixed,
   or a smoke step when a unit test is not suitable. Run `dev/smoke.py` before closing the version.

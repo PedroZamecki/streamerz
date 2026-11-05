@@ -10,6 +10,7 @@ no crash report was written, and that a screenshot of its own window can be take
 Needs xdotool, and the nested display from the project's notes running as :99.
 """
 import base64, json, os, re, socket, struct, subprocess, sys, tempfile, time
+import uuid
 
 WINE = len(sys.argv) > 2 and sys.argv[1] == "--exe"
 BIN = sys.argv[2] if WINE else sys.argv[1] if len(sys.argv) > 1 else "target/fast/Streamerz"
@@ -31,14 +32,20 @@ OFFSET = [0, 0]
 
 
 class Ws:
-    def __init__(self):
+    def __init__(self, expected_name=None):
         self.s = socket.create_connection(("127.0.0.1", PORT), timeout=15)
         key = base64.b64encode(os.urandom(16)).decode()
         self.s.sendall(f"GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n".encode())
         buf = b""
         while b"\r\n\r\n" not in buf:
             buf += self.s.recv(1)
-        self.read()  # Hello
+        self.hello = self.read()
+        if expected_name is not None:
+            try:
+                verify_instance(self.hello, expected_name)
+            except RuntimeError:
+                self.s.close()
+                raise
 
     def read(self):
         h = self.s.recv(2)
@@ -73,13 +80,29 @@ def dev_dirs(pid):
     return glob.glob(os.path.join(TEMP, "streamerz-dev-*" if WINE else f"streamerz-dev-{pid}-*"))
 
 
+def require_free_port(port):
+    with socket.socket() as probe:
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError as error:
+            raise RuntimeError(f"test port {port} is unavailable; no instance was contacted") from error
+
+
+def verify_instance(hello, expected_name):
+    info = hello.get("info") if isinstance(hello, dict) else None
+    if not isinstance(info, dict) or hello.get("request") != "Hello" or info.get("name") != expected_name:
+        raise RuntimeError("refusing to drive a WebSocket instance that does not belong to this test")
+
+
 def main():
+    require_free_port(PORT)
+    instance_name = "Streamerz smoke " + uuid.uuid4().hex
     os.makedirs(OUT, exist_ok=True)
     tmp = ROAMING if WINE else tempfile.mkdtemp()
     os.makedirs(os.path.join(tmp, "streamerz"), exist_ok=True)
     cfg = os.path.join(tmp, "streamerz", "streamerz.json")
     # These checks exercise retained chat; history is opt-in in a fresh installation.
-    json.dump({"start_hidden": False, "locale": "en_US", "websockets": {"port": PORT},
+    json.dump({"start_hidden": False, "locale": "en_US", "instance_name": instance_name, "websockets": {"port": PORT},
                "window": {"chat": {"saveHistory": True}}}, open(cfg, "w"))
     env["XDG_CONFIG_HOME"] = tmp
     if WINE:
@@ -104,7 +127,7 @@ def main():
         ws = None
         for _ in range(20):
             try:
-                ws = Ws()
+                ws = Ws(expected_name=instance_name)
                 break
             except OSError:
                 time.sleep(0.5)
@@ -247,7 +270,60 @@ def main():
             time.sleep(1)
         ws.ask({"request": "StreamerzUi", "id": "s", "do": f"shot {OUT}/actions_off.png"})
         check("disabled trigger and sub-action")
-        pages = ["Chat", "Accounts", "Community", "Polls", "Actions", "Commands", "Timers", "Queues", "Groups", "Plugins",
+        # The sidebar is reachable with the keyboard, including pages below the viewport.
+        nav = ws.ask({"request": "StreamerzUi", "id": "nav", "do": "find Navigation"}).get("result", "")
+        coords = re.search(r'"Navigation" at (\d+),(\d+)', nav)
+        if coords:
+            xdo("mousemove", coords.group(1), coords.group(2), found=True)
+            xdo("click", "1")
+            for key, expected in (("Home", "Chat"), ("Down", "Accounts"), ("End", "Backups"), ("Up", "Crashes")):
+                xdo("key", key)
+                time.sleep(.2)
+                page = ws.ask({"request": "StreamerzUi", "id": "nav-page", "do": "currentpage"}).get("result", "")
+                if page != expected:
+                    failures.append(f"sidebar {key}: expected {expected}, got {page}")
+            for key, expected_width in (("Left", 52), ("Right", 176)):
+                xdo("key", key)
+                tree = ws.ask({"request": "StreamerzUi", "id": "nav-width", "do": "tree"}).get("result", "")
+                geometry = re.search(r'"Navigation" \d+,\d+ (\d+)x\d+', tree)
+                if not geometry or int(geometry.group(1)) != expected_width:
+                    failures.append(f"sidebar {key}: did not reach width {expected_width}")
+            ws.ask({"request": "StreamerzUi", "id": "nav-shot", "do": f"shot {OUT}/navigation-focus.png"})
+        else:
+            failures.append(f"the sidebar cannot be found ({nav})")
+        # Generic lists disable selection actions until a row is selected.
+        ws.ask({"request": "StreamerzUi", "id": "selection", "do": "page Timers"})
+        tree = ws.ask({"request": "StreamerzUi", "id": "selection", "do": "tree"}).get("result", "")
+        for action in ("Edit", "On/Off", "Delete"):
+            controls = [line for line in tree.splitlines() if line.strip().startswith(f'"{action}" ')
+                        and "(hidden)" not in line]
+            if not controls or any("(disabled)" not in line for line in controls):
+                failures.append(f"empty Timers list leaves {action} available")
+        where = ws.ask({"request": "StreamerzUi", "id": "focus-empty", "do": "find Timer"}).get("result", "")
+        coords = re.search(r'"Timer" at (\d+),(\d+)', where)
+        if coords:
+            xdo("mousemove", coords.group(1), coords.group(2), found=True)
+            xdo("click", "1")
+            ws.ask({"request": "StreamerzUi", "id": "focus-empty", "do": f"shot {OUT}/timers-empty-focus.png"})
+        else:
+            failures.append("the empty Timers list cannot be focused")
+        ws.ask({"request": "StreamerzUi", "id": "selection", "do": "page Commands"})
+        where = ws.ask({"request": "StreamerzUi", "id": "selection", "do": "find Command"}).get("result", "")
+        coords = re.search(r'"Command" at (\d+),(\d+)', where)
+        if coords:
+            xdo("mousemove", coords.group(1), coords.group(2), found=True)
+            xdo("click", "1")
+            xdo("key", "Home")
+            time.sleep(.2)
+            tree = ws.ask({"request": "StreamerzUi", "id": "selection", "do": "tree"}).get("result", "")
+            for action in ("Edit", "On/Off", "Delete"):
+                controls = [line for line in tree.splitlines() if line.strip().startswith(f'"{action}" ')
+                            and "(hidden)" not in line]
+                if not any("(disabled)" not in line for line in controls):
+                    failures.append(f"selecting a Command does not enable {action}")
+        else:
+            failures.append("the Commands list cannot be found")
+        pages = ["Chat", "Accounts", "Community", "Polls", "Actions", "Commands", "Timers", "Files", "Queues", "Groups", "Plugins",
                  "Servers", "Stream Apps", "Integrations", "Donations", "Globals", "History", "Settings", "MCP", "Log", "Crashes", "Backups"]
         for page in pages:
             ws.ask({"request": "StreamerzUi", "id": "p", "do": f"page {page}"})

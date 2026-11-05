@@ -1073,5 +1073,11 @@
   "accounts.tiktok_sending.login_needed": "Entre no TikTok no seu navegador",
   "find.tiktok_login": "Entre pela opção Contas > TikTok > Configurar primeiro.",
   "tip.tiktok_emote": "Emote do TikTok",
-  "chat.tiktok_stickers_unavailable": "Ainda não é possível enviar figurinhas do TikTok. Escolha um emoji ou digite uma mensagem."
+  "chat.tiktok_stickers_unavailable": "Ainda não é possível enviar figurinhas do TikTok. Escolha um emoji ou digite uma mensagem.",
+  "forms.capture_keys": "Clique em Teclas e pressione a combinação de teclas.",
+  "forms.empty": "Nada para configurar.",
+  "forms.number": "{label}: digite um número.",
+  "forms.whole_number": "{label}: digite um número inteiro.",
+  "lists.timers.interval": "A cada",
+  "nav.navigation": "Navegação"
 }

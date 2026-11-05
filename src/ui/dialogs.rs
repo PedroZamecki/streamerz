@@ -85,7 +85,7 @@ fn centre(win: &mut Window, w: i32, h: i32) {
 
 /// `text` broken into lines no wider than `room` by `width` (words stay whole; a word wider than the room
 /// is cut). Newlines in `text` are kept.
-fn wrap(text: &str, room: i32, width: impl Fn(&str) -> i32) -> Vec<String> {
+pub(super) fn wrap(text: &str, room: i32, width: impl Fn(&str) -> i32) -> Vec<String> {
     let mut out = Vec::new();
     for para in text.split('\n') {
         let mut line = String::new();

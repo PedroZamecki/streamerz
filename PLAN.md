@@ -562,6 +562,18 @@ platform handles through channels, never through shared locks held across awaits
   Hide internal sticker IDs in tips and fallback text, and prevent unsupported native sticker sends.
   Refresh account pictures on change without continuously redrawing an idle popup.
 
+## UI and UX review
+
+- [ ] Inventory every page and major dialog against `docs/UI.md`, using independent reviews and
+  separate UI and UX scores from 1 to 10. Record evidence and unresolved problems per page.
+- [ ] Improve shared controls and page layouts using the existing native zinc theme, Lucide icons,
+  brand assets and shadcn-inspired patterns. Keep dependencies and idle work unchanged.
+- [ ] Verify every page at narrow and wide sizes, including useful empty states, populated lists,
+  right-click actions, forms, cancellation and validation where applicable. Cover fixed bugs.
+- [ ] Repeat independent reviews until every page scores at least 9 for both UI and UX, with visual
+  and task evidence. Do not count unverified pages as passing.
+- [ ] Run the smoke test and required Rust checks, and record before and after hidden RSS and idle CPU.
+
 ## Open points (decide when the phase starts, ask first)
 
 - Points: its sub-actions are new in Streamer.bot 1.1.0, unreleased (1.0.7 is the latest). When it's out,

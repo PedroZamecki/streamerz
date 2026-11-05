@@ -7,6 +7,7 @@ mod agents;
 mod card;
 pub(crate) mod chat;
 pub(crate) mod clipboard;
+mod columns;
 mod conns;
 mod dev;
 pub(crate) mod dialogs;
@@ -484,8 +485,8 @@ fn theme(dark: bool, accent: Option<(u8, u8, u8)>) {
         draw::set_draw_color(Color::color_average(c, Color::Foreground, 0.7));
         draw::draw_rounded_rect(x, y, w, h, r(w, h));
     }
-    // No dotted focus boxes: fields show their cursor, lists their selection.
-    app::set_visible_focus(false);
+    // Keyboard users need to see which control receives the next action.
+    app::set_visible_focus(true);
     app::set_menu_linespacing(8);
     app::set_scrollbar_size(12);
     for f in [
@@ -595,11 +596,23 @@ pub(crate) fn header(col: &mut Flex, widths: &'static [i32], titles: &[&'static 
     f.draw(move |f| {
         draw::set_font(Font::HelveticaBold, 12);
         draw::set_draw_color(muted());
-        let mut x = f.x() + 12;
+        let layout = columns::layout(widths, titles.len(), f.w());
         for (i, t) in titles.iter().enumerate() {
-            let w = widths.get(i).copied().unwrap_or(f.w());
-            draw::draw_text2(t, x, f.y(), w, f.h(), Align::Left | Align::Clip);
-            x += w;
+            let (offset, w) = layout.cell(i);
+            let room = (w - 8).max(0);
+            let shown = if draw::width(t) as i32 <= room {
+                std::borrow::Cow::Borrowed(*t)
+            } else {
+                std::borrow::Cow::Owned(fit::ellipsize(t, room, |s| draw::width(s) as i32))
+            };
+            draw::draw_text2(
+                &shown,
+                f.x() + columns::INSET + offset,
+                f.y(),
+                w,
+                f.h(),
+                Align::Left | Align::Clip,
+            );
         }
     });
     col.fixed(&f, 16);
@@ -628,6 +641,7 @@ pub(crate) fn sort_header(
     filter: Option<Rc<HeaderFilter>>,
 ) -> Frame {
     let titles = titles.to_vec();
+    let count = titles.len();
     // Its own box: redrawn alone, it paints over the last arrow instead of on top of it (that left a
     // ghost of every arrow until the page was drawn again).
     let mut f = Frame::default();
@@ -637,12 +651,12 @@ pub(crate) fn sort_header(
         let (sort, filter) = (sort.clone(), filter.clone());
         move |f| {
             draw::set_font(Font::HelveticaBold, 12);
-            let mut x = f.x() + 12;
+            let layout = columns::layout(widths, titles.len(), f.w());
             for (i, t) in titles.iter().enumerate() {
-                let w = widths.get(i).copied().unwrap_or(f.w());
+                let (offset, w) = layout.cell(i);
+                let x = f.x() + columns::INSET + offset;
                 let filters = filter.as_ref().filter(|h| h.column == i);
                 if filters.is_some_and(|h| !h.shown.get()) {
-                    x += w;
                     continue;
                 }
                 let (on, up) = (sort.get().0 == i, sort.get().1);
@@ -655,16 +669,21 @@ pub(crate) fn sort_header(
                     tx += FUNNEL;
                 }
                 draw::set_draw_color(if on { Color::Foreground } else { muted() });
-                draw::draw_text2(t, tx, f.y(), w - 20, f.h(), Align::Left | Align::Clip);
+                let room = (w - (tx - x) - 20).max(0);
+                let shown = if draw::width(t) as i32 <= room {
+                    std::borrow::Cow::Borrowed(*t)
+                } else {
+                    std::borrow::Cow::Owned(fit::ellipsize(t, room, |s| draw::width(s) as i32))
+                };
+                draw::draw_text2(&shown, tx, f.y(), room, f.h(), Align::Left | Align::Clip);
                 if on {
-                    let tw = draw::width(t) as i32;
+                    let tw = draw::width(&shown) as i32;
                     let ink = Color::Foreground;
                     if let Some(mut a) = icons::icon(if up { "arrow-up" } else { "arrow-down" }, ink, 12) {
                         let gap = if t.is_empty() { 0 } else { 4 };
-                        a.draw(tx + tw.min(w - 34) + gap, f.y() + (f.h() - 12) / 2, 12, 12);
+                        a.draw(tx + tw + gap, f.y() + (f.h() - 12) / 2, 12, 12);
                     }
                 }
-                x += w;
             }
         }
     });
@@ -677,27 +696,24 @@ pub(crate) fn sort_header(
         }
         Event::Push => {
             // The titles start 12 px in, as the rows' text does.
-            let mut x = f.x() + 12;
-            let ex = app::event_x().max(x);
-            for (i, w) in widths.iter().enumerate() {
-                if (x..x + w).contains(&ex) {
-                    if let Some(h) = filter.as_ref().filter(|h| h.column == i) {
-                        if !h.shown.get() {
-                            break;
-                        }
-                        if ex < x + FUNNEL {
-                            (h.open)();
-                            f.redraw();
-                            break;
-                        }
+            let layout = columns::layout(widths, count, f.w());
+            let ex = app::event_x() - f.x() - columns::INSET;
+            if let Some(i) = layout.column_at(ex) {
+                let (x, _) = layout.cell(i);
+                if let Some(h) = filter.as_ref().filter(|h| h.column == i) {
+                    if !h.shown.get() {
+                        return true;
                     }
-                    let (on, up) = sort.get();
-                    sort.set((i, on != i || !up));
-                    f.redraw();
-                    f.do_callback();
-                    break;
+                    if ex < x + FUNNEL {
+                        (h.open)();
+                        f.redraw();
+                        return true;
+                    }
                 }
-                x += w;
+                let (on, up) = sort.get();
+                sort.set((i, on != i || !up));
+                f.redraw();
+                f.do_callback();
             }
             true
         }
@@ -780,6 +796,12 @@ fn icon_for(label: &str) -> Option<&'static str> {
         "connect" | "connect_all" => "plug",
         "disconnect" | "disconnect_all" => "unplug",
         "test" => "play",
+        "blocking" => "lock",
+        "pause_resume" | "pause_all" => "pause",
+        "resume_all" => "play",
+        "run_again" => "rotate-ccw",
+        "variables_when_queued" | "variables_after_run" => "braces",
+        "configure" => "sliders-horizontal",
         "templates" | "manage_templates" => "layout-template",
         "change_value" => "pencil",
         "add_setting" | "add_file" => "plus",
@@ -957,13 +979,37 @@ fn grid_group(col: &mut Flex, labels: &[&str], rows: i32) -> (fltk::group::Group
     (g, out)
 }
 
-/// A quiet line of help text in `col`, `h` tall, wrapped.
+/// Quiet help text, at least `h` tall, growing to fit its wrapped lines on resize.
 pub(crate) fn hint(col: &mut Flex, text: &str, h: i32) -> Frame {
     let mut f = Frame::default()
         .with_label(&text.replace('@', "@@"))
         .with_align(Align::Left | Align::Inside | Align::Wrap);
     f.set_label_color(muted());
     col.fixed(&f, h);
+    f.resize_callback({
+        let mut col = col.clone();
+        let measured_width = Cell::new(0);
+        move |f, _, _, width, _| {
+            if width <= 0 || measured_width.replace(width) == width {
+                return;
+            }
+            draw::set_font(f.label_font(), f.label_size());
+            let lines = dialogs::wrap(&f.label(), (width - 4).max(1), |s| draw::width(s) as i32);
+            let height = (lines.len() as i32 * draw::height() + 4).max(h);
+            if f.h() != height {
+                col.fixed(f, height);
+                // A Flex can be in the middle of laying out its children here. Recalculate after
+                // that pass so its flexible lists use the newly measured help height.
+                let mut parent = col.clone();
+                app::awake_callback(move || {
+                    if !parent.was_deleted() {
+                        parent.recalc();
+                        parent.redraw();
+                    }
+                });
+            }
+        }
+    });
     f
 }
 
@@ -1543,6 +1589,57 @@ fn pump_dev_with(tabs: &Wizard) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore]
+    fn wrapped_help_keeps_following_controls_inside_the_page() {
+        let _app = app::App::default();
+        let mut window = DoubleWindow::new(0, 0, 600, 400, None);
+        let mut column = Flex::new(0, 0, 600, 400, None).column();
+        let help = hint(&mut column, "Connect a streaming app using its WebSocket server. Add the matching address, port and password before connecting.", 24);
+        let rows = rows::Rows::new("No connections yet.");
+        let footer = Frame::default().with_label("Connections");
+        column.fixed(&footer, 26);
+        column.end();
+        window.end();
+        window.show();
+        let mut wide_height = 0;
+        for width in [600, 180, 600] {
+            window.resize(0, 0, width, 400);
+            column.resize(0, 0, width, 400);
+            column.recalc();
+            for _ in 0..4 {
+                app::check();
+            }
+            assert!(help.y() + help.h() <= rows.y());
+            assert!(rows.y() + rows.h() <= footer.y());
+            assert!(footer.y() + footer.h() <= column.y() + column.h());
+            assert!(rows.h() > 100);
+            if width == 180 {
+                assert!(help.h() > wide_height);
+            } else {
+                wide_height = help.h();
+            }
+        }
+        window.hide();
+        app::delete_widget(window);
+    }
+
+    #[test]
+    fn queue_history_and_configuration_actions_can_fold_to_icons() {
+        for key in [
+            "btn.blocking",
+            "btn.pause_resume",
+            "btn.pause_all",
+            "btn.resume_all",
+            "btn.run_again",
+            "btn.variables_when_queued",
+            "btn.variables_after_run",
+            "btn.configure",
+        ] {
+            assert!(icon_for(tr(key)).is_some(), "{key} has no compact action icon");
+        }
+    }
 
     /// A login that ran out is asked about once, and again only after it was done again.
     #[test]

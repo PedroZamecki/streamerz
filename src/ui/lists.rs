@@ -207,7 +207,7 @@ pub static TIMERS: Kind = Kind {
     columns: &[220, 180, 120, 120, 80],
     titles: &[
         "lists.timers.name",
-        "lists.timers.every",
+        "lists.timers.interval",
         "lists.timers.lines",
         "lists.timers.runs",
         "",
@@ -478,6 +478,7 @@ pub struct List {
     view: Rows,
     kind: &'static Kind,
     ids: Vec<String>,
+    selection_buttons: Vec<Button>,
 }
 
 impl List {
@@ -490,8 +491,21 @@ impl List {
             self.view.add(&line(&(self.kind.label)(o)));
             self.ids.push(s(o, "id").into());
         }
+        drop(c);
         if let Some(i) = sel.and_then(|id| self.ids.iter().position(|x| *x == id)) {
             self.view.select(i as i32 + 1);
+        }
+        self.selection_changed();
+    }
+
+    fn selection_changed(&mut self) {
+        let selected = self.selected().is_some();
+        for button in &mut self.selection_buttons {
+            if selected {
+                button.activate();
+            } else {
+                button.deactivate();
+            }
         }
     }
 
@@ -522,6 +536,7 @@ impl List {
         if let Some(i) = self.ids.iter().position(|x| *x == id) {
             self.view.select(i as i32 + 1);
         }
+        self.selection_changed();
     }
 
     fn edit(&mut self) {
@@ -566,7 +581,7 @@ fn ask(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Option<Obj> {
     match forms::form(title, fields, o, lists) {
         Done::Ok(x) => Some(x),
         Done::Cancel => None,
-        Done::Json => json(title, o),
+        Done::Json(draft) => json(title, &draft),
     }
 }
 
@@ -597,7 +612,8 @@ fn list(
     kind: &'static Kind,
     toggle: Option<&'static str>,
 ) -> Rc<RefCell<List>> {
-    let view = browser(col, kind.columns, kind.titles, kind.empty);
+    let mut view = browser(col, kind.columns, kind.titles, kind.empty);
+    view.set_label(tr(kind.what));
     let mut labels = vec![tr("btn.add"), tr("btn.edit")];
     labels.extend(toggle.map(|_| tr("btn.on_off")));
     labels.push(tr("btn.delete"));
@@ -609,7 +625,9 @@ fn list(
         view: view.clone(),
         kind,
         ids: Vec::new(),
+        selection_buttons: b[1..].to_vec(),
     }));
+    me.borrow_mut().selection_changed();
     let click = |b: &Button, f: Box<dyn Fn(&mut List)>| {
         let me = me.clone();
         b.clone().set_callback(move |_| {
@@ -627,8 +645,9 @@ fn list(
     view.clone().set_callback({
         let me = me.clone();
         move |_| {
-            if fltk::app::event_clicks() {
-                if let Ok(mut m) = me.try_borrow_mut() {
+            if let Ok(mut m) = me.try_borrow_mut() {
+                m.selection_changed();
+                if fltk::app::event_clicks() {
                     m.edit();
                 }
             }
@@ -784,10 +803,7 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
     let mut col = tab(tabs, "Commands");
     let commands = list(&mut col, cfg, cmds, &COMMANDS, Some("enabled"));
     title(&mut col, tr("lists.voice.title"));
-    let guide = Frame::default()
-        .with_label(tr("lists.voice.guide"))
-        .with_align(Align::Left | Align::Inside | Align::Wrap);
-    col.fixed(&guide, 36);
+    super::hint(&mut col, tr("lists.voice.guide"), 36);
     let voice = list(&mut col, cfg, cmds, &VOICE_COMMANDS, Some("enabled"));
     col.end();
 
@@ -797,16 +813,10 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
 
     let mut col = tab(tabs, "Files");
     title(&mut col, tr("lists.watchers.title"));
-    let guide = Frame::default()
-        .with_label(tr("lists.watchers.guide"))
-        .with_align(Align::Left | Align::Inside | Align::Wrap);
-    col.fixed(&guide, 36);
+    super::hint(&mut col, tr("lists.watchers.guide"), 36);
     let watchers = list(&mut col, cfg, cmds, &FILE_WATCHERS, Some("enabled"));
     title(&mut col, tr("lists.tails.title"));
-    let guide = Frame::default()
-        .with_label(tr("lists.tails.guide"))
-        .with_align(Align::Left | Align::Inside | Align::Wrap);
-    col.fixed(&guide, 36);
+    super::hint(&mut col, tr("lists.tails.guide"), 36);
     let tails = list(&mut col, cfg, cmds, &FILE_TAILS, Some("enabled"));
     col.end();
 
@@ -827,10 +837,7 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
 
     let mut col = tab(tabs, "Stream Apps");
     title(&mut col, "OBS Studio");
-    let obs_guide = Frame::default()
-        .with_label(tr("lists.stream_apps.obs_guide"))
-        .with_align(Align::Left | Align::Inside | Align::Wrap);
-    col.fixed(&obs_guide, 36);
+    super::hint(&mut col, tr("lists.stream_apps.obs_guide"), 36);
     let obs = list(&mut col, cfg, cmds, &OBS_CONNECTIONS, Some("autoConnect"));
     let mut b_row = Flex::default().row();
     b_row.set_pad(8);
@@ -852,10 +859,7 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
         });
     });
     title(&mut col, "Streamlabs Desktop");
-    let slobs_guide = Frame::default()
-        .with_label(tr("lists.stream_apps.slobs_guide"))
-        .with_align(Align::Left | Align::Inside | Align::Wrap);
-    col.fixed(&slobs_guide, 36);
+    super::hint(&mut col, tr("lists.stream_apps.slobs_guide"), 36);
     let slobs = list(&mut col, cfg, cmds, &SLOBS_CONNECTIONS, Some("autoConnect"));
     let mut b_row = Flex::default().row();
     b_row.set_pad(8);
@@ -2070,10 +2074,7 @@ fn donations_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Donations>
         .enumerate()
     {
         title(&mut col, name);
-        let g = Frame::default()
-            .with_label(guide)
-            .with_align(Align::Left | Align::Inside | Align::Wrap);
-        col.fixed(&g, ROW);
+        super::hint(&mut col, guide, ROW);
         let mut r = Flex::default().row();
         r.set_pad(8);
         let f = Frame::default().with_align(Align::Left | Align::Inside).ellipsis();
@@ -2192,6 +2193,26 @@ fn users_click(me: &Rc<RefCell<Community>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn list_headers_do_not_contain_row_format_parameters() {
+        for kind in [
+            &COMMANDS,
+            &TIMERS,
+            &CLIENTS,
+            &SERVERS,
+            &OBS_CONNECTIONS,
+            &SLOBS_CONNECTIONS,
+        ] {
+            for key in kind.titles.iter().filter(|key| !key.is_empty()) {
+                assert!(
+                    !tr(key).contains('{'),
+                    "{} has a row template as its heading",
+                    kind.what
+                );
+            }
+        }
+    }
 
     /// A new one already has every field its form sets, so none lands out of Streamer.bot's order.
     #[test]
