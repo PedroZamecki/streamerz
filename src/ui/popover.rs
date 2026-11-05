@@ -3,9 +3,11 @@
 //! tile them). It's a window inside the window, so widgets repainting themselves under it (a cursor, a
 //! hover) never draw over it.
 
-use fltk::enums::{Color, Event, FrameType, Key};
+use fltk::enums::{Color, Damage, Event, FrameType, Key};
 use fltk::frame::Frame;
+use fltk::image::RgbImage;
 use fltk::prelude::*;
+use fltk::surface::ImageSurface;
 use fltk::window::Window;
 use fltk::{app, draw};
 use std::cell::Cell;
@@ -19,6 +21,38 @@ pub struct Popover {
     catcher: Frame,
     /// Set by a click outside, Escape, or `close_now`.
     pub done: Rc<Cell<bool>>,
+}
+
+/// The corner radius of everything that floats (popovers, menus).
+pub const RADIUS: i32 = 8;
+
+/// The part of `host` at `(x, y, w, h)`, as it is drawn now.
+fn backdrop(host: &dyn WindowExt, x: i32, y: i32, w: i32, h: i32) -> Option<RgbImage> {
+    let surface = ImageSurface::new(w, h, false);
+    ImageSurface::push_current(&surface);
+    draw::set_draw_color(Color::Background);
+    draw::draw_rectf(0, 0, w, h);
+    // Not dropped: a handle got this way could take the window with it.
+    if let Some(base) = fltk::widget::Widget::from_dyn_widget_ptr(host.as_widget_ptr()).map(std::mem::ManuallyDrop::new)
+    {
+        surface.draw(&*base, -x, -y);
+    }
+    ImageSurface::pop_current();
+    surface.image()
+}
+
+/// A floating panel `w` x `h` at the window's corner: what it covers in its corners, then a rounded
+/// panel with a quiet border.
+fn panel(w: i32, h: i32, under: Option<&RgbImage>) {
+    let back = Color::Background;
+    match under {
+        Some(img) => img.clone().draw(0, 0, w, h),
+        None => draw::draw_rect_fill(0, 0, w, h, back),
+    }
+    draw::set_draw_color(back);
+    draw::draw_rounded_rectf(0, 0, w, h, RADIUS);
+    draw::set_draw_color(Color::color_average(Color::Foreground, back, 0.2));
+    draw::draw_rounded_rect(0, 0, w, h, RADIUS);
 }
 
 impl Popover {
@@ -49,12 +83,17 @@ impl Popover {
                 _ => false,
             }
         });
+        // What is under it, for its corners: a window is square, so they show what they cover.
+        let under = backdrop(&*host, x, y, w, h);
         let mut pop = Window::new(x, y, w, h, None);
-        pop.set_frame(FrameType::FlatBox);
+        pop.set_frame(FrameType::NoBox);
         pop.set_color(Color::Background);
-        pop.draw(|c| {
-            draw::set_draw_color(Color::color_average(Color::Foreground, Color::Background, 0.25));
-            draw::draw_rounded_rect(0, 0, c.w(), c.h(), 8);
+        pop.super_draw_first(false);
+        pop.draw(move |c| {
+            if !c.damage_type().contains(Damage::All) {
+                return;
+            }
+            panel(c.w(), c.h(), under.as_ref());
         });
         Popover {
             host: std::mem::ManuallyDrop::new(host),

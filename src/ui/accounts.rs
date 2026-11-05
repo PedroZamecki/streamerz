@@ -903,7 +903,7 @@ impl Accounts {
 }
 
 pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Accounts>> {
-    let (scroll, mut col) = super::tab_scrolled(tabs, "Accounts", 780);
+    let (scroll, mut col) = super::scroll::page(tabs, "Accounts");
 
     let mut lock_bar = Flex::default().row();
     lock_bar.set_pad(8);

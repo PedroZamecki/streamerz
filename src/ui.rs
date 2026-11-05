@@ -20,6 +20,7 @@ mod groups;
 pub(crate) mod icons;
 pub(crate) mod img;
 mod lists;
+pub(crate) mod menu;
 mod nav;
 pub mod picker;
 mod picker_icons;
@@ -28,6 +29,9 @@ pub(crate) mod polls;
 pub(crate) mod popover;
 mod recovery;
 mod rows;
+#[cfg(test)]
+mod rules;
+pub(crate) mod scroll;
 mod settings;
 mod suggest;
 mod tip;
@@ -505,13 +509,6 @@ fn theme(dark: bool, accent: Option<(u8, u8, u8)>) {
     ] {
         app::set_frame_type_cb(f, down, 2, 2, 4, 4);
     }
-    if let Ok(mut bars) = SCROLLBARS.lock() {
-        bars.retain(|sb| !sb.was_deleted());
-        for sb in bars.iter_mut() {
-            sb.set_color(Color::Background);
-            sb.set_selection_color(Color::color_average(Color::Foreground, Color::Background, 0.35));
-        }
-    }
 }
 
 /// Every window's icon, drawn for the theme.
@@ -736,26 +733,12 @@ pub(crate) fn sort_header(
 /// A menu at the pointer of things to tick: each item is a label and whether it's ticked; `pick` gets
 /// the item clicked.
 pub(crate) fn tick_menu(items: &[(String, bool)], pick: impl Fn(usize) + Clone + 'static) {
-    use fltk::menu::{MenuButton, MenuFlag};
-    let mut m = menu_at_pointer();
+    let mut m = menu::Menu::new();
     for (i, (label, on)) in items.iter().enumerate() {
-        let flag = if *on {
-            MenuFlag::Toggle | MenuFlag::Value
-        } else {
-            MenuFlag::Toggle
-        };
         let pick = pick.clone();
-        m.add(
-            &label.replace('/', "\\/").replace('&', "&&"),
-            Shortcut::None,
-            flag,
-            move |_| pick(i),
-        );
+        m.tick(label, *on, move || pick(i));
     }
-    if m.size() > 0 {
-        m.popup();
-    }
-    MenuButton::delete(m);
+    m.show();
 }
 
 fn button(row: &mut Flex, label: &str, w: i32) -> Button {
@@ -849,6 +832,7 @@ fn icon_for(label: &str) -> Option<&'static str> {
         "user_info" => "user-round",
         "report_github" => "bug",
         "start_poll" | "start_prediction" => "play",
+        "new_poll" | "new_prediction" => "plus",
         "end_poll" => "square",
         "lock" | "remove_access" => "lock",
         "allow_access" => "lock-open",
@@ -862,53 +846,13 @@ fn icon_for(label: &str) -> Option<&'static str> {
     })
 }
 
-/// `labels` as a menu at the pointer; the index of the one picked. (Not a menu item's `value()`: that's
-/// a toggle's state, so every pick used to be read as the first.)
+/// `labels` as a menu at the pointer; the index of the one picked.
 pub(crate) fn pick(labels: &[&str]) -> Option<usize> {
-    use fltk::menu::{MenuButton, MenuFlag};
-    let mut m = menu_at_pointer();
+    let mut m = menu::Menu::new();
     for l in labels {
-        m.add(&menu_text(l), Shortcut::None, MenuFlag::Normal, |_| {});
+        m.item(l, None, || {});
     }
-    let chosen = m.popup().map(|_| m.value());
-    MenuButton::delete(m);
-    if let Some(l) = chosen.and_then(|i| usize::try_from(i).ok()).and_then(|i| labels.get(i)) {
-        crate::crash::step(&format!("menu item {l}"));
-    }
-    chosen
-        .and_then(|i| usize::try_from(i).ok())
-        .filter(|i| *i < labels.len())
-}
-
-/// A label as a menu shows it as written (`&` underlines and `/` makes a submenu otherwise).
-fn menu_text(l: &str) -> String {
-    l.replace('&', "&&").replace('/', "\\/")
-}
-
-/// A menu button at the pointer, in the window the pointer is in. Wayland places a popup relative to the
-/// window of the widget that opens it (a button with no window opens it in the corner), and refuses an
-/// empty box, so it is 1x1 (and invisible).
-pub(crate) fn menu_at_pointer() -> fltk::menu::MenuButton {
-    let host: Option<Box<dyn WindowExt>> = app::belowmouse::<fltk::widget::Widget>()
-        .and_then(|w| w.window())
-        .or_else(|| app::first_window().map(|w| Box::new(w) as Box<dyn WindowExt>));
-    if let Some(h) = &host {
-        h.begin();
-    }
-    // From the keyboard (the Menu key, Shift+F10) the menu opens on the focused control instead.
-    let (x, y) = match app::focus().filter(|_| app::event() == Event::KeyDown) {
-        Some(w) => (w.x() + 12, w.y() + 12),
-        None => (app::event_x(), app::event_y()),
-    };
-    let mut m = fltk::menu::MenuButton::new(x, y, 1, 1, None);
-    // No box: a menu button draws one (and a marker) of its own, which left white dots on the window.
-    m.set_frame(FrameType::NoBox);
-    if let Some(h) = host {
-        h.end();
-        // Not dropped: a window got this way owns its widget, and dropping it would delete the window.
-        std::mem::forget(h);
-    }
-    m
+    m.show()
 }
 
 /// The keys that open a context menu without the mouse: the Menu key and Shift+F10.
@@ -918,13 +862,13 @@ pub(crate) fn menu_key() -> bool {
     key == Key::Menu || (key == Key::F10 && app::is_event_shift())
 }
 
-/// The menu a right click opens: `buttons`' actions, the inactive ones greyed. Runs the one picked.
+/// The menu a right click opens: `buttons`' actions with their icons, the inactive ones greyed. Runs
+/// the one picked.
 pub(crate) fn context_menu(buttons: &[Button]) {
     if crate::brand::IS_DEV {
         dev::record_menu(buttons);
     }
-    use fltk::menu::{MenuButton, MenuFlag};
-    let mut m = menu_at_pointer();
+    let mut m = menu::Menu::new();
     for b in buttons {
         let l = b.label();
         let l = if l.is_empty() {
@@ -932,31 +876,10 @@ pub(crate) fn context_menu(buttons: &[Button]) {
         } else {
             l
         };
-        let flag = if b.active_r() {
-            MenuFlag::Normal
-        } else {
-            MenuFlag::Inactive
-        };
-        let i = m.add(&l.replace('/', "\\/").replace('&', "&&"), Shortcut::None, flag, {
-            let (mut b, l) = (b.clone(), l.clone());
-            move |_| {
-                crate::crash::step(&format!("menu item {l}"));
-                b.do_callback()
-            }
-        });
-        if let (Some(mut item), Some(name)) = (m.at(i), icon_for(&l)) {
-            let ink = if b.active_r() {
-                button_ink()
-            } else {
-                button_ink().inactive()
-            };
-            item.add_image(icons::before_label(name, ink, 14), true);
-        }
+        let mut b2 = b.clone();
+        m.add(&l, icon_for(&l), b.active_r(), move || b2.do_callback());
     }
-    if m.size() > 0 {
-        m.popup();
-    }
-    MenuButton::delete(m);
+    m.show();
 }
 
 /// Buttons in a grid `rows` high that fills `col`'s width, all the same width; where their labels don't
@@ -1099,31 +1022,6 @@ fn tab(tabs: &Wizard, label: &str) -> Flex {
     col.set_margin(10);
     col.set_pad(4);
     col
-}
-
-static SCROLLBARS: Mutex<Vec<fltk::valuator::Scrollbar>> = Mutex::new(Vec::new());
-
-/// A scrollable page: wraps a vertical Flex inside a fltk::group::Scroll.
-pub(crate) fn tab_scrolled(tabs: &Wizard, label: &str, content_h: i32) -> (fltk::group::Scroll, Flex) {
-    let mut s = fltk::group::Scroll::new(tabs.x(), tabs.y(), tabs.w(), tabs.h(), None).with_label(label);
-    s.set_type(fltk::group::ScrollType::Vertical);
-    s.set_scrollbar_size(10);
-    let mut sb = s.scrollbar();
-    sb.set_color(Color::Background);
-    sb.set_selection_color(Color::color_average(Color::Foreground, Color::Background, 0.35));
-    if let Ok(mut bars) = SCROLLBARS.lock() {
-        bars.push(sb.clone());
-    }
-    let mut col = Flex::new(s.x(), s.y(), s.w() - 14, content_h.max(s.h()), None).column();
-    col.set_margin(10);
-    col.set_pad(4);
-    s.resizable(&col);
-    let mut col_c = col.clone();
-    s.resize_callback(move |s, x, y, w, h| {
-        let ch = content_h.max(h);
-        col_c.resize(x - s.xposition(), y - s.yposition(), (w - 14).max(50), ch);
-    });
-    (s, col)
 }
 
 /// The Log tab: each line's time, its level in the level's colour, and its text, filtered by level and
@@ -1317,6 +1215,7 @@ pub fn run(
     });
     col.fixed(&top, ROW);
     let mut view = TextDisplay::default();
+    scroll::view(&mut view);
     let (buf, styles) = (TextBuffer::default(), TextBuffer::default());
     view.set_buffer(buf.clone());
     view.set_highlight_data(styles.clone(), log_styles());
@@ -1812,12 +1711,6 @@ mod tests {
         let t = std::time::Instant::now();
         let got = query_for(&tx, std::time::Duration::from_millis(50), |_| 1);
         assert!(got.is_none() && t.elapsed() < std::time::Duration::from_secs(2));
-    }
-
-    /// Menu labels show as written: an outcome named "Yes/No" isn't a submenu.
-    #[test]
-    fn menu_labels_show_as_written() {
-        assert_eq!(menu_text("Yes/No & maybe"), "Yes\\/No && maybe");
     }
 
     /// The log's styles have one letter per byte (FLTK styles bytes), so colours stay on their words

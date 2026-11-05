@@ -1487,8 +1487,7 @@ pub fn form_validated(
     let area_h = visible_h - ROW - 34 - (tab_y - 10);
     let mut tabs = song.then(|| fltk::group::Tabs::new(10, 10, 540, visible_h - ROW - 34, None));
     let mut page = song.then(|| fltk::group::Group::new(10, tab_y, 540, area_h, crate::i18n::tr("spotify.tab_action")));
-    let mut scroll = fltk::group::Scroll::new(10, tab_y, 540, area_h, None);
-    scroll.set_type(fltk::group::ScrollType::Vertical);
+    let mut scroll = super::scroll::area(10, tab_y, 540, area_h);
     let content_h = if song {
         (5 * (ROW + 4)).max(area_h)
     } else {
@@ -1512,8 +1511,7 @@ pub fn form_validated(
                 "spotify.tab_replies"
             });
             page = Some(fltk::group::Group::new(10, tab_y, 540, area_h, label));
-            scroll = fltk::group::Scroll::new(10, tab_y, 540, area_h, None);
-            scroll.set_type(fltk::group::ScrollType::Vertical);
+            scroll = super::scroll::area(10, tab_y, 540, area_h);
             let count = if index == 5 { 12 } else { fields.len() - 17 };
             col = Flex::new(10, tab_y, 526, (count as i32 * (ROW + 4)).max(area_h), None).column();
             col.set_pad(4);
@@ -1566,6 +1564,7 @@ pub fn form_validated(
             }
             Expression(values) => {
                 let mut c = InputChoice::default();
+                super::menu::input_choice(&mut c);
                 for value in *values {
                     c.add(&item(value));
                 }
@@ -1619,6 +1618,7 @@ pub fn form_validated(
             }
             Suggest(key) => {
                 let mut c = InputChoice::default();
+                super::menu::input_choice(&mut c);
                 for (_, name) in crate::catalog::get(key) {
                     c.add(&item(&name));
                 }
@@ -1629,6 +1629,7 @@ pub fn form_validated(
             }
             ActionGroup | CommandGroup => {
                 let mut c = InputChoice::default();
+                super::menu::input_choice(&mut c);
                 let list = if let ActionGroup = w {
                     &lists.action_groups
                 } else {
@@ -1904,6 +1905,7 @@ mod tests {
         let mut count = IntInput::default();
         count.set_value("invalid");
         let mut expression = InputChoice::default();
+        crate::ui::menu::input_choice(&mut expression);
         expression.set_value("7");
         let enabled = CheckButton::default();
         enabled.set_checked(true);

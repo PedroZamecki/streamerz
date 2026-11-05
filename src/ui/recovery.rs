@@ -124,6 +124,7 @@ pub fn crashes_tab(tabs: &Wizard) -> Rc<RefCell<Crashes>> {
     );
     col.fixed(&*view, 170);
     let mut shown = TextDisplay::default();
+    super::scroll::view(&mut shown);
     let text = TextBuffer::default();
     shown.set_buffer(text.clone());
     shown.set_text_font(Font::Courier);

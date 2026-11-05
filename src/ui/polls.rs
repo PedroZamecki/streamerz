@@ -9,6 +9,7 @@ use super::{tell, ROW};
 use crate::i18n::{tr, trf};
 use crate::model::Obj;
 use fltk::button::{Button, CheckButton};
+use fltk::enums::{Align, Color, Font, Key, Shortcut};
 use fltk::frame::Frame;
 use fltk::group::{Flex, Wizard};
 use fltk::input::Input;
@@ -32,6 +33,8 @@ struct Seen {
     prediction: Obj,
     youtube_poll: Obj,
     note: String,
+    /// Something asked last didn't go through (the note says what).
+    trouble: bool,
     ready: [bool; 2],
     prediction_known: bool,
     requested: u64,
@@ -63,13 +66,11 @@ pub struct Polls {
     cmds: Cmds,
     poll_results: Rows,
     pred_results: Rows,
+    /// How the accounts are and how the last thing asked went: a state's icon and words.
     note: Frame,
     /// Filled by the engine's answers; shown on the next refresh.
     seen: Arc<Mutex<Seen>>,
     asked: Option<Instant>,
-    targets: [CheckButton; 2],
-    /// A target's tick while it can't be used: cleared on screen, put back once it can.
-    held: [bool; 2],
     poll_buttons: [Button; 3],
     prediction_buttons: [Button; 4],
 }
@@ -90,6 +91,14 @@ fn token_ready(access: &str, refresh: &str, expires_at: u64) -> bool {
 }
 
 impl Polls {
+    /// The status line and the buttons as they are before anything is known.
+    fn refresh_note(&mut self) {
+        let seen = Seen::default();
+        let (health, text) = note(&seen);
+        health.show(&mut self.note, &text);
+        self.update_controls(&seen);
+    }
+
     /// Shows what's known; asks the platforms again when something changed or it's been a while.
     pub fn refresh(&mut self) {
         let dirty = super::POLLS_DIRTY.swap(false, Ordering::Relaxed);
@@ -151,43 +160,22 @@ impl Polls {
         if sel.1 > 0 {
             self.pred_results.select(sel.1);
         }
-        let note = if seen.busy {
-            tr("polls.working")
-        } else if seen.received == 0 {
-            tr("polls.checking")
-        } else if seen.note.is_empty() && !seen.ready.iter().any(|ready| *ready) {
-            tr("polls.accounts_needed")
-        } else {
-            &seen.note
-        };
-        self.note.set_label(&note.replace('@', "@@"));
+        let (health, note) = note(&seen);
+        health.show(&mut self.note, &note);
         self.note.set_tooltip(&note.replace('@', "@@"));
+        self.note.redraw();
         self.update_controls(&seen);
     }
 
     fn update_controls(&mut self, seen: &Seen) {
-        let selected = self.targets.each_ref().map(|target| target.is_checked());
-        let active_poll = seen.twitch_poll.get("active").and_then(Value::as_bool) == Some(true);
+        let twitch_poll = seen.twitch_poll.get("active").and_then(Value::as_bool) == Some(true);
+        let youtube_poll = !s(&seen.youtube_poll, "poll.question").is_empty();
         let prediction = s(&seen.prediction, "prediction.Status");
         let (mut poll, mut prediction_actions) =
-            action_availability(seen.ready, selected, active_poll, prediction, seen.prediction_known);
+            action_availability(seen.ready, twitch_poll, youtube_poll, prediction, seen.prediction_known);
         if seen.busy {
-            poll = [false; 3];
+            poll = [false, false, false];
             prediction_actions = [false; 4];
-        }
-        for ((target, ready), held) in self.targets.iter_mut().zip(seen.ready).zip(&mut self.held) {
-            if ready && *held {
-                target.set_checked(true);
-                *held = false;
-            } else if !ready && target.is_checked() {
-                target.set_checked(false);
-                *held = true;
-            }
-            if ready && !seen.busy {
-                target.activate();
-            } else {
-                target.deactivate();
-            }
         }
         for (button, available) in self.poll_buttons.iter_mut().zip(poll) {
             if available {
@@ -196,6 +184,11 @@ impl Polls {
                 button.deactivate();
             }
         }
+        self.poll_buttons[0].set_tooltip(if seen.ready.iter().any(|r| *r) {
+            ""
+        } else {
+            tr("polls.accounts_needed")
+        });
         for (button, available) in self.prediction_buttons.iter_mut().zip(prediction_actions) {
             if available {
                 button.activate();
@@ -210,15 +203,6 @@ impl Polls {
                 ""
             });
         }
-        for (i, target) in self.targets.iter_mut().enumerate() {
-            target.set_tooltip(if seen.ready[i] {
-                ""
-            } else if i == 0 {
-                tr("polls.twitch_unavailable")
-            } else {
-                tr("polls.youtube_unavailable")
-            });
-        }
         self.prediction_buttons[0].set_tooltip(if !seen.ready[0] {
             tr("polls.twitch_unavailable")
         } else if !seen.prediction_known {
@@ -231,22 +215,42 @@ impl Polls {
     }
 }
 
+/// The page's status line: its state and its words.
+fn note(seen: &Seen) -> (super::Health, String) {
+    use super::Health;
+    let ready: Vec<&str> = ["Twitch", "YouTube"]
+        .into_iter()
+        .zip(seen.ready)
+        .filter_map(|(name, ready)| ready.then_some(name))
+        .collect();
+    if seen.busy {
+        (Health::Busy, tr("polls.working").into())
+    } else if seen.received == 0 {
+        (Health::Busy, tr("polls.checking").into())
+    } else if !seen.note.is_empty() {
+        (if seen.trouble { Health::Down } else { Health::Up }, seen.note.clone())
+    } else if ready.is_empty() {
+        (Health::Off, tr("polls.accounts_needed").into())
+    } else {
+        (Health::Up, trf("polls.ready_on", &[("where", &ready.join(", "))]))
+    }
+}
+
 /// YouTube can end only polls created by its runner. Public chat state cannot prove ownership, so
 /// keep its authenticated End action available and report the request outcome without guessing.
 fn action_availability(
     ready: [bool; 2],
-    selected: [bool; 2],
     twitch_poll: bool,
+    youtube_poll: bool,
     prediction: &str,
     prediction_known: bool,
 ) -> ([bool; 3], [bool; 4]) {
-    let targets = [ready[0] && selected[0], ready[1] && selected[1]];
     let active = matches!(prediction, "ACTIVE" | "LOCKED");
     let prediction_ready = ready[0] && prediction_known;
     (
         [
-            targets.iter().any(|target| *target),
-            (targets[0] && twitch_poll) || targets[1],
+            ready.iter().any(|ready| *ready),
+            (ready[0] && twitch_poll) || (ready[1] && youtube_poll),
             true,
         ],
         [
@@ -310,6 +314,7 @@ fn ask(cmds: &Cmds, seen: &Arc<Mutex<Seen>>, steps: Option<Vec<(u64, Value, Stri
         tokio::task::spawn_local(async move {
             let obj = |v: Value| v.as_object().cloned().unwrap_or_default();
             let mut notes = Vec::new();
+            let mut trouble = false;
             let ready = {
                 let c = e.config();
                 [
@@ -328,16 +333,21 @@ fn ask(cmds: &Cmds, seen: &Arc<Mutex<Seen>>, steps: Option<Vec<(u64, Value, Stri
                 // Twitch's sub-actions do nothing without Twitch (and don't say so).
                 if (561..=572).contains(&kind) && !ready[0] {
                     notes.push(trf("polls.twitch_off", &[("what", &what)]));
+                    trouble = true;
                     continue;
                 }
                 if matches!(kind, 4011 | 4012) && !ready[1] {
                     notes.push(tr("polls.youtube_unavailable").into());
+                    trouble = true;
                     continue;
                 }
                 let r = e.run_one(kind, obj(settings)).await;
                 let message = match operation_result(kind, &r) {
                     Some(true) => "polls.done",
-                    Some(false) => "polls.failed",
+                    Some(false) => {
+                        trouble = true;
+                        "polls.failed"
+                    }
                     None => "polls.request_sent",
                 };
                 notes.push(trf(message, &[("what", &what)]));
@@ -367,10 +377,13 @@ fn ask(cmds: &Cmds, seen: &Arc<Mutex<Seen>>, steps: Option<Vec<(u64, Value, Stri
                             crate::engine::prediction_args(current, &mut prediction);
                         }
                     }
-                    Err(error) => notes.push(trf(
-                        "polls.lookup_failed",
-                        &[("what", tr("polls.prediction")), ("error", &error)],
-                    )),
+                    Err(error) => {
+                        trouble = true;
+                        notes.push(trf(
+                            "polls.lookup_failed",
+                            &[("what", tr("polls.prediction")), ("error", &error)],
+                        ))
+                    }
                 }
             }
             if let Ok(mut s) = seen.lock() {
@@ -384,6 +397,7 @@ fn ask(cmds: &Cmds, seen: &Arc<Mutex<Seen>>, steps: Option<Vec<(u64, Value, Stri
                 s.prediction_known = prediction_known;
                 if !notes.is_empty() {
                     s.note = notes.join("  ");
+                    s.trouble = trouble;
                 }
             }
             crate::ui::changed();
@@ -417,21 +431,57 @@ fn lasts_choice(default: usize) -> Choice {
     c
 }
 
-pub fn tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<Polls>> {
-    let (scroll, mut col) = super::tab_scrolled(tabs, "Polls", 1150);
+/// A section's title with its icon.
+fn section(col: &mut Flex, icon: &str, text: &str) {
+    let mut f = Frame::default()
+        .with_label(&format!("  {text}"))
+        .with_align(Align::Left | Align::Inside | Align::ImageNextToText);
+    f.set_label_font(Font::HelveticaBold);
+    f.set_image(super::icons::icon(icon, Color::Foreground, ROW - 10));
+    col.fixed(&f, ROW - 2);
+}
 
-    super::hint(&mut col, tr("polls.hint"), 36);
-    // How the last thing asked went.
-    let mut note =
-        Frame::default().with_align(fltk::enums::Align::Left | fltk::enums::Align::Inside | fltk::enums::Align::Wrap);
-    note.set_label_font(fltk::enums::Font::HelveticaBold);
-    col.fixed(&note, 60);
-    // A poll, on Twitch and YouTube.
-    let mut t = Frame::default()
-        .with_label(tr("polls.poll"))
-        .with_align(fltk::enums::Align::Left | fltk::enums::Align::Inside);
-    t.set_label_font(fltk::enums::Font::HelveticaBold);
-    col.fixed(&t, ROW);
+/// A dialog's own buttons at the right of `bar`: Cancel, and the one that does it (Enter).
+fn cancel_go(bar: &mut Flex, answer: &dialogs::Answer, go: &str) {
+    Frame::default();
+    let mut cancel = super::button(bar, tr("dialogs.cancel"), 90);
+    let mut start = super::button(bar, go, 140);
+    start.set_shortcut(Shortcut::from_key(Key::Enter));
+    cancel.set_shortcut(Shortcut::from_key(Key::Escape));
+    start.set_callback({
+        let a = answer.clone();
+        move |_| a.set(Some(true))
+    });
+    cancel.set_callback({
+        let a = answer.clone();
+        move |_| a.set(Some(false))
+    });
+}
+
+/// A short note at the top of a dialog.
+fn about(col: &mut Flex, text: &str) {
+    let mut f = Frame::default()
+        .with_label(text)
+        .with_align(Align::Left | Align::Inside | Align::Wrap);
+    f.set_label_color(super::muted());
+    col.fixed(&f, 38);
+}
+
+/// What a new poll asks: its question, its choices, how long (Twitch), and where.
+pub(super) struct NewPoll {
+    question: String,
+    choices: Vec<String>,
+    secs: u64,
+    on: [bool; 2],
+}
+
+/// Asks for a new poll on the platforms that are `ready`.
+pub(super) fn new_poll(ready: [bool; 2]) -> Option<NewPoll> {
+    let (w, h) = (500, 14 + 38 + 8 * (ROW + 6) + 12 + ROW + 4 + 14);
+    let (mut win, answer) = dialogs::window(w, h, tr("btn.new_poll"));
+    let mut col = Flex::new(14, 14, w - 28, h - 28, None).column();
+    col.set_pad(6);
+    about(&mut col, tr("polls.poll_about"));
     let r = dialogs::row(tr("polls.question"));
     let question = Input::default();
     r.end();
@@ -449,34 +499,69 @@ pub fn tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<Polls>> {
     Frame::default();
     r.end();
     col.fixed(&r, ROW);
-    let mut r = Flex::default().row();
-    r.set_pad(8);
-    let on_twitch = CheckButton::default().with_label(tr("polls.platform_twitch"));
-    on_twitch.set_checked(true);
-    r.fixed(&on_twitch, 90);
-    let on_youtube = CheckButton::default().with_label(tr("polls.platform_youtube"));
-    r.fixed(&on_youtube, 100);
+    let mut r = dialogs::row(tr("polls.where"));
+    let mut targets = Vec::new();
+    for (i, (name, tip)) in [
+        (tr("polls.platform_twitch"), tr("polls.twitch_unavailable")),
+        (tr("polls.platform_youtube"), tr("polls.youtube_unavailable")),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut c = CheckButton::default().with_label(name);
+        r.fixed(&c, 100);
+        c.set_checked(ready[i]);
+        if !ready[i] {
+            c.deactivate();
+            c.set_tooltip(tip);
+        }
+        targets.push(c);
+    }
     Frame::default();
     r.end();
     col.fixed(&r, ROW);
-    let pb = bar(&mut col, &[tr("btn.start_poll"), tr("btn.end_poll"), tr("btn.refresh")]);
-    let poll_results = browser(
-        &mut col,
-        &[90, 220, 220, 120],
-        &["polls.where", "polls.question", "polls.choice", "polls.votes"],
-        "polls.no_poll",
-    );
-    col.fixed(&*poll_results, 150);
-    poll_results.clone().set_menu(&pb);
+    Frame::default();
+    let mut bar = Flex::default().row();
+    bar.set_pad(8);
+    cancel_go(&mut bar, &answer, tr("btn.start_poll"));
+    bar.end();
+    col.fixed(&bar, ROW + 4);
+    col.end();
+    win.end();
+    let on = || [targets[0].is_checked(), targets[1].is_checked()];
+    let ok = dialogs::run(&mut win, &answer, || {
+        let (q, c) = (question.value(), texts(&choices));
+        let problem = if q.trim().is_empty() || c.len() < 2 {
+            Some(tr("polls.need_two"))
+        } else if !on().iter().any(|on| *on) {
+            Some(tr("polls.pick_where"))
+        } else if on()[1] && c.len() > 4 {
+            Some(tr("polls.youtube_limit"))
+        } else {
+            None
+        };
+        if let Some(p) = problem {
+            dialogs::message(p);
+        }
+        problem.is_none()
+    });
+    ok.then(|| NewPoll {
+        question: question.value().trim().to_string(),
+        choices: texts(&choices),
+        secs: LASTS[lasts.value().clamp(0, 5) as usize],
+        on: on(),
+    })
+}
 
-    // A prediction, on Twitch.
-    let mut t = Frame::default()
-        .with_label(tr("polls.prediction"))
-        .with_align(fltk::enums::Align::Left | fltk::enums::Align::Inside);
-    t.set_label_font(fltk::enums::Font::HelveticaBold);
-    col.fixed(&t, ROW);
+/// Asks for a new prediction: its question, its outcomes and how long people can bet.
+pub(super) fn new_prediction() -> Option<(String, Vec<String>, u64)> {
+    let (w, h) = (500, 14 + 38 + 6 * (ROW + 6) + 12 + ROW + 4 + 14);
+    let (mut win, answer) = dialogs::window(w, h, tr("btn.new_prediction"));
+    let mut col = Flex::new(14, 14, w - 28, h - 28, None).column();
+    col.set_pad(6);
+    about(&mut col, tr("polls.prediction_about"));
     let r = dialogs::row(tr("polls.question"));
-    let pquestion = Input::default();
+    let question = Input::default();
     r.end();
     col.fixed(&r, ROW);
     let mut outcomes = Vec::new();
@@ -492,15 +577,50 @@ pub fn tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<Polls>> {
     Frame::default();
     r.end();
     col.fixed(&r, ROW);
-    let db = bar(
+    Frame::default();
+    let mut bar = Flex::default().row();
+    bar.set_pad(8);
+    cancel_go(&mut bar, &answer, tr("btn.start_prediction"));
+    bar.end();
+    col.fixed(&bar, ROW + 4);
+    col.end();
+    win.end();
+    let ok = dialogs::run(&mut win, &answer, || {
+        let enough = !question.value().trim().is_empty() && texts(&outcomes).len() >= 2;
+        if !enough {
+            dialogs::message(tr("polls.need_two"));
+        }
+        enough
+    });
+    ok.then(|| {
+        (
+            question.value().trim().to_string(),
+            texts(&outcomes),
+            LASTS[window.value().clamp(0, 5) as usize],
+        )
+    })
+}
+
+pub fn tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<Polls>> {
+    let (scroll, mut col) = super::scroll::page(tabs, "Polls");
+
+    super::hint(&mut col, tr("polls.hint"), 36);
+    // How the accounts are, and how the last thing asked went.
+    let note = Frame::default().with_align(Align::Left | Align::Inside | Align::Clip);
+    col.fixed(&note, ROW);
+
+    // What's running: each list shows it, with what can be done to it below.
+    section(&mut col, "vote", tr("polls.poll"));
+    let poll_results = browser(
         &mut col,
-        &[
-            tr("btn.start_prediction"),
-            tr("btn.lock"),
-            tr("btn.resolve"),
-            tr("btn.cancel_prediction"),
-        ],
+        &[90, 220, 220, 120],
+        &["polls.where", "polls.question", "polls.choice", "polls.votes"],
+        "polls.no_poll",
     );
+    let pb = bar(&mut col, &[tr("btn.new_poll"), tr("btn.end_poll"), tr("btn.refresh")]);
+    poll_results.clone().set_menu(&pb);
+
+    section(&mut col, "trophy", tr("polls.prediction"));
     let pred_results = browser(
         &mut col,
         &[90, 220, 220, 90, 100],
@@ -513,9 +633,16 @@ pub fn tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<Polls>> {
         ],
         "polls.no_prediction",
     );
-    col.fixed(&*pred_results, 150);
+    let db = bar(
+        &mut col,
+        &[
+            tr("btn.new_prediction"),
+            tr("btn.lock"),
+            tr("btn.resolve"),
+            tr("btn.cancel_prediction"),
+        ],
+    );
     pred_results.clone().set_menu(&db);
-    Frame::default();
     col.end();
     scroll.end();
 
@@ -528,60 +655,39 @@ pub fn tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<Polls>> {
         note,
         seen: seen.clone(),
         asked: None,
-        targets: [on_twitch.clone(), on_youtube.clone()],
-        held: [false; 2],
         poll_buttons: [pb[0].clone(), pb[1].clone(), pb[2].clone()],
         prediction_buttons: [db[0].clone(), db[1].clone(), db[2].clone(), db[3].clone()],
     }));
-    me.borrow_mut().update_controls(&Seen::default());
-    for target in [&on_twitch, &on_youtube] {
-        let (me, seen) = (me.clone(), seen.clone());
-        target.clone().set_callback(move |_| {
-            let snapshot = seen.lock().map(|s| s.clone()).unwrap_or_default();
-            if let Ok(mut me) = me.try_borrow_mut() {
-                me.update_controls(&snapshot);
-            }
-        });
-    }
+    me.borrow_mut().refresh_note();
     let go = {
         let (cmds, seen) = (cmds.clone(), seen.clone());
         move |steps: Vec<(u64, Value, String)>| ask(&cmds, &seen, Some(steps))
     };
     let on = |b: &Button, f: Box<dyn Fn()>| b.clone().set_callback(move |_| f());
+    let snapshot = {
+        let seen = seen.clone();
+        move || seen.lock().map(|s| s.clone()).unwrap_or_default()
+    };
 
     on(&pb[0], {
-        let (go, question, choices, lasts, on_twitch, on_youtube) = (
-            go.clone(),
-            question.clone(),
-            choices.clone(),
-            lasts.clone(),
-            on_twitch.clone(),
-            on_youtube.clone(),
-        );
+        let (go, snapshot) = (go.clone(), snapshot.clone());
         Box::new(move || {
-            let (q, c) = (question.value().trim().to_string(), texts(&choices));
-            if q.is_empty() || c.len() < 2 {
-                dialogs::message(tr("polls.need_two"));
+            let Some(p) = new_poll(snapshot().ready) else {
                 return;
-            }
-            if on_youtube.active() && on_youtube.is_checked() && c.len() > 4 {
-                dialogs::message(tr("polls.youtube_limit"));
-                return;
-            }
-            let secs = LASTS[lasts.value().clamp(0, 5) as usize];
+            };
             let mut steps = Vec::new();
-            if on_twitch.active() && on_twitch.is_checked() {
+            if p.on[0] {
                 steps.push((
                     561,
-                    json!({"title": q, "choices": c, "duration": secs}),
+                    json!({"title": p.question, "choices": p.choices, "duration": p.secs}),
                     trf("polls.poll_on", &[("where", "Twitch")]),
                 ));
             }
-            if on_youtube.active() && on_youtube.is_checked() {
+            if p.on[1] {
                 // YouTube takes up to 4 options, and runs until it's ended.
                 steps.push((
                     4011,
-                    json!({"question": q, "options": c, "broadcast": ""}),
+                    json!({"question": p.question, "options": p.choices, "broadcast": ""}),
                     trf("polls.poll_on", &[("where", "YouTube")]),
                 ));
             }
@@ -589,13 +695,15 @@ pub fn tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<Polls>> {
         })
     });
     on(&pb[1], {
-        let (go, on_twitch, on_youtube) = (go.clone(), on_twitch.clone(), on_youtube.clone());
+        let (go, snapshot) = (go.clone(), snapshot.clone());
         Box::new(move || {
+            // Ends what is running, where it can.
+            let seen = snapshot();
             let mut steps = Vec::new();
-            if on_twitch.active() && on_twitch.is_checked() {
+            if seen.ready[0] && seen.twitch_poll.get("active").and_then(Value::as_bool) == Some(true) {
                 steps.push((562, json!({}), trf("polls.end_on", &[("where", "Twitch")])));
             }
-            if on_youtube.active() && on_youtube.is_checked() {
+            if seen.ready[1] && !s(&seen.youtube_poll, "poll.question").is_empty() {
                 steps.push((
                     4012,
                     json!({"broadcast": ""}),
@@ -610,19 +718,15 @@ pub fn tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<Polls>> {
         Box::new(move || go(Vec::new()))
     });
     on(&db[0], {
-        let (go, pquestion, outcomes, window) = (go.clone(), pquestion.clone(), outcomes.clone(), window.clone());
+        let go = go.clone();
         Box::new(move || {
-            let (q, o) = (pquestion.value().trim().to_string(), texts(&outcomes));
-            if q.is_empty() || o.len() < 2 {
-                dialogs::message(tr("polls.need_two"));
-                return;
+            if let Some((q, o, secs)) = new_prediction() {
+                go(vec![(
+                    568,
+                    json!({"title": q, "outcomes": o, "predictionWindow": secs}),
+                    tr("polls.prediction_new").into(),
+                )]);
             }
-            let secs = LASTS[window.value().clamp(0, 5) as usize];
-            go(vec![(
-                568,
-                json!({"title": q, "outcomes": o, "predictionWindow": secs}),
-                tr("polls.prediction_new").into(),
-            )]);
         })
     });
     on(&db[1], {
@@ -715,31 +819,57 @@ mod tests {
     }
 
     #[test]
-    fn poll_actions_require_an_available_selected_account_and_known_prediction_state() {
+    fn poll_actions_require_an_available_account_and_known_prediction_state() {
         assert_eq!(
-            action_availability([false; 2], [true; 2], true, "ACTIVE", true),
+            action_availability([false; 2], true, true, "ACTIVE", true),
             ([false, false, true], [false; 4])
         );
+        // New poll on any ready platform; End only where a poll runs.
         assert_eq!(
-            action_availability([true, false], [false; 2], false, "", true).0,
-            [false, false, true]
+            action_availability([true, false], false, false, "", true).0,
+            [true, false, true]
         );
         assert_eq!(
-            action_availability([true, false], [true, false], false, "LOCKED", true).1,
+            action_availability([true, false], true, false, "", true).0,
+            [true, true, true]
+        );
+        assert_eq!(
+            action_availability([false, true], true, false, "", true).0,
+            [true, false, true]
+        );
+        assert_eq!(
+            action_availability([false, true], false, true, "", true).0,
+            [true, true, true]
+        );
+        assert_eq!(
+            action_availability([true, false], false, false, "LOCKED", true).1,
             [false, false, true, true]
         );
         assert_eq!(
-            action_availability([true, false], [true, false], false, "ACTIVE", true).1,
+            action_availability([true, false], false, false, "ACTIVE", true).1,
             [false, true, true, true]
         );
         assert_eq!(
-            action_availability([true, false], [true, false], false, "", true).1,
+            action_availability([true, false], false, false, "", true).1,
             [true, false, false, false]
         );
         assert_eq!(
-            action_availability([true, false], [true, false], false, "", false).1,
+            action_availability([true, false], false, false, "", false).1,
             [false; 4]
         );
+    }
+
+    #[test]
+    fn the_status_line_says_what_is_ready_and_what_went_wrong() {
+        let mut seen = Seen::default();
+        assert!(matches!(note(&seen).0, crate::ui::Health::Busy));
+        seen.received = 1;
+        assert!(matches!(note(&seen).0, crate::ui::Health::Off));
+        seen.ready = [true, true];
+        assert_eq!(note(&seen).1, trf("polls.ready_on", &[("where", "Twitch, YouTube")]));
+        seen.note = "x".into();
+        seen.trouble = true;
+        assert!(matches!(note(&seen).0, crate::ui::Health::Down));
     }
 
     #[test]

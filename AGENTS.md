@@ -63,8 +63,12 @@
   SVGs in `assets/icons`. A new icon: add its Lucide body to `ICONS`; never draw symbols with text.
 - One look everywhere: zinc colours from `theme()`, `muted()` for quiet text, `Health` for a connection's
   state, `grid()` for rows of buttons (they fill the space and fold to icons when narrow), `Rows` for
-  lists, `context_menu()` for right clicks. Reuse these; don't style a widget by hand.
+  lists, `context_menu()` (or `menu::Menu`) for right clicks, `scroll::page` for a page that scrolls. Reuse these; don't style a widget by hand.
 - Every list and tree with actions gets a right-click menu with the same actions as its buttons.
+- The UI is modular: one look, one module. Scrolling is `ui/scroll.rs`, menus and dropdowns `ui/menu.rs`,
+  floating panels `ui/popover.rs` (see "Building blocks" in `docs/UI.md`). Never style FLTK's raw widget
+  for one screen: change or extend the shared block so every screen gets it, and `ui/rules.rs` fails the
+  tests when a screen bypasses one.
 - Raw JSON is for power users: show values as forms or tables, with JSON one button away.
 - Dates and times on screen go through `fmt::shown_date`, `shown_time`, `shown_iso` or `shown_clock`
   (the user's pick in Settings, else the system's). Never format a date by hand for display.

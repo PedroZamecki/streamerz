@@ -252,7 +252,7 @@ fn items(names: &[String]) -> String {
 }
 
 pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
-    let (mut scroll, mut col) = super::tab_scrolled(tabs, "Settings", 1450);
+    let (mut scroll, mut col) = super::scroll::bare(tabs, "Settings");
     let mut rows = Vec::new();
     col.set_pad(2);
     let c = cfg.borrow();
@@ -737,6 +737,9 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     place(&mut scroll, x, y, width, height);
     scroll.resize_callback(move |scroll, x, y, width, height| place(scroll, x, y, width, height));
     scroll.handle(|scroll, event| {
+        if super::scroll::wheeled(scroll, event) {
+            return true;
+        }
         if event == Event::Show && super::SHOWN.load(std::sync::atomic::Ordering::Relaxed) {
             // Re-measure the initial font-free layout when this page becomes visible.
             scroll.resize(scroll.x(), scroll.y(), scroll.w(), scroll.h());

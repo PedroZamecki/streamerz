@@ -377,6 +377,7 @@ fn members_dialog(c: &Config, group: &str, meta: &mut Meta) {
     hint.set_label_color(super::muted());
     col.fixed(&hint, 2 * ROW);
     let mut list = CheckBrowser::default();
+    super::scroll::view(&mut list);
     let mut ids = Vec::new();
     for o in &c.commands {
         list.add(

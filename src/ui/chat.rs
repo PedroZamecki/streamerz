@@ -1095,9 +1095,15 @@ impl Pane {
             }
             let th = ((h as f32 * b.slider_size()) as i32).clamp(24.min(h), h);
             let ty = y + ((h - th) as f64 * (b.value() - b.minimum()) / max) as i32;
-            let c = Color::color_average(Color::Foreground, Color::Background, 0.3);
-            draw::set_draw_color(c);
-            draw::draw_rounded_rectf(x + (w - 6) / 2, ty, 6, th, 3);
+            let held = app::pushed().is_some_and(|p| p.as_widget_ptr() == b.as_widget_ptr());
+            super::scroll::draw_thumb(
+                x + (w - super::scroll::BAR) / 2,
+                ty,
+                super::scroll::BAR,
+                th,
+                Color::Background2,
+                held,
+            );
         });
         group.fixed(&bar, 12);
         group.end();
@@ -1885,8 +1891,7 @@ impl Pane {
                 let pin = self.pin_at(f).expect("a pin");
                 let menu_click = app::event_x() >= f.x() + f.w() - 64;
                 if super::right_button() || menu_click {
-                    use fltk::menu::{MenuButton, MenuFlag};
-                    let mut m = super::menu_at_pointer();
+                    let mut m = super::menu::Menu::new();
                     let (role, _) = crate::roles::get(&pin.platform);
                     if pin.platform == "twitch" && role.moderates() && !pin.msg_id.is_empty() {
                         let l = Line {
@@ -1896,34 +1901,15 @@ impl Pane {
                         };
                         let cmds = self.cmds.clone();
                         let unpin = l.clone();
-                        let i = m.add(
-                            tr("chat.act_unpin"),
-                            fltk::enums::Shortcut::None,
-                            MenuFlag::Normal,
-                            move |_| {
-                                let l = unpin.clone();
-                                tell(&cmds, move |e| e.moderate(&l, Moderate::Unpin));
-                            },
-                        );
-                        if let Some(mut item) = m.at(i) {
-                            item.add_image(icons::before_label("pin-off", super::muted(), 14), true);
-                        }
+                        m.item(tr("chat.act_unpin"), Some("pin-off"), move || {
+                            tell(&cmds, move |e| e.moderate(&unpin, Moderate::Unpin));
+                        });
                         let pane = self.clone();
-                        if pin.platform == "twitch" {
-                            m.add(
-                                tr("chat.pin_change_duration"),
-                                fltk::enums::Shortcut::None,
-                                MenuFlag::Normal,
-                                move |_| {
-                                    pane.run(&l, Act::Mod(Moderate::Pin(None)));
-                                },
-                            );
-                        }
+                        m.item(tr("chat.pin_change_duration"), Some("timer"), move || {
+                            pane.run(&l, Act::Mod(Moderate::Pin(None)));
+                        });
                     }
-                    if m.size() > 0 {
-                        m.popup();
-                    }
-                    MenuButton::delete(m);
+                    m.show();
                 }
                 true
             }
@@ -1933,36 +1919,21 @@ impl Pane {
                     self.line_at(f, &st).and_then(|i| st.lines.get(i).cloned())
                 };
                 let Some(l) = l.filter(|l| !l.note) else { return true };
-                use fltk::menu::{MenuButton, MenuFlag};
-                let mut m = super::menu_at_pointer();
+                let mut m = super::menu::Menu::new();
                 for (act, icon, name) in acts(&l, self.on_reply.borrow().is_some()) {
                     let (p, l) = (self.clone(), l.clone());
-                    let i = m.add(name, fltk::enums::Shortcut::None, MenuFlag::Normal, move |_| {
-                        p.run(&l, act)
-                    });
-                    if let Some(mut item) = m.at(i) {
-                        item.add_image(icons::before_label(icon, super::muted(), 14), true);
-                    }
+                    m.item(name, Some(icon), move || p.run(&l, act));
                 }
                 if !l.user_id.is_empty() && self.st.borrow().cards {
                     let (cmds, l) = (self.cmds.clone(), l.clone());
-                    m.add(
-                        tr("chat.user_info"),
-                        fltk::enums::Shortcut::None,
-                        MenuFlag::Normal,
-                        move |_| {
-                            super::card::open(
-                                &cmds,
-                                super::card::Who::from_line(&l, name_color(&l)),
-                                (app::event_x(), app::event_y()),
-                            )
-                        },
-                    );
+                    // Where the click was: the card opens there once the menu is gone.
+                    let at = (app::event_x(), app::event_y());
+                    m.line();
+                    m.item(tr("chat.user_info"), Some("user-round"), move || {
+                        super::card::open(&cmds, super::card::Who::from_line(&l, name_color(&l)), at)
+                    });
                 }
-                if m.size() > 0 {
-                    m.popup();
-                }
-                MenuButton::delete(m);
+                m.show();
                 true
             }
             Event::Push if super::left_button() => {
@@ -1977,6 +1948,7 @@ impl Pane {
                 }
                 true
             }
+            Event::MouseWheel if !app::event_inside_widget(f) => false,
             Event::MouseWheel => {
                 let mut st = self.st.borrow_mut();
                 st.top += app::event_dy_value() * 3 * LINE;
@@ -3264,7 +3236,7 @@ impl Chat {
         let states: Vec<ChatState> =
             query(&self.cmds, |e| PLATFORMS.map(|p| e.chat_state(p)).to_vec()).unwrap_or_default();
         let state = |i: usize| states.get(i).copied().unwrap_or(ChatState::Connected);
-        if self.view.value() == 1 {
+        if self.side_by_side() {
             for (i, col) in self.side.iter().enumerate() {
                 col.pane.set_disconnected(state(i) == ChatState::Down);
                 col.show_notice(Some(PLATFORMS[i]), state(i));
@@ -3330,7 +3302,7 @@ impl Chat {
                 format!("{}: {}", NAMES[p], labels.join(", "))
             }
         };
-        if self.view.value() == 1 {
+        if self.side_by_side() {
             for (i, col) in self.side.iter().enumerate() {
                 col.show_modes(&label(PLATFORMS[i]));
             }
@@ -3424,7 +3396,7 @@ impl Chat {
             total.hide();
         }
         drop(shown);
-        if self.view.value() == 1 {
+        if self.side_by_side() {
             for col in &self.side {
                 col.refresh_sender(&self.cfg, &self.cmds);
             }
@@ -3454,6 +3426,12 @@ impl Chat {
     }
 
     /// The one platform the view shows, if it shows one.
+    /// Side by side, with a column for each chat set up. With none, the view is the same as all
+    /// together: no column for a chat that isn't there, and the note saying how to set one up.
+    fn side_by_side(&self) -> bool {
+        self.view.value() == 1 && !self.plats.borrow().is_empty()
+    }
+
     fn shown(&self) -> Option<&'static str> {
         let v = self.view.value();
         (v >= 2)
@@ -3488,7 +3466,7 @@ impl Chat {
 
     /// Lay the view out again, and fill it (only while the window is up: filling loads the emotes).
     fn rebuild(&mut self, fill: bool) {
-        let side = self.view.value() == 1;
+        let side = self.side_by_side();
         self.main.pane.clear();
         self.main.pane.st.borrow_mut().tag = self.view.value() == 0;
         for p in &mut self.side {
@@ -3498,7 +3476,7 @@ impl Chat {
             self.main.col.hide();
             let plats = self.plats.borrow();
             for (i, p) in self.side.iter_mut().enumerate() {
-                if plats.contains(&i) || plats.is_empty() && i == 0 {
+                if plats.contains(&i) {
                     p.col.show();
                 } else {
                     p.col.hide();
@@ -3511,7 +3489,7 @@ impl Chat {
             }
         }
         // All together: no chat box (Message all sends); Reply opens it for that line.
-        let together = self.view.value() == 0;
+        let together = self.view.value() == 0 || (self.view.value() == 1 && !side);
         let mut bar = self.main.bar.clone();
         let mut head = self.main.head.clone();
         if together {
@@ -3595,6 +3573,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
     }
 
     let mut opts = fltk::menu::MenuButton::default().with_label(tr("chat.options"));
+    super::menu::dropdown(&mut opts);
     actions.fixed(&opts, 84);
     let mut clear = button(&mut actions, tr("btn.clear"), 64);
     let clear_w = clear.w();

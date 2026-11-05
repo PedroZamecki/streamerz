@@ -14,6 +14,36 @@ Use the shared zinc theme and controls from `src/ui.rs`. Use `muted()` for secon
 connection state. Use Lucide icons from `src/ui/icons.rs` and the existing brand assets. Don't introduce
 local colors, decorative symbols or custom widget styling for one screen.
 
+## Building blocks
+
+The UI is modular: a look or behaviour used in more than one place lives in one module under `src/ui/`,
+and every screen uses that module instead of styling FLTK by hand. To change how something looks
+everywhere, change its module. When a screen needs something new that others could use, add it to the
+right module (or a new one) first, then use it. `src/ui/rules.rs` fails the tests when a screen uses the
+raw FLTK widget for something a block covers.
+
+| Need | Use | Never |
+|---|---|---|
+| A page that may not fit | `scroll::page` (as tall as its content, lists get a minimum) | `Scroll::new` with a guessed height |
+| A scroll area in a dialog | `scroll::area` | FLTK's scrollbar with arrows |
+| A text view, tree or browser | `scroll::view`, or `scroll::paint_bars` at the end of its own draw | its default bars |
+| A list drawn by hand | `scroll::thumb`, `scroll::dragged`, `scroll::draw_thumb` | a bar of its own |
+| A right-click or any popup menu | `menu::Menu` (`context_menu()` for a list's buttons, `pick`, `tick_menu`) | `MenuButton::popup`, `menu_at_pointer` |
+| A dropdown | `fit::choice()`; `menu::dropdown` on a MenuButton; `menu::input_choice` on an InputChoice | FLTK's own pulldown |
+| Something floating over the window | `popover::Popover` (rounded, closed by Escape or a click outside) | a borderless window |
+| A row of buttons | `grid()` | buttons placed by hand |
+| A list | `Rows` with `header()` | `Browser` |
+| A connection's state | `Health::show` | a coloured label |
+
+Scrolling: the wheel scrolls what is under the pointer when it can scroll (a list, a text view), else the
+page. A list that has nothing to scroll passes the wheel on. A page never has blank room to scroll into.
+
+Menus: a rounded panel with a quiet border, roomy rows, a Lucide icon per item when any has one (a tick for
+toggles and a dropdown's current choice), dividing lines between groups, greyed items that can't be picked.
+They take the mouse and the keyboard: arrows, Home, End, Enter, Space, Escape, and first letters. From the
+keyboard they open on the focused control; a dropdown opens under its control (above it when there is no
+room) and lines up with its right edge when it would leave the window.
+
 ## Lists and actions
 
 Use `Rows` for lists and `header()` for column titles when columns need names. Make each row easy to scan:
@@ -76,6 +106,10 @@ buttons visible and let each tab scroll when needed. When a value accepts expres
 values in an editable choice so selecting a value is easy and expressions remain available. Preserve an
 unchanged value and its stored type.
 
+Keep a page for what is happening and what can be done to it; put a long form (starting a poll, a
+prediction) in a dialog its button opens, with a short note on top and the action's own name on its main
+button (Start poll, not OK).
+
 Prefer forms and tables for ordinary editing. When raw data is useful, provide JSON one button away with
 the existing editor. Ask for confirmation before an irreversible destructive action, with text that names
 what will be affected. Use the existing date and time formatting helpers for displayed values.
@@ -90,8 +124,10 @@ Keep disabled integrations inactive, as required by the project rules.
 Keep filter fields and toolbar actions inside narrow pages. Let search take the remaining width;
 stack navigation and actions when one row cannot fit. A chat with no configured channel offers
 Accounts in its empty state. When chat history is off, disable sending controls with an explanation.
-The Polls page keeps locked predictions available for resolution and distinguishes an unknown result
-from confirmed success or failure.
+The Polls page shows what runs (a poll, a prediction) with what can be done to it, and a status line
+saying which accounts are ready; New poll and New prediction open their forms in dialogs. It keeps
+locked predictions available for resolution and distinguishes an unknown result from confirmed success
+or failure. A chat view with no chat set up (Side by side too) shows the same note and Accounts button.
 
 A stream ending and a chat disconnecting are separate states. A stream end gets a desktop notification
 and leaves an available chat usable. For a disconnected chat, hide its messages and replace the composer

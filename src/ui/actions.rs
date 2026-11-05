@@ -273,8 +273,7 @@ impl Actions {
             &[("title", &title), ("category", &cat.replace('/', " > "))],
         ));
         self.detail_desc.set_label(&desc);
-        self.detail_title.redraw();
-        self.detail_desc.redraw();
+        self.show_details();
     }
 
     fn update_details_sub(&mut self, path: &[usize]) {
@@ -299,8 +298,23 @@ impl Actions {
             &[("name", name), ("category", &cat_str.replace('/', " > "))],
         ));
         self.detail_desc.set_label(&desc);
-        self.detail_title.redraw();
-        self.detail_desc.redraw();
+        self.show_details();
+    }
+
+    /// The details under the sub-actions show only when there is something to say: no blank room.
+    fn show_details(&self) {
+        let on = !self.detail_title.label().is_empty();
+        for mut f in [self.detail_title.clone(), self.detail_desc.clone()] {
+            if on {
+                f.show();
+            } else {
+                f.hide();
+            }
+        }
+        if let Some(mut right) = self.detail_title.parent().and_then(|p| Flex::from_dyn_widget(&p)) {
+            right.layout();
+            right.redraw();
+        }
     }
 
     fn update_details_action(&mut self) {
@@ -323,15 +337,13 @@ impl Actions {
                         ("subactions", &a.sub_actions.len().to_string()),
                     ],
                 ));
-                self.detail_title.redraw();
-                self.detail_desc.redraw();
+                self.show_details();
                 return;
             }
         }
         self.detail_title.set_label(tr("actions.details"));
         self.detail_desc.set_label(tr("actions.details_empty"));
-        self.detail_title.redraw();
-        self.detail_desc.redraw();
+        self.show_details();
     }
 
     /// The group of what's selected on the left ("" for none).
@@ -475,6 +487,7 @@ impl Actions {
             self.title.set_label(tr("actions.pick_to_edit"));
             self.detail_title.set_label("");
             self.detail_desc.set_label("");
+            self.show_details();
             for b in &mut self.action_btns {
                 b.deactivate();
             }
@@ -623,6 +636,7 @@ fn tree(empty: &'static str) -> Tree {
             fltk::draw::draw_text2(empty, t.x() + 10, t.y(), t.w() - 20, t.h(), Align::Center | Align::Wrap);
         }
         super::picker::focus_ring(t);
+        super::scroll::paint_bars(t);
     });
     t
 }

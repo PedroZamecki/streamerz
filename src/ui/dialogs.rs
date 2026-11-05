@@ -257,6 +257,7 @@ pub fn json_editor(title: &str, hint: &str, v: &Value, valid: impl Fn(&Value) ->
         col.fixed(&h, 40);
     }
     let mut ed = TextEditor::default();
+    super::scroll::view(&mut ed);
     let buf = TextBuffer::default();
     ed.set_buffer(buf.clone());
     ed.set_text_font(Font::Courier);
@@ -329,6 +330,7 @@ pub fn action(a: &Action, groups: &[String], queues: &[(String, String)]) -> Opt
     col.fixed(&r, ROW);
     let r = row(tr("dialogs.action.group"));
     let mut group = InputChoice::default();
+    super::menu::input_choice(&mut group);
     for g in groups {
         group.add(&g.replace('/', "\\/").replace('&', "&&"));
     }
@@ -476,6 +478,7 @@ pub fn export(
     sel_bar.end();
     col.fixed(&sel_bar, ROW);
     let mut list = CheckBrowser::default();
+    super::scroll::view(&mut list);
     for g in groups {
         list.add(&trf("dialogs.export.group", &[("name", g)]), false);
     }

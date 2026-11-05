@@ -201,7 +201,9 @@ def main():
                                  key=lambda item: item["y"])["enabled"]) for action in actions]
         ui("menu clear")
         click_widget(area, "3")
-        time.sleep(.2)
+        time.sleep(.3)
+        # The menu is ours (a window inside the window): the shot shows it, rounded, over the list.
+        ui(f"shot {OUT}/{artifact}.png")
         xdo("key", "Escape")
         items = ui_data("menu")
         actual = [(item["label"].strip(), item["enabled"]) for item in items]
@@ -235,6 +237,16 @@ def main():
             at = re.search(r"Position: (\d+),(\d+)", geo)
             if at:
                 OFFSET[:] = [int(at.group(1)) - 1, int(at.group(2)) - 20]
+        # With no chat set up, Side by side says so as All together does: no empty Twitch column.
+        ui("page Chat")
+        ui("chatview Side by side")
+        time.sleep(.5)
+        if not [item for item in widgets("No chat connected") if fits_window(item)]:
+            failures.append("Side by side with no chat set up lacks the no-chat note")
+        if widgets("Twitch:"):
+            failures.append("Side by side with no chat set up shows a Twitch column")
+        ui(f"shot {OUT}/chat-side-empty.png")
+        ui("chatview All together")
         for p in ("twitch", "kick", "youtube", "tiktok"):
             ws.ask({"request": "SimulateChatConnection", "id": "conn-" + p, "platform": p, "connected": True})
             ws.ask({"request": "InjectChat", "id": p, "platform": p, "user": "Ana", "text": f"hello from {p}"})
@@ -437,7 +449,7 @@ def main():
             for page, labels in (("Chat", ("Message all", "Options", "Clear")),
                                  ("Community", ("Search users",)),
                                  ("MCP", ("Address", "Port", "Route")),
-                                 ("Polls", ("Twitch", "YouTube")),
+                                 ("Polls", ("New poll", "End poll", "New prediction")),
                                  ("Log", ("Search the log",))):
                 ws.ask({"request": "StreamerzUi", "id": "narrow-page", "do": "page " + page})
                 time.sleep(.2)
@@ -472,7 +484,41 @@ def main():
                             raise RuntimeError("Community did not return to Users after checking Quotes")
                     else:
                         failures.append("Community's view selector is missing")
+            # A page that doesn't fit scrolls with the wheel anywhere on it (not a list beside the pointer), and
+            # ends where its content ends: no blank room below.
+            xdo("windowsize", window, "760", "560")
+            ui("page Stream Apps")
+            time.sleep(.4)
+            title = lambda: widgets("OBS Studio")[0]["y"]
+            top = title()
+            hint = widget("In OBS Studio")
+            xdo("mousemove", str(hint["x"] + 40), str(hint["y"] + hint["h"] // 2), found=True)
+            xdo("click", "5")
+            time.sleep(.3)
+            if title() >= top:
+                failures.append("the wheel over a page's text didn't scroll the page")
+            xdo("click", "--repeat", "60", "--delay", "5", "5")
+            time.sleep(.4)
+            last = max((item for item in widgets("Refresh", exact=True) if fits_window(item)),
+                       key=lambda item: item["y"], default=None)
+            save = widget("Save", exact=True)
+            if not last or save["y"] - (last["y"] + last["h"]) > 40:
+                failures.append(f"Stream Apps scrolls past its content ({last}, footer at {save['y']})")
+            ui(f"shot {OUT}/stream-apps-bottom.png")
             xdo("windowsize", window, "1100", "700")
+        # Starting a poll or a prediction is a dialog the page's button opens.
+        for command, title in (("newpoll twitch", "New poll"), ("newprediction", "New prediction")):
+            ui(command)
+            time.sleep(.5)
+            if f"'{title}'" not in ui("windows"):
+                failures.append(f"{title}: the dialog didn't open")
+                continue
+            ui(f"shot {OUT}/{title.lower().replace(' ', '-')}.png")
+            click_widget(widget("Cancel", exact=True))
+            time.sleep(.3)
+            if f"'{title}'" in ui("windows"):
+                failures.append(f"{title}: Cancel didn't close the dialog")
+            check(title)
         # A list's menu has its buttons' actions and states, from a right click and from the keyboard.
         ui("page Commands")
         time.sleep(.3)

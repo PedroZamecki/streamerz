@@ -102,6 +102,7 @@ impl Ellipsis for Frame {
 /// A drop-down whose chosen text is cut with "..." to the room it has.
 pub fn choice() -> Choice {
     let mut c = Choice::default();
+    super::menu::dropdown(&mut c);
     c.draw(|c| {
         let ink = if c.active() {
             Color::Foreground

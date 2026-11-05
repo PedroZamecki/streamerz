@@ -910,7 +910,10 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
     tree.set_show_root(false);
     tree.set_select_mode(TreeSelect::Single);
     style_tree(&mut tree);
-    tree.draw(|t| focus_ring(t));
+    tree.draw(|t| {
+        focus_ring(t);
+        super::scroll::paint_bars(t);
+    });
 
     let mut detail_col = Flex::default().column();
     detail_col.set_pad(4);
@@ -928,6 +931,7 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
 
     let desc_buf = TextBuffer::default();
     let mut desc_disp = TextDisplay::default();
+    super::scroll::view(&mut desc_disp);
     desc_disp.set_buffer(desc_buf.clone());
     desc_disp.wrap_mode(WrapMode::AtBounds, 0);
     desc_disp.set_text_font(Font::Helvetica);

@@ -946,16 +946,13 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
     let timers = list(&mut col, cfg, cmds, &TIMERS, Some("enabled"));
     col.end();
 
-    let (files_scroll, mut col) = super::tab_scrolled(tabs, "Files", 820);
+    let (files_scroll, mut col) = super::scroll::page(tabs, "Files");
     title(&mut col, tr("lists.watchers.title"));
     super::hint(&mut col, tr("lists.watchers.guide"), 36);
     let watchers = list(&mut col, cfg, cmds, &FILE_WATCHERS, Some("enabled"));
     title(&mut col, tr("lists.tails.title"));
     super::hint(&mut col, tr("lists.tails.guide"), 36);
     let tails = list(&mut col, cfg, cmds, &FILE_TAILS, Some("enabled"));
-    col.fixed(&*watchers.borrow().view, 220);
-    col.fixed(&*tails.borrow().view, 220);
-    Frame::default();
     col.end();
     files_scroll.end();
 
@@ -966,30 +963,24 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
     let groups = groups_tab(tabs, cfg, cmds);
     let plugins = super::plugins::tab(tabs, cfg, cmds);
 
-    let (servers_scroll, mut col) = super::tab_scrolled(tabs, "Servers", 900);
+    let (servers_scroll, mut col) = super::scroll::page(tabs, "Servers");
     let servers = servers_box(&mut col, cfg);
     title(&mut col, tr("lists.servers.ws_clients_title"));
     let clients = list(&mut col, cfg, cmds, &CLIENTS, None);
     title(&mut col, tr("lists.servers.ws_servers_title"));
     let custom = list(&mut col, cfg, cmds, &SERVERS, Some("autoStart"));
-    col.fixed(&*clients.borrow().view, 200);
-    col.fixed(&*custom.borrow().view, 200);
-    Frame::default();
     col.end();
     servers_scroll.end();
 
-    let (apps_scroll, mut col) = super::tab_scrolled(tabs, "Stream Apps", 980);
+    let (apps_scroll, mut col) = super::scroll::page(tabs, "Stream Apps");
     title(&mut col, "OBS Studio");
     super::hint(&mut col, tr("lists.stream_apps.obs_guide"), 36);
     let obs = list(&mut col, cfg, cmds, &OBS_CONNECTIONS, Some("autoConnect"));
-    col.fixed(&*obs.borrow().view, 220);
     connection_controls(&mut col, &obs, true);
     title(&mut col, "Streamlabs Desktop");
     super::hint(&mut col, tr("lists.stream_apps.slobs_guide"), 36);
     let slobs = list(&mut col, cfg, cmds, &SLOBS_CONNECTIONS, Some("autoConnect"));
-    col.fixed(&*slobs.borrow().view, 220);
     connection_controls(&mut col, &slobs, false);
-    Frame::default();
     col.end();
     apps_scroll.end();
     let donations = donations_tab(tabs, cfg, cmds);
@@ -2388,7 +2379,7 @@ impl Donations {
 }
 
 fn donations_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Donations>> {
-    let (scroll, mut col) = super::tab_scrolled(tabs, "Donations", 400);
+    let (scroll, mut col) = super::scroll::page(tabs, "Donations");
     let me = Rc::new(RefCell::new(Donations {
         tab: col.clone(),
         cfg: cfg.clone(),

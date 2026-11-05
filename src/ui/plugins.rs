@@ -121,6 +121,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Plugins>> {
     let mut view = Rows::new(tr("plugins.empty"));
     view.set_column_widths(&[300, 120]);
     let mut about = TextDisplay::default();
+    super::scroll::view(&mut about);
     let about_text = TextBuffer::default();
     about.set_buffer(about_text.clone());
     about.set_text_color(super::muted());

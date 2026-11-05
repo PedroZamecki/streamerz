@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 const LINE: i32 = 28;
 /// The scrollbar's width, and the space kept for it.
-const BAR: i32 = 6;
+const BAR: i32 = super::scroll::BAR;
 
 /// How a column draws its cells (text unless said).
 #[derive(Clone, Copy, PartialEq)]
@@ -294,13 +294,7 @@ impl Rows {
 
     /// The scrollbar's top and height, when it's needed.
     fn thumb(&self, st: &State) -> Option<(i32, i32)> {
-        let max = self.max(st);
-        if max == 0 {
-            return None;
-        }
-        let h = self.area.h() - 8;
-        let th = (h * h / (h + max)).max(24).min(h);
-        Some((self.area.y() + 4 + (h - th) * st.top.clamp(0, max) / max, th))
+        super::scroll::thumb(self.area.y() + 4, self.area.h() - 8, st.top, self.max(st))
     }
 
     fn draw(&self, f: &Frame) {
@@ -429,12 +423,7 @@ impl Rows {
             }
         }
         if let Some((ty, th)) = thumb {
-            draw::set_draw_color(Color::color_average(
-                fg,
-                f.color(),
-                if st.grab.is_some() { 0.5 } else { 0.3 },
-            ));
-            draw::draw_rounded_rectf(x + w - BAR - 4, ty, BAR, th, BAR / 2);
+            super::scroll::draw_thumb(x + w - BAR - 4, ty, BAR, th, f.color(), st.grab.is_some());
         }
         draw::pop_clip();
     }
@@ -500,6 +489,8 @@ impl Rows {
                 f.redraw();
                 true
             }
+            // Only under the pointer, and only when it scrolls: else the page around it does.
+            Event::MouseWheel if !app::event_inside_widget(f) || self.max(&st) == 0 => false,
             Event::MouseWheel => {
                 st.top = (st.top + app::event_dy_value() * LINE).clamp(0, self.max(&st));
                 st.hover = self.line_at(&st);
@@ -587,8 +578,7 @@ impl Rows {
         let (Some(grab), Some((_, th)), max) = (st.grab, self.thumb(&st), self.max(&st)) else {
             return;
         };
-        let room = (f.h() - 8 - th).max(1);
-        st.top = ((app::event_y() - grab - f.y() - 4) * max / room).clamp(0, max);
+        st.top = super::scroll::dragged(app::event_y(), grab, f.y() + 4, f.h() - 8, th, max);
         f.redraw();
     }
 }

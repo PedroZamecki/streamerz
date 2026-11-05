@@ -279,8 +279,7 @@ pub fn sidebar(h: i32, pages: &Wizard, cfg: &Cfg) -> Frame {
                 let avail = f.h() - TOP - FOOT;
                 let bar_h = (avail * avail / tot).max(18);
                 let bar_y = f.y() + TOP + (sy * (avail - bar_h) / max_s);
-                draw::set_draw_color(Color::color_average(fg, bg, 0.25));
-                draw::draw_rounded_rectf(f.x() + f.w() - 5, bar_y, 3, bar_h, 1);
+                super::scroll::draw_thumb(f.x() + f.w() - 6, bar_y, 4, bar_h, bg, false);
             }
         }
     });

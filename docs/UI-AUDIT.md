@@ -73,3 +73,25 @@ verification recorded at the end; unchecked items remain work to do.
 - [ ] Not checked: live Twitch/OBS (the 25 MB budget is about a connected release build), Windows, and
   hand walkthroughs of the changed dialogs (picker, Message all, Delay form, emote menu) beyond build,
   tests and smoke.
+
+## Second pass: scrolling, menus, Polls
+
+- [x] Scrolling pages (Accounts, Polls, Files, Servers, Stream Apps, Donations, Settings) use one thin
+  rounded bar with no arrows or grips; text views, trees and browsers paint theirs the same way.
+- [x] The wheel scrolls the page anywhere on it; before, a list beside the pointer took it. A list that
+  has nothing to scroll passes the wheel on.
+- [x] A page is exactly as tall as its content (lists get a minimum), so there is no blank room to scroll
+  into. Actions hides its empty details strip.
+- [x] Chat Side by side with no chat set up shows the same note and Accounts button as All together,
+  not an empty Twitch column.
+- [x] Polls: the page shows what runs and what can be done to it, with a status line; New poll and New
+  prediction open their forms in dialogs.
+- [x] Every menu (right clicks, dropdowns, Options, lists in forms) is one rounded, roomy menu with
+  icons, ticks, keyboard support and first-letter search; popovers have truly rounded corners.
+- [x] The blocks are documented in `docs/UI.md` ("Building blocks") and enforced by `src/ui/rules.rs`.
+- [x] Unit tests: 466 passed, 13 ignored. Smoke passes with new steps (empty Side by side, page wheel
+  and bottom, Polls dialogs, menu screenshot). Formatting, clippy, locale and harness checks pass.
+- [x] Hidden RSS and idle CPU (release, same method): before 35.8 MiB RSS / 20.6 MiB PSS, after
+  36.1 / 20.7, idle CPU 0% for both, 4 threads.
+- [ ] Not checked: Wayland (menus and popovers are windows inside the window, as popovers were, but were
+  only seen on X11), Windows, live Twitch/OBS, and starting a real poll or prediction.

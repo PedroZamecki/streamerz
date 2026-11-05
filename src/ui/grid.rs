@@ -19,7 +19,7 @@ const CELL: i32 = 36;
 const PIC: i32 = 28;
 const HEAD: i32 = 28;
 const NOTE: i32 = 40;
-const BAR: i32 = 6;
+const BAR: i32 = super::scroll::BAR;
 
 pub enum Item {
     /// A section's title; its emotes follow unless it's folded.
@@ -142,13 +142,7 @@ impl Grid {
     }
 
     fn thumb(&self, st: &State) -> Option<(i32, i32)> {
-        let max = self.max(st);
-        if max == 0 {
-            return None;
-        }
-        let h = self.area.h() - 8;
-        let th = (h * h / (h + max)).max(24).min(h);
-        Some((self.area.y() + 4 + (h - th) * st.top.clamp(0, max) / max, th))
+        super::scroll::thumb(self.area.y() + 4, self.area.h() - 8, st.top, self.max(st))
     }
 
     fn draw(&self, f: &Frame, cmds: &UnboundedSender<UiCmd>) {
@@ -242,8 +236,7 @@ impl Grid {
         }
         st.visible = visible;
         if let Some((ty, th)) = self.thumb(&st) {
-            draw::set_draw_color(Color::color_average(fg, bg, if st.grab.is_some() { 0.5 } else { 0.3 }));
-            draw::draw_rounded_rectf(f.x() + f.w() - BAR - 3, ty, BAR, th, BAR / 2);
+            super::scroll::draw_thumb(f.x() + f.w() - BAR - 3, ty, BAR, th, bg, st.grab.is_some());
         }
         draw::pop_clip();
         if moving && !st.ticking {
@@ -283,6 +276,7 @@ impl Grid {
                 }
                 true
             }
+            Event::MouseWheel if !app::event_inside_widget(f) || self.max(&st) == 0 => false,
             Event::MouseWheel => {
                 st.top = (st.top + app::event_dy_value() * CELL).clamp(0, self.max(&st));
                 st.hover = self.under(&st);
@@ -375,15 +369,13 @@ impl Grid {
 
     /// The emote's menu: insert it, or add it to (remove it from) the favorites.
     fn menu(&self, k: usize) {
-        use fltk::menu::{MenuButton, MenuFlag};
         let Some((name, url, fav)) = (match self.st.borrow().items.get(k) {
             Some(Item::Emote { name, url, fav }) => Some((name.clone(), url.clone(), *fav)),
             _ => None,
         }) else {
             return;
         };
-        let mut m = super::menu_at_pointer();
-        let ink = super::button_ink();
+        let mut m = super::menu::Menu::new();
         let entries = [
             (
                 tr("emotes.insert"),
@@ -397,19 +389,10 @@ impl Grid {
             },
         ];
         for (label, icon_name, asked) in entries {
-            let asked = RefCell::new(Some(asked));
             let queue = self.asked.clone();
-            let i = m.add(label, fltk::enums::Shortcut::None, MenuFlag::Normal, move |_| {
-                if let Some(a) = asked.borrow_mut().take() {
-                    queue.borrow_mut().push(a);
-                }
-            });
-            if let (Some(mut item), Some(img)) = (m.at(i), super::icons::before_label(icon_name, ink, 14)) {
-                item.add_image(Some(img), true);
-            }
+            m.item(label, Some(icon_name), move || queue.borrow_mut().push(asked));
         }
-        m.popup();
-        MenuButton::delete(m);
+        m.show();
     }
 
     fn drag(&self, f: &mut Frame) {
@@ -417,8 +400,7 @@ impl Grid {
         let (Some(grab), Some((_, th)), max) = (st.grab, self.thumb(&st), self.max(&st)) else {
             return;
         };
-        let room = (f.h() - 8 - th).max(1);
-        st.top = ((app::event_y() - grab - f.y() - 4) * max / room).clamp(0, max);
+        st.top = super::scroll::dragged(app::event_y(), grab, f.y() + 4, f.h() - 8, th, max);
         f.redraw();
     }
 }

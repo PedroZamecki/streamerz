@@ -52,11 +52,18 @@ pub(super) fn record_menu(buttons: &[fltk::button::Button]) {
 ///   chatlines       how many lines the chat page holds
 ///   room            opens the question asked when a channel is changed
 ///   community       how many users the Community tab lists
+///   newpoll [twitch] [youtube]  opens the New poll dialog, with those platforms ready
+///   newprediction   opens the New prediction dialog
 ///   panic           panics on the window's thread (to try crash reports and saving on a crash)
 pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
     let mut words = cmd.split_whitespace();
     let (what, a, b) = (words.next().unwrap_or(""), words.next(), words.next());
-    let mut windows = app::windows().unwrap_or_default();
+    // Top-level windows only: a popover or a menu is a window inside one, and is captured with it.
+    let mut windows: Vec<_> = app::windows()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|w| w.parent().is_none())
+        .collect();
     let at = |i: Option<&str>| i.and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
     match what {
         "menu" => LAST_MENU.with_borrow_mut(|menu| {
@@ -206,6 +213,20 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
             });
             "ok".into()
         }
+        // The Polls page's dialogs: `newpoll [twitch] [youtube]` (the platforms that are ready), `newprediction`.
+        "newpoll" => {
+            let ready = [cmd.contains("twitch"), cmd.contains("youtube")];
+            app::add_timeout3(0.05, move |_| {
+                let _ = super::polls::new_poll(ready);
+            });
+            "ok".into()
+        }
+        "newprediction" => {
+            app::add_timeout3(0.05, |_| {
+                let _ = super::polls::new_prediction();
+            });
+            "ok".into()
+        }
         // The Mouse Click trigger's button picker.
         "mousebutton" => {
             app::add_timeout3(0.05, |_| {
@@ -219,7 +240,7 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
             "ok".into()
         }
         "panic" => panic!("dev panic"),
-        _ => "commands: shot, windows, tree, find, page, chat, community, panic".into(),
+        _ => "commands: shot, windows, tree, find, page, chat, community, newpoll, newprediction, panic".into(),
     }
 }
 
