@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Streamerz for TikTok",
+  "version": "1.0.0",
+  "description": "Sends your TikTok LIVE chat messages from Streamerz through your own logged-in TikTok tab.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAp3CQvIljXyRI0FtLK3f0RT+g2lw/UgxPL0VJvvMZBy1J4WiaiYLpiud65kYd2+9wpU0deRezWR1gAVERl+aRvqh+irwsdiiIPvFpn3//ZJ+vlrFSBe4s72NILRC1KJjZRK4/iN3TV1G+zyAoo1Vhb7PhK2sWfVQnJDxSIbVqSA3tquredPd6dqBtObrUHznDBOzSCmuyb8BpvRydo9dsJQl95thyc1nQ6h7+CTifYIBbHptWNl97WD1vj9SlYADI3VmfkvxTP65TnMCUdcafcN0R2nenFIt+mQqkffrU953LZdwLi53ossCXmLCdiQRYIfRuuyAbnfRPcDREr3cJAQIDAQAB",
+  "permissions": [
+    "alarms",
+    "declarativeNetRequest",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://*.tiktok.com/*"
+  ],
+  "background": {
+    "service_worker": "bridge.js"
+  },
+  "icons": {
+    "128": "icon.png"
+  },
+  "minimum_chrome_version": "116"
+}

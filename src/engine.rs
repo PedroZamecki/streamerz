@@ -162,6 +162,8 @@ pub struct Engine {
     kick: RefCell<Option<crate::kick::KickHandle>>,
     youtube: RefCell<Option<crate::youtube::YouTubeHandle>>,
     tiktok: RefCell<Option<crate::tiktok::TikTokHandle>>,
+    /// The Streamerz for TikTok extension, when connected (sending through the browser).
+    pub(crate) tiktok_bridge: crate::tiktok_bridge::Bridge,
     pub(crate) slobs: crate::slobs::Slobs,
     pub(crate) donations: RefCell<crate::donations::Live>,
     pub(crate) hotkeys: RefCell<crate::hotkeys::Live>,
@@ -497,6 +499,7 @@ impl Engine {
             kick: RefCell::default(),
             youtube: RefCell::default(),
             tiktok: RefCell::default(),
+            tiktok_bridge: Default::default(),
             slobs: Default::default(),
             donations: RefCell::default(),
             hotkeys: RefCell::default(),

@@ -52,6 +52,7 @@ mod storage;
 mod streamdeck;
 mod templates;
 pub mod tiktok;
+mod tiktok_bridge;
 mod tray;
 pub mod twitch;
 pub mod types;

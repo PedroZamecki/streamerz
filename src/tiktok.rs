@@ -99,6 +99,10 @@ pub struct TikTokConfig {
     pub broadcaster: Option<TikTokAccount>,
     /// Bot account credentials
     pub bot: Option<TikTokAccount>,
+    /// Sending through the browser is set up: the Streamerz for TikTok extension must show this to
+    /// connect (see tiktok_bridge.rs).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub bridge_token: String,
 }
 
 /// Strip URLs, @ signs, and slashes from a TikTok channel input.

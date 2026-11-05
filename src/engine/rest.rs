@@ -3898,8 +3898,14 @@ impl Engine {
             }
             // TikTok Sub-actions
             // 43001: Send Message to Live Chat
+            // Sent as the browser's account (useBot and fallback don't apply).
             43001 => {
-                crate::error("TikTok chat is read-only in Streamerz".into());
+                let text = self.expand(ctx, s(o, "text"));
+                if !self.dev_out("tiktok", &text, false) {
+                    if let Err(err) = crate::tiktok_bridge::send_message(self, &text).await {
+                        crate::error(format!("TikTok: {err}"));
+                    }
+                }
             }
 
             // 43002: Get Top Gifters, 43003: Get Stream Info (this live's, as read)
@@ -4737,7 +4743,9 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
             let out = e.dev_take().unwrap();
             assert_eq!(out[0], json!({"platform": "kick", "text": "hi bo", "bot": false}));
-            assert_eq!(out.len(), 1);
+            // TikTok's Send Message sends now (through the browser), so dev mode keeps it too.
+            assert_eq!(out[1], json!({"platform": "tiktok", "text": "tt bo", "bot": false}));
+            assert_eq!(out.len(), 2);
             assert!(e.dev_take().unwrap().is_empty());
         });
     }

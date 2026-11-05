@@ -28,6 +28,6 @@
       {"fire": 41002, "args": {"user": "bo", "giftName": "Rose", "repeatCount": 5}, "ran": 1},
       {"fire": "KickFollow", "args": {"user": "cy"}}
     ],
-    "expect": {"chat": [{"platform": "kick", "text": "welcome cy"}]}
+    "expect": {"chat": [{"platform": "tiktok", "text": "thanks bo for 5 Rose"}, {"platform": "kick", "text": "welcome cy"}]}
   }
 ]

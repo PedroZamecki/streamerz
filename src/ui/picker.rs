@@ -547,7 +547,7 @@ pub fn sub_action_description(code: u32, name: &str, category: &str) -> String {
         7 => "Plays a random sound from a folder.",
         8 => "Turns a timer on, off, or toggles it.",
         10 | 35001 => "Sends a message to the chat, as the bot or the broadcaster.",
-        43001 => crate::i18n::tr("chat.tiktok_read_only"),
+        43001 => "Sends a message to the TikTok LIVE chat, as the account logged in to the browser with the Streamerz for TikTok extension.",
         15 => "Changes the stream title.",
         18 => "Makes a clip of the stream.",
         20 => "Times a user out for some seconds.",
@@ -644,7 +644,7 @@ pub(super) fn spotify_player_title(code: u32) -> Option<&'static str> {
 pub fn sub_action_pick_items() -> Vec<PickItem> {
     SUB_ACTION_INFO
         .iter()
-        .filter(|x| x.0 != 43001 && (!(99901..=99904).contains(&x.0) || x.0 == 99903))
+        .filter(|x| !(99901..=99904).contains(&x.0) || x.0 == 99903)
         .map(|&(code, name, category, _)| {
             let cat = if category.is_empty() {
                 "Core/General".to_string()

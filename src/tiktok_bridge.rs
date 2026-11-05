@@ -1,0 +1,547 @@
+//! TikTok sending through the user's own browser. The "Streamerz for TikTok" extension keeps one light
+//! TikTok tab open while Streamerz runs and makes requests inside it, so TikTok's own scripts sign them
+//! (msToken, X-Bogus, X-Gnarly, X-Dynosaur, ticket guard, csrf) exactly as when the user types in chat.
+//! Streamerz opens nothing for it: the extension connects to the WebSocket server on [`PATH`] with the
+//! token Streamerz wrote next to it, and its tab closes when Streamerz does.
+
+use crate::engine::Engine;
+use futures_util::{SinkExt, StreamExt};
+use serde_json::{json, Value};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::time::Duration;
+use tokio::sync::{mpsc, oneshot};
+use tokio_tungstenite::tungstenite::Message;
+
+/// Where the extension connects, on the WebSocket server's port.
+pub const PATH: &str = "/streamerz/tiktok";
+/// Fixed by the public key in the extension's manifest.
+pub const EXTENSION_ID: &str = "lhijoeeghjcohapolkfkacipklhbnecc";
+/// The messages this side speaks; an extension with another needs reinstalling.
+const PROTOCOL: u64 = 1;
+/// How long one request in the tab may take (the first one opens and loads it).
+const CALL: Duration = Duration::from_secs(45);
+/// TikTok's chat box takes this many characters.
+const MAX_CHARS: usize = 150;
+
+const FILES: [(&str, &[u8]); 3] = [
+    (
+        "manifest.json",
+        include_bytes!("../assets/tiktok-extension/manifest.json"),
+    ),
+    ("bridge.js", include_bytes!("../assets/tiktok-extension/bridge.js")),
+    ("icon.png", include_bytes!("../assets/tiktok-extension/icon.png")),
+];
+
+/// The query keys TikTok's page sends with every webcast request (browser, device, region...), as seen
+/// on its own chat sends; the rest of a page request's query is particular to it.
+const COMMON: [&str; 30] = [
+    "WebIdLastTime",
+    "aid",
+    "app_language",
+    "app_name",
+    "browser_language",
+    "browser_name",
+    "browser_online",
+    "browser_platform",
+    "browser_version",
+    "channel",
+    "cookie_enabled",
+    "data_collection_enabled",
+    "device_id",
+    "device_platform",
+    "focus_state",
+    "from_page",
+    "history_len",
+    "is_fullscreen",
+    "is_page_visible",
+    "os",
+    "priority_region",
+    "referer",
+    "region",
+    "root_referer",
+    "screen_height",
+    "screen_width",
+    "tz_name",
+    "user_is_login",
+    "verifyFp",
+    "webcast_language",
+];
+
+/// Whether a WebSocket handshake comes from the extension.
+pub fn from_extension(origin: Option<&str>) -> bool {
+    origin.is_some_and(|o| o.trim_end_matches('/') == format!("chrome-extension://{EXTENSION_ID}"))
+}
+
+/// The extension's folder, next to streamerz.json (the browser loads it from there).
+pub fn folder() -> PathBuf {
+    crate::config_path().with_file_name("tiktok-extension")
+}
+
+/// Whether sending through the browser is set up.
+pub fn set_up(c: &crate::Config) -> bool {
+    !c.tiktok.bridge_token.is_empty()
+}
+
+fn new_token() -> String {
+    (0..4).map(|_| format!("{:016x}", crate::math::secure_u64())).collect()
+}
+
+/// The address the extension connects to: the WebSocket server's, on this machine.
+fn server_url(c: &crate::Config) -> String {
+    let w = &c.websockets;
+    let host = match w.address.trim() {
+        "" | "0.0.0.0" | "::" | "[::]" | "*" | "+" => "127.0.0.1",
+        a => a,
+    };
+    format!("ws://{host}:{}{PATH}", w.port)
+}
+
+/// Sets sending up (a token, if there's none yet) and writes the extension, with its settings, to
+/// [`folder`]. Returns the folder.
+pub fn install(e: &Rc<Engine>) -> Result<PathBuf, String> {
+    if !set_up(&e.config()) {
+        let token = new_token();
+        e.change(|c| c.tiktok.bridge_token = token);
+    }
+    write_files(&e.config())
+}
+
+fn write_files(c: &crate::Config) -> Result<PathBuf, String> {
+    let dir = folder();
+    std::fs::create_dir_all(&dir).map_err(|err| format!("can't create {}: {err}", dir.display()))?;
+    let settings = json!({"url": server_url(c), "token": c.tiktok.bridge_token});
+    let config = format!("self.STREAMERZ = {settings};\n");
+    let files = FILES
+        .iter()
+        .map(|(n, b)| (*n, *b))
+        .chain([("config.js", config.as_bytes())]);
+    for (name, bytes) in files {
+        let path = dir.join(name);
+        // Unchanged files stay as they are: the browser notices nothing.
+        if std::fs::read(&path).is_ok_and(|old| old == bytes) {
+            continue;
+        }
+        write_private(&path, bytes).map_err(|err| format!("can't write {}: {err}", path.display()))?;
+    }
+    Ok(dir)
+}
+
+/// Only the owner can read them: config.js holds the token.
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    o.open(path)?.write_all(bytes)
+}
+
+/// At start, and when the WebSocket server's address changes: the extension's files follow this
+/// version and the server's address (the browser reads them when it starts the extension).
+pub fn refresh(c: &crate::Config) {
+    if set_up(c) && folder().is_dir() {
+        if let Err(err) = write_files(c) {
+            crate::warn(format!("TikTok extension: {err}"));
+        }
+    }
+}
+
+/// Turns sending off: the token goes (the extension is refused from then on) and so does its folder.
+pub fn remove(e: &Rc<Engine>) {
+    e.change(|c| c.tiktok.bridge_token.clear());
+    e.tiktok_bridge.disconnect();
+    let _ = std::fs::remove_dir_all(folder());
+}
+
+/// For the MCP tool and the WebSocket request.
+pub fn status(e: &Engine) -> Value {
+    let b = &e.tiktok_bridge;
+    json!({"setUp": set_up(&e.config()), "connected": b.is_connected(), "user": b.user(),
+        "folder": folder().display().to_string(), "extensionId": EXTENSION_ID})
+}
+
+struct Link {
+    tx: mpsc::UnboundedSender<String>,
+    pending: HashMap<u64, oneshot::Sender<Value>>,
+    next: u64,
+    /// Which connection this is (a newer one replaces it).
+    serial: u64,
+}
+
+/// The connected extension, if any, and what was learnt from its tab.
+#[derive(Default)]
+pub struct Bridge {
+    link: RefCell<Option<Link>>,
+    serial: std::cell::Cell<u64>,
+    /// The page's common query, once read.
+    params: RefCell<Option<Vec<(String, String)>>>,
+    /// The browser's TikTok account (its @handle), once known.
+    user: RefCell<String>,
+}
+
+impl Bridge {
+    pub fn is_connected(&self) -> bool {
+        self.link.borrow().is_some()
+    }
+
+    /// The TikTok account logged in to the browser ("" until known).
+    pub fn user(&self) -> String {
+        self.user.borrow().clone()
+    }
+
+    fn disconnect(&self) {
+        // Dropping the sender ends the connection's task, which closes the socket.
+        self.link.borrow_mut().take();
+        self.params.borrow_mut().take();
+        self.user.borrow_mut().clear();
+        crate::ui::changed();
+    }
+
+    /// One request to the extension; its answer, or its error.
+    async fn call(&self, mut msg: Value) -> Result<Value, String> {
+        let rx = {
+            let mut link = self.link.borrow_mut();
+            let l = link.as_mut().ok_or(NOT_CONNECTED)?;
+            l.next += 1;
+            let id = l.next;
+            msg["id"] = id.into();
+            let (tx, rx) = oneshot::channel();
+            l.pending.insert(id, tx);
+            l.tx.send(msg.to_string()).map_err(|_| NOT_CONNECTED)?;
+            rx
+        };
+        let v = match tokio::time::timeout(CALL, rx).await {
+            Ok(Ok(v)) => v,
+            Ok(Err(_)) => return Err(NOT_CONNECTED.into()),
+            Err(_) => return Err("the browser's TikTok tab didn't answer".into()),
+        };
+        match v.get("error").and_then(Value::as_str) {
+            Some(err) => Err(err.to_string()),
+            None => Ok(v),
+        }
+    }
+
+    /// The page's common query: read once from the tab (opening it), then kept.
+    async fn params(&self) -> Result<Vec<(String, String)>, String> {
+        if let Some(p) = self.params.borrow().clone() {
+            return Ok(p);
+        }
+        let v = self.call(json!({"op": "page"})).await?;
+        let p = common_params(&v["params"]);
+        if p.iter().all(|(k, _)| k != "device_id") {
+            return Err("TikTok's page didn't say which device it is".into());
+        }
+        *self.params.borrow_mut() = Some(p.clone());
+        Ok(p)
+    }
+
+    /// A request made inside the tab: (HTTP status, body as JSON).
+    async fn fetch(&self, url: &str, init: Value) -> Result<(u64, Value), String> {
+        let v = self.call(json!({"op": "fetch", "url": url, "init": init})).await?;
+        let status = v["status"].as_u64().unwrap_or(0);
+        let body = v["body"].as_str().unwrap_or("");
+        let json = serde_json::from_str(body).unwrap_or(Value::Null);
+        Ok((status, json))
+    }
+}
+
+const NOT_CONNECTED: &str = "the Streamerz for TikTok extension isn't connected (Accounts > TikTok)";
+
+/// The common keys of a page request's query, in the page's order.
+fn common_params(v: &Value) -> Vec<(String, String)> {
+    let Some(o) = v.as_object() else { return Vec::new() };
+    o.iter()
+        .filter(|(k, _)| COMMON.contains(&k.as_str()))
+        .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
+        .collect()
+}
+
+fn encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// TikTok's chat send, as its live page makes it: (URL, JSON body). The page's common query, with the
+/// live's page as referer, then the message (TikTok's page puts it in both).
+pub fn chat_request(
+    params: &[(String, String)],
+    channel: &str,
+    room: &str,
+    text: &str,
+    now_ms: u64,
+) -> (String, String) {
+    let page = format!("https://www.tiktok.com/@{channel}/live");
+    let mut query: Vec<(&str, String)> = params
+        .iter()
+        .map(|(k, v)| {
+            let v = match k.as_str() {
+                "referer" | "root_referer" => page.clone(),
+                // A message is only ever typed into a page that's in front.
+                "focus_state" | "is_page_visible" => "true".into(),
+                _ => v.clone(),
+            };
+            (k.as_str(), v)
+        })
+        .collect();
+    let now = now_ms.to_string();
+    query.extend([
+        ("room_id", room.to_string()),
+        ("content", text.to_string()),
+        ("emotes_with_index", String::new()),
+        ("input_type", "0".into()),
+        ("client_start_timestamp_millisecond", now),
+    ]);
+    query.sort_by(|a, b| a.0.cmp(b.0));
+    let q: Vec<String> = query.iter().map(|(k, v)| format!("{k}={}", encode(v))).collect();
+    let url = format!("https://webcast.tiktok.com/webcast/room/chat/?{}", q.join("&"));
+    let body = json!({"room_id": room, "content": text, "emotes_with_index": "", "input_type": 0,
+        "client_start_timestamp_millisecond": now_ms});
+    (url, body.to_string())
+}
+
+/// TikTok's answer to a request: Ok, or why it refused.
+fn answer(status: u64, body: &Value) -> Result<(), String> {
+    match body["status_code"].as_i64() {
+        Some(0) => Ok(()),
+        Some(code) => {
+            let d = &body["data"];
+            let why = [&d["prompts"], &d["message"], &body["message"]]
+                .into_iter()
+                .filter_map(Value::as_str)
+                .find(|s| !s.is_empty())
+                .map_or_else(|| format!("error {code}"), str::to_string);
+            Err(format!("TikTok: {why}"))
+        }
+        None if status != 200 => Err(format!("TikTok answered HTTP {status}")),
+        None => Err("TikTok's answer was empty".into()),
+    }
+}
+
+/// Sends `text` to the live being read, as the browser's TikTok account.
+pub async fn send_message(e: &Rc<Engine>, text: &str) -> Result<(), String> {
+    let room = e
+        .tiktok()
+        .and_then(|t| t.room_id())
+        .ok_or("TikTok isn't connected to a live")?;
+    let channel = crate::tiktok::clean_tiktok_channel(&e.config().tiktok.channel);
+    let text: String = text.chars().take(MAX_CHARS).collect();
+    let b = &e.tiktok_bridge;
+    let params = b.params().await?;
+    let (url, body) = chat_request(&params, &channel, &room, &text, crate::templates::clock::now_ms());
+    let init = json!({"method": "POST", "headers": {"content-type": "application/json; charset=UTF-8"}, "body": body});
+    let (status, json) = b.fetch(&url, init).await?;
+    let r = answer(status, &json);
+    if r.is_err() {
+        // Read the page's query again next time, in case it was what TikTok didn't like.
+        b.params.borrow_mut().take();
+    }
+    r
+}
+
+/// The browser's TikTok account, asked through the tab.
+async fn who(b: &Bridge) -> Result<String, String> {
+    let (_, v) = b
+        .fetch("https://www.tiktok.com/passport/web/account/info/?aid=1988", json!({}))
+        .await?;
+    Ok(v["data"]["username"].as_str().unwrap_or_default().to_string())
+}
+
+fn same(a: &str, b: &str) -> bool {
+    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// One connection from the extension, until it closes. The first message must be its hello, with
+/// this install's token.
+pub async fn serve<S>(e: Rc<Engine>, ws: tokio_tungstenite::WebSocketStream<S>)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let (mut sink, mut stream) = ws.split();
+    let hello = match tokio::time::timeout(Duration::from_secs(10), stream.next()).await {
+        Ok(Some(Ok(Message::Text(t)))) => serde_json::from_str::<Value>(&t).unwrap_or(Value::Null),
+        _ => return,
+    };
+    let token = e.config().tiktok.bridge_token.clone();
+    if token.is_empty() || hello["op"] != "hello" || !same(hello["token"].as_str().unwrap_or(""), &token) {
+        crate::warn(
+            "TikTok extension: refused a connection with a wrong token (set it up again in Accounts > TikTok)".into(),
+        );
+        let _ = sink.close().await;
+        return;
+    }
+    if hello["protocol"].as_u64() != Some(PROTOCOL) {
+        crate::warn(
+            "TikTok extension: it's from another version of Streamerz, reload it in the browser's extensions page"
+                .into(),
+        );
+        let _ = sink.close().await;
+        return;
+    }
+    let b = &e.tiktok_bridge;
+    let serial = b.serial.get() + 1;
+    b.serial.set(serial);
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    b.disconnect();
+    *b.link.borrow_mut() = Some(Link {
+        tx,
+        pending: HashMap::new(),
+        next: 0,
+        serial,
+    });
+    crate::say("TikTok: the browser extension connected".into());
+    crate::ui::changed();
+    // Ready for the first message: the tab opens and the account is known.
+    let warm = e.clone();
+    tokio::task::spawn_local(async move {
+        let b = &warm.tiktok_bridge;
+        let r = async {
+            b.params().await?;
+            who(b).await
+        }
+        .await;
+        match r {
+            Ok(user) => {
+                *b.user.borrow_mut() = user;
+                crate::ui::changed();
+            }
+            Err(err) => crate::warn(format!("TikTok extension: {err}")),
+        }
+    });
+    loop {
+        tokio::select! {
+            out = rx.recv() => match out {
+                Some(text) => if sink.send(Message::Text(text.into())).await.is_err() { break },
+                None => break,
+            },
+            m = stream.next() => match m {
+                Some(Ok(Message::Text(t))) => {
+                    let Ok(v) = serde_json::from_str::<Value>(&t) else { continue };
+                    let Some(id) = v["id"].as_u64() else { continue };
+                    let waiting = b.link.borrow_mut().as_mut().and_then(|l| l.pending.remove(&id));
+                    if let Some(w) = waiting {
+                        let _ = w.send(v);
+                    }
+                }
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                _ => {}
+            },
+        }
+    }
+    let _ = sink.close().await;
+    if b.link.borrow().as_ref().is_some_and(|l| l.serial == serial) {
+        b.disconnect();
+        crate::say("TikTok: the browser extension disconnected".into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params() -> Vec<(String, String)> {
+        let page = json!({"aid": "1988", "device_id": "42", "channel_id": "86", "max_time": "0",
+            "referer": "https://www.tiktok.com/live/history/center", "focus_state": "false",
+            "is_page_visible": "false", "browser_version": "5.0 (X11; Linux x86_64)",
+            "msToken": "m", "X-Bogus": "b", "X-Gnarly": "g", "X-Dynosaur": "d"});
+        common_params(&page)
+    }
+
+    #[test]
+    fn keeps_only_the_common_query() {
+        let keys: Vec<_> = params().into_iter().map(|(k, _)| k).collect();
+        assert_eq!(
+            keys,
+            [
+                "aid",
+                "device_id",
+                "referer",
+                "focus_state",
+                "is_page_visible",
+                "browser_version"
+            ]
+        );
+    }
+
+    #[test]
+    fn chat_request_is_the_pages() {
+        let (url, body) = chat_request(&params(), "some.one", "7704", "hi & ção", 1_700_000_000_123);
+        let u = url
+            .strip_prefix("https://webcast.tiktok.com/webcast/room/chat/?")
+            .unwrap();
+        let q: HashMap<&str, &str> = u.split('&').filter_map(|kv| kv.split_once('=')).collect();
+        assert_eq!(q["room_id"], "7704");
+        assert_eq!(q["content"], "hi%20%26%20%C3%A7%C3%A3o");
+        assert_eq!(q["referer"], "https%3A%2F%2Fwww.tiktok.com%2F%40some.one%2Flive");
+        assert_eq!(q["focus_state"], "true");
+        assert_eq!(q["is_page_visible"], "true");
+        assert_eq!(q["browser_version"], "5.0%20%28X11%3B%20Linux%20x86_64%29");
+        assert_eq!(q["client_start_timestamp_millisecond"], "1700000000123");
+        assert!(!q.contains_key("channel_id") && !q.contains_key("X-Bogus"));
+        let b: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            b,
+            json!({"room_id": "7704", "content": "hi & ção", "emotes_with_index": "",
+            "input_type": 0, "client_start_timestamp_millisecond": 1_700_000_000_123u64})
+        );
+    }
+
+    #[test]
+    fn answers() {
+        assert!(answer(200, &json!({"status_code": 0, "data": {"content": "hi"}})).is_ok());
+        assert_eq!(
+            answer(
+                200,
+                &json!({"status_code": 4003110, "data": {"prompts": "You're commenting too fast"}})
+            ),
+            Err("TikTok: You're commenting too fast".into())
+        );
+        assert_eq!(answer(200, &json!({"status_code": 7})), Err("TikTok: error 7".into()));
+        assert_eq!(answer(403, &Value::Null), Err("TikTok answered HTTP 403".into()));
+    }
+
+    #[test]
+    fn only_the_extension_and_its_token() {
+        assert!(from_extension(Some(
+            "chrome-extension://lhijoeeghjcohapolkfkacipklhbnecc"
+        )));
+        assert!(!from_extension(Some(
+            "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        )));
+        assert!(!from_extension(Some("https://www.tiktok.com")));
+        assert!(!from_extension(None));
+        assert!(same("abc", "abc") && !same("abc", "abd") && !same("abc", "ab"));
+    }
+
+    #[test]
+    fn the_extension_id_is_its_keys() {
+        use base64::Engine as _;
+        use sha2::{Digest, Sha256};
+        let m: Value = serde_json::from_slice(FILES[0].1).unwrap();
+        let der = base64::engine::general_purpose::STANDARD
+            .decode(m["key"].as_str().unwrap())
+            .unwrap();
+        let id: String = Sha256::digest(&der)[..16]
+            .iter()
+            .flat_map(|b| [b >> 4, b & 15])
+            .map(|n| (b'a' + n) as char)
+            .collect();
+        assert_eq!(id, EXTENSION_ID);
+    }
+
+    #[test]
+    fn server_url_is_local() {
+        let mut c = crate::Config::default();
+        c.websockets.address = "0.0.0.0".into();
+        c.websockets.port = 8090;
+        assert_eq!(server_url(&c), "ws://127.0.0.1:8090/streamerz/tiktok");
+    }
+}

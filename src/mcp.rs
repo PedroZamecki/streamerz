@@ -72,6 +72,7 @@ const TOOLS: &[(&str, &str, &str, &[&str])] = &[
     ("spotify_local", "Read Spotify's local Windows media session without an API login. Local information cannot control the Spotify API queue.", r#"{}"#, &[]),
     ("overlays", "The overlays (HTML files in action groups) with their URLs for an OBS browser source, and the topics that have a value. An overlay page reads its group's settings from streamerz.settings, a topic with streamerz.on(topic, fn) (built in: viewers, ad) and any event with streamerz.event('Source.Type', fn).", "{}", &[]),
     ("overlay_publish", "Set an overlay topic: the pages listening show it at once. The value is any JSON. The Overlay sub-action (type 99880, fields topic and value) does the same from an action.", r#"{"topic": {"type": "string"}, "value": {}}"#, &["topic"]),
+    ("tiktok_bridge", "Sending to TikTok LIVE chat through the user's browser (the Streamerz for TikTok extension): status (set up, connected, the browser's TikTok account, the extension folder to load unpacked), install (sets it up and writes the extension) or remove. Messages then go out with the chat tools and the TikTok Send Message sub-action (43001).", r#"{"action": {"type": "string", "enum": ["status", "install", "remove"]}}"#, &[]),
     ("countdown", "Read a template countdown by its clock ID.", r#"{"clockId": {"type": "string"}}"#, &["clockId"]),
     ("spotify_find", "The track a song name or Spotify link would be: what a viewer's !sr would queue. Adds nothing.", r#"{"query": {"type": "string"}}"#, &["query"]),
     ("spotify_player", "What Spotify plays and has queued, and the song requests (who asked, and whether each is with Spotify or still waiting).", "{}", &[]),
@@ -363,6 +364,7 @@ impl Client {
                     .await
             }
             "countdown" => self.ask(json!({"request": "StreamerzCountdown", "clockId": s("clockId")})).await,
+            "tiktok_bridge" => self.ask(json!({"request": "StreamerzTikTokBridge", "action": s("action")})).await,
             "group_meta" => self.ask(json!({"request": "StreamerzGroupMeta", "group": s("group")})).await,
             "set_group_meta" => self.ask(json!({"request": "StreamerzSetGroupMeta", "group": s("group"), "meta": a["meta"]})).await,
             "export_group" => self.ask(json!({"request": "StreamerzGroupExport", "group": s("group"), "meta": a["meta"]})).await,

@@ -1854,7 +1854,13 @@ impl Engine {
     /// A line for what we are sending, shown at once (before the platform has taken it, and its own copy
     /// has come back); `chat_unlocal` takes it away if the send fails. The sequence number to ask that with.
     fn chat_local(&self, platform: &str, text: &str, bot: bool, reply: Option<&Line>) -> Option<u64> {
-        let (name, id) = {
+        // TikTok sends as the browser's account.
+        let browser = Some(self.tiktok_bridge.user())
+            .filter(|u| platform == "tiktok" && !u.is_empty())
+            .map(|u| (u.clone(), u));
+        let (name, id) = if let Some(b) = browser {
+            b
+        } else {
             let c = self.cfg.borrow();
             let acct = |b: bool| -> Option<(String, String)> {
                 match platform {
@@ -2103,10 +2109,6 @@ impl Engine {
             .map(|e| e.0.clone())
             .collect();
         for &p in to {
-            if p == "tiktok" {
-                self.chat_note(p, "TikTok chat is read-only in Streamerz".into());
-                continue;
-            }
             let mut text = for_platform(text, p, &kick_known);
             // A reply where the platform has them; a mention elsewhere.
             let reply_target = reply.filter(|l| l.platform == p);
@@ -2158,7 +2160,8 @@ impl Engine {
                         Some(r) => e.kick_start().reply_message(&text, r, bot, fallback).await,
                         None => e.kick_start().send_message(&text, bot, fallback).await,
                     },
-                    _ => Err("TikTok chat is read-only".into()),
+                    "tiktok" => crate::tiktok_bridge::send_message(&e, &text).await,
+                    _ => Err(format!("{p}: can't send there")),
                 };
                 match r {
                     Ok(()) => {
@@ -2197,7 +2200,7 @@ pub fn can_send(c: &crate::Config, platform: &str) -> bool {
         "twitch" => c.twitch.broadcaster.is_some() || c.twitch.bot.is_some(),
         "youtube" => c.youtube.broadcaster.is_some() || c.youtube.bot.is_some(),
         "kick" => c.kick.broadcaster.is_some() || c.kick.bot.is_some(),
-        "tiktok" => false,
+        "tiktok" => crate::tiktok_bridge::set_up(c),
         _ => false,
     }
 }
@@ -2781,8 +2784,11 @@ mod tests {
         assert!(can_send(&c, "kick"));
         assert!(!can_send(&c, "twitch"));
         assert!(!can_send(&c, "tiktok"));
+        // A TikTok login only reads: sending goes through the browser, once set up.
         c.tiktok.broadcaster = Some(Default::default());
         assert!(!can_send(&c, "tiktok"));
+        c.tiktok.bridge_token = "t".into();
+        assert!(can_send(&c, "tiktok"));
     }
 
     #[test]
@@ -2804,14 +2810,18 @@ mod tests {
     }
 
     #[test]
-    fn tiktok_cannot_be_sent_even_in_development_mode() {
+    fn tiktok_is_kept_in_development_mode() {
         let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::engine::tests::run(async {
-            let c = crate::Config::default();
+            let mut c = crate::Config::default();
+            c.tiktok.bridge_token = "t".into();
             let e = crate::engine::Engine::new(std::sync::Arc::new(tokio::sync::watch::channel(c).0), |_| {});
             e.st.borrow_mut().dev_out = Some(Vec::new());
-            assert!(e.send_chat_list(&["tiktok"], "hello", false, false, None).is_empty());
-            assert!(e.dev_take().unwrap().is_empty());
+            e.send_chat_list(&["tiktok"], "hello", false, false, None);
+            let out = e.dev_take().unwrap();
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0]["platform"], "tiktok");
+            assert_eq!(out[0]["text"], "hello");
             assert!(e.tiktok().is_none());
         });
     }
