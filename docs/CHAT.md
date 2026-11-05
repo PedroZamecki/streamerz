@@ -5,7 +5,8 @@ How the chat page behaves. For what each trigger and sub-action does, see the re
 ## The chat box
 
 - One box per platform. It is off, with a plain user icon, when no account is logged in for that platform:
-  the chat is then read only. "Message all" leaves such a platform out, and its lines only offer Copy.
+  the chat is then read only. TikTok uses the browser account described below instead. "Message all"
+  leaves a platform without sending set up out, and its lines only offer Copy.
 - The hover actions follow the platform's rules and our role there (viewer, VIP, moderator, lead
   moderator, broadcaster): nobody can ban or time out the broadcaster or themselves, moderators leave
   each other to the owner, and a viewer only gets Reply and Copy.
@@ -14,6 +15,25 @@ How the chat page behaves. For what each trigger and sub-action does, see the re
   comes back (a failed send takes the line away and says why). The log says how long each send took.
 - An `@name` that names one of our logged-in accounts sits on a chip, so it stands out. The chip follows
   the theme (light and dark).
+
+## TikTok sending
+
+In Accounts > TikTok > Sending, choose Set up. Open your Chromium browser's extensions page, turn on
+Developer mode, choose Load unpacked, and select the folder shown by Streamerz. Log in to TikTok in that
+browser. Accounts shows the browser account once the extension connects. Streamerz sends to the live
+channel it is reading, using that browser account; the optional broadcaster and bot logins help with
+reading restricted rooms and do not select who sends.
+
+The extension keeps a pinned, muted TikTok tab open while Streamerz runs. It blocks pictures, video,
+fonts and some background requests. Closing Streamerz closes the tab. Remove in the Sending dialog turns
+sending off; remove the extension from the browser too.
+
+To measure its usage while other tabs are open, open the browser's Task Manager. Look for both
+Streamerz for TikTok (the extension worker) and the pinned TikTok tab. Watch their CPU and memory for at
+least a minute after the page finishes loading. The tab does most of the work, so measuring only the
+extension worker misses most of the cost. Shared browser, network and GPU costs are separate; these rows
+do not measure the entire browser overhead. Developer tools and an open Task Manager can affect CPU
+readings, so close developer tools and allow the tab to settle first.
 
 ## Twitch chat commands
 

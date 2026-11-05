@@ -539,7 +539,7 @@ platform handles through channels, never through shared locks held across awaits
 - [ ] Complete Windows and real Twitch + OBS profiling. Linux release-profile synthetic, restart,
   sustained SSD, allocation, and UI reclamation comparisons are recorded in the experiment report.
 
-## Version 1.4.1
+## Version 1.5.0
 
 - [x] Twitch standalone GIF messages: show the animated picture below the sender in live chat and history,
   with the title as fallback.
@@ -548,8 +548,9 @@ platform handles through channels, never through shared locks held across awaits
   (`assets/tiktok-extension`, loaded unpacked from the folder Streamerz writes next to `streamerz.json`)
   connects to the WebSocket server on `/streamerz/tiktok`: only its fixed extension ID, only with the token
   Streamerz wrote, and the path doesn't exist until sending is set up. It keeps one pinned, muted TikTok tab
-  (`/live/history/center`) with pictures, video, fonts, telemetry and feed refreshes blocked (about 110 MB
-  in the browser, about 1% idle CPU), closed when Streamerz closes, and runs requests inside it. Chat,
+  (`/live/history/center`) with pictures, video, fonts, telemetry and feed refreshes blocked (96 to 106 MiB PSS
+  for the TikTok tab, 0.33 to 0.57% of one CPU core in local idle samples, with browser and extension
+  overhead separate), closed when Streamerz closes, and runs requests inside it. Chat,
   `SendMessage` and the TikTok Send Message sub-action (43001) send as the browser's account, and the reader
   confirms each message. Accounts > TikTok > Sending sets it up and removes it; MCP tool `tiktok_bridge`.
 

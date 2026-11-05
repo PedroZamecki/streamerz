@@ -74,6 +74,37 @@ predictions, title) runs only on the test account, by hand, from a checklist in 
 Hidden RSS and idle CPU before and after, in the PR. Fakes and scenarios are never part of a normal start:
 they cost nothing when the app runs.
 
+## Version 1.5.0 local verification
+
+Linux, 2026-11-04: formatting and clippy passed, with 420 unit and scenario tests passed and 10 ignored.
+TikTok sending was confirmed in a real LIVE chat by the user. Accounts setup and removal, the sending
+composer, and narrow and wide screenshots were checked on the hidden display.
+
+Hidden optimized development builds, scratch settings, no Twitch or OBS connection, 30-second samples
+at 100 ticks per second:
+
+| Build | RSS across three runs (KiB) | Idle CPU ticks per run |
+| --- | --- | --- |
+| Main (`c48ffb4`) | 28,344 to 29,044 | 0 |
+| Version, sending not set up | 28,788 to 29,300 | 0 |
+
+These disconnected measurements do not verify the hidden Twitch + OBS budget of less than 25 MB.
+Windows runtime verification remains pending. The local Windows check could not run because the
+Windows Rust toolchain was unavailable.
+
+Browser measurements must first verify that the extension is connected and its TikTok tab is open.
+An initial idle run failed this check because Developer mode was off in the lab profile; its readings
+are discarded. Measure the tab and extension worker separately from shared browser, network and GPU
+processes. Linux PSS accounts proportionally for shared pages; browser Task Manager memory figures use
+a different definition and should not be compared directly with PSS.
+
+With sending confirmed connected, the TikTok renderer measured 105.60 MiB PSS and 0.57% of one CPU
+core in the first 60-second sample, then 96.04 MiB PSS and 0.33% in a second sample starting four
+minutes later. Streamerz held 30,056 KiB RSS and used zero CPU ticks in both samples. These figures
+exclude shared browser overhead and the extension workers. The lab browser also loaded its default
+extensions, so worker totals cannot be attributed solely to Streamerz. CPU percentages use the OS tick
+rate and elapsed time. The first valid sample started about one minute after the extension connected.
+
 ## Linux input
 
 `python3 -P dev/linux-input.py [target/fast/Streamerz]` runs the binary as an X11 session on the hidden
