@@ -53,7 +53,9 @@ contents (`Dialog::resizer`). Only when the window is hidden in the tray does a 
 Motion: a dialog rises into place while the window behind it fades from sharp to blurred, and sinks as it
 closes; a menu or a popover unrolls from the top. Everything moves through `anim::play` (eased out, under a
 fifth of a second, events still handled), and nothing moves when Animations is off in Settings or with the
-memory saver.
+memory saver. A switch's knob slides across (`anim::start`, which doesn't wait). A focus ring shows only
+when the keyboard moved the focus, never after a click, and always fits inside its control. A menu marks
+only the row under the mouse; off every row, none is marked.
 
 Menus: a rounded panel with a quiet border, roomy rows, a Lucide icon per item when any has one (a tick for
 toggles and a dropdown's current choice), dividing lines between groups, greyed items that can't be picked.

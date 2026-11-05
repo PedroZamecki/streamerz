@@ -25,6 +25,8 @@ pub const IN: u32 = 170;
 pub const OUT: u32 = 120;
 /// A menu or a floating panel unrolling: quick, it's asked for often.
 pub const POP: u32 = 110;
+/// A switch's knob sliding across.
+pub const SWITCH: u32 = 140;
 
 /// Eased out: quick at first, settling at the end.
 pub fn ease_out(t: f32) -> f32 {
@@ -55,6 +57,27 @@ pub fn play(ms: u32, mut frame: impl FnMut(f32)) {
     }
     frame(1.0);
     app::flush();
+}
+
+/// `play` without waiting for it: the frames come from timeouts while everything else goes on (a switch
+/// sliding). With animations off, only the last frame, at once.
+pub fn start(ms: u32, frame: impl FnMut(f32) + 'static) {
+    let frame = std::rc::Rc::new(std::cell::RefCell::new(frame));
+    if !on() || ms == 0 {
+        (frame.borrow_mut())(1.0);
+        return;
+    }
+    let total = Duration::from_millis(ms.into()).as_secs_f32();
+    let begun = Instant::now();
+    app::add_timeout3(0.0, move |h| {
+        let t = begun.elapsed().as_secs_f32() / total;
+        if let Ok(mut f) = frame.try_borrow_mut() {
+            f(if t >= 1.0 { 1.0 } else { ease_out(t) });
+        }
+        if t < 1.0 {
+            app::repeat_timeout3(1.0 / 60.0, h);
+        }
+    });
 }
 
 /// From `a` to `b`, at `p` (0 to 1).
@@ -104,7 +127,13 @@ mod tests {
         set(false);
         let mut seen = Vec::new();
         play(IN, |p| seen.push(p));
+        let later = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        start(SWITCH, {
+            let later = later.clone();
+            move |p| later.borrow_mut().push(p)
+        });
         set(true);
         assert_eq!(seen, [1.0]);
+        assert_eq!(*later.borrow(), [1.0], "a switch is across at once");
     }
 }

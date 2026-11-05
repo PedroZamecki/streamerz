@@ -293,6 +293,13 @@ struct State {
     max: i32,
 }
 
+/// The mouse is on row `at` (None: off every row): only that one is marked. True when that changed.
+fn mark(cursor: &mut Option<usize>, at: Option<usize>) -> bool {
+    let changed = *cursor != at;
+    *cursor = at;
+    changed
+}
+
 fn row_at(items: &[Row], st: &State, f: &Frame) -> Option<usize> {
     let y = app::event_y() - f.y() + st.top;
     if !app::event_inside_widget(f) {
@@ -415,15 +422,15 @@ fn handle(
             f.redraw();
             true
         }
-        Event::Move | Event::Drag => {
-            let at = row_at(items, &s, f);
-            if at.is_some() && at != s.cursor {
-                s.cursor = at;
+        // The mouse marks only the row it is on: off a row (a divider, a greyed item, out of the menu),
+        // none is marked. The keys mark one again.
+        Event::Move | Event::Drag | Event::Leave => {
+            let at = if ev == Event::Leave { None } else { row_at(items, &s, f) };
+            if mark(&mut s.cursor, at) {
                 f.redraw();
             }
             true
         }
-        Event::Leave => true,
         Event::Push => {
             s.pressed = true;
             true
@@ -597,6 +604,16 @@ fn open<M: MenuExt + WidgetBase + Clone + 'static>(m: &mut M) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_row_is_marked_only_while_the_mouse_is_on_it() {
+        let mut cursor = None;
+        assert!(mark(&mut cursor, Some(3)));
+        assert!(!mark(&mut cursor, Some(3)), "no repaint while it stays");
+        // Out of the menu, or onto a divider: nothing stays marked.
+        assert!(mark(&mut cursor, None));
+        assert_eq!(cursor, None);
+    }
 
     fn row(item: Option<usize>, label: &str, enabled: bool) -> Row {
         Row {

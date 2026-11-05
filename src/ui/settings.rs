@@ -203,43 +203,83 @@ fn history_enabled(saved: bool, memory_saver: bool) -> bool {
     saved && !memory_saver
 }
 
-/// An on/off switch: a pill with a knob, lit when on.
+/// An on/off switch: a pill with a knob, lit when on. The knob slides across when it changes; the ring
+/// that says it has the keyboard shows only when the keyboard brought it there (not after a click).
 fn switch(on: bool) -> ToggleButton {
+    use std::cell::Cell;
+    use std::rc::Rc;
     let mut b = ToggleButton::default();
     b.set_value(on);
-    b.draw(|b| {
-        let (w, h) = (36, 20);
-        let (x, y) = (b.x() + b.w() - w, b.y() + (b.h() - h) / 2);
-        let bg = Color::Background;
-        let track = if b.value() {
-            Color::Selection
-        } else {
-            Color::color_average(Color::Foreground, bg, 0.25)
-        };
-        let track = if b.active_r() { track } else { track.inactive() };
-        draw::draw_rect_fill(b.x(), b.y(), b.w(), b.h(), bg);
-        draw::set_draw_color(track);
-        draw::draw_rounded_rectf(x, y, w, h, h / 2);
-        draw::set_draw_color(if b.active_r() {
-            Color::White
-        } else {
-            Color::White.inactive()
-        });
-        let k = h - 6;
-        let kx = if b.value() { x + w - k - 3 } else { x + 3 };
-        draw::draw_pie(kx, y + 3, k, k, 0.0, 360.0);
-        if b.has_focus() && b.active_r() {
-            draw::set_draw_color(Color::Foreground);
-            draw::draw_rounded_rect(x - 3, y - 3, w + 6, h + 6, 12);
+    // Where the knob is: 0 off, 1 on.
+    let knob = Rc::new(Cell::new(if on { 1.0f32 } else { 0.0 }));
+    let sliding = Rc::new(Cell::new(false));
+    let clicked = Rc::new(Cell::new(false));
+    b.draw({
+        let (knob, sliding, clicked) = (knob.clone(), sliding.clone(), clicked.clone());
+        move |b| {
+            let target = if b.value() { 1.0 } else { 0.0 };
+            if knob.get() != target && !sliding.get() {
+                sliding.set(true);
+                let from = knob.get();
+                let (knob, sliding, mut again) = (knob.clone(), sliding.clone(), b.clone());
+                super::anim::start(super::anim::SWITCH, move |p| {
+                    knob.set(from + (target - from) * p);
+                    if p >= 1.0 {
+                        sliding.set(false);
+                    }
+                    if !again.was_deleted() {
+                        again.redraw();
+                    }
+                });
+            }
+            let p = knob.get();
+            let (x, y, w, h) = pill((b.x(), b.y(), b.w(), b.h()));
+            let bg = Color::Background;
+            let off = Color::color_average(Color::Foreground, bg, 0.25);
+            let track = Color::color_average(Color::Selection, off, p);
+            let track = if b.active_r() { track } else { track.inactive() };
+            draw::draw_rect_fill(b.x(), b.y(), b.w(), b.h(), bg);
+            draw::set_draw_color(track);
+            draw::draw_rounded_rectf(x, y, w, h, h / 2);
+            draw::set_draw_color(if b.active_r() {
+                Color::White
+            } else {
+                Color::White.inactive()
+            });
+            let k = h - 6;
+            let kx = x + 3 + ((w - k - 6) as f32 * p).round() as i32;
+            draw::draw_pie(kx, y + 3, k, k, 0.0, 360.0);
+            if b.has_focus() && b.active_r() && !clicked.get() {
+                let (rx, ry, rw, rh) = ring((x, y, w, h));
+                draw::set_draw_color(Color::Foreground);
+                draw::draw_rounded_rect(rx, ry, rw, rh, 12);
+            }
         }
     });
-    b.handle(|b, event| {
-        if matches!(event, Event::Focus | Event::Unfocus) {
+    b.handle(move |b, event| {
+        match event {
+            Event::Push => clicked.set(true),
+            Event::KeyDown => clicked.set(false),
+            Event::Unfocus => clicked.set(false),
+            _ => {}
+        }
+        if matches!(event, Event::Focus | Event::Unfocus | Event::KeyDown) {
             b.redraw();
         }
         false
     });
     b
+}
+
+/// A switch's pill in a switch `(x, y, w, h)`: at its right, with room left for its focus ring.
+fn pill((x, y, w, h): (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
+    let (pw, ph) = (36, 20);
+    (x + w - pw - 4, y + (h - ph) / 2, pw, ph)
+}
+
+/// The focus ring around a pill.
+fn ring((x, y, w, h): (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
+    (x - 3, y - 3, w + 6, h + 6)
 }
 
 /// A choice's items: "/" would make a submenu.
@@ -799,6 +839,15 @@ pub(super) fn chat_dialog(cfg: &Cfg, cmds: &Cmds) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_switchs_focus_ring_is_never_cut() {
+        // The ring was drawn past the switch's right edge, where its row cut it off.
+        let widget = (500, 100, 44, ROW);
+        let (rx, ry, rw, rh) = ring(pill(widget));
+        assert!(rx >= widget.0 && rx + rw <= widget.0 + widget.2, "{:?}", (rx, rw));
+        assert!(ry >= widget.1 && ry + rh <= widget.1 + widget.3, "{:?}", (ry, rh));
+    }
 
     #[test]
     fn history_switch_matches_the_saved_preference_and_active_memory_policy() {

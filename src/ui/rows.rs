@@ -68,6 +68,8 @@ struct State {
     top: i32,
     /// Where the scrollbar was grabbed, from its top.
     grab: Option<i32>,
+    /// A line whose switch is sliding across, and how far it has gone (0 to 1).
+    slide: Option<(i32, f32)>,
 }
 
 #[derive(Clone)]
@@ -236,6 +238,16 @@ impl Rows {
     }
 
     fn switch(&mut self, n: i32) {
+        if self.st.borrow().slide.is_some() {
+            return;
+        }
+        // The knob slides across first, then the page turns the flag (and fills the list again).
+        let (st, mut area) = (self.st.clone(), self.area.clone());
+        super::anim::play(super::anim::SWITCH, |p| {
+            st.borrow_mut().slide = Some((n, p));
+            area.redraw();
+        });
+        self.st.borrow_mut().slide = None;
         let f = self.switched.borrow_mut().take();
         if let Some(mut f) = f {
             f(self, n);
@@ -443,18 +455,26 @@ impl Rows {
                     }
                     Some(Cell::Switch) if !col.is_empty() => {
                         let on = col == "1";
+                        // How far on it is: 0 or 1, or on its way while it slides.
+                        let p = match st.slide {
+                            Some((line, p)) if line == n => {
+                                if on {
+                                    1.0 - p
+                                } else {
+                                    p
+                                }
+                            }
+                            _ if on => 1.0,
+                            _ => 0.0,
+                        };
                         let (sw, sh) = SWITCH;
                         let sy = ly + (LINE - sh) / 2;
-                        let track = if on {
-                            Color::Selection
-                        } else {
-                            Color::color_average(fg, back, 0.28)
-                        };
+                        let track = Color::color_average(Color::Selection, Color::color_average(fg, back, 0.28), p);
                         draw::set_draw_color(track);
                         draw::draw_rounded_rectf(at, sy, sw, sh, sh / 2);
                         let knob = sh - 4;
-                        let kx = if on { at + sw - knob - 2 } else { at + 2 };
-                        draw::set_draw_color(if on { Color::White } else { back });
+                        let kx = at + 2 + ((sw - knob - 4) as f32 * p).round() as i32;
+                        draw::set_draw_color(Color::color_average(Color::White, back, p));
                         draw::draw_pie(kx, sy + 2, knob, knob, 0.0, 360.0);
                         draw::set_draw_color(text);
                     }
