@@ -197,6 +197,7 @@ pub struct Config {
     pub window: WindowState,
     /// What a new release does: ask first, install in the background, or nothing.
     pub updates: update::Updates,
+    pub notifications: notify::Settings,
     /// Plugins by id (their file's name): on or off, and their settings.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub plugins: std::collections::BTreeMap<String, engine::plugins::PluginConfig>,
@@ -255,6 +256,7 @@ impl Default for Config {
             builtins: false,
             window: WindowState::default(),
             updates: update::Updates::default(),
+            notifications: notify::Settings::default(),
             plugins: Default::default(),
             date_format: String::new(),
             time_format: String::new(),
@@ -607,6 +609,9 @@ fn log(level: Level, line: String) {
         return;
     }
     let line = redact(&line);
+    if level == Level::Error {
+        engine::record_error(&line);
+    }
     if !QUIET.load(std::sync::atomic::Ordering::Relaxed) {
         let _ = writeln!(std::io::stdout(), "[{}] {line}", level.tag());
     }
@@ -1312,6 +1317,7 @@ fn main() {
             return;
         }
     }
+    notify::configure(cfg.notifications);
     i18n::set(&cfg.locale);
     set_debug_log(cfg.debug_log);
     fmt::set_shown_as(&cfg.date_format, &cfg.time_format);

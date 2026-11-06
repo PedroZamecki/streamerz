@@ -994,7 +994,7 @@ impl Engine {
             }
             // Run Commercial (19)
             19 => {
-                let duration = n(o, "duration") as u64;
+                let duration = self.duration_number(ctx, o, "duration") as u64;
                 let len = if duration == 0 { 30 } else { duration };
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
@@ -1310,7 +1310,7 @@ impl Engine {
                     .map(|c| json!({"title": self.expand(ctx, c)}))
                     .collect();
                 let mut body = json!({"broadcaster_id": "{broadcaster_id}", "title": title, "choices": choices,
-                    "duration": (n(o, "duration") as u64).clamp(15, 1800)});
+                    "duration": (self.duration_number(ctx, o, "duration") as u64).clamp(15, 1800)});
                 let points = n(o, "channelPointsPerVote") as u64;
                 if points > 0 {
                     body["channel_points_voting_enabled"] = true.into();
@@ -1465,7 +1465,7 @@ impl Engine {
                     .iter()
                     .map(|c| json!({"title": self.expand(ctx, c)}))
                     .collect();
-                let window = (n(o, "predictionWindow") as u64).clamp(30, 1800);
+                let window = (self.duration_number(ctx, o, "predictionWindow") as u64).clamp(30, 1800);
                 let body = json!({"broadcaster_id": "{broadcaster_id}", "title": title, "outcomes": outcomes,
                     "prediction_window": window});
                 let Some(tw) = self.twitch() else { return };
@@ -1618,7 +1618,7 @@ impl Engine {
             // Slow Mode (14)
             14 => {
                 let status = b(o, "status", true);
-                let dur = n(o, "duration") as u64;
+                let dur = self.duration_number(ctx, o, "duration") as u64;
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
                         .helix(
@@ -1641,7 +1641,7 @@ impl Engine {
             // Follower Mode (28)
             28 => {
                 let status = b(o, "status", true);
-                let dur = n(o, "duration") as u64;
+                let dur = self.duration_number(ctx, o, "duration") as u64;
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
                         .helix(
@@ -1665,7 +1665,7 @@ impl Engine {
             20 => {
                 ctx.args.insert("timeoutResult".into(), false.into());
                 let login = self.expand(ctx, s(o, "userLogin"));
-                let dur = (n(o, "duration") as u64).max(1);
+                let dur = (self.duration_number(ctx, o, "duration") as u64).max(1);
                 let reason = self.expand(ctx, s(o, "reason"));
                 if let Some(tw) = self.twitch() {
                     if let Ok(uid) = tw.resolve_user_id(&login).await {
@@ -2028,7 +2028,7 @@ impl Engine {
             // Set Global Cooldown (204)
             204 => {
                 let rew_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
-                let cd = n(o, "cooldown") as u64;
+                let cd = self.duration_number(ctx, o, "cooldown") as u64;
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
                         .helix(
@@ -2489,7 +2489,7 @@ impl Engine {
                     .ok()
                     .and_then(|v| v.pointer("/data/0").cloned())
                     .unwrap_or_default();
-                let duration = n(o, "duration").max(0.0) as u64;
+                let duration = self.duration_number(ctx, o, "duration").max(0.0) as u64;
                 let secs = duration.to_string();
                 let with = |id: &str, dur: bool| {
                     let mut q: Vec<(&str, String)> = who.iter().map(|(k, v)| (*k, v.to_string())).collect();
@@ -3556,7 +3556,7 @@ impl Engine {
                 ctx.args.insert("timeoutResult".into(), false.into());
                 let broadcast = self.expand(ctx, s(o, "broadcast"));
                 let user_id = self.expand(ctx, s(o, "userId"));
-                let duration = n(o, "duration") as u64;
+                let duration = self.duration_number(ctx, o, "duration") as u64;
                 let yt = self.youtube_start();
                 ctx.args.insert("bannedUser".into(), user_id.clone().into());
                 ctx.args.insert("bannedUserName".into(), user_id.clone().into());
@@ -3808,7 +3808,7 @@ impl Engine {
             35042 => {
                 ctx.args.insert("timeoutResult".into(), false.into());
                 let user = self.expand(ctx, s(o, "userLogin"));
-                let duration = n(o, "duration") as u64;
+                let duration = self.duration_number(ctx, o, "duration") as u64;
                 let reason = self.expand(ctx, s(o, "reason"));
                 let kick = self.kick_start();
                 ctx.args.insert("timedOutUser".into(), user.clone().into());
@@ -4082,7 +4082,7 @@ impl Engine {
             20003 => {
                 let inst = self.expand(ctx, s(o, "instanceId"));
                 let sig = self.expand(ctx, s(o, "signalName"));
-                let timeout = n(o, "timeout") as u64;
+                let timeout = self.duration_number(ctx, o, "timeout") as u64;
                 let overwrite = b(o, "overwrite", false);
                 let got = self.wait_remote_signal(&inst, &sig, timeout).await;
                 match got {
@@ -4158,7 +4158,16 @@ impl Engine {
             // MIDI Out: Note On (9001), Control Change (9002), Generic Event (9003).
             9001..=9003 => {
                 let device = self.expand(ctx, s(o, "device"));
-                self.midi_out(kind, o, &device);
+                if o.get("duration").is_some_and(Value::is_string) {
+                    let mut request = o.clone();
+                    request.insert(
+                        "duration".into(),
+                        (self.duration_number(ctx, o, "duration").max(0.0) as u64).into(),
+                    );
+                    self.midi_out(kind, &request, &device);
+                } else {
+                    self.midi_out(kind, o, &device);
+                }
             }
 
             // Elgato Stream Deck (11001-11008): pushed to the connected plugins (`streamdeck.rs`).
@@ -4180,10 +4189,15 @@ impl Engine {
                 let file = self.expand(ctx, s(o, "file"));
                 let text = self.expand(ctx, s(o, "text"));
                 let append = b(o, "append", false);
-                let _ = tokio::task::spawn_blocking(move || {
+                let result = tokio::task::spawn_blocking(move || {
                     crate::fileio::write_to_file(std::path::Path::new(&file), &text, append)
                 })
                 .await;
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => crate::error(format!("Write To File: {error}")),
+                    Err(error) => crate::error(format!("Write To File: {error}")),
+                }
             }
 
             // Read Random Line From File (5)
@@ -4358,7 +4372,7 @@ impl Engine {
         let prog = self.expand(ctx, s(o, "command"));
         let args = self.expand(ctx, s(o, "arguments"));
         let dir = self.expand(ctx, s(o, "workingDir"));
-        let wait = n(o, "waitForExit");
+        let wait = self.duration_number(ctx, o, "waitForExit");
         let mut cmd = tokio::process::Command::new(&prog);
         #[cfg(windows)]
         {

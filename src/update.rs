@@ -230,6 +230,7 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
         crate::say(format!("Downloading {tag}..."));
         match stage(&release).await {
             Ok(()) if fresh => crate::notify::send(
+                crate::notify::Kind::Updates,
                 &trf("update.ready.title", &[("version", &tag)]),
                 tr("update.ready.body"),
             ),
@@ -242,7 +243,11 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
         return;
     }
     if fresh {
-        crate::notify::send(&trf("update.out.title", &[("version", &tag)]), tr("update.out.body"));
+        crate::notify::send(
+            crate::notify::Kind::Updates,
+            &trf("update.out.title", &[("version", &tag)]),
+            tr("update.out.body"),
+        );
     }
     let now = running().unwrap_or("");
     let question = trf("update.ask", &[("version", &tag), ("now", now)]);

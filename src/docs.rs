@@ -58,7 +58,106 @@ pub fn entries() -> Vec<Entry> {
 
 /// The page of a `kind` ("subaction" or "trigger") by its code.
 pub fn entry(kind: &str, code: u32) -> Option<Entry> {
-    entries().into_iter().find(|e| e.kind == kind && e.code == code)
+    let at = REFERENCE.binary_search_by(|e| (e.0, e.1).cmp(&(kind, code))).ok()?;
+    let (kind, code, file, start, end) = REFERENCE[at];
+    let text = &DOCS[file].1[start..end];
+    Some(Entry {
+        kind,
+        code,
+        title: text.lines().next()?.trim_start_matches("## ").into(),
+        file: DOCS[file].0,
+        text: text.into(),
+    })
+}
+
+/// Borrow compiled reference text without parsing or allocating the other pages.
+pub fn text(kind: &str, code: u32) -> Option<&'static str> {
+    let at = REFERENCE.binary_search_by(|e| (e.0, e.1).cmp(&(kind, code))).ok()?;
+    let (_, _, file, start, end) = REFERENCE[at];
+    Some(&DOCS[file].1[start..end])
+}
+
+pub fn summary(kind: &str, code: u32) -> Option<&'static str> {
+    text(kind, code)?
+        .split("\n\n")
+        .skip(1)
+        .find(|p| !p.starts_with('-') && !p.starts_with('#') && !p.trim().is_empty())
+}
+
+/// Explicitly unavailable trigger types, kept for lossless imports.
+pub fn available(kind: &str, code: u32) -> bool {
+    if kind == "subaction" {
+        return crate::engine::supported(code);
+    }
+    if crate::types::name(crate::types::TRIGGERS, code).is_none() {
+        return false;
+    }
+    !matches!(code, 1 | 116..=117 | 123 | 143 | 168 | 170 | 172 | 497..=498 | 602 | 705 | 707
+        | 801..=802 | 806 | 4013 | 4021..=4022 | 4031 | 5001 | 6001..=6004 | 9001..=9007
+        | 17001 | 17004 | 19001..=19011 | 20001..=20009 | 21001..=21020 | 21301..=21302
+        | 21341..=21342 | 21351..=21390 | 21401..=21426 | 21501..=21502 | 23001..=23002
+        | 27001..=27012 | 30001..=30004 | 33001..=33012)
+}
+
+/// The same reference presented as readable text, without storage metadata or Markdown tables.
+pub fn readable(text: &str) -> String {
+    let mut out = String::new();
+    for line in text.lines() {
+        if ["- Kind:", "- Code:", "- Type:", "- Category:"]
+            .iter()
+            .any(|p| line.starts_with(p))
+        {
+            continue;
+        }
+        if line.starts_with('|') {
+            let cells: Vec<_> = line.split('|').map(str::trim).filter(|c| !c.is_empty()).collect();
+            if cells.len() < 3 || cells[0] == "Field" || cells[0].starts_with('-') {
+                continue;
+            }
+            out.push_str(&format!("{}: {}\n", cells[0], cells[2].replace('`', "")));
+        } else {
+            out.push_str(
+                &line
+                    .trim_start_matches('#')
+                    .trim_start()
+                    .replace('`', "")
+                    .replace("**", ""),
+            );
+            out.push('\n');
+        }
+    }
+    out
+}
+
+pub fn field_help(kind: &str, code: u32, key: &str) -> Option<&'static str> {
+    text(kind, code)?
+        .lines()
+        .filter(|line| line.starts_with('|'))
+        .find_map(|line| {
+            let mut cells = line.split('|').skip(1).map(str::trim);
+            cells.next()?;
+            (cells.next()?.trim_matches('`') == key).then(|| cells.next()).flatten()
+        })
+}
+
+/// Documented values, for insertion menus. Some depend on the triggering event or branch.
+pub fn argument_names(kind: &str, code: u32) -> Vec<&'static str> {
+    let Some(text) = text(kind, code).and_then(|s| s.split("### Arguments").nth(1)) else {
+        return Vec::new();
+    };
+    let text = text.split("\n### ").next().unwrap_or(text);
+    text.lines()
+        .filter(|s| s.starts_with("- "))
+        .flat_map(|line| {
+            line.split(':')
+                .next()
+                .unwrap_or(line)
+                .split('`')
+                .skip(1)
+                .step_by(2)
+                .filter(|s| !s.is_empty() && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'.'))
+        })
+        .collect()
 }
 
 /// The guides (everything outside the reference): their names.
@@ -116,6 +215,9 @@ mod tests {
     /// Every trigger and sub-action Streamerz knows has its page, and no page is about one it doesn't.
     #[test]
     fn every_trigger_and_sub_action_is_documented() {
+        assert!(REFERENCE
+            .windows(2)
+            .all(|pair| (pair[0].0, pair[0].1) < (pair[1].0, pair[1].1)));
         let all = entries();
         let mut missing = Vec::new();
         for (kind, table) in [
@@ -136,6 +238,34 @@ mod tests {
         );
         let mut seen = std::collections::HashSet::new();
         for e in &all {
+            let table = if e.kind == "trigger" {
+                crate::types::TRIGGERS
+            } else {
+                crate::types::SUB_ACTIONS
+            };
+            assert!(
+                crate::types::name(table, e.code).is_some(),
+                "orphan reference {} {}",
+                e.kind,
+                e.code
+            );
+            let indexed = entry(e.kind, e.code).expect("indexed reference");
+            assert_eq!(indexed.text.trim(), e.text.trim());
+            for heading in ["Fields", "Arguments"]
+                .into_iter()
+                .chain((e.kind == "trigger").then_some("When"))
+            {
+                let marker = format!("### {heading}\n");
+                let section = e
+                    .text
+                    .split_once(&marker)
+                    .unwrap_or_else(|| panic!("{} {} needs {heading} ({})", e.kind, e.code, e.file))
+                    .1
+                    .split("\n### ")
+                    .next()
+                    .unwrap();
+                assert!(!section.trim().is_empty(), "{} {} has empty {heading}", e.kind, e.code);
+            }
             assert!(
                 seen.insert((e.kind, e.code)),
                 "{} {} is documented twice ({})",
@@ -144,6 +274,23 @@ mod tests {
                 e.file
             );
         }
+    }
+
+    #[test]
+    fn help_explains_fields_without_exposing_storage_metadata() {
+        let text = text("trigger", 41002).unwrap();
+        let shown = readable(text);
+        assert!(!shown.contains("- Code:"));
+        assert!(!shown.contains("| ---"));
+        assert!(summary("trigger", 41002).unwrap().contains("gift"));
+        assert!(field_help("subaction", 10, "text").is_some());
+        assert!(!available("subaction", 99999));
+        assert!(!available("trigger", 5001));
+        assert!(available("trigger", 41002));
+        assert!(argument_names("trigger", 99831).contains(&"spotifyReason"));
+        assert!(!argument_names("trigger", 99831).contains(&"spotifyError"));
+        assert_eq!(argument_names("subaction", 99832), ["spotifyOk"]);
+        assert!(argument_names("subaction", 99811).contains(&"spotifyResult"));
     }
 
     #[test]
@@ -170,11 +317,16 @@ mod tests {
     #[ignore]
     fn dump_types() {
         use crate::ui::{forms, picker};
+        let form_state = |f: Option<&'static [forms::F]>| match f {
+            Some([]) => "no settings",
+            Some(_) => "form",
+            None => "JSON fallback",
+        };
         let fields = |f: Option<&'static [forms::F]>| -> Vec<serde_json::Value> {
             f.unwrap_or(&[])
                 .iter()
                 .filter(|f| !f.0.is_empty())
-                .map(|(k, l, w)| serde_json::json!({"key": k, "label": l, "holds": w.about()}))
+                .map(|(k, l, w)| serde_json::json!({"key": k, "label": forms::field_label(l), "holds": w.about()}))
                 .collect()
         };
         let subs: Vec<_> = crate::types::SUB_ACTIONS
@@ -186,6 +338,8 @@ mod tests {
                     "code": code, "name": name, "title": info.map_or(name, |i| i.1), "category": category,
                     "about": picker::sub_action_description(code, name, category),
                     "fields": fields(forms::sub_fields(code as u64)),
+                    "formState": form_state(forms::sub_fields(code as u64)),
+                    "available": available("subaction", code),
                     "stored": info.map_or(&[][..], |i| i.3),
                 })
             })
@@ -199,6 +353,8 @@ mod tests {
                     "code": code, "name": name, "title": title, "category": category,
                     "about": picker::trigger_description(code, name, &title, &category),
                     "fields": fields(forms::trigger_fields(code as u64)),
+                    "formState": form_state(forms::trigger_fields(code as u64)),
+                    "available": available("trigger", code),
                 })
             })
             .collect();

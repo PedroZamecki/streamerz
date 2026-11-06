@@ -158,7 +158,18 @@ pub fn sub_label(o: &Obj, names: &Names) -> String {
         }
         123 | 122 => format!("{} = {}", v("variableName"), v("value")),
         121 => format!("{} -> {}", v("variableName"), v("destinationVariable")),
-        1002 => format!("{} ms", v("value")),
+        1002 => match o.get("value").and_then(Value::as_u64) {
+            Some(ms) => crate::groups::format_duration(ms),
+            None => v("value"),
+        },
+        200..=202 | 204..=210 | 213..=215 => {
+            let id = v("rewardId");
+            crate::catalog::name_of("twitch.rewards", &id).unwrap_or(id)
+        }
+        35101..=35103 | 35105..=35110 | 35113 => {
+            let id = v("rewardId");
+            crate::catalog::name_of("kick.rewards", &id).unwrap_or(id)
+        }
         // Its clock is an ID nobody reads: say what it does to the clock instead.
         99803 => match v("operation").as_str() {
             "add" => tr("countdown.op_add").to_string(),
@@ -192,17 +203,50 @@ pub fn trigger_label(t: &Obj, names: &Names) -> String {
     if k == T_PLUGIN {
         return format!("{}: {}", s(t, "plugin"), s(t, "event"));
     }
-    let what = if let Some(raw) = name(TRIGGERS, k) {
-        let cat = super::picker::trigger_categorize(raw);
-        let platform = cat.split("/").next().unwrap_or(&cat);
-        let clean = super::picker::trigger_clean_title(raw);
-        format!("{platform}: {clean}")
-    } else {
-        tr("actions.unknown").to_string()
+    let what = match k {
+        706 => tr("automation.started").to_string(),
+        707 => tr("automation.exiting").to_string(),
+        _ if name(TRIGGERS, k).is_some() => {
+            let raw = name(TRIGGERS, k).unwrap();
+            let cat = super::picker::trigger_categorize(raw);
+            let platform = cat.split('/').next().unwrap_or(&cat);
+            let clean = super::picker::trigger_item_title(k, raw);
+            format!("{platform}: {clean}")
+        }
+        _ => tr("actions.unknown").to_string(),
     };
     let n = |f: &str| t.get(f).and_then(Value::as_i64).unwrap_or(0);
     let detail = if k == crate::hotkeys::T_KEY_PRESS {
         crate::hotkeys::label(n("keyCode"), n("modifierMask"))
+    } else if k == crate::tiktok::T_TIKTOK_GIFT {
+        let mut parts = Vec::new();
+        let id = t.get("giftId").map(crate::vars::text).unwrap_or_default();
+        if !id.trim().is_empty() {
+            parts.push(crate::catalog::name_of("tiktok.gifts", &id).unwrap_or_else(|| format!("#{id}")));
+        }
+        if t.get("giftDelivery").and_then(Value::as_i64) == Some(1) {
+            parts.push(tr("automation.completed_combo").into());
+        } else if !parts.is_empty() {
+            parts.push(tr("automation.every_update").into());
+        }
+        let min = t.get("minCoins").and_then(Value::as_u64).unwrap_or(0);
+        let max = t.get("maxCoins").and_then(Value::as_u64).unwrap_or(0);
+        match (min, max) {
+            (0, 0) => {}
+            (lo, 0) => parts.push(format!("{lo}+ coins")),
+            (0, hi) => parts.push(format!("<= {hi} coins")),
+            (lo, hi) if lo == hi => parts.push(format!("{lo} coins")),
+            (lo, hi) => parts.push(format!("{lo}-{hi} coins")),
+        }
+        parts.join(", ")
+    } else if matches!(k, 112..=115 | 171 | 35024) {
+        let id = t.get("rewardId").map(crate::vars::text).unwrap_or_default();
+        let cat = if k == 35024 { "kick.rewards" } else { "twitch.rewards" };
+        if id.trim().is_empty() {
+            String::new()
+        } else {
+            crate::catalog::name_of(cat, &id).unwrap_or(id)
+        }
     } else {
         t.iter()
             .filter(|(k, _)| !["id", "type", "enabled", "exclusions"].contains(&k.as_str()))
@@ -266,7 +310,7 @@ impl Actions {
         let k = t.get("type").and_then(Value::as_u64).unwrap_or(0) as u32;
         let raw = name(TRIGGERS, k).unwrap_or(tr("actions.unknown"));
         let cat = super::picker::trigger_categorize(raw);
-        let title = super::picker::trigger_clean_title(raw);
+        let title = super::picker::trigger_item_title(k, raw);
         let desc = super::picker::trigger_description(k, raw, &title, &cat);
         self.detail_title.set_label(&trf(
             "actions.trigger_details",
@@ -752,6 +796,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
             tr("btn.on_off"),
             tr("btn.test"),
             tr("btn.delete"),
+            tr("btn.help"),
         ],
     );
     let mut sub_head = Flex::default().row();
@@ -769,7 +814,13 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
     let subs = tree(tr("actions.empty_subactions"));
     let sb = bar(
         &mut right,
-        &[tr("btn.add"), tr("btn.edit"), tr("btn.on_off"), tr("btn.delete")],
+        &[
+            tr("btn.add"),
+            tr("btn.edit"),
+            tr("btn.on_off"),
+            tr("btn.delete"),
+            tr("btn.help"),
+        ],
     );
 
     let mut detail_title = Frame::default().with_align(Align::Left | Align::Inside).ellipsis();
@@ -850,6 +901,39 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
 
     // Right clicks: what's under the mouse, then its buttons.
     triggers.clone().set_menu(&tb);
+    on(
+        &tb[5],
+        Box::new(|m| {
+            let cfg = m.cfg.borrow();
+            let code = m
+                .selected
+                .as_ref()
+                .and_then(|id| cfg.actions.actions.iter().find(|a| &a.id == id))
+                .and_then(|a| a.triggers.get((m.triggers.value() - 1) as usize))
+                .map(edit::kind);
+            drop(cfg);
+            if let Some(code) = code {
+                dialogs::reference("trigger", code as u32);
+            }
+        }),
+    );
+    on(
+        &sb[4],
+        Box::new(|m| {
+            let Some(path) = m.selected_sub() else { return };
+            let cfg = m.cfg.borrow();
+            let code = m
+                .selected
+                .as_ref()
+                .and_then(|id| cfg.actions.actions.iter().find(|a| &a.id == id))
+                .and_then(|a| edit::get(&a.sub_actions, &path))
+                .map(edit::kind);
+            drop(cfg);
+            if let Some(code) = code {
+                dialogs::reference("subaction", code as u32);
+            }
+        }),
+    );
 
     // Left: the actions.
     let mut t = actions_tree.clone();
@@ -1134,7 +1218,7 @@ pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender
             super::changed();
             crate::say(trf(
                 "actions.added_from_template",
-                &[("name", t.name), ("items", &names.join(", "))],
+                &[("name", t.title()), ("items", &names.join(", "))],
             ));
         });
     }
@@ -1640,10 +1724,49 @@ fn edit_action(me: &Rc<RefCell<Actions>>) {
 }
 
 /// Edit a sub-action or trigger: in its form, or as JSON (no form, or asked for). The type stays.
-fn edit_obj(m: &Actions, title: &str, fields: Option<&[forms::F]>, o: &Obj, hint: &str) -> Option<Obj> {
+fn edit_obj(m: &Actions, title: &str, fields: Option<&[forms::F]>, o: &Obj, hint: &str, trigger: bool) -> Option<Obj> {
     let draft = if let Some(fields) = fields {
-        let lists = Lists::new(&m.cfg.borrow());
-        match forms::form(title, fields, o, &lists) {
+        let mut lists = Lists::new(&m.cfg.borrow());
+        lists.cmds = Some(m.cmds.clone());
+        if let Some(action) = m
+            .selected
+            .as_ref()
+            .and_then(|id| m.cfg.borrow().actions.actions.iter().find(|a| &a.id == id).cloned())
+        {
+            let mut values = std::collections::BTreeMap::new();
+            for trigger in &action.triggers {
+                for key in crate::docs::argument_names("trigger", edit::kind(trigger) as u32) {
+                    values.insert(key.to_string(), value_label(key));
+                }
+            }
+            for key in crate::groups::values(&m.cfg.borrow(), &action.group).keys() {
+                values.insert(format!("group.{key}"), trf("automation.group_value", &[("name", key)]));
+            }
+            let current = s(o, "id");
+            let mut before = true;
+            edit::walk(&action.sub_actions, &mut |sub| {
+                if s(sub, "id") == current {
+                    before = false;
+                }
+                if before {
+                    for key in crate::docs::argument_names("subaction", edit::kind(sub) as u32) {
+                        values.insert(key.into(), value_label(key));
+                    }
+                    if let Some(key) = sub
+                        .get("variableName")
+                        .and_then(Value::as_str)
+                        .filter(|key| !key.is_empty())
+                    {
+                        values.insert(key.into(), value_label(key));
+                    }
+                }
+            });
+            lists.values = values
+                .into_iter()
+                .map(|(key, label)| (label, format!("%{key}%")))
+                .collect();
+        }
+        match forms::form_reference(title, fields, o, &lists, if trigger { "trigger" } else { "subaction" }) {
             Done::Ok(x) => return Some(x),
             Done::Cancel => return None,
             Done::Json(draft) => draft,
@@ -1652,7 +1775,8 @@ fn edit_obj(m: &Actions, title: &str, fields: Option<&[forms::F]>, o: &Obj, hint
         o.clone()
     };
     let k = edit::kind(o);
-    let new = dialogs::json_editor(title, hint, &Value::Object(draft), |v| {
+    let help_ref = Some((if trigger { "trigger" } else { "subaction" }, k as u32));
+    let new = dialogs::json_editor_reference(title, hint, &Value::Object(draft), help_ref, |v| {
         match v.get("type").and_then(Value::as_u64) {
             Some(x) if x == k => Ok(()),
             _ => Err(trf("actions.json_editor_hint", &[("type", &k.to_string())])),
@@ -1664,11 +1788,39 @@ fn edit_obj(m: &Actions, title: &str, fields: Option<&[forms::F]>, o: &Obj, hint
     }
 }
 
-fn trigger_title(k: u64) -> &'static str {
-    name(TRIGGERS, k as u32).unwrap_or("Trigger")
+fn value_label(key: &str) -> String {
+    let friendly = match key {
+        "user" | "userName" => Some(tr("automation.sender_name")),
+        "message" => Some(tr("automation.message_value")),
+        "rawInput" => Some(tr("automation.command_input")),
+        "giftName" => Some(tr("automation.gift_name")),
+        "repeatCount" => Some(tr("automation.gift_quantity")),
+        "coins" => Some(tr("automation.gift_coins")),
+        "diamondCount" => Some(tr("automation.unit_coins")),
+        _ => None,
+    };
+    match friendly {
+        Some(label) => format!("{label} (%{key}%)"),
+        None => format!("%{key}%"),
+    }
 }
 
-fn sub_title(k: u64) -> &'static str {
+pub(super) fn trigger_title(k: u64) -> String {
+    match k {
+        706 => tr("automation.started").to_string(),
+        707 => tr("automation.exiting").to_string(),
+        _ if name(TRIGGERS, k as u32).is_some() => {
+            let raw = name(TRIGGERS, k as u32).unwrap();
+            let cat = super::picker::trigger_categorize(raw);
+            let platform = cat.split('/').next().unwrap_or(&cat);
+            let clean = super::picker::trigger_item_title(k as u32, raw);
+            format!("{platform}: {clean}")
+        }
+        _ => tr("actions.unknown").to_string(),
+    }
+}
+
+pub(super) fn sub_title(k: u64) -> &'static str {
     if let Some(title) = super::picker::spotify_player_title(k as u32) {
         return title;
     }
@@ -1689,9 +1841,13 @@ fn sub_title(k: u64) -> &'static str {
 /// A new trigger or sub-action with fields opens its form first; cancelling it adds nothing.
 fn fill_new(m: &Actions, o: Obj, trigger: bool) -> Option<Obj> {
     let k = edit::kind(&o);
-    let title = if trigger { trigger_title(k) } else { sub_title(k) };
+    let title = if trigger {
+        trigger_title(k)
+    } else {
+        sub_title(k).to_string()
+    };
     match fields_of(m, &o, trigger) {
-        Some(f) if !f.is_empty() => edit_obj(m, title, Some(f), &o, ""),
+        Some(f) => edit_obj(m, &title, Some(f), &o, "", trigger),
         _ => Some(o),
     }
 }
@@ -1739,6 +1895,7 @@ fn plugin_items(m: &Actions, trigger: bool) -> (Vec<super::picker::PickItem>, Ve
                 title: n.clone(),
                 category: format!("Plugins/{}", man.name),
                 description: about,
+                reference: None,
             });
             what.push((id.clone(), n));
         }
@@ -1768,8 +1925,10 @@ fn edit_trigger(me: &Rc<RefCell<Actions>>) {
     let Some(t) = t else { return };
     let k = edit::kind(&t);
     let title = trigger_title(k);
-    let hint = trf("actions.trigger_hint", &[("title", title)]);
-    if let Some(mut new) = edit_obj(&m, title, fields_of(&m, &t, true), &t, &hint) {
+    let hint = crate::docs::summary("trigger", k as u32).unwrap_or(tr("actions.trigger_hint"));
+    let fields = fields_of(&m, &t, true);
+    let fields = fields.or_else(|| crate::docs::available("trigger", k as u32).then_some(&[][..]));
+    if let Some(mut new) = edit_obj(&m, &title, fields, &t, hint, true) {
         if let Some(keep) = t.get("id") {
             new.insert("id".into(), keep.clone());
         }
@@ -1806,7 +1965,7 @@ fn edit_sub(me: &Rc<RefCell<Actions>>) {
         ),
         Err(_) => title.into(),
     };
-    if let Some(mut new) = edit_obj(&m, title, fields_of(&m, &o, false), &o, &hint) {
+    if let Some(mut new) = edit_obj(&m, title, fields_of(&m, &o, false), &o, &hint, false) {
         for f in ["id", "parentId", "index"] {
             if let Some(v) = o.get(f) {
                 new.insert(f.into(), v.clone());
@@ -1834,12 +1993,12 @@ fn pick_template() -> Option<&'static crate::templates::Template> {
         list.add(if t.name == "Song requests (Spotify)" {
             tr("spotify.template_name")
         } else {
-            t.name
+            t.title()
         });
     }
     list.select(1);
     let mut about = Frame::default().with_align(Align::Left | Align::Inside | Align::Wrap | Align::Top);
-    about.set_label(TEMPLATES[0].about);
+    about.set_label(TEMPLATES[0].description());
     col.fixed(&about, 60);
     let mut row = Flex::default().row();
     row.set_pad(8);
@@ -1858,7 +2017,7 @@ fn pick_template() -> Option<&'static crate::templates::Template> {
                 let text = if t.name == "Song requests (Spotify)" {
                     tr("spotify.template_about")
                 } else {
-                    t.about
+                    t.description()
                 };
                 about.set_label(&text.replace('@', "@@"));
             }

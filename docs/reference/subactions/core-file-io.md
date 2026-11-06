@@ -30,7 +30,7 @@ None set.
 - Append starts a new line first when the file is already there (even empty), as Streamer.bot does:
   `\r\n` on Windows, `\n` on Linux. A file it makes starts with the text.
 - Variables in the path and the text are filled in first.
-- A write that fails is not reported in the app.
+- A failed write is reported in the log and the action's execution result.
 
 ## Read Random Line From File
 
@@ -57,7 +57,8 @@ Puts a random line of a text file in a variable.
 
 ### Notes
 
-- The editor also shows Overwrite and Count for this type, but Streamerz doesn't read them.
+- Older imported Overwrite and Count values are preserved for export. Streamerz does not use them,
+  so they are not offered as controls. JSON editing still exposes the preserved data.
 
 ## Read Lines From File
 

@@ -2956,6 +2956,7 @@ pub(crate) fn handle_notification(
             engine.chat_unpinned("twitch", "");
             if !engine.chat_stream_ended("twitch") {
                 crate::notify::send(
+                    crate::notify::Kind::Streams,
                     "Streamerz",
                     &crate::i18n::trf("chat.state_ended_title", &[("platform", "Twitch")]),
                 );

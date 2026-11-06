@@ -516,13 +516,23 @@ pub fn dropdown<M: MenuExt + WidgetBase + Clone + 'static>(m: &mut M) {
 /// Makes an input with a list beside it (an InputChoice) open the list in our menu: a pick fills the
 /// input, as FLTK's would.
 pub fn input_choice(c: &mut fltk::misc::InputChoice) {
+    input_choice_dynamic(c, |_| {});
+}
+
+/// Refresh a detected list just before opening it, without an idle callback.
+pub fn input_choice_dynamic(
+    c: &mut fltk::misc::InputChoice,
+    mut before: impl FnMut(&mut fltk::misc::InputChoice) + 'static,
+) {
     c.super_handle_first(false);
-    c.handle(|c, ev| {
+    c.handle(move |c, ev| {
         let button = c.menu_button();
         let keys = ev == Event::KeyDown && app::event_key() == Key::Down && c.input().has_focus();
         if !(ev == Event::Push && app::event_inside_widget(&button) || keys) || !c.active_r() {
             return false;
         }
+        before(c);
+        let button = c.menu_button();
         let mut menu = Menu::new();
         menu.under(&*c);
         let now = c.value().unwrap_or_default();

@@ -588,6 +588,42 @@ There is no per-page score threshold or repeated scoring requirement. Track the 
   and idle CPU measurements, and state any live-service or Windows verification limits plainly.
 - [x] Commit locally and report the completed checklist. Keep the version open until asked to close it.
 
+## MCP verification and usability
+
+- [x] Check every advertised tool's schema and dispatch, and repair missing routes.
+- [x] Validate arguments, bound connection waits and report protocol errors.
+- [x] Exercise all 51 tools through stdio on an isolated dev instance, including
+  authoring round trips, exports, group settings and unavailable integrations.
+- [x] Document setup, offline testing, replacement semantics and service limits in docs/MCP.md.
+- [ ] Before closing the version, test configured live-service success paths and record
+  the required hidden RSS and idle CPU measurements.
+
+## Trigger configuration and documentation
+
+- [x] Inspect the misleading trigger editor hint, built-in reference access and TikTok gift
+  configuration/catalog pipeline. Findings and proposed sequence are in
+  [docs/TRIGGER-DOCUMENTATION-AUDIT.md](docs/TRIGGER-DOCUMENTATION-AUDIT.md).
+- [x] Inventory every registered trigger and sub-action, review shared authoring and execution
+  paths, and organize simple user-facing ideas by family. The proposed packages and acceptance
+  workflows are in [docs/AUTOMATION-IDEAS.md](docs/AUTOMATION-IDEAS.md), with a reproducible
+  [per-type inventory](docs/AUTOMATION-INVENTORY.csv).
+- [x] Deliver honest picker availability and shared in-app Help with explicit form states.
+  Every reference has Fields and Arguments, plus When for triggers, checked by a regression test.
+- [x] Add reusable identity-preserving selectors, starting with dynamic TikTok gifts.
+  Discovery uses the current room and paired browser; channel/account changes invalidate the list.
+- [x] Simplify supported forms with task-specific fields, human units and value insertion.
+  Keep imported values and unknown fields intact; hide options with no runtime effect.
+- [x] Share live-event matching with previews and report actual step outcomes.
+  Gift previews use the live matcher; history distinguishes reported failures and skipped steps.
+- [x] Build the selected workflows as editable recipes using the general group/template tools.
+  Thank TikTok gifts and Reward shows an OBS source start disabled until configured.
+- [x] Use completion delivery for new gift triggers and retain legacy update delivery when absent.
+  Select one exact gift ID or any gift. Inclusive coin bounds use cumulative quantity times unit
+  value; zero means unbounded. Separate triggers remain alternatives and can queue separate runs.
+- [ ] Before closing the version, verify gift discovery and matching on a real live, native Windows
+  behavior, and hidden Twitch + OBS RSS and idle CPU. Fixture and isolated UI checks are recorded in
+  [docs/TESTING.md](docs/TESTING.md); disconnected measurements do not establish the connected budget.
+
 ## Open points (decide when the phase starts, ask first)
 
 - Points: its sub-actions are new in Streamer.bot 1.1.0, unreleased (1.0.7 is the latest). When it's out,
@@ -604,3 +640,11 @@ There is no per-page score threshold or repeated scoring requirement. Track the 
 - Phase 10: Kick Pusher app key and chatroom id lookup (kick.com's v2 channel endpoint may sit behind
   Cloudflare). Check, and fall back to the official API ids.
 - Phase 13: integrations whose only transport is Streamer.bot's website relay.
+
+## Windows and notification improvements
+
+- [ ] Bring the existing production window forward on a second launch, on Linux and Windows.
+- [ ] Add a notification dialog for login expiry, updates, stream endings and automation toasts, enabled by default.
+- [ ] Investigate free trusted signing and SmartScreen reputation for Windows releases.
+
+- [ ] Prepare SignPath Foundation onboarding, Windows metadata and a verified signed artifact flow that preserves build reuse.

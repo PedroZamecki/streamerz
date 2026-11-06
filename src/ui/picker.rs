@@ -25,6 +25,7 @@ pub struct PickItem {
     pub title: String,
     pub category: String,
     pub description: String,
+    pub reference: Option<(&'static str, u32)>,
 }
 
 use super::dialogs::window;
@@ -45,6 +46,11 @@ pub fn split_pascal(s: &str) -> String {
 
 /// Clean human-readable title for a trigger.
 pub fn trigger_clean_title(name: &str) -> String {
+    match name {
+        "StreamerbotStarted" => return "Streamerz Started".to_string(),
+        "StreamerbotExiting" => return "Streamerz Exiting".to_string(),
+        _ => {}
+    }
     let stripped = name
         .strip_prefix("ElgatoCameraHubWebcam")
         .or_else(|| name.strip_prefix("ElgatoCameraHubPrompter"))
@@ -413,6 +419,9 @@ pub fn trigger_categorize(name: &str) -> String {
 
 /// Helpful description of what a trigger does and when it fires.
 pub fn trigger_description(code: u32, _raw_name: &str, title: &str, category: &str) -> String {
+    if let Some(text) = crate::docs::summary("trigger", code) {
+        return text.into();
+    }
     match code {
         1 => "Fires when triggered programmatically via ExecuteCodeTrigger or external API calls.".into(),
         101 => "Fires when a new viewer follows the channel on Twitch.".into(),
@@ -457,8 +466,8 @@ pub fn trigger_description(code: u32, _raw_name: &str, title: &str, category: &s
         703 => "Fires when an external application or process starts running.".into(),
         704 => "Fires when an external application or process terminates.".into(),
         705 => "Fires on multi-platform chat window actions.".into(),
-        706 => "Fires when Streamer.bot starts up and completes initialization.".into(),
-        707 => "Fires when Streamer.bot is shutting down.".into(),
+        706 => "Fires when Streamerz starts up and completes initialization.".into(),
+        707 => "Fires when Streamerz is shutting down.".into(),
         5001 => "Fires on each new heart rate reading from Pulsoid. Set heartRate for the BPM.".into(),
         6001 => "Fires on each new heart rate reading from HypeRate (about once a second while it broadcasts). \
 Set heartRate for the BPM."
@@ -527,6 +536,9 @@ not one you made). clipUrl holds the clip's address."
 
 /// Description of what a sub-action does.
 pub fn sub_action_description(code: u32, name: &str, category: &str) -> String {
+    if let Some(text) = crate::docs::summary("subaction", code) {
+        return text.into();
+    }
     let said = match code {
         1 => "Plays a sound file.",
         3 => "Writes or appends text to a file.",
@@ -572,36 +584,42 @@ pub fn sub_action_description(code: u32, name: &str, category: &str) -> String {
     out
 }
 
+pub(super) fn trigger_item_title(code: u32, raw_name: &str) -> String {
+    match code {
+        99804 => crate::i18n::tr("spotify.trigger_connected").to_string(),
+        99805 => crate::i18n::tr("spotify.trigger_disconnected").to_string(),
+        99806 => crate::i18n::tr("spotify.trigger_error").to_string(),
+        99807 => crate::i18n::tr("spotify.trigger_local_connected").to_string(),
+        99808 => crate::i18n::tr("spotify.trigger_local_disconnected").to_string(),
+        99809 => crate::i18n::tr("spotify.trigger_track_changed").to_string(),
+        99825 => crate::i18n::tr("spotify.trigger_playback_started").to_string(),
+        99826 => crate::i18n::tr("spotify.trigger_playback_paused").to_string(),
+        99836 => crate::i18n::tr("spotify.trigger_volume_changed").to_string(),
+        99837 => crate::i18n::tr("spotify.trigger_shuffle_changed").to_string(),
+        99838 => crate::i18n::tr("spotify.trigger_repeat_changed").to_string(),
+        99839 => crate::i18n::tr("spotify.trigger_device_changed").to_string(),
+        99840 => crate::i18n::tr("spotify.trigger_login_expired").to_string(),
+        99841 => crate::i18n::tr("spotify.trigger_song_liked").to_string(),
+        99842 => crate::i18n::tr("spotify.trigger_playlist_changed").to_string(),
+        _ => trigger_clean_title(raw_name),
+    }
+}
+
 /// Generate structured PickItem list for all triggers.
 pub fn trigger_pick_items() -> Vec<PickItem> {
     TRIGGERS
         .iter()
+        .filter(|(code, _)| crate::docs::available("trigger", *code))
         .map(|&(code, raw_name)| {
             let cat = trigger_categorize(raw_name);
-            let title = match code {
-                99804 => crate::i18n::tr("spotify.trigger_connected").to_string(),
-                99805 => crate::i18n::tr("spotify.trigger_disconnected").to_string(),
-                99806 => crate::i18n::tr("spotify.trigger_error").to_string(),
-                99807 => crate::i18n::tr("spotify.trigger_local_connected").to_string(),
-                99808 => crate::i18n::tr("spotify.trigger_local_disconnected").to_string(),
-                99809 => crate::i18n::tr("spotify.trigger_track_changed").to_string(),
-                99825 => crate::i18n::tr("spotify.trigger_playback_started").to_string(),
-                99826 => crate::i18n::tr("spotify.trigger_playback_paused").to_string(),
-                99836 => crate::i18n::tr("spotify.trigger_volume_changed").to_string(),
-                99837 => crate::i18n::tr("spotify.trigger_shuffle_changed").to_string(),
-                99838 => crate::i18n::tr("spotify.trigger_repeat_changed").to_string(),
-                99839 => crate::i18n::tr("spotify.trigger_device_changed").to_string(),
-                99840 => crate::i18n::tr("spotify.trigger_login_expired").to_string(),
-                99841 => crate::i18n::tr("spotify.trigger_song_liked").to_string(),
-                99842 => crate::i18n::tr("spotify.trigger_playlist_changed").to_string(),
-                _ => trigger_clean_title(raw_name),
-            };
+            let title = trigger_item_title(code, raw_name);
             let desc = trigger_description(code, raw_name, &title, &cat);
             PickItem {
                 id: code as usize,
                 title,
                 category: cat,
                 description: desc,
+                reference: Some(("trigger", code)),
             }
         })
         .collect()
@@ -632,6 +650,7 @@ pub(super) fn spotify_player_title(code: u32) -> Option<&'static str> {
 pub fn sub_action_pick_items() -> Vec<PickItem> {
     SUB_ACTION_INFO
         .iter()
+        .filter(|x| crate::docs::available("subaction", x.0))
         .filter(|x| !(99901..=99904).contains(&x.0) || x.0 == 99903)
         .map(|&(code, name, category, _)| {
             let cat = if category.is_empty() {
@@ -667,6 +686,7 @@ pub fn sub_action_pick_items() -> Vec<PickItem> {
                 },
                 category: cat,
                 description: desc,
+                reference: Some(("subaction", code)),
             }
         })
         .collect()
@@ -849,7 +869,16 @@ impl Detail {
 
     fn item(&mut self, it: &PickItem) {
         let icon = node_icon("", item_icon(it), true);
-        self.show(&it.title, &it.category.replace('/', " > "), &it.description, icon);
+        let text = it
+            .reference
+            .and_then(|(kind, code)| crate::docs::text(kind, code))
+            .map(crate::docs::readable);
+        self.show(
+            &it.title,
+            &it.category.replace('/', " > "),
+            text.as_deref().unwrap_or(&it.description),
+            icon,
+        );
     }
 
     fn group(&mut self, name: &str) {
@@ -979,11 +1008,7 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
             let mut matched = 0;
             let mut root_node = CategoryNode::default();
             for it in &items {
-                let m = q.is_empty()
-                    || it.title.to_lowercase().contains(&q)
-                    || it.category.to_lowercase().contains(&q)
-                    || it.description.to_lowercase().contains(&q);
-                if !m {
+                if !matches_query(it, &q) {
                     continue;
                 }
                 matched += 1;
@@ -1137,10 +1162,32 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
     }
 }
 
+fn matches_query(it: &PickItem, q: &str) -> bool {
+    let q = q.trim().to_lowercase();
+    if q.is_empty() {
+        return true;
+    }
+    let title = it.title.to_lowercase();
+    let category = it.category.to_lowercase();
+    let description = it.description.to_lowercase();
+    q.split_whitespace()
+        .all(|word| title.contains(word) || category.contains(word) || description.contains(word))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use fltk::enums::Color;
+
+    #[test]
+    fn multi_word_search_matches_across_category_and_title() {
+        let triggers = trigger_pick_items();
+        assert!(triggers
+            .iter()
+            .any(|it| it.id == 41002 && matches_query(it, "tiktok gift")));
+        let subs = sub_action_pick_items();
+        assert!(subs.iter().any(|it| it.id == 30 && matches_query(it, "obs source")));
+    }
 
     /// Every group and every item of both pickers shows an icon: a logo or a Lucide icon we have.
     #[test]

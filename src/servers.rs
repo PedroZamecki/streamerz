@@ -687,6 +687,8 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
         | "StreamerzSearchChannels"
         | "StreamerzTikTokBridge"
         | "StreamerzTikTokState"
+        | "StreamerzTikTokGifts"
+        | "StreamerzActionHistory"
             if !authed && e.config().websockets.enable_auth =>
         {
             error(&id, "Authentication required to use this method")
@@ -708,7 +710,12 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
         "StreamerzPluginEnable" => {
             let on = req.get("on").and_then(Value::as_bool).unwrap_or(true);
             e.plugin_enable(get("plugin"), on);
-            ok(&id, json!({"on": e.plugins_on().iter().any(|p| p.0 == get("plugin"))}))
+            let enabled = e.plugins_on().iter().any(|p| p.0 == get("plugin"));
+            if enabled != on {
+                error(&id, "Plugin could not be enabled; check the plugin id and log")
+            } else {
+                ok(&id, json!({"on": enabled}))
+            }
         }
         "StreamerzGet" | "StreamerzSave" | "StreamerzDelete" => match authoring(e, req) {
             Ok(v) => ok(&id, v),
@@ -727,7 +734,7 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
         },
         "StreamerzTemplateAdd" => match crate::templates::TEMPLATES
             .iter()
-            .find(|t| t.name.eq_ignore_ascii_case(get("name")))
+            .find(|t| t.name.eq_ignore_ascii_case(get("name")) || t.title().eq_ignore_ascii_case(get("name")))
         {
             None => error(&id, "template not found"),
             Some(t) => {
@@ -847,6 +854,14 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
                 Err(msg) => error(&id, &msg),
             }
         }
+        "StreamerzTikTokGifts" => ok(&id, crate::tiktok::gifts::status()),
+        "StreamerzActionHistory" => ok(
+            &id,
+            json!({"runs":e.history().iter().rev().map(|record|
+            json!({"actionId":record.action_id,"name":record.name,"queuedAt":record.queued_at,
+                "durationMs":record.ms,"outcome":record.outcome,"executionStatus":record.outcome.status()})
+        ).collect::<Vec<_>>()}),
+        ),
         "StreamerzCountdown" => {
             let clock_id = get("clockId");
             match crate::templates::clock::get(&e.config(), clock_id, crate::templates::clock::now_ms()) {
@@ -1001,7 +1016,9 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
             match found {
                 Some(&(code, name)) => {
                     let args = req.get("args").and_then(Value::as_object).cloned().unwrap_or_default();
-                    let ran = e.fire(code, name, "Test", "test", &args, |_| true);
+                    let ran = e.fire(code, name, "Test", "test", &args, |t| {
+                        crate::engine::trigger_matches(code, t, &args)
+                    });
                     ok(&id, json!({"trigger": code, "name": name, "ran": ran}))
                 }
                 None => error(&id, &format!("no trigger {t}")),
@@ -1141,8 +1158,9 @@ fn group_request(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
     }
 }
 
-/// StreamerzGet {what, id?|name?}: one item, or all of them; StreamerzSave {what, item}: adds it (a new
-/// id when it has none) or replaces the one with its id; StreamerzDelete {what, id}.
+/// StreamerzGet {what, itemId?|name?}: one item, or all of them; StreamerzSave {what, item}: adds it (a new
+/// id when it has none) or replaces the one with its id; StreamerzDelete {what, itemId}.
+/// Legacy clients can still use id for selection; MCP keeps it for request correlation.
 fn authoring(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
     let what = req.get("what").and_then(Value::as_str).unwrap_or("");
     if !KINDS.contains(&what) {
@@ -1163,7 +1181,13 @@ fn authoring(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
         }
     };
     let key = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-    let (want_id, want_name) = (key(req, "id"), key(req, "name"));
+    let (want_id, want_name) = (
+        req.get("itemId")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| key(req, "id")),
+        key(req, "name"),
+    );
     match req.get("request").and_then(Value::as_str).unwrap_or("") {
         "StreamerzGet" => {
             let all = list(&e.config());
@@ -1438,6 +1462,12 @@ async fn connection(e: &Rc<Engine>, s: &WsSettings, tcp: TcpStream, conn: u64) -
                     "StreamerzSearchChannels" => {
                         if s.enable_auth && !authed { error(&id, "Authentication required to use this method") }
                         else { match search_request(e, &req).await { Ok(v) => ok(&id, v), Err(err) => error(&id, &err) } }
+                    }
+                    "StreamerzTikTokGifts" if req["refresh"] == true => {
+                        if s.enable_auth && !authed { error(&id, "Authentication required to use this method") }
+                        else { match crate::tiktok::gifts::refresh(e).await {
+                            Ok(value) => ok(&id, value), Err(err) => error(&id, &err),
+                        } }
                     }
                     "StreamerzTikTokBridge" if req["action"] == "login" => {
                         if s.enable_auth && !authed { error(&id, "Authentication required to use this method") }
@@ -1962,6 +1992,29 @@ mod tests {
                 "data": {"user": {"roomId": "777"}, "liveRoom": {"status": 2}}}).to_string()});
             ws.send(Message::Text(reply.to_string().into())).await.unwrap();
             assert_eq!(room.await.unwrap(), Ok(777));
+            let gift_engine = e.clone();
+            let gifts =
+                tokio::task::spawn_local(async move { crate::tiktok_bridge::gift_list(&gift_engine, "777").await });
+            let request = match ws.next().await.unwrap().unwrap() {
+                Message::Text(text) => serde_json::from_str::<Value>(&text).unwrap(),
+                _ => panic!("gift request"),
+            };
+            assert_eq!(request["op"], "fetch");
+            let url = request["url"].as_str().unwrap();
+            assert!(url.starts_with("https://webcast.tiktok.com/webcast/gift/list/?"));
+            assert!(url.contains("room_id=777") && url.contains("device_id=42"));
+            let body =
+                json!({"status_code":0,"data":{"gifts":[{"id":998877,"name":"New gift","diamond_count":25,"type":1}]}});
+            ws.send(Message::Text(
+                json!({"id":request["id"],"status":200,"body":body.to_string()})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+            let gifts = crate::tiktok::gifts::parse(&gifts.await.unwrap().unwrap()).unwrap();
+            assert_eq!(gifts[0].id, "998877");
+            assert_eq!(gifts[0].coins, 25);
             ws.send(Message::Text(json!({"op": "session_changed"}).to_string().into()))
                 .await
                 .unwrap();

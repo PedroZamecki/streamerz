@@ -61,6 +61,7 @@ struct Run {
 /// One past run, for the history view (newest last).
 #[derive(Clone)]
 pub struct Record {
+    pub outcome: RunOutcome,
     pub action_id: String,
     pub name: String,
     /// The arguments it started with, and those it ended with.
@@ -68,6 +69,43 @@ pub struct Record {
     pub after: Obj,
     pub queued_at: String,
     pub ms: f64,
+}
+
+/// Observed execution errors, separate from the action's public arguments.
+#[derive(Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunOutcome {
+    pub errors: u32,
+    pub skipped: u32,
+    pub failed_step: Option<u64>,
+    pub error: Option<String>,
+    #[serde(skip)]
+    step: u64,
+}
+
+impl RunOutcome {
+    pub fn status(&self) -> &'static str {
+        if self.errors > 0 {
+            "failed"
+        } else if self.skipped > 0 {
+            "completed_with_skips"
+        } else {
+            "completed"
+        }
+    }
+}
+
+tokio::task_local! { static RUN_OUTCOME: RefCell<RunOutcome>; }
+
+pub fn record_error(message: &str) {
+    let _ = RUN_OUTCOME.try_with(|state| {
+        let mut state = state.borrow_mut();
+        state.errors = state.errors.saturating_add(1);
+        if state.error.is_none() {
+            state.error = Some(message.into());
+            state.failed_step = Some(state.step);
+        }
+    });
 }
 
 #[derive(Default)]
@@ -1057,6 +1095,19 @@ impl Engine {
         vars::expand(t, &args, &c.globals)
     }
 
+    fn duration_number(&self, ctx: &Ctx, object: &Obj, key: &str) -> f64 {
+        let value = object
+            .get(key)
+            .and_then(Value::as_str)
+            .map(|value| self.expand(ctx, value).trim().parse::<f64>().unwrap_or(0.0))
+            .unwrap_or_else(|| n(object, key));
+        if value.is_finite() {
+            value
+        } else {
+            0.0
+        }
+    }
+
     fn simple(&self, ctx: &Ctx, t: &str) -> String {
         let c = self.cfg.borrow();
         if !t.contains("%group.") {
@@ -1267,10 +1318,16 @@ impl Engine {
             || json!({"id": run.id, "actionId": run.action, "name": run.name, "arguments": start}),
         );
         let subs: Vec<Value> = subs.into_iter().map(Value::Object).collect();
-        self.list(&mut ctx, &subs, random).await;
+        let outcome = RUN_OUTCOME
+            .scope(RefCell::new(RunOutcome::default()), async {
+                self.list(&mut ctx, &subs, random).await;
+                RUN_OUTCOME.with(|state| state.borrow().clone())
+            })
+            .await;
         self.emit("Raw", "ActionCompleted", || {
             json!({"duration": started.0.elapsed().as_secs_f64() * 1000.0, "queuedAt": run.queued_at,
-                "startedAt": started.1, "completedAt": globals::iso_now(), "success": true,
+                "startedAt": started.1, "completedAt": globals::iso_now(), "success": outcome.errors == 0,
+                "outcome": outcome, "executionStatus": outcome.status(),
                 "excludeFromHistory": self.action(&run.action, |a| a.exclude_from_history).unwrap_or(false),
                 "id": run.id, "actionId": run.action, "name": run.name, "arguments": ctx.args})
         });
@@ -1282,6 +1339,7 @@ impl Engine {
             st.history.pop_front();
         }
         st.history.push_back(Record {
+            outcome,
             action_id: run.action,
             name: run.name,
             args: start,
@@ -1337,6 +1395,7 @@ impl Engine {
     fn one<'a>(self: &'a Rc<Self>, ctx: &'a mut Ctx, o: &'a Obj) -> Fut<'a, Flow> {
         Box::pin(async move {
             let kind = o.get("type").and_then(Value::as_u64).unwrap_or(0);
+            let _ = RUN_OUTCOME.try_with(|state| state.borrow_mut().step = kind);
             // Containers (If/Else branches, Switch cases, groups) aren't sub-actions of their own.
             if !(99900..99999).contains(&kind) && self.listening("Raw", "SubAction") {
                 let what = crate::types::SUB_ACTION_INFO
@@ -1534,7 +1593,13 @@ impl Engine {
                 }
                 // Delay, in ms; Random: between value and maxValue.
                 1002 => {
-                    let (lo, hi) = (n(o, "value").max(0.0), n(o, "maxValue").max(0.0));
+                    let number = |key| {
+                        o.get(key)
+                            .and_then(Value::as_str)
+                            .map(|text| self.expand(ctx, text).parse::<f64>().unwrap_or(0.0))
+                            .unwrap_or_else(|| n(o, key))
+                    };
+                    let (lo, hi) = (number("value").max(0.0), number("maxValue").max(0.0));
                     let ms = if b(o, "random", false) && hi > lo {
                         lo + crate::math::random() * (hi - lo)
                     } else {
@@ -1686,7 +1751,7 @@ impl Engine {
                 // Wait For Local Signal: up to `timeout` ms (blank or over 30 s: 30 s).
                 1032 => {
                     let name = self.simple(ctx, s(o, "signalName"));
-                    let ms = match n(o, "timeout") as u64 {
+                    let ms = match self.duration_number(ctx, o, "timeout") as u64 {
                         0 => 30_000,
                         t => t.min(30_000),
                     };
@@ -1800,6 +1865,7 @@ impl Engine {
                         }
                         Err(error) => {
                             let error = crate::spotify::friendly(&error);
+                            record_error(&error);
                             ctx.args.insert("spotifyResult".into(), Value::Null);
                             ctx.args.insert("spotifyText".into(), "".into());
                             ctx.args.insert("spotifyCount".into(), 0.into());
@@ -1866,6 +1932,9 @@ impl Engine {
 
     /// Log once per type that a sub-action can't run here (yet), and skip it.
     fn unsupported(&self, kind: u64) {
+        let _ = RUN_OUTCOME.try_with(|state| {
+            state.borrow_mut().skipped += 1;
+        });
         if self.st.borrow_mut().warned.insert(kind) {
             let what = name(SUB_ACTIONS, kind as u32).unwrap_or("unknown");
             let why = if kind >= 99998 {
@@ -2042,9 +2111,131 @@ pub fn spawn_secret_recovery(e: Rc<Engine>) {
     });
 }
 
+/// Shared trigger filter evaluation for injected events (`FireTrigger`, scenarios) and tests.
+pub fn trigger_matches(code: u32, trigger: &Obj, args: &Obj) -> bool {
+    match code {
+        41002 => crate::tiktok::gifts::matches_args(trigger, args),
+        112..=115 | 171 => {
+            let title = match s(args, "rewardTitle") {
+                "" => s(args, "rewardName"),
+                t => t,
+            };
+            crate::catalog::matches("twitch.rewards", s(trigger, "rewardId"), s(args, "rewardId"), title)
+        }
+        35024 => {
+            let title = match s(args, "reward.title") {
+                "" => args
+                    .get("reward")
+                    .and_then(|r| r.get("title"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+                t => t,
+            };
+            crate::catalog::matches("kick.rewards", s(trigger, "rewardId"), s(args, "rewardId"), title)
+        }
+        18001 => {
+            let want = s(trigger, "eventName");
+            want.is_empty() || want == s(args, "eventName")
+        }
+        18002 => {
+            let want = trigger
+                .get("triggerName")
+                .or_else(|| trigger.get("eventName"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            want.is_empty() || want == s(args, "triggerName") || want == s(args, "eventName")
+        }
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn action_results_capture_failures_and_skips_without_leaking_between_runs() {
+        let _guard = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        run(async {
+            let e = engine(json!({"actions":[
+                action("failed", "Failed", json!([{"type":1007,"url":"invalid URL","variableName":"body"}])),
+                action("skipped", "Skipped", json!([{"type":99999}])),
+                action("good", "Good", json!([{"type":123,"variableName":"value","value":"ok"}]))
+            ]}));
+            for id in ["failed", "skipped", "good"] {
+                e.execute(Run {
+                    id: uuid(),
+                    action: id.into(),
+                    name: id.into(),
+                    args: Obj::new(),
+                    queued_at: globals::iso_now(),
+                })
+                .await;
+            }
+            let history = e.history();
+            assert_eq!(history[0].outcome.status(), "failed");
+            assert_eq!(history[0].outcome.failed_step, Some(1007));
+            assert!(history[0].outcome.error.is_some());
+            assert_eq!(history[1].outcome.status(), "completed_with_skips");
+            assert_eq!(history[1].outcome.skipped, 1);
+            assert_eq!(history[2].outcome.status(), "completed");
+            assert_eq!(history[2].outcome.errors, 0);
+            assert_eq!(history[2].after["value"], "ok");
+        });
+    }
+
+    #[test]
+    fn duration_inputs_expand_event_values_and_keep_wire_units() {
+        run(async {
+            let engine = engine(json!({"actions":[]}));
+            let ctx = Ctx {
+                group: String::new(),
+                args: json!({"seconds":30,"milliseconds":1500}).as_object().unwrap().clone(),
+            };
+            let object = json!({"duration":"%seconds%","timeout":"%milliseconds%","literal":12,"bad":"NaN"})
+                .as_object()
+                .unwrap()
+                .clone();
+            assert_eq!(engine.duration_number(&ctx, &object, "duration"), 30.0);
+            assert_eq!(engine.duration_number(&ctx, &object, "timeout"), 1500.0);
+            assert_eq!(engine.duration_number(&ctx, &object, "literal"), 12.0);
+            assert_eq!(engine.duration_number(&ctx, &object, "bad"), 0.0);
+        });
+    }
+
+    #[test]
+    fn trigger_matches_filters_gifts_rewards_and_custom_events() {
+        let obj = |v: Value| v.as_object().unwrap().clone();
+        let gift = obj(json!({"type": 41002, "giftId": "5655", "giftDelivery": 1, "minCoins": 10, "maxCoins": 50}));
+        assert!(!trigger_matches(
+            41002,
+            &gift,
+            &obj(json!({"giftId": "1", "diamondCount": 20, "repeatCount": 1, "giftType": 0}))
+        ));
+        assert!(!trigger_matches(
+            41002,
+            &gift,
+            &obj(json!({"giftId": "5655", "diamondCount": 10, "repeatCount": 2, "giftType": 1, "repeatEnd": false}))
+        ));
+        assert!(trigger_matches(
+            41002,
+            &gift,
+            &obj(json!({"giftId": "5655", "diamondCount": 10, "repeatCount": 2, "giftType": 1, "repeatEnd": true}))
+        ));
+        assert!(!trigger_matches(
+            41002,
+            &gift,
+            &obj(json!({"giftId": "5655", "diamondCount": 30, "repeatCount": 2, "giftType": 0}))
+        ));
+
+        let reward = obj(json!({"type": 112, "rewardId": "rw-1"}));
+        assert!(trigger_matches(112, &reward, &obj(json!({"rewardId": "rw-1"}))));
+        assert!(!trigger_matches(112, &reward, &obj(json!({"rewardId": "rw-2"}))));
+
+        let custom = obj(json!({"type": 18001, "eventName": "goal"}));
+        assert!(trigger_matches(18001, &custom, &obj(json!({"eventName": "goal"}))));
+        assert!(!trigger_matches(18001, &custom, &obj(json!({"eventName": "other"}))));
+    }
 
     #[test]
     fn group_variables_are_shared_persistent_and_isolated() {

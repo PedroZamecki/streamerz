@@ -386,6 +386,7 @@ pub fn event(kind: &str, m: Msg) -> Option<(&'static str, Value)> {
         }
         "WebcastGiftMessage" => {
             let g = m.msg(15);
+            let number = |key| g.fields().any(|(field, _)| field == key).then(|| g.int(key));
             (
                 "gift",
                 with(
@@ -393,9 +394,9 @@ pub fn event(kind: &str, m: Msg) -> Option<(&'static str, Value)> {
                     json!({
                         "giftId": m.int(2),
                         "giftName": g.str(16),
-                        "giftType": g.int(11),
+                        "giftType": number(11),
                         "giftPictureUrl": g.msg(1).str(1),
-                        "diamondCount": g.int(12),
+                        "diamondCount": number(12),
                         "repeatCount": m.int(5),
                         "repeatEnd": m.int(9) == 1,
                     }),
@@ -683,6 +684,7 @@ mod tests {
 
     #[test]
     fn room_lookup_accepts_numeric_ids_and_checks_live_status() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::engine::tests::run(async {
             for id in [json!("777"), json!(777)] {
                 let mut body = json!({"statusCode": 0, "data": {"user": {"roomId": id}, "liveRoom": {"status": 2}}});
@@ -825,6 +827,8 @@ mod tests {
             (Some("Rose"), Some(3))
         );
         assert_eq!(v["repeatEnd"], true);
+        let (_, sparse) = event("WebcastGiftMessage", Msg(&[])).unwrap();
+        assert!(sparse["giftType"].is_null() && sparse["diamondCount"].is_null());
         let mut u = Vec::new();
         put_bytes(&mut u, 38, b"bigfan");
         let mut top = Vec::new();

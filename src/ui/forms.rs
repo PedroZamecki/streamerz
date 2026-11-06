@@ -16,6 +16,26 @@ use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+/// Puts a value at the cursor of a text field.
+type Insert = Rc<dyn Fn(&str)>;
+
+thread_local! {
+    static GIFT_NOTES: RefCell<Vec<std::rc::Weak<RefCell<Frame>>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Respond to the existing UI change event, including while a form's nested loop is open.
+pub(super) fn catalog_changed() {
+    GIFT_NOTES.with_borrow_mut(|notes| {
+        notes.retain(|note| {
+            let Some(note) = note.upgrade() else {
+                return false;
+            };
+            note.borrow_mut().set_label(&gift_hint().replace('@', "@@"));
+            true
+        })
+    });
+}
+
 /// What a field is, and so how it's edited.
 pub enum W {
     Text,
@@ -30,6 +50,8 @@ pub enum W {
     Bit(u64),
     Int,
     Num,
+    /// Human durations; the stored number is in units of this many milliseconds.
+    Duration(u64),
     /// One of these, stored as its index.
     Pick(&'static [&'static str]),
     /// An id, picked by name.
@@ -51,6 +73,8 @@ pub enum W {
     /// A name found on a connection (the catalog's list for this key: a channel's rewards, OBS's scenes),
     /// picked, or typed when nothing was found.
     Suggest(&'static str),
+    /// Display a detected object's name, store its ID and retain unavailable selections.
+    Entity(&'static str),
     /// A name, typed or picked.
     ActionGroup,
     CommandGroup,
@@ -81,7 +105,14 @@ impl W {
             Bit(b) => format!("bit {b} of a number of flags"),
             Int => "whole number".into(),
             Num => "number".into(),
-            Pick(o) => format!("index into {o:?}"),
+            Duration(unit) => format!(
+                "duration, stored as a whole number of {}",
+                if *unit == 1 { "milliseconds" } else { "seconds" }
+            ),
+            Pick(o) => format!(
+                "index into {:?}",
+                o.iter().map(|label| field_label(label)).collect::<Vec<_>>()
+            ),
             Action => "action id".into(),
             Queue => "queue id".into(),
             Timer => "timer id".into(),
@@ -97,6 +128,7 @@ impl W {
             Sub => "sub-action id of the action in actionId".into(),
             Trigger => "trigger id of the action in actionId".into(),
             Suggest(k) => format!("a name ({k} detected on the connection, or typed)"),
+            Entity(k) => format!("an ID ({k}, selected by name, or entered manually)"),
             ActionGroup => "action group name".into(),
             CommandGroup => "command group name".into(),
             Map => "object of texts".into(),
@@ -111,8 +143,17 @@ impl W {
 /// (JSON field, label, kind).
 pub type F = (&'static str, &'static str, W);
 
-pub(super) fn field_label(label: &'static str) -> &'static str {
-    if label.starts_with("spotify.") {
+/// Imported options that are preserved but have no runtime effect. Never offer them as controls.
+pub fn preserved_fields(kind: u64) -> &'static [&'static str] {
+    match kind {
+        5 => &["overwrite", "count"],
+        18 => &["title", "duration"],
+        _ => &[],
+    }
+}
+
+pub(crate) fn field_label(label: &'static str) -> &'static str {
+    if label.starts_with("spotify.") || label.starts_with("automation.") {
         return crate::i18n::tr(label);
     }
     match label {
@@ -293,7 +334,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("command", "Command", Text),
             ("arguments", "Arguments", Text),
             ("workingDir", "Working directory", Text),
-            ("waitForExit", "Wait for exit (s)", Int),
+            ("waitForExit", "automation.duration_wait_for_exit", Duration(1000)),
             ("envVars", "Environment (NAME=value)", Map),
         ],
         8 => &[("timerId", "Timer", Timer), ("state", "State", Pick(STATE))],
@@ -308,7 +349,10 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         11 => &[("status", "Status", Pick(&["Fulfilled", "Canceled"]))],
         12 => &[("status", "Subscriber only", Bool)],
         13 => &[("status", "Emote only", Bool)],
-        14 => &[("status", "Slow mode", Bool), ("duration", "Duration (seconds)", Int)],
+        14 => &[
+            ("status", "Slow mode", Bool),
+            ("duration", "automation.duration_duration", Duration(1000)),
+        ],
         15 => &[("title", "Title", Text)],
         16 => &[
             ("source", "Source", Pick(&["Game name", "Game ID"])),
@@ -316,11 +360,11 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("gameId", "Game ID", Text),
         ],
         17 => &[("description", "Description", Text)],
-        18 => &[("title", "Title", Text), ("duration", "Duration (seconds)", Int)],
-        19 => &[("duration", "Duration (seconds)", Int)],
+        18 => &[("hasDelay", "automation.clip_delay", Bool)],
+        19 => &[("duration", "automation.duration_duration", Duration(1000))],
         20 => &[
             ("userLogin", "User login", Text),
-            ("duration", "Duration (seconds)", Int),
+            ("duration", "automation.duration_duration", Duration(1000)),
             ("reason", "Reason", Multi),
         ],
         21
@@ -365,49 +409,49 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         ],
         29 | 50 | 51 | 52 | 500 | 502..=505 | 512 | 513 | 526 | 527 | 580 => &[("userLogin", "User login", Text)],
         200 => &[
-            ("rewardId", "Reward", Suggest("twitch.rewards")),
+            ("rewardId", "Reward", Entity("twitch.rewards")),
             ("state", "State", Pick(STATE)),
         ],
         201 => &[
-            ("rewardId", "Reward", Suggest("twitch.rewards")),
+            ("rewardId", "Reward", Entity("twitch.rewards")),
             ("state", "State", Pick(STATE)),
         ],
         202 => &[
-            ("rewardId", "Reward", Suggest("twitch.rewards")),
+            ("rewardId", "Reward", Entity("twitch.rewards")),
             ("cost", "Cost", Int),
             ("operator", "Operation", Pick(&["Set", "Add", "Subtract"])),
         ],
         203 => &[("disableNotConfigured", "Disable not configured", Bool)],
         204 => &[
-            ("rewardId", "Reward", Suggest("twitch.rewards")),
-            ("cooldown", "Cooldown (seconds)", Int),
+            ("rewardId", "Reward", Entity("twitch.rewards")),
+            ("cooldown", "automation.duration_cooldown", Duration(1000)),
             ("additive", "Additive", Bool),
         ],
         205 => &[
-            ("rewardId", "Reward", Suggest("twitch.rewards")),
+            ("rewardId", "Reward", Entity("twitch.rewards")),
             ("title", "Title", Text),
         ],
         206 => &[
-            ("rewardId", "Reward", Suggest("twitch.rewards")),
+            ("rewardId", "Reward", Entity("twitch.rewards")),
             ("prompt", "Prompt", Multi),
         ],
         207 => &[
-            ("rewardId", "Reward", Suggest("twitch.rewards")),
+            ("rewardId", "Reward", Entity("twitch.rewards")),
             ("title", "Title", Text),
             ("prompt", "Prompt", Multi),
             ("cost", "Cost", Int),
             ("operator", "Operation", Pick(&["Set", "Add", "Subtract"])),
         ],
-        208..=210 => &[("rewardId", "Reward", Suggest("twitch.rewards"))],
+        208..=210 => &[("rewardId", "Reward", Entity("twitch.rewards"))],
         211 => &[("groupName", "Group name", Text), ("state", "State", Pick(STATE))],
         212 => &[("groupName", "Group name", Text), ("state", "State", Pick(STATE))],
         213 => &[
-            ("rewardId", "Reward", Suggest("twitch.rewards")),
+            ("rewardId", "Reward", Entity("twitch.rewards")),
             ("backgroundColor", "Background color", Text),
             ("random", "Random", Bool),
         ],
         214 | 215 => &[
-            ("rewardId", "Reward", Suggest("twitch.rewards")),
+            ("rewardId", "Reward", Entity("twitch.rewards")),
             ("redeems", "Max redeems", Int),
             ("additive", "Additive", Bool),
         ],
@@ -445,7 +489,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         ],
         561 => &[
             ("title", "Title", Text),
-            ("duration", "Duration (seconds)", Int),
+            ("duration", "automation.duration_duration", Duration(1000)),
             ("channelPointsPerVote", "Points per vote", Int),
             ("choices", "Choices (one per line)", Lines),
         ],
@@ -453,7 +497,11 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         565 => &[("userLogin", "User login", Text), ("reason", "Reason", Multi)],
         568 => &[
             ("title", "Title", Text),
-            ("predictionWindow", "Prediction window (seconds)", Int),
+            (
+                "predictionWindow",
+                "automation.duration_prediction_window",
+                Duration(1000),
+            ),
             ("outcomes", "Outcomes (one per line)", Lines),
         ],
         571 => &[("winningIndex", "Winning outcome index", Int)],
@@ -461,9 +509,9 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         573 => &[("clipId", "Clip ID", Text)],
         576 => &[
             ("messageId", "Message ID", Text),
-            ("duration", "Duration (seconds)", Int),
+            ("duration", "automation.duration_duration", Duration(1000)),
         ],
-        577 => &[("duration", "Duration (seconds)", Int)],
+        577 => &[("duration", "automation.duration_duration", Duration(1000))],
         579 => &[
             ("userLogin", "User login", Text),
             ("status", "Status", Pick(&["Monitored", "Restricted"])),
@@ -510,9 +558,9 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("clear", "Clear the queue", Bool),
         ],
         1002 => &[
-            ("value", "Delay (ms)", Int),
+            ("value", "automation.duration_delay", Duration(1)),
             ("random", "Random", Bool),
-            ("maxValue", "Up to (ms)", Int),
+            ("maxValue", "automation.duration_up_to", Duration(1)),
         ],
         1003 => &[
             ("randomType", "Type", Pick(&["Between", "Next Float"])),
@@ -568,7 +616,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         1032 => &[
             ("signalName", "Signal", Text),
             ("overwrite", "Overwrite arguments", Bool),
-            ("timeout", "Timeout (ms)", Int),
+            ("timeout", "automation.duration_timeout", Duration(1)),
         ],
         1033 => &[
             ("actionId", "Action", Action),
@@ -847,7 +895,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         4009 => &[
             ("broadcast", "Broadcast", Text),
             ("userId", "User ID", Text),
-            ("duration", "Duration (seconds)", Int),
+            ("duration", "automation.duration_duration", Duration(1000)),
         ],
         4010 => &[],
         4011 => &[
@@ -886,38 +934,32 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         35041 | 35043 => &[("userLogin", "User login", Text)],
         35042 => &[
             ("userLogin", "User login", Text),
-            ("duration", "Duration (seconds)", Int),
+            ("duration", "automation.duration_duration", Duration(1000)),
             ("reason", "Reason", Text),
         ],
-        35101 | 35102 => &[
-            ("rewardId", "Reward", Suggest("kick.rewards")),
-            ("state", "State", Bool),
-        ],
+        35101 | 35102 => &[("rewardId", "Reward", Entity("kick.rewards")), ("state", "State", Bool)],
         35103 => &[
-            ("rewardId", "Reward", Suggest("kick.rewards")),
+            ("rewardId", "Reward", Entity("kick.rewards")),
             ("cost", "Cost", Int),
             ("operator", "Operator", Int),
         ],
         35104 => &[("disableNotConfigured", "Disable not configured", Bool)],
-        35105 => &[
-            ("rewardId", "Reward", Suggest("kick.rewards")),
-            ("title", "Title", Text),
-        ],
+        35105 => &[("rewardId", "Reward", Entity("kick.rewards")), ("title", "Title", Text)],
         35106 => &[
-            ("rewardId", "Reward", Suggest("kick.rewards")),
+            ("rewardId", "Reward", Entity("kick.rewards")),
             ("description", "Description", Text),
         ],
         35107 => &[
-            ("rewardId", "Reward", Suggest("kick.rewards")),
+            ("rewardId", "Reward", Entity("kick.rewards")),
             ("title", "Title", Text),
             ("description", "Description", Text),
             ("cost", "Cost", Int),
             ("operator", "Operator", Int),
         ],
-        35108..=35110 => &[("rewardId", "Reward", Suggest("kick.rewards"))],
+        35108..=35110 => &[("rewardId", "Reward", Entity("kick.rewards"))],
         35111 | 35112 => &[("groupName", "Group name", Text), ("state", "State", Bool)],
         35113 => &[
-            ("rewardId", "Reward", Suggest("kick.rewards")),
+            ("rewardId", "Reward", Entity("kick.rewards")),
             ("backgroundColor", "Background color", Text),
             ("random", "Random", Bool),
         ],
@@ -958,7 +1000,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("instanceId", "Instance", Text),
             ("signalName", "Signal Name", Text),
             ("overwrite", "Overwrite", Bool),
-            ("timeout", "Timeout (ms)", Int),
+            ("timeout", "automation.duration_timeout", Duration(1)),
         ],
         1012 => &[("key", "Key", Text), ("modifiers", "Modifiers", Int)],
         1018 => &[
@@ -980,7 +1022,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("channel", "Channel", Int),
             ("note", "Note", Int),
             ("velocity", "Velocity", Int),
-            ("duration", "Duration (ms)", Int),
+            ("duration", "automation.duration_duration", Duration(1)),
         ],
         9002 => &[
             ("device", "Device (none: the first)", Suggest("midi.outputs")),
@@ -1088,8 +1130,6 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("file", "File", Text),
             ("parseVariables", "Parse Variables", Bool),
             ("autoType", "Auto Type", Bool),
-            ("overwrite", "Overwrite", Bool),
-            ("count", "Count", Int),
             ("variableName", "Variable Name", Text),
         ],
         1006 => &[
@@ -1165,8 +1205,19 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
             ("vendorName", "Vendor (empty: any)", Text),
             ("eventType", "Event type (empty: any)", Text),
         ],
-        112..=115 | 171 => &[("rewardId", "Reward (none: any)", Suggest("twitch.rewards"))],
-        35024 => &[("rewardId", "Reward (none: any)", Suggest("kick.rewards"))],
+        112..=115 | 171 => &[("rewardId", "Reward (none: any)", Entity("twitch.rewards"))],
+        35024 => &[("rewardId", "Reward (none: any)", Entity("kick.rewards"))],
+        41002 => &[
+            ("giftId", "automation.gift", Entity("tiktok.gifts")),
+            (
+                "giftDelivery",
+                "automation.delivery",
+                Pick(&["automation.every_update", "automation.completed_combo"]),
+            ),
+            ("minCoins", "automation.min_coins", Int),
+            ("maxCoins", "automation.max_coins", Int),
+        ],
+        41001..=41012 => &[],
         101..=196
         | 451..=498
         | 4001..=4031
@@ -1212,6 +1263,7 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
         501..=504 => &[("watcherId", "Watcher (none: any)", FileWatcher)],
         511 => &[("tailId", "File tail (none: any)", FileTail)],
         703 | 704 => &[("processName", "Process Name", Text)],
+        code if crate::docs::available("trigger", code as u32) => &[],
         _ => return None,
     })
 }
@@ -1221,6 +1273,8 @@ type Ids = Vec<(String, String)>;
 /// What the pickers offer, copied out of the config so it isn't held while the form is open.
 #[derive(Default)]
 pub struct Lists {
+    pub(super) values: Vec<(String, String)>,
+    pub(super) cmds: Option<tokio::sync::mpsc::UnboundedSender<crate::engine::UiCmd>>,
     /// (id, name, its sub-actions, its triggers).
     actions: Vec<(String, String, Ids, Ids)>,
     queues: Ids,
@@ -1290,6 +1344,8 @@ impl Lists {
         let mut queues = vec![(crate::engine::DEFAULT_QUEUE.to_string(), "Default".to_string())];
         queues.extend(ids(&c.actions.queues));
         Lists {
+            values: Vec::new(),
+            cmds: None,
             actions,
             queues,
             timers: ids(&c.timers),
@@ -1338,6 +1394,7 @@ fn fill(c: &mut Choice, list: &Ids, cur: &str) -> Vec<String> {
     out
 }
 
+#[derive(Clone)]
 enum Widget {
     Text(Input),
     Multi(MultilineInput),
@@ -1345,9 +1402,11 @@ enum Widget {
     Bit(CheckButton, u64),
     Int(IntInput),
     Num(FloatInput),
+    Duration(Input, u64, String),
     Pick(Choice),
     Id(Choice, Rc<RefCell<Vec<String>>>),
     Name(InputChoice),
+    Entity(InputChoice, Rc<RefCell<Ids>>, String),
     Expression(InputChoice, String),
     Map(MultilineInput),
     Lines(MultilineInput),
@@ -1462,6 +1521,28 @@ pub fn form_validated(
     lists: &Lists,
     valid: impl Fn(&Obj) -> Result<(), String>,
 ) -> Done {
+    form_inner(title, fields, o, lists, None, valid)
+}
+
+pub fn form_reference(title: &str, fields: &[F], o: &Obj, lists: &Lists, kind: &'static str) -> Done {
+    form_inner(
+        title,
+        fields,
+        o,
+        lists,
+        Some((kind, crate::edit::kind(o) as u32)),
+        |_| Ok(()),
+    )
+}
+
+fn form_inner(
+    title: &str,
+    fields: &[F],
+    o: &Obj,
+    lists: &Lists,
+    reference: Option<(&'static str, u32)>,
+    valid: impl Fn(&Obj) -> Result<(), String>,
+) -> Done {
     let tall = |w: &W| matches!(w, Multi | Map | Lines);
     let check = |w: &W| matches!(w, Bool | Bit(_));
     // Check boxes go two to a row: a check box right after one that opened a row shares it.
@@ -1469,6 +1550,10 @@ pub fn form_validated(
     for i in 1..fields.len() {
         shares[i] = check(&fields[i].2) && check(&fields[i - 1].2) && !shares[i - 1];
     }
+    let empty_doc = fields
+        .is_empty()
+        .then(|| reference.and_then(|(kind, code)| crate::docs::text(kind, code)))
+        .flatten();
     let h = fields
         .iter()
         .zip(&shares)
@@ -1480,7 +1565,15 @@ pub fn form_validated(
         })
         .sum::<i32>()
         + ROW
-        + 34;
+        + 34
+        + if empty_doc.is_some() {
+            264
+        } else if reference.is_some() {
+            64
+        } else {
+            0
+        }
+        + if reference == Some(("trigger", 41002)) { 110 } else { 0 };
     let visible_h = h.clamp(120, 600);
     let (mut win, answer) = window(560, visible_h, title);
     // The song request action has many optional rules and replies. Keep them in separate
@@ -1492,13 +1585,44 @@ pub fn form_validated(
     let mut page = song.then(|| fltk::group::Group::new(10, tab_y, 540, area_h, crate::i18n::tr("spotify.tab_action")));
     let mut scroll = super::scroll::area(10, tab_y, 540, area_h);
     let content_h = if song {
-        (5 * (ROW + 4)).max(area_h)
+        (5 * (ROW + 4) + if reference.is_some() { 64 } else { 0 }).max(area_h)
     } else {
         (h - ROW - 34).max(area_h)
     };
     let mut col = Flex::new(10, tab_y, 526, content_h, None).column();
     col.set_pad(4);
     let mut ws = Vec::new();
+    let gift = reference == Some(("trigger", 41002));
+    let gift_note = if gift {
+        let mut note = Frame::default()
+            .with_label(&gift_hint().replace('@', "@@"))
+            .with_align(fltk::enums::Align::Left | fltk::enums::Align::Inside | fltk::enums::Align::Wrap);
+        note.set_label_size(12);
+        note.set_label_color(super::muted());
+        col.fixed(&note, 62);
+        Some(note)
+    } else {
+        None
+    };
+    let _live_note = gift_note.clone().map(|note| {
+        let note = Rc::new(RefCell::new(note));
+        GIFT_NOTES.with_borrow_mut(|notes| {
+            notes.retain(|note| note.strong_count() > 0);
+            notes.push(Rc::downgrade(&note));
+        });
+        note
+    });
+    if empty_doc.is_none() {
+        if let Some((kind, code)) = reference {
+            if let Some(text) = crate::docs::summary(kind, code) {
+                let summary = Frame::default()
+                    .with_label(&text.replace('@', "@@"))
+                    .with_align(fltk::enums::Align::Left | fltk::enums::Align::Inside | fltk::enums::Align::Wrap);
+                col.fixed(&summary, 60);
+            }
+        }
+    }
+    let insert_values = Rc::new(lists.values.clone());
     let mut half: Option<Flex> = None;
     for (index, ((key, label, w), &shared)) in fields.iter().zip(&shares).enumerate() {
         if song && (index == 5 || index == 17) {
@@ -1530,7 +1654,7 @@ pub fn form_validated(
                 }
             };
             r.begin();
-            let c = CheckButton::default().with_label(label);
+            let c = CheckButton::default().with_label(field_label(label));
             c.set_checked(match w {
                 Bit(bit) => v.and_then(Value::as_u64).unwrap_or(0) & bit != 0,
                 _ => v.and_then(Value::as_bool).unwrap_or(false),
@@ -1591,10 +1715,20 @@ pub fn form_validated(
                 i.set_value(&v.and_then(Value::as_f64).unwrap_or(0.0).to_string());
                 Widget::Num(i)
             }
+            Duration(unit) => {
+                let mut input = Input::default();
+                let shown = match v {
+                    Some(Value::String(text)) => text.clone(),
+                    _ => crate::groups::format_duration(v.and_then(Value::as_u64).unwrap_or(0).saturating_mul(*unit)),
+                };
+                input.set_value(&shown);
+                input.set_tooltip(crate::i18n::tr("automation.duration_hint"));
+                Widget::Duration(input, *unit, shown)
+            }
             Pick(opts) => {
                 let mut c = super::fit::choice();
                 for x in *opts {
-                    c.add_choice(x);
+                    c.add_choice(field_label(x));
                 }
                 c.set_value(v.and_then(Value::as_i64).unwrap_or(0) as i32);
                 Widget::Pick(c)
@@ -1630,6 +1764,38 @@ pub fn form_validated(
                 let saved = text(v);
                 c.set_value(&crate::catalog::name_of(key, &saved).unwrap_or(saved));
                 Widget::Name(c)
+            }
+            Entity(key) => {
+                let entries = Rc::new(RefCell::new(crate::catalog::choices(key)));
+                let saved = text(v);
+                let shown = entries
+                    .borrow()
+                    .iter()
+                    .find(|(id, _)| id == &saved)
+                    .map(|(_, name)| name.clone())
+                    .unwrap_or(saved);
+                let updated = entries.clone();
+                let key = *key;
+                let mut note = gift_note.clone();
+                let mut c = InputChoice::default();
+                super::menu::input_choice_dynamic(&mut c, move |c| {
+                    let value = c.value().unwrap_or_default();
+                    *updated.borrow_mut() = crate::catalog::choices(key);
+                    c.clear();
+                    for (_, label) in updated.borrow().iter() {
+                        c.add(&item(label));
+                    }
+                    c.set_value(&value);
+                    if let Some(note) = &mut note {
+                        note.set_label(&gift_hint().replace('@', "@@"));
+                    }
+                });
+                for (_, label) in entries.borrow().iter() {
+                    c.add(&item(label));
+                }
+                c.set_value(&shown);
+                c.clear_changed();
+                Widget::Entity(c, entries, shown)
             }
             ActionGroup | CommandGroup => {
                 let mut c = InputChoice::default();
@@ -1704,9 +1870,61 @@ pub fn form_validated(
             }
             Bool | Bit(_) | Access(_) => unreachable!(),
         };
+        if !lists.values.is_empty() {
+            let insert: Option<Insert> = match &widget {
+                Widget::Text(input) | Widget::Duration(input, _, _) => {
+                    let input = input.clone();
+                    Some(Rc::new(move |value| {
+                        let _ = input.clone().insert(value);
+                    }))
+                }
+                Widget::Multi(input) => {
+                    let input = input.clone();
+                    Some(Rc::new(move |value| {
+                        let _ = input.clone().insert(value);
+                    }))
+                }
+                Widget::Expression(input, _) => {
+                    let input = input.clone();
+                    Some(Rc::new(move |value| {
+                        let _ = input.input().insert(value);
+                    }))
+                }
+                _ => None,
+            };
+            if let Some(insert) = insert {
+                let insert_label = crate::i18n::tr("btn.insert_value");
+                let mut add = if tall(w) {
+                    let mut side = Flex::default().column();
+                    let mut b = fltk::button::Button::default().with_label(insert_label);
+                    let wide = super::with_icon(&mut b);
+                    let bw = super::fit::grown(96 + if wide { 20 } else { 0 }, insert_label, wide);
+                    side.fixed(&b, ROW);
+                    Frame::default();
+                    side.end();
+                    r.fixed(&side, bw);
+                    b
+                } else {
+                    button(&mut r, insert_label, 96)
+                };
+                add.set_tooltip(crate::i18n::tr("automation.value_hint"));
+                let values = insert_values.clone();
+                add.set_callback(move |button| {
+                    let mut menu = super::menu::Menu::new();
+                    menu.under(button);
+                    for (label, value) in values.iter() {
+                        let insert = insert.clone();
+                        let value = value.clone();
+                        menu.item(label, None, move || insert(&value));
+                    }
+                    menu.show();
+                });
+            }
+        }
         if let Some(mut input) = r.child(1) {
             if input.tooltip().is_none_or(|tip| tip.is_empty()) {
-                input.set_tooltip(label);
+                let help = reference.and_then(|(kind, code)| crate::docs::field_help(kind, code, key));
+                input.set_tooltip(help.unwrap_or(label));
             }
         }
         r.end();
@@ -1717,17 +1935,34 @@ pub fn form_validated(
     let at = |k: &str| fields.iter().position(|f| f.0 == k);
     // A random delay's upper bound only counts with Random on.
     if let (Some(r), Some(m)) = (at("random"), at("maxValue")) {
-        if let (Widget::Bool(random), Widget::Int(upper)) = (&ws[r], &ws[m]) {
-            let mut upper = upper.clone();
-            let follow = move |on: bool, upper: &mut IntInput| {
-                if on {
-                    upper.activate();
-                } else {
-                    upper.deactivate();
+        if let Widget::Bool(random) = &ws[r] {
+            match &ws[m] {
+                Widget::Int(upper) => {
+                    let mut upper = upper.clone();
+                    let follow = |on: bool, upper: &mut IntInput| {
+                        if on {
+                            upper.activate();
+                        } else {
+                            upper.deactivate();
+                        }
+                    };
+                    follow(random.is_checked(), &mut upper);
+                    random.clone().set_callback(move |c| follow(c.is_checked(), &mut upper));
                 }
-            };
-            follow(random.is_checked(), &mut upper);
-            random.clone().set_callback(move |c| follow(c.is_checked(), &mut upper));
+                Widget::Duration(upper, _, _) => {
+                    let mut upper = upper.clone();
+                    let follow = |on: bool, upper: &mut Input| {
+                        if on {
+                            upper.activate();
+                        } else {
+                            upper.deactivate();
+                        }
+                    };
+                    follow(random.is_checked(), &mut upper);
+                    random.clone().set_callback(move |c| follow(c.is_checked(), &mut upper));
+                }
+                _ => {}
+            }
         }
     }
     if let (Some(a), Some(d)) = (at("actionId"), at("subActionId").or(at("triggerId"))) {
@@ -1754,8 +1989,68 @@ pub fn form_validated(
             });
         }
     }
+    if gift {
+        let ws = ws.clone();
+        let original = o.clone();
+        if let Some(cmds) = &lists.cmds {
+            let cmds = cmds.clone();
+            let mut note = gift_note;
+            let mut buttons = super::grid(
+                &mut col,
+                &[
+                    crate::i18n::tr("btn.refresh_gifts"),
+                    crate::i18n::tr("btn.preview_gift"),
+                ],
+                1,
+            );
+            buttons[0].set_callback(move |_| {
+                let ready = super::query(&cmds, |e| e.tiktok_connected() && e.tiktok_bridge.ready()).unwrap_or(false);
+                if !ready {
+                    if let Some(note) = &mut note {
+                        note.set_label(crate::i18n::tr("automation.gifts_unavailable"));
+                    }
+                    return;
+                }
+                if let Some(note) = &mut note {
+                    note.set_label(&crate::i18n::tr("automation.gifts_loading").replace('@', "@@"));
+                }
+                super::tell(&cmds, |e| {
+                    if let Some(t) = e.tiktok() {
+                        t.send(crate::tiktok::TikTokCmd::RefreshGifts);
+                    }
+                });
+            });
+            buttons[1].set_callback(
+                move |_| match collect_draft(trigger_fields(41002).unwrap(), &ws, &original) {
+                    Ok(draft) => preview_gift(&draft),
+                    Err(error) => super::dialogs::error(&error),
+                },
+            );
+        } else {
+            let mut buttons = super::grid(&mut col, &[crate::i18n::tr("btn.preview_gift")], 1);
+            buttons[0].set_callback(
+                move |_| match collect_draft(trigger_fields(41002).unwrap(), &ws, &original) {
+                    Ok(draft) => preview_gift(&draft),
+                    Err(error) => super::dialogs::error(&error),
+                },
+            );
+        }
+    }
     if fields.is_empty() {
-        let f = Frame::default().with_label(crate::i18n::tr("forms.empty"));
+        if let Some(text) = empty_doc {
+            let mut view = fltk::text::TextDisplay::default();
+            super::scroll::view(&mut view);
+            let mut buffer = fltk::text::TextBuffer::default();
+            buffer.set_text(&crate::docs::readable(text));
+            view.set_buffer(buffer);
+            view.set_text_font(fltk::enums::Font::Helvetica);
+            view.wrap_mode(fltk::text::WrapMode::AtBounds, 0);
+            col.fixed(&view, 220);
+        }
+        let mut f = Frame::default()
+            .with_label(crate::i18n::tr("forms.empty"))
+            .with_align(fltk::enums::Align::Left | fltk::enums::Align::Inside);
+        f.set_label_color(super::muted());
         col.fixed(&f, ROW);
     }
     Frame::default();
@@ -1778,15 +2073,30 @@ pub fn form_validated(
             a.set(Some(true));
         }
     });
+    if let Some((kind, code)) = reference {
+        if crate::docs::text(kind, code).is_some() {
+            let mut help = button(&mut bar, crate::i18n::tr("btn.help"), 80);
+            help.set_callback(move |_| super::dialogs::reference(kind, code));
+        }
+    }
     ok_cancel(&mut bar, &answer, !fields.iter().any(|f| tall(&f.2)));
     bar.end();
     win.end();
+    let initial = collect_draft(fields, &ws, o).ok();
     let mut out = o.clone();
     let mut show_json = false;
     let ok = run(&mut win, &answer, || {
         // Consume the intent before validation, so a later normal OK cannot inherit it.
         let requested_json = json.replace(false);
-        match collect_draft(fields, &ws, o).and_then(|draft| valid(&draft).map(|()| draft)) {
+        match collect_draft(fields, &ws, o).and_then(|mut draft| {
+            if let Some(initial) = &initial {
+                preserve_unchanged(&mut draft, initial, o, fields);
+            }
+            if gift {
+                crate::tiktok::gifts::validate(&draft)?;
+            }
+            valid(&draft).map(|()| draft)
+        }) {
             Ok(draft) => {
                 out = draft;
                 show_json = requested_json;
@@ -1805,6 +2115,34 @@ pub fn form_validated(
     } else {
         Done::Cancel
     }
+}
+
+fn preserve_unchanged(draft: &mut Obj, initial: &Obj, original: &Obj, fields: &[F]) {
+    for (key, _, _) in fields {
+        if key.is_empty() || draft.get(*key) != initial.get(*key) {
+            continue;
+        }
+        if let Some(value) = original.get(*key) {
+            draft.insert((*key).into(), value.clone());
+        } else {
+            draft.shift_remove(*key);
+        }
+    }
+}
+
+fn parse_duration_field(value: &str, unit: u64) -> Result<Value, String> {
+    let trimmed = value.trim();
+    if trimmed.contains(['%', '~', '$']) {
+        return Ok(Value::from(trimmed));
+    }
+    let ms = if trimmed.is_empty() {
+        Some(0)
+    } else {
+        crate::groups::parse_duration(trimmed)
+    }
+    .filter(|ms| ms.is_multiple_of(unit))
+    .ok_or_else(|| crate::i18n::tr("automation.duration_error").to_string())?;
+    Ok(Value::from(ms / unit))
 }
 
 /// Collect a fresh draft for either submit action; a failed attempt never changes the original.
@@ -1839,6 +2177,13 @@ fn collect_draft(fields: &[F], ws: &[Widget], original: &Obj) -> Result<Obj, Str
                     }
                 },
             },
+            Widget::Duration(input, unit, shown) => {
+                let value = input.value();
+                if &value == shown {
+                    continue;
+                }
+                parse_duration_field(&value, *unit)?
+            }
             Widget::Pick(c) if c.value() < 0 => continue,
             Widget::Pick(c) => c.value().into(),
             Widget::Id(c, ids) => match ids.borrow().get(c.value().max(0) as usize) {
@@ -1850,6 +2195,20 @@ fn collect_draft(fields: &[F], ws: &[Widget], original: &Obj) -> Result<Obj, Str
                 }
             },
             Widget::Name(c) => c.value().unwrap_or_default().trim().into(),
+            Widget::Entity(c, entries, shown) => {
+                let value = c.value().unwrap_or_default();
+                if &value == shown && !c.changed() {
+                    continue;
+                }
+                let value = value.trim();
+                entries
+                    .borrow()
+                    .iter()
+                    .find(|(_, label)| label == value)
+                    .map(|(id, _)| id.clone())
+                    .unwrap_or_else(|| value.to_string())
+                    .into()
+            }
             Widget::Expression(c, original) => {
                 let value = c.value().unwrap_or_default();
                 if &value == original {
@@ -1892,9 +2251,76 @@ fn collect_draft(fields: &[F], ws: &[Widget], original: &Obj) -> Result<Obj, Str
     Ok(out)
 }
 
+/// Catalog state is read on opening the form or list, never polled.
+fn gift_hint() -> String {
+    let (state, count, error) = crate::tiktok::gifts::summary();
+    match state {
+        "loading" => crate::i18n::tr("automation.gifts_loading").into(),
+        "ready" if count == 0 => crate::i18n::tr("automation.gifts_empty").into(),
+        "ready" => crate::i18n::tr("automation.gifts_ready").into(),
+        "error" => crate::i18n::trf("automation.gifts_error", &[("error", &error)]),
+        _ => crate::i18n::tr("automation.gifts_unavailable").into(),
+    }
+}
+
+fn preview_gift(trigger: &Obj) {
+    if let Err(error) = crate::tiktok::gifts::validate(trigger) {
+        super::dialogs::error(&error);
+        return;
+    }
+    let id = trigger.get("giftId").map(crate::vars::text).unwrap_or_default();
+    let gift_id = if id.trim().is_empty() { "5655".into() } else { id };
+    let coins = trigger.get("minCoins").and_then(Value::as_u64).unwrap_or(1).max(1);
+    let item = serde_json::json!({
+        "giftId": gift_id,
+        "diamondCount": coins,
+        "repeatCount": 1,
+        "giftType": 1,
+        "repeatEnd": true
+    });
+    let fields = &[
+        ("giftId", "automation.sample_id", Text),
+        ("diamondCount", "automation.unit_coins", Int),
+        ("repeatCount", "automation.quantity", Int),
+        (
+            "giftType",
+            "automation.sample_type",
+            Pick(&["automation.ordinary", "automation.combo"]),
+        ),
+        ("repeatEnd", "automation.combo_finished", Bool),
+    ];
+    if let Done::Ok(sample) = form(
+        crate::i18n::tr("btn.preview_gift"),
+        fields,
+        item.as_object().unwrap(),
+        &Lists::default(),
+    ) {
+        let matched = crate::tiktok::gifts::matches(trigger, &Value::Object(sample));
+        super::dialogs::message(crate::i18n::tr(if matched {
+            "automation.sample_matches"
+        } else {
+            "automation.sample_no_match"
+        }));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_op_edits_keep_missing_defaults_and_original_numeric_types() {
+        let fields: &[F] = &[("count", "Count", Int), ("enabled", "Enabled", Bool)];
+        let original = json!({"count":7,"unknown":{"kept":true}}).as_object().unwrap().clone();
+        let initial = json!({"count":7.0,"enabled":false}).as_object().unwrap().clone();
+        let mut draft = initial.clone();
+        preserve_unchanged(&mut draft, &initial, &original, fields);
+        assert_eq!(draft.get("count"), original.get("count"));
+        assert!(!draft.contains_key("enabled"));
+        draft.insert("count".into(), 8.into());
+        preserve_unchanged(&mut draft, &initial, &original, fields);
+        assert_eq!(draft["count"], 8);
+    }
 
     /// Run separately on the hidden display; FLTK must stay on this test's thread.
     #[test]
@@ -1958,6 +2384,19 @@ mod tests {
     }
 
     #[test]
+    fn duration_fields_accept_human_units_and_expressions() {
+        assert_eq!(parse_duration_field("500ms", 1).unwrap(), json!(500));
+        assert_eq!(parse_duration_field("1.5s", 1).unwrap(), json!(1500));
+        assert_eq!(parse_duration_field("2m", 1000).unwrap(), json!(120));
+        assert_eq!(parse_duration_field("", 1).unwrap(), json!(0));
+        assert_eq!(
+            parse_duration_field(" %group.duration% ", 1).unwrap(),
+            json!("%group.duration%")
+        );
+        assert!(parse_duration_field("500ms", 1000).is_err());
+    }
+
+    #[test]
     fn spotify_song_form_groups_and_expression_suggestions() {
         let fields = sub_fields(99802).unwrap();
         assert_eq!(fields[0].0, "operation");
@@ -1977,7 +2416,10 @@ mod tests {
             }
             let form = sub_fields(*k as u64).unwrap_or_else(|| panic!("{name} has no form"));
             // Every field but the children is on the form.
-            for f in fields.iter().filter(|f| **f != "subActions") {
+            for f in fields
+                .iter()
+                .filter(|f| **f != "subActions" && !preserved_fields(*k as u64).contains(f))
+            {
                 assert!(form.iter().any(|x| x.0 == *f), "{name}: {f} missing");
             }
         }

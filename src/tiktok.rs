@@ -18,6 +18,8 @@ use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
+pub mod gifts;
+
 // TikTok Trigger IDs
 pub const T_TIKTOK_CHAT_MESSAGE: u32 = 41001;
 pub const T_TIKTOK_GIFT: u32 = 41002;
@@ -156,6 +158,7 @@ pub enum TikTokStatus {
 pub enum TikTokCmd {
     Connect,
     Disconnect,
+    RefreshGifts,
 }
 
 /// What the reader shares with the handle (read from the UI's queries).
@@ -238,8 +241,18 @@ impl Runner {
         if !self.cfg.borrow().tiktok.manual_connect && !self.cfg.borrow().tiktok.channel.trim().is_empty() {
             self.connect();
         }
-        while let Some(cmd) = self.rx.recv().await {
+        let mut queued = None;
+        while let Some(cmd) = match queued.take() {
+            Some(cmd) => Some(cmd),
+            None => self.rx.recv().await,
+        } {
             match cmd {
+                TikTokCmd::RefreshGifts => {
+                    queued = refresh_command(gifts::refresh(&self.engine), &mut self.rx).await;
+                    if queued.is_some() {
+                        gifts::invalidate();
+                    }
+                }
                 TikTokCmd::Connect => self.connect(),
                 TikTokCmd::Disconnect => {
                     if let Some(task) = self.read_task.take() {
@@ -259,6 +272,11 @@ impl Runner {
     }
 
     fn connect(&mut self) {
+        gifts::invalidate();
+        self.shared.connected.store(false, Ordering::Relaxed);
+        if let Ok(mut room) = self.shared.room_id.lock() {
+            *room = None;
+        }
         if let Some(task) = self.read_task.take() {
             task.abort();
         }
@@ -346,6 +364,23 @@ impl Runner {
     }
 }
 
+/// A catalog read must not delay Connect or Disconnect. Repeated refresh clicks share the read.
+async fn refresh_command(
+    refresh: impl std::future::Future<Output = Result<Value, String>>,
+    commands: &mut mpsc::UnboundedReceiver<TikTokCmd>,
+) -> Option<TikTokCmd> {
+    tokio::pin!(refresh);
+    loop {
+        tokio::select! {
+            _ = &mut refresh => return None,
+            command = commands.recv() => match command {
+                Some(TikTokCmd::RefreshGifts) => {},
+                command => return command,
+            },
+        }
+    }
+}
+
 /// One connection to the channel's live, until it drops or the stream ends.
 async fn live(
     engine: &Rc<Engine>,
@@ -379,6 +414,7 @@ async fn live(
     if let Ok(mut r) = shared.room_id.lock() {
         *r = Some(room.to_string());
     }
+    gifts::invalidate();
     let cookie = if browser_ttwid(&session).is_some() {
         session
     } else {
@@ -465,9 +501,13 @@ async fn live(
     let mut hb = tokio::time::interval(Duration::from_secs(10));
     hb.tick().await;
     let mut prejoin_window_open = true;
+    let gift_request = gifts::refresh(engine);
+    tokio::pin!(gift_request);
+    let mut gifts_done = false;
     let joined_inst = std::time::Instant::now();
     loop {
         tokio::select! {
+            _ = &mut gift_request, if !gifts_done => { gifts_done = true; }
             _ = hb.tick() => {
                 if let Err(e) = w.send(send(crate::webcast::heartbeat(room))).await {
                     return Err(LiveEnd::Error(format!("connection lost ({e})"), 2));
@@ -487,7 +527,7 @@ async fn live(
                         if name == "streamEnd" {
                             crate::say(format!("TikTok: @{channel}'s live stream ended"));
                             if !engine.chat_stream_ended("tiktok") {
-                                crate::notify::send("Streamerz", &crate::i18n::trf("chat.state_ended_title", &[("platform", "TikTok")]));
+                                crate::notify::send(crate::notify::Kind::Streams, "Streamerz", &crate::i18n::trf("chat.state_ended_title", &[("platform", "TikTok")]));
                             }
                             engine.chat_stream("tiktok", false);
                             let mut args = stream_info(false);
@@ -630,6 +670,7 @@ fn tiktok_chat_line(channel: &str, d: &Value) -> Option<Line> {
 }
 
 fn disconnected(engine: &Rc<Engine>, channel: &str) {
+    gifts::invalidate();
     engine.chat_unpinned("tiktok", "");
     STREAM.with_borrow_mut(|s| {
         s.paused = false;
@@ -678,6 +719,9 @@ pub fn handle_tiktok_event(engine: &Rc<Engine>, channel: &str, event: &str, d: &
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| s("uniqueId"));
     let mut args: Obj = d.as_object().cloned().unwrap_or_default().into_iter().collect();
+    if event == "gift" {
+        gifts::enrich(&mut args);
+    }
     args.insert("user".into(), user.clone().into());
     args.insert("channel".into(), channel.into());
     let (badges, color) = tiktok_badges_and_color(channel, d);
@@ -692,15 +736,21 @@ pub fn handle_tiktok_event(engine: &Rc<Engine>, channel: &str, event: &str, d: &
             args.insert("badges".into(), Value::Array(badge_json));
         }
         "gift" => {
-            let coins = d["diamondCount"].as_u64().unwrap_or(0) * d["repeatCount"].as_u64().unwrap_or(1).max(1);
+            gifts::observe(d);
+            let coins = args
+                .get("diamondCount")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                .saturating_mul(d["repeatCount"].as_u64().unwrap_or(1).max(1));
             args.insert("coins".into(), coins.into());
             // A combo gift (type 1) repeats with a growing count while it lasts: counted when it ends.
-            let done = d["giftType"].as_u64() != Some(1) || d["repeatEnd"].as_bool().unwrap_or(true);
+            let done =
+                args.get("giftType").and_then(Value::as_u64) != Some(1) || d["repeatEnd"].as_bool().unwrap_or(true);
             let total = STREAM.with_borrow_mut(|st| {
                 let g = st.gifters.entry(s("userId")).or_insert_with(|| (user.clone(), 0));
                 if done {
-                    g.1 += coins;
-                    st.coins += coins;
+                    g.1 = g.1.saturating_add(coins);
+                    st.coins = st.coins.saturating_add(coins);
                 }
                 g.1
             });
@@ -712,7 +762,9 @@ pub fn handle_tiktok_event(engine: &Rc<Engine>, channel: &str, event: &str, d: &
         }
         _ => {}
     }
-    engine.fire(kind, name, "TikTok", "tiktok", &args, |_| true);
+    engine.fire(kind, name, "TikTok", "tiktok", &args, |t| {
+        event != "gift" || gifts::matches_args(t, &args)
+    });
     engine.emit("TikTok", ev, || json!(args));
     if event == "chat" {
         let flag = |k: &str| d[k].as_bool().unwrap_or(false);
@@ -826,6 +878,47 @@ fn presentation_event(engine: &Rc<Engine>, channel: &str, event: &str, d: &Value
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    #[test]
+    fn disconnect_interrupts_a_slow_catalog_read_and_refresh_clicks_are_coalesced() {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let (send, mut commands) = mpsc::unbounded_channel();
+                send.send(TikTokCmd::RefreshGifts).unwrap();
+                send.send(TikTokCmd::Disconnect).unwrap();
+                let next = tokio::time::timeout(
+                    Duration::from_secs(1),
+                    refresh_command(std::future::pending(), &mut commands),
+                )
+                .await
+                .unwrap();
+                assert!(matches!(next, Some(TikTokCmd::Disconnect)));
+            });
+    }
+
+    #[test]
+    fn reconnect_clears_the_old_room_before_looking_up_the_new_channel() {
+        let _guard = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let shared = Shared::default();
+            shared.connected.store(true, Ordering::Relaxed);
+            *shared.room_id.lock().unwrap() = Some("old room".into());
+            let mut runner = Runner {
+                engine: crate::engine::tests::engine(json!({"actions":[]})),
+                cfg: Arc::new(watch::channel(Config::default()).0),
+                rx: mpsc::unbounded_channel().1,
+                shared: shared.clone(),
+                read_task: None,
+            };
+            runner.connect();
+            assert!(!shared.connected.load(Ordering::Relaxed));
+            assert!(shared.room_id.lock().unwrap().is_none());
+            runner.read_task.take().unwrap().abort();
+        });
+    }
 
     #[test]
     fn old_accounts_preserve_the_channel_but_not_their_credentials() {

@@ -2,7 +2,7 @@
 
 Events for Streamerz itself: starting and exiting, toast clicks, and changes to its actions and commands. Only the start event fires.
 
-## Streamerbot Started
+## Streamerz Started
 
 - Kind: trigger
 - Code: 706
@@ -24,7 +24,7 @@ None beyond the ones every trigger gets: `triggerId`, `triggerName`, `triggerCat
 
 Once each time Streamerz starts.
 
-## Streamerbot Exiting
+## Streamerz Exiting
 
 - Kind: trigger
 - Code: 707

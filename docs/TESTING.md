@@ -273,3 +273,34 @@ Hidden, disconnected optimized development samples (30 seconds, 100 Hz): before 
 37,852 KiB RSS; final build, 38,820 KiB RSS. Both stayed stable and used zero CPU ticks. The final
 workspace also contains concurrent MCP changes, so this comparison does not isolate the TikTok code.
 The existing integration budget is not established by these disconnected samples.
+
+### Automation editors, reference and TikTok gifts
+
+Linux, 2026-11-05: 520 Rust tests passed, 13 ignored. Formatting and clippy with warnings denied
+passed. All 951 registered entries have an indexed built-in reference, with nonempty Fields and
+Arguments sections and When for triggers. Additional documentation checks cover Spotify outputs
+and the absence of the misleading external-documentation hint. Eleven extension tests passed.
+
+Gift fixtures cover exact IDs, inclusive total coin bounds, combo completion, legacy update behavior,
+sparse event metadata, changing rooms/accounts, failed and empty catalogs, stale replies and a signed
+browser request carrying the current room. Connection tests cover cancelling a slow catalog request,
+releasing pending browser calls and clearing the old room before a new channel lookup completes.
+No authenticated live gift list or real gift delivery was available in this isolated run.
+
+All 54 MCP tools passed the isolated stdio smoke. The general UI smoke passed, and
+`dev/automation-smoke.py` checked gift editing, Help, matching preview, a no-settings trigger,
+duration editing and inserting a real event value at 1280 by 820 and 760 by 620. Screenshots were
+inspected on DISPLAY=:99. The forms keep unknown fields and unchanged imported representations;
+execution tests distinguish reported failures, skipped operations and successful runs.
+
+Windows cross-target type-check passed with `fltk/fltk-bundled`. Native Windows runtime checks remain
+pending. OBS and the reference application are installed, but their local services were not listening
+during this run; these results do not establish connected live-service behavior.
+
+The final hidden, disconnected optimized development sample used 40,916 KiB RSS before opening
+editors and 62,824 KiB after the screenshot/editor checks, with zero CPU ticks over five idle seconds.
+Private dirty memory was 7,404 KiB before and 8,268 KiB after. These compare states within one build;
+earlier builds were sampled in different states and do not provide a comparable version baseline.
+The required hidden Twitch + OBS before/after measurement and the 25 MB budget remain unverified;
+these disconnected RSS samples are already above that target. Final screenshots and metrics are in
+`/tmp/streamerz-automation-ui-5wwp7qvi`; the general smoke is in `/tmp/szsmoke`.

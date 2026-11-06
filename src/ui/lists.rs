@@ -1687,6 +1687,12 @@ impl History {
                 record.name.clone(),
                 format!("{:.0} ms", record.ms),
                 record.after.len().to_string(),
+                tr(match record.outcome.status() {
+                    "failed" => "automation.failed",
+                    "completed_with_skips" => "automation.completed_with_skips",
+                    _ => "automation.completed",
+                })
+                .into(),
             ];
             if !matches_query(&columns, &query) {
                 continue;
@@ -1721,12 +1727,13 @@ fn history_tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<History>> {
     col.fixed(&search, ROW);
     let view = browser(
         &mut col,
-        &[180, 420, 100, 120],
+        &[180, 340, 100, 90, 160],
         &[
             "lists.history.when",
             "lists.history.action",
             "lists.history.took",
             "lists.history.variables",
+            "automation.result",
         ],
         "lists.history.empty",
     );
@@ -1780,7 +1787,8 @@ fn history_tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<History>> {
         move |m: &mut History| {
             if let Some(r) = m.selected() {
                 let v = if after { &r.after } else { &r.args };
-                dialogs::values(&r.name, "", v, false);
+                let hint = r.outcome.error.as_deref().unwrap_or(tr("automation.completed_hint"));
+                dialogs::values(&r.name, hint, v, false);
             }
         }
     };

@@ -152,6 +152,22 @@ Prefer forms and tables for ordinary editing. When raw data is useful, provide J
 the existing editor. Ask for confirmation before an irreversible destructive action, with text that names
 what will be affected. Use the existing date and time formatting helpers for displayed values.
 
+Automation editors use the built-in Streamerz reference for summaries, field explanations and Help.
+An event with no settings shows its behavior and available values, rather than opening JSON. Types
+kept only for compatibility are preserved on import, explained in Help, and omitted from the ordinary
+add picker. Help is also available from selected-item buttons and context menus.
+
+Offer Insert value on expression-capable inputs. Name common values such as Sender name and Command
+input; explain that some depend on the event or branch. Durations accept human units and retain the
+wire format. An unchanged field retains its original type, missing key and unknown imported data.
+Imported options that the engine ignores are available through JSON, not ordinary controls.
+
+Detected selectors show names and save identities, distinguishing duplicates and preserving an
+unavailable saved selection. Catalog loading, empty, failure and unavailable states are separate.
+Refresh and result updates use connection/UI events, with no idle poll. Matching previews run no
+actions; actual test execution is labeled separately. History reports observed failures and skipped
+steps, and never treats completion alone as proof of remote delivery.
+
 ## Text and states
 
 Write short, natural English and translate all UI text through `i18n::tr` and the locale files. Name the

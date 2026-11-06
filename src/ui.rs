@@ -835,6 +835,10 @@ fn icon_for(label: &str) -> Option<&'static str> {
         "restore" => "rotate-ccw",
         "change" => "folder-pen",
         "open_file" | "open_profile" | "open_browser" => "external-link",
+        "help" => "circle-help",
+        "refresh_gifts" => "rotate-cw",
+        "preview_gift" => "eye",
+        "insert_value" => "braces",
         _ => return None,
     })
 }
@@ -1479,6 +1483,7 @@ pub fn run(
                 Msg::Image => pictures.set(true),
                 // Hidden: nothing to redraw (filling a list loads the fonts); opening refreshes.
                 Msg::Changed if win.visible() => {
+                    forms::catalog_changed();
                     clipboard::sync(&cfg, &cmds_live);
                     status_bar();
                     if let Ok(mut a) = acts.try_borrow_mut() {

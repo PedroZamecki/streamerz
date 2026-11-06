@@ -862,6 +862,44 @@ pub fn message(text: &str) {
     notice(Tone::Info, text, None, tr("dialogs.ok"));
 }
 
+/// The built-in reference, inside the same shared dialog used by the editors.
+pub fn reference(kind: &str, code: u32) {
+    let Some(text) = crate::docs::text(kind, code) else {
+        return;
+    };
+    let heading = text
+        .lines()
+        .next()
+        .map(|l| l.trim_start_matches("## ").trim())
+        .filter(|l| !l.is_empty());
+    let title = match heading {
+        Some(h) => format!("{}: {h}", tr("btn.help")),
+        None => tr("btn.help").to_string(),
+    };
+    let (mut win, answer) = window(680, 520, &title);
+    let mut col = Flex::new(10, 10, 660, 500, None).column();
+    col.set_pad(8);
+    let mut view = fltk::text::TextDisplay::default();
+    super::scroll::view(&mut view);
+    let mut buffer = TextBuffer::default();
+    buffer.set_text(&crate::docs::readable(text));
+    view.set_buffer(buffer);
+    view.set_text_font(Font::Helvetica);
+    view.wrap_mode(fltk::text::WrapMode::AtBounds, 0);
+    let mut bar = Flex::default().row();
+    Frame::default();
+    let mut close = button(&mut bar, tr("dialogs.ok"), 90);
+    close.set_shortcut(Shortcut::from_key(Key::Escape));
+    let done = answer.clone();
+    close.set_callback(move |_| done.set(Some(true)));
+    bar.end();
+    col.fixed(&bar, ROW + 4);
+    col.end();
+    win.end();
+    win.resizable(&col);
+    run(&mut win, &answer, || true);
+}
+
 /// A question: true for `yes`, false for `no` (or closing it).
 pub fn choice(text: &str, no: &str, yes: &str) -> bool {
     // No second button asked for: a notice, closed by its one button.
@@ -890,13 +928,24 @@ pub fn row(label: &str) -> Flex {
 
 /// Edit a JSON value as text; the new value, if OK'd and valid (`valid` may refuse it with a reason).
 pub fn json_editor(title: &str, hint: &str, v: &Value, valid: impl Fn(&Value) -> Result<(), String>) -> Option<Value> {
+    json_editor_reference(title, hint, v, None, valid)
+}
+
+pub fn json_editor_reference(
+    title: &str,
+    hint: &str,
+    v: &Value,
+    help_ref: Option<(&'static str, u32)>,
+    valid: impl Fn(&Value) -> Result<(), String>,
+) -> Option<Value> {
     let (mut win, answer) = window(680, 520, title);
     let mut col = Flex::new(10, 10, 660, 500, None).column();
     col.set_pad(6);
     if !hint.is_empty() {
-        let h = Frame::default()
+        let mut h = Frame::default()
             .with_label(&hint.replace('@', "@@"))
             .with_align(Align::Left | Align::Inside | Align::Wrap);
+        h.set_label_color(super::muted());
         col.fixed(&h, 40);
     }
     let mut ed = TextEditor::default();
@@ -908,6 +957,12 @@ pub fn json_editor(title: &str, hint: &str, v: &Value, valid: impl Fn(&Value) ->
     buf2.set_text(&serde_json::to_string_pretty(v).unwrap_or_default());
     let mut bar = Flex::default().row();
     bar.set_pad(8);
+    if let Some((kind, code)) = help_ref {
+        if crate::docs::text(kind, code).is_some() {
+            let mut help = button(&mut bar, tr("btn.help"), 90);
+            help.set_callback(move |_| reference(kind, code));
+        }
+    }
     ok_cancel(&mut bar, &answer, false);
     bar.end();
     col.fixed(&bar, ROW + 4);
@@ -951,6 +1006,7 @@ pub fn pick(title: &str, items: &[String]) -> Option<usize> {
                 (tr("dialogs.action.general").to_string(), name.clone())
             };
             super::picker::PickItem {
+                reference: None,
                 id: i,
                 title: item_title,
                 category: cat,

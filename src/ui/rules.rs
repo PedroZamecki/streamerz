@@ -88,7 +88,11 @@ fn menus_are_ours() {
         "a MenuButton opens ui::menu: call menu::dropdown on it"
     );
     assert_eq!(
-        unstyled("InputChoice::default()", &["menu::input_choice("], 2),
+        unstyled(
+            "InputChoice::default()",
+            &["menu::input_choice(", "menu::input_choice_dynamic("],
+            5,
+        ),
         Vec::<String>::new(),
         "an InputChoice opens ui::menu: call menu::input_choice on it"
     );

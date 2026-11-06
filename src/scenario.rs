@@ -278,7 +278,9 @@ fn step_once(e: &Rc<Engine>, step: &Value) -> Result<Option<usize>, String> {
             .iter()
             .find(|(c, n)| t.as_u64() == Some(u64::from(*c)) || t.as_str().is_some_and(|s| s.eq_ignore_ascii_case(n)))
             .ok_or_else(|| format!("no trigger {t}"))?;
-        return Ok(Some(e.fire(*code, tname, "Scenario", "scenario", &args, |_| true)));
+        return Ok(Some(e.fire(*code, tname, "Scenario", "scenario", &args, |t| {
+            crate::engine::trigger_matches(*code, t, &args)
+        })));
     }
     if let Some(c) = step.get("chat") {
         let g = |k: &str| c[k].as_str().unwrap_or("").to_string();

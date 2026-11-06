@@ -326,6 +326,25 @@ struct Link {
     serial: u64,
 }
 
+struct PendingCall<'a> {
+    bridge: &'a Bridge,
+    serial: u64,
+    id: u64,
+}
+impl Drop for PendingCall<'_> {
+    fn drop(&mut self) {
+        if let Some(link) = self
+            .bridge
+            .link
+            .borrow_mut()
+            .as_mut()
+            .filter(|link| link.serial == self.serial)
+        {
+            link.pending.remove(&self.id);
+        }
+    }
+}
+
 /// The connected extension, if any, and what was learnt from its tab.
 #[derive(Default)]
 pub struct Bridge {
@@ -393,6 +412,7 @@ impl Bridge {
     }
 
     fn disconnect(&self) {
+        crate::tiktok::gifts::invalidate();
         // Dropping the sender ends the connection's task, which closes the socket.
         self.link.borrow_mut().take();
         self.params.borrow_mut().take();
@@ -410,7 +430,7 @@ impl Bridge {
 
     /// One request to the extension; its answer, or its error.
     async fn call(&self, mut msg: Value) -> Result<Value, String> {
-        let rx = {
+        let (rx, id, serial) = {
             let mut link = self.link.borrow_mut();
             let l = link.as_mut().ok_or(NOT_CONNECTED)?;
             l.next += 1;
@@ -418,8 +438,16 @@ impl Bridge {
             msg["id"] = id.into();
             let (tx, rx) = oneshot::channel();
             l.pending.insert(id, tx);
-            l.tx.send(msg.to_string()).map_err(|_| NOT_CONNECTED)?;
-            rx
+            if l.tx.send(msg.to_string()).is_err() {
+                l.pending.remove(&id);
+                return Err(NOT_CONNECTED.into());
+            }
+            (rx, id, l.serial)
+        };
+        let _pending = PendingCall {
+            bridge: self,
+            serial,
+            id,
         };
         let v = match tokio::time::timeout(CALL, rx).await {
             Ok(Ok(v)) => v,
@@ -478,6 +506,24 @@ impl Bridge {
 }
 
 const NOT_CONNECTED: &str = "the Streamerz for TikTok extension isn't connected (Accounts > TikTok)";
+
+pub(crate) async fn gift_list(e: &Rc<Engine>, room: &str) -> Result<Value, String> {
+    let b = &e.tiktok_bridge;
+    let mut params = b.params().await?;
+    params.retain(|(key, _)| key != "room_id");
+    params.push(("room_id".into(), room.into()));
+    let query = params
+        .iter()
+        .map(|(k, v)| format!("{}={}", encode(k), encode(v)))
+        .collect::<Vec<_>>()
+        .join("&");
+    let url = format!("https://webcast.tiktok.com/webcast/gift/list/?{query}");
+    let (status, body) = b.fetch(&url, json!({})).await?;
+    if status != 200 {
+        return Err(format!("TikTok gift list answered HTTP {status}"));
+    }
+    Ok(body)
+}
 
 /// The common keys of a page request's query, in the page's order.
 fn common_params(v: &Value) -> Vec<(String, String)> {
@@ -631,6 +677,7 @@ fn warm(e: &Rc<Engine>, serial: u64) {
         b.refresh_pending.set(true);
         return;
     }
+    crate::tiktok::gifts::invalidate();
     b.ready.set(false);
     b.login_required.set(false);
     let previous = b.user();
@@ -688,6 +735,7 @@ fn warm(e: &Rc<Engine>, serial: u64) {
                 }
                 b.error.borrow_mut().clear();
                 b.ready.set(true);
+                let _ = crate::tiktok::gifts::refresh(&e).await;
                 e.settle_role("tiktok");
                 let user = b.user();
                 if !user.is_empty() && e.config().tiktok.channel.trim().is_empty() {
@@ -797,6 +845,27 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelling_a_browser_read_releases_pending_state_and_keeps_replacement_connections() {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let bridge = Bridge::default();
+            let (send, mut wire) = mpsc::unbounded_channel();
+            *bridge.link.borrow_mut() = Some(Link { tx: send.clone(), pending: HashMap::new(), next: 0, serial: 1 });
+            let mut request = Box::pin(bridge.call(json!({"op":"fetch"})));
+            tokio::select! { _ = &mut request => panic!("request should wait"), _ = wire.recv() => {} }
+            assert_eq!(bridge.link.borrow().as_ref().unwrap().pending.len(), 1);
+            drop(request);
+            assert!(bridge.link.borrow().as_ref().unwrap().pending.is_empty());
+            let mut request = Box::pin(bridge.call(json!({"op":"fetch"})));
+            let message = tokio::select! { _ = &mut request => panic!("request should wait"), message = wire.recv() => message.unwrap() };
+            let id = serde_json::from_str::<Value>(&message).unwrap()["id"].as_u64().unwrap();
+            let (reply, _received) = oneshot::channel();
+            *bridge.link.borrow_mut() = Some(Link { tx: send, pending: HashMap::from([(id, reply)]), next: id, serial: 2 });
+            drop(request);
+            assert!(bridge.link.borrow().as_ref().unwrap().pending.contains_key(&id));
+        });
+    }
 
     fn params() -> Vec<(String, String)> {
         let page = json!({"aid": "1988", "device_id": "42", "channel_id": "86", "max_time": "0",

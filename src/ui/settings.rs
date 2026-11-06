@@ -448,6 +448,21 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
     });
     done(right, &open_chat);
 
+    section(&mut col, tr("notifications.title"), "bell");
+    let mut right = setting(
+        &mut col,
+        &mut rows,
+        tr("notifications.title"),
+        tr("notifications.about"),
+        150,
+    );
+    let mut manage = button(&mut right, tr("notifications.manage"), 150);
+    manage.set_callback({
+        let cfg = cfg.clone();
+        move |_| notifications_dialog(&cfg)
+    });
+    done(right, &manage);
+
     section(&mut col, tr("settings.startup"), "power");
     let r = setting(
         &mut col,
@@ -804,6 +819,62 @@ fn chat_rows(col: &mut Flex, rows: &mut Vec<SettingRow>, cfg: &Cfg, cmds: &Cmds)
             super::chat();
         }
     });
+}
+
+fn notifications_dialog(cfg: &Cfg) {
+    const W: i32 = 620;
+    let (mut win, answer) = super::dialogs::window(W, 350, tr("notifications.title"));
+    let mut rows = Vec::new();
+    let mut col = Flex::new(0, 0, W, 350, None).column();
+    col.set_margin(10);
+    col.set_pad(2);
+    for (index, key) in [
+        "notifications.login",
+        "notifications.updates",
+        "notifications.streams",
+        "notifications.automation",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let current = cfg.borrow().notifications;
+        let on = [current.login, current.updates, current.streams, current.automation][index];
+        let row = setting(&mut col, &mut rows, tr(key), "", 44);
+        let mut toggle = switch(on);
+        done(row, &toggle);
+        toggle.set_callback({
+            let cfg = cfg.clone();
+            move |b| {
+                put(&cfg, |c| {
+                    match index {
+                        0 => c.notifications.login = b.value(),
+                        1 => c.notifications.updates = b.value(),
+                        2 => c.notifications.streams = b.value(),
+                        _ => c.notifications.automation = b.value(),
+                    }
+                    crate::notify::configure(c.notifications);
+                });
+            }
+        });
+    }
+    let mut bar = Flex::default().row();
+    Frame::default();
+    let mut close = button(&mut bar, tr("dialogs.close"), 90);
+    close.set_shortcut(fltk::enums::Shortcut::from_key(fltk::enums::Key::Escape));
+    close.set_callback({
+        let a = answer.clone();
+        move |_| a.set(Some(false))
+    });
+    bar.end();
+    col.fixed(&bar, ROW + 4);
+    col.end();
+    win.end();
+    layout_settings(&mut col, &mut rows, W - 24, 0);
+    let h = col.h();
+    let resize = win.resizer();
+    col.resize(0, 0, W, h);
+    resize(h);
+    super::dialogs::run(&mut win, &answer, || true);
 }
 
 /// The chat's settings in a dialog (from the Chat page's Options, or from Settings).

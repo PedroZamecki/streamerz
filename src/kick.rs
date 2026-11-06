@@ -1637,6 +1637,7 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
             engine.chat_unpinned("kick", "");
             if !engine.chat_stream_ended("kick") {
                 crate::notify::send(
+                    crate::notify::Kind::Streams,
                     "Streamerz",
                     &crate::i18n::trf("chat.state_ended_title", &[("platform", "Kick")]),
                 );

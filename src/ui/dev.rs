@@ -193,6 +193,7 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
             };
             // `form CODE trigger`: a trigger's form.
             let trigger = b == Some("trigger");
+            let sample_values = b == Some("values");
             let fields = if trigger {
                 super::forms::trigger_fields(kind)
             } else {
@@ -207,10 +208,24 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
                 } else {
                     crate::edit::new_sub(kind)
                 };
-                let lists = super::forms::Lists::default();
-                let title =
-                    super::picker::spotify_player_title(kind as u32).unwrap_or(crate::i18n::tr("actions.unknown"));
-                let _ = super::forms::form(title, fields, &item, &lists);
+                let mut lists = super::forms::Lists::default();
+                if sample_values {
+                    lists
+                        .values
+                        .push((crate::i18n::tr("automation.sender_name").into(), "%user%".into()));
+                }
+                let title = if trigger {
+                    super::actions::trigger_title(kind)
+                } else {
+                    super::actions::sub_title(kind).to_string()
+                };
+                let _ = super::forms::form_reference(
+                    &title,
+                    fields,
+                    &item,
+                    &lists,
+                    if trigger { "trigger" } else { "subaction" },
+                );
             });
             "ok".into()
         }
