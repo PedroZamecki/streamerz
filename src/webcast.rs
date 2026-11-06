@@ -88,6 +88,22 @@ impl<'a> Msg<'a> {
             })
             .unwrap_or(0)
     }
+
+    /// Repeated integers may arrive packed or as individual varints.
+    fn ints(self, n: u32) -> Vec<String> {
+        let mut out = Vec::new();
+        for (_, v) in self.fields().filter(|(k, _)| *k == n) {
+            match v {
+                V::I(i) => out.push(i.to_string()),
+                V::B(mut b) => {
+                    while let Some(i) = varint(&mut b) {
+                        out.push(i.to_string());
+                    }
+                }
+            }
+        }
+        out
+    }
     pub fn all(self, n: u32) -> impl Iterator<Item = &'a [u8]> {
         self.fields().filter_map(move |(k, v)| match v {
             V::B(b) if k == n => Some(b),
@@ -343,6 +359,20 @@ pub fn event(kind: &str, m: Msg) -> Option<(&'static str, Value)> {
         },
         "WebcastMemberMessage" if m.int(10) == 1 => ("member", user(m.msg(2), c)),
         "WebcastSubNotifyMessage" => ("subscribe", with(user(m.msg(11), c), json!({ "subMonth": m.int(4) }))),
+        "WebcastImDeleteMessage" => (
+            "messageDelete",
+            json!({"deleteMsgIds": m.ints(2), "deleteUserIds": m.ints(3)}),
+        ),
+        "WebcastRoomPinMessage" => {
+            let chat = m.msg(2);
+            let (_, data) = event("WebcastChatMessage", chat)?;
+            (
+                "roomPin",
+                json!({"action": m.int(33), "chatMessage": data,
+                "pinTime": m.int(31), "displayDuration": m.int(34), "pinMsgId": m.int(35).to_string(),
+                "operator": user(m.msg(32), c)}),
+            )
+        }
         // ranksList (2): the top viewers by coins sent, each TopUser {coinCount 1, user 2}.
         "WebcastRoomUserSeqMessage" => {
             let top: Vec<Value> = m
@@ -356,6 +386,7 @@ pub fn event(kind: &str, m: Msg) -> Option<(&'static str, Value)> {
         }
         "WebcastGiftMessage" => {
             let g = m.msg(15);
+            let number = |key| g.fields().any(|(field, _)| field == key).then(|| g.int(key));
             (
                 "gift",
                 with(
@@ -363,9 +394,9 @@ pub fn event(kind: &str, m: Msg) -> Option<(&'static str, Value)> {
                     json!({
                         "giftId": m.int(2),
                         "giftName": g.str(16),
-                        "giftType": g.int(11),
+                        "giftType": number(11),
                         "giftPictureUrl": g.msg(1).str(1),
-                        "diamondCount": g.int(12),
+                        "diamondCount": number(12),
                         "repeatCount": m.int(5),
                         "repeatEnd": m.int(9) == 1,
                     }),
@@ -373,6 +404,8 @@ pub fn event(kind: &str, m: Msg) -> Option<(&'static str, Value)> {
             )
         }
         "WebcastControlMessage" if m.int(2) == 3 => ("streamEnd", json!({})),
+        "WebcastControlMessage" if m.int(2) == 1 => ("streamPaused", json!({})),
+        "WebcastControlMessage" if m.int(2) == 2 => ("streamResumed", json!({})),
         _ => return None,
     })
 }
@@ -467,16 +500,32 @@ async fn probe_embed(user: &str) -> (EmbedProbe, Option<String>, Option<String>)
     }
 }
 
-/// A TikTok user's profile picture, from their public creator embed (no cookie, not rate limited
-/// like `user/room`, and it works when they're not live).
-pub async fn avatar(user: &str) -> Option<String> {
-    probe_embed(user).await.1
-}
-
-/// A TikTok user's profile picture and display name, from the same embed page.
+/// A TikTok user's profile picture and display name, from the same embed page, or from their live
+/// room's page when the embed page answers with a bot check.
 pub async fn profile(user: &str) -> (Option<String>, Option<String>) {
     let p = probe_embed(user).await;
-    (p.1, p.2)
+    if p.1.is_some() {
+        return (p.1, p.2);
+    }
+    match fetch_user_room_raw(user, "").await {
+        Ok(v) => {
+            let (pic, name) = room_profile(&v);
+            (pic, name.or(p.2))
+        }
+        Err(_) => (p.1, p.2),
+    }
+}
+
+/// The picture and name in a live room's page (`api-live/user/room`), which has them live or not.
+fn room_profile(v: &Value) -> (Option<String>, Option<String>) {
+    let user = &v["data"]["user"];
+    let text = |k: &str| user[k].as_str().filter(|t| !t.trim().is_empty()).map(str::to_string);
+    (
+        ["avatarThumb", "avatarMedium", "avatarLarger"]
+            .iter()
+            .find_map(|k| text(k).filter(|u| u.starts_with("https://"))),
+        text("nickname"),
+    )
 }
 
 /// Structured reason why a TikTok channel currently has no active live room.
@@ -492,13 +541,17 @@ pub enum RoomLookupError {
     Transient(String),
 }
 
-async fn fetch_user_room_raw(channel: &str, ttwid: &str) -> Result<Value, String> {
-    let url = format!(
+pub(crate) fn user_room_url(channel: &str) -> String {
+    format!(
         "https://www.tiktok.com/api-live/user/room?aid=1988&app_name=tiktok_web&device_platform=web_pc\
          &app_language=en&browser_language=en-US&region=US&user_is_login=false&uniqueId={}\
          &sourceType=54&staleTime=600000",
         crate::commands::url_encode(channel)
-    );
+    )
+}
+
+async fn fetch_user_room_raw(channel: &str, ttwid: &str) -> Result<Value, String> {
+    let url = user_room_url(channel);
     let h = [
         ("User-Agent".into(), UA.into()),
         ("Referer".into(), "https://www.tiktok.com/".into()),
@@ -511,24 +564,6 @@ async fn fetch_user_room_raw(channel: &str, ttwid: &str) -> Result<Value, String
     serde_json::from_slice(&r.body).map_err(|_| format!("TikTok answered HTTP {}", r.status))
 }
 
-/// The channel's `user/room` answer (user, live room). TikTok rate limits this lookup much less with a
-/// `ttwid`.
-pub async fn user_room(channel: &str, ttwid: &str) -> Result<Value, String> {
-    let v = fetch_user_room_raw(channel, ttwid).await?;
-    match v["statusCode"].as_i64() {
-        Some(0) => {
-            remember_existing_user(channel);
-            Ok(v)
-        }
-        Some(19881007) => match probe_embed(channel).await.0 {
-            EmbedProbe::Exists => Err(format!("@{channel} has never gone live yet")),
-            EmbedProbe::Transient => Err(format!("@{channel} is offline")),
-            EmbedProbe::NotFound => Err(format!("@{channel} not found")),
-        },
-        c => Err(format!("TikTok error {}", c.unwrap_or(-1))),
-    }
-}
-
 /// The channel's live room ID, distinguishing normal offline/standby states from missing handles or
 /// transient errors. When `known_account` is true (e.g. a logged-in TikTok account), never hits the
 /// public embed endpoint on `19881007`.
@@ -539,6 +574,10 @@ pub async fn room_id(channel: &str, ttwid: &str, known_account: bool) -> Result<
     let v = fetch_user_room_raw(channel, ttwid)
         .await
         .map_err(RoomLookupError::Transient)?;
+    room_from_response(channel, &v, known_account).await
+}
+
+pub(crate) async fn room_from_response(channel: &str, v: &Value, known_account: bool) -> Result<u64, RoomLookupError> {
     match v["statusCode"].as_i64() {
         Some(0) => remember_existing_user(channel),
         // TikTok's Live service returns 19881007 (LIVE_USER_NOT_EXIST) for valid accounts that have
@@ -563,6 +602,7 @@ pub async fn room_id(channel: &str, ttwid: &str, known_account: bool) -> Result<
     let room = v["data"]["user"]["roomId"]
         .as_str()
         .and_then(|r| r.parse().ok())
+        .or_else(|| v["data"]["user"]["roomId"].as_u64())
         .unwrap_or(0);
     let status = v["data"]["liveRoom"]["status"]
         .as_i64()
@@ -593,6 +633,87 @@ pub fn ws_url(room: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deletion_ids_accept_packed_and_unpacked_large_integers() {
+        let mut message = Vec::new();
+        let large = 7_565_717_210_162_105_144;
+        put_int(&mut message, 2, large);
+        let mut packed = Vec::new();
+        put_varint(&mut packed, large + 1);
+        put_varint(&mut packed, large + 2);
+        put_bytes(&mut message, 2, &packed);
+        put_int(&mut message, 3, 42);
+        let (kind, data) = event("WebcastImDeleteMessage", Msg(&message)).unwrap();
+        assert_eq!(kind, "messageDelete");
+        assert_eq!(
+            data["deleteMsgIds"],
+            json!([large.to_string(), (large + 1).to_string(), (large + 2).to_string()])
+        );
+        assert_eq!(data["deleteUserIds"], json!(["42"]));
+    }
+
+    #[test]
+    fn room_pins_and_pause_controls_decode() {
+        let mut common = Vec::new();
+        put_int(&mut common, 2, 9001);
+        let mut sender = Vec::new();
+        put_bytes(&mut sender, 3, b"Display name");
+        put_bytes(&mut sender, 38, b"actual.handle");
+        let mut chat = Vec::new();
+        put_bytes(&mut chat, 1, &common);
+        put_bytes(&mut chat, 2, &sender);
+        put_bytes(&mut chat, 3, b":)");
+        let mut pin = Vec::new();
+        put_bytes(&mut pin, 2, &chat);
+        put_bytes(&mut pin, 32, &sender);
+        put_int(&mut pin, 33, 1);
+        put_int(&mut pin, 35, 9002);
+        let (kind, data) = event("WebcastRoomPinMessage", Msg(&pin)).unwrap();
+        assert_eq!(kind, "roomPin");
+        assert_eq!(data["chatMessage"]["msgId"], "9001");
+        assert_eq!(data["chatMessage"]["comment"], ":)");
+        assert_eq!(data["operator"]["nickname"], "Display name");
+        assert_eq!(data["pinMsgId"], "9002");
+        for (action, expected) in [(1, "streamPaused"), (2, "streamResumed"), (3, "streamEnd")] {
+            let mut control = Vec::new();
+            put_int(&mut control, 2, action);
+            assert_eq!(event("WebcastControlMessage", Msg(&control)).unwrap().0, expected);
+        }
+    }
+
+    #[test]
+    fn room_lookup_accepts_numeric_ids_and_checks_live_status() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            for id in [json!("777"), json!(777)] {
+                let mut body = json!({"statusCode": 0, "data": {"user": {"roomId": id}, "liveRoom": {"status": 2}}});
+                assert_eq!(room_from_response("fixture", &body, true).await, Ok(777));
+                body["data"]["liveRoom"]["status"] = json!(4);
+                assert_eq!(
+                    room_from_response("fixture", &body, true).await,
+                    Err(RoomLookupError::Offline)
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn a_rooms_page_gives_the_picture_and_name_live_or_not() {
+        let v = serde_json::json!({"data": {"user": {"avatarThumb": "https://p19.tiktokcdn.com/a.webp?x-expires=1",
+            "avatarLarger": "https://p16.tiktokcdn.com/big.webp", "nickname": "Naná", "uniqueId": "umananaai"}}});
+        assert_eq!(
+            super::room_profile(&v),
+            (
+                Some("https://p19.tiktokcdn.com/a.webp?x-expires=1".into()),
+                Some("Naná".into())
+            )
+        );
+        assert_eq!(
+            super::room_profile(&serde_json::json!({"statusCode": 19881007})),
+            (None, None)
+        );
+    }
 
     #[test]
     fn json_string_decodes_escapes() {
@@ -706,6 +827,8 @@ mod tests {
             (Some("Rose"), Some(3))
         );
         assert_eq!(v["repeatEnd"], true);
+        let (_, sparse) = event("WebcastGiftMessage", Msg(&[])).unwrap();
+        assert!(sparse["giftType"].is_null() && sparse["diamondCount"].is_null());
         let mut u = Vec::new();
         put_bytes(&mut u, 38, b"bigfan");
         let mut top = Vec::new();

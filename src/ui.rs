@@ -4,13 +4,16 @@
 mod accounts;
 mod actions;
 mod agents;
+mod anim;
 mod card;
 pub(crate) mod chat;
 pub(crate) mod clipboard;
+mod columns;
 mod conns;
 mod dev;
 pub(crate) mod dialogs;
 pub(crate) mod emotes;
+mod fields;
 mod find;
 pub(crate) mod fit;
 pub(crate) mod forms;
@@ -19,6 +22,7 @@ mod groups;
 pub(crate) mod icons;
 pub(crate) mod img;
 mod lists;
+pub(crate) mod menu;
 mod nav;
 pub mod picker;
 mod picker_icons;
@@ -27,6 +31,9 @@ pub(crate) mod polls;
 pub(crate) mod popover;
 mod recovery;
 mod rows;
+#[cfg(test)]
+mod rules;
+pub(crate) mod scroll;
 mod settings;
 mod suggest;
 mod tip;
@@ -245,12 +252,17 @@ pub(crate) fn pump_chat() {
 /// commands are answered). False when the app is closing.
 pub(crate) fn nested_wait(secs: Option<f64>) -> bool {
     let go = match secs {
-        Some(s) => app::wait_for(s).is_ok(),
+        // A launched browser can exit after forwarding to its existing process. SIGCHLD may
+        // interrupt FLTK's timed wait; that is not a request to close the dialog.
+        Some(s) => {
+            let _ = app::wait_for(s);
+            !app::should_program_quit() && app::first_window().is_some()
+        }
         None => app::wait(),
     };
     pump_dev();
     pump_chat();
-    go
+    go && !app::should_program_quit()
 }
 
 /// Yes/no questions from the engine: the text, the two buttons (no, yes), and where the answer goes.
@@ -335,9 +347,8 @@ pub fn restart() {
 /// A modal text question. Not dialog::input: on Wayland it focuses its input before the window
 /// exists and crashes FLTK.
 fn ask(title: &str, prompt: &str, text: &str) -> Option<String> {
-    let mut win = DoubleWindow::default().with_size(420, 130).with_label(title);
-    win.set_xclass("streamerz");
-    let mut col = Flex::new(10, 10, 400, 110, None).column();
+    let (mut win, answer) = dialogs::window(420, 120, title);
+    let mut col = Flex::new(10, 0, 400, 110, None).column();
     col.set_pad(6);
     Frame::default()
         .with_label(&prompt.replace('@', "@@"))
@@ -354,8 +365,7 @@ fn ask(title: &str, prompt: &str, text: &str) -> Option<String> {
     col.fixed(&bar, ROW + 4);
     col.end();
     win.end();
-    win.make_modal(true);
-    let answer = Rc::new(Cell::new(None::<bool>));
+    cancel.set_shortcut(Shortcut::from_key(fltk::enums::Key::Escape));
     ok.set_shortcut(Shortcut::from_key(fltk::enums::Key::Enter));
     ok.set_callback({
         let a = answer.clone();
@@ -365,20 +375,7 @@ fn ask(title: &str, prompt: &str, text: &str) -> Option<String> {
         let a = answer.clone();
         move |_| a.set(Some(false))
     });
-    win.set_callback({
-        let a = answer.clone();
-        move |_| a.set(Some(false))
-    });
-    win.show();
-    while win.shown() && answer.get().is_none() {
-        if !nested_wait(None) {
-            break;
-        }
-    }
-    win.hide();
-    let val = answer.get().unwrap_or(false).then(|| input.value());
-    app::delete_widget(win);
-    val
+    dialogs::run(&mut win, &answer, || true).then(|| input.value())
 }
 
 /// Run `f` on the engine's thread.
@@ -484,8 +481,8 @@ fn theme(dark: bool, accent: Option<(u8, u8, u8)>) {
         draw::set_draw_color(Color::color_average(c, Color::Foreground, 0.7));
         draw::draw_rounded_rect(x, y, w, h, r(w, h));
     }
-    // No dotted focus boxes: fields show their cursor, lists their selection.
-    app::set_visible_focus(false);
+    // Keyboard users need to see which control receives the next action.
+    app::set_visible_focus(true);
     app::set_menu_linespacing(8);
     app::set_scrollbar_size(12);
     for f in [
@@ -503,13 +500,6 @@ fn theme(dark: bool, accent: Option<(u8, u8, u8)>) {
         FrameType::GtkThinDownBox,
     ] {
         app::set_frame_type_cb(f, down, 2, 2, 4, 4);
-    }
-    if let Ok(mut bars) = SCROLLBARS.lock() {
-        bars.retain(|sb| !sb.was_deleted());
-        for sb in bars.iter_mut() {
-            sb.set_color(Color::Background);
-            sb.set_selection_color(Color::color_average(Color::Foreground, Color::Background, 0.35));
-        }
     }
 }
 
@@ -541,12 +531,22 @@ pub(crate) enum Health {
 
 impl Health {
     pub(crate) fn color(self) -> Color {
-        match self {
-            Health::Up => Color::from_rgb(0x3c, 0xb3, 0x71),
-            Health::Standby => Color::from_rgb(0x64, 0xb5, 0xf6),
-            Health::Busy | Health::Locked => Color::from_rgb(0xe0, 0xa8, 0x30),
-            Health::Off => Color::from_rgb(0x99, 0x99, 0x99),
-            Health::Down => Color::from_rgb(0xe0, 0x60, 0x50),
+        let (r, g, b) = self.rgb(icons::is_dark());
+        Color::from_rgb(r, g, b)
+    }
+
+    fn rgb(self, dark: bool) -> (u8, u8, u8) {
+        match (self, dark) {
+            (Health::Up, true) => (0x3c, 0xb3, 0x71),
+            (Health::Standby, true) => (0x64, 0xb5, 0xf6),
+            (Health::Busy | Health::Locked, true) => (0xe0, 0xa8, 0x30),
+            (Health::Off, true) => (0x99, 0x99, 0x99),
+            (Health::Down, true) => (0xe0, 0x60, 0x50),
+            (Health::Up, false) => (0x16, 0x65, 0x34),
+            (Health::Standby, false) => (0x1d, 0x4e, 0xd8),
+            (Health::Busy | Health::Locked, false) => (0x92, 0x40, 0x0e),
+            (Health::Off, false) => (0x52, 0x52, 0x5b),
+            (Health::Down, false) => (0xb9, 0x1c, 0x1c),
         }
     }
 
@@ -571,12 +571,13 @@ impl Health {
 }
 
 /// `text` in an empty field that isn't being typed in, saying what goes there.
-fn placeholder(i: &mut fltk::input::Input, text: &'static str) {
+fn placeholder(i: &mut fltk::input::Input, text: &str) {
+    let text = text.to_string();
     i.draw(move |i| {
         if i.value().is_empty() && !i.has_focus() {
             draw::set_font(Font::Helvetica, i.text_size());
             draw::set_draw_color(muted());
-            let shown = fit::ellipsize(text, i.w() - 12, |t| draw::width(t) as i32);
+            let shown = fit::ellipsize(&text, i.w() - 12, |t| draw::width(t) as i32);
             draw::draw_text2(&shown, i.x() + 6, i.y(), i.w() - 12, i.h(), Align::Left | Align::Clip);
         }
     });
@@ -595,11 +596,23 @@ pub(crate) fn header(col: &mut Flex, widths: &'static [i32], titles: &[&'static 
     f.draw(move |f| {
         draw::set_font(Font::HelveticaBold, 12);
         draw::set_draw_color(muted());
-        let mut x = f.x() + 12;
+        let layout = columns::layout(widths, titles.len(), f.w());
         for (i, t) in titles.iter().enumerate() {
-            let w = widths.get(i).copied().unwrap_or(f.w());
-            draw::draw_text2(t, x, f.y(), w, f.h(), Align::Left | Align::Clip);
-            x += w;
+            let (offset, w) = layout.cell(i);
+            let room = (w - 8).max(0);
+            let shown = if draw::width(t) as i32 <= room {
+                std::borrow::Cow::Borrowed(*t)
+            } else {
+                std::borrow::Cow::Owned(fit::ellipsize(t, room, |s| draw::width(s) as i32))
+            };
+            draw::draw_text2(
+                &shown,
+                f.x() + columns::INSET + offset,
+                f.y(),
+                w,
+                f.h(),
+                Align::Left | Align::Clip,
+            );
         }
     });
     col.fixed(&f, 16);
@@ -628,6 +641,7 @@ pub(crate) fn sort_header(
     filter: Option<Rc<HeaderFilter>>,
 ) -> Frame {
     let titles = titles.to_vec();
+    let count = titles.len();
     // Its own box: redrawn alone, it paints over the last arrow instead of on top of it (that left a
     // ghost of every arrow until the page was drawn again).
     let mut f = Frame::default();
@@ -637,12 +651,12 @@ pub(crate) fn sort_header(
         let (sort, filter) = (sort.clone(), filter.clone());
         move |f| {
             draw::set_font(Font::HelveticaBold, 12);
-            let mut x = f.x() + 12;
+            let layout = columns::layout(widths, titles.len(), f.w());
             for (i, t) in titles.iter().enumerate() {
-                let w = widths.get(i).copied().unwrap_or(f.w());
+                let (offset, w) = layout.cell(i);
+                let x = f.x() + columns::INSET + offset;
                 let filters = filter.as_ref().filter(|h| h.column == i);
                 if filters.is_some_and(|h| !h.shown.get()) {
-                    x += w;
                     continue;
                 }
                 let (on, up) = (sort.get().0 == i, sort.get().1);
@@ -655,16 +669,21 @@ pub(crate) fn sort_header(
                     tx += FUNNEL;
                 }
                 draw::set_draw_color(if on { Color::Foreground } else { muted() });
-                draw::draw_text2(t, tx, f.y(), w - 20, f.h(), Align::Left | Align::Clip);
+                let room = (w - (tx - x) - 20).max(0);
+                let shown = if draw::width(t) as i32 <= room {
+                    std::borrow::Cow::Borrowed(*t)
+                } else {
+                    std::borrow::Cow::Owned(fit::ellipsize(t, room, |s| draw::width(s) as i32))
+                };
+                draw::draw_text2(&shown, tx, f.y(), room, f.h(), Align::Left | Align::Clip);
                 if on {
-                    let tw = draw::width(t) as i32;
+                    let tw = draw::width(&shown) as i32;
                     let ink = Color::Foreground;
                     if let Some(mut a) = icons::icon(if up { "arrow-up" } else { "arrow-down" }, ink, 12) {
                         let gap = if t.is_empty() { 0 } else { 4 };
-                        a.draw(tx + tw.min(w - 34) + gap, f.y() + (f.h() - 12) / 2, 12, 12);
+                        a.draw(tx + tw + gap, f.y() + (f.h() - 12) / 2, 12, 12);
                     }
                 }
-                x += w;
             }
         }
     });
@@ -677,27 +696,24 @@ pub(crate) fn sort_header(
         }
         Event::Push => {
             // The titles start 12 px in, as the rows' text does.
-            let mut x = f.x() + 12;
-            let ex = app::event_x().max(x);
-            for (i, w) in widths.iter().enumerate() {
-                if (x..x + w).contains(&ex) {
-                    if let Some(h) = filter.as_ref().filter(|h| h.column == i) {
-                        if !h.shown.get() {
-                            break;
-                        }
-                        if ex < x + FUNNEL {
-                            (h.open)();
-                            f.redraw();
-                            break;
-                        }
+            let layout = columns::layout(widths, count, f.w());
+            let ex = app::event_x() - f.x() - columns::INSET;
+            if let Some(i) = layout.column_at(ex) {
+                let (x, _) = layout.cell(i);
+                if let Some(h) = filter.as_ref().filter(|h| h.column == i) {
+                    if !h.shown.get() {
+                        return true;
                     }
-                    let (on, up) = sort.get();
-                    sort.set((i, on != i || !up));
-                    f.redraw();
-                    f.do_callback();
-                    break;
+                    if ex < x + FUNNEL {
+                        (h.open)();
+                        f.redraw();
+                        return true;
+                    }
                 }
-                x += w;
+                let (on, up) = sort.get();
+                sort.set((i, on != i || !up));
+                f.redraw();
+                f.do_callback();
             }
             true
         }
@@ -710,26 +726,12 @@ pub(crate) fn sort_header(
 /// A menu at the pointer of things to tick: each item is a label and whether it's ticked; `pick` gets
 /// the item clicked.
 pub(crate) fn tick_menu(items: &[(String, bool)], pick: impl Fn(usize) + Clone + 'static) {
-    use fltk::menu::{MenuButton, MenuFlag};
-    let mut m = menu_at_pointer();
+    let mut m = menu::Menu::new();
     for (i, (label, on)) in items.iter().enumerate() {
-        let flag = if *on {
-            MenuFlag::Toggle | MenuFlag::Value
-        } else {
-            MenuFlag::Toggle
-        };
         let pick = pick.clone();
-        m.add(
-            &label.replace('/', "\\/").replace('&', "&&"),
-            Shortcut::None,
-            flag,
-            move |_| pick(i),
-        );
+        m.tick(label, *on, move || pick(i));
     }
-    if m.size() > 0 {
-        m.popup();
-    }
-    MenuButton::delete(m);
+    m.show();
 }
 
 fn button(row: &mut Flex, label: &str, w: i32) -> Button {
@@ -745,11 +747,13 @@ pub(crate) fn with_icon(b: &mut Button) -> bool {
     match icon_for(&b.label()) {
         Some(name) => {
             b.set_image(icons::before_label(name, button_ink(), 14));
+            b.set_deimage(icons::before_label(name, button_ink().inactive(), 14));
             b.set_align(Align::ImageNextToText);
             true
         }
         None => {
             b.set_image(None::<fltk::image::SvgImage>);
+            b.set_deimage(None::<fltk::image::SvgImage>);
             false
         }
     }
@@ -780,6 +784,14 @@ fn icon_for(label: &str) -> Option<&'static str> {
         "connect" | "connect_all" => "plug",
         "disconnect" | "disconnect_all" => "unplug",
         "test" => "play",
+        "blocking" => "lock",
+        "pause_resume" => "pause",
+        "pause_all" => "circle-pause",
+        "resume_all" => "play",
+        "run_again" => "rotate-ccw",
+        "variables_when_queued" => "list-ordered",
+        "variables_after_run" => "braces",
+        "configure" | "chat_settings" => "sliders-horizontal",
         "templates" | "manage_templates" => "layout-template",
         "change_value" => "pencil",
         "add_setting" | "add_file" => "plus",
@@ -803,13 +815,17 @@ fn icon_for(label: &str) -> Option<&'static str> {
         "clear" => "eraser",
         "advanced" => "sliders-horizontal",
         "settings" => "settings",
+        "accounts" => "user-round",
+        "members" => "users",
         "fill_with_test_names" => "users",
         "open" | "open_folder" => "folder-open",
+        "set_up" => "puzzle",
         "open_github" => "external-link",
         "browse" => "folder-open",
         "user_info" => "user-round",
         "report_github" => "bug",
         "start_poll" | "start_prediction" => "play",
+        "new_poll" | "new_prediction" => "plus",
         "end_poll" => "square",
         "lock" | "remove_access" => "lock",
         "allow_access" => "lock-open",
@@ -819,58 +835,37 @@ fn icon_for(label: &str) -> Option<&'static str> {
         "restore" => "rotate-ccw",
         "change" => "folder-pen",
         "open_file" | "open_profile" | "open_browser" => "external-link",
+        "help" => "circle-help",
+        "refresh_gifts" => "rotate-cw",
+        "preview_gift" => "eye",
+        "insert_value" => "braces",
         _ => return None,
     })
 }
 
-/// `labels` as a menu at the pointer; the index of the one picked. (Not a menu item's `value()`: that's
-/// a toggle's state, so every pick used to be read as the first.)
+/// `labels` as a menu at the pointer; the index of the one picked.
 pub(crate) fn pick(labels: &[&str]) -> Option<usize> {
-    use fltk::menu::{MenuButton, MenuFlag};
-    let mut m = menu_at_pointer();
+    let mut m = menu::Menu::new();
     for l in labels {
-        m.add(&menu_text(l), Shortcut::None, MenuFlag::Normal, |_| {});
+        m.item(l, None, || {});
     }
-    let chosen = m.popup().map(|_| m.value());
-    MenuButton::delete(m);
-    if let Some(l) = chosen.and_then(|i| usize::try_from(i).ok()).and_then(|i| labels.get(i)) {
-        crate::crash::step(&format!("menu item {l}"));
-    }
-    chosen
-        .and_then(|i| usize::try_from(i).ok())
-        .filter(|i| *i < labels.len())
+    m.show()
 }
 
-/// A label as a menu shows it as written (`&` underlines and `/` makes a submenu otherwise).
-fn menu_text(l: &str) -> String {
-    l.replace('&', "&&").replace('/', "\\/")
+/// The keys that open a context menu without the mouse: the Menu key and Shift+F10.
+pub(crate) fn menu_key() -> bool {
+    let key = app::event_key();
+    use fltk::enums::Key;
+    key == Key::Menu || (key == Key::F10 && app::is_event_shift())
 }
 
-/// A menu button at the pointer, in the window the pointer is in. Wayland places a popup relative to the
-/// window of the widget that opens it (a button with no window opens it in the corner), and refuses an
-/// empty box, so it is 1x1 (and invisible).
-pub(crate) fn menu_at_pointer() -> fltk::menu::MenuButton {
-    let host: Option<Box<dyn WindowExt>> = app::belowmouse::<fltk::widget::Widget>()
-        .and_then(|w| w.window())
-        .or_else(|| app::first_window().map(|w| Box::new(w) as Box<dyn WindowExt>));
-    if let Some(h) = &host {
-        h.begin();
-    }
-    let mut m = fltk::menu::MenuButton::new(app::event_x(), app::event_y(), 1, 1, None);
-    // No box: a menu button draws one (and a marker) of its own, which left white dots on the window.
-    m.set_frame(FrameType::NoBox);
-    if let Some(h) = host {
-        h.end();
-        // Not dropped: a window got this way owns its widget, and dropping it would delete the window.
-        std::mem::forget(h);
-    }
-    m
-}
-
-/// The menu a right click opens: `buttons`' actions, the inactive ones greyed. Runs the one picked.
+/// The menu a right click opens: `buttons`' actions with their icons, the inactive ones greyed. Runs
+/// the one picked.
 pub(crate) fn context_menu(buttons: &[Button]) {
-    use fltk::menu::{MenuButton, MenuFlag};
-    let mut m = menu_at_pointer();
+    if crate::brand::IS_DEV {
+        dev::record_menu(buttons);
+    }
+    let mut m = menu::Menu::new();
     for b in buttons {
         let l = b.label();
         let l = if l.is_empty() {
@@ -878,26 +873,10 @@ pub(crate) fn context_menu(buttons: &[Button]) {
         } else {
             l
         };
-        let flag = if b.active() {
-            MenuFlag::Normal
-        } else {
-            MenuFlag::Inactive
-        };
-        let i = m.add(&l.replace('/', "\\/").replace('&', "&&"), Shortcut::None, flag, {
-            let (mut b, l) = (b.clone(), l.clone());
-            move |_| {
-                crate::crash::step(&format!("menu item {l}"));
-                b.do_callback()
-            }
-        });
-        if let (Some(mut item), Some(name)) = (m.at(i), icon_for(&l)) {
-            item.add_image(icons::before_label(name, button_ink(), 14), true);
-        }
+        let mut b2 = b.clone();
+        m.add(&l, icon_for(&l), b.active_r(), move || b2.do_callback());
     }
-    if m.size() > 0 {
-        m.popup();
-    }
-    MenuButton::delete(m);
+    m.show();
 }
 
 /// Buttons in a grid `rows` high that fills `col`'s width, all the same width; where their labels don't
@@ -907,62 +886,128 @@ fn grid(col: &mut Flex, labels: &[&str], rows: i32) -> Vec<Button> {
 }
 
 /// `grid`, also giving the group holding the buttons (to show or hide them together).
+fn grid_rows(width: i32, count: i32, requested: i32, label_width: i32) -> i32 {
+    let requested = requested.max(1);
+    let columns = (count + requested - 1) / requested;
+    let cell = (width - (columns - 1).max(0) * 8) / columns.max(1);
+    if width >= 600 && count > 4 && cell < label_width {
+        requested.max(2)
+    } else {
+        requested
+    }
+}
+
+fn row_folded(widths: &[i32], cell: i32) -> bool {
+    widths.iter().any(|width| *width > cell)
+}
+
+fn footer_sizes(width: i32, normal: [i32; 3]) -> ([i32; 3], i32) {
+    if width < 700 {
+        let buttons = [36; 3];
+        (buttons, ((width - 3 * 36 - 4 * 8) / 2).max(0))
+    } else {
+        (normal, 240)
+    }
+}
+
 fn grid_group(col: &mut Flex, labels: &[&str], rows: i32) -> (fltk::group::Group, Vec<Button>) {
+    let rows = rows.max(1);
     let mut g = fltk::group::Group::default();
-    let out: Vec<Button> = labels.iter().map(|l| Button::default().with_label(l)).collect();
+    let out: Vec<Button> = labels
+        .iter()
+        .map(|label| {
+            let mut button = Button::default().with_label(label);
+            with_icon(&mut button);
+            button
+        })
+        .collect();
     g.end();
     col.fixed(&g, rows * (ROW + 2) + (rows - 1) * 6);
-    let labels: Vec<String> = labels.iter().map(|l| (*l).to_string()).collect();
-    let place = {
+    let mut place = {
         let out = out.clone();
-        move |x: i32, y: i32, w: i32, h: i32| {
-            let n = out.len() as i32;
-            let cols = (n + rows - 1) / rows;
-            let cw = (w - (cols - 1) * 8) / cols.max(1);
-            let rh = (h - (rows - 1) * 6) / rows;
-            // Measured once the window shows (measuring loads the fonts); a guess before.
+        let mut parent = col.clone();
+        // One fold decision for the whole grid: every button shows its words, or every one its icon.
+        let fold = Rc::new(Cell::new(false));
+        for button in &out {
+            fit::adaptive_with_fold(&mut button.clone(), fold.clone());
+        }
+        move |g: &mut fltk::group::Group, x: i32, y: i32, width: i32| {
             let shown = SHOWN.load(Ordering::Relaxed);
             if shown {
                 draw::set_font(Font::Helvetica, app::font_size());
             }
-            let fits = labels.iter().all(|l| {
-                let text = if shown {
-                    draw::width(l) as i32
-                } else {
-                    l.len() as i32 * 7
-                };
-                text + 14 + 7 + 20 <= cw
-            });
-            for (i, (mut b, l)) in out.iter().cloned().zip(&labels).enumerate() {
-                let (r, c) = (i as i32 / cols, i as i32 % cols);
-                b.resize(x + c * (cw + 8), y + r * (rh + 6), cw, rh);
-                match icon_for(l).filter(|_| !fits) {
-                    Some(name) => {
-                        b.set_label("");
-                        b.set_image(icons::icon(name, button_ink(), 16));
-                        b.set_align(Align::Center | Align::ImageNextToText);
-                        b.set_tooltip(l);
+            let widths: Vec<_> = out
+                .iter()
+                .map(|button| {
+                    let label = button.label();
+                    let text = if shown {
+                        draw::width(&label) as i32
+                    } else {
+                        label.len() as i32 * 7
+                    };
+                    text + 41
+                })
+                .collect();
+            let wanted = widths.iter().copied().max().unwrap_or(0);
+            let count = out.len() as i32;
+            let rows = grid_rows(width, count, rows, wanted);
+            let columns = ((count + rows - 1) / rows).max(1);
+            let cell = ((width - (columns - 1) * 8) / columns).max(0);
+            fold.set(row_folded(&widths, cell));
+            let height = rows * (ROW + 2) + (rows - 1) * 6;
+            if g.h() != height {
+                parent.fixed(g, height);
+                let mut parent = parent.clone();
+                app::awake_callback(move || {
+                    if !parent.was_deleted() {
+                        parent.recalc();
+                        parent.redraw();
                     }
-                    None => {
-                        b.set_label(l);
-                        with_icon(&mut b);
-                    }
-                }
+                });
+            }
+            for (index, mut button) in out.iter().cloned().enumerate() {
+                let (row, column) = (index as i32 / columns, index as i32 % columns);
+                button.resize(x + column * (cell + 8), y + row * (ROW + 8), cell, ROW + 2);
             }
         }
     };
-    place(g.x(), g.y(), g.w(), g.h());
-    g.resize_callback(move |_, x, y, w, h| place(x, y, w, h));
+    let (x, y, width) = (g.x(), g.y(), g.w());
+    place(&mut g, x, y, width);
+    g.resize_callback(move |g, x, y, width, _| place(g, x, y, width));
     (g, out)
 }
 
-/// A quiet line of help text in `col`, `h` tall, wrapped.
+/// Quiet help text, at least `h` tall, growing to fit its wrapped lines on resize.
 pub(crate) fn hint(col: &mut Flex, text: &str, h: i32) -> Frame {
     let mut f = Frame::default()
         .with_label(&text.replace('@', "@@"))
         .with_align(Align::Left | Align::Inside | Align::Wrap);
     f.set_label_color(muted());
     col.fixed(&f, h);
+    f.resize_callback({
+        let mut col = col.clone();
+        let measured_width = Cell::new(0);
+        move |f, _, _, width, _| {
+            if width <= 0 || measured_width.replace(width) == width {
+                return;
+            }
+            draw::set_font(f.label_font(), f.label_size());
+            let lines = dialogs::wrap(&f.label(), (width - 4).max(1), |s| draw::width(s) as i32);
+            let height = (lines.len() as i32 * draw::height() + 4).max(h);
+            if f.h() != height {
+                col.fixed(f, height);
+                // A Flex can be in the middle of laying out its children here. Recalculate after
+                // that pass so its flexible lists use the newly measured help height.
+                let mut parent = col.clone();
+                app::awake_callback(move || {
+                    if !parent.was_deleted() {
+                        parent.recalc();
+                        parent.redraw();
+                    }
+                });
+            }
+        }
+    });
     f
 }
 
@@ -974,31 +1019,6 @@ fn tab(tabs: &Wizard, label: &str) -> Flex {
     col.set_margin(10);
     col.set_pad(4);
     col
-}
-
-static SCROLLBARS: Mutex<Vec<fltk::valuator::Scrollbar>> = Mutex::new(Vec::new());
-
-/// A scrollable page: wraps a vertical Flex inside a fltk::group::Scroll.
-pub(crate) fn tab_scrolled(tabs: &Wizard, label: &str, content_h: i32) -> (fltk::group::Scroll, Flex) {
-    let mut s = fltk::group::Scroll::new(tabs.x(), tabs.y(), tabs.w(), tabs.h(), None).with_label(label);
-    s.set_type(fltk::group::ScrollType::Vertical);
-    s.set_scrollbar_size(10);
-    let mut sb = s.scrollbar();
-    sb.set_color(Color::Background);
-    sb.set_selection_color(Color::color_average(Color::Foreground, Color::Background, 0.35));
-    if let Ok(mut bars) = SCROLLBARS.lock() {
-        bars.push(sb.clone());
-    }
-    let mut col = Flex::new(s.x(), s.y(), s.w() - 14, content_h.max(s.h()), None).column();
-    col.set_margin(10);
-    col.set_pad(4);
-    s.resizable(&col);
-    let mut col_c = col.clone();
-    s.resize_callback(move |s, x, y, w, h| {
-        let ch = content_h.max(h);
-        col_c.resize(x - s.xposition(), y - s.yposition(), (w - 14).max(50), ch);
-    });
-    (s, col)
 }
 
 /// The Log tab: each line's time, its level in the level's colour, and its text, filtered by level and
@@ -1139,6 +1159,9 @@ pub fn run(
     fltk::image::Image::set_scaling_algorithm(fltk::image::RgbScaling::Bilinear);
     let mut win = DoubleWindow::default().with_size(W, H).with_label(&crate::version());
     win.set_xclass("streamerz");
+    // Dialogs open inside it (over it, blurred), never as windows of their own.
+    dialogs::set_host(&win);
+    anim::set(cfg.borrow().animations);
     if let Ok(icon) = RgbImage::new(brand::app(c_dark), brand::SIZE, brand::SIZE, ColorDepth::Rgba8) {
         win.set_icon(Some(icon));
     }
@@ -1170,12 +1193,29 @@ pub fn run(
     top.fixed(&level, 160);
     let mut search = fltk::input::Input::default();
     placeholder(&mut search, tr("log.search"));
+    search.set_tooltip(tr("log.search"));
     search.set_trigger(fltk::enums::CallbackTrigger::Changed);
     // The search takes what's left, so the row fits narrow windows.
     let mut open_logs = button(&mut top, tr("btn.open_folder"), 120);
     top.end();
+    top.resize_callback({
+        let (mut label, level, open) = (l.clone(), level.clone(), open_logs.clone());
+        let open_width = open_logs.w();
+        move |row, _, _, width, _| {
+            if width < 600 {
+                label.hide();
+                row.fixed(&level, 120);
+                row.fixed(&open, 36);
+            } else {
+                label.show();
+                row.fixed(&level, 160);
+                row.fixed(&open, open_width);
+            }
+        }
+    });
     col.fixed(&top, ROW);
     let mut view = TextDisplay::default();
+    scroll::view(&mut view);
     let (buf, styles) = (TextBuffer::default(), TextBuffer::default());
     view.set_buffer(buf.clone());
     view.set_highlight_data(styles.clone(), log_styles());
@@ -1219,8 +1259,32 @@ pub fn run(
     let mut hide = button(&mut bar, tr("btn.hide"), 90);
     let mut quit = button(&mut bar, tr("btn.quit"), 90);
     bar.end();
+    bar.resize_callback({
+        let buttons = [save.clone(), hide.clone(), quit.clone()];
+        let normal = buttons.each_ref().map(|button| button.w());
+        let conns = conns.clone();
+        move |bar, _, _, width, _| {
+            let (widths, status) = footer_sizes(width, normal);
+            for (button, width) in buttons.iter().zip(widths) {
+                bar.fixed(button, width);
+            }
+            bar.fixed(&conns, status);
+        }
+    });
     win.end();
     win.resizable(&tabs);
+    win.resize_callback({
+        let (sidebar, pages, cfg) = (sidebar.clone(), tabs.clone(), cfg.clone());
+        let narrow = Cell::new(false);
+        move |_, _, _, width, _| {
+            let now = width < 760;
+            // Restore the preference on crossing the breakpoint; manual expansion remains usable
+            // during resizing within a narrow viewport.
+            if narrow.replace(now) != now {
+                nav::fit_window(sidebar.clone(), pages.clone(), &cfg, width);
+            }
+        }
+    });
     // Back as it was left: size and tab.
     {
         let c = cfg.borrow();
@@ -1419,6 +1483,7 @@ pub fn run(
                 Msg::Image => pictures.set(true),
                 // Hidden: nothing to redraw (filling a list loads the fonts); opening refreshes.
                 Msg::Changed if win.visible() => {
+                    forms::catalog_changed();
                     clipboard::sync(&cfg, &cmds_live);
                     status_bar();
                     if let Ok(mut a) = acts.try_borrow_mut() {
@@ -1543,6 +1608,93 @@ fn pump_dev_with(tabs: &Wizard) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn long_desktop_action_rows_wrap_before_hiding_their_labels() {
+        assert_eq!(grid_rows(904, 8, 1, 160), 2);
+        assert_eq!(grid_rows(904, 3, 1, 160), 1);
+        assert_eq!(grid_rows(344, 8, 1, 160), 1);
+        assert_eq!(grid_rows(904, 8, 2, 160), 2);
+    }
+
+    #[test]
+    fn one_long_action_folds_the_whole_row_without_affecting_other_rows() {
+        assert!(row_folded(&[60, 150, 70], 100));
+        assert!(!row_folded(&[60, 80], 100));
+        assert!(!row_folded(&[60, 150, 70], 160));
+    }
+
+    #[test]
+    fn narrow_footer_keeps_connections_and_save_feedback_between_its_buttons() {
+        for width in [520, 620] {
+            let (buttons, connections) = footer_sizes(width, [110; 3]);
+            let feedback = width - buttons.iter().sum::<i32>() - connections - 4 * 8;
+            assert!(connections >= 100);
+            assert!(feedback >= 100);
+        }
+        assert_eq!(footer_sizes(1080, [110; 3]), ([110; 3], 240));
+    }
+
+    #[test]
+    fn related_history_and_queue_actions_have_distinct_icons() {
+        for (left, right) in [
+            ("btn.variables_when_queued", "btn.variables_after_run"),
+            ("btn.pause_resume", "btn.pause_all"),
+        ] {
+            assert_ne!(icon_for(tr(left)), icon_for(tr(right)));
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn wrapped_help_keeps_following_controls_inside_the_page() {
+        let _app = app::App::default();
+        let mut window = DoubleWindow::new(0, 0, 600, 400, None);
+        let mut column = Flex::new(0, 0, 600, 400, None).column();
+        let help = hint(&mut column, "Connect a streaming app using its WebSocket server. Add the matching address, port and password before connecting.", 24);
+        let rows = rows::Rows::new("No connections yet.");
+        let footer = Frame::default().with_label("Connections");
+        column.fixed(&footer, 26);
+        column.end();
+        window.end();
+        window.show();
+        let mut wide_height = 0;
+        for width in [600, 180, 600] {
+            window.resize(0, 0, width, 400);
+            column.resize(0, 0, width, 400);
+            column.recalc();
+            for _ in 0..4 {
+                app::check();
+            }
+            assert!(help.y() + help.h() <= rows.y());
+            assert!(rows.y() + rows.h() <= footer.y());
+            assert!(footer.y() + footer.h() <= column.y() + column.h());
+            assert!(rows.h() > 100);
+            if width == 180 {
+                assert!(help.h() > wide_height);
+            } else {
+                wide_height = help.h();
+            }
+        }
+        window.hide();
+        app::delete_widget(window);
+    }
+
+    #[test]
+    fn queue_history_and_configuration_actions_can_fold_to_icons() {
+        for key in [
+            "btn.blocking",
+            "btn.pause_resume",
+            "btn.pause_all",
+            "btn.resume_all",
+            "btn.run_again",
+            "btn.variables_when_queued",
+            "btn.variables_after_run",
+            "btn.configure",
+        ] {
+            assert!(icon_for(tr(key)).is_some(), "{key} has no compact action icon");
+        }
+    }
+
     /// A login that ran out is asked about once, and again only after it was done again.
     #[test]
     fn a_login_is_asked_about_once() {
@@ -1560,12 +1712,6 @@ mod tests {
         let t = std::time::Instant::now();
         let got = query_for(&tx, std::time::Duration::from_millis(50), |_| 1);
         assert!(got.is_none() && t.elapsed() < std::time::Duration::from_secs(2));
-    }
-
-    /// Menu labels show as written: an outcome named "Yes/No" isn't a submenu.
-    #[test]
-    fn menu_labels_show_as_written() {
-        assert_eq!(menu_text("Yes/No & maybe"), "Yes\\/No && maybe");
     }
 
     /// The log's styles have one letter per byte (FLTK styles bytes), so colours stay on their words

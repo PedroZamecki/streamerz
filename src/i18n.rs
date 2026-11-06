@@ -207,7 +207,7 @@ mod tests {
         }
         assert_eq!(button_id("Add"), Some("add"));
         assert_eq!(button_id("Edit…"), Some("edit"));
-        assert_eq!(button_id("Connect All"), Some("connect_all"));
+        assert_eq!(button_id("Connect all"), Some("connect_all"));
         assert_eq!(button_id("Nothing like it"), None);
     }
 

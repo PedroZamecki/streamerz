@@ -28,6 +28,35 @@
       {"fire": 41002, "args": {"user": "bo", "giftName": "Rose", "repeatCount": 5}, "ran": 1},
       {"fire": "KickFollow", "args": {"user": "cy"}}
     ],
-    "expect": {"chat": [{"platform": "kick", "text": "welcome cy"}]}
+    "expect": {"chat": [{"platform": "tiktok", "text": "thanks bo for 5 Rose"}, {"platform": "kick", "text": "welcome cy"}]}
+  },
+  {
+    "name": "TikTok gift and Twitch reward filters match exact IDs, combo completion, and coin bounds",
+    "actions": [
+      {
+        "name": "rose combo",
+        "triggers": [{"type": 41002, "giftId": "5655", "giftDelivery": 1, "minCoins": 5, "maxCoins": 20}],
+        "subActions": [{"type": 43001, "text": "rose %user% x%repeatCount%"}]
+      },
+      {
+        "name": "hydrate",
+        "triggers": [{"type": 112, "rewardId": "rw-hydrate"}],
+        "subActions": [{"type": 10, "text": "drink %user%"}]
+      }
+    ],
+    "steps": [
+      {"fire": 41002, "args": {"user": "ana", "giftId": "9999", "giftName": "Heart", "diamondCount": 10, "repeatCount": 1, "giftType": 0}, "ran": 0},
+      {"fire": 41002, "args": {"user": "ana", "giftId": "5655", "giftName": "Rose", "diamondCount": 1, "repeatCount": 5, "giftType": 1, "repeatEnd": false}, "ran": 0},
+      {"fire": 41002, "args": {"user": "ana", "giftId": "5655", "giftName": "Rose", "diamondCount": 1, "repeatCount": 25, "giftType": 1, "repeatEnd": true}, "ran": 0},
+      {"fire": 41002, "args": {"user": "ana", "giftId": "5655", "giftName": "Rose", "diamondCount": 1, "repeatCount": 6, "giftType": 1, "repeatEnd": true}, "ran": 1},
+      {"fire": 112, "args": {"user": "bo", "rewardId": "rw-other"}, "ran": 0},
+      {"fire": 112, "args": {"user": "bo", "rewardId": "rw-hydrate"}, "ran": 1}
+    ],
+    "expect": {
+      "chat": [
+        {"platform": "tiktok", "text": "rose ana x6"},
+        {"platform": "twitch", "text": "drink bo"}
+      ]
+    }
   }
 ]

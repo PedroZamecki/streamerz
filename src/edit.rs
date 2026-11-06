@@ -168,7 +168,12 @@ pub fn new_sub(kind: u64) -> Obj {
 
 pub fn new_trigger(kind: u32) -> Obj {
     match json!({"id": uuid(), "type": kind, "enabled": true, "exclusions": []}) {
-        Value::Object(o) => o,
+        Value::Object(mut o) => {
+            if kind == crate::tiktok::T_TIKTOK_GIFT {
+                o.insert("giftDelivery".into(), 1.into());
+            }
+            o
+        }
         _ => Obj::new(),
     }
 }

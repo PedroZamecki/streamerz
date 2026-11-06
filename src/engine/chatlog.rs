@@ -63,10 +63,15 @@ pub struct Line {
     pub ts: i64,
     pub user: String,
     pub user_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handle: Option<Box<str>>,
     pub text: String,
     /// The emotes in `text`: name and picture URL.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub emotes: Vec<(String, String)>,
+    /// URL of a standalone Twitch GIF message.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub gif: String,
     /// Roles, shown as badges when no explicit badge list is present.
     #[serde(skip_serializing_if = "is_false")]
     pub broadcaster: bool,
@@ -474,8 +479,9 @@ pub fn local_hhmm(unix_secs: i64) -> String {
 
 /// Whether an argument is about the user rather than the message.
 fn about_user(k: &str) -> bool {
-    const ABOUT: [&str; 18] = [
+    const ABOUT: [&str; 19] = [
         "user",
+        "uniqueId",
         "isSubscribed",
         "isModerator",
         "isVip",
@@ -879,10 +885,25 @@ impl Engine {
                 ts: crate::fmt::unix_now().as_millis() as i64,
                 user: c.user.clone(),
                 user_id: c.user_id.clone(),
+                handle: (c.platform == "tiktok")
+                    .then(|| {
+                        c.args
+                            .get("uniqueId")
+                            .and_then(Value::as_str)
+                            .filter(|s| !s.is_empty())
+                            .map(Box::<str>::from)
+                    })
+                    .flatten(),
                 reply,
                 text,
                 action,
                 emotes,
+                gif: c
+                    .args
+                    .get("messageGifUrl")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
                 broadcaster: c.broadcaster,
                 moderator: c.moderator,
                 vip: c.vip,
@@ -1028,7 +1049,7 @@ impl Engine {
     }
 
     /// A line from Streamerz itself (a failed send, a dev-mode send).
-    fn chat_note(&self, platform: &str, text: String) {
+    pub(crate) fn chat_note(&self, platform: &str, text: String) {
         self.chat_log_mut().push(Line {
             platform: platform.into(),
             time: crate::fmt::shown_time(&crate::fmt::now()),
@@ -1390,7 +1411,7 @@ impl Engine {
             .filter(|l| l.platform == platform && !l.note)
         {
             if !seen.iter().any(|(_, id): &(String, String)| *id == l.user_id) {
-                seen.push((l.user.clone(), l.user_id.clone()));
+                seen.push((l.handle.as_deref().unwrap_or(&l.user).to_string(), l.user_id.clone()));
             }
         }
         seen
@@ -1460,7 +1481,17 @@ impl Engine {
         let own = self.own_channel(platform) || crate::roles::get(platform).0.moderates();
         let mut st = self.st.borrow_mut();
         let log = &mut st.chat_log;
-        let mut changed = false;
+        let before = log.pins.len();
+        log.pins.retain(|pin| {
+            pin.platform != platform
+                || !((!msg_id.is_empty() && pin.msg_id == msg_id)
+                    || (!user_id.is_empty()
+                        && log
+                            .lines
+                            .iter()
+                            .any(|l| l.platform == platform && l.msg_id == pin.msg_id && l.user_id == user_id)))
+        });
+        let mut changed = before != log.pins.len();
         for l in log.lines.iter_mut().filter(|l| {
             l.platform == platform
                 && !l.note
@@ -1468,6 +1499,7 @@ impl Engine {
                 && ((!msg_id.is_empty() && l.msg_id == msg_id) || (!user_id.is_empty() && l.user_id == user_id))
         }) {
             l.deleted = true;
+            l.pinned = None;
             if !own {
                 l.text = "message deleted".into();
                 l.emotes.clear();
@@ -1774,7 +1806,7 @@ impl Engine {
         match platform {
             "kick" => c.kick.broadcaster.as_ref().map(|b| b.user_id.to_string()),
             "youtube" => c.youtube.broadcaster.as_ref().map(|b| b.channel_id.clone()),
-            "tiktok" => c.tiktok.broadcaster.as_ref().map(|b| b.username.clone()),
+            "tiktok" => Some(self.tiktok_bridge.uid()),
             _ => None,
         }
         .unwrap_or_default()
@@ -1845,7 +1877,13 @@ impl Engine {
     /// A line for what we are sending, shown at once (before the platform has taken it, and its own copy
     /// has come back); `chat_unlocal` takes it away if the send fails. The sequence number to ask that with.
     fn chat_local(&self, platform: &str, text: &str, bot: bool, reply: Option<&Line>) -> Option<u64> {
-        let (name, id) = {
+        // TikTok sends as the browser's account.
+        let browser = Some(self.tiktok_bridge.user())
+            .filter(|u| platform == "tiktok" && !u.is_empty())
+            .map(|u| (u, self.tiktok_bridge.uid()));
+        let (name, id) = if let Some(b) = browser {
+            b
+        } else {
             let c = self.cfg.borrow();
             let acct = |b: bool| -> Option<(String, String)> {
                 match platform {
@@ -1872,9 +1910,7 @@ impl Engine {
                             };
                             (name, a.channel_id.clone())
                         }),
-                    "tiktok" => (if b { &c.tiktok.bot } else { &c.tiktok.broadcaster })
-                        .as_ref()
-                        .map(|a| (a.username.trim_start_matches('@').to_string(), a.username.clone())),
+                    "tiktok" => None,
                     _ => None,
                 }
             };
@@ -1979,11 +2015,7 @@ impl Engine {
                 .broadcaster
                 .as_ref()
                 .is_none_or(|b| b.channel_id == c.youtube.channel_id),
-            "tiktok" => c.tiktok.broadcaster.as_ref().is_none_or(|b| {
-                b.username
-                    .trim_start_matches('@')
-                    .eq_ignore_ascii_case(&c.tiktok.channel)
-            }),
+            "tiktok" => self.tiktok_bridge.user().eq_ignore_ascii_case(&c.tiktok.channel),
             "twitch" => !crate::twitch::other_channel(&c),
             _ => true,
         }
@@ -2068,12 +2100,36 @@ impl Engine {
 
     /// Whether the chat sends on `platform` as the broadcaster (else as the bot), as picked in the chat.
     pub fn sends_as_broadcaster(&self, platform: &str) -> bool {
+        if platform == "tiktok" {
+            return true;
+        }
         self.cfg
             .borrow()
             .window
             .chat_as_broadcaster
             .iter()
             .any(|p| p == platform)
+    }
+
+    /// The outgoing mention, using TikTok's handle even when the display name differs.
+    pub(crate) fn chat_reply_text(&self, platform: &str, text: String, reply: Option<&Line>) -> String {
+        let Some(line) =
+            reply.filter(|l| l.platform == platform && (l.msg_id.is_empty() || !matches!(platform, "twitch" | "kick")))
+        else {
+            return text;
+        };
+        let remembered = (platform == "tiktok" && line.handle.is_none())
+            .then(|| self.chatter(platform, &line.user_id))
+            .flatten()
+            .and_then(|s| s.args.get("uniqueId").and_then(Value::as_str).map(str::to_string));
+        format!(
+            "@{} {text}",
+            line.handle
+                .as_deref()
+                .or(remembered.as_deref())
+                .unwrap_or(&line.user)
+                .trim_start_matches('@')
+        )
     }
 
     /// Send `text` to an explicit list of platforms with configurable account fallback.
@@ -2094,16 +2150,17 @@ impl Engine {
             .map(|e| e.0.clone())
             .collect();
         for &p in to {
-            if p == "tiktok" {
-                self.chat_note(p, "TikTok chat is read-only in Streamerz".into());
-                continue;
-            }
-            let mut text = for_platform(text, p, &kick_known);
+            let bot = bot && p != "tiktok";
+            let text = for_platform(text, p, &kick_known);
             // A reply where the platform has them; a mention elsewhere.
             let reply_target = reply.filter(|l| l.platform == p);
             let reply_id = reply_target.filter(|l| !l.msg_id.is_empty() && matches!(p, "twitch" | "kick"));
-            if let (Some(l), None) = (reply_target, reply_id) {
-                text = format!("@{} {text}", l.user);
+            let text = self.chat_reply_text(p, text, reply_target);
+            if p == "tiktok" {
+                if let Err(error) = crate::tiktok_bridge::validate_message(&text) {
+                    self.chat_note(p, error);
+                    continue;
+                }
             }
             let to = reply_id.map(|l| format!(", reply to @{}", l.user)).unwrap_or_default();
             let reply_id = reply_id.map(|l| l.msg_id.clone());
@@ -2149,7 +2206,8 @@ impl Engine {
                         Some(r) => e.kick_start().reply_message(&text, r, bot, fallback).await,
                         None => e.kick_start().send_message(&text, bot, fallback).await,
                     },
-                    _ => Err("TikTok chat is read-only".into()),
+                    "tiktok" => crate::tiktok_bridge::send_message(&e, &text).await,
+                    _ => Err(format!("{p}: can't send there")),
                 };
                 match r {
                     Ok(()) => {
@@ -2188,7 +2246,7 @@ pub fn can_send(c: &crate::Config, platform: &str) -> bool {
         "twitch" => c.twitch.broadcaster.is_some() || c.twitch.bot.is_some(),
         "youtube" => c.youtube.broadcaster.is_some() || c.youtube.bot.is_some(),
         "kick" => c.kick.broadcaster.is_some() || c.kick.bot.is_some(),
-        "tiktok" => false,
+        "tiktok" => crate::tiktok_bridge::set_up(c),
         _ => false,
     }
 }
@@ -2390,15 +2448,12 @@ mod tests {
         let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::engine::tests::run(async {
             let mut c = crate::Config::default();
-            c.tiktok.broadcaster = Some(crate::tiktok::TikTokAccount {
-                username: "pedrozamecki".into(),
-                ..Default::default()
-            });
             c.window.chat.total = 100;
             let (tx, _rx) = tokio::sync::watch::channel(c);
             let cfg = std::sync::Arc::new(tx);
             let e = crate::engine::Engine::new(cfg, |_| {});
 
+            e.tiktok_bridge.test_account("pedrozamecki", "7034185239447077894");
             // Optimistic TikTok local message
             let seq = e.chat_local("tiktok", "tap tap", false, None).unwrap();
             let (_, _, lines) = e.chat_sync(999, 0);
@@ -2772,8 +2827,79 @@ mod tests {
         assert!(can_send(&c, "kick"));
         assert!(!can_send(&c, "twitch"));
         assert!(!can_send(&c, "tiktok"));
-        c.tiktok.broadcaster = Some(Default::default());
-        assert!(!can_send(&c, "tiktok"));
+        // Sending needs the browser extension, not a separate account login.
+        c.tiktok.bridge_token = "t".into();
+        assert!(can_send(&c, "tiktok"));
+    }
+
+    #[test]
+    fn injected_tiktok_stickers_use_the_real_emote_parser() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
+            e.dev_mode();
+            e.change(|c| c.window.chat.save_history = true);
+            e.inject_chat(
+                "tiktok",
+                "Viewer",
+                "42",
+                "viewer",
+                "[tiktok:123]",
+                &serde_json::json!({"args": {"emotes": [
+                    {"token": "[tiktok:123]", "url": "https://example.test/emote.png"},
+                    {"token": "bad", "url": "file:///private"}
+                ]}}),
+            )
+            .unwrap();
+            let (_, _, lines) = e.chat_sync(999, 0);
+            assert_eq!(
+                lines[0].emotes,
+                vec![("[tiktok:123]".to_string(), "https://example.test/emote.png".to_string())]
+            );
+        });
+    }
+
+    #[test]
+    fn tiktok_replies_and_suggestions_use_the_handle_and_never_a_bot() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
+            e.dev_mode();
+            e.change(|c| c.window.chat.save_history = true);
+            e.log_chat(&crate::commands::Chat {
+                platform: "tiktok".into(),
+                user: "Display Name".into(),
+                user_id: "42".into(),
+                text: "hello".into(),
+                args: serde_json::json!({"uniqueId": "actual.handle"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ..Default::default()
+            });
+            let (_, _, lines) = e.chat_sync(999, 0);
+            let line = lines.iter().find(|l| l.user_id == "42").unwrap();
+            assert_eq!(line.handle.as_deref(), Some("actual.handle"));
+            assert_eq!(e.chatters("tiktok")[0].0, "actual.handle");
+            assert!(e.sends_as_broadcaster("tiktok"));
+            e.send_chat_list(&["tiktok"], ":)", true, true, Some(line));
+            let mut old = line.clone();
+            old.handle = None;
+            e.send_chat_list(&["tiktok"], ":)", true, true, Some(&old));
+            let messages = e.dev_take().unwrap();
+            assert_eq!(messages.len(), 2);
+            for message in messages {
+                assert_eq!(message["text"], "@actual.handle :)");
+                assert_eq!(message["bot"], false);
+            }
+            e.send_chat_list(&["tiktok"], &"a".repeat(140), false, true, Some(line));
+            assert!(
+                e.dev_take().unwrap().is_empty(),
+                "the mention must count towards the limit"
+            );
+            e.send_chat_list(&["tiktok"], &"a".repeat(135), false, true, Some(line));
+            assert_eq!(e.dev_take().unwrap()[0]["text"].as_str().unwrap().chars().count(), 150);
+        });
     }
 
     #[test]
@@ -2795,14 +2921,18 @@ mod tests {
     }
 
     #[test]
-    fn tiktok_cannot_be_sent_even_in_development_mode() {
+    fn tiktok_is_kept_in_development_mode() {
         let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::engine::tests::run(async {
-            let c = crate::Config::default();
+            let mut c = crate::Config::default();
+            c.tiktok.bridge_token = "t".into();
             let e = crate::engine::Engine::new(std::sync::Arc::new(tokio::sync::watch::channel(c).0), |_| {});
             e.st.borrow_mut().dev_out = Some(Vec::new());
-            assert!(e.send_chat_list(&["tiktok"], "hello", false, false, None).is_empty());
-            assert!(e.dev_take().unwrap().is_empty());
+            e.send_chat_list(&["tiktok"], "hello", false, false, None);
+            let out = e.dev_take().unwrap();
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0]["platform"], "tiktok");
+            assert_eq!(out[0]["text"], "hello");
             assert!(e.tiktok().is_none());
         });
     }

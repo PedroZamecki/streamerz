@@ -123,6 +123,38 @@ fn kick_found(v: &Value) -> Vec<Found> {
         .collect()
 }
 
+/// TikTok's web search, parsed without keeping the full response in presentation storage.
+pub fn tiktok_found(v: &Value) -> Vec<Found> {
+    v["user_list"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let u = &entry["user_info"];
+            let handle = u["unique_id"].as_str()?.trim();
+            if handle.is_empty() {
+                return None;
+            }
+            Some(Found {
+                handle: handle.to_string(),
+                name: u["nickname"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(handle)
+                    .to_string(),
+                picture: u["avatar_thumb"]["url_list"][0]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                detail: u["follower_count"].as_u64().map(compact).unwrap_or_default(),
+                live: u["room_id"].as_u64().is_some_and(|id| id != 0)
+                    || u["room_id"].as_str().is_some_and(|id| !id.is_empty() && id != "0"),
+            })
+        })
+        .take(12)
+        .collect()
+}
+
 async fn youtube(query: &str) -> Vec<Found> {
     // youtube.com's search page filtered to channels; the results are in the page's data.
     let headers = [
@@ -203,6 +235,26 @@ fn youtube_found(v: &Value, out: &mut Vec<Found>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tiktok_search_uses_handles_and_accepts_both_room_id_shapes() {
+        let found = tiktok_found(&json!({"user_list": [
+            {"user_info": {"unique_id": "creator", "nickname": "Creator", "follower_count": 1200,
+                "room_id": "42", "avatar_thumb": {"url_list": ["https://example.com/avatar"]}}},
+            {"user_info": {"unique_id": "offline", "room_id": 0}},
+            {"user_info": {"unique_id": "live", "room_id": 43}},
+            {"user_info": {"nickname": "no handle"}}, {"user_info": {"unique_id": ""}}
+        ]}));
+        assert_eq!(found.len(), 3);
+        assert_eq!(
+            (found[0].handle.as_str(), found[0].detail.as_str()),
+            ("creator", "1.2K")
+        );
+        assert_eq!(found[0].picture, "https://example.com/avatar");
+        assert!(found[0].live && !found[1].live && found[2].live);
+        assert_eq!(found[1].name, "offline");
+        assert!(tiktok_found(&Value::Null).is_empty());
+    }
 
     #[test]
     fn counts_as_people_say_them() {

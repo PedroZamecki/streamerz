@@ -6,26 +6,85 @@ use super::nav;
 use fltk::group::Wizard;
 use fltk::prelude::*;
 use fltk::{app, draw};
+use std::cell::RefCell;
 use std::fmt::Write;
+
+#[derive(serde::Serialize)]
+struct MenuEntry {
+    label: String,
+    enabled: bool,
+    icon: Option<&'static str>,
+}
+thread_local! { static LAST_MENU: RefCell<Vec<MenuEntry>> = const { RefCell::new(Vec::new()) }; }
+
+pub(super) fn record_menu(buttons: &[fltk::button::Button]) {
+    LAST_MENU.with_borrow_mut(|menu| {
+        *menu = buttons
+            .iter()
+            .map(|button| {
+                let label = button.label();
+                let label = if label.is_empty() {
+                    button.tooltip().unwrap_or_default()
+                } else {
+                    label
+                };
+                MenuEntry {
+                    icon: super::icon_for(&label),
+                    label,
+                    enabled: button.active_r(),
+                }
+            })
+            .collect();
+    });
+}
 
 /// Runs one command and says what happened.
 ///   shot PATH [N]   saves window N (0, the top one, by default) as a PNG
 ///   windows         the windows: index, title, position and size
 ///   tree [N]        the widgets of window N: depth, label, x y w h (in the window), hidden ones marked
 ///   find TEXT [N]   where widgets with TEXT in their label are, as screen coordinates to click
+///   bounds TEXT     matching visible widget rectangles as JSON (all if empty)
+///   menu [clear]    last shared context-menu labels, states and icons as JSON, or reset it
 ///   page LABEL      goes to a page (Chat, Settings...)
+///   currentpage     the current page's identifier
 ///   chatview LABEL  selects a chat view (All together, Side by side, Twitch...)
 ///   chat            the last chat line the chat page took in (its seq)
 ///   chatlines       how many lines the chat page holds
 ///   room            opens the question asked when a channel is changed
 ///   community       how many users the Community tab lists
+///   newpoll [twitch] [youtube]  opens the New poll dialog, with those platforms ready
+///   newprediction   opens the New prediction dialog
 ///   panic           panics on the window's thread (to try crash reports and saving on a crash)
 pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
     let mut words = cmd.split_whitespace();
     let (what, a, b) = (words.next().unwrap_or(""), words.next(), words.next());
-    let mut windows = app::windows().unwrap_or_default();
+    // Top-level windows only: a popover or a menu is a window inside one, and is captured with it.
+    let mut windows: Vec<_> = app::windows()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|w| w.parent().is_none())
+        .collect();
     let at = |i: Option<&str>| i.and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
     match what {
+        "menu" => LAST_MENU.with_borrow_mut(|menu| {
+            if a == Some("clear") {
+                menu.clear();
+            }
+            serde_json::to_string(menu).unwrap_or_default()
+        }),
+        "bounds" => {
+            let Some(window) = windows.first() else {
+                return "[]".into();
+            };
+            let mut entries = Vec::new();
+            bounds(
+                &window.as_base_widget().as_group(),
+                &cmd.trim_start_matches("bounds").trim().to_lowercase(),
+                (window.x(), window.y()),
+                &mut entries,
+            );
+            serde_json::to_string(&entries).unwrap_or_default()
+        }
         "chatview" => {
             if super::chat::dev_select_view(cmd.trim_start_matches("chatview").trim()) {
                 "ok".into()
@@ -33,6 +92,10 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
                 "chat view not found".into()
             }
         }
+        "currentpage" => pages
+            .and_then(|p| p.try_current_widget())
+            .map(|p| p.label())
+            .unwrap_or_default(),
         "page" => match pages {
             Some(p) => {
                 nav::go(p, cmd.trim_start_matches("page").trim());
@@ -54,6 +117,7 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
                     if w.visible() { "shown" } else { "hidden" }
                 )
             })
+            .chain(dialogs_in(&windows))
             .collect::<Vec<_>>()
             .join("\n"),
         "shot" => {
@@ -103,16 +167,13 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
             .load(std::sync::atomic::Ordering::Relaxed)
             .to_string(),
         // `relogin Twitch [bot]`: the popup that asks to log in again.
-        "relogin" => match ["Twitch", "YouTube", "Kick", "TikTok"]
-            .into_iter()
-            .find(|p| Some(*p) == a)
-        {
+        "relogin" => match ["Twitch", "YouTube", "Kick"].into_iter().find(|p| Some(*p) == a) {
             Some(p) => {
                 crate::ui::relogin_done(p, b == Some("bot"));
                 crate::ui::relogin(p, b == Some("bot"));
                 "ok".into()
             }
-            None => "relogin Twitch|YouTube|Kick|TikTok [bot]".into(),
+            None => "relogin Twitch|YouTube|Kick [bot]".into(),
         },
         // The question asked when a channel is changed (it waits for an answer, so it opens a moment later).
         "room" => {
@@ -132,6 +193,7 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
             };
             // `form CODE trigger`: a trigger's form.
             let trigger = b == Some("trigger");
+            let sample_values = b == Some("values");
             let fields = if trigger {
                 super::forms::trigger_fields(kind)
             } else {
@@ -146,10 +208,38 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
                 } else {
                     crate::edit::new_sub(kind)
                 };
-                let lists = super::forms::Lists::default();
-                let title =
-                    super::picker::spotify_player_title(kind as u32).unwrap_or(crate::i18n::tr("actions.unknown"));
-                let _ = super::forms::form(title, fields, &item, &lists);
+                let mut lists = super::forms::Lists::default();
+                if sample_values {
+                    lists
+                        .values
+                        .push((crate::i18n::tr("automation.sender_name").into(), "%user%".into()));
+                }
+                let title = if trigger {
+                    super::actions::trigger_title(kind)
+                } else {
+                    super::actions::sub_title(kind).to_string()
+                };
+                let _ = super::forms::form_reference(
+                    &title,
+                    fields,
+                    &item,
+                    &lists,
+                    if trigger { "trigger" } else { "subaction" },
+                );
+            });
+            "ok".into()
+        }
+        // The Polls page's dialogs: `newpoll [twitch] [youtube]` (the platforms that are ready), `newprediction`.
+        "newpoll" => {
+            let ready = [cmd.contains("twitch"), cmd.contains("youtube")];
+            app::add_timeout3(0.05, move |_| {
+                let _ = super::polls::new_poll(ready);
+            });
+            "ok".into()
+        }
+        "newprediction" => {
+            app::add_timeout3(0.05, |_| {
+                let _ = super::polls::new_prediction();
             });
             "ok".into()
         }
@@ -166,7 +256,7 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
             "ok".into()
         }
         "panic" => panic!("dev panic"),
-        _ => "commands: shot, windows, tree, find, page, chat, community, panic".into(),
+        _ => "commands: shot, windows, tree, find, page, chat, community, newpoll, newprediction, panic".into(),
     }
 }
 
@@ -183,16 +273,50 @@ fn capture(win: &impl WindowExt) -> Option<fltk::image::RgbImage> {
         let Some(g) = g else { return };
         for i in 0..g.children() {
             let Some(c) = g.child(i) else { continue };
-            if c.as_window().is_some() {
+            if c.as_window().is_some() && c.visible() {
                 c.clone().redraw();
                 surface.draw(&c, at.0 + c.x(), at.1 + c.y());
             }
-            inside(&c.as_group(), at, surface);
+            inside(&c.as_group(), inner(&c, at), surface);
         }
     }
     inside(&win.as_base_widget().as_group(), (0, 0), &surface);
     ImageSurface::pop_current();
     surface.image()
+}
+
+/// The dialogs open in the windows (windows inside them, with a title): they're drawn in a window's
+/// shot, and `find` finds what's in them.
+fn dialogs_in(windows: &[impl WindowExt]) -> Vec<String> {
+    let mut out = Vec::new();
+    for w in windows {
+        let Some(g) = w.as_base_widget().as_group() else {
+            continue;
+        };
+        for i in 0..g.children() {
+            let Some(c) = g.child(i) else { continue };
+            if c.as_window().is_some() && c.visible() && !c.label().is_empty() {
+                out.push(format!(
+                    "dialog '{}' at {},{} {}x{} shown",
+                    c.label(),
+                    w.x() + c.x(),
+                    w.y() + c.y(),
+                    c.w(),
+                    c.h()
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// Where `w`'s children are counted from: a window inside the window starts its own.
+fn inner(w: &fltk::widget::Widget, at: (i32, i32)) -> (i32, i32) {
+    if w.as_window().is_some() {
+        (at.0 + w.x(), at.1 + w.y())
+    } else {
+        at
+    }
 }
 
 fn walk(g: &Option<fltk::group::Group>, depth: usize, out: &mut String) {
@@ -201,16 +325,37 @@ fn walk(g: &Option<fltk::group::Group>, depth: usize, out: &mut String) {
         let Some(c) = g.child(i) else { continue };
         let _ = writeln!(
             out,
-            "{}{:?} {},{} {}x{}{}",
+            "{}{:?} {},{} {}x{}{}{}",
             "  ".repeat(depth),
             c.label(),
             c.x(),
             c.y(),
             c.w(),
             c.h(),
-            if c.visible() { "" } else { " (hidden)" }
+            if c.visible_r() { "" } else { " (hidden)" },
+            if c.active_r() { "" } else { " (disabled)" }
         );
         walk(&c.as_group(), depth + 1, out);
+    }
+}
+
+fn bounds(group: &Option<fltk::group::Group>, text: &str, at: (i32, i32), out: &mut Vec<serde_json::Value>) {
+    let Some(group) = group else {
+        return;
+    };
+    for index in 0..group.children() {
+        let Some(child) = group.child(index) else {
+            continue;
+        };
+        if !child.visible_r() {
+            continue;
+        }
+        let (label, tooltip) = (child.label(), child.tooltip().unwrap_or_default());
+        if text.is_empty() || label.to_lowercase().contains(text) || tooltip.to_lowercase().contains(text) {
+            out.push(serde_json::json!({"label":if label.is_empty() { &tooltip } else { &label }, "tooltip":tooltip,
+                "x":at.0+child.x(), "y":at.1+child.y(), "w":child.w(), "h":child.h(), "enabled":child.active_r(), "focused":child.has_focus()}));
+        }
+        bounds(&child.as_group(), text, inner(&child, at), out);
     }
 }
 
@@ -229,7 +374,7 @@ fn find(g: &Option<fltk::group::Group>, text: &str, at: (i32, i32), out: &mut St
                 at.1 + c.y() + c.h() / 2
             );
         }
-        find(&c.as_group(), text, at, out);
+        find(&c.as_group(), text, inner(&c, at), out);
     }
 }
 

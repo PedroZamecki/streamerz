@@ -3,8 +3,9 @@
 
 use super::fit::Ellipsis;
 use super::forms::{self, Done, Lists, F, W::*};
-use super::rows::Rows;
-use super::{button, dialogs, query, tell, ROW};
+use super::rows::Cell::{Badge, Lead, Link, Logos, Note, State, Switch};
+use super::rows::{Cell as Look, Rows};
+use super::{button, dialogs, query, tell, Health, ROW};
 use crate::engine::{Engine, Record, DEFAULT_QUEUE};
 use crate::i18n::{tr, trf};
 use crate::model::Obj;
@@ -44,6 +45,57 @@ fn yes(b: bool, t: &str) -> String {
         t.into()
     } else {
         String::new()
+    }
+}
+
+/// Apply one eligibility decision to both the buttons and their reused context menu.
+fn set_available(buttons: &[Button], states: &[bool]) {
+    for (mut button, enabled) in buttons.iter().cloned().zip(states) {
+        if *enabled {
+            button.activate();
+        } else {
+            button.deactivate();
+        }
+    }
+}
+
+fn matches_query(columns: &[String], query: &str) -> bool {
+    query.is_empty() || columns.iter().any(|column| column.to_lowercase().contains(query))
+}
+
+fn queue_actions(selected: Option<&str>, waiting: bool, any_paused: bool, any_unpaused: bool) -> [bool; 8] {
+    let selected_queue = selected.is_some();
+    let editable = selected.is_some_and(|id| id != DEFAULT_QUEUE);
+    [
+        true,
+        editable,
+        editable,
+        selected_queue,
+        selected_queue,
+        selected_queue && waiting,
+        any_unpaused,
+        any_paused,
+    ]
+}
+
+fn history_actions(selected: bool, has_runs: bool) -> [bool; 5] {
+    [selected, selected, selected, has_runs, true]
+}
+
+fn global_actions(selected: bool, user_global: bool) -> [bool; 4] {
+    [true, selected && !user_global, selected && !user_global, true]
+}
+
+fn stream_actions(configured: usize, connected: usize) -> [bool; 3] {
+    // Disconnect remains available for configured connections whose attempt may still be pending.
+    [configured > connected, configured > 0, true]
+}
+
+fn validate_global(object: &Obj) -> Result<(), String> {
+    if s(object, "variableName").trim().is_empty() {
+        Err(tr("lists.globals.needs_name").into())
+    } else {
+        Ok(())
     }
 }
 
@@ -110,10 +162,113 @@ pub struct Kind {
     columns: &'static [i32],
     /// The columns' titles, and what an empty list says.
     titles: &'static [&'static str],
+    /// How each column draws (text when None).
+    cells: &'static [Option<Look>],
+    /// Connections: each one's state (`LIVE` in its column), from the engine.
+    live: Option<Live>,
     empty: &'static str,
     label: fn(&Obj) -> Vec<String>,
     /// What the engine does after a change (restart the timers...).
     after: Option<fn(&Rc<Engine>)>,
+}
+
+/// What a connection list asks the engine about each connection.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Live {
+    Obs,
+    Slobs,
+}
+
+/// A connection's state goes in this cell (the engine is asked when the list is filled).
+const LIVE: &str = "\u{1}live";
+
+/// A switch's cell: whether `key` is on.
+fn switch(o: &Obj, key: &str) -> String {
+    if on(o, key) { "1" } else { "0" }.into()
+}
+
+/// A detail's cell: a Lucide icon and its words.
+fn note(icon: &str, words: impl AsRef<str>) -> String {
+    format!("{icon}|{}", words.as_ref())
+}
+
+/// A state's cell: its health's icon and colour, and its words.
+fn state(health: Health, words: &str) -> String {
+    let (r, g, b) = health.color().to_rgb();
+    format!("{}|{r:02x}{g:02x}{b:02x}|{words}", health.icon())
+}
+
+/// Whether a file or folder a list points at is there.
+fn found(path: &str) -> String {
+    if path.trim().is_empty() {
+        state(Health::Off, tr("lists.not_set"))
+    } else if std::path::Path::new(path.trim()).exists() {
+        state(Health::Up, tr("lists.found"))
+    } else {
+        state(Health::Down, tr("lists.missing"))
+    }
+}
+
+/// How a connection reconnects (`key` on: every retry interval).
+fn retry(o: &Obj, key: &str) -> String {
+    if on(o, key) {
+        let every = o.get("retryInterval").and_then(Value::as_u64).unwrap_or(5);
+        note(
+            "refresh-cw",
+            trf("lists.retry_every", &[("seconds", &every.to_string())]),
+        )
+    } else {
+        note("circle-off", tr("lists.no_retry"))
+    }
+}
+
+/// Whether a password or token is set.
+fn locked(set: bool) -> String {
+    if set {
+        note("lock", tr("lists.secret_set"))
+    } else {
+        note("lock-open", tr("lists.secret_none"))
+    }
+}
+
+/// Who may use a command: everyone, the groups it allows, or all but those it denies.
+fn who(o: &Obj) -> String {
+    let groups: Vec<String> = o
+        .get("permittedGroups")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect();
+    let users = o.get("permittedUsers").and_then(Value::as_array).map_or(0, Vec::len);
+    let deny = o.get("grantType").and_then(Value::as_u64) == Some(1);
+    let mut named = groups.join(", ");
+    if users > 0 {
+        let people = trf("lists.commands.people", &[("count", &users.to_string())]);
+        named = if named.is_empty() {
+            people
+        } else {
+            format!("{named}, {people}")
+        };
+    }
+    match (named.is_empty(), deny) {
+        (true, _) => note("users", tr("lists.commands.everyone")),
+        (false, false) => note("shield", named),
+        (false, true) => note("shield-off", trf("lists.commands.all_but", &[("who", &named)])),
+    }
+}
+
+/// The platforms a command listens on (`twitch,youtube`), from its sources.
+fn source_platforms(bits: u64) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for (name, bit) in SOURCES {
+        let platform = name.split(' ').next().unwrap_or("").to_lowercase();
+        if bits & bit != 0 && !out.contains(&platform) {
+            out.push(platform);
+        }
+    }
+    out.join(",")
 }
 
 const SOURCES: &[(&str, u64)] = &[
@@ -163,24 +318,59 @@ pub static COMMANDS: Kind = Kind {
             "persistUserCounter": false, "caseSensitive": false, "globalCooldown": 0, "userCooldown": 0,
             "group": "", "grantType": 0, "response": "", "replyAll": false})
     },
-    columns: &[180, 280, 120, 260],
+    columns: &[52, 160, 200, 140, 100, 120, 120],
     titles: &[
+        "lists.on",
         "lists.commands.name",
         "lists.commands.commands",
-        "lists.commands.group",
+        "lists.commands.who",
         "lists.commands.sources",
+        "lists.commands.cooldown",
+        "lists.commands.group",
     ],
+    cells: &[
+        Some(Switch),
+        None,
+        None,
+        Some(Note),
+        Some(Logos),
+        Some(Note),
+        Some(Note),
+    ],
+    live: None,
     empty: "lists.commands.empty",
     label: |o| {
-        let aliases = crate::commands::aliases(o).join(", ");
+        let n = |k: &str| o.get(k).and_then(Value::as_u64).unwrap_or(0);
+        let cooldown = match (n("globalCooldown"), n("userCooldown")) {
+            (0, 0) => String::new(),
+            (all, 0) => note(
+                "timer",
+                trf("lists.commands.cooldown_all", &[("seconds", &all.to_string())]),
+            ),
+            (0, each) => note(
+                "timer",
+                trf("lists.commands.cooldown_each", &[("seconds", &each.to_string())]),
+            ),
+            (all, each) => note(
+                "timer",
+                trf(
+                    "lists.commands.cooldown_both",
+                    &[("all", &all.to_string()), ("each", &each.to_string())],
+                ),
+            ),
+        };
+        let group = s(o, "group");
         vec![
+            switch(o, "enabled"),
             s(o, "name").into(),
-            aliases,
-            s(o, "group").into(),
-            if on(o, "enabled") {
-                crate::engine::builtins::sources_text(o.get("sources").and_then(Value::as_u64).unwrap_or(1))
+            crate::commands::aliases(o).join(", "),
+            who(o),
+            source_platforms(n("sources")),
+            cooldown,
+            if group.is_empty() {
+                String::new()
             } else {
-                tr("lists.disabled").into()
+                note("folder", group)
             },
         ]
     },
@@ -204,14 +394,17 @@ pub static TIMERS: Kind = Kind {
         json!({"id": "", "name": "New timer", "enabled": false, "repeat": true, "interval": 60,
             "randomInterval": false, "upperInterval": 0, "lines": 0, "counter": 0})
     },
-    columns: &[220, 180, 120, 120, 80],
+    columns: &[52, 200, 160, 120, 120, 100],
     titles: &[
+        "lists.on",
         "lists.timers.name",
-        "lists.timers.every",
+        "lists.timers.interval",
+        "lists.timers.repeat",
         "lists.timers.lines",
         "lists.timers.runs",
-        "",
     ],
+    cells: &[Some(Switch), None, Some(Note), Some(Note), Some(Note), Some(Note)],
+    live: None,
     empty: "lists.timers.empty",
     label: |o| {
         let n = |k: &str| o.get(k).and_then(Value::as_i64).unwrap_or(0);
@@ -227,15 +420,26 @@ pub static TIMERS: Kind = Kind {
             trf("lists.timers.every", &[("seconds", &n("interval").to_string())])
         };
         vec![
+            switch(o, "enabled"),
             s(o, "name").into(),
-            every,
+            note(if on(o, "randomInterval") { "shuffle" } else { "timer" }, every),
+            if on(o, "repeat") {
+                note("repeat", tr("lists.timers.repeats"))
+            } else {
+                note("play", tr("lists.timers.once"))
+            },
             if n("lines") > 0 {
-                trf("lists.timers.lines_count", &[("count", &n("lines").to_string())])
+                note(
+                    "message-square",
+                    trf("lists.timers.lines_count", &[("count", &n("lines").to_string())]),
+                )
             } else {
                 String::new()
             },
-            trf("lists.timers.ran_count", &[("count", &n("counter").to_string())]),
-            yes(!on(o, "enabled"), tr("lists.disabled")),
+            note(
+                "hash",
+                trf("lists.timers.ran_count", &[("count", &n("counter").to_string())]),
+            ),
         ]
     },
     after: Some(|e| e.timers()),
@@ -261,8 +465,16 @@ pub static VOICE_COMMANDS: Kind = Kind {
         json!({"id": "", "name": "New voice command", "enabled": true, "command": "", "location": 0,
             "overrideGlobalConfidence": false, "confidenceThreshold": 0.0})
     },
-    columns: &[200, 360, 140, 80],
-    titles: &["lists.voice.name", "lists.voice.phrases", "lists.voice.where", ""],
+    columns: &[52, 180, 300, 140, 120],
+    titles: &[
+        "lists.on",
+        "lists.voice.name",
+        "lists.voice.phrases",
+        "lists.voice.where",
+        "lists.voice.confidence",
+    ],
+    cells: &[Some(Switch), None, None, Some(Note), Some(Note)],
+    live: None,
     empty: "lists.voice.empty",
     label: |o| {
         let at = match o.get("location").and_then(Value::as_u64).unwrap_or(0) {
@@ -270,11 +482,18 @@ pub static VOICE_COMMANDS: Kind = Kind {
             2 => tr("lists.voice.anywhere"),
             _ => tr("lists.voice.whole"),
         };
+        let confidence = if on(o, "overrideGlobalConfidence") {
+            let c = o.get("confidenceThreshold").and_then(Value::as_f64).unwrap_or(0.0);
+            format!("{}%", (c * 100.0).round())
+        } else {
+            tr("lists.voice.default_confidence").into()
+        };
         vec![
+            switch(o, "enabled"),
             s(o, "name").into(),
             s(o, "command").lines().collect::<Vec<_>>().join(", "),
-            at.into(),
-            yes(!on(o, "enabled"), tr("lists.disabled")),
+            note("mic", at),
+            note("gauge", confidence),
         ]
     },
     after: None,
@@ -297,20 +516,30 @@ pub static FILE_WATCHERS: Kind = Kind {
         json!({"id": "", "name": "New watcher", "enabled": true, "folderPath": "", "filter": "*.*",
             "includeSubdirectories": false, "addChangedData": false, "asJson": false})
     },
-    columns: &[200, 360, 100, 80],
+    columns: &[52, 180, 120, 300, 100, 140],
     titles: &[
+        "lists.on",
         "lists.watchers.name",
+        "lists.state",
         "lists.watchers.folder",
         "lists.watchers.filter",
-        "",
+        "lists.watchers.subfolders",
     ],
+    cells: &[Some(Switch), None, Some(State), Some(Link), Some(Badge), Some(Note)],
+    live: None,
     empty: "lists.watchers.empty",
     label: |o| {
         vec![
+            switch(o, "enabled"),
             s(o, "name").into(),
+            found(s(o, "folderPath")),
             s(o, "folderPath").into(),
             s(o, "filter").into(),
-            yes(!on(o, "enabled"), tr("lists.disabled")),
+            if on(o, "includeSubdirectories") {
+                note("folder-tree", tr("lists.watchers.with_subfolders"))
+            } else {
+                String::new()
+            },
         ]
     },
     after: Some(|e| e.watchers()),
@@ -326,14 +555,17 @@ pub static FILE_TAILS: Kind = Kind {
         ("filePath", "File", Text),
     ],
     new: || json!({"id": "", "name": "New file tail", "enabled": true, "filePath": ""}),
-    columns: &[200, 440, 80],
-    titles: &["lists.tails.name", "lists.tails.file", ""],
+    columns: &[52, 200, 120, 400],
+    titles: &["lists.on", "lists.tails.name", "lists.state", "lists.tails.file"],
+    cells: &[Some(Switch), None, Some(State), Some(Link)],
+    live: None,
     empty: "lists.tails.empty",
     label: |o| {
         vec![
+            switch(o, "enabled"),
             s(o, "name").into(),
+            found(s(o, "filePath")),
             s(o, "filePath").into(),
-            yes(!on(o, "enabled"), tr("lists.disabled")),
         ]
     },
     after: Some(|e| e.watchers()),
@@ -354,14 +586,22 @@ pub static CLIENTS: Kind = Kind {
         json!({"id": "", "name": "New client", "endpoint": "ws://127.0.0.1:8080/", "autoConnect": false,
             "reconnectOnDisconnect": true, "retryInterval": 5})
     },
-    columns: &[200, 400, 120],
-    titles: &["lists.clients.name", "lists.clients.endpoint", ""],
+    columns: &[72, 200, 320, 140],
+    titles: &[
+        "lists.on_start",
+        "lists.clients.name",
+        "lists.clients.endpoint",
+        "lists.reconnect",
+    ],
+    cells: &[Some(Switch), None, Some(Link), Some(Note)],
+    live: None,
     empty: "lists.clients.empty",
     label: |o| {
         vec![
+            switch(o, "autoConnect"),
             s(o, "name").into(),
             s(o, "endpoint").into(),
-            yes(!on(o, "autoConnect"), tr("lists.manual")),
+            retry(o, "reconnectOnDisconnect"),
         ]
     },
     after: None,
@@ -375,7 +615,7 @@ pub static OBS_CONNECTIONS: Kind = Kind {
         ("name", "Name", Text),
         ("host", "Host", Text),
         ("port", "Port", Int),
-        ("password", "Password", Text),
+        ("password", "Password", Secret),
         ("autoConnect", "Connect on start", Bool),
         ("reconnect", "Reconnect", Bool),
         ("retryInterval", "Retry interval (s)", Int),
@@ -383,7 +623,7 @@ pub static OBS_CONNECTIONS: Kind = Kind {
     new: || {
         json!({
             "id": crate::engine::uuid(),
-            "name": "OBS",
+            "name": "Local",
             "host": "127.0.0.1",
             "port": 4455,
             "password": "",
@@ -393,16 +633,34 @@ pub static OBS_CONNECTIONS: Kind = Kind {
             "version": 5,
         })
     },
-    columns: &[150, 150, 80, 100],
-    titles: &["lists.obs.name", "lists.obs.address", "", ""],
+    columns: &[72, 170, 140, 170, 140, 120],
+    titles: &[
+        "lists.on_start",
+        "lists.obs.name",
+        "lists.state",
+        "lists.obs.address",
+        "lists.reconnect",
+        "lists.password",
+    ],
+    cells: &[
+        Some(Switch),
+        Some(Lead),
+        Some(State),
+        Some(Link),
+        Some(Note),
+        Some(Note),
+    ],
+    live: Some(Live::Obs),
     empty: "lists.obs.empty",
     label: |o| {
         let port = o.get("port").and_then(Value::as_u64).unwrap_or(4455);
         vec![
-            s(o, "name").into(),
+            switch(o, "autoConnect"),
+            format!("OBS Studio|{}", s(o, "name")),
+            LIVE.into(),
             format!("{}:{}", s(o, "host"), port),
-            yes(!on(o, "autoConnect"), tr("lists.manual")),
-            yes(!on(o, "reconnect"), tr("lists.no_retry")),
+            retry(o, "reconnect"),
+            locked(!s(o, "password").is_empty()),
         ]
     },
     after: Some(|e| e.obs_start().reload()),
@@ -416,7 +674,7 @@ pub static SLOBS_CONNECTIONS: Kind = Kind {
         ("name", "Name", Text),
         ("host", "Host", Text),
         ("port", "Port", Int),
-        ("token", "Token", Text),
+        ("token", "Token", Secret),
         ("autoConnect", "Connect on start", Bool),
         ("reconnectOnDisconnect", "Reconnect", Bool),
         ("retryInterval", "Retry interval (s)", Int),
@@ -424,18 +682,36 @@ pub static SLOBS_CONNECTIONS: Kind = Kind {
     ],
     // Streamer.bot's field order (its settings.json).
     new: || {
-        json!({"id": "", "name": "Streamlabs Desktop", "host": "127.0.0.1", "port": 59650, "autoConnect": true,
+        json!({"id": "", "name": "Local", "host": "127.0.0.1", "port": 59650, "autoConnect": true,
             "reconnectOnDisconnect": true, "token": "", "retryInterval": 30, "default": false})
     },
-    columns: &[200, 200, 100, 100],
-    titles: &["lists.slobs.name", "lists.slobs.address", "", ""],
+    columns: &[72, 190, 140, 170, 120, 100],
+    titles: &[
+        "lists.on_start",
+        "lists.slobs.name",
+        "lists.state",
+        "lists.slobs.address",
+        "lists.slobs.token",
+        "",
+    ],
+    cells: &[
+        Some(Switch),
+        Some(Lead),
+        Some(State),
+        Some(Link),
+        Some(Note),
+        Some(Badge),
+    ],
+    live: Some(Live::Slobs),
     empty: "lists.slobs.empty",
     label: |o| {
         let port = o.get("port").and_then(Value::as_u64).unwrap_or(59650);
         vec![
-            s(o, "name").into(),
+            switch(o, "autoConnect"),
+            format!("Streamlabs Desktop|{}", s(o, "name")),
+            LIVE.into(),
             format!("{}:{port}", s(o, "host")),
-            yes(!on(o, "autoConnect"), tr("lists.manual")),
+            locked(!s(o, "token").is_empty()),
             yes(on(o, "default"), tr("lists.default_badge")),
         ]
     },
@@ -457,15 +733,21 @@ pub static SERVERS: Kind = Kind {
         json!({"id": "", "name": "New server", "address": "127.0.0.1", "port": 9090, "endpoint": "/",
             "autoStart": false})
     },
-    columns: &[200, 400, 120],
-    titles: &["lists.custom_servers.name", "lists.custom_servers.address", ""],
+    columns: &[72, 200, 400],
+    titles: &[
+        "lists.on_start",
+        "lists.custom_servers.name",
+        "lists.custom_servers.address",
+    ],
+    cells: &[Some(Switch), None, Some(Link)],
+    live: None,
     empty: "lists.custom_servers.empty",
     label: |o| {
         let port = o.get("port").and_then(Value::as_u64).unwrap_or(0);
         vec![
+            switch(o, "autoStart"),
             s(o, "name").into(),
             format!("ws://{}:{port}{}", s(o, "address"), s(o, "endpoint")),
-            yes(!on(o, "autoStart"), tr("lists.off_badge")),
         ]
     },
     after: None,
@@ -478,6 +760,21 @@ pub struct List {
     view: Rows,
     kind: &'static Kind,
     ids: Vec<String>,
+    selection_buttons: Vec<Button>,
+    menu_buttons: Vec<Button>,
+    search: Option<fltk::input::Input>,
+    connection: Option<ConnectionControls>,
+    /// The flag its switches (and On/Off) turn.
+    toggle: Option<&'static str>,
+    /// Which connections are up, for the selection's Connect or Disconnect.
+    up: Vec<bool>,
+}
+
+struct ConnectionControls {
+    obs: bool,
+    status: Frame,
+    /// Connect (or Disconnect) the selection, Connect all, Disconnect all, Refresh.
+    buttons: Vec<Button>,
 }
 
 impl List {
@@ -485,13 +782,131 @@ impl List {
         let sel = self.selected();
         self.view.clear();
         self.ids.clear();
+        let query = self
+            .search
+            .as_ref()
+            .map(|search| search.value().trim().to_lowercase())
+            .unwrap_or_default();
+        self.view.set_empty(if query.is_empty() {
+            tr(self.kind.empty)
+        } else {
+            tr("lists.no_matches")
+        });
         let c = self.cfg.borrow();
-        for o in (self.kind.get)(&c) {
-            self.view.add(&line(&(self.kind.label)(o)));
+        let objects = (self.kind.get)(&c).clone();
+        drop(c);
+        // Connections: which are up (one question to the engine for all).
+        let up: Option<Vec<bool>> = self.kind.live.and_then(|live| {
+            let ids: Vec<String> = objects.iter().map(|o| s(o, "id").to_string()).collect();
+            super::query(&self.cmds, move |engine: &Rc<Engine>| {
+                ids.iter()
+                    .map(|id| match live {
+                        Live::Obs => engine.obs_connected(Some(id)),
+                        Live::Slobs => engine.slobs_up(id),
+                    })
+                    .collect()
+            })
+        });
+        self.up.clear();
+        for (i, o) in objects.iter().enumerate() {
+            let mut columns = (self.kind.label)(o);
+            let connected = up.as_ref().and_then(|u| u.get(i).copied());
+            for cell in columns.iter_mut().filter(|c| *c == LIVE) {
+                *cell = match connected {
+                    Some(true) => state(Health::Up, tr("lists.live.connected")),
+                    Some(false) => state(Health::Off, tr("lists.live.disconnected")),
+                    None => state(Health::Busy, tr("lists.stream_apps.unknown")),
+                };
+            }
+            if !matches_query(&columns, &query) {
+                continue;
+            }
+            let off = self.toggle.is_some_and(|key| !on(o, key)) && self.kind.live.is_none();
+            self.view.add_state(&line(&columns), off);
             self.ids.push(s(o, "id").into());
+            self.up.push(connected.unwrap_or(false));
         }
         if let Some(i) = sel.and_then(|id| self.ids.iter().position(|x| *x == id)) {
             self.view.select(i as i32 + 1);
+        }
+        self.selection_changed();
+        self.connection_changed();
+    }
+
+    fn connection_changed(&mut self) {
+        let picked = self.view.value() - 1;
+        let picked_up = usize::try_from(picked).ok().and_then(|i| self.up.get(i).copied());
+        let Some(connection) = &mut self.connection else { return };
+        // The selection's own button: Connect, or Disconnect when it's up.
+        if let Some(b) = connection.buttons.first_mut() {
+            let label = if picked_up == Some(true) {
+                tr("btn.disconnect")
+            } else {
+                tr("btn.connect")
+            };
+            if b.label() != label {
+                b.set_label(label);
+                super::with_icon(b);
+                b.redraw();
+            }
+            if picked_up.is_some() {
+                b.activate();
+            } else {
+                b.deactivate();
+            }
+        }
+        let ids: Vec<String> = (self.kind.get)(&self.cfg.borrow())
+            .iter()
+            .map(|object| s(object, "id").to_string())
+            .collect();
+        let configured = ids.len();
+        let obs = connection.obs;
+        let connected = query(&self.cmds, move |engine| {
+            ids.iter()
+                .filter(|id| {
+                    if obs {
+                        engine.obs_connected(Some(id))
+                    } else {
+                        engine.slobs_up(id)
+                    }
+                })
+                .count()
+        });
+        set_available(
+            &connection.buttons[1..],
+            &stream_actions(configured, connected.unwrap_or(0)),
+        );
+        let (health, text) = match connected {
+            None => (Health::Busy, tr("lists.stream_apps.unknown").to_string()),
+            Some(_) if configured == 0 => (Health::Off, tr("lists.stream_apps.not_configured").to_string()),
+            Some(0) => (Health::Off, tr("lists.stream_apps.disconnected").to_string()),
+            Some(count) => (
+                if count == configured {
+                    Health::Up
+                } else {
+                    Health::Standby
+                },
+                trf(
+                    "lists.stream_apps.connected_count",
+                    &[("connected", &count.to_string()), ("total", &configured.to_string())],
+                ),
+            ),
+        };
+        health.show(&mut connection.status, &text);
+        connection.status.set_tooltip(&text.replace('@', "@@"));
+    }
+
+    fn selection_changed(&mut self) {
+        if self.connection.is_some() {
+            self.connection_changed();
+        }
+        let selected = self.selected().is_some();
+        for button in &mut self.selection_buttons {
+            if selected {
+                button.activate();
+            } else {
+                button.deactivate();
+            }
         }
     }
 
@@ -522,6 +937,7 @@ impl List {
         if let Some(i) = self.ids.iter().position(|x| *x == id) {
             self.view.select(i as i32 + 1);
         }
+        self.selection_changed();
     }
 
     fn edit(&mut self) {
@@ -555,7 +971,7 @@ impl List {
     fn delete(&mut self) {
         let Some(id) = self.selected() else { return };
         let q = trf("lists.delete_confirm", &[("what", &tr(self.kind.what).to_lowercase())]);
-        if super::dialogs::choice(&q.replace('@', "@@"), tr("dialogs.cancel"), tr("btn.delete")) {
+        if super::dialogs::danger(&q.replace('@', "@@"), tr("dialogs.cancel"), tr("btn.delete")) {
             self.change(|l| l.retain(|o| s(o, "id") != id));
         }
     }
@@ -566,7 +982,7 @@ fn ask(title: &str, fields: &[F], o: &Obj, lists: &Lists) -> Option<Obj> {
     match forms::form(title, fields, o, lists) {
         Done::Ok(x) => Some(x),
         Done::Cancel => None,
-        Done::Json => json(title, o),
+        Done::Json(draft) => json(title, &draft),
     }
 }
 
@@ -597,7 +1013,21 @@ fn list(
     kind: &'static Kind,
     toggle: Option<&'static str>,
 ) -> Rc<RefCell<List>> {
-    let view = browser(col, kind.columns, kind.titles, kind.empty);
+    let search = matches!(kind.what, "lists.commands.what" | "lists.timers.what").then(|| {
+        let mut search = fltk::input::Input::default();
+        super::placeholder(&mut search, tr("lists.search"));
+        search.set_tooltip(tr("lists.search"));
+        search.set_trigger(fltk::enums::CallbackTrigger::Changed);
+        col.fixed(&search, ROW);
+        search
+    });
+    let mut view = browser(col, kind.columns, kind.titles, kind.empty);
+    view.set_label(tr(kind.what));
+    for (c, look) in kind.cells.iter().enumerate() {
+        if let Some(look) = look {
+            view.set_cell(c, *look);
+        }
+    }
     let mut labels = vec![tr("btn.add"), tr("btn.edit")];
     labels.extend(toggle.map(|_| tr("btn.on_off")));
     labels.push(tr("btn.delete"));
@@ -609,7 +1039,22 @@ fn list(
         view: view.clone(),
         kind,
         ids: Vec::new(),
+        selection_buttons: b[1..].to_vec(),
+        menu_buttons: b.clone(),
+        search: search.clone(),
+        connection: None,
+        toggle,
+        up: Vec::new(),
     }));
+    if let Some(mut search) = search {
+        let me = me.clone();
+        search.set_callback(move |_| {
+            if let Ok(mut list) = me.try_borrow_mut() {
+                list.refresh();
+            }
+        });
+    }
+    me.borrow_mut().selection_changed();
     let click = |b: &Button, f: Box<dyn Fn(&mut List)>| {
         let me = me.clone();
         b.clone().set_callback(move |_| {
@@ -626,14 +1071,30 @@ fn list(
     click(&b[b.len() - 1], Box::new(List::delete));
     view.clone().set_callback({
         let me = me.clone();
-        move |_| {
-            if fltk::app::event_clicks() {
-                if let Ok(mut m) = me.try_borrow_mut() {
+        move |v| {
+            if let Ok(mut m) = me.try_borrow_mut() {
+                m.selection_changed();
+                if fltk::app::event() == fltk::enums::Event::Push
+                    && fltk::app::event_clicks()
+                    && !super::right_button()
+                    && !v.clicked_switch()
+                {
                     m.edit();
                 }
             }
         }
     });
+    if let Some(key) = toggle {
+        // A line's switch turns it on or off where it is.
+        view.clone().on_switch({
+            let me = me.clone();
+            move |_, _| {
+                if let Ok(mut m) = me.try_borrow_mut() {
+                    m.toggle(key);
+                }
+            }
+        });
+    }
     me
 }
 
@@ -784,10 +1245,7 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
     let mut col = tab(tabs, "Commands");
     let commands = list(&mut col, cfg, cmds, &COMMANDS, Some("enabled"));
     title(&mut col, tr("lists.voice.title"));
-    let guide = Frame::default()
-        .with_label(tr("lists.voice.guide"))
-        .with_align(Align::Left | Align::Inside | Align::Wrap);
-    col.fixed(&guide, 36);
+    super::hint(&mut col, tr("lists.voice.guide"), 36);
     let voice = list(&mut col, cfg, cmds, &VOICE_COMMANDS, Some("enabled"));
     col.end();
 
@@ -795,20 +1253,15 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
     let timers = list(&mut col, cfg, cmds, &TIMERS, Some("enabled"));
     col.end();
 
-    let mut col = tab(tabs, "Files");
+    let (files_scroll, mut col) = super::scroll::page(tabs, "Files");
     title(&mut col, tr("lists.watchers.title"));
-    let guide = Frame::default()
-        .with_label(tr("lists.watchers.guide"))
-        .with_align(Align::Left | Align::Inside | Align::Wrap);
-    col.fixed(&guide, 36);
+    super::hint(&mut col, tr("lists.watchers.guide"), 36);
     let watchers = list(&mut col, cfg, cmds, &FILE_WATCHERS, Some("enabled"));
     title(&mut col, tr("lists.tails.title"));
-    let guide = Frame::default()
-        .with_label(tr("lists.tails.guide"))
-        .with_align(Align::Left | Align::Inside | Align::Wrap);
-    col.fixed(&guide, 36);
+    super::hint(&mut col, tr("lists.tails.guide"), 36);
     let tails = list(&mut col, cfg, cmds, &FILE_TAILS, Some("enabled"));
     col.end();
+    files_scroll.end();
 
     let queues = queues_tab(tabs, cfg, cmds);
     let history = history_tab(tabs, cmds);
@@ -817,58 +1270,26 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
     let groups = groups_tab(tabs, cfg, cmds);
     let plugins = super::plugins::tab(tabs, cfg, cmds);
 
-    let mut col = tab(tabs, "Servers");
+    let (servers_scroll, mut col) = super::scroll::page(tabs, "Servers");
     let servers = servers_box(&mut col, cfg);
     title(&mut col, tr("lists.servers.ws_clients_title"));
     let clients = list(&mut col, cfg, cmds, &CLIENTS, None);
     title(&mut col, tr("lists.servers.ws_servers_title"));
     let custom = list(&mut col, cfg, cmds, &SERVERS, Some("autoStart"));
     col.end();
+    servers_scroll.end();
 
-    let mut col = tab(tabs, "Stream Apps");
+    let (apps_scroll, mut col) = super::scroll::page(tabs, "Stream Apps");
     title(&mut col, "OBS Studio");
-    let obs_guide = Frame::default()
-        .with_label(tr("lists.stream_apps.obs_guide"))
-        .with_align(Align::Left | Align::Inside | Align::Wrap);
-    col.fixed(&obs_guide, 36);
+    super::hint(&mut col, tr("lists.stream_apps.obs_guide"), 36);
     let obs = list(&mut col, cfg, cmds, &OBS_CONNECTIONS, Some("autoConnect"));
-    let mut b_row = Flex::default().row();
-    b_row.set_pad(8);
-    let mut b_connect = button(&mut b_row, tr("btn.connect_all"), 120);
-    let mut b_disconnect = button(&mut b_row, tr("btn.disconnect_all"), 120);
-    Frame::default();
-    b_row.end();
-    col.fixed(&b_row, ROW);
-    let cmds_c = cmds.clone();
-    b_connect.set_callback(move |_| {
-        tell(&cmds_c, |e| {
-            e.obs_start().connect(None);
-        });
-    });
-    let cmds_d = cmds.clone();
-    b_disconnect.set_callback(move |_| {
-        tell(&cmds_d, |e| {
-            e.obs_start().disconnect(None);
-        });
-    });
+    connection_controls(&mut col, &obs, true);
     title(&mut col, "Streamlabs Desktop");
-    let slobs_guide = Frame::default()
-        .with_label(tr("lists.stream_apps.slobs_guide"))
-        .with_align(Align::Left | Align::Inside | Align::Wrap);
-    col.fixed(&slobs_guide, 36);
+    super::hint(&mut col, tr("lists.stream_apps.slobs_guide"), 36);
     let slobs = list(&mut col, cfg, cmds, &SLOBS_CONNECTIONS, Some("autoConnect"));
-    let mut b_row = Flex::default().row();
-    b_row.set_pad(8);
-    let mut b_connect = button(&mut b_row, tr("btn.connect_all"), 120);
-    let mut b_disconnect = button(&mut b_row, tr("btn.disconnect_all"), 120);
-    Frame::default();
-    b_row.end();
-    col.fixed(&b_row, ROW);
-    let c = cmds.clone();
-    b_connect.set_callback(move |_| tell(&c, |e| e.slobs_connect("")));
-    let c = cmds.clone();
-    b_disconnect.set_callback(move |_| tell(&c, |e| e.slobs_disconnect("")));
+    connection_controls(&mut col, &slobs, false);
     col.end();
+    apps_scroll.end();
     let donations = donations_tab(tabs, cfg, cmds);
     let crashes = super::recovery::crashes_tab(tabs);
     let polls = super::polls::tab(tabs, cmds);
@@ -894,6 +1315,71 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
     }
 }
 
+/// Connection actions use the list's same menu and observe state without starting integrations.
+fn connection_controls(col: &mut Flex, list: &Rc<RefCell<List>>, obs: bool) {
+    let status = Frame::default().with_align(Align::Left | Align::Inside).ellipsis();
+    col.fixed(&status, ROW);
+    let buttons = bar(
+        col,
+        &[
+            tr("btn.connect"),
+            tr("btn.connect_all"),
+            tr("btn.disconnect_all"),
+            tr("btn.refresh"),
+        ],
+    );
+    {
+        let mut list = list.borrow_mut();
+        let mut menu = list.menu_buttons.clone();
+        menu.extend(buttons.iter().cloned());
+        list.view.set_menu(&menu);
+        list.connection = Some(ConnectionControls {
+            obs,
+            status,
+            buttons: buttons.clone(),
+        });
+        // There are no configured rows before refresh, so connection actions start unavailable.
+        set_available(&buttons[1..], &stream_actions(0, 0));
+        let mut first = buttons[0].clone();
+        first.deactivate();
+    }
+    for (index, mut button) in buttons.into_iter().enumerate() {
+        let list = list.clone();
+        button.set_callback(move |_| {
+            let Ok(mut list) = list.try_borrow_mut() else { return };
+            // The selection alone (index 0), all of them (1, 2), or only a look again (3).
+            let (connect, one) = match index {
+                0 => {
+                    let Some(id) = list.selected() else { return };
+                    let i = (list.view.value() - 1).max(0) as usize;
+                    (!list.up.get(i).copied().unwrap_or(false), Some(id))
+                }
+                1 => (true, None),
+                2 => (false, None),
+                _ => {
+                    list.refresh();
+                    return;
+                }
+            };
+            tell(&list.cmds, move |engine| {
+                let id = one.as_deref();
+                if obs {
+                    if connect {
+                        engine.obs_start().connect(id);
+                    } else if let Some(handle) = engine.obs() {
+                        handle.disconnect(id);
+                    }
+                } else if connect {
+                    engine.slobs_connect(id.unwrap_or(""));
+                } else {
+                    engine.slobs_disconnect(id.unwrap_or(""));
+                }
+            });
+            list.refresh();
+        });
+    }
+}
+
 /// Queues: the configured ones (Default first) and what's running and waiting in them.
 pub struct Queues {
     tab: Flex,
@@ -902,6 +1388,9 @@ pub struct Queues {
     view: Rows,
     pending: Rows,
     ids: Vec<String>,
+    waiting: Vec<bool>,
+    paused: Vec<bool>,
+    buttons: Vec<Button>,
 }
 
 impl Queues {
@@ -911,7 +1400,11 @@ impl Queues {
         };
         let sel = self.selected();
         let c = self.cfg.borrow();
-        let mut rows = vec![(DEFAULT_QUEUE.to_string(), "Default".to_string(), c.actions.blocking)];
+        let mut rows = vec![(
+            DEFAULT_QUEUE.to_string(),
+            tr("lists.queues.default").to_string(),
+            c.actions.blocking,
+        )];
         rows.extend(
             c.actions
                 .queues
@@ -921,29 +1414,57 @@ impl Queues {
         let name = |id: &str| rows.iter().find(|r| r.0 == id).map_or(id, |r| r.1.as_str()).to_string();
         self.view.clear();
         self.ids.clear();
-        for (id, n, blocking) in &rows {
-            let count = |running: bool| pending.iter().filter(|p| p.0 == *id && p.2 == running).count();
+        self.waiting.clear();
+        self.paused.clear();
+        for (id, name, blocking) in &rows {
+            let count = |running: bool| pending.iter().filter(|item| item.0 == *id && item.2 == running).count();
             self.view.add(&line(&[
-                n.clone(),
-                yes(*blocking, "blocking"),
-                yes(paused.contains(id), "paused"),
-                format!("{} running", count(true)),
-                format!("{} waiting", count(false)),
+                name.clone(),
+                yes(*blocking, tr("lists.queues.blocking")),
+                yes(paused.contains(id), tr("lists.queues.paused")),
+                count(true).to_string(),
+                count(false).to_string(),
             ]));
             self.ids.push(id.clone());
+            self.waiting.push(count(false) > 0);
+            self.paused.push(paused.contains(id));
         }
         self.pending.clear();
         for (q, action, running) in &pending {
             self.pending.add(&line(&[
                 name(q),
                 action.clone(),
-                if *running { "running" } else { "waiting" }.into(),
+                if *running {
+                    tr("lists.queues.running")
+                } else {
+                    tr("lists.queues.waiting")
+                }
+                .into(),
             ]));
         }
         drop(c);
         if let Some(i) = sel.and_then(|id| self.ids.iter().position(|x| *x == id)) {
             self.view.select(i as i32 + 1);
         }
+        self.selection_changed();
+    }
+
+    fn selection_changed(&self) {
+        let selected = self.selected();
+        let index = usize::try_from(self.view.value() - 1).ok();
+        let waiting = index
+            .and_then(|index| self.waiting.get(index))
+            .copied()
+            .unwrap_or(false);
+        set_available(
+            &self.buttons,
+            &queue_actions(
+                selected.as_deref(),
+                waiting,
+                self.paused.iter().any(|paused| *paused),
+                self.paused.iter().any(|paused| !*paused),
+            ),
+        );
     }
 
     fn selected(&self) -> Option<String> {
@@ -957,7 +1478,7 @@ impl Queues {
                 Some(q) => q.clone(),
                 None => return,
             },
-            None => json!({"id": crate::engine::uuid(), "name": "New queue", "blocking": false})
+            None => json!({"id": crate::engine::uuid(), "name": tr("lists.queues.queue_title"), "blocking": false})
                 .as_object()
                 .cloned()
                 .unwrap_or_default(),
@@ -1016,19 +1537,35 @@ fn queues_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Queues>> {
     let pending = browser(
         &mut col,
         &[220, 420, 100],
-        &["lists.queues.queue", "lists.queues.action", ""],
+        &["lists.queues.queue", "lists.queues.action", "lists.queues.status"],
         "lists.queues.pending_empty",
     );
     col.fixed(&*pending, 200);
     col.end();
+    col.resize_callback({
+        let pending = pending.clone();
+        move |col, _, _, _, height| col.fixed(&*pending, (height / 3).clamp(100, 200))
+    });
     let me = Rc::new(RefCell::new(Queues {
         tab: col,
         cfg: cfg.clone(),
         cmds: cmds.clone(),
-        view,
+        view: view.clone(),
         pending,
         ids: Vec::new(),
+        waiting: Vec::new(),
+        paused: Vec::new(),
+        buttons: b.clone(),
     }));
+    me.borrow().selection_changed();
+    view.clone().set_callback({
+        let me = me.clone();
+        move |_| {
+            if let Ok(list) = me.try_borrow() {
+                list.selection_changed();
+            }
+        }
+    });
     let click = |b: &Button, f: Box<dyn Fn(&mut Queues)>| {
         let me = me.clone();
         b.clone().set_callback(move |_| {
@@ -1055,7 +1592,7 @@ fn queues_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Queues>> {
                 return;
             };
             let q = tr("lists.queues.delete_confirm");
-            if super::dialogs::choice(q, tr("dialogs.cancel"), tr("btn.delete")) {
+            if super::dialogs::danger(q, tr("dialogs.cancel"), tr("btn.delete")) {
                 save(&m.cfg, |c| {
                     c.actions.queues.retain(|q| s(q, "id") != id);
                     for a in c.actions.actions.iter_mut().filter(|a| a.queue.as_deref() == Some(&id)) {
@@ -1118,6 +1655,15 @@ pub struct History {
     cmds: Cmds,
     view: Rows,
     runs: Vec<Record>,
+    search: fltk::input::Input,
+    buttons: Vec<Button>,
+    has_runs: bool,
+}
+
+fn same_run(left: &Record, right: &Record) -> bool {
+    left.action_id == right.action_id
+        && left.queued_at == right.queued_at
+        && left.args.get("runningActionId") == right.args.get("runningActionId")
 }
 
 impl History {
@@ -1125,21 +1671,46 @@ impl History {
         let Some(runs) = query(&self.cmds, |e| e.history().iter().rev().cloned().collect::<Vec<_>>()) else {
             return;
         };
-        let sel = self.view.value();
+        let selected = self.selected().cloned();
+        let query = self.search.value().trim().to_lowercase();
+        self.has_runs = !runs.is_empty();
         self.view.clear();
-        for r in &runs {
-            let at = crate::fmt::shown_iso(&r.queued_at, true);
-            self.view.add(&line(&[
-                at,
-                r.name.clone(),
-                format!("{:.0} ms", r.ms),
-                format!("{} variables", r.after.len()),
-            ]));
+        self.view.set_empty(if query.is_empty() {
+            tr("lists.history.empty")
+        } else {
+            tr("lists.no_matches")
+        });
+        self.runs.clear();
+        for record in runs {
+            let columns = [
+                crate::fmt::shown_iso(&record.queued_at, true),
+                record.name.clone(),
+                format!("{:.0} ms", record.ms),
+                record.after.len().to_string(),
+                tr(match record.outcome.status() {
+                    "failed" => "automation.failed",
+                    "completed_with_skips" => "automation.completed_with_skips",
+                    _ => "automation.completed",
+                })
+                .into(),
+            ];
+            if !matches_query(&columns, &query) {
+                continue;
+            }
+            self.view.add(&line(&columns));
+            self.runs.push(record);
         }
-        self.runs = runs;
-        if sel > 0 {
-            self.view.select(sel);
+        if let Some(index) = selected.and_then(|selected| self.runs.iter().position(|run| same_run(run, &selected))) {
+            self.view.select(index as i32 + 1);
         }
+        self.selection_changed();
+    }
+
+    fn selection_changed(&self) {
+        set_available(
+            &self.buttons,
+            &history_actions(self.selected().is_some(), self.has_runs),
+        );
     }
 
     fn selected(&self) -> Option<&Record> {
@@ -1149,14 +1720,20 @@ impl History {
 
 fn history_tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<History>> {
     let mut col = tab(tabs, "History");
+    let mut search = fltk::input::Input::default();
+    super::placeholder(&mut search, tr("lists.history.search"));
+    search.set_tooltip(tr("lists.history.search"));
+    search.set_trigger(fltk::enums::CallbackTrigger::Changed);
+    col.fixed(&search, ROW);
     let view = browser(
         &mut col,
-        &[180, 420, 100, 120],
+        &[180, 340, 100, 90, 160],
         &[
             "lists.history.when",
             "lists.history.action",
             "lists.history.took",
             "lists.history.variables",
+            "automation.result",
         ],
         "lists.history.empty",
     );
@@ -1175,9 +1752,29 @@ fn history_tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<History>> {
     let me = Rc::new(RefCell::new(History {
         tab: col,
         cmds: cmds.clone(),
-        view,
+        view: view.clone(),
         runs: Vec::new(),
+        search: search.clone(),
+        buttons: b.clone(),
+        has_runs: false,
     }));
+    me.borrow().selection_changed();
+    view.clone().set_callback({
+        let me = me.clone();
+        move |_| {
+            if let Ok(history) = me.try_borrow() {
+                history.selection_changed();
+            }
+        }
+    });
+    search.set_callback({
+        let me = me.clone();
+        move |_| {
+            if let Ok(mut history) = me.try_borrow_mut() {
+                history.refresh();
+            }
+        }
+    });
     let click = |b: &Button, f: Box<dyn Fn(&mut History)>| {
         let me = me.clone();
         b.clone().set_callback(move |_| {
@@ -1190,7 +1787,8 @@ fn history_tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<History>> {
         move |m: &mut History| {
             if let Some(r) = m.selected() {
                 let v = if after { &r.after } else { &r.args };
-                dialogs::values(&r.name, "", v, false);
+                let hint = r.outcome.error.as_deref().unwrap_or(tr("automation.completed_hint"));
+                dialogs::values(&r.name, hint, v, false);
             }
         }
     };
@@ -1225,6 +1823,7 @@ pub struct Globals {
     view: Rows,
     /// Each row: (name, value, persisted, a user global's user).
     rows: Vec<(String, Value, bool, Option<String>)>,
+    buttons: Vec<Button>,
 }
 
 impl Globals {
@@ -1249,7 +1848,7 @@ impl Globals {
         }) else {
             return;
         };
-        let sel = self.view.value();
+        let selected = self.selected().map(|row| (row.0.clone(), row.2, row.3.clone()));
         self.view.clear();
         for (name, v, persisted, user) in &rows {
             self.view.add(&line(&[
@@ -1261,13 +1860,28 @@ impl Globals {
                     tr("lists.globals.temporary")
                 }
                 .into(),
-                user.clone().unwrap_or_default(),
+                user.as_ref()
+                    .map(|user| trf("lists.globals.read_only_user", &[("user", user)]))
+                    .unwrap_or_default(),
             ]));
         }
         self.rows = rows;
-        if sel > 0 {
-            self.view.select(sel);
+        if let Some(index) = selected.and_then(|selected| {
+            self.rows
+                .iter()
+                .position(|row| (row.0.as_str(), row.2, &row.3) == (selected.0.as_str(), selected.1, &selected.2))
+        }) {
+            self.view.select(index as i32 + 1);
         }
+        self.selection_changed();
+    }
+
+    fn selection_changed(&self) {
+        let selected = self.selected();
+        set_available(
+            &self.buttons,
+            &global_actions(selected.is_some(), selected.is_some_and(|row| row.3.is_some())),
+        );
     }
 
     fn selected(&self) -> Option<&(String, Value, bool, Option<String>)> {
@@ -1286,13 +1900,20 @@ impl Globals {
             ("persisted", "Persisted", Bool),
         ];
         let Some(o) = o.as_object() else { return };
-        let Some(o) = ask(tr("lists.globals.global_title"), fields, o, &Lists::default()) else {
-            return;
+        let title = tr("lists.globals.global_title");
+        let object = match forms::form_validated(title, fields, o, &Lists::default(), validate_global) {
+            Done::Ok(object) => Some(object),
+            Done::Cancel => None,
+            Done::Json(draft) => dialogs::json_editor(title, "", &Value::Object(draft), |value| {
+                let object = value
+                    .as_object()
+                    .ok_or_else(|| tr("dialogs.values.need_object").to_string())?;
+                validate_global(object)
+            })
+            .and_then(|value| value.as_object().cloned()),
         };
+        let Some(o) = object else { return };
         let name = s(&o, "variableName").trim().to_string();
-        if name.is_empty() {
-            return;
-        }
         let v = if on(&o, "autoType") {
             crate::vars::auto_type(s(&o, "value"))
         } else {
@@ -1311,6 +1932,7 @@ impl Globals {
 
 fn globals_tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<Globals>> {
     let mut col = tab(tabs, "Globals");
+    super::hint(&mut col, tr("lists.globals.read_only_hint"), 36);
     let view = browser(
         &mut col,
         &[220, 420, 100, 200],
@@ -1326,9 +1948,19 @@ fn globals_tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<Globals>> {
     let me = Rc::new(RefCell::new(Globals {
         tab: col,
         cmds: cmds.clone(),
-        view,
+        view: view.clone(),
         rows: Vec::new(),
+        buttons: b.clone(),
     }));
+    me.borrow().selection_changed();
+    view.clone().set_callback({
+        let me = me.clone();
+        move |_| {
+            if let Ok(globals) = me.try_borrow() {
+                globals.selection_changed();
+            }
+        }
+    });
     let click = |b: &Button, f: Box<dyn Fn(&mut Globals)>| {
         let me = me.clone();
         b.clone().set_callback(move |_| {
@@ -1337,7 +1969,7 @@ fn globals_tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<Globals>> {
             }
         });
     };
-    // ponytail: user globals are shown, not edited here; Global (Set) with User does that.
+    // User globals are read only here; Global (Set) with User changes them.
     let global = |m: &Globals| {
         m.selected()
             .filter(|r| r.3.is_none())
@@ -1356,8 +1988,8 @@ fn globals_tab(tabs: &Wizard, cmds: &Cmds) -> Rc<RefCell<Globals>> {
         &b[2],
         Box::new(move |m| {
             let Some((name, _, persisted)) = global(m) else { return };
-            let q = format!("Delete the global {}?", name.replace('@', "@@"));
-            if super::dialogs::choice(&q, "Cancel", "Delete") {
+            let q = trf("lists.globals.delete_confirm", &[("name", &name)]);
+            if super::dialogs::danger(&q, tr("dialogs.cancel"), tr("btn.delete")) {
                 let _ = query(&m.cmds, move |e| e.delete_global(&name, persisted));
                 m.refresh();
             }
@@ -1436,6 +2068,7 @@ pub struct Community {
     /// The users in the list, as shown (the list's line n is `shown[n - 1]`).
     shown: Vec<(String, String)>,
     quotes: Rows,
+    quote_buttons: Vec<Button>,
     credits: Rows,
     /// The engine's `community_rev` when the users and credits were last read.
     rev: u64,
@@ -1578,6 +2211,18 @@ impl Community {
                 }
             }
         }
+        self.quote_selection_changed();
+    }
+
+    fn quote_selection_changed(&mut self) {
+        let eligible = self.quote_id().is_some();
+        for button in &mut self.quote_buttons {
+            if eligible {
+                button.activate();
+            } else {
+                button.deactivate();
+            }
+        }
     }
 
     /// The card of the user selected: who they are, what they said, their time here.
@@ -1660,6 +2305,7 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
     let l = Frame::default().with_label(tr("lists.community.show"));
     top.fixed(&l, 44);
     let mut show = super::fit::choice();
+    show.set_tooltip(tr("lists.community.show"));
     show.add_choice(&format!(
         "{}|{}|{}",
         tr("lists.community.users"),
@@ -1672,8 +2318,7 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
     search.set_tooltip(tr("lists.community.search_tooltip"));
     super::placeholder(&mut search, tr("lists.community.search_users"));
     search.set_trigger(fltk::enums::CallbackTrigger::Changed);
-    top.fixed(&search, 220);
-    Frame::default();
+    // Search takes the remaining width instead of running beyond narrow windows.
     top.end();
     col.fixed(&top, ROW);
 
@@ -1748,6 +2393,7 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
     let mut credits_v = Flex::default().column();
     let cb = bar(&mut credits_v, &[tr("btn.reset"), tr("btn.fill_with_test_names")]);
     let credits = browser(&mut credits_v, &[180, 600], &[], "");
+    credits.clone().set_menu(&cb);
     credits_v.end();
     col.end();
 
@@ -1765,9 +2411,11 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
         users_header: users_header.clone(),
         shown: Vec::new(),
         quotes: quotes.clone(),
+        quote_buttons: qb[1..].to_vec(),
         credits,
         rev: 0,
     }));
+    me.borrow_mut().quote_selection_changed();
     *after_filter.borrow_mut() = Some(Rc::new({
         let me = me.clone();
         move || {
@@ -1837,10 +2485,13 @@ fn community_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Community>
     quotes.clone().set_callback({
         let me = me.clone();
         move |_| {
-            if fltk::app::event_clicks() {
-                if let Ok(mut m) = me.try_borrow_mut() {
-                    let id = m.quote_id();
-                    m.edit_quote(id);
+            if let Ok(mut m) = me.try_borrow_mut() {
+                m.quote_selection_changed();
+                if fltk::app::event() == fltk::enums::Event::Push && fltk::app::event_clicks() && !super::right_button()
+                {
+                    if let Some(id) = m.quote_id() {
+                        m.edit_quote(Some(id));
+                    }
                 }
             }
         }
@@ -1866,11 +2517,11 @@ impl Servers {
     pub fn refresh(&mut self) {
         let c = self.cfg.borrow();
         let (w, h, u) = (&c.websockets, &c.http, &c.udp);
-        let state = |on: bool| {
-            if on {
-                tr("lists.servers.on")
+        let state = |enabled: bool| {
+            if enabled {
+                tr("lists.servers.enabled")
             } else {
-                tr("lists.servers.off")
+                tr("lists.servers.disabled")
             }
         };
         let texts = [
@@ -1904,8 +2555,10 @@ impl Servers {
                 c.stream_deck.port
             ),
         ];
-        for (f, t) in self.lines.iter_mut().zip(texts) {
-            f.set_label(&t.replace('@', "@@"));
+        let enabled = [w.auto_start, h.auto_start, u.auto_start, c.stream_deck.auto_start];
+        for ((frame, text), enabled) in self.lines.iter_mut().zip(texts).zip(enabled) {
+            (if enabled { Health::Standby } else { Health::Off }).show(frame, &text);
+            frame.set_tooltip(&text.replace('@', "@@"));
         }
     }
 
@@ -1917,7 +2570,7 @@ impl Servers {
             ("endpoint", "Endpoint", Text),
             ("enableAuth", "Password required", Bool),
             ("authEnforce", "Password for every request", Bool),
-            ("authPassword", "Password", Text),
+            ("authPassword", "Password", Secret),
             ("allowedOrigins", "Websites allowed (also HTTP), one per line", Multi),
         ];
         let http: &[F] = &[
@@ -1955,7 +2608,7 @@ impl Servers {
             bad = r.err();
         });
         if let Some(e) = bad {
-            super::dialogs::alert(&e.to_string());
+            super::dialogs::error(&e.to_string());
         }
         self.refresh();
     }
@@ -1963,6 +2616,7 @@ impl Servers {
 
 fn servers_box(col: &mut Flex, cfg: &Cfg) -> Rc<RefCell<Servers>> {
     title(col, tr("lists.servers.title"));
+    super::hint(col, tr("lists.servers.state_hint"), 36);
     let me = Rc::new(RefCell::new(Servers {
         cfg: cfg.clone(),
         lines: Vec::new(),
@@ -1997,38 +2651,45 @@ pub struct Donations {
 
 impl Donations {
     pub fn refresh(&mut self) {
-        let (se, sl) = query(&self.cmds, |e| {
-            let d = e.donations.borrow();
-            (d.streamelements.get(), d.streamlabs.get())
-        })
-        .unwrap_or_default();
-        let c = self.cfg.borrow();
-        let d = &c.donations;
-        let state = |token: &str, up: bool| match (token.trim().is_empty(), up) {
-            (true, _) => tr("lists.donations.off_no_token"),
-            (_, true) => tr("lists.donations.connected"),
-            _ => tr("lists.donations.not_connected"),
-        };
-        let texts = [
-            trf(
-                "lists.donations.status",
-                &[("status", state(&d.streamelements_token, se))],
-            ),
-            trf("lists.donations.status", &[("status", state(&d.streamlabs_token, sl))]),
-            match (d.donordrive_instance.trim(), d.donordrive_participant_id.trim()) {
-                ("", _) | (_, "") => tr("lists.donations.status_off").to_string(),
-                (site, id) => trf("lists.donations.donordrive_status", &[("id", id), ("site", site)]),
-            },
-        ];
-        for (f, t) in self.lines.iter_mut().zip(texts) {
-            f.set_label(&t.replace('@', "@@"));
+        let runtime = query(&self.cmds, |engine| {
+            let donations = engine.donations.borrow();
+            (donations.streamelements.get(), donations.streamlabs.get())
+        });
+        let config = self.cfg.borrow();
+        let donations = &config.donations;
+        for (index, token) in [&donations.streamelements_token, &donations.streamlabs_token]
+            .into_iter()
+            .enumerate()
+        {
+            let (health, text) = if token.trim().is_empty() {
+                (Health::Off, tr("lists.donations.off_no_token"))
+            } else {
+                match runtime.map(|states| if index == 0 { states.0 } else { states.1 }) {
+                    Some(true) => (Health::Up, tr("lists.donations.connected")),
+                    Some(false) => (Health::Down, tr("lists.donations.not_connected")),
+                    None => (Health::Busy, tr("lists.stream_apps.unknown")),
+                }
+            };
+            health.show(&mut self.lines[index], text);
         }
+        let (health, text) = match (
+            donations.donordrive_instance.trim(),
+            donations.donordrive_participant_id.trim(),
+        ) {
+            ("", _) | (_, "") => (Health::Off, tr("lists.donations.status_off").to_string()),
+            (site, id) => (
+                Health::Standby,
+                trf("lists.donations.donordrive_status", &[("id", id), ("site", site)]),
+            ),
+        };
+        health.show(&mut self.lines[2], &text);
+        self.lines[2].set_tooltip(&text.replace('@', "@@"));
     }
 
     fn edit(&mut self, which: usize) {
         let fields: &[F] = match which {
-            0 => &[("streamelementsToken", "JWT token", Text)],
-            1 => &[("streamlabsToken", "Socket API token", Text)],
+            0 => &[("streamelementsToken", "JWT token", Secret)],
+            1 => &[("streamlabsToken", "Socket API token", Secret)],
             _ => &[
                 ("donordriveInstance", "Site", Text),
                 (
@@ -2052,7 +2713,7 @@ impl Donations {
 }
 
 fn donations_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Donations>> {
-    let (scroll, mut col) = super::tab_scrolled(tabs, "Donations", 400);
+    let (scroll, mut col) = super::scroll::page(tabs, "Donations");
     let me = Rc::new(RefCell::new(Donations {
         tab: col.clone(),
         cfg: cfg.clone(),
@@ -2070,10 +2731,7 @@ fn donations_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Donations>
         .enumerate()
     {
         title(&mut col, name);
-        let g = Frame::default()
-            .with_label(guide)
-            .with_align(Align::Left | Align::Inside | Align::Wrap);
-        col.fixed(&g, ROW);
+        super::hint(&mut col, guide, ROW);
         let mut r = Flex::default().row();
         r.set_pad(8);
         let f = Frame::default().with_align(Align::Left | Align::Inside).ellipsis();
@@ -2103,11 +2761,12 @@ pub struct Groups {
     cmds: Cmds,
     view: Rows,
     ids: Vec<String>,
+    buttons: Vec<Button>,
 }
 
 impl Groups {
     pub fn refresh(&mut self) {
-        let sel = self.view.value();
+        let selected = self.selected();
         self.view.clear();
         self.ids.clear();
         for g in &self.cfg.borrow().groups {
@@ -2118,29 +2777,144 @@ impl Groups {
             ]));
             self.ids.push(s(g, "id").into());
         }
-        if sel > 0 {
-            self.view.select(sel);
+        if let Some(index) = selected.and_then(|id| self.ids.iter().position(|candidate| *candidate == id)) {
+            self.view.select(index as i32 + 1);
         }
+        self.selection_changed();
+    }
+
+    fn selected(&self) -> Option<String> {
+        self.ids.get(usize::try_from(self.view.value() - 1).ok()?).cloned()
+    }
+
+    fn selection_changed(&self) {
+        let selected = self.selected().is_some();
+        set_available(&self.buttons, &[true, selected, selected]);
+    }
+
+    fn members(&self) {
+        let Some(id) = self.selected() else { return };
+        // Each member: their platform, their name as last seen, and their key (platform-id).
+        let read = {
+            let (cfg, id) = (self.cfg.clone(), id.clone());
+            move || -> (String, Vec<(String, String, String)>) {
+                let config = cfg.borrow();
+                let Some(group) = config.groups.iter().find(|group| s(group, "id") == id) else {
+                    return (String::new(), Vec::new());
+                };
+                let people = crate::usergroups::members(group)
+                    .into_iter()
+                    .map(|key| {
+                        let (platform, uid) = crate::usergroups::split(&key).unwrap_or(("twitch", key.as_str()));
+                        let name = crate::usergroups::name(group, &key).unwrap_or(uid).to_string();
+                        (platform.to_string(), name, key.clone())
+                    })
+                    .collect();
+                (s(group, "name").to_string(), people)
+            }
+        };
+        let (title, _) = read();
+        let (mut window, answer) = dialogs::window(520, 380, &title);
+        let mut column = Flex::new(16, 0, 488, 372, None).column();
+        column.set_pad(6);
+        super::header(
+            &mut column,
+            &[34, 260],
+            &[tr("lists.groups.platform"), tr("lists.groups.user_id"), ""],
+        );
+        let mut members = Rows::new(tr("lists.groups.members_empty"));
+        members.set_column_widths(&[34, 260]);
+        members.set_logo_column(0);
+        let keys: Rc<RefCell<Vec<String>>> = Rc::default();
+        let fill = {
+            let (members, keys, read) = (members.clone(), keys.clone(), read.clone());
+            move || {
+                let mut members = members.clone();
+                let (_, people) = read();
+                members.clear();
+                keys.borrow_mut().clear();
+                for (platform, name, key) in people {
+                    let uid = crate::usergroups::split(&key).map_or(key.as_str(), |k| k.1).to_string();
+                    members.add(&line(&[platform, name, uid]));
+                    keys.borrow_mut().push(key);
+                }
+            }
+        };
+        fill();
+        let mut row = Flex::default().row();
+        row.set_pad(8);
+        let mut remove = button(&mut row, tr("btn.remove_streamerz"), 100);
+        Frame::default();
+        let mut close = button(&mut row, tr("dialogs.close"), 90);
+        close.set_shortcut(fltk::enums::Shortcut::from_key(fltk::enums::Key::Escape));
+        close.set_callback({
+            let answer = answer.clone();
+            move |_| answer.set(Some(false))
+        });
+        row.end();
+        column.fixed(&row, ROW + 4);
+        column.end();
+        window.end();
+        members.set_menu(std::slice::from_ref(&remove));
+        remove.set_callback({
+            let (members, keys, cmds, gid) = (members.clone(), keys.clone(), self.cmds.clone(), id.clone());
+            let fill = fill.clone();
+            move |_| {
+                let Some(at) = usize::try_from(members.value() - 1).ok() else {
+                    return;
+                };
+                let Some(key) = keys.borrow().get(at).cloned() else {
+                    return;
+                };
+                let (platform, uid) = crate::usergroups::split(&key).unwrap_or(("twitch", key.as_str()));
+                let mut u = crate::model::Obj::new();
+                u.insert("userId".into(), uid.into());
+                u.insert("userType".into(), platform.into());
+                let gid = gid.clone();
+                let _ = query(&cmds, move |e| e.group_users(&gid, &[u], false));
+                fill();
+            }
+        });
+        dialogs::run(&mut window, &answer, || true);
     }
 }
 
 fn groups_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Groups>> {
     let mut col = tab(tabs, "Groups");
+    super::hint(&mut col, tr("lists.groups.guide"), 48);
     let view = browser(
         &mut col,
         &[300, 120],
         &["lists.groups.group", "lists.groups.users"],
         "lists.groups.empty",
     );
-    let b = bar(&mut col, &[tr("btn.add"), tr("btn.delete")]);
+    let b = bar(&mut col, &[tr("btn.add"), tr("btn.members"), tr("btn.delete")]);
     view.clone().set_menu(&b);
     col.end();
     let me = Rc::new(RefCell::new(Groups {
         cfg: cfg.clone(),
         cmds: cmds.clone(),
-        view,
+        view: view.clone(),
         ids: Vec::new(),
+        buttons: b.clone(),
     }));
+    me.borrow().selection_changed();
+    view.clone().set_callback({
+        let me = me.clone();
+        move |_| {
+            if let Ok(groups) = me.try_borrow() {
+                groups.selection_changed();
+            }
+        }
+    });
+    b[1].clone().set_callback({
+        let me = me.clone();
+        move |_| {
+            if let Ok(groups) = me.try_borrow() {
+                groups.members();
+            }
+        }
+    });
     b[0].clone().set_callback({
         let me = me.clone();
         move |_| {
@@ -2154,7 +2928,7 @@ fn groups_tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Groups>> {
             }
         }
     });
-    b[1].clone().set_callback({
+    b[2].clone().set_callback({
         let me = me.clone();
         move |_| {
             let Ok(mut m) = me.try_borrow_mut() else { return };
@@ -2192,6 +2966,79 @@ fn users_click(me: &Rc<RefCell<Community>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_list_says_how_each_of_its_columns_draws() {
+        for kind in [
+            &COMMANDS,
+            &TIMERS,
+            &VOICE_COMMANDS,
+            &FILE_WATCHERS,
+            &FILE_TAILS,
+            &CLIENTS,
+            &OBS_CONNECTIONS,
+            &SLOBS_CONNECTIONS,
+            &SERVERS,
+        ] {
+            let Value::Object(o) = (kind.new)() else {
+                panic!("{}", kind.what)
+            };
+            let cells = (kind.label)(&o);
+            assert_eq!(cells.len(), kind.titles.len(), "{}: a title per column", kind.what);
+            assert_eq!(cells.len(), kind.cells.len(), "{}: a look per column", kind.what);
+            assert_eq!(cells.len(), kind.columns.len(), "{}: a width per column", kind.what);
+            // The switch comes first, and says what the flag is.
+            assert_eq!(kind.cells[0], Some(Switch), "{}", kind.what);
+            assert!(cells[0] == "1" || cells[0] == "0", "{}: {:?}", kind.what, cells[0]);
+            assert_eq!(kind.live.is_some(), cells.iter().any(|c| c == LIVE), "{}", kind.what);
+        }
+    }
+
+    #[test]
+    fn a_commands_row_says_who_where_and_how_often() {
+        let o = json!({"permittedGroups": ["Moderators"], "grantType": 0, "sources": 1 | 2 | 1024,
+            "globalCooldown": 30, "userCooldown": 10})
+        .as_object()
+        .cloned()
+        .unwrap();
+        assert_eq!(who(&o), "shield|Moderators");
+        assert_eq!(source_platforms(1 | 2 | 1024), "twitch,youtube");
+        let deny = json!({"permittedGroups": ["VIP"], "permittedUsers": ["a"], "grantType": 1})
+            .as_object()
+            .cloned()
+            .unwrap();
+        assert!(who(&deny).starts_with("shield-off|") && who(&deny).contains("VIP"));
+        assert!(who(&Obj::new()).starts_with("users|"));
+        let row = (COMMANDS.label)(&o);
+        assert!(row[5].starts_with("timer|"), "{row:?}");
+    }
+
+    #[test]
+    fn a_files_row_says_whether_the_file_is_there() {
+        assert!(found(env!("CARGO_MANIFEST_DIR")).contains(tr("lists.found")));
+        assert!(found("/no/such/streamerz/file").contains(tr("lists.missing")));
+        assert!(found("  ").contains(tr("lists.not_set")));
+    }
+
+    #[test]
+    fn list_headers_do_not_contain_row_format_parameters() {
+        for kind in [
+            &COMMANDS,
+            &TIMERS,
+            &CLIENTS,
+            &SERVERS,
+            &OBS_CONNECTIONS,
+            &SLOBS_CONNECTIONS,
+        ] {
+            for key in kind.titles.iter().filter(|key| !key.is_empty()) {
+                assert!(
+                    !tr(key).contains('{'),
+                    "{} has a row template as its heading",
+                    kind.what
+                );
+            }
+        }
+    }
 
     /// A new one already has every field its form sets, so none lands out of Streamer.bot's order.
     #[test]

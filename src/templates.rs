@@ -2,6 +2,7 @@
 //! commands and timers, so they can be edited, exported and imported like any other. Nothing is added
 //! until one is picked. One action per platform where the platforms differ (each sends its own way).
 
+mod automation;
 pub mod clock;
 pub mod overlays;
 pub mod songs;
@@ -49,6 +50,23 @@ pub struct Template {
     pub name: &'static str,
     pub about: &'static str,
     pub make: fn() -> Made,
+}
+
+impl Template {
+    pub fn title(&self) -> &'static str {
+        if self.name.starts_with("automation.") {
+            crate::i18n::tr(self.name)
+        } else {
+            self.name
+        }
+    }
+    pub fn description(&self) -> &'static str {
+        if self.about.starts_with("automation.") {
+            crate::i18n::tr(self.about)
+        } else {
+            self.about
+        }
+    }
 }
 
 /// A platform's send-message sub-action, as the bot (falling back to the broadcaster).
@@ -134,6 +152,8 @@ fn command(name: &str, alias: &str, response: &str, cooldown: u64) -> Made {
 }
 
 pub const TEMPLATES: &[Template] = &[
+    Template { name: "automation.template_gifts", about: "automation.template_gifts_about", make: automation::gift_thanks },
+    Template { name: "automation.template_reward", about: "automation.template_reward_about", make: automation::reward_source },
     Template {
         name: "Ad break overlay",
         about: "A badge with the time left while Twitch plays an ad: an overlay page for an OBS browser source.",

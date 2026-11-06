@@ -268,6 +268,40 @@ pub fn other_channel(c: &Config) -> bool {
             .is_none_or(|b| !b.login.eq_ignore_ascii_case(ch))
 }
 
+/// A Twitch error (as `helix` and the logins return it) in a person's words: what happened, not the
+/// HTTP status and JSON. The raw text stays in the Log.
+pub fn plain_error(error: &str) -> String {
+    let message = error
+        .find('{')
+        .and_then(|at| serde_json::from_str::<Value>(&error[at..]).ok())
+        .and_then(|v| v.get("message").and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_default();
+    let status = error
+        .split("HTTP ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|code| code.parse::<u16>().ok());
+    let lower = message.to_lowercase();
+    let key = if lower.contains("broadcaster_id must match") || lower.contains("must be the broadcaster") {
+        "twitch.error.owner_only"
+    } else if lower.contains("missing scope") || lower.contains("scope") && status == Some(401) {
+        "twitch.error.scope"
+    } else {
+        match status {
+            Some(401) => "twitch.error.login",
+            Some(403) if lower.contains("affiliate") || lower.contains("partner") => "twitch.error.affiliate",
+            Some(403) => "twitch.error.forbidden",
+            Some(404) => "twitch.error.not_found",
+            Some(429) => "twitch.error.busy",
+            Some(500..=599) => "twitch.error.down",
+            _ if error.contains("No broadcaster account") => "twitch.error.no_login",
+            _ if message.is_empty() => return error.to_string(),
+            _ => return message,
+        }
+    };
+    crate::i18n::tr(key).to_string()
+}
+
 /// The id of the channel read: the one set, else the logged-in account's.
 pub fn channel_id(c: &Config) -> String {
     if other_channel(c) {
@@ -1573,6 +1607,7 @@ async fn run_eventsub_loop(
                 let refused = auth_refused.clone();
                 let (bans, cfg_c, channel) = (bans_task.clone(), cfg.clone(), broadcaster.clone());
                 // The welcome waits only for the history: the ~40 subscriptions take seconds.
+                engine.set_chat_modes("twitch", None);
                 let setup = tokio::task::spawn_local(async move {
                     let hist_fut = async {
                         if custom_eventsub || login.is_empty() {
@@ -2224,6 +2259,17 @@ fn unescape_irc_tag(v: &str) -> String {
 }
 
 /// Parse an IRCv3 `PRIVMSG` line (e.g. from `recent-messages.robotty.de`) into a historical chat `Line`.
+fn standalone_gif<'a>(event: &'a Value, text: &str) -> Option<&'a str> {
+    let fragments = event.pointer("/message/fragments")?.as_array()?;
+    if fragments.len() != 1 || fragments[0]["type"] != "gif" || fragments[0]["text"].as_str()? != text {
+        return None;
+    }
+    fragments[0]
+        .pointer("/gif/url")?
+        .as_str()
+        .filter(|url| url.starts_with("https://"))
+}
+
 pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate::engine::chatlog::Line> {
     let raw = raw.trim_end_matches(['\r', '\n']);
     let (tags_part, rest) = if let Some(r) = raw.strip_prefix('@') {
@@ -2255,6 +2301,7 @@ pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate
     let mut color = String::new();
     let mut badges_raw = String::new();
     let mut emotes_raw = String::new();
+    let mut gifs_raw = String::new();
     let mut sent_ts: Option<i64> = None;
     let mut reply = crate::engine::chatlog::Reply::default();
 
@@ -2267,6 +2314,7 @@ pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate
             "color" => color = v.to_string(),
             "badges" => badges_raw = v.to_string(),
             "emotes" => emotes_raw = v.to_string(),
+            "gifs" => gifs_raw = unescape_irc_tag(v),
             "tmi-sent-ts" => sent_ts = v.parse::<i64>().ok(),
             // Deleted by a moderator since: not shown again.
             "rm-deleted" if v == "1" => return None,
@@ -2332,6 +2380,8 @@ pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate
         }
     }
 
+    let gif_event = json!({"message": {"fragments": crate::irc::message_fragments(&text, &emotes_raw, &gifs_raw)}});
+    let gif = standalone_gif(&gif_event, &text).unwrap_or("").to_string();
     let reply = (!reply.user.is_empty()).then_some(reply);
     let text = reply.as_ref().map_or(text.clone(), |r| r.strip(&text));
     Some(crate::engine::chatlog::Line {
@@ -2345,6 +2395,7 @@ pub fn parse_irc_recent_message(raw: &str, broadcaster_id: &str) -> Option<crate
         user_id,
         text,
         emotes,
+        gif,
         broadcaster,
         moderator,
         vip,
@@ -2445,6 +2496,10 @@ pub(crate) fn handle_notification(
                     internal: false,
                 },
             );
+
+            if let Some(url) = standalone_gif(event, text) {
+                args.insert("messageGifUrl".into(), url.into());
+            }
 
             // Highlighted with channel points, a first message, a power-up: the chat marks it.
             let kind = event.pointer("/message_type").and_then(Value::as_str).unwrap_or("text");
@@ -2901,6 +2956,7 @@ pub(crate) fn handle_notification(
             engine.chat_unpinned("twitch", "");
             if !engine.chat_stream_ended("twitch") {
                 crate::notify::send(
+                    crate::notify::Kind::Streams,
                     "Streamerz",
                     &crate::i18n::trf("chat.state_ended_title", &[("platform", "Twitch")]),
                 );
@@ -3570,6 +3626,7 @@ pub(crate) fn handle_notification(
             engine.emit("Twitch", "ChatCleared", || json!(args));
         }
         "channel.chat_settings.update" => {
+            engine.set_chat_modes("twitch", twitch_chat_modes(event));
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
             let f = |k: &str| event[k].as_bool().unwrap_or(false);
@@ -4677,6 +4734,19 @@ fn publish_rewards() {
 }
 
 /// Remember what later events compare against (chat settings, title and game, the custom rewards).
+fn twitch_chat_modes(settings: &Value) -> Option<crate::engine::ChatModes> {
+    Some(crate::engine::ChatModes {
+        emote_only: settings["emote_mode"].as_bool()?,
+        slow_seconds: if settings["slow_mode"].as_bool()? {
+            settings["slow_mode_wait_time_seconds"]
+                .as_u64()
+                .or_else(|| settings["slow_mode_wait_time"].as_u64())
+        } else {
+            None
+        },
+    })
+}
+
 async fn seed(engine: &Rc<Engine>) {
     let Some(tw) = engine.twitch() else { return };
     let b = vec![("broadcaster_id", "{broadcaster_id}")];
@@ -4684,6 +4754,11 @@ async fn seed(engine: &Rc<Engine>) {
     // The badge pictures first and without a login's help; Helix's below adds what it knows.
     load_public_badges(&chan).await;
     let settings = tw.helix("GET", "chat/settings", b.clone(), None, false, false).await;
+    if let Ok(v) = &settings {
+        if engine.chat_modes()[0].is_none() {
+            engine.set_chat_modes("twitch", twitch_chat_modes(&v["data"][0]));
+        }
+    }
     let channel = tw.helix("GET", "channels", b.clone(), None, false, false).await;
     let rewards = tw
         .helix("GET", "channel_points/custom_rewards", b.clone(), None, false, false)
@@ -4839,6 +4914,47 @@ async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn twitch_errors_read_as_plain_words() {
+        let owner = r#"Helix GET predictions failed: HTTP 401 {"error":"Unauthorized","status":401,"message":"The ID in broadcaster_id must match the user ID found in the request's OAuth token."}"#;
+        assert_eq!(plain_error(owner), crate::i18n::tr("twitch.error.owner_only"));
+        assert_eq!(
+            plain_error(r#"Helix GET x failed: HTTP 401 {"message":"Invalid OAuth token"}"#),
+            crate::i18n::tr("twitch.error.login")
+        );
+        assert_eq!(
+            plain_error("Helix GET x failed: HTTP 503 "),
+            crate::i18n::tr("twitch.error.down")
+        );
+        assert_eq!(
+            plain_error(r#"Helix POST x failed: HTTP 400 {"message":"Bad title"}"#),
+            "Bad title"
+        );
+        assert_eq!(plain_error("timed out"), "timed out");
+    }
+
+    #[test]
+    fn chat_modes_read_helix_and_eventsub_settings() {
+        use super::*;
+        let initial = json!({"emote_mode": true, "slow_mode": true, "slow_mode_wait_time": 30});
+        let update = json!({"emote_mode": false, "slow_mode": true, "slow_mode_wait_time_seconds": 10});
+        assert_eq!(
+            twitch_chat_modes(&initial),
+            Some(crate::engine::ChatModes {
+                emote_only: true,
+                slow_seconds: Some(30)
+            })
+        );
+        assert_eq!(
+            twitch_chat_modes(&update),
+            Some(crate::engine::ChatModes {
+                emote_only: false,
+                slow_seconds: Some(10)
+            })
+        );
+        assert_eq!(twitch_chat_modes(&json!({})), None);
+    }
+
     #[test]
     fn an_ad_break_tells_the_overlays() {
         let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -5566,5 +5682,19 @@ pub(crate) mod tests {
         assert_eq!(line.badges[0].0, "broadcaster/1");
         assert_eq!(line.emotes.len(), 1);
         assert_eq!(line.emotes[0].0, "Kappa");
+    }
+}
+
+#[cfg(test)]
+mod gif_message_tests {
+    use super::*;
+    #[test]
+    fn event_and_recent_history_keep_standalone_gif_url() {
+        let url = "https://media.giphy.com/a.gif?x=1&y=2";
+        let event = json!({"message": {"fragments": [{"type": "gif", "text": "[a gif]", "gif": {"url": url}}]}});
+        assert_eq!(standalone_gif(&event, "[a gif]"), Some(url));
+        assert_eq!(standalone_gif(&event, "other"), None);
+        let raw = format!("@gifs=0-6|id|{url};id=msg :user!user@host PRIVMSG #channel :[a gif]");
+        assert_eq!(parse_irc_recent_message(&raw, "").unwrap().gif, url);
     }
 }

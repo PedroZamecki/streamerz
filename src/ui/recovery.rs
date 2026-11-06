@@ -8,7 +8,7 @@ use crate::backup::{self, Backup, Kind};
 use crate::crash::{self, Report};
 use crate::i18n::{tr, trf};
 use fltk::button::Button;
-use fltk::enums::Font;
+use fltk::enums::{Color, Font};
 use fltk::group::{Flex, Wizard};
 use fltk::prelude::*;
 use fltk::text::{TextBuffer, TextDisplay};
@@ -29,7 +29,41 @@ pub struct Crashes {
     pub tab: Flex,
     view: Rows,
     text: TextBuffer,
+    display: TextDisplay,
+    buttons: Vec<Button>,
     reports: Vec<Report>,
+}
+
+fn crash_actions(selected: bool, readable: bool) -> [bool; 4] {
+    [selected && readable, true, selected, true]
+}
+
+fn backup_actions(selected: bool) -> [bool; 4] {
+    [true, selected, true, selected]
+}
+
+fn set_available(buttons: &mut [Button], states: [bool; 4]) {
+    for (button, available) in buttons.iter_mut().zip(states) {
+        if available {
+            button.activate();
+        } else {
+            button.deactivate();
+        }
+    }
+}
+
+fn failure(key: &'static str, error: &str) {
+    let message = trf(key, &[("error", error)]);
+    crate::error(message.clone());
+    dialogs::alert(&message);
+}
+
+fn open_folder(path: &std::path::Path) {
+    if let Err(error) = std::fs::create_dir_all(path) {
+        failure("recovery.folder_failed", &error.to_string());
+        return;
+    }
+    crate::oauth::open_browser(&path.display().to_string());
 }
 
 impl Crashes {
@@ -63,8 +97,20 @@ impl Crashes {
 
     /// The selected report, whole, under the list.
     fn show(&mut self) {
-        let text = self.selected().map(Report::text).unwrap_or_default();
+        let selected = self.selected().is_some();
+        let result = self.selected().map(|report| std::fs::read_to_string(&report.path));
+        let (text, color, readable) = match result {
+            Some(Ok(text)) => (text, Color::Foreground, true),
+            Some(Err(error)) => (
+                trf("crashes.read_failed", &[("error", &error.to_string())]),
+                super::Health::Down.color(),
+                false,
+            ),
+            None => (tr("crashes.detail_empty").to_string(), super::muted(), false),
+        };
         self.text.set_text(&text);
+        self.display.set_text_color(color);
+        set_available(&mut self.buttons, crash_actions(selected, readable));
     }
 }
 
@@ -78,6 +124,7 @@ pub fn crashes_tab(tabs: &Wizard) -> Rc<RefCell<Crashes>> {
     );
     col.fixed(&*view, 170);
     let mut shown = TextDisplay::default();
+    super::scroll::view(&mut shown);
     let text = TextBuffer::default();
     shown.set_buffer(text.clone());
     shown.set_text_font(Font::Courier);
@@ -97,8 +144,11 @@ pub fn crashes_tab(tabs: &Wizard) -> Rc<RefCell<Crashes>> {
         tab: col,
         view: view.clone(),
         text,
+        display: shown,
+        buttons: b.clone(),
         reports: Vec::new(),
     }));
+    me.borrow_mut().show();
     view.clone().set_callback({
         let me = me.clone();
         move |_| {
@@ -109,20 +159,25 @@ pub fn crashes_tab(tabs: &Wizard) -> Rc<RefCell<Crashes>> {
     });
     click(&me, &b[0], |m| {
         if let Some(r) = m.selected() {
+            if let Err(error) = std::fs::read_to_string(&r.path) {
+                failure("crashes.read_failed", &error.to_string());
+                m.show();
+                return;
+            }
             crash::report_on_github(r);
             m.refresh();
         }
     });
     click(&me, &b[1], |_| {
-        crate::oauth::open_browser(&crash::folder().display().to_string());
+        open_folder(&crash::folder());
     });
     click(&me, &b[2], |m| {
         let Some(r) = m.selected() else { return };
-        if !dialogs::choice(tr("crashes.delete_ask"), tr("dialogs.cancel"), tr("btn.delete")) {
+        if !dialogs::danger(tr("crashes.delete_ask"), tr("dialogs.cancel"), tr("btn.delete")) {
             return;
         }
         if let Err(e) = crash::delete(r) {
-            crate::error(format!("Delete crash report: {e}"));
+            failure("crashes.delete_failed", &e);
         }
         m.refresh();
     });
@@ -136,6 +191,7 @@ pub struct Backups {
     cmds: super::lists::Cmds,
     view: Rows,
     backups: Vec<Backup>,
+    buttons: Vec<Button>,
 }
 
 /// What made a backup, as the list says it.
@@ -164,7 +220,7 @@ impl Backups {
             self.view.add(&line(&[
                 crate::fmt::shown_when(b.info.made),
                 if b.info.version.is_empty() {
-                    "?".into()
+                    tr("backups.version_unknown").into()
                 } else {
                     b.info.version.clone()
                 },
@@ -176,10 +232,16 @@ impl Backups {
         if n > 0 {
             self.view.select(sel.clamp(1, n));
         }
+        self.selection_changed();
     }
 
     fn selected(&self) -> Option<&Backup> {
         self.backups.get((self.view.value() - 1).max(-1) as usize)
+    }
+
+    fn selection_changed(&mut self) {
+        let selected = self.selected().is_some();
+        set_available(&mut self.buttons, backup_actions(selected));
     }
 }
 
@@ -207,16 +269,39 @@ pub fn backups_tab(tabs: &Wizard, cfg: &super::lists::Cfg, cmds: &super::lists::
         tab: col,
         cfg: cfg.clone(),
         cmds: cmds.clone(),
-        view,
+        view: view.clone(),
         backups: Vec::new(),
+        buttons: b.clone(),
     }));
+    me.borrow_mut().selection_changed();
+    view.clone().set_callback({
+        let me = me.clone();
+        move |_| {
+            if let Ok(mut m) = me.try_borrow_mut() {
+                m.selection_changed();
+            }
+        }
+    });
     click(&me, &b[0], |m| {
         // What's in memory goes to disk first, so the backup has it.
-        let _ = crate::save(&m.cfg.borrow());
-        let _ = super::query(&m.cmds, |e| e.save_community());
+        if let Err(error) = crate::save(&m.cfg.borrow()) {
+            failure("backups.save_failed", &error.to_string());
+            return;
+        }
+        match super::query(&m.cmds, |e| e.flush_community()) {
+            Some(Ok(())) => {}
+            Some(Err(error)) => {
+                failure("backups.save_failed", &error.to_string());
+                return;
+            }
+            None => {
+                dialogs::alert(tr("backups.busy"));
+                return;
+            }
+        }
         match backup::make(Kind::Manual, crate::brand::VERSION, "") {
-            Ok(b) => crate::say(format!("Backed up the settings ({})", b.name())),
-            Err(e) => crate::error(format!("Backup: {e}")),
+            Ok(b) => crate::say(trf("backups.created", &[("name", &b.name())])),
+            Err(e) => failure("backups.create_failed", &e),
         }
         m.refresh();
     });
@@ -228,26 +313,24 @@ pub fn backups_tab(tabs: &Wizard, cfg: &super::lists::Cfg, cmds: &super::lists::
         }
         match backup::restore(b) {
             Ok(()) => {
-                crate::say(format!("Restored the backup {}; restarting", b.name()));
+                crate::say(trf("backups.restored", &[("name", &b.name())]));
                 crate::update::restart();
             }
             Err(e) => {
-                crate::error(format!("Restore: {e}"));
-                dialogs::message(&trf("backups.restore_failed", &[("error", &e)]));
+                failure("backups.restore_failed", &e);
             }
         }
     });
     click(&me, &b[2], |_| {
-        let _ = std::fs::create_dir_all(backup::root());
-        crate::oauth::open_browser(&backup::root().display().to_string());
+        open_folder(&backup::root());
     });
     click(&me, &b[3], |m| {
         let Some(b) = m.selected() else { return };
-        if !dialogs::choice(tr("backups.delete_ask"), tr("dialogs.cancel"), tr("btn.delete")) {
+        if !dialogs::danger(tr("backups.delete_ask"), tr("dialogs.cancel"), tr("btn.delete")) {
             return;
         }
         if let Err(e) = backup::delete(b) {
-            crate::error(format!("Delete backup: {e}"));
+            failure("backups.delete_failed", &e);
         }
         m.refresh();
     });
@@ -256,6 +339,20 @@ pub fn backups_tab(tabs: &Wizard, cfg: &super::lists::Cfg, cmds: &super::lists::
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn crash_actions_require_a_selected_readable_report_before_reporting() {
+        assert_eq!(super::crash_actions(false, false), [false, true, false, true]);
+        assert_eq!(super::crash_actions(false, true), [false, true, false, true]);
+        assert_eq!(super::crash_actions(true, false), [false, true, true, true]);
+        assert_eq!(super::crash_actions(true, true), [true; 4]);
+    }
+
+    #[test]
+    fn empty_backup_lists_keep_creation_and_folder_actions_available() {
+        assert_eq!(super::backup_actions(false), [true, false, true, false]);
+        assert_eq!(super::backup_actions(true), [true; 4]);
+    }
+
     #[test]
     fn sizes_read_well() {
         assert_eq!(super::size(512), "512 B");

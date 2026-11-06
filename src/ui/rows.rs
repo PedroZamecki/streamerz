@@ -2,6 +2,7 @@
 //! Like FLTK's browsers, lines count from 1 (0 is none) and columns are split by tabs; the text is
 //! drawn as is (no `@` formatting).
 
+use super::columns::{layout, INSET};
 use fltk::enums::{Align, Color, Event, Font, FrameType, Key};
 use fltk::frame::Frame;
 use fltk::prelude::*;
@@ -12,10 +13,10 @@ use std::rc::Rc;
 
 const LINE: i32 = 28;
 /// The scrollbar's width, and the space kept for it.
-const BAR: i32 = 6;
+const BAR: i32 = super::scroll::BAR;
 
 /// How a column draws its cells (text unless said).
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Cell {
     /// `key|text`: a logo (or else a Lucide icon) named `key`, then the text.
     Lead,
@@ -24,9 +25,23 @@ pub enum Cell {
     /// A path or address: quiet, cut with an ellipsis, underlined under the mouse (the click is the
     /// page's to use, see `column`).
     Link,
+    /// `1` or `0`: a switch, turned by a click on it or Space (see `on_switch`). Empty: none.
+    Switch,
+    /// `icon|rrggbb|text`: a state (Connected...), its icon and its words in its colour.
+    State,
+    /// `icon|text` (or just `text`): a detail, quiet, with a Lucide icon before it.
+    Note,
+    /// `text`: a small label in a rounded outline (default, manual...). Empty: none.
+    Badge,
+    /// Platforms (`twitch,youtube`): their logos side by side, named on hover.
+    Logos,
 }
 
+/// A switch in a row: its size.
+const SWITCH: (i32, i32) = (28, 16);
+
 type Cb = Box<dyn FnMut(&mut Rows)>;
+type Switched = Box<dyn FnMut(&mut Rows, i32)>;
 type Keys = Box<dyn FnMut(&mut Rows, Key) -> bool>;
 
 #[derive(Default)]
@@ -37,6 +52,7 @@ struct State {
     /// An icon at the start of a line.
     icons: Vec<Option<fltk::image::SharedImage>>,
     widths: &'static [i32],
+    columns: usize,
     empty: &'static str,
     /// The column holding a platform: drawn as its logo, named on hover.
     logo: Option<usize>,
@@ -52,6 +68,8 @@ struct State {
     top: i32,
     /// Where the scrollbar was grabbed, from its top.
     grab: Option<i32>,
+    /// A line whose switch is sliding across, and how far it has gone (0 to 1).
+    slide: Option<(i32, f32)>,
 }
 
 #[derive(Clone)]
@@ -60,6 +78,8 @@ pub struct Rows {
     st: Rc<RefCell<State>>,
     cb: Rc<RefCell<Option<Cb>>>,
     keys: Rc<RefCell<Option<Keys>>>,
+    /// What a click on a line's switch (or Space) does, given the line.
+    switched: Rc<RefCell<Option<Switched>>>,
     /// What a right click offers.
     menu: Rc<RefCell<Vec<fltk::button::Button>>>,
 }
@@ -78,22 +98,35 @@ impl DerefMut for Rows {
 }
 
 /// `text` cut to fit `w` px with an ellipsis (in the current font).
-fn fit(text: &str, w: i32) -> String {
+fn fit(text: &str, w: i32) -> std::borrow::Cow<'_, str> {
     if w <= 0 {
-        return String::new();
+        return std::borrow::Cow::Borrowed("");
     }
     if draw::width(text) as i32 <= w {
-        return text.to_string();
+        return std::borrow::Cow::Borrowed(text);
     }
-    let mut t: String = text.to_string();
-    while !t.is_empty() {
-        t.pop();
-        let c = format!("{t}…");
-        if draw::width(&c) as i32 <= w {
-            return c;
-        }
+    if draw::width("...") as i32 > w {
+        return std::borrow::Cow::Borrowed("");
     }
-    String::new()
+    std::borrow::Cow::Owned(super::fit::ellipsize(text, w, |s| draw::width(s) as i32))
+}
+
+/// Only user-facing cell values belong in hover text, never image addresses or status encoding.
+fn cell_text(value: &str, kind: Option<Cell>, picture: bool) -> Option<&str> {
+    if picture {
+        return None;
+    }
+    match kind {
+        Some(Cell::Status | Cell::State) => value.splitn(3, '|').nth(2),
+        Some(Cell::Lead | Cell::Note) => Some(value.split_once('|').map_or(value, |(_, label)| label)),
+        Some(Cell::Switch) => None,
+        _ => Some(value),
+    }
+}
+
+/// The platforms in a `Logos` cell, named.
+fn platforms(value: &str) -> impl Iterator<Item = &str> {
+    value.split(',').map(str::trim).filter(|p| !p.is_empty())
 }
 
 fn tone(hex: &str) -> Color {
@@ -101,10 +134,16 @@ fn tone(hex: &str) -> Color {
     Color::from_rgb((n >> 16) as u8, (n >> 8) as u8, n as u8)
 }
 
+/// A selected row or tree item: the background `back` with a little of the text colour, like shadcn's accent.
+pub fn selected(back: Color) -> Color {
+    Color::color_average(Color::Foreground, back, 0.14)
+}
+
 impl Rows {
     /// `empty` is what it says in the middle while it has no lines.
     pub fn new(empty: &'static str) -> Rows {
         let mut area = Frame::default();
+        area.set_label_type(fltk::enums::LabelType::None);
         area.set_frame(FrameType::DownBox);
         area.set_color(Color::Background2);
         let r = Rows {
@@ -115,6 +154,7 @@ impl Rows {
             })),
             cb: Rc::default(),
             keys: Rc::default(),
+            switched: Rc::default(),
             menu: Rc::default(),
         };
         area.draw({
@@ -130,6 +170,14 @@ impl Rows {
 
     pub fn set_column_widths(&mut self, w: &'static [i32]) {
         self.st.borrow_mut().widths = w;
+    }
+
+    pub fn set_empty(&mut self, text: &'static str) {
+        let mut state = self.st.borrow_mut();
+        if state.empty != text {
+            state.empty = text;
+            self.area.redraw();
+        }
     }
 
     /// Column `c` holds a platform ("twitch"...): its logo shows instead of the text.
@@ -177,6 +225,36 @@ impl Rows {
         *self.keys.borrow_mut() = Some(Box::new(f));
     }
 
+    /// Runs when the switch of line `n` is clicked (after the line is selected), or Space is pressed.
+    pub fn on_switch(&mut self, f: impl FnMut(&mut Rows, i32) + 'static) {
+        *self.switched.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Whether the last click landed on a switch (a page doesn't open the line for it).
+    pub fn clicked_switch(&self) -> bool {
+        let st = self.st.borrow();
+        st.col
+            .is_some_and(|c| st.cells.get(c).copied().flatten() == Some(Cell::Switch))
+    }
+
+    fn switch(&mut self, n: i32) {
+        if self.st.borrow().slide.is_some() {
+            return;
+        }
+        // The knob slides across first, then the page turns the flag (and fills the list again).
+        let (st, mut area) = (self.st.clone(), self.area.clone());
+        super::anim::play(super::anim::SWITCH, |p| {
+            st.borrow_mut().slide = Some((n, p));
+            area.redraw();
+        });
+        self.st.borrow_mut().slide = None;
+        let f = self.switched.borrow_mut().take();
+        if let Some(mut f) = f {
+            f(self, n);
+            self.switched.borrow_mut().get_or_insert(f);
+        }
+    }
+
     /// A right click selects the line under it and offers these buttons' actions.
     pub fn set_menu(&mut self, buttons: &[fltk::button::Button]) {
         *self.menu.borrow_mut() = buttons.to_vec();
@@ -194,6 +272,7 @@ impl Rows {
     /// A line with an icon at its start, and perhaps switched off.
     pub fn add_icon(&mut self, line: &str, off: bool, icon: Option<fltk::image::SharedImage>) {
         let mut st = self.st.borrow_mut();
+        st.columns = st.columns.max(line.split('\t').count());
         st.lines.push(line.to_string());
         st.off.push(off);
         st.icons.push(icon);
@@ -204,6 +283,7 @@ impl Rows {
     pub fn clear(&mut self) {
         let mut st = self.st.borrow_mut();
         st.lines.clear();
+        st.columns = 0;
         st.off.clear();
         st.icons.clear();
         (st.sel, st.hover) = (0, 0);
@@ -269,13 +349,7 @@ impl Rows {
 
     /// The scrollbar's top and height, when it's needed.
     fn thumb(&self, st: &State) -> Option<(i32, i32)> {
-        let max = self.max(st);
-        if max == 0 {
-            return None;
-        }
-        let h = self.area.h() - 8;
-        let th = (h * h / (h + max)).max(24).min(h);
-        Some((self.area.y() + 4 + (h - th) * st.top.clamp(0, max) / max, th))
+        super::scroll::thumb(self.area.y() + 4, self.area.h() - 8, st.top, self.max(st))
     }
 
     fn draw(&self, f: &Frame) {
@@ -283,16 +357,23 @@ impl Rows {
         st.top = st.top.clamp(0, self.max(&st));
         let (x, y, w, h) = (f.x(), f.y(), f.w(), f.h());
         draw::set_font(Font::Helvetica, 14);
+        if f.has_focus() && (st.sel == 0 || st.lines.is_empty()) {
+            draw::set_draw_color(Color::Foreground);
+            draw::draw_rounded_rect(x + 1, y + 1, (w - 2).max(0), (h - 2).max(0), 5);
+        }
         if st.lines.is_empty() {
             draw::set_draw_color(super::muted());
             draw::draw_text2(st.empty, x + 8, y, w - 16, h, Align::Center | Align::Wrap);
             return;
         }
         let thumb = self.thumb(&st);
-        let rw = w - 8 - if thumb.is_some() { BAR + 4 } else { 0 };
+        let rw = (w - 8 - BAR - 4).max(0);
+        let columns = layout(st.widths, st.columns, w);
         draw::push_clip(x + 2, y + 2, w - 4, h - 4);
         let fg = Color::Foreground;
         let first = st.top / LINE;
+        // A line's switch says it's off already.
+        let switches = st.cells.contains(&Some(Cell::Switch));
         for (i, l) in st.lines.iter().enumerate().skip(first as usize) {
             let n = i as i32 + 1;
             let ly = y + 2 + i as i32 * LINE - st.top;
@@ -300,9 +381,15 @@ impl Rows {
                 break;
             }
             let (text, back) = if n == st.sel {
-                draw::set_draw_color(Color::Selection);
+                // The same soft zinc selection as the trees, ringed while the list has the keys.
+                let picked = selected(f.color());
+                draw::set_draw_color(picked);
                 draw::draw_rounded_rectf(x + 4, ly + 1, rw, LINE - 2, 5);
-                (Color::contrast(fg, Color::Selection), Color::Selection)
+                if f.has_focus() {
+                    draw::set_draw_color(Color::color_average(fg, f.color(), 0.5));
+                    draw::draw_rounded_rect(x + 4, ly + 1, rw, LINE - 2, 5);
+                }
+                (fg, picked)
             } else {
                 if n == st.hover {
                     draw::set_draw_color(Color::color_average(fg, f.color(), 0.08));
@@ -317,107 +404,174 @@ impl Rows {
             } else {
                 text
             };
-            if off {
-                if let Some(mut ic) = super::icons::icon("power-off", text, 14) {
-                    ic.draw(x + 4 + rw - 22, ly + (LINE - 14) / 2, 14, 14);
-                }
-            }
             draw::set_draw_color(text);
             let base = ly + (LINE + draw::height()) / 2 - draw::descent();
-            let mut cx = x + 12;
-            if let Some(mut ic) = st.icons.get(i).cloned().flatten() {
-                ic.draw(cx, ly + (LINE - 16) / 2, 16, 16);
-                cx += 24;
-            }
-            let mut cols = l.split('\t').peekable();
-            let mut c = 0;
-            while let Some(col) = cols.next() {
-                let cw = match (st.widths.get(c), cols.peek()) {
-                    (Some(&cw), Some(_)) => cw,
-                    _ => x + 4 + rw - cx - if off { 24 } else { 0 },
-                };
+            for (c, col) in l.split('\t').enumerate() {
+                let (offset, cw) = columns.cell(c);
+                let cx = x + INSET + offset;
+                let marked = off && !switches && c + 1 == st.columns;
+                let trailing = 8 + if marked { 24 } else { 0 };
+                let mut at = cx;
+                draw::push_clip(cx, ly, cw.max(0), LINE);
+                if c == 0 {
+                    if let Some(mut ic) = st.icons.get(i).cloned().flatten() {
+                        ic.draw(at, ly + (LINE - 16) / 2, 16, 16);
+                        at += 24;
+                    }
+                }
                 let kind = st.cells.get(c).copied().flatten();
-                if let Some(kind) = kind {
-                    let hovered = n == st.hover;
-                    match kind {
-                        Cell::Lead => {
-                            let (key, label) = col.split_once('|').unwrap_or(("", col));
-                            let mut at = cx;
-                            if let Some(mut i) = super::img::logo(key, 16) {
-                                i.draw(at, ly + (LINE - 16) / 2, 16, 16);
-                                at += 24;
-                            } else if let Some(mut i) = super::icons::icon(key, text, 16) {
-                                i.draw(at, ly + (LINE - 16) / 2, 16, 16);
-                                at += 24;
-                            }
-                            draw::push_clip(at, ly, (cx + cw - 8 - at).max(0), LINE);
-                            draw::draw_text(label, at, base);
-                            draw::pop_clip();
+                match kind {
+                    Some(Cell::Lead) => {
+                        let (key, label) = col.split_once('|').unwrap_or(("", col));
+                        if let Some(mut icon) = super::img::logo(key, 16).or_else(|| super::icons::icon(key, text, 16))
+                        {
+                            icon.draw(at, ly + (LINE - 16) / 2, 16, 16);
+                            at += 24;
                         }
-                        Cell::Status => {
-                            let mut p = col.splitn(3, '|');
-                            let (icon, color) = (p.next().unwrap_or(""), tone(p.next().unwrap_or("")));
-                            if let Some(mut i) = super::icons::icon(icon, color, 16) {
-                                i.draw(cx, ly + (LINE - 16) / 2, 16, 16);
-                            }
-                        }
-                        Cell::Link => {
-                            let shown = fit(col, cw - 12);
-                            let ink = if n == st.sel {
-                                text
-                            } else {
-                                Color::color_average(text, back, 0.65)
-                            };
-                            draw::set_draw_color(ink);
-                            draw::draw_text(&shown, cx, base);
-                            if hovered {
-                                let w = draw::width(&shown) as i32;
-                                draw::draw_line(cx, base + 2, cx + w, base + 2);
-                            }
-                            draw::set_draw_color(text);
+                        let shown = fit(label, columns.text_room(c, at - cx, trailing));
+                        draw::draw_text(&shown, at, base);
+                    }
+                    Some(Cell::Status) => {
+                        let mut parts = col.splitn(3, '|');
+                        let (name, color) = (parts.next().unwrap_or(""), tone(parts.next().unwrap_or("")));
+                        if let Some(mut icon) = super::icons::icon(name, color, 16) {
+                            icon.draw(at, ly + (LINE - 16) / 2, 16, 16);
                         }
                     }
-                    (cx, c) = (cx + cw, c + 1);
-                    continue;
-                }
-                match super::img::logo(super::img::platform_name(col), 16).filter(|_| st.logo == Some(c)) {
-                    Some(mut i) => i.draw(cx, ly + (LINE - 16) / 2, 16, 16),
+                    Some(Cell::Link) => {
+                        let shown = fit(col, columns.text_room(c, at - cx, trailing));
+                        let ink = if n == st.sel {
+                            text
+                        } else {
+                            Color::color_average(text, back, 0.65)
+                        };
+                        draw::set_draw_color(ink);
+                        draw::draw_text(&shown, at, base);
+                        if n == st.hover {
+                            let width = draw::width(&shown) as i32;
+                            draw::draw_line(at, base + 2, at + width, base + 2);
+                        }
+                        draw::set_draw_color(text);
+                    }
+                    Some(Cell::Switch) if !col.is_empty() => {
+                        let on = col == "1";
+                        // How far on it is: 0 or 1, or on its way while it slides.
+                        let p = match st.slide {
+                            Some((line, p)) if line == n => {
+                                if on {
+                                    1.0 - p
+                                } else {
+                                    p
+                                }
+                            }
+                            _ if on => 1.0,
+                            _ => 0.0,
+                        };
+                        let (sw, sh) = SWITCH;
+                        let sy = ly + (LINE - sh) / 2;
+                        let track = Color::color_average(Color::Selection, Color::color_average(fg, back, 0.28), p);
+                        draw::set_draw_color(track);
+                        draw::draw_rounded_rectf(at, sy, sw, sh, sh / 2);
+                        let knob = sh - 4;
+                        let kx = at + 2 + ((sw - knob - 4) as f32 * p).round() as i32;
+                        draw::set_draw_color(Color::color_average(Color::White, back, p));
+                        draw::draw_pie(kx, sy + 2, knob, knob, 0.0, 360.0);
+                        draw::set_draw_color(text);
+                    }
+                    Some(Cell::Switch) => {}
+                    Some(Cell::State) => {
+                        let mut parts = col.splitn(3, '|');
+                        let (name, color) = (parts.next().unwrap_or(""), tone(parts.next().unwrap_or("")));
+                        let words = parts.next().unwrap_or("");
+                        let color = if off {
+                            Color::color_average(color, back, 0.6)
+                        } else {
+                            color
+                        };
+                        if let Some(mut icon) = super::icons::icon(name, color, 16) {
+                            icon.draw(at, ly + (LINE - 16) / 2, 16, 16);
+                            at += 22;
+                        }
+                        draw::set_draw_color(color);
+                        let shown = fit(words, columns.text_room(c, at - cx, trailing));
+                        draw::draw_text(&shown, at, base);
+                        draw::set_draw_color(text);
+                    }
+                    Some(Cell::Note) => {
+                        let (icon, words) = col.split_once('|').unwrap_or(("", col));
+                        let quiet = if n == st.sel {
+                            Color::color_average(text, back, 0.8)
+                        } else {
+                            Color::color_average(text, back, 0.62)
+                        };
+                        if !words.is_empty() {
+                            if let Some(mut i) = super::icons::icon(icon, quiet, 14) {
+                                i.draw(at, ly + (LINE - 14) / 2, 14, 14);
+                                at += 20;
+                            }
+                        }
+                        draw::set_draw_color(quiet);
+                        let shown = fit(words, columns.text_room(c, at - cx, trailing));
+                        draw::draw_text(&shown, at, base);
+                        draw::set_draw_color(text);
+                    }
+                    Some(Cell::Badge) if !col.is_empty() => {
+                        draw::set_font(Font::Helvetica, 12);
+                        let shown = fit(col, columns.text_room(c, at - cx, trailing) - 14);
+                        let bw = draw::width(&shown) as i32 + 14;
+                        let (bh, by) = (18, ly + (LINE - 18) / 2);
+                        draw::set_draw_color(Color::color_average(text, back, 0.35));
+                        draw::draw_rounded_rect(at, by, bw, bh, bh / 2);
+                        draw::set_draw_color(Color::color_average(text, back, 0.8));
+                        draw::draw_text2(&shown, at, by, bw, bh, Align::Center);
+                        draw::set_font(Font::Helvetica, 14);
+                        draw::set_draw_color(text);
+                    }
+                    Some(Cell::Badge) => {}
+                    Some(Cell::Logos) => {
+                        for p in platforms(col) {
+                            if let Some(mut icon) = super::img::logo(super::img::platform_name(p), 16) {
+                                icon.draw(at, ly + (LINE - 16) / 2, 16, 16);
+                                at += 22;
+                            }
+                        }
+                    }
+                    None if st.logo == Some(c) => {
+                        if let Some(mut icon) = super::img::logo(super::img::platform_name(col), 16) {
+                            icon.draw(at, ly + (LINE - 16) / 2, 16, 16);
+                        } else {
+                            let shown = fit(col, columns.text_room(c, at - cx, trailing));
+                            draw::draw_text(&shown, at, base);
+                        }
+                    }
                     None if st.pic == Some(c) => {
-                        if let Some(p) = st.pics.get(col) {
-                            let mut p = p.clone();
-                            p.draw(cx, ly + (LINE - p.h()) / 2, p.w(), p.h());
+                        if let Some(pic) = st.pics.get(col) {
+                            let mut pic = pic.clone();
+                            pic.draw(at, ly + (LINE - pic.h()) / 2, pic.w(), pic.h());
                         }
                     }
                     None => {
-                        draw::push_clip(cx, ly, cw - 8, LINE);
-                        draw::draw_text(col, cx, base);
-                        draw::pop_clip();
+                        let shown = fit(col, columns.text_room(c, at - cx, trailing));
+                        draw::draw_text(&shown, at, base);
                     }
                 }
-                (cx, c) = (cx + cw, c + 1);
+                if marked {
+                    if let Some(mut icon) = super::icons::icon("power-off", text, 14) {
+                        icon.draw((cx + cw - 20).max(cx), ly + (LINE - 14) / 2, 14, 14);
+                    }
+                }
+                draw::pop_clip();
             }
         }
         if let Some((ty, th)) = thumb {
-            draw::set_draw_color(Color::color_average(
-                fg,
-                f.color(),
-                if st.grab.is_some() { 0.5 } else { 0.3 },
-            ));
-            draw::draw_rounded_rectf(x + w - BAR - 4, ty, BAR, th, BAR / 2);
+            super::scroll::draw_thumb(x + w - BAR - 4, ty, BAR, th, f.color(), st.grab.is_some());
         }
         draw::pop_clip();
     }
 
-    /// The column under the mouse (the last one for all that is past the widths).
-    fn column_at(&self, st: &State, f: &Frame) -> usize {
-        let mut x = f.x() + 12;
-        for (i, w) in st.widths.iter().enumerate() {
-            x += w;
-            if app::event_x() < x {
-                return i;
-            }
-        }
-        st.widths.len()
+    /// The column under the mouse uses the same geometry as the header and cells.
+    fn column_at(&self, st: &State, f: &Frame) -> Option<usize> {
+        layout(st.widths, st.columns, f.w()).column_at(app::event_x() - f.x() - INSET)
     }
 
     /// The line under the mouse, or 0.
@@ -432,7 +586,11 @@ impl Rows {
 
     fn handle(&mut self, f: &mut Frame, ev: Event) -> bool {
         match ev {
-            Event::Enter | Event::Focus | Event::Unfocus => return true,
+            Event::Enter => return true,
+            Event::Focus | Event::Unfocus => {
+                f.redraw();
+                return true;
+            }
             // Before borrowing: it sends Focus here at once.
             Event::Push => {
                 let _ = f.take_focus();
@@ -447,25 +605,36 @@ impl Rows {
                     st.hover = n;
                     f.redraw();
                 }
-                // The logo's platform, by name.
-                let tip = st.logo.and_then(|c| {
-                    let x0: i32 = f.x() + 12 + st.widths.iter().take(c).sum::<i32>();
-                    let on = (x0..x0 + 20).contains(&app::event_x());
+                let tip = self.column_at(&st, f).and_then(|c| {
                     let line = st.lines.get(usize::try_from(n - 1).ok()?)?;
-                    on.then(|| super::img::platform_name(line.split('\t').nth(c).unwrap_or("")).to_string())
-                });
-                let tip = tip.or_else(|| {
-                    let line = st.lines.get(usize::try_from(n - 1).ok()?)?;
-                    let c = self.column_at(&st, f);
-                    let cell = line.split('\t').nth(c)?;
-                    match st.cells.get(c).copied().flatten()? {
-                        Cell::Status => cell.splitn(3, '|').nth(2).map(str::to_string),
-                        Cell::Link => Some(cell.to_string()),
-                        Cell::Lead => None,
+                    let value = line.split('\t').nth(c)?;
+                    if st.logo == Some(c) && st.pic != Some(c) {
+                        return Some(super::img::platform_name(value).to_string());
                     }
+                    match st.cells.get(c).copied().flatten() {
+                        Some(Cell::Switch) if !value.is_empty() => {
+                            return Some(
+                                crate::i18n::tr(if value == "1" {
+                                    "rows.switch_on"
+                                } else {
+                                    "rows.switch_off"
+                                })
+                                .to_string(),
+                            );
+                        }
+                        Some(Cell::Logos) => {
+                            let names: Vec<&str> = platforms(value).map(super::img::platform_name).collect();
+                            return (!names.is_empty()).then(|| names.join(", "));
+                        }
+                        _ => {}
+                    }
+                    cell_text(value, st.cells.get(c).copied().flatten(), st.pic == Some(c)).map(str::to_string)
                 });
+                let columns = layout(st.widths, st.columns, f.w());
                 let off = st.off.get(usize::try_from(n - 1).unwrap_or(usize::MAX)) == Some(&true)
-                    && app::event_x() >= f.x() + f.w() - 36 - if self.thumb(&st).is_some() { BAR + 4 } else { 0 };
+                    && !st.cells.contains(&Some(Cell::Switch))
+                    && self.column_at(&st, f) == st.columns.checked_sub(1)
+                    && app::event_x() >= f.x() + INSET + columns.width() - 24;
                 let tip = if off {
                     Some(crate::i18n::tr("lists.disabled").to_string())
                 } else {
@@ -479,6 +648,8 @@ impl Rows {
                 f.redraw();
                 true
             }
+            // Only under the pointer, and only when it scrolls: else the page around it does.
+            Event::MouseWheel if !app::event_inside_widget(f) || self.max(&st) == 0 => false,
             Event::MouseWheel => {
                 st.top = (st.top + app::event_dy_value() * LINE).clamp(0, self.max(&st));
                 st.hover = self.line_at(&st);
@@ -495,15 +666,27 @@ impl Rows {
                     return true;
                 }
                 let n = self.line_at(&st);
-                st.col = (n > 0).then(|| self.column_at(&st, f));
+                st.col = (n > 0).then(|| self.column_at(&st, f)).flatten();
                 if n > 0 {
                     st.sel = n;
                 }
+                let switch = n > 0
+                    && !super::right_button()
+                    && st.col.is_some_and(|c| {
+                        st.cells.get(c).copied().flatten() == Some(Cell::Switch)
+                            && st.lines[(n - 1) as usize]
+                                .split('\t')
+                                .nth(c)
+                                .is_some_and(|v| !v.is_empty())
+                    });
                 // Not held over what follows: the menu going away moves the focus, which comes back here.
                 drop(st);
                 if n > 0 {
                     f.redraw();
                     self.fire();
+                }
+                if switch {
+                    self.switch(n);
                 }
                 if super::right_button() {
                     let menu = self.menu.borrow().clone();
@@ -522,6 +705,12 @@ impl Rows {
                 }
                 true
             }
+            Event::KeyDown if super::menu_key() => {
+                drop(st);
+                let menu = self.menu.borrow().clone();
+                super::context_menu(&menu);
+                true
+            }
             Event::KeyDown => {
                 let len = st.lines.len() as i32;
                 let page = ((f.h() - 4) / LINE).max(1);
@@ -532,6 +721,12 @@ impl Rows {
                     Key::PageDown => st.sel + page,
                     Key::Home => 1,
                     Key::End => len,
+                    k if k == Key::from_char(' ') && st.sel > 0 && st.cells.contains(&Some(Cell::Switch)) => {
+                        let n = st.sel;
+                        drop(st);
+                        self.switch(n);
+                        return true;
+                    }
                     k => {
                         drop(st);
                         let f = self.keys.borrow_mut().take();
@@ -560,14 +755,37 @@ impl Rows {
         let (Some(grab), Some((_, th)), max) = (st.grab, self.thumb(&st), self.max(&st)) else {
             return;
         };
-        let room = (f.h() - 8 - th).max(1);
-        st.top = ((app::event_y() - grab - f.y() - 4) * max / room).clamp(0, max);
+        st.top = super::scroll::dragged(app::event_y(), grab, f.y() + 4, f.h() - 8, th, max);
         f.redraw();
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hover_text_exposes_values_without_internal_image_or_status_data() {
+        use super::{cell_text, Cell};
+        assert_eq!(cell_text("A long command", None, false), Some("A long command"));
+        assert_eq!(cell_text("terminal|An app", Some(Cell::Lead), false), Some("An app"));
+        assert_eq!(cell_text("Plain label", Some(Cell::Lead), false), Some("Plain label"));
+        assert_eq!(
+            cell_text("circle-alert|e06050|Disconnected", Some(Cell::Status), false),
+            Some("Disconnected")
+        );
+        assert_eq!(cell_text("circle-alert|e06050", Some(Cell::Status), false), None);
+        assert_eq!(cell_text("https://example.com/avatar.png", None, true), None);
+        assert_eq!(cell_text("1", Some(Cell::Switch), false), None);
+        assert_eq!(
+            cell_text("circle-check|3cb371|Connected", Some(Cell::State), false),
+            Some("Connected")
+        );
+        assert_eq!(cell_text("timer|10 s each", Some(Cell::Note), false), Some("10 s each"));
+        assert_eq!(
+            super::platforms("twitch, youtube,").collect::<Vec<_>>(),
+            ["twitch", "youtube"]
+        );
+    }
+
     #[test]
     fn link_text_does_not_overflow_a_zero_width_column() {
         assert_eq!(super::fit("a long address", 0), "");

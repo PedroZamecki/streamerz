@@ -345,7 +345,7 @@ async fn custom_server(e: Rc<Engine>, s: Obj) {
         let (e, s) = (e.clone(), s.clone());
         tokio::task::spawn_local(async move {
             let allowed = e.config().websockets.allowed_origins.clone();
-            let Ok(ws) = accept(tcp, field(&s, "endpoint").to_string(), allowed).await else {
+            let Ok((ws, _)) = accept(tcp, field(&s, "endpoint").to_string(), allowed, false).await else {
                 return;
             };
             let mut args = Obj::new();
@@ -393,18 +393,29 @@ pub fn origin_ok(origin: Option<&str>, fetch_site: Option<&str>, allowed: &str) 
 }
 
 /// Accept a WebSocket connection on `endpoint` only (404 elsewhere), from allowed origins only
-/// (403). The handshake callback's error type is tungstenite's (a whole HTTP response).
+/// (403). With `bridge`, the TikTok extension's path is open too, to the extension only; the bool
+/// says it's that. The handshake callback's error type is tungstenite's (a whole HTTP response).
 #[allow(clippy::result_large_err)]
 async fn accept(
     tcp: TcpStream,
     endpoint: String,
     allowed: String,
-) -> Result<tokio_tungstenite::WebSocketStream<TcpStream>, String> {
+    bridge: bool,
+) -> Result<(tokio_tungstenite::WebSocketStream<TcpStream>, bool), String> {
+    use std::sync::atomic::{AtomicBool, Ordering};
     use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
     use tokio_tungstenite::tungstenite::http::StatusCode;
+    let is_bridge = Arc::new(AtomicBool::new(false));
+    let seen = is_bridge.clone();
     let check = move |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
         let h = |k: &str| req.headers().get(k).and_then(|v| v.to_str().ok());
-        let status = if !endpoint.is_empty() && req.uri().path() != endpoint {
+        let status = if bridge && req.uri().path() == crate::tiktok_bridge::PATH {
+            if crate::tiktok_bridge::from_extension(h("origin")) {
+                seen.store(true, Ordering::Relaxed);
+                return Ok(resp);
+            }
+            StatusCode::FORBIDDEN
+        } else if !endpoint.is_empty() && req.uri().path() != endpoint {
             StatusCode::NOT_FOUND
         } else if !origin_ok(h("origin"), h("sec-fetch-site"), &allowed) {
             crate::warn(format!(
@@ -419,9 +430,10 @@ async fn accept(
         *r.status_mut() = status;
         Err(r)
     };
-    tokio_tungstenite::accept_hdr_async(tcp, check)
+    let ws = tokio_tungstenite::accept_hdr_async(tcp, check)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok((ws, is_bridge.load(Ordering::Relaxed)))
 }
 
 fn info(e: &Engine) -> Value {
@@ -672,6 +684,11 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
         | "StreamerzSetGroupMeta"
         | "StreamerzGroupExport"
         | "StreamerzSaveGroupFiles"
+        | "StreamerzSearchChannels"
+        | "StreamerzTikTokBridge"
+        | "StreamerzTikTokState"
+        | "StreamerzTikTokGifts"
+        | "StreamerzActionHistory"
             if !authed && e.config().websockets.enable_auth =>
         {
             error(&id, "Authentication required to use this method")
@@ -693,7 +710,12 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
         "StreamerzPluginEnable" => {
             let on = req.get("on").and_then(Value::as_bool).unwrap_or(true);
             e.plugin_enable(get("plugin"), on);
-            ok(&id, json!({"on": e.plugins_on().iter().any(|p| p.0 == get("plugin"))}))
+            let enabled = e.plugins_on().iter().any(|p| p.0 == get("plugin"));
+            if enabled != on {
+                error(&id, "Plugin could not be enabled; check the plugin id and log")
+            } else {
+                ok(&id, json!({"on": enabled}))
+            }
         }
         "StreamerzGet" | "StreamerzSave" | "StreamerzDelete" => match authoring(e, req) {
             Ok(v) => ok(&id, v),
@@ -712,7 +734,7 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
         },
         "StreamerzTemplateAdd" => match crate::templates::TEMPLATES
             .iter()
-            .find(|t| t.name.eq_ignore_ascii_case(get("name")))
+            .find(|t| t.name.eq_ignore_ascii_case(get("name")) || t.title().eq_ignore_ascii_case(get("name")))
         {
             None => error(&id, "template not found"),
             Some(t) => {
@@ -814,6 +836,32 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
                 ok(&id, json!({}))
             }
         }
+        // Sending to TikTok through the browser: status, install (writes the extension) or remove.
+        "StreamerzTikTokBridge" => {
+            let done = match get("action") {
+                "" | "status" => Ok(()),
+                "install" => crate::tiktok_bridge::install(e).map(drop),
+                "retry" => crate::tiktok_bridge::retry(e),
+
+                "remove" => {
+                    crate::tiktok_bridge::remove(e);
+                    Ok(())
+                }
+                other => Err(format!("unknown action {other}")),
+            };
+            match done {
+                Ok(()) => ok(&id, crate::tiktok_bridge::status(e)),
+                Err(msg) => error(&id, &msg),
+            }
+        }
+        "StreamerzTikTokGifts" => ok(&id, crate::tiktok::gifts::status()),
+        "StreamerzActionHistory" => ok(
+            &id,
+            json!({"runs":e.history().iter().rev().map(|record|
+            json!({"actionId":record.action_id,"name":record.name,"queuedAt":record.queued_at,
+                "durationMs":record.ms,"outcome":record.outcome,"executionStatus":record.outcome.status()})
+        ).collect::<Vec<_>>()}),
+        ),
         "StreamerzCountdown" => {
             let clock_id = get("clockId");
             match crate::templates::clock::get(&e.config(), clock_id, crate::templates::clock::now_ms()) {
@@ -821,7 +869,41 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
                 None => error(&id, "Countdown not found"),
             }
         }
-        // Dev mode only (STREAMERZ_DEV=1): fake chat in, and the chat that would have gone out.
+        "StreamerzTikTokState" => ok(
+            &id,
+            json!({
+                "stream": crate::tiktok::stream_info(e.chat_connected("tiktok")),
+                "topGifters": crate::tiktok::top_gifters(req["count"].as_u64().unwrap_or(10).clamp(1, 100) as usize),
+                "pins": e.chat_pins().into_iter().filter(|p| p.platform == "tiktok")
+                    .map(|p| json!({"msgId": p.msg_id, "user": p.user, "text": p.text, "by": p.by})).collect::<Vec<_>>()
+            }),
+        ),
+        // Dev mode only: run the same handler as an incoming LIVE event.
+        "InjectTikTokEvent" if e.dev() => {
+            let event = get("event");
+            if !matches!(
+                event,
+                "chat"
+                    | "gift"
+                    | "like"
+                    | "follow"
+                    | "share"
+                    | "subscribe"
+                    | "member"
+                    | "roomUser"
+                    | "messageDelete"
+                    | "roomPin"
+                    | "streamPaused"
+                    | "streamResumed"
+            ) {
+                error(&id, "Unknown TikTok event")
+            } else if !req["data"].is_object() {
+                error(&id, "data must be an object")
+            } else {
+                crate::tiktok::handle_tiktok_event(e, &e.config().tiktok.channel, event, &req["data"]);
+                ok(&id, json!({}))
+            }
+        }
         "InjectChat" if e.dev() => match e.inject_chat(
             get("platform"),
             get("user"),
@@ -848,6 +930,21 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
                 error(&id, "Unknown platform")
             } else {
                 e.simulate_chat_connection(platform, req.get("connected").and_then(Value::as_bool));
+                ok(&id, json!({}))
+            }
+        }
+        "SimulateChatModes" if e.dev() => {
+            let platform = get("platform");
+            if !["twitch", "kick"].contains(&platform) {
+                error(&id, "Unknown platform")
+            } else {
+                e.set_chat_modes(
+                    platform,
+                    Some(crate::engine::ChatModes {
+                        emote_only: req.get("emote_only").and_then(Value::as_bool).unwrap_or(false),
+                        slow_seconds: req.get("slow_seconds").and_then(Value::as_u64),
+                    }),
+                );
                 ok(&id, json!({}))
             }
         }
@@ -919,7 +1016,9 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
             match found {
                 Some(&(code, name)) => {
                     let args = req.get("args").and_then(Value::as_object).cloned().unwrap_or_default();
-                    let ran = e.fire(code, name, "Test", "test", &args, |_| true);
+                    let ran = e.fire(code, name, "Test", "test", &args, |t| {
+                        crate::engine::trigger_matches(code, t, &args)
+                    });
                     ok(&id, json!({"trigger": code, "name": name, "ran": ran}))
                 }
                 None => error(&id, &format!("no trigger {t}")),
@@ -1059,8 +1158,9 @@ fn group_request(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
     }
 }
 
-/// StreamerzGet {what, id?|name?}: one item, or all of them; StreamerzSave {what, item}: adds it (a new
-/// id when it has none) or replaces the one with its id; StreamerzDelete {what, id}.
+/// StreamerzGet {what, itemId?|name?}: one item, or all of them; StreamerzSave {what, item}: adds it (a new
+/// id when it has none) or replaces the one with its id; StreamerzDelete {what, itemId}.
+/// Legacy clients can still use id for selection; MCP keeps it for request correlation.
 fn authoring(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
     let what = req.get("what").and_then(Value::as_str).unwrap_or("");
     if !KINDS.contains(&what) {
@@ -1081,7 +1181,13 @@ fn authoring(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
         }
     };
     let key = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-    let (want_id, want_name) = (key(req, "id"), key(req, "name"));
+    let (want_id, want_name) = (
+        req.get("itemId")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| key(req, "id")),
+        key(req, "name"),
+    );
     match req.get("request").and_then(Value::as_str).unwrap_or("") {
         "StreamerzGet" => {
             let all = list(&e.config());
@@ -1186,6 +1292,8 @@ async fn websocket(e: Rc<Engine>, s: WsSettings) {
         "WebSocket server on ws://{}:{}{}",
         s.address, s.port, s.endpoint
     ));
+    // The TikTok extension connects here: its files follow this address and version.
+    crate::tiktok_bridge::refresh(&e.config());
     let mut next = 0u64;
     loop {
         let Ok((tcp, _)) = l.accept().await else { continue };
@@ -1219,7 +1327,25 @@ pub(crate) fn connectors(e: &Rc<Engine>) -> Value {
     })
 }
 
-/// A raw obs-websocket request through the OBS port (dev mode: it acts on the real OBS).
+/// Channel search for the picker and MCP, including signed TikTok requests.
+pub(crate) async fn search_request(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
+    let platform = req["platform"].as_str().unwrap_or_default();
+    let query = req["query"].as_str().unwrap_or_default().trim();
+    let found = if query.is_empty() {
+        Vec::new()
+    } else if platform == "tiktok" {
+        crate::tiktok_bridge::search(e, query).await?
+    } else if crate::search::can(platform) {
+        crate::search::channels(platform, query).await
+    } else {
+        return Err("Unknown platform".into());
+    };
+    Ok(
+        json!({"channels": found.iter().map(|f| json!({"handle": f.handle, "name": f.name,
+        "picture": f.picture, "detail": f.detail, "live": f.live})).collect::<Vec<_>>()}),
+    )
+}
+
 pub(crate) async fn obs_request(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
     let kind = req["requestType"]
         .as_str()
@@ -1274,7 +1400,12 @@ pub(crate) async fn spotify_request(e: &Rc<Engine>, req: &Value) -> Result<Value
 }
 
 async fn connection(e: &Rc<Engine>, s: &WsSettings, tcp: TcpStream, conn: u64) -> Result<(), String> {
-    let ws = accept(tcp, s.endpoint.clone(), s.allowed_origins.clone()).await?;
+    let bridge = crate::tiktok_bridge::set_up(&e.config());
+    let (ws, is_bridge) = accept(tcp, s.endpoint.clone(), s.allowed_origins.clone(), bridge).await?;
+    if is_bridge {
+        crate::tiktok_bridge::serve(e.clone(), ws).await;
+        return Ok(());
+    }
     let (mut sink, mut stream) = ws.split();
     let (salt, challenge) = (random_b64(), random_b64());
     let mut hello = json!({"timestamp": crate::engine::globals::iso_now(), "session": crate::engine::uuid(),
@@ -1327,6 +1458,20 @@ async fn connection(e: &Rc<Engine>, s: &WsSettings, tcp: TcpStream, conn: u64) -
                         events::update(&mut subs, &ev, kind == "Subscribe");
                         e.listen(conn, &subs, &tx);
                         ok(&id, json!({"events": ev}))
+                    }
+                    "StreamerzSearchChannels" => {
+                        if s.enable_auth && !authed { error(&id, "Authentication required to use this method") }
+                        else { match search_request(e, &req).await { Ok(v) => ok(&id, v), Err(err) => error(&id, &err) } }
+                    }
+                    "StreamerzTikTokGifts" if req["refresh"] == true => {
+                        if s.enable_auth && !authed { error(&id, "Authentication required to use this method") }
+                        else { match crate::tiktok::gifts::refresh(e).await {
+                            Ok(value) => ok(&id, value), Err(err) => error(&id, &err),
+                        } }
+                    }
+                    "StreamerzTikTokBridge" if req["action"] == "login" => {
+                        if s.enable_auth && !authed { error(&id, "Authentication required to use this method") }
+                        else { match e.tiktok_bridge.login().await { Ok(()) => ok(&id, crate::tiktok_bridge::status(e)), Err(err) => error(&id, &err) } }
                     }
                     "StreamerzSpotifyLocal"
                     | "StreamerzSpotifyCurrent"
@@ -1591,6 +1736,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tiktok_state_and_event_injection_use_the_real_handler() {
+        let _guard = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(json!({"actions": []}));
+            let inject = json!({"request": "InjectTikTokEvent", "event": "streamPaused", "data": {}});
+            assert!(answer(&e, &inject, true).is_none());
+            e.dev_mode();
+            e.change(|c| c.window.chat.save_history = true);
+            e.simulate_chat_connection("tiktok", Some(true));
+            assert_eq!(answer(&e, &inject, true).unwrap()["status"], "ok");
+            let state = answer(&e, &json!({"request": "StreamerzTikTokState"}), true).unwrap();
+            assert_eq!(state["stream"]["isPaused"], true);
+            assert_eq!(state["stream"]["isLive"], true);
+            assert_eq!(
+                answer(
+                    &e,
+                    &json!({"request": "InjectTikTokEvent", "event": "missing", "data": {}}),
+                    true
+                )
+                .unwrap()["status"],
+                "error"
+            );
+            assert_eq!(
+                answer(
+                    &e,
+                    &json!({"request": "InjectTikTokEvent", "event": "chat", "data": []}),
+                    true
+                )
+                .unwrap()["status"],
+                "error"
+            );
+            let retry = json!({"request": "StreamerzTikTokBridge", "action": "retry"});
+            assert_eq!(answer(&e, &retry, true).unwrap()["status"], "error");
+            e.change(|c| c.websockets.enable_auth = true);
+            assert_eq!(
+                answer(&e, &json!({"request": "StreamerzTikTokState"}), false).unwrap()["status"],
+                "error"
+            );
+        });
+    }
+
+    #[test]
     fn action_group_requests_preserve_data_on_rename_and_export() {
         let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -1683,6 +1870,191 @@ mod tests {
             assert_eq!(result["restartRequired"], true);
             assert_eq!(result["active"], false);
             assert_eq!(result["enabled"], true);
+        });
+    }
+
+    /// The TikTok extension's path: only its origin, only with this install's token, and only once
+    /// sending is set up. Once in, Streamerz opens its tab and learns the browser's account.
+    #[test]
+    fn tiktok_extension_pairs_with_its_origin_and_token() {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let e = crate::engine::tests::engine(json!({"actions": []}));
+        crate::engine::tests::run(async move {
+            e.dev_mode();
+            e.change(|c| {
+                c.websockets.auto_start = true;
+                c.websockets.address = "127.0.0.1".into();
+                c.websockets.port = port;
+                c.websockets.endpoint = "/".into();
+                c.tiktok.bridge_token = "right".into();
+            });
+            tokio::task::spawn_local(super::run(e.clone()));
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let open = |origin: &str| {
+                let mut req = format!("ws://127.0.0.1:{port}{}", crate::tiktok_bridge::PATH)
+                    .into_client_request()
+                    .unwrap();
+                req.headers_mut().insert("origin", origin.parse().unwrap());
+                crate::http::ws_connect(req)
+            };
+            let ext = format!("chrome-extension://{}", crate::tiktok_bridge::EXTENSION_ID);
+            // Any other page is refused.
+            assert!(open("https://www.tiktok.com").await.is_err());
+            // The extension with a wrong token: closed, never connected.
+            let (mut ws, _) = open(&ext).await.unwrap();
+            ws.send(Message::Text(
+                json!({"op": "hello", "token": "wrong", "protocol": 2})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            assert!(!e.tiktok_bridge.is_connected());
+            // The right token: connected; it asks for the page, then who is logged in.
+            let (mut ws, _) = open(&ext).await.unwrap();
+            ws.send(Message::Text(
+                json!({"op": "hello", "token": "right", "protocol": 2})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+            let page = loop {
+                if let Some(Ok(Message::Text(t))) = ws.next().await {
+                    break serde_json::from_str::<Value>(&t).unwrap();
+                }
+            };
+            assert_eq!(page["op"], "page");
+            assert!(e.tiktok_bridge.is_connected());
+            let reply = json!({"id": page["id"], "params": {"device_id": "42", "aid": "1988", "max_time": "0"}});
+            ws.send(Message::Text(reply.to_string().into())).await.unwrap();
+            let who = loop {
+                if let Some(Ok(Message::Text(t))) = ws.next().await {
+                    break serde_json::from_str::<Value>(&t).unwrap();
+                }
+            };
+            assert_eq!(who["op"], "fetch");
+            assert!(who["url"].as_str().unwrap().contains("/passport/web/account/info/"));
+            let body = json!({"data": {"username": "tester", "user_id_str": "42", "avatar_url": ""}}).to_string();
+            let reply = json!({"id": who["id"], "status": 200, "body": body});
+            ws.send(Message::Text(reply.to_string().into())).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            // Passport's missing avatar is filled from the existing signed search endpoint.
+            let avatar_request = match tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+            {
+                Message::Text(t) => serde_json::from_str::<Value>(&t).unwrap(),
+                _ => panic!("avatar search"),
+            };
+            assert_eq!(avatar_request["op"], "search");
+            assert_eq!(avatar_request["query"], "tester");
+            let reply = json!({"id": avatar_request["id"], "status": 200, "body": json!({"status_code": 0,
+                "user_list": [{"user_info": {"unique_id": "tester", "avatar_thumb": {"url_list": ["https://example.test/avatar.png"]}}}]}).to_string()});
+            ws.send(Message::Text(reply.to_string().into())).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            assert_eq!(e.tiktok_bridge.user(), "tester");
+            assert_eq!(e.tiktok_bridge.avatar(), "https://example.test/avatar.png");
+            assert!(e.tiktok_bridge.ready());
+            let search_engine = e.clone();
+            let search = tokio::task::spawn_local(async move {
+                search_request(&search_engine, &json!({"platform": "tiktok", "query": "tester"})).await
+            });
+            let request = match ws.next().await.unwrap().unwrap() {
+                Message::Text(t) => serde_json::from_str::<Value>(&t).unwrap(),
+                _ => panic!("search request"),
+            };
+            assert_eq!(request["op"], "search");
+            let reply = json!({"id": request["id"], "status": 200, "body": json!({"status_code": 0,
+                "user_list": [{"user_info": {"unique_id": "tester", "nickname": "Tester"}}]}).to_string()});
+            ws.send(Message::Text(reply.to_string().into())).await.unwrap();
+            assert_eq!(search.await.unwrap().unwrap()["channels"][0]["handle"], "tester");
+            let room_engine = e.clone();
+            let room =
+                tokio::task::spawn_local(async move { crate::tiktok_bridge::room_id(&room_engine, "creator").await });
+            let request = match ws.next().await.unwrap().unwrap() {
+                Message::Text(t) => serde_json::from_str::<Value>(&t).unwrap(),
+                _ => panic!("room request"),
+            };
+            assert_eq!(request["op"], "fetch");
+            assert!(request["url"].as_str().unwrap().contains("uniqueId=creator"));
+            assert!(request["url"].as_str().unwrap().contains("user_is_login=true"));
+            let reply = json!({"id": request["id"], "status": 200, "body": json!({"statusCode": 0,
+                "data": {"user": {"roomId": "777"}, "liveRoom": {"status": 2}}}).to_string()});
+            ws.send(Message::Text(reply.to_string().into())).await.unwrap();
+            assert_eq!(room.await.unwrap(), Ok(777));
+            let gift_engine = e.clone();
+            let gifts =
+                tokio::task::spawn_local(async move { crate::tiktok_bridge::gift_list(&gift_engine, "777").await });
+            let request = match ws.next().await.unwrap().unwrap() {
+                Message::Text(text) => serde_json::from_str::<Value>(&text).unwrap(),
+                _ => panic!("gift request"),
+            };
+            assert_eq!(request["op"], "fetch");
+            let url = request["url"].as_str().unwrap();
+            assert!(url.starts_with("https://webcast.tiktok.com/webcast/gift/list/?"));
+            assert!(url.contains("room_id=777") && url.contains("device_id=42"));
+            let body =
+                json!({"status_code":0,"data":{"gifts":[{"id":998877,"name":"New gift","diamond_count":25,"type":1}]}});
+            ws.send(Message::Text(
+                json!({"id":request["id"],"status":200,"body":body.to_string()})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+            let gifts = crate::tiktok::gifts::parse(&gifts.await.unwrap().unwrap()).unwrap();
+            assert_eq!(gifts[0].id, "998877");
+            assert_eq!(gifts[0].coins, 25);
+            ws.send(Message::Text(json!({"op": "session_changed"}).to_string().into()))
+                .await
+                .unwrap();
+            let reload = match tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+            {
+                Message::Text(t) => serde_json::from_str::<Value>(&t).unwrap(),
+                _ => panic!("reload request"),
+            };
+            assert_eq!(reload["op"], "page");
+            assert!(e.tiktok_bridge.user().is_empty());
+            assert!(e.tiktok_bridge.avatar().is_empty());
+            assert_eq!(crate::roles::get("tiktok").0, crate::roles::Role::Anonymous);
+            assert!(!e.tiktok_bridge.ready());
+            ws.send(Message::Text(
+                json!({"id": reload["id"], "error": "Log in to TikTok"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            assert_eq!(e.tiktok_bridge.error(), "Log in to TikTok");
+            assert!(e.tiktok_bridge.login_required());
+            assert!(!e.tiktok_bridge.ready());
+            // It goes away with its socket.
+            ws.close(None).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            assert!(!e.tiktok_bridge.is_connected());
+            assert!(!e.tiktok_bridge.ready());
+            assert!(search_request(&e, &json!({"platform": "tiktok", "query": "tester"}))
+                .await
+                .unwrap_err()
+                .contains("isn't connected"));
+            // Not set up: the path isn't there at all.
+            e.change(|c| c.tiktok.bridge_token.clear());
+            assert!(open(&ext).await.is_err());
         });
     }
 

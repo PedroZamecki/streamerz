@@ -36,7 +36,7 @@ phase, following `CLAUDE.md`.
 | OS | Windows + Linux (Wayland, ksni tray). CI releases a Windows exe and the Linux AppImage on every release. |
 | Budget | Hidden window, Twitch + OBS connected: < 25 MB RSS and ~0% idle CPU, measured and written in every PR. Streamer.bot uses ~300 MB. |
 | Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, fltk, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only). No webview (wry/tao were removed in 1.1.0: TikTok uses the user's own browser). **image-webp** (WebP emotes and avatars; FLTK decodes the other formats itself). HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. **tokio-native-tls** (the crate tokio-tungstenite's native-tls feature uses, for HTTPS), **regex-lite** (If/Else, While, Switch and regex commands; .NET's backreferences and lookaround aren't supported). Anything else needs a question first. |
-| TikTok | Read LIVE chat and events natively through `webcast.rs`, without a bridge. Streamerz does not send TikTok messages: TikTok has no public LIVE chat sending API and its private requests require browser signing. An optional broadcaster login can help with restricted rooms. Login uses an installed Chromium-based browser in a separate profile, with no browser kept running for chat. Imported TikTok send sub-actions are kept for compatibility but do not send. |
+| TikTok | Public LIVE reading is native through `webcast.rs`. The optional extension is the single account for signed search, authenticated reading and sending (`tiktok_bridge.rs`). It uses TikTok's own scripts in an offscreen browser frame, with no visible helper tab, and recovers discarded contexts on demand. Chromium background mode permits use with all browser windows closed. Separate broadcaster and bot logins are retired; reader cookies are requested from the browser only when connecting and remain in memory. |
 | Chat commands | Commands keep Streamer.bot's `sources` bitmask (Twitch 1/2/8, YouTube 1024, Kick 2097152, TikTok 4194304), so each command chooses its platforms. Built-in commands (`!commands`, `!command add/edit/remove`, `!command platforms`, `!so`, `!uptime`, `!title`) are normal commands created on first run, editable and disable-able. Replies go to the platform the command came from; a command can opt in to reply on all connected platforms. |
 | Not in scope | Meld, PolyPop, Elgato, VTube Studio/Voicemod/Speaker.bot/TITS/Crowd Control/HypeRate/Pulsoid/Lumia/Streamfog/mtion, the Streamer.bot website integration/cloud, C# and plugins. |
 | Later (own phases, after phase 14) | Quotes, credits, points, users/first words; sounds and TTS; file I/O, file tail, folder watcher, process triggers; hotkeys/inputs, MIDI, voice control; Decks, HTML overlay, multi-platform chat window. |
@@ -295,7 +295,8 @@ platform handles through channels, never through shared locks held across awaits
   chat in the log, and follows connections as they come and go; the emote picker fills its grid after it's
   shown (it was one emote a row on first open).
 - [x] 35. Real badges: Twitch's own badge pictures (sharp) instead of drawn role badges, the ones the
-  chatter wears, with spacing; chat settings: timestamps on/off, badges on/off.
+  chatter wears, with spacing; chat settings: timestamps on/off, badges on/off. Active emote-only and slow modes
+  appear above the composer, with the platform named in combined chat.
 - [x] 36. Message actions on hover (Twitch-like): reply, copy, pin (Twitch), delete (Twitch, Kick), timeout and
   ban (Twitch, Kick, YouTube); lines deleted or banned anywhere leave the chat.
 - [x] 37. Emote picker like 7TV's: per-platform and per-account provider tabs (Favorites, platform native
@@ -340,8 +341,8 @@ platform handles through channels, never through shared locks held across awaits
 - [x] Hover details: pointing at an emote or a badge in any chat shows its picture big, its name, where it
   comes from (the source's icon: 7TV, BTTV, FFZ, the platform) and its id (`ui/tip.rs`).
 - [x] Pinned messages over the chat, with who pinned them and the time left (Twitch, Kick, YouTube).
-- [x] TikTok without a webview: login and sending through the user's own Chromium-based browser over its
-  DevTools port (`cdp.rs`); wry, tao, WebKitGTK and the helper binary are gone (390 crates down to 199).
+- [x] TikTok without a webview: the user's Chromium browser supplies the account through the extension.
+  The older DevTools login driver is retired; wry, tao, WebKitGTK and the helper binary remain removed.
 - [x] Accounts: the channel to read is on the page, for every platform; Twitch reads someone else's
   channel too, as a moderator (the subscriptions a moderator can't have are left out).
 - [x] Accounts, simpler: a platform connects at start by itself once set up (Advanced turns that off);
@@ -538,6 +539,91 @@ platform handles through channels, never through shared locks held across awaits
 - [ ] Complete Windows and real Twitch + OBS profiling. Linux release-profile synthetic, restart,
   sustained SSD, allocation, and UI reclamation comparisons are recorded in the experiment report.
 
+## Version 1.5.0
+
+- [x] Twitch standalone GIF messages: show the animated picture below the sender in live chat and history,
+  with the title as fallback.
+- [x] Active emote-only and slow modes above the composer, with the platform named in combined chat.
+- [x] TikTok sending through the user's own browser. The Streamerz for TikTok extension
+  (`assets/tiktok-extension`, loaded unpacked from the folder Streamerz writes next to `streamerz.json`)
+  connects to the WebSocket server on `/streamerz/tiktok`: only its fixed extension ID and the pairing
+  token are accepted. The route does not exist before setup. Chat, SendMessage and sub-action 43001 use
+  the browser account. MCP tool `tiktok_bridge` manages setup and login.
+- [x] TikTok convenience: replace separate logins with the extension's account, preserve the chosen
+  channel during migration, and use browser session cookies only in memory for authenticated reading.
+  Search channels through the extension from the picker and MCP `search_channels`. Use an offscreen
+  frame instead of a pinned tab, recover discarded contexts, distinguish loading, ready and login states,
+  and never automatically retry a send with an ambiguous outcome. Keep public reading independent.
+
+
+- [x] TikTok account audit: one account in the chat popup, profile pictures across Accounts and chat,
+  signed channel-picture lookup, handle-based mention replies and suggestions, and TikTok in Message all.
+  Retire obsolete account-selection form fields and profile migration; preserve imported action data.
+  Hide internal sticker IDs in tips and fallback text, and prevent unsupported native sticker sends.
+  Refresh account pictures on change without continuously redrawing an idle popup.
+
+- [x] TikTok capability audit: receive message deletions, user-history deletions, pins and pin
+  cancellations; report pause/resume without dropping chat. Expose observed state and development
+  event injection through WebSocket requests. Recover room lookup through the browser after a public
+  lookup failure, accept pasted LIVE links, and reject oversized messages before clearing the draft.
+  Reuse the browser device cookie, recheck signing state when reopening setup after a transient error,
+  and never replay a send. Keep validation notices readable when the window is resized.
+
+- [x] Repair TikTok browser setup: reuse the existing browser profile and window, keep the
+  dialog open, preserve development pairing in a stable cache, and open login when required.
+  Verify running-browser reuse, cold start, pairing, login and narrow/wide layouts with
+  `dev/tiktok-setup.py`. Browser-controlled extension installation remains a manual step.
+
+## UI and UX review
+
+The agreed scope is to fix the issues cited in the UI/UX reviews and verify the affected screens.
+There is no per-page score threshold or repeated scoring requirement. Track the finite checklist in
+[docs/UI-AUDIT.md](docs/UI-AUDIT.md); scores from earlier reviews are historical context only.
+
+- [x] Inventory pages and major dialogs using independent code and visual reviews.
+- [x] Complete the cited shared-control, page-layout, state, accessibility and workflow fixes.
+- [x] Verify affected pages at narrow and wide sizes, including relevant populated, unavailable,
+  error, context-menu, cancellation and validation cases. Cover fixed bugs with regression checks.
+- [x] Run the smoke suite, formatting, clippy and relevant tests. Record comparable hidden memory
+  and idle CPU measurements, and state any live-service or Windows verification limits plainly.
+- [x] Commit locally and report the completed checklist. Keep the version open until asked to close it.
+
+## MCP verification and usability
+
+- [x] Check every advertised tool's schema and dispatch, and repair missing routes.
+- [x] Validate arguments, bound connection waits and report protocol errors.
+- [x] Exercise all 51 tools through stdio on an isolated dev instance, including
+  authoring round trips, exports, group settings and unavailable integrations.
+- [x] Document setup, offline testing, replacement semantics and service limits in docs/MCP.md.
+- [ ] Before closing the version, test configured live-service success paths and record
+  the required hidden RSS and idle CPU measurements.
+
+## Trigger configuration and documentation
+
+- [x] Inspect the misleading trigger editor hint, built-in reference access and TikTok gift
+  configuration/catalog pipeline. Findings and proposed sequence are in
+  [docs/TRIGGER-DOCUMENTATION-AUDIT.md](docs/TRIGGER-DOCUMENTATION-AUDIT.md).
+- [x] Inventory every registered trigger and sub-action, review shared authoring and execution
+  paths, and organize simple user-facing ideas by family. The proposed packages and acceptance
+  workflows are in [docs/AUTOMATION-IDEAS.md](docs/AUTOMATION-IDEAS.md), with a reproducible
+  [per-type inventory](docs/AUTOMATION-INVENTORY.csv).
+- [x] Deliver honest picker availability and shared in-app Help with explicit form states.
+  Every reference has Fields and Arguments, plus When for triggers, checked by a regression test.
+- [x] Add reusable identity-preserving selectors, starting with dynamic TikTok gifts.
+  Discovery uses the current room and paired browser; channel/account changes invalidate the list.
+- [x] Simplify supported forms with task-specific fields, human units and value insertion.
+  Keep imported values and unknown fields intact; hide options with no runtime effect.
+- [x] Share live-event matching with previews and report actual step outcomes.
+  Gift previews use the live matcher; history distinguishes reported failures and skipped steps.
+- [x] Build the selected workflows as editable recipes using the general group/template tools.
+  Thank TikTok gifts and Reward shows an OBS source start disabled until configured.
+- [x] Use completion delivery for new gift triggers and retain legacy update delivery when absent.
+  Select one exact gift ID or any gift. Inclusive coin bounds use cumulative quantity times unit
+  value; zero means unbounded. Separate triggers remain alternatives and can queue separate runs.
+- [ ] Before closing the version, verify gift discovery and matching on a real live, native Windows
+  behavior, and hidden Twitch + OBS RSS and idle CPU. Fixture and isolated UI checks are recorded in
+  [docs/TESTING.md](docs/TESTING.md); disconnected measurements do not establish the connected budget.
+
 ## Open points (decide when the phase starts, ask first)
 
 - Points: its sub-actions are new in Streamer.bot 1.1.0, unreleased (1.0.7 is the latest). When it's out,
@@ -554,3 +640,11 @@ platform handles through channels, never through shared locks held across awaits
 - Phase 10: Kick Pusher app key and chatroom id lookup (kick.com's v2 channel endpoint may sit behind
   Cloudflare). Check, and fall back to the official API ids.
 - Phase 13: integrations whose only transport is Streamer.bot's website relay.
+
+## Windows and notification improvements
+
+- [ ] Bring the existing production window forward on a second launch, on Linux and Windows.
+- [ ] Add a notification dialog for login expiry, updates, stream endings and automation toasts, enabled by default.
+- [ ] Investigate free trusted signing and SmartScreen reputation for Windows releases.
+
+- [ ] Prepare SignPath Foundation onboarding, Windows metadata and a verified signed artifact flow that preserves build reuse.

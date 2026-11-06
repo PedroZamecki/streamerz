@@ -2,8 +2,47 @@
 //! D-Bus (every desktop environment has one; zbus is already in for the tray), on Windows a toast.
 //! A failure only goes to the log: a missing notification daemon is no reason to stop anything.
 
+/// Notification choices are shared with the engine without a background task.
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    pub login: bool,
+    pub updates: bool,
+    pub streams: bool,
+    pub automation: bool,
+}
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            login: true,
+            updates: true,
+            streams: true,
+            automation: true,
+        }
+    }
+}
+#[derive(Clone, Copy)]
+pub enum Kind {
+    Login,
+    Updates,
+    Streams,
+    Automation,
+}
+static ENABLED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(15);
+pub fn configure(s: Settings) {
+    let bits =
+        u8::from(s.login) | (u8::from(s.updates) << 1) | (u8::from(s.streams) << 2) | (u8::from(s.automation) << 3);
+    ENABLED.store(bits, std::sync::atomic::Ordering::Relaxed);
+}
+fn enabled(kind: Kind) -> bool {
+    ENABLED.load(std::sync::atomic::Ordering::Relaxed) & (1 << kind as u8) != 0
+}
+
 /// Shows a notification, without waiting for it.
-pub fn send(title: &str, body: &str) {
+pub fn send(kind: Kind, title: &str, body: &str) {
+    if !enabled(kind) {
+        return;
+    }
     let (title, body) = (title.to_string(), body.to_string());
     tokio::task::spawn_local(async move {
         if let Err(e) = show(&title, &body).await {
@@ -17,7 +56,7 @@ pub fn send(title: &str, body: &str) {
 pub fn login_needed(platform: &'static str, bot: bool) {
     if crate::ui::relogin(platform, bot) {
         let key = if bot { "relogin.ask_bot" } else { "relogin.ask" };
-        send(platform, &crate::i18n::trf(key, &[("platform", platform)]));
+        send(Kind::Login, platform, &crate::i18n::trf(key, &[("platform", platform)]));
     }
 }
 
@@ -56,6 +95,9 @@ impl Toast {
 
 /// Shows `t`, without waiting; a click on it calls `clicked` (on this thread).
 pub fn toast(t: Toast, clicked: impl FnOnce(&Toast) + 'static) {
+    if !enabled(Kind::Automation) {
+        return;
+    }
     tokio::task::spawn_local(async move {
         match show_toast(&t).await {
             Ok(true) => clicked(&t),
@@ -241,6 +283,16 @@ $t = $x.GetElementsByTagName('text')
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
+    #[test]
+    fn notification_preferences_default_on_and_preserve_disabled_values() {
+        let defaults: super::Settings = serde_json::from_str("{}").unwrap();
+        assert!(defaults.login && defaults.updates && defaults.streams && defaults.automation);
+        let saved: super::Settings = serde_json::from_str(r#"{"updates":false}"#).unwrap();
+        assert!(saved.login && !saved.updates && saved.streams && saved.automation);
+        let restored: super::Settings = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert!(restored.login && !restored.updates && restored.streams && restored.automation);
+    }
+
     /// A fake notification service on a private bus clicks every toast: the click comes back. Needs its
     /// own bus: `dbus-run-session -- cargo test -- --ignored clicked_toast`.
     #[tokio::test(flavor = "current_thread")]

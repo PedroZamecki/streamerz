@@ -4,8 +4,8 @@
 mod agents;
 mod backup;
 mod brand;
+mod browsers;
 mod catalog;
-mod cdp;
 mod commands;
 mod crash;
 pub mod decks;
@@ -52,11 +52,13 @@ mod storage;
 mod streamdeck;
 mod templates;
 pub mod tiktok;
+mod tiktok_bridge;
 mod tray;
 pub mod twitch;
 pub mod types;
 mod ui;
 mod update;
+mod usergroups;
 mod vars;
 mod webcast;
 #[cfg(not(windows))]
@@ -116,6 +118,8 @@ pub struct Config {
     start_hidden: bool,
     /// Aggressive background mode, applied on restart. Existing Community files stay untouched.
     memory_saver: bool,
+    /// Dialogs, menus and floating panels move as they come and go (Settings, Appearance).
+    animations: bool,
     autostart: bool,
     /// Keep [DEBUG] lines in the log.
     debug_log: bool,
@@ -193,6 +197,7 @@ pub struct Config {
     pub window: WindowState,
     /// What a new release does: ask first, install in the background, or nothing.
     pub updates: update::Updates,
+    pub notifications: notify::Settings,
     /// Plugins by id (their file's name): on or off, and their settings.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub plugins: std::collections::BTreeMap<String, engine::plugins::PluginConfig>,
@@ -214,6 +219,7 @@ impl Default for Config {
             locale: String::new(),
             start_hidden: true,
             memory_saver: false,
+            animations: true,
             autostart: false,
             debug_log: false,
             actions: model::ActionsFile::default(),
@@ -250,6 +256,7 @@ impl Default for Config {
             builtins: false,
             window: WindowState::default(),
             updates: update::Updates::default(),
+            notifications: notify::Settings::default(),
             plugins: Default::default(),
             date_format: String::new(),
             time_format: String::new(),
@@ -428,11 +435,6 @@ impl Config {
                 self.kick.channel = b.username.to_lowercase();
             }
         }
-        if self.tiktok.channel.trim().is_empty() {
-            if let Some(b) = &self.tiktok.broadcaster {
-                self.tiktok.channel = b.username.trim_start_matches('@').to_string();
-            }
-        }
     }
 }
 
@@ -607,6 +609,9 @@ fn log(level: Level, line: String) {
         return;
     }
     let line = redact(&line);
+    if level == Level::Error {
+        engine::record_error(&line);
+    }
     if !QUIET.load(std::sync::atomic::Ordering::Relaxed) {
         let _ = writeln!(std::io::stdout(), "[{}] {line}", level.tag());
     }
@@ -754,7 +759,7 @@ fn location_file() -> PathBuf {
 /// system folder.
 fn portable_config() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    if std::env::var_os("APPIMAGE").is_some() || exe.starts_with("/tmp") || exe.starts_with("/usr") {
+    if update::appimage().is_some() || exe.starts_with("/tmp") || exe.starts_with("/usr") {
         return None;
     }
     Some(exe.parent()?.join("streamerz.json")).filter(|p| p.is_file())
@@ -924,6 +929,7 @@ fn load_from(path: &Path) -> Config {
         }
     };
     c.own_channels();
+    usergroups::migrate(&mut c.groups);
     let _ = save_to(path, &c);
     c
 }
@@ -998,6 +1004,43 @@ fn autostart(on: bool) -> std::io::Result<()> {
 }
 
 static DEV_DIR: OnceLock<PathBuf> = OnceLock::new();
+static DEV_SOURCE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Where the TikTok extension's files go: next to streamerz.json. A browser keeps loading them after a
+/// development process (and its disposable settings) is gone, so a development build's go to the user's
+/// cache instead, one folder per settings it cloned: stable across its restarts, apart from a test's
+/// scratch settings, and never next to the production settings.
+pub(crate) fn extension_folder() -> PathBuf {
+    extension_folder_for(
+        &config_path(),
+        DEV_SOURCE.get().map(PathBuf::as_path),
+        dev_cache_dir().as_deref(),
+    )
+}
+
+fn extension_folder_for(config: &Path, source: Option<&Path>, cache: Option<&Path>) -> PathBuf {
+    match (source, cache) {
+        (Some(source), Some(cache)) => {
+            use sha2::Digest;
+            let id = sha2::Sha256::digest(source.to_string_lossy().as_bytes());
+            let id: String = id[..6].iter().map(|b| format!("{b:02x}")).collect();
+            cache.join(id).join("tiktok-extension")
+        }
+        _ => config.with_file_name("tiktok-extension"),
+    }
+}
+
+/// The cache folder development builds keep across runs.
+fn dev_cache_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    #[cfg(not(windows))]
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")));
+    base.map(|b| b.join("streamerz-dev"))
+}
 static DEV_LOCK: Mutex<Option<std::fs::File>> = Mutex::new(None);
 static DEV_LISTENER: Mutex<Option<std::net::TcpListener>> = Mutex::new(None);
 
@@ -1091,7 +1134,8 @@ fn prepare_dev(source: &Path) -> std::io::Result<PathBuf> {
                         }
                     }
                 }
-                for name in ["plugins", "tiktok-bot", "tiktok-broadcaster"] {
+                {
+                    let name = "plugins";
                     let from = source.with_file_name(name);
                     if from.exists() {
                         if let Err(e) = storage::copy_tree(&from, &dir.join(name)) {
@@ -1176,6 +1220,7 @@ fn main() {
     if brand::IS_DEV {
         // Resolve the source before selecting the private path. The source is only read.
         let source = default_config_path();
+        let _ = DEV_SOURCE.set(source.clone());
         let dir = match prepare_dev(&source) {
             Ok(dir) => dir,
             Err(e) => {
@@ -1214,6 +1259,7 @@ fn main() {
     }
     backup::on_start();
     let mut cfg = load_from(&config_path());
+    tiktok_bridge::restore_pairing(&mut cfg);
     MEMORY_SAVER.store(cfg.memory_saver, std::sync::atomic::Ordering::Relaxed);
     cleanup_first_words();
     if brand::IS_DEV {
@@ -1271,6 +1317,7 @@ fn main() {
             return;
         }
     }
+    notify::configure(cfg.notifications);
     i18n::set(&cfg.locale);
     set_debug_log(cfg.debug_log);
     fmt::set_shown_as(&cfg.date_format, &cfg.time_format);
@@ -1341,6 +1388,29 @@ fn under_wine() -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn development_extensions_outlive_disposable_settings_and_keep_release_separate() {
+        use std::path::Path;
+        let (source, cache) = (
+            Path::new("/settings/streamerz.json"),
+            Some(Path::new("/cache/streamerz-dev")),
+        );
+        let a = super::extension_folder_for(Path::new("/scratch/run-a/streamerz.json"), Some(source), cache);
+        let b = super::extension_folder_for(Path::new("/scratch/run-b/streamerz.json"), Some(source), cache);
+        // Every run of the same settings: one folder, in the cache, never beside the production settings.
+        assert_eq!(a, b);
+        assert!(a.starts_with("/cache/streamerz-dev") && a.ends_with("tiktok-extension"));
+        assert!(!a.starts_with("/settings"));
+        // A test's scratch settings get another.
+        let scratch = Path::new("/tmp/scratch/streamerz.json");
+        assert_ne!(a, super::extension_folder_for(scratch, Some(scratch), cache));
+        // A release build: beside its settings.
+        assert_eq!(
+            super::extension_folder_for(source, None, cache),
+            Path::new("/settings/tiktok-extension")
+        );
+    }
+
     #[test]
     fn shutdown_waits_for_the_pending_save() {
         let queue = std::sync::Arc::new(std::sync::Mutex::new(super::SaveQueue {

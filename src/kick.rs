@@ -872,6 +872,7 @@ pub async fn run_pusher_loop_url(
     pusher_url: &str,
     run_once: bool,
 ) {
+    engine.set_chat_modes("kick", None);
     let channel = cfg.borrow().kick.channel.trim().to_lowercase();
     let chatroom_id = cfg.borrow().kick.chatroom_id;
     let channel_id = cfg.borrow().kick.channel_id;
@@ -892,6 +893,7 @@ pub async fn run_pusher_loop_url(
             .and_then(|r| serde_json::from_slice::<Value>(&r.body).ok());
         if let Some(v) = &parsed {
             cache_sub_badges(&v["subscriber_badges"]);
+            engine.set_chat_modes("kick", kick_chat_modes(&v["chatroom"]));
         }
         let cid = parsed
             .as_ref()
@@ -915,7 +917,21 @@ pub async fn run_pusher_loop_url(
     };
 
     let mut failures = 0u32;
+    let mut first_connection = true;
     loop {
+        if !first_connection && is_live_pusher {
+            engine.set_chat_modes("kick", None);
+            let url = format!("https://kick.com/api/v2/channels/{channel}");
+            let headers = [("Accept".to_string(), "application/json".to_string())];
+            if let Ok(response) = crate::http::request("GET", &url, &headers, b"").await {
+                if response.status == 200 {
+                    if let Ok(value) = serde_json::from_slice::<Value>(&response.body) {
+                        engine.set_chat_modes("kick", kick_chat_modes(&value["chatroom"]));
+                    }
+                }
+            }
+        }
+        first_connection = false;
         match crate::http::ws_connect(pusher_url).await {
             Ok((ws, _)) => {
                 let (mut sink, mut stream) = ws.split();
@@ -1451,6 +1467,20 @@ fn category(l: &Value) -> (Value, Value, Value) {
     (c["id"].clone(), c["name"].clone(), thumb)
 }
 
+fn kick_chat_modes(value: &Value) -> Option<crate::engine::ChatModes> {
+    let enabled = |key: &str| value[key].as_bool().or_else(|| value[key]["enabled"].as_bool());
+    Some(crate::engine::ChatModes {
+        emote_only: enabled("emotes_mode")?,
+        slow_seconds: if enabled("slow_mode")? {
+            value["message_interval"]
+                .as_u64()
+                .or_else(|| value["slow_mode"]["message_interval"].as_u64())
+        } else {
+            None
+        },
+    })
+}
+
 pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_val: &Value) {
     let data: Value = match data_val {
         Value::String(s) => serde_json::from_str(s).unwrap_or(Value::Null),
@@ -1461,6 +1491,7 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
     let now = || crate::fmt::date(&crate::fmt::now(), "o");
     // The Pusher event names, with and without their PHP namespace.
     match event.trim_start_matches("App\\Events\\") {
+        "ChatroomUpdatedEvent" => engine.set_chat_modes("kick", kick_chat_modes(&data)),
         "ChatMessageEvent" => {
             let content = data["content"].as_str().unwrap_or("").to_string();
             let msg_id = data["id"].as_str().unwrap_or("").to_string();
@@ -1606,6 +1637,7 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
             engine.chat_unpinned("kick", "");
             if !engine.chat_stream_ended("kick") {
                 crate::notify::send(
+                    crate::notify::Kind::Streams,
                     "Streamerz",
                     &crate::i18n::trf("chat.state_ended_title", &[("platform", "Kick")]),
                 );
@@ -1901,6 +1933,35 @@ pub async fn kick_extras(engine: Rc<Engine>, channel: String, user_id: Option<u6
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn chat_modes_read_initial_settings_and_updates() {
+        use super::*;
+        let initial = json!({"emotes_mode": true, "slow_mode": true, "message_interval": 30});
+        let update = json!({"emotes_mode": {"enabled": false}, "slow_mode": {"enabled": true, "message_interval": 10}});
+        assert_eq!(
+            kick_chat_modes(&initial),
+            Some(crate::engine::ChatModes {
+                emote_only: true,
+                slow_seconds: Some(30)
+            })
+        );
+        assert_eq!(
+            kick_chat_modes(&update),
+            Some(crate::engine::ChatModes {
+                emote_only: false,
+                slow_seconds: Some(10)
+            })
+        );
+        assert_eq!(kick_chat_modes(&json!({})), None);
+        let (tx, _rx) = watch::channel(Config::default());
+        let engine = Engine::new(Arc::new(tx), |_| {});
+        handle_kick_event(&engine, "channel", "App\\Events\\ChatroomUpdatedEvent", &update);
+        assert_eq!(engine.chat_modes()[1], kick_chat_modes(&update));
+        let off = json!({"emotes_mode": {"enabled": false}, "slow_mode": {"enabled": false}});
+        handle_kick_event(&engine, "channel", "ChatroomUpdatedEvent", &off);
+        assert_eq!(engine.chat_modes()[1], Some(crate::engine::ChatModes::default()));
+    }
+
     #[test]
     fn test_clean_kick_channel() {
         assert_eq!(clean_kick_channel("https://kick.com/streamer"), "streamer");

@@ -37,6 +37,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
+      - name: Test TikTok extension lifecycle
+        run: node --test dev/tiktok-extension.test.mjs
 
   commits:
     runs-on: ubuntu-latest

@@ -5,7 +5,8 @@ How the chat page behaves. For what each trigger and sub-action does, see the re
 ## The chat box
 
 - One box per platform. It is off, with a plain user icon, when no account is logged in for that platform:
-  the chat is then read only. "Message all" leaves such a platform out, and its lines only offer Copy.
+  the chat is then read only. TikTok uses the browser account described below instead. "Message all"
+  leaves a platform without sending set up out, and its lines only offer Copy.
 - The hover actions follow the platform's rules and our role there (viewer, VIP, moderator, lead
   moderator, broadcaster): nobody can ban or time out the broadcaster or themselves, moderators leave
   each other to the owner, and a viewer only gets Reply and Copy.
@@ -14,6 +15,53 @@ How the chat page behaves. For what each trigger and sub-action does, see the re
   comes back (a failed send takes the line away and says why). The log says how long each send took.
 - An `@name` that names one of our logged-in accounts sits on a chip, so it stands out. The chip follows
   the theme (light and dark).
+
+## TikTok account and search
+
+In Accounts > TikTok > Browser account, choose Set up. Open your Chromium browser's extensions page,
+turn on Developer mode, choose Load unpacked, and select the folder shown by Streamerz. When updating
+an existing installation, reload the extension after Streamerz writes its new files.
+
+Log in opens TikTok in that browser. This is the only TikTok login Streamerz uses: the browser account
+supplies search, authenticated reading and sending. Old separate account and bot logins are no longer
+used. An old account's own channel is preserved when loading its settings; its saved cookies are not
+carried into the new settings. Ordinary public LIVE reading still works without the extension.
+
+The browser account picture appears in Accounts, the composer and its single-account popup. Channel
+pictures use the same cache, with signed search when the extension is ready and a public lookup otherwise.
+
+The channel picker searches TikTok through the extension, with names, pictures, follower counts and
+live state. A pasted link or @handle still works when search is unavailable. Use my own channel selects
+the browser account. A new setup with no chosen channel uses that account's channel automatically.
+
+The extension loads TikTok inside a hidden browser document, with pictures, video, fonts, telemetry
+and feed refreshes blocked. No helper tab or window opens. Browser background mode lets it work after
+all browser windows close; explicitly quitting the browser disconnects it. Log in may require a visible
+browser window, but ordinary use never requires navigating to a helper page. A discarded context is
+recreated on the next request. A send with a lost reply is never retried automatically.
+
+Accounts distinguishes an extension connection, a loading context, a ready account and a required
+login. Sending stays disabled until the browser account is ready. Session changes refresh the identity
+and reconnect an active reader with the new session. Reader cookies stay in memory and are never saved.
+Closing Streamerz or removing the integration releases the hidden context. Remove the extension from
+the browser too if you no longer use it.
+
+To measure usage while other tabs are open, use the browser's Task Manager. Include Streamerz for TikTok
+and its hidden TikTok frame. Shared browser, network and GPU costs are separate. Developer tools and an
+open Task Manager can affect CPU readings; allow the context to settle before measuring it.
+
+TikTok replies add `@handle` to the message, using the chatter's handle rather than their display name.
+The same handle is used in mention suggestions and profile links. Message all includes TikTok and uses
+its browser account regardless of the account chosen for other platforms.
+
+Unicode emoji can be sent. Native TikTok stickers are shown when received, with a preview instead of
+internal IDs in their tooltip, but their outgoing encoding is not implemented. The picker hides these
+unsendable entries and a pasted sticker token produces an explanation before anything is posted.
+
+TikTok also follows incoming message and user-history deletions, pinned comments and explicit pin
+cancellations. Pause and resume updates appear in chat without disconnecting it. The 150-character
+limit includes a reply's @mention; an oversized draft stays in the composer so it can be shortened.
+See [TikTok capabilities](TIKTOK.md) for the supported paths and verification limits.
 
 ## Twitch chat commands
 

@@ -5,10 +5,10 @@ use super::rows::Rows;
 use super::{query, tell};
 use crate::engine::plugins::{self, Manifest};
 use crate::i18n::{tr, trf};
-use fltk::enums::Align;
-use fltk::frame::Frame;
+use fltk::button::Button;
 use fltk::group::{Flex, Wizard};
 use fltk::prelude::*;
+use fltk::text::{TextBuffer, TextDisplay, WrapMode};
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
@@ -21,7 +21,9 @@ pub struct Plugins {
     cfg: Cfg,
     cmds: Cmds,
     view: Rows,
-    about: Frame,
+    about: TextDisplay,
+    about_text: TextBuffer,
+    buttons: Vec<Button>,
     /// What the list shows: id, manifest (None when it doesn't load), on.
     shown: Vec<(String, Option<Manifest>, bool, String)>,
 }
@@ -67,6 +69,17 @@ impl Plugins {
 
     /// The selected plugin's description, and what it adds.
     fn describe(&mut self) {
+        let selected = self.selected();
+        let valid = selected.is_some_and(|(_, manifest, _, _)| manifest.is_some());
+        let settings =
+            selected.is_some_and(|(_, manifest, _, _)| manifest.as_ref().is_some_and(|m| !m.settings.is_empty()));
+        for (button, available) in self.buttons.iter_mut().zip([valid, settings, true, true]) {
+            if available {
+                button.activate();
+            } else {
+                button.deactivate();
+            }
+        }
         let text = match self.selected() {
             Some((_, _, _, err)) if !err.is_empty() => err.clone(),
             Some((_, Some(m), _, _)) => {
@@ -83,7 +96,14 @@ impl Plugins {
             }
             _ => String::new(),
         };
-        self.about.set_label(&text.replace('@', "@@"));
+        self.about_text.set_text(&text);
+        self.about.scroll(0, 0);
+        if text.is_empty() {
+            self.about.hide();
+        } else {
+            self.about.show();
+        }
+        self.tab.layout();
     }
 }
 
@@ -100,9 +120,14 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Plugins>> {
     );
     let mut view = Rows::new(tr("plugins.empty"));
     view.set_column_widths(&[300, 120]);
-    let mut about = Frame::default().with_align(Align::Left | Align::Inside | Align::Wrap | Align::Top);
-    about.set_label_color(super::muted());
-    col.fixed(&about, 64);
+    let mut about = TextDisplay::default();
+    super::scroll::view(&mut about);
+    let about_text = TextBuffer::default();
+    about.set_buffer(about_text.clone());
+    about.set_text_color(super::muted());
+    about.wrap_mode(WrapMode::AtBounds, 0);
+    about.hide();
+    col.fixed(&about, 100);
     let b = super::grid(
         &mut col,
         &[
@@ -121,8 +146,11 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Plugins>> {
         cmds: cmds.clone(),
         view: view.clone(),
         about,
+        about_text,
+        buttons: b.clone(),
         shown: Vec::new(),
     }));
+    me.borrow_mut().describe();
     view.set_callback({
         let me = me.clone();
         move |_| {
@@ -174,12 +202,30 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Plugins>> {
                 }
             }
             let lists = Lists::new(&m.cfg.borrow());
-            if let Done::Ok(new) = forms::form(
+            let result = forms::form(
                 &trf("plugins.settings_title", &[("name", &man.name)]),
                 fields,
                 &now,
                 &lists,
-            ) {
+            );
+            let new = match result {
+                Done::Ok(new) => Some(new),
+                Done::Json(draft) => super::dialogs::json_editor(
+                    &trf("plugins.settings_title", &[("name", &man.name)]),
+                    "",
+                    &serde_json::Value::Object(draft),
+                    |value| {
+                        if value.is_object() {
+                            Ok(())
+                        } else {
+                            Err(tr("dialogs.object_required").into())
+                        }
+                    },
+                )
+                .and_then(|value| value.as_object().cloned()),
+                Done::Cancel => None,
+            };
+            if let Some(new) = new {
                 tell(&m.cmds, move |e| e.plugin_set(&id, new));
             }
         }),

@@ -14,6 +14,11 @@ Starts its actions for each message from a MIDI device (a key, a pad, a knob). E
 open while an enabled action uses this trigger, and none otherwise: Linux reads the system's raw MIDI
 devices (`/dev/snd/midiC*D*`), Windows uses winmm.
 
+### When
+
+Runs for each incoming MIDI message that matches all configured filters. Leave the filters empty
+(or Channel at zero) to accept every message from an open input.
+
 ### Fields
 
 | Field | Key | What it holds |

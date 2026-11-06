@@ -19,6 +19,7 @@ None.
 ### Arguments
 
 - `isLive`: true while Streamerz is connected to the TikTok live.
+- `isPaused`: true while connected and TikTok reports the LIVE is paused. A pause keeps chat connected.
 - `roomId`: the room ID of the live.
 - `viewerCount`: the viewer count the live reported last.
 - `totalLikes`: the likes counted for this live.

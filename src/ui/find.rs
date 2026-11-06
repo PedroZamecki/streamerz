@@ -72,7 +72,7 @@ pub(super) fn channel(cmds: &Cmds, platform: &str) -> Option<String> {
     win.end();
     win.resizable(&col);
 
-    let searchable = search::can(platform);
+    let searchable = search::can(platform) || platform == "tiktok";
     if !searchable {
         status.set_label(&trf("find.no_search", &[("platform", name)]).replace('@', "@@"));
     }
@@ -85,7 +85,16 @@ pub(super) fn channel(cmds: &Cmds, platform: &str) -> Option<String> {
     let use_own = Rc::new(Cell::new(false));
     own.set_callback({
         let (answer, use_own) = (answer.clone(), use_own.clone());
+        let (cmds, platform) = (cmds.clone(), platform.to_string());
         move |_| {
+            if platform == "tiktok"
+                && super::query(&cmds, |e| e.tiktok_bridge.user())
+                    .unwrap_or_default()
+                    .is_empty()
+            {
+                super::dialogs::message(tr("find.tiktok_login"));
+                return;
+            }
             use_own.set(true);
             answer.set(Some(true));
         }
@@ -99,9 +108,9 @@ pub(super) fn channel(cmds: &Cmds, platform: &str) -> Option<String> {
         }
     });
 
-    let (tx, rx) = std::sync::mpsc::channel::<(u64, Vec<Found>)>();
+    let (tx, rx) = std::sync::mpsc::channel::<(u64, Result<Vec<Found>, String>)>();
     let asked = Cell::new(0u64);
-    win.show();
+    win.open();
     let _ = input.take_focus();
     while win.shown() && answer.get().is_none() {
         nested_wait(Some(0.15));
@@ -116,9 +125,15 @@ pub(super) fn channel(cmds: &Cmds, platform: &str) -> Option<String> {
             } else {
                 status.set_label(tr("find.searching"));
                 let (n, p, tx) = (asked.get(), platform.to_string(), tx.clone());
-                tell(cmds, move |_| {
+                tell(cmds, move |e| {
+                    let e = e.clone();
                     tokio::task::spawn_local(async move {
-                        let _ = tx.send((n, search::channels(&p, &q).await));
+                        let result = if p == "tiktok" {
+                            crate::tiktok_bridge::search(&e, &q).await
+                        } else {
+                            Ok(search::channels(&p, &q).await)
+                        };
+                        let _ = tx.send((n, result));
                         app::awake();
                     });
                 });
@@ -129,6 +144,14 @@ pub(super) fn channel(cmds: &Cmds, platform: &str) -> Option<String> {
                 continue;
             }
             list.clear();
+            let got = match got {
+                Ok(got) => got,
+                Err(err) => {
+                    found.borrow_mut().clear();
+                    status.set_label(&err.replace('@', "@@"));
+                    continue;
+                }
+            };
             for f in &got {
                 list.add(&line(f));
             }
@@ -158,13 +181,17 @@ pub(super) fn channel(cmds: &Cmds, platform: &str) -> Option<String> {
         None
     };
     let own = use_own.get();
-    win.hide();
-    app::delete_widget(win);
+    win.close();
+    drop(win);
     if !ok {
         return None;
     }
     if own {
-        return Some(String::new());
+        return if platform == "tiktok" {
+            super::query(cmds, |e| e.tiktok_bridge.user()).filter(|u| !u.is_empty())
+        } else {
+            Some(String::new())
+        };
     }
     chosen
 }

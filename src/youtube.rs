@@ -2171,6 +2171,7 @@ async fn broadcast_started(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>
 fn broadcast_ended(engine: &Rc<Engine>) {
     if !engine.chat_stream_ended("youtube") {
         crate::notify::send(
+            crate::notify::Kind::Streams,
             "Streamerz",
             &crate::i18n::trf("chat.state_ended_title", &[("platform", "YouTube")]),
         );

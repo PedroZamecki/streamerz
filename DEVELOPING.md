@@ -536,14 +536,17 @@ ws.onmessage = (m) => { const v = JSON.parse(m.data); if (v.request !== "Hello")
 Reading needs a channel that is live right now. `api-live/user/room?...&uniqueId=NAME` (the URL in
 `webcast::room_id`) says so: `statusCode` 19881007 is no such user, `data.liveRoom.status` 2 is live, 4
 offline. It answers 429 to a few quick lookups in a row (less with a `ttwid` cookie), so check names one
-every few seconds. Then run Streamerz with `"tiktok": {"channel": NAME, "autoConnect": true}` and subscribe
+every few seconds. Then run Streamerz with `"tiktok": {"channel": NAME, "manualConnect": false}` and subscribe
 to the TikTok events on its WebSocket. Chat on a quiet live can take minutes; joins and likes come at once.
 An emote-only comment has no text (its emotes are in field 13).
 
-TikTok chat is read-only. Imported Send Message sub-actions are retained for compatibility, but report
-that sending is unavailable. An optional broadcaster login can help with restricted rooms. Login uses
-an installed Chromium-based browser with a separate Streamerz profile; `STREAMERZ_BROWSER` selects the
-executable. No browser is kept running for reading or sending.
+Public TikTok reading needs no login. The optional browser extension is the single account for signed
+channel search, authenticated reading and sending (chat, SendMessage and sub-action 43001). Set it up in
+Accounts > TikTok > Browser account. It uses an offscreen TikTok frame, with no visible helper tab.
+Reader session cookies are requested from the browser on connection and never persisted. The older
+separate browser profiles and DevTools login driver are retired. Browser background mode permits use
+with all windows closed; quitting the browser disconnects it. Test lifecycle behavior without an account
+with `node --test dev/tiktok-extension.test.mjs`. Live send checks should use `:)`.
 
 ## OBS sub-actions against a real OBS
 
@@ -808,7 +811,7 @@ The [Twitch CLI](https://dev.twitch.tv/docs/cli/) runs a mock EventSub WebSocket
 subscriptions there too when `twitch.eventsubUrl` points at it.
 
 1. A throwaway folder with a copy of the binary and a `streamerz.json` holding a fake broadcaster
-   (`"twitch": {"autoConnect": true, "eventsubUrl": "ws://127.0.0.1:8099/ws", "broadcaster": {"userId":
+   (`"twitch": {"manualConnect": false, "eventsubUrl": "ws://127.0.0.1:8099/ws", "broadcaster": {"userId":
    "5555", "login": "tester", "token": {"accessToken": "fake"}}}`) and one action per trigger, each a Log
    sub-action with the variables to check.
 2. `twitch event websocket start-server -p 8099` (not `-S`: CLI 1.1.24 refuses the newer subscription

@@ -94,7 +94,7 @@ fn system() -> String {
         _ => "no display",
     };
     parts.push(shows.to_string());
-    if std::env::var_os("APPIMAGE").is_some() {
+    if crate::update::appimage().is_some() {
         parts.push("AppImage".into());
     }
     parts.join(", ")

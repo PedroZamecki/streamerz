@@ -296,6 +296,22 @@ impl Engine {
     }
 
     /// Write community.json now.
+    pub fn flush_community(&self) -> std::io::Result<()> {
+        if self.memory_saver {
+            return Ok(());
+        }
+        let c = &mut self.st.borrow_mut().community;
+        c.saved_at = unix();
+        write_snapshot(
+            &file(),
+            &Snapshot {
+                users: &c.users,
+                credits: &c.credits,
+            },
+        )
+    }
+
+    /// Save according to the configured policy; explicit backups use the synchronous checked flush.
     pub fn save_community(&self) {
         if self.memory_saver {
             return;
@@ -304,17 +320,7 @@ impl Engine {
         // The buffered development path is retained only for reproducible memory experiments.
         let buffered = crate::brand::IS_DEV && std::env::var("STREAMERZ_MEMORY_WRITE").as_deref() == Ok("buffered");
         if !buffered && !legacy_save() {
-            let result = {
-                let c = &mut self.st.borrow_mut().community;
-                c.saved_at = unix();
-                write_snapshot(
-                    &file(),
-                    &Snapshot {
-                        users: &c.users,
-                        credits: &c.credits,
-                    },
-                )
-            };
+            let result = self.flush_community();
             if result.is_err() {
                 crate::error(format!("can't save {}", file().display()));
             }
@@ -506,10 +512,13 @@ impl Engine {
                 c.youtube.channel_id.trim(),
                 c.youtube.broadcaster.as_ref().map(|b| b.channel_id.as_str()),
             ),
-            "tiktok" => (
-                c.tiktok.channel.trim().trim_start_matches('@'),
-                c.tiktok.broadcaster.as_ref().map(|b| b.username.as_str()),
-            ),
+            "tiktok" => {
+                return if c.tiktok.channel.trim().is_empty() {
+                    self.tiktok_bridge.user().to_lowercase()
+                } else {
+                    c.tiktok.channel.trim().trim_start_matches('@').to_lowercase()
+                }
+            }
             _ => return String::new(),
         };
         if set.is_empty() {

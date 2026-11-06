@@ -128,6 +128,18 @@ jobs:
       - if: needs.version.outputs.reuse == ''
         name: Verify the Windows executable icon
         run: python dev/check-windows-icon.py dist/Streamerz-windows-x86_64.exe
+      - if: needs.version.outputs.reuse == ''
+        name: Verify Windows version metadata
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.tag || 'dev' }}
+        run: |
+          $expected = if ($env:RELEASE_VERSION -eq 'dev') { '0.0.0.0' } else { $env:RELEASE_VERSION.TrimStart('v') + '.0' }
+          $info = (Get-Item dist/Streamerz-windows-x86_64.exe).VersionInfo
+          if ($info.ProductName -ne 'Streamerz' -or $info.FileDescription -ne 'Streamerz' -or
+              $info.ProductVersion -ne $expected -or $info.FileVersion -ne $expected) {
+            throw "Unexpected Windows metadata: $($info | Format-List | Out-String)"
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: streamerz-windows-${{ needs.version.outputs.tag || 'dev' }}-${{ needs.version.outputs.tree }}

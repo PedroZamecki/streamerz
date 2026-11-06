@@ -8,17 +8,17 @@ Posting messages to the TikTok Live chat.
 - Code: 43001
 - Type: TikTokSendMessage
 - Category: TikTok/Chat
-- Needs: a TikTok login (the bot or the broadcaster) and a TikTok channel set
+- Needs: TikTok sending set up (Accounts > TikTok > Browser account), the Streamerz for TikTok extension connected, and the channel's live being read
 
-Sends a message to the TikTok Live chat, as the bot or as the broadcaster.
+Sends a message to the TikTok Live chat, as the TikTok account logged in to the browser with the extension.
 
 ### Fields
 
 | Field | Key | What it holds |
 | --- | --- | --- |
 | Message | `text` | The text to send. Variables like `%user%` are filled in first. |
-| Use Bot Account | `useBot` | On: the bot account sends it. Off: the broadcaster sends it. |
-| Fallback to Broadcaster | `fallback` | On: when the chosen account is not logged in, the other one sends it. |
+
+Older imported account-selection fields are preserved but ignored. The browser account always sends.
 
 ### Arguments
 
@@ -26,6 +26,7 @@ None set.
 
 ### Notes
 
-- The message is posted with the session of the logged-in account.
-- If the keyring is locked, or no TikTok channel is set, nothing is sent and the error is logged.
-- Without the fallback, a message with no logged-in account for the chosen side is an error and is logged.
+- TikTok has no official way to send LIVE chat. The extension uses an offscreen TikTok frame while Streamerz runs; no helper tab is visible. TikTok's own scripts sign the message.
+- The message goes to the live Streamerz is reading (Accounts > TikTok > Channel). TikTok takes up to 150 characters. Longer messages are rejected with a reason, without sending a shortened copy.
+- When the extension isn't connected, TikTok isn't live, or TikTok refuses the message (too fast, muted, comments off), nothing is sent and the reason is logged.
+- In development mode (`STREAMERZ_DEV=1`) the message is kept for `GetChatOut` instead of sent.

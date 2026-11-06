@@ -49,8 +49,6 @@ pub fn migrate_selected(source: &Path, target: &Path) -> io::Result<()> {
             "streamerz.json.bak",
             "community.json",
             "plugins",
-            "tiktok-bot",
-            "tiktok-broadcaster",
             "backups",
             "key-source",
         ];
@@ -63,14 +61,7 @@ pub fn migrate_selected(source: &Path, target: &Path) -> io::Result<()> {
         // The old global data is safely copied. Only replace related data present at the selected
         // location. Leave the old settings file until last so an interrupted backup changes nothing.
         if from != dir {
-            for name in [
-                "streamerz.json.bak",
-                "community.json",
-                "plugins",
-                "tiktok-bot",
-                "tiktok-broadcaster",
-                "backups",
-            ] {
+            for name in ["streamerz.json.bak", "community.json", "plugins", "backups"] {
                 let old = dir.join(name);
                 if from.join(name).exists() && old.exists() {
                     if old.is_dir() {
@@ -98,13 +89,7 @@ pub fn migrate(source: &Path, target: &Path) -> io::Result<()> {
         .parent()
         .ok_or_else(|| io::Error::other("target has no directory"))?;
     std::fs::create_dir_all(to)?;
-    for name in [
-        "community.json",
-        "plugins",
-        "tiktok-bot",
-        "tiktok-broadcaster",
-        "backups",
-    ] {
+    for name in ["community.json", "plugins", "backups"] {
         let path = from.join(name);
         if path.exists() {
             copy_tree(&path, &to.join(name))?;

@@ -86,8 +86,7 @@ Makes a clip of the live stream and adds its link to the arguments.
 
 | Field | Key | What it holds |
 | --- | --- | --- |
-| Title | `title` | The title of the clip. |
-| Duration (seconds) | `duration` | The length of the clip, in seconds. |
+| Allow a delayed clip | `hasDelay` | Lets Twitch include a delay when creating the clip. Off when omitted. |
 
 ### Arguments
 

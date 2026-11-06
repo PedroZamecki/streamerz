@@ -1,0 +1,132 @@
+# UI and UX fixes
+
+The agreed scope is to fix the issues cited in the independent reviews, verify the affected screens,
+and report the result. The earlier 9/10 target is retired. There is no further scoring loop.
+
+Streamerz keeps its native zinc theme, Lucide icons, brand assets and shared controls. The checklist
+below consolidates the code audit and both visual reviews. Completed implementation still needs the
+verification recorded at the end; unchecked items remain work to do.
+
+## Shared controls and navigation
+
+- [x] Visible keyboard focus, keyboard sidebar navigation, and focus on empty lists.
+- [x] Shared responsive columns, matching headers and pointer targets, readable overflow tooltips.
+- [x] Wrapped help without overlapping following controls.
+- [x] Form edits retained on JSON transfer and failed validation; unchanged types and fields preserved.
+- [x] Compact button labels retained, inactive icons dimmed, and related action icons distinguished.
+- [x] One fold decision per grid (every button labelled or every one an icon), with readable wide rows
+  and preserved explanation tooltips.
+- [x] Responsive sidebar folding below 760 px and selected-page visibility at both review heights.
+- [x] Consistent zinc selection in lists and trees (rounded ring for keyboard focus, no dotted box), and
+  muted disabled items.
+- [x] Connection states use Health, with darker light-theme inks; warning labels use Health colours.
+- [x] Right-click menus match their buttons and also open with the Menu key or Shift+F10; credits have a
+  menu; emote favorites have an Insert / Add to favorites menu and arrow-key navigation.
+- [x] Narrow footer leaves room for connection state and save feedback.
+
+## Pages
+
+- [x] Chat: fitting toolbar, centered Accounts action, unavailable Message all explained.
+- [x] Accounts: shorter status that fits narrow rows, and "Log in" wording.
+- [x] Community: fitting search; quote selection states and validation; credits menu.
+- [x] Polls: fitting platform controls, a checking state before the first read, ordered reads and
+  mutations, locked predictions, account readiness, unavailable targets unticked, YouTube's four-answer
+  limit explained.
+- [x] Actions: responsive panes, plain status text ("Triggers: 1. Sub-actions: 1."), theme colours.
+- [x] Commands and Timers: clear headers and a search field.
+- [x] Files and Servers: usable sections in short and narrow windows; server states explained.
+- [x] Queues: distinct controls, selection-aware actions, a Status column in the pending pane.
+- [x] Groups: guidance on what groups are for, selection actions and a Members view.
+- [x] Plugins: selection actions, a wrapped description and no gap above the buttons.
+- [x] Stream Apps: readable guides, Connect all states and Health.
+- [x] Integrations and Donations: an intro and a description per integration, Health states.
+- [x] Globals: read-only user globals marked; eligible actions and validation keeping the form open.
+- [x] History: eligible actions, distinct variable views and search.
+- [x] Settings: "Keep chat history", consistent switches, wrapping descriptions, sentence case.
+- [x] MCP: fitting fields, an inline port error (an alert only on Enter), the correct executable.
+- [x] Log: usable search and filter when narrow.
+- [x] Crashes and Backups: selection actions, empty detail hint, Unknown version, visible failures.
+
+## Dialogs and text
+
+- [x] Picker: search focused on open, the intro shown once, OK disabled until something is picked.
+- [x] Property forms: translated labels, Spotify Operation as a choice, Delay's "Up to (ms)" disabled
+  until Random is on.
+- [x] Group settings: the description opens at its start; typed validation and cancellation.
+- [x] Message all: wider layout, a reason on each unavailable platform, and Send disabled with a visible
+  note when no account can send.
+- [x] Countdown shows its operation instead of a clock ID.
+- [x] Shared name/value and Globals validation explain blank names while keeping the form open.
+- [x] Every text key the code uses exists in English and Portuguese (several were missing and showed
+  raw keys such as `lists.search`).
+- [x] AppImage identity checks also cover portable configuration and crash reports.
+
+## Verification
+
+- [x] Unit tests: 458 passed, 13 ignored (new: emote grid arrow keys, tooltip kept while folded).
+- [x] All 22 pages captured at 540x700 and 1100x800 in both themes, plus populated Actions, and
+  checked by eye.
+- [x] Smoke suite passes, including a Commands list menu from a right click and from Shift+F10, compared
+  with its buttons. Harness tests (3), formatting, clippy and locale checks pass.
+- [x] Hidden RSS and idle CPU (release builds, nothing connected, every page visited, 15 s settle, 30 s
+  sampled): main 35.4 MiB RSS / 20.2 MiB PSS, this branch 35.9 / 20.7, idle CPU 0% for both, 4 threads.
+- [ ] Not checked: live Twitch/OBS (the 25 MB budget is about a connected release build), Windows, and
+  hand walkthroughs of the changed dialogs (picker, Message all, Delay form, emote menu) beyond build,
+  tests and smoke.
+
+## Second pass: scrolling, menus, Polls
+
+- [x] Scrolling pages (Accounts, Polls, Files, Servers, Stream Apps, Donations, Settings) use one thin
+  rounded bar with no arrows or grips; text views, trees and browsers paint theirs the same way.
+- [x] The wheel scrolls the page anywhere on it; before, a list beside the pointer took it. A list that
+  has nothing to scroll passes the wheel on.
+- [x] A page is exactly as tall as its content (lists get a minimum), so there is no blank room to scroll
+  into. Actions hides its empty details strip.
+- [x] Chat Side by side with no chat set up shows the same note and Accounts button as All together,
+  not an empty Twitch column.
+- [x] Polls: the page shows what runs and what can be done to it, with a status line; New poll and New
+  prediction open their forms in dialogs.
+- [x] Every menu (right clicks, dropdowns, Options, lists in forms) is one rounded, roomy menu with
+  icons, ticks, keyboard support and first-letter search; popovers have truly rounded corners.
+- [x] The blocks are documented in `docs/UI.md` ("Building blocks") and enforced by `src/ui/rules.rs`.
+- [x] Unit tests: 466 passed, 13 ignored. Smoke passes with new steps (empty Side by side, page wheel
+  and bottom, Polls dialogs, menu screenshot). Formatting, clippy, locale and harness checks pass.
+- [x] Hidden RSS and idle CPU (release, same method): before 35.8 MiB RSS / 20.6 MiB PSS, after
+  36.1 / 20.7, idle CPU 0% for both, 4 threads.
+- [ ] Not checked: Wayland (menus and popovers are windows inside the window, as popovers were, but were
+  only seen on X11), Windows, live Twitch/OBS, and starting a real poll or prediction.
+
+## Third pass: dialogs, short forms, groups, setup
+
+- Dialogs open inside the app's window (`dialogs::window`), over it blurred and dimmed, one at a time,
+  with a title row, a close button and a tone (info, question, success, warning, error). No screen makes
+  a window of its own or uses FLTK's message boxes (`rules.rs` checks).
+- New poll and New prediction ask the least: the question, two answers that grow as they're filled, the
+  platforms as chips with their logos, and the duration with a timer icon (`ui/fields.rs`).
+- Menus and popovers clear what a hover drew before (no highlight left behind).
+- Polls says in plain words why Twitch can't run polls on someone else's channel; Twitch errors are
+  translated (`twitch::plain_error`).
+- Accounts shows the account's and the channel's pictures once they load.
+- User groups keep members as `platform-id` (old bare ids migrated), with the name beside it; the user
+  card has a Groups menu, and Members shows names and platforms with Remove.
+- The chat's settings moved to the Chat page (Options, Chat settings); Settings keeps a row to them.
+- TikTok setup finds the Chromium browsers and whether the extension is in them; Set up (the consent)
+  writes it, copies its folder and opens the browser's extensions page, and the steps tick themselves off.
+
+## Fourth pass: tables, secrets, motion
+
+- Lists show what each row is, not only its name (`Rows` cells, see `docs/UI.md`): a switch per row for
+  its on/off flag (click or Space), live states in colour, quiet details with icons, badges and platform
+  logos. Commands show who can use them, where and their cooldown; timers how often and how many runs;
+  files whether the path is there; connections their state, address, reconnect and password.
+- OBS and Streamlabs connect or disconnect the selected connection, not only all of them; a new one is
+  named Local.
+- Passwords and tokens are `fields::secret`: dots, with an eye that shows what's typed.
+- A notice with no title kept its top border and round corners hidden under its contents: fixed, and a
+  test checks the panel shows its border all round.
+- Dialogs fade the window behind from sharp to blurred while they rise into place, and back as they
+  close; menus and popovers unroll (`ui/anim.rs`). Settings, Appearance, Animations turns it off. The
+  blur is softer.
+- Channel pictures are kept under one key per channel, looked up again when a lookup failed (not more
+  than every two minutes) or the address is about to expire, and TikTok's come from the live room's page
+  when its profile page answers with a bot check.

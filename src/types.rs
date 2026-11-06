@@ -405,7 +405,6 @@ pub const SUB_ACTIONS: &[(u32, &str)] = &[
     // Streamerz-only; Streamer.bot does not implement this operation.
     (99802, "StreamerzSpotifyQueue"),
     (99803, "StreamerzCountdown"),
-    (99880, "StreamerzOverlayPublish"),
     (99810, "SpotifyGetCurrent"),
     (99811, "SpotifyGetDevices"),
     (99812, "SpotifyGetQueue"),
@@ -452,6 +451,7 @@ pub const SUB_ACTIONS: &[(u32, &str)] = &[
     (99873, "SpotifySearch"),
     (99874, "SpotifyGetCurrentArtist"),
     (99875, "SpotifyGetCurrentAlbum"),
+    (99880, "StreamerzOverlayPublish"),
     (99900, "Group"),
     (99901, "IfTrueGroup"),
     (99902, "IfFalseGroup"),
@@ -1030,7 +1030,7 @@ pub const SUB_ACTION_INFO: &[(u32, &str, &str, &[&str])] = &[
     (15, "Set Channel Title", "Twitch/Channel", &["title"]),
     (16, "Set Channel Game", "Twitch/Channel", &["source", "game", "gameId"]),
     (17, "Create Stream Marker", "Twitch/Channel", &["description"]),
-    (18, "Create Clip", "Twitch/Channel", &["title", "duration"]),
+    (18, "Create Clip", "Twitch/Channel", &["title", "duration", "hasDelay"]),
     (19, "Run Commercial", "Twitch/Ads", &["duration"]),
     (
         20,
@@ -2372,12 +2372,7 @@ pub const SUB_ACTION_INFO: &[(u32, &str, &str, &[&str])] = &[
         &["connectionId", "sceneName", "layerName", "url"],
     ),
     (41017, "Take Vertical Screenshot", "Meld Studio", &["connectionId"]),
-    (
-        43001,
-        "Send Message to Live Chat",
-        "TikTok/Chat",
-        &["text", "useBot", "fallback"],
-    ),
+    (43001, "Send Message to Live Chat", "TikTok/Chat", &["text"]),
     (43002, "Get Top Gifters", "TikTok/Gifts", &["count"]),
     (43003, "Get Stream Info", "TikTok", &[]),
     (44001, "Spin Wheel", "Integrations/Streamlabs", &[]),

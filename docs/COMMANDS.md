@@ -31,10 +31,10 @@ Added once on first run, in the Built-in group: edit, turn off or re-alias them 
     (External, then **Publish app**; unpublished apps log you out every 7 days) > Credentials > Create
     OAuth client ID, type **Desktop app**. Paste its ID and secret, then Login. Google warns that the app
     is unverified: it's yours, so continue. Reading chat needs no login.
-  - TikTok: Streamerz reads the channel's live itself, with no login (it waits while the
-    channel is offline). Login opens TikTok's own login page in your browser (Chrome, Chromium, Edge, Brave or Vivaldi,
-    with a profile of Streamerz's own); sending types into the live page's chat in a hidden tab of it,
-    which closes after 2 idle minutes. Nothing else to install: on Windows, Edge is always there.
+  - TikTok: public LIVE reading needs no login and waits while the channel is offline. Browser account >
+    Set up installs the extension for channel search, authenticated reading and sending. Log in opens
+    TikTok in your own browser; ordinary use runs in a hidden context with no helper tab. Background
+    mode lets the browser work with all its windows closed. See [Chat](CHAT.md#tiktok-account-and-search).
 - **Polls**: start and end polls on Twitch and YouTube and follow their votes; start, lock, resolve and
   cancel Twitch predictions.
 - **Stream Apps**: OBS Studio and Streamlabs Desktop connections.

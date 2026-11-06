@@ -21,13 +21,12 @@ use fltk::button::{Button, CheckButton};
 use fltk::draw;
 use fltk::enums::{Align, CallbackTrigger, Color, Damage, Event, Font, FrameType, Key};
 use fltk::frame::Frame;
-use fltk::group::{Flex, Wizard};
+use fltk::group::{Flex, FlexType, Wizard};
 use fltk::image::SvgImage;
 use fltk::input::Input;
 use fltk::menu::Choice;
 use fltk::prelude::*;
 use fltk::valuator::Slider;
-use fltk::window::DoubleWindow;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
@@ -486,7 +485,7 @@ fn display_user(l: &Line, yt_tag: bool) -> String {
 }
 
 /// A line's things, in order.
-fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
+fn items(cmds: &Cmds, l: &Line, tag: bool, width: i32) -> Vec<It> {
     let gray = Color::from_rgb(0x88, 0x88, 0x88);
     let (time, badges, _, yt_tag) = SHOW.get();
     let mut v = Vec::new();
@@ -582,6 +581,22 @@ fn items(cmds: &Cmds, l: &Line, tag: bool) -> Vec<It> {
     }
     let name = display_user(l, yt_tag);
     v.push(It::Text(format!("{name}:"), Font::HelveticaBold, name_color(l)));
+    if !l.deleted && !l.gif.is_empty() {
+        if let Some(mut p) = img::get(cmds, &l.gif, 140, false) {
+            if p.w() > width.max(1) {
+                let h = (140 * width.max(1) / p.w()).max(1);
+                if let Some(smaller) = img::get(cmds, &l.gif, h, false) {
+                    p = smaller;
+                } else {
+                    words(cmds, l, &mut v);
+                    return v;
+                }
+            }
+            v.push(It::Break);
+            v.push(It::Pic(p, None));
+            return v;
+        }
+    }
     words(cmds, l, &mut v);
     v
 }
@@ -661,7 +676,11 @@ fn words(cmds: &Cmds, l: &Line, v: &mut Vec<It>) {
         for (part, url) in emotes::split(w) {
             match url.and_then(|u| pic(&u).map(|p| (p, u))) {
                 Some((p, u)) => v.push(It::Pic(p, Some(emote_tip(&l.platform, part, &u)))),
-                None => v.push(It::Text(part.to_string(), font, fg)),
+                None => v.push(It::Text(
+                    super::tip::emote_name(&l.platform, part).to_string(),
+                    font,
+                    fg,
+                )),
             }
         }
     }
@@ -708,11 +727,6 @@ fn my_names(c: &crate::Config) -> Vec<String> {
         c.youtube.bot.as_ref().map(|a| (a.name.clone(), String::new())),
         c.kick.broadcaster.as_ref().map(|a| (a.username.clone(), String::new())),
         c.kick.bot.as_ref().map(|a| (a.username.clone(), String::new())),
-        c.tiktok
-            .broadcaster
-            .as_ref()
-            .map(|a| (a.username.clone(), String::new())),
-        c.tiktok.bot.as_ref().map(|a| (a.username.clone(), String::new())),
     ]
     .into_iter()
     .flatten()
@@ -1009,7 +1023,7 @@ fn acts(l: &Line, reply: bool) -> Vec<(Act, &'static str, &'static str)> {
     );
     let mut v = vec![(Act::Copy, "copy", tr("chat.act_copy"))];
     // An event isn't a message to answer, and a pane with no box under it has nowhere to answer.
-    if reply && p != "tiktok" && may.reply && l.event.is_empty() {
+    if reply && may.reply && l.event.is_empty() {
         v.insert(0, (Act::Reply, "corner-up-left", tr("chat.act_reply")));
     }
     if may.pin && !l.msg_id.is_empty() {
@@ -1080,9 +1094,15 @@ impl Pane {
             }
             let th = ((h as f32 * b.slider_size()) as i32).clamp(24.min(h), h);
             let ty = y + ((h - th) as f64 * (b.value() - b.minimum()) / max) as i32;
-            let c = Color::color_average(Color::Foreground, Color::Background, 0.3);
-            draw::set_draw_color(c);
-            draw::draw_rounded_rectf(x + (w - 6) / 2, ty, 6, th, 3);
+            let held = app::pushed().is_some_and(|p| p.as_widget_ptr() == b.as_widget_ptr());
+            super::scroll::draw_thumb(
+                x + (w - super::scroll::BAR) / 2,
+                ty,
+                super::scroll::BAR,
+                th,
+                Color::Background2,
+                held,
+            );
         });
         group.fixed(&bar, 12);
         group.end();
@@ -1164,7 +1184,7 @@ impl Pane {
     }
 
     fn lay(&self, l: &Line, tag: bool, w: i32) -> (Rows, i32) {
-        let r = rows(items(&self.cmds, l, tag), w);
+        let r = rows(items(&self.cmds, l, tag, w), w);
         let h = r.iter().map(|r| r.1).sum();
         (r, h)
     }
@@ -1716,7 +1736,7 @@ impl Pane {
             }
             Act::Mod(Moderate::Ban) => {
                 let q = trf("chat.ban_confirm", &[("user", &l.user), ("platform", &l.platform)]).replace('@', "@@");
-                if super::dialogs::choice(&q, tr("dialogs.cancel"), tr("btn.ban")) {
+                if super::dialogs::danger(&q, tr("dialogs.cancel"), tr("btn.ban")) {
                     let l = l.clone();
                     tell(&self.cmds, move |e| e.moderate(&l, Moderate::Ban));
                 }
@@ -1870,8 +1890,7 @@ impl Pane {
                 let pin = self.pin_at(f).expect("a pin");
                 let menu_click = app::event_x() >= f.x() + f.w() - 64;
                 if super::right_button() || menu_click {
-                    use fltk::menu::{MenuButton, MenuFlag};
-                    let mut m = super::menu_at_pointer();
+                    let mut m = super::menu::Menu::new();
                     let (role, _) = crate::roles::get(&pin.platform);
                     if pin.platform == "twitch" && role.moderates() && !pin.msg_id.is_empty() {
                         let l = Line {
@@ -1881,34 +1900,15 @@ impl Pane {
                         };
                         let cmds = self.cmds.clone();
                         let unpin = l.clone();
-                        let i = m.add(
-                            tr("chat.act_unpin"),
-                            fltk::enums::Shortcut::None,
-                            MenuFlag::Normal,
-                            move |_| {
-                                let l = unpin.clone();
-                                tell(&cmds, move |e| e.moderate(&l, Moderate::Unpin));
-                            },
-                        );
-                        if let Some(mut item) = m.at(i) {
-                            item.add_image(icons::before_label("pin-off", super::muted(), 14), true);
-                        }
+                        m.item(tr("chat.act_unpin"), Some("pin-off"), move || {
+                            tell(&cmds, move |e| e.moderate(&unpin, Moderate::Unpin));
+                        });
                         let pane = self.clone();
-                        if pin.platform == "twitch" {
-                            m.add(
-                                tr("chat.pin_change_duration"),
-                                fltk::enums::Shortcut::None,
-                                MenuFlag::Normal,
-                                move |_| {
-                                    pane.run(&l, Act::Mod(Moderate::Pin(None)));
-                                },
-                            );
-                        }
+                        m.item(tr("chat.pin_change_duration"), Some("timer"), move || {
+                            pane.run(&l, Act::Mod(Moderate::Pin(None)));
+                        });
                     }
-                    if m.size() > 0 {
-                        m.popup();
-                    }
-                    MenuButton::delete(m);
+                    m.show();
                 }
                 true
             }
@@ -1918,36 +1918,21 @@ impl Pane {
                     self.line_at(f, &st).and_then(|i| st.lines.get(i).cloned())
                 };
                 let Some(l) = l.filter(|l| !l.note) else { return true };
-                use fltk::menu::{MenuButton, MenuFlag};
-                let mut m = super::menu_at_pointer();
+                let mut m = super::menu::Menu::new();
                 for (act, icon, name) in acts(&l, self.on_reply.borrow().is_some()) {
                     let (p, l) = (self.clone(), l.clone());
-                    let i = m.add(name, fltk::enums::Shortcut::None, MenuFlag::Normal, move |_| {
-                        p.run(&l, act)
-                    });
-                    if let Some(mut item) = m.at(i) {
-                        item.add_image(icons::before_label(icon, super::muted(), 14), true);
-                    }
+                    m.item(name, Some(icon), move || p.run(&l, act));
                 }
                 if !l.user_id.is_empty() && self.st.borrow().cards {
                     let (cmds, l) = (self.cmds.clone(), l.clone());
-                    m.add(
-                        tr("chat.user_info"),
-                        fltk::enums::Shortcut::None,
-                        MenuFlag::Normal,
-                        move |_| {
-                            super::card::open(
-                                &cmds,
-                                super::card::Who::from_line(&l, name_color(&l)),
-                                (app::event_x(), app::event_y()),
-                            )
-                        },
-                    );
+                    // Where the click was: the card opens there once the menu is gone.
+                    let at = (app::event_x(), app::event_y());
+                    m.line();
+                    m.item(tr("chat.user_info"), Some("user-round"), move || {
+                        super::card::open(&cmds, super::card::Who::from_line(&l, name_color(&l)), at)
+                    });
                 }
-                if m.size() > 0 {
-                    m.popup();
-                }
-                MenuButton::delete(m);
+                m.show();
                 true
             }
             Event::Push if super::left_button() => {
@@ -1962,6 +1947,7 @@ impl Pane {
                 }
                 true
             }
+            Event::MouseWheel if !app::event_inside_widget(f) => false,
             Event::MouseWheel => {
                 let mut st = self.st.borrow_mut();
                 st.top += app::event_dy_value() * 3 * LINE;
@@ -2205,6 +2191,15 @@ fn effective_sender_role(
     cmds: &Cmds,
     plat_idx: usize,
 ) -> (bool, Option<String>, Option<fltk::image::RgbImage>) {
+    // TikTok sends as whoever is logged in to the browser with the extension.
+    if PLATFORMS[plat_idx] == "tiktok" {
+        if !crate::engine::can_send(&cfg.borrow(), "tiktok") {
+            return (false, None, None);
+        }
+        let (ready, user) = query(cmds, |e| (e.tiktok_bridge.ready(), e.tiktok_bridge.user())).unwrap_or_default();
+        let pic = super::accounts::browser_account(cmds, 22).and_then(|a| a.pic);
+        return (false, (ready && !user.is_empty()).then_some(user), pic);
+    }
     let want_broadcaster = cfg
         .borrow()
         .window
@@ -2238,6 +2233,8 @@ struct ChatColumn {
     chat_stack: Wizard,
     chat_group: Flex,
     down_group: Flex,
+    empty: Frame,
+    setup: Flex,
     acct_btn: Button,
     input: Input,
     target_plat: Rc<Cell<usize>>,
@@ -2245,6 +2242,7 @@ struct ChatColumn {
     bar: Flex,
     down_bar: Flex,
     read_only: Frame,
+    modes: Frame,
     set_reply: SetReply,
     /// What is wrong with the chat (the stream ended, not connected), with what to do about it.
     notice: Flex,
@@ -2262,6 +2260,34 @@ struct ChatColumn {
 }
 
 impl ChatColumn {
+    fn show_modes(&self, text: &str) {
+        let mut frame = self.modes.clone();
+        let changed = frame.label() != text;
+        if changed {
+            frame.set_label(text);
+        }
+        let height = if text.is_empty() {
+            0
+        } else {
+            draw::set_font(frame.label_font(), frame.label_size());
+            let width = frame.w().max(1);
+            let (_, h) = draw::measure(text, true);
+            // Allow space for wrapped text even before the first layout.
+            let lines = (draw::width(text) / f64::from(width)).ceil() as i32;
+            h.max(lines * 16).max(20)
+        };
+        if changed || frame.h() != height {
+            let mut col = self.col.clone();
+            if height == 0 {
+                frame.hide();
+            } else {
+                frame.show();
+            }
+            col.fixed(&frame, height);
+            col.layout();
+        }
+    }
+
     fn show_viewers(&self, count: Option<u64>, state: ChatState, ended: bool) {
         let mut frame = self.viewers.clone();
         let show = !ended && (state == ChatState::Down || (state == ChatState::Connected && count.is_some()));
@@ -2341,7 +2367,24 @@ impl ChatColumn {
         let mut down_group = Flex::default().column();
         down_group.set_frame(FrameType::DownBox);
         down_group.set_color(Color::Background2);
-        let _empty_chat = Frame::default();
+        Frame::default();
+        let mut empty = Frame::default()
+            .with_label(tr("chat.no_connection"))
+            .with_align(Align::Center | Align::Inside | Align::Wrap);
+        empty.set_label_color(super::muted());
+        down_group.fixed(&empty, 72);
+        let mut setup = Flex::default().row();
+        Frame::default();
+        let mut accounts = super::button(&mut setup, tr("btn.accounts"), 120);
+        Frame::default();
+        setup.end();
+        down_group.fixed(&setup, ROW + 4);
+        accounts.set_callback({
+            let go = go_accounts.clone();
+            move |_| go()
+        });
+        setup.hide();
+        Frame::default();
         down_group.end();
         chat_stack.end();
         chat_stack.resize_callback({
@@ -2409,6 +2452,12 @@ impl ChatColumn {
         notice.end();
         col.fixed(&notice, 0);
         notice.hide();
+
+        let mut modes = Frame::default().with_align(Align::Left | Align::Inside | Align::Wrap);
+        modes.set_label_size(12);
+        modes.set_label_color(super::muted());
+        col.fixed(&modes, 0);
+        modes.hide();
 
         let mut bar = Flex::default().row();
         bar.set_pad(4);
@@ -2552,12 +2601,15 @@ impl ChatColumn {
             chat_stack,
             chat_group,
             down_group,
+            empty,
+            setup,
             acct_btn: acct_btn.clone(),
             input: input.clone(),
             target_plat: target_plat.clone(),
             bar: bar.clone(),
             down_bar: down_row,
             read_only,
+            modes,
             set_reply: set_reply.clone(),
             notice: notice.clone(),
             notice_icon: notice_icon.clone(),
@@ -2630,6 +2682,15 @@ impl ChatColumn {
                 }
                 let p_idx = target_plat.get().min(3);
                 let plat = PLATFORMS[p_idx];
+                if plat == "tiktok" {
+                    let (draft, target) = (text.clone(), reply.borrow().clone());
+                    let outgoing = query(&cmds, move |e| e.chat_reply_text(plat, draft, target.as_ref()))
+                        .unwrap_or_else(|| text.clone());
+                    if let Err(error) = crate::tiktok_bridge::validate_message(&outgoing) {
+                        super::dialogs::message(&error);
+                        return;
+                    }
+                }
                 if !crate::engine::can_send(&cfg.borrow(), plat)
                     || !query(&cmds, move |e| e.chat_connected(plat)).unwrap_or(false)
                 {
@@ -2728,6 +2789,19 @@ impl ChatColumn {
 
     /// Shows what is wrong with `platform`'s chat (`state`), or takes the notice away.
     fn show_notice(&self, platform: Option<&'static str>, state: ChatState) {
+        let nothing = self.pane.nothing.get();
+        self.empty
+            .clone()
+            .set_label(if nothing { tr("chat.no_connection") } else { "" });
+        let mut setup = self.setup.clone();
+        if setup.visible() != nothing {
+            if nothing {
+                setup.show();
+            } else {
+                setup.hide();
+            }
+            self.down_group.clone().layout();
+        }
         self.notice_targets
             .replace(platform.filter(|_| state != ChatState::Connected).into_iter().collect());
         let mut stack = self.chat_stack.clone();
@@ -2865,11 +2939,36 @@ impl ChatColumn {
         };
         let plat = PLATFORMS[p_idx];
         let connected = query(cmds, move |e| e.chat_connected(plat)).unwrap_or(false);
-        let can_send_plat = crate::engine::can_send(&cfg.borrow(), plat) && connected;
+        let (browser_ready, browser_connected, browser_user, browser_error) = if plat == "tiktok" {
+            query(cmds, |e| {
+                (
+                    e.tiktok_bridge.ready(),
+                    e.tiktok_bridge.is_connected(),
+                    e.tiktok_bridge.user(),
+                    e.tiktok_bridge.error(),
+                )
+            })
+            .unwrap_or_default()
+        } else {
+            (true, true, String::new(), String::new())
+        };
+        let browser_hint = if !browser_error.is_empty() {
+            browser_error
+        } else if !browser_connected {
+            tr("accounts.tiktok_sending.waiting").to_string()
+        } else if !browser_ready {
+            tr("accounts.tiktok_sending.loading").to_string()
+        } else if browser_user.is_empty() {
+            tr("accounts.tiktok_sending.login_needed").to_string()
+        } else {
+            String::new()
+        };
+        let can_send_plat = crate::engine::can_send(&cfg.borrow(), plat) && connected && browser_ready;
         let mut bar = self.bar.clone();
         let mut space = self.down_bar.clone();
         let mut read_only = self.read_only.clone();
-        let show_read_only = connected && plat == "tiktok";
+        // TikTok reads without a login; sending needs the browser set up (Accounts > TikTok).
+        let show_read_only = connected && plat == "tiktok" && !crate::engine::can_send(&cfg.borrow(), plat);
         let show_bar = connected && !show_read_only;
         if show_bar {
             bar.show();
@@ -2891,8 +2990,13 @@ impl ChatColumn {
         col.fixed(&read_only, if show_read_only { ROW + 4 } else { 0 });
         col.fixed(&space, if connected { 0 } else { ROW + 4 });
         col.layout();
-        let tip = if plat == "tiktok" {
+        let tip = if show_read_only {
             tr("chat.tiktok_read_only_tip").to_string()
+        } else if plat == "tiktok" && !browser_hint.is_empty() {
+            browser_hint.clone()
+        } else if plat == "tiktok" {
+            let name = sender_name.clone().unwrap_or_default();
+            trf("chat.tiktok_sending_as_tip", &[("name", &name.replace('@', "@@"))])
         } else {
             match &sender_name {
                 Some(name) => trf(
@@ -2918,8 +3022,13 @@ impl ChatColumn {
             }
         }
         let mut inp = self.input.clone();
-        let placeholder_tip = if plat == "tiktok" {
+        let placeholder_tip = if show_read_only {
             tr("chat.tiktok_read_only").to_string()
+        } else if plat == "tiktok" && !browser_hint.is_empty() {
+            browser_hint.clone()
+        } else if plat == "tiktok" {
+            let name = sender_name.clone().unwrap_or_default();
+            trf("chat.tiktok_sending_as_tip", &[("name", &name.replace('@', "@@"))])
         } else {
             match &sender_name {
                 Some(name) => trf(
@@ -2945,6 +3054,8 @@ pub struct Chat {
     cmds: Cmds,
     view: Choice,
     viewers: Frame,
+    message_all: Button,
+    history_note: Frame,
     /// The set-up platforms (indexes in PLATFORMS), as the view list shows them.
     plats: Rc<RefCell<Vec<usize>>>,
     /// All together / single platform column, plus one individual column per platform for side by side.
@@ -2985,7 +3096,10 @@ impl Chat {
                 p.pane.apply_limits();
             }
         }
-        let me = my_names(&self.cfg.borrow());
+        let mut me = my_names(&self.cfg.borrow());
+        if let Some(user) = query(&self.cmds, |e| e.tiktok_bridge.user()).filter(|u| !u.is_empty()) {
+            me.push(user.to_lowercase());
+        }
         if ME.with_borrow(|m| *m != me) {
             ME.set(me);
             self.main.pane.remeasure();
@@ -3124,7 +3238,7 @@ impl Chat {
         let states: Vec<ChatState> =
             query(&self.cmds, |e| PLATFORMS.map(|p| e.chat_state(p)).to_vec()).unwrap_or_default();
         let state = |i: usize| states.get(i).copied().unwrap_or(ChatState::Connected);
-        if self.view.value() == 1 {
+        if self.side_by_side() {
             for (i, col) in self.side.iter().enumerate() {
                 col.pane.set_disconnected(state(i) == ChatState::Down);
                 col.show_notice(Some(PLATFORMS[i]), state(i));
@@ -3162,8 +3276,55 @@ impl Chat {
         }
     }
 
+    fn refresh_modes(&self) {
+        let (modes, connected) = query(&self.cmds, |e| (e.chat_modes(), PLATFORMS.map(|p| e.chat_connected(p))))
+            .unwrap_or(([None; 2], [false; 4]));
+        let hidden = self.cfg.borrow().window.chat_hidden.clone();
+        let label = |platform: &str| -> String {
+            let Some(i) = ["twitch", "kick"].iter().position(|p| *p == platform) else {
+                return String::new();
+            };
+            let Some(m) = modes[i] else { return String::new() };
+            let Some(p) = PLATFORMS.iter().position(|p| *p == platform) else {
+                return String::new();
+            };
+            if !connected[p] || hidden.contains(&platform.to_string()) {
+                return String::new();
+            }
+            let mut labels = Vec::new();
+            if m.emote_only {
+                labels.push(tr("chat.emote_only").to_string());
+            }
+            if let Some(seconds) = m.slow_seconds {
+                labels.push(trf("chat.slow_mode_seconds", &[("seconds", &seconds.to_string())]));
+            }
+            if labels.is_empty() {
+                String::new()
+            } else {
+                format!("{}: {}", NAMES[p], labels.join(", "))
+            }
+        };
+        if self.side_by_side() {
+            for (i, col) in self.side.iter().enumerate() {
+                col.show_modes(&label(PLATFORMS[i]));
+            }
+        } else if let Some(platform) = self.shown() {
+            self.main.show_modes(&label(platform));
+        } else {
+            let labels: Vec<_> = self
+                .plats
+                .borrow()
+                .iter()
+                .map(|i| label(PLATFORMS[*i]))
+                .filter(|s| !s.is_empty())
+                .collect();
+            self.main.show_modes(&labels.join("  "));
+        }
+    }
+
     fn refresh_senders(&self) {
         self.refresh_notices();
+        self.refresh_modes();
         let (counts, states, ended) = query(&self.cmds, |e| {
             (
                 e.chat_viewers(),
@@ -3172,6 +3333,32 @@ impl Chat {
             )
         })
         .unwrap_or(([None; 4], [ChatState::Down; 4], [false; 4]));
+        let history = self.cfg.borrow().window.chat.save_history && !crate::memory_saver();
+        let connected = states.contains(&ChatState::Connected);
+        let mut message = self.message_all.clone();
+        if history && connected {
+            message.activate();
+        } else {
+            message.deactivate();
+        }
+        message.set_tooltip(if !history {
+            tr("chat.sending_disabled")
+        } else if !connected {
+            tr("chat.no_connection")
+        } else {
+            tr("chat.message_all_tooltip")
+        });
+        let mut history_note = self.history_note.clone();
+        if history_note.visible() == history {
+            if history {
+                history_note.hide();
+            } else {
+                history_note.show();
+            }
+            let mut tab = self.tab.clone();
+            tab.fixed(&history_note, if history { 0 } else { 40 });
+            tab.layout();
+        }
         let shown = self.plats.borrow();
         let format_count = |i: usize| counts[i].map_or_else(|| "?".to_string(), |n| n.to_string());
         for (i, col) in self.side.iter().enumerate() {
@@ -3211,7 +3398,7 @@ impl Chat {
             total.hide();
         }
         drop(shown);
-        if self.view.value() == 1 {
+        if self.side_by_side() {
             for col in &self.side {
                 col.refresh_sender(&self.cfg, &self.cmds);
             }
@@ -3241,6 +3428,12 @@ impl Chat {
     }
 
     /// The one platform the view shows, if it shows one.
+    /// Side by side, with a column for each chat set up. With none, the view is the same as all
+    /// together: no column for a chat that isn't there, and the note saying how to set one up.
+    fn side_by_side(&self) -> bool {
+        self.view.value() == 1 && !self.plats.borrow().is_empty()
+    }
+
     fn shown(&self) -> Option<&'static str> {
         let v = self.view.value();
         (v >= 2)
@@ -3275,7 +3468,7 @@ impl Chat {
 
     /// Lay the view out again, and fill it (only while the window is up: filling loads the emotes).
     fn rebuild(&mut self, fill: bool) {
-        let side = self.view.value() == 1;
+        let side = self.side_by_side();
         self.main.pane.clear();
         self.main.pane.st.borrow_mut().tag = self.view.value() == 0;
         for p in &mut self.side {
@@ -3285,7 +3478,7 @@ impl Chat {
             self.main.col.hide();
             let plats = self.plats.borrow();
             for (i, p) in self.side.iter_mut().enumerate() {
-                if plats.contains(&i) || plats.is_empty() && i == 0 {
+                if plats.contains(&i) {
                     p.col.show();
                 } else {
                     p.col.hide();
@@ -3298,7 +3491,7 @@ impl Chat {
             }
         }
         // All together: no chat box (Message all sends); Reply opens it for that line.
-        let together = self.view.value() == 0;
+        let together = self.view.value() == 0 || (self.view.value() == 1 && !side);
         let mut bar = self.main.bar.clone();
         let mut head = self.main.head.clone();
         if together {
@@ -3347,11 +3540,13 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
     let mut col = super::tab(tabs, "Chat");
     let mut top = Flex::default().row();
     top.set_pad(6);
+    let mut navigation = Flex::default().row();
+    navigation.set_pad(6);
     let l = Frame::default().with_label(tr("chat.show"));
-    top.fixed(&l, 46);
+    navigation.fixed(&l, 46);
     let mut view = super::fit::choice();
     view.set_tooltip(tr("chat.view_label"));
-    top.fixed(&view, 136);
+    navigation.fixed(&view, 136);
     let mut hint = Frame::default()
         .with_label(tr("chat.hint"))
         .with_align(Align::Right | Align::Inside | Align::Clip)
@@ -3360,37 +3555,85 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
     hint.set_label_color(super::muted());
 
     let viewers = viewer_counter();
-    top.fixed(&viewers, 58);
+    navigation.fixed(&viewers, 58);
+    navigation.end();
+
+    let mut actions = Flex::default().row();
+    actions.set_pad(6);
 
     // Discrete "Message all" button with broadcast icon
     let mut msg_all = Button::default().with_label(tr("chat.message_all_btn"));
     msg_all.set_image(icons::before_label("megaphone", Color::Foreground, 14));
+    msg_all.set_deimage(icons::before_label("megaphone", Color::Foreground.inactive(), 14));
     super::fit::adaptive(&mut msg_all);
     msg_all.set_tooltip(tr("chat.message_all_tooltip"));
     let msg_all_w = super::fit::grown(114, tr("chat.message_all_btn"), true);
-    top.fixed(&msg_all, msg_all_w);
+    actions.fixed(&msg_all, msg_all_w);
+    if crate::memory_saver() || !cfg.borrow().window.chat.save_history {
+        msg_all.deactivate();
+        msg_all.set_tooltip(tr("chat.sending_disabled"));
+    }
 
     let mut opts = fltk::menu::MenuButton::default().with_label(tr("chat.options"));
-    top.fixed(&opts, 84);
-    let mut clear = button(&mut top, tr("btn.clear"), 64);
+    super::menu::dropdown(&mut opts);
+    actions.fixed(&opts, 84);
+    let mut clear = button(&mut actions, tr("btn.clear"), 64);
+    let clear_w = clear.w();
+    actions.end();
+    let actions_w = msg_all_w + 84 + clear_w + 12;
+    top.fixed(&actions, actions_w);
     top.end();
     col.fixed(&top, ROW);
-    // Narrow: the buttons keep only their icons, and the hint goes.
+    // Narrow: navigation and actions keep their own row, so every control remains reachable.
     top.resize_callback({
-        let (msg_all, clear, mut hint) = (msg_all.clone(), clear.clone(), hint.clone());
-        // As wide as `button` makes them.
-        let clear_w = super::fit::grown(84, tr("btn.clear"), true);
+        let (mut navigation, actions, view, msg_all, clear, mut hint, mut parent) = (
+            navigation.clone(),
+            actions.clone(),
+            view.clone(),
+            msg_all.clone(),
+            clear.clone(),
+            hint.clone(),
+            col.clone(),
+        );
+        let mut actions = actions;
         move |t, _, _, w, _| {
-            let narrow = w < 600;
-            t.fixed(&msg_all, if narrow { 36 } else { msg_all_w });
-            t.fixed(&clear, if narrow { 36 } else { clear_w });
-            if narrow {
+            let stacked = w < 700;
+            let compact = w < actions_w;
+            actions.fixed(&msg_all, if compact { 36 } else { msg_all_w });
+            actions.fixed(&clear, if compact { 36 } else { clear_w });
+            t.set_type(if stacked { FlexType::Column } else { FlexType::Row });
+            t.set_pad(if stacked { 4 } else { 6 });
+            if stacked {
                 hint.hide();
+                navigation.fixed(&view, 0);
+                t.fixed(&navigation, ROW);
+                t.fixed(&actions, ROW);
             } else {
                 hint.show();
+                navigation.fixed(&view, 136);
+                t.fixed(&navigation, 0);
+                t.fixed(&actions, actions_w);
+            }
+            let height = if stacked { ROW * 2 + 4 } else { ROW };
+            if t.h() != height {
+                parent.fixed(t, height);
+                let mut parent = parent.clone();
+                fltk::app::awake_callback(move || {
+                    if !parent.was_deleted() {
+                        parent.recalc();
+                        parent.redraw();
+                    }
+                });
             }
         }
     });
+
+    let mut history_note = Frame::default()
+        .with_label(tr("chat.sending_disabled"))
+        .with_align(Align::Left | Align::Inside | Align::Wrap);
+    history_note.set_label_color(super::muted());
+    col.fixed(&history_note, 40);
+    history_note.hide();
 
     let go_accounts: Rc<dyn Fn()> = {
         let tabs = tabs.clone();
@@ -3418,6 +3661,8 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
         cmds: cmds.clone(),
         view: view.clone(),
         viewers,
+        message_all: msg_all.clone(),
+        history_note,
         plats: Rc::default(),
         main,
         side,
@@ -3432,9 +3677,7 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
         let was = cfg.borrow().window.chat_view.clone();
         let at = m.view.find_index(&was);
         m.view.set_value(at.max(0));
-        if at > 0 {
-            m.rebuild(false);
-        }
+        m.rebuild(false);
     }
 
     view.set_callback({
@@ -3530,6 +3773,16 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
             },
         );
     }
+    // How much the chat keeps and how lines come and go: in a dialog, last.
+    opts.add(
+        tr("chat.opt_settings"),
+        fltk::enums::Shortcut::None,
+        fltk::menu::MenuFlag::Normal,
+        {
+            let (cfg, cmds) = (cfg.clone(), cmds.clone());
+            move |_| super::settings::chat_dialog(&cfg, &cmds)
+        },
+    );
     clear.set_callback({
         let me = me.clone();
         move |_| {
@@ -3548,14 +3801,11 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Rc<RefCell<Chat>> {
 /// shows account details, connection status, and lets the user switch between Broadcaster and Bot
 /// (and in `"All together"` mode, pick which platform the single input sends to).
 fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accounts: Rc<dyn Fn()>) {
-    let h = 236 + i32::from(crate::secrets::is_locked()) * 34;
-    let mut win = DoubleWindow::default()
-        .with_size(430, h)
-        .with_label(tr("chat.acct_win_title"));
-    win.set_xclass("streamerz");
-    win.make_modal(true);
+    let browser = PLATFORMS[col_ui.target_plat.get().min(3)] == "tiktok";
+    let h = if browser { 180 } else { 236 } + i32::from(crate::secrets::is_locked()) * 34;
+    let (mut win, _) = super::dialogs::window(430, h - 10, tr("chat.acct_win_title"));
 
-    let mut root = Flex::new(10, 10, 410, h - 20, None).column();
+    let mut root = Flex::new(10, 0, 410, h - 20, None).column();
     root.set_pad(8);
 
     if crate::secrets::is_locked() {
@@ -3565,7 +3815,7 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
             .with_label(tr("chat.acct_keyring_locked"))
             .with_align(Align::Left | Align::Inside)
             .ellipsis();
-        lbl.set_label_color(Color::from_rgb(0xe0, 0xa8, 0x30));
+        lbl.set_label_color(super::Health::Busy.color());
         let mut ubtn = button(&mut lrow, tr("btn.unlock"), 80);
         lrow.end();
         root.fixed(&lrow, ROW);
@@ -3588,9 +3838,9 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
     head.end();
     root.fixed(&head, ROW);
 
-    // Two account cards: [0] Broadcaster, [1] Bot
+    // One browser account on TikTok; broadcaster and bot on other platforms.
     let mut slot_uis = Vec::new();
-    for _ in 0..2 {
+    for _ in 0..if browser { 1 } else { 2 } {
         let mut row = Flex::default().row();
         row.set_pad(8);
         let pic = Frame::default();
@@ -3598,6 +3848,11 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
         let info = Frame::default().with_align(Align::Left | Align::Inside | Align::Wrap);
         let mut pick_btn = button(&mut row, tr("btn.select"), 96);
         pick_btn.set_frame(FrameType::RFlatBox);
+        if browser {
+            row.fixed(&pick_btn, 0);
+            pick_btn.hide();
+        }
+
         row.end();
         root.fixed(&row, 48);
         slot_uis.push((pic, info, pick_btn));
@@ -3626,6 +3881,7 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
         let mut note = note.clone();
         let slot_uis: Vec<_> = slot_uis.clone();
         let target_plat = col_ui.target_plat.clone();
+        let mut last = None;
         move || {
             let p_idx = target_plat.get().min(3);
             let slug = PLATFORMS[p_idx];
@@ -3641,15 +3897,64 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
                 )
             })
             .unwrap_or((false, false));
+            let bridge = (slug == "tiktok").then(|| {
+                query(&cmds, |e| {
+                    (
+                        e.tiktok_bridge.ready(),
+                        e.tiktok_bridge.user(),
+                        e.tiktok_bridge.error(),
+                        e.tiktok_bridge.is_connected(),
+                        e.tiktok_bridge.avatar(),
+                    )
+                })
+                .unwrap_or_default()
+            });
+            let want_broadcaster = cfg.borrow().window.chat_as_broadcaster.iter().any(|s| s == slug);
+            let slots = platform_accounts(&cmds, &cfg, slug, 32);
+            let (eff_bot, _, _) = effective_sender_role(&cfg, &cmds, p_idx);
+            let state = (
+                p_idx,
+                conn,
+                standby,
+                want_broadcaster,
+                eff_bot,
+                bridge.clone(),
+                slots
+                    .each_ref()
+                    .map(|s| s.as_ref().map(|a| (a.name.clone(), a.note, a.pic.is_some()))),
+                img::ARRIVED.load(std::sync::atomic::Ordering::Relaxed),
+            );
+            // Redrawing on each wait wakes this loop again. Only changed account data or pictures
+            // need a refresh; decoded pictures are observed by platform_accounts above.
+            if last.as_ref() == Some(&state) {
+                return;
+            }
+            last = Some(state);
             head_logo.set_image(img::logo(pname, 18));
             let (h, st_txt) = if conn {
-                (super::Health::Up, "Connected")
+                (super::Health::Up, tr("conns.connected"))
             } else if standby {
-                (super::Health::Standby, "Standby")
+                (super::Health::Standby, tr("accounts.standby_default"))
             } else {
-                (super::Health::Off, "Off")
+                (super::Health::Off, tr("conns.off"))
             };
-            h.show(&mut head_title, &format!("{pname}: {st_txt}"));
+            if let Some((ready, user, error, connected, _)) = bridge {
+                let (health, detail) = if !error.is_empty() {
+                    (super::Health::Off, error)
+                } else if !connected {
+                    (super::Health::Off, tr("accounts.tiktok_sending.waiting").to_string())
+                } else if ready && !user.is_empty() {
+                    (super::Health::Up, tr("conns.connected").to_string())
+                } else {
+                    (
+                        super::Health::Standby,
+                        tr("accounts.tiktok_sending.login_needed").to_string(),
+                    )
+                };
+                health.show(&mut head_title, &format!("{pname}: {detail}"));
+            } else {
+                h.show(&mut head_title, &format!("{pname}: {st_txt}"));
+            }
             head_title.set_label_font(Font::HelveticaBold);
             note.set_label(if slug == "tiktok" {
                 tr("chat.tiktok_account_note")
@@ -3657,15 +3962,13 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
                 tr("chat.acct_note")
             });
 
-            let want_broadcaster = cfg.borrow().window.chat_as_broadcaster.iter().any(|s| s == slug);
-            let slots = platform_accounts(&cmds, &cfg, slug, 32);
-            let (eff_bot, _, _) = effective_sender_role(&cfg, &cmds, p_idx);
-
             for (bot_i, ((mut pic_f, mut info_f, mut btn), slot)) in
                 slot_uis.iter().cloned().zip(slots.iter()).enumerate()
             {
                 let is_bot = bot_i == 1;
-                let role = if is_bot {
+                let role = if slug == "tiktok" {
+                    tr("accounts.row_sending")
+                } else if is_bot {
                     tr("chat.role_bot")
                 } else {
                     tr("chat.role_broadcaster")
@@ -3697,7 +4000,11 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
                     None => {
                         pic_f.set_image(icons::icon("circle-user-round", super::muted(), 28));
                         let suffix = if is_pref { tr("chat.preferred_other_suffix") } else { "" };
-                        info_f.set_label(&trf("chat.role_not_logged_in", &[("role", role), ("suffix", suffix)]));
+                        info_f.set_label(&if slug == "tiktok" {
+                            tr("accounts.not_logged_in").to_string()
+                        } else {
+                            trf("chat.role_not_logged_in", &[("role", role), ("suffix", suffix)])
+                        });
                         btn.set_label(tr("chat.btn_not_logged_in"));
                         btn.set_color(Color::Background);
                         btn.deactivate();
@@ -3705,7 +4012,7 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
                 }
                 if slug == "tiktok" {
                     btn.deactivate();
-                    btn.set_tooltip(tr("chat.tiktok_read_only_tip"));
+                    btn.set_tooltip(tr("chat.tiktok_browser_tip"));
                 }
                 pic_f.redraw();
                 info_f.redraw();
@@ -3750,12 +4057,14 @@ fn account_selector_popup(cfg: &Cfg, cmds: &Cmds, col_ui: &ChatColumn, go_accoun
     });
 
     populate();
-    win.show();
+    win.open();
     while win.shown() && !done.get() {
-        super::nested_wait(Some(0.1));
+        super::nested_wait(None);
+        if win.shown() && !done.get() {
+            populate();
+        }
     }
-    win.hide();
-    app::delete_widget(win);
+    win.close();
 }
 
 /// Popup opened by the discrete `"Message all"` button in the top bar:
@@ -3774,15 +4083,12 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
     })
     .unwrap_or_default();
     // Only where an account is logged in: a chat read without one can't be sent to.
-    let set_up = PLATFORMS.map(|p| crate::engine::can_send(&cfg.borrow(), p));
+    let mut set_up = PLATFORMS.map(|p| crate::engine::can_send(&cfg.borrow(), p));
+    set_up[3] &= query(cmds, |e| e.tiktok_bridge.ready() && !e.tiktok_bridge.user().is_empty()).unwrap_or(false);
     let conn_states: [bool; 4] = std::array::from_fn(|i| conn_states[i] && set_up[i]);
 
-    let mut win = DoubleWindow::default()
-        .with_size(520, 210)
-        .with_label(tr("chat.msg_all_title"));
-    win.set_xclass("streamerz");
-    win.make_modal(true);
-    let mut col = Flex::new(12, 12, 496, 186, None).column();
+    let (mut win, _) = super::dialogs::window(580, 190, tr("chat.msg_all_title"));
+    let mut col = Flex::new(12, 0, 556, 186, None).column();
     col.set_pad(8);
 
     let mut title = Frame::default()
@@ -3801,7 +4107,7 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
     let mut plat_row = Flex::default().row();
     plat_row.set_pad(8);
     let mut checks = Vec::new();
-    for i in 0..3 {
+    for i in 0..PLATFORMS.len() {
         let suffix = if conn_states[i] { "" } else { tr("chat.offline_suffix") };
         let mut c = CheckButton::default().with_label(&format!("{}{suffix}", NAMES[i]));
         let any_conn = conn_states.iter().any(|&x| x);
@@ -3815,6 +4121,11 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
         );
         if !set_up[i] {
             c.deactivate();
+            if PLATFORMS[i] == "tiktok" {
+                c.set_tooltip(tr("chat.msg_all_needs_tiktok"));
+            } else {
+                c.set_tooltip(&trf("chat.msg_all_needs_login", &[("platform", NAMES[i])]));
+            }
         }
         checks.push(c);
     }
@@ -3840,6 +4151,28 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
     fallback.set_checked(true);
     acct_row.end();
     col.fixed(&acct_row, ROW);
+    let update_accounts: Rc<dyn Fn()> = Rc::new({
+        let (checks, row, col) = (checks.clone(), acct_row.clone(), col.clone());
+        move || {
+            let (mut row, mut col) = (row.clone(), col.clone());
+            let only_browser = checks[3].is_checked() && !checks[..3].iter().any(CheckButton::is_checked);
+            if only_browser {
+                row.hide();
+            } else {
+                row.show();
+            }
+            col.fixed(&row, if only_browser { 0 } else { ROW });
+            col.layout();
+        }
+    });
+    for (i, mut check) in checks.iter().cloned().enumerate() {
+        if i == 3 && set_up[3] {
+            check.set_tooltip(tr("chat.tiktok_browser_tip"));
+        }
+        let update = update_accounts.clone();
+        check.set_callback(move |_| update());
+    }
+    update_accounts();
 
     let mut bar = Flex::default().row();
     bar.set_pad(4);
@@ -3860,12 +4193,21 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
 
     let mut foot = Flex::default().row();
     foot.set_pad(8);
-    let status = Frame::default().with_align(Align::Left | Align::Inside).ellipsis();
+    let mut status = Frame::default().with_align(Align::Left | Align::Inside).ellipsis();
     let mut close = button(&mut foot, tr("dialogs.cancel"), 80);
     foot.end();
     col.fixed(&foot, ROW);
     col.end();
     win.end();
+    // Nowhere to send: say why, and what to do, instead of a Send that does nothing.
+    if !set_up.iter().any(|&on| on) {
+        super::Health::Off.show(&mut status, tr("chat.msg_all_nowhere"));
+        status.set_tooltip(tr("chat.msg_all_nowhere"));
+        send_btn.set_image(icons::icon("send-horizontal", super::muted(), 18));
+        send_btn.deactivate();
+        input.deactivate();
+        emote_btn.deactivate();
+    }
 
     let done = Rc::new(Cell::new(false));
     let do_send = {
@@ -3887,9 +4229,18 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
                 .collect();
             if targets.is_empty() {
                 status.set_label(tr("chat.check_at_least_one"));
-                status.set_label_color(Color::from_rgb(0xe0, 0x60, 0x50));
+                status.set_label_color(super::Health::Down.color());
                 status.redraw();
                 return;
+            }
+            if targets.contains(&"tiktok") {
+                let (draft, target) = (text.clone(), reply.clone());
+                let outgoing = query(&cmds, move |e| e.chat_reply_text("tiktok", draft, target.as_ref()))
+                    .unwrap_or_else(|| text.clone());
+                if let Err(error) = crate::tiktok_bridge::validate_message(&outgoing) {
+                    super::dialogs::message(&error);
+                    return;
+                }
             }
             let use_bot = who.value() == 0;
             let fb = fallback.is_checked();
@@ -3936,13 +4287,12 @@ fn message_all_popup(cfg: &Cfg, cmds: &Cmds, reply: Option<Line>) {
         move |_| done.set(true)
     });
 
-    win.show();
+    win.open();
     let _ = input.take_focus();
     while win.shown() && !done.get() {
         super::nested_wait(Some(0.1));
     }
-    win.hide();
-    app::delete_widget(win);
+    win.close();
 }
 
 fn provider_icon(prov: Provider, platform: &str, size: i32) -> Option<SvgImage> {
@@ -4274,37 +4624,22 @@ fn emote_picker_popup(
 
     let providers = emotes::providers_for(platform);
     let default_tab = providers.iter().position(|&p| p == Provider::Platform).unwrap_or(0);
-    // A popover over the chat, above its box. Where the box is in a small dialog (no room) it gets a
-    // window of its own, as before.
-    let Some(parent) = target_input.top_window() else {
+    // A popover over the app's window, above the box (or below it when there's no room above). The box
+    // may be in a dialog: its place is counted from the app's window.
+    let Some(host) = target_input.top_window() else {
         return;
     };
-    let own = parent.h() < 520;
-    let mut own_win = own.then(|| {
-        let mut w = DoubleWindow::default().with_size(380, 480).with_label("Streamerz");
-        w.set_xclass("streamerz");
-        w.make_modal(true);
-        w
-    });
-    let host: Box<dyn WindowExt> = match &own_win {
-        Some(w) => Box::new(w.clone()),
-        None => parent,
-    };
-    let (x, y) = if own {
-        (0, 0)
-    } else {
-        // Above the box, or below it when there's no room above.
-        let above = target_input.y() - 460.min(host.h() - 16) - 8;
-        (
-            target_input.x(),
-            if above >= 8 {
-                above
-            } else {
-                target_input.y() + target_input.h() + 8
-            },
-        )
-    };
-    let mut pop = super::popover::Popover::start(host, x, y, 380, if own { 480 } else { 460 });
+    let (mut ox, mut oy) = (0, 0);
+    let mut w = target_input.window();
+    while let Some(win) = w.filter(|w| w.parent().is_some()) {
+        ox += win.x();
+        oy += win.y();
+        w = win.window();
+    }
+    let (tx, ty) = (target_input.x() + ox, target_input.y() + oy);
+    let above = ty - 460.min(host.h() - 16) - 8;
+    let (x, y) = (tx, if above >= 8 { above } else { ty + target_input.h() + 8 });
+    let mut pop = super::popover::Popover::start(host, x, y, 380, 460);
     let (pw, ph) = pop.size();
     let done = pop.done.clone();
     let mut col = Flex::new(0, 0, pw, ph, None).column();
@@ -4442,16 +4777,14 @@ fn emote_picker_popup(
         move |_| fill(false)
     });
     style_tabs(default_tab);
-    if let Some(w) = &mut own_win {
-        w.show();
-    }
     fill(false);
     let _ = search.take_focus();
+    pop.unroll();
 
     let mut pics = img::ARRIVED.load(std::sync::atomic::Ordering::Relaxed);
     let mut seen_rev = emotes::REV.load(std::sync::atomic::Ordering::Relaxed);
     let mut picked = false;
-    while !done.get() && own_win.as_ref().is_none_or(|w| w.shown()) {
+    while !done.get() {
         super::nested_wait(Some(0.25));
         let asked: Vec<super::grid::Asked> = grid.asked.borrow_mut().drain(..).collect();
         let mut refill = false;
@@ -4496,10 +4829,6 @@ fn emote_picker_popup(
         }
     }
     pop.close();
-    if let Some(mut w) = own_win {
-        w.hide();
-        app::delete_widget(w);
-    }
     if picked {
         let _ = target_input.take_focus();
     }
@@ -4521,6 +4850,24 @@ fn shown_platforms(cmds: &Cmds) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tiktok_offers_replies_without_exposing_moderation() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::roles::set("tiktok", crate::roles::Role::Viewer, "42");
+        let line = Line {
+            platform: "tiktok".into(),
+            user_id: "43".into(),
+            user: "Other".into(),
+            ..Default::default()
+        };
+        let actions = acts(&line, true);
+        assert!(actions.iter().any(|a| matches!(a.0, Act::Reply)));
+        assert!(!actions.iter().any(|a| matches!(a.0, Act::Mod(_))));
+        assert!(!acts(&line, false).iter().any(|a| matches!(a.0, Act::Reply)));
+        crate::roles::clear("tiktok");
+        assert!(!acts(&line, true).iter().any(|a| matches!(a.0, Act::Reply)));
+    }
 
     #[test]
     fn control_characters_never_reach_the_chat() {

@@ -1,14 +1,16 @@
 //! Modal dialogs: JSON editor, type picker, the action form, import and export.
 
 use super::fit::Ellipsis;
+use super::popover::RADIUS;
 use super::{button, ROW};
 use crate::i18n::{tr, trf};
 use crate::model::{Action, Obj};
 use fltk::browser::CheckBrowser;
 use fltk::button::CheckButton;
-use fltk::enums::{Align, Color, Font, Key, Shortcut};
+use fltk::enums::{Align, Color, Damage, Event, Font, FrameType, Key, Shortcut};
 use fltk::frame::Frame;
 use fltk::group::Flex;
+use fltk::image::RgbImage;
 use fltk::input::{Input, MultilineInput};
 use fltk::misc::InputChoice;
 use fltk::prelude::*;
@@ -16,24 +18,634 @@ use fltk::text::{TextBuffer, TextEditor};
 use fltk::window::{DoubleWindow, Window};
 use fltk::{app, dialog, draw};
 use serde_json::Value;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// The dialog's answer: None while open, then OK (true) or cancel (false).
 pub type Answer = Rc<Cell<Option<bool>>>;
 
-/// A dialog window: centred, modal, closing it cancels.
-pub fn window(w: i32, h: i32, title: &str) -> (DoubleWindow, Answer) {
+/// What a dialog is about, for its colour: a plain one, or news, a question, a success, a warning or
+/// an error (its border and its icon take the colour).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Tone {
+    Plain,
+    Info,
+    Question,
+    Success,
+    Warning,
+    Error,
+}
+
+impl Tone {
+    /// Its colour, and the icon a notice shows.
+    pub fn look(self) -> (Color, &'static str) {
+        use super::Health;
+        match self {
+            Tone::Plain | Tone::Info => (Color::Selection, "info"),
+            Tone::Question => (Color::Selection, "circle-help"),
+            Tone::Success => (Health::Up.color(), "circle-check"),
+            Tone::Warning => (Health::Busy.color(), "triangle-alert"),
+            Tone::Error => (Health::Down.color(), "circle-x"),
+        }
+    }
+}
+
+/// The room left around a dialog inside the app's window, and its title's height.
+const MARGIN: i32 = 24;
+const HEAD: i32 = 44;
+
+thread_local! {
+    /// The app's window: dialogs open inside it.
+    static HOST: std::cell::RefCell<Option<DoubleWindow>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Dialogs open inside `win` (the app's window) from now on.
+pub fn set_host(win: &DoubleWindow) {
+    HOST.with_borrow_mut(|h| *h = Some(win.clone()));
+}
+
+/// The app's window, when it's on screen: a dialog opens inside it.
+fn host() -> Option<DoubleWindow> {
+    HOST.with_borrow(|h| h.clone())
+        .filter(|w| !w.was_deleted() && w.shown() && w.visible())
+}
+
+/// A dialog: a panel in the middle of the app's window, over the window blurred and dimmed (clicks and
+/// keys don't reach it while the dialog is open). Not a window of its own: those can't be placed on
+/// Wayland, tiling desktops tile them, and another could be opened behind it. Use it as the window it
+/// holds; dropping it takes it away. With the app's window hidden (in the tray) it is a window of its own.
+pub struct Dialog {
+    win: DoubleWindow,
+    /// The blurred window under the panel, with the panel's title and close button.
+    scrim: Option<Window>,
+    /// What had the keyboard before it opened: it gets it back.
+    focus: Option<fltk::widget::Widget>,
+    /// The room above its contents: its title row, or (with no title) the panel's top edge.
+    head: i32,
+    /// What the scrim shows behind the panel, and the window as it was, to fade from and to.
+    fade: Rc<RefCell<Fade>>,
+}
+
+/// The window behind a dialog: blurred once it's open, and as it was (to fade from as it opens and to
+/// as it closes, kept only while animations are on).
+#[derive(Default)]
+struct Fade {
+    /// The window blurred and dimmed.
+    under: Option<RgbImage>,
+    /// The window as it was (RGB, `size` pixels).
+    sharp: Option<Vec<u8>>,
+    size: (i32, i32),
+    /// What shows while it fades (None: `under`).
+    now: Option<RgbImage>,
+}
+
+impl Fade {
+    /// Shows the window `blur` of the way (0 to 1) from as it was to blurred; `frost` is `under`'s
+    /// pixels, `buf` room for the mix.
+    fn at(&mut self, blur: f32, frost: &[u8], buf: &mut Vec<u8>, shown: (i32, i32)) {
+        let Some(sharp) = self.sharp.as_ref().filter(|s| s.len() == frost.len()) else {
+            return;
+        };
+        super::anim::blend(sharp, frost, blur, buf);
+        self.now = RgbImage::new(buf, self.size.0, self.size.1, fltk::enums::ColorDepth::Rgb8)
+            .ok()
+            .map(|mut i| {
+                i.scale(shown.0, shown.1, false, true);
+                i
+            });
+    }
+}
+
+impl std::ops::Deref for Dialog {
+    type Target = DoubleWindow;
+    fn deref(&self) -> &DoubleWindow {
+        &self.win
+    }
+}
+
+impl std::ops::DerefMut for Dialog {
+    fn deref_mut(&mut self) -> &mut DoubleWindow {
+        &mut self.win
+    }
+}
+
+impl Dialog {
+    /// Shows it and gives the keyboard to its first control.
+    pub fn open(&mut self) {
+        let Some(s) = &mut self.scrim else {
+            self.win.show();
+            return;
+        };
+        if let Some(mut host) = host() {
+            if self.win.parent().is_none() {
+                // Over the blurred window: added after it, so drawn (and stacked) above it.
+                host.add(&self.win);
+                let head = self.head;
+                place(&host, &mut self.win, head);
+                place_close(s, &self.win, head);
+            }
+        }
+        s.show();
+        self.win.show();
+        self.animate(true);
+        // Closing fades back to the window as it is then, not as it was.
+        if !super::anim::on() {
+            self.fade.borrow_mut().sharp = None;
+        }
+        let _ = first_focus(&self.win.as_group().expect("a window is a group"));
+    }
+
+    /// Fades the window behind in (blurred) as the panel rises into place, or out as it sinks away.
+    fn animate(&mut self, opening: bool) {
+        let Some(scrim) = self.scrim.clone() else { return };
+        if !super::anim::on() || self.win.parent().is_none() {
+            return;
+        }
+        let Some(frost) = self.fade.borrow().under.as_ref().map(RgbImage::to_rgb_data) else {
+            return;
+        };
+        let (fade, head, mut win, mut scrim) = (self.fade.clone(), self.head, self.win.clone(), scrim);
+        let (x, y) = (win.x(), win.y());
+        let mut buf = Vec::new();
+        super::anim::play(if opening { super::anim::IN } else { super::anim::OUT }, |p| {
+            let blur = if opening { p } else { 1.0 - p };
+            fade.borrow_mut().at(blur, &frost, &mut buf, (scrim.w(), scrim.h()));
+            let drop = if opening {
+                super::anim::mix(16, 0, p)
+            } else {
+                super::anim::mix(0, 10, p)
+            };
+            win.set_pos(x, y + drop);
+            place_close(&mut scrim, &win, head);
+            scrim.redraw();
+        });
+        fade.borrow_mut().now = None;
+        if !opening {
+            win.set_pos(x, y);
+            place_close(&mut scrim, &win, head);
+        }
+    }
+
+    /// What makes it `h` high later (its contents grew or shrank), kept in the middle of the window.
+    pub fn resizer(&self) -> impl Fn(i32) + Clone + 'static {
+        let (win, scrim, head) = (self.win.clone(), self.scrim.clone(), self.head);
+        move |h| {
+            let mut win = win.clone();
+            win.resize(win.x(), win.y(), win.w(), h);
+            if let (Some(host), true) = (host(), win.parent().is_some()) {
+                place(&host, &mut win, head);
+            }
+            if let Some(mut s) = scrim.clone() {
+                place_close(&mut s, &win, head);
+                s.redraw();
+            }
+            win.redraw();
+        }
+    }
+
+    /// Hides it (and what it covers comes back).
+    pub fn close(&mut self) {
+        if self.win.shown() {
+            self.animate(false);
+        }
+        self.win.hide();
+        if let Some(s) = &mut self.scrim {
+            s.hide();
+        }
+        if let Some(h) = host() {
+            h.clone().redraw();
+        }
+    }
+}
+
+impl Drop for Dialog {
+    fn drop(&mut self) {
+        if !self.win.was_deleted() {
+            self.win.hide();
+            app::delete_widget(self.win.clone());
+        }
+        if let Some(s) = self.scrim.take().filter(|s| !s.was_deleted()) {
+            app::delete_widget(s);
+        }
+        if let Some(mut f) = self.focus.take().filter(|f| !f.was_deleted()) {
+            let _ = f.take_focus();
+        }
+        if let Some(h) = host() {
+            h.clone().redraw();
+        }
+    }
+}
+
+/// The close button (the scrim's first child) at the panel's top right corner.
+fn place_close(scrim: &mut Window, win: &DoubleWindow, head: i32) {
+    let (px, py, pw, _) = panel(win, head);
+    if let Some(mut b) = scrim.child(0) {
+        b.resize(px + pw - 38, py + 8, 28, 28);
+    }
+}
+
+/// Gives the keyboard to the first control in `g` that takes it (as a new window does). True when one did.
+fn first_focus(g: &fltk::group::Group) -> bool {
+    focusable(g, false)
+}
+
+/// The first (or last) control in `g` that takes the keyboard gets it.
+fn focusable(g: &fltk::group::Group, last: bool) -> bool {
+    let n = g.children();
+    let order: Vec<i32> = if last { (0..n).rev().collect() } else { (0..n).collect() };
+    for i in order {
+        let Some(mut c) = g.child(i) else { continue };
+        if !c.visible() || !c.active() {
+            continue;
+        }
+        match c.as_group() {
+            Some(sub) if c.as_window().is_none() => {
+                if focusable(&sub, last) {
+                    return true;
+                }
+            }
+            Some(_) => {}
+            None => {
+                if c.take_focus().is_ok() && c.has_focus() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// The app's window as drawn now, blurred and dimmed (what a dialog sits on), and as it is (RGB, to fade
+/// from; only while animations are on).
+fn frosted(host: &DoubleWindow) -> Fade {
+    let Some(shot) = super::popover::backdrop(host, 0, 0, host.w(), host.h()) else {
+        return Fade::default();
+    };
+    let (w, h) = (shot.data_w() as usize, shot.data_h() as usize);
+    let depth = shot.depth() as usize;
+    let data = shot.to_rgb_data();
+    let (r, g, b) = Color::Background.to_rgb();
+    let dark = u32::from(r) + u32::from(g) + u32::from(b) < 384;
+    let out = frost(&data, w, h, depth, if dark { 0.34 } else { 0.22 });
+    let under = RgbImage::new(&out, w as i32, h as i32, fltk::enums::ColorDepth::Rgb8)
+        .ok()
+        .map(|mut img| {
+            img.scale(host.w(), host.h(), false, true);
+            img
+        });
+    let sharp = super::anim::on().then(|| match depth {
+        3 => data,
+        _ => data
+            .chunks(depth.max(1))
+            .flat_map(|px| {
+                [
+                    px[0],
+                    px.get(1).copied().unwrap_or(px[0]),
+                    px.get(2).copied().unwrap_or(px[0]),
+                ]
+            })
+            .collect(),
+    });
+    Fade {
+        under,
+        sharp,
+        size: (w as i32, h as i32),
+        now: None,
+    }
+}
+
+/// `data` (`w` x `h`, `depth` bytes a pixel) blurred and darkened by `dim` (0 to 1): made small, blurred
+/// there and made big again, so it costs little however big the window is. RGB out.
+pub(super) fn frost(data: &[u8], w: usize, h: usize, depth: usize, dim: f32) -> Vec<u8> {
+    const F: usize = 8;
+    let (sw, sh) = ((w / F).max(1), (h / F).max(1));
+    // Small: each pixel the average of the block it stands for.
+    let mut small = vec![0f32; sw * sh * 3];
+    for sy in 0..sh {
+        for sx in 0..sw {
+            let mut sum = [0f32; 3];
+            let mut n = 0f32;
+            for y in sy * F..((sy + 1) * F).min(h) {
+                for x in sx * F..((sx + 1) * F).min(w) {
+                    let at = (y * w + x) * depth;
+                    if at + 2 < data.len() {
+                        for (k, s) in sum.iter_mut().enumerate() {
+                            *s += f32::from(data[at + k]);
+                        }
+                        n += 1.0;
+                    }
+                }
+            }
+            for k in 0..3 {
+                small[(sy * sw + sx) * 3 + k] = sum[k] / n.max(1.0);
+            }
+        }
+    }
+    // Blurred: a box across and down, four times (close to a Gaussian, with no edges left).
+    let mut tmp = small.clone();
+    for _ in 0..4 {
+        box_pass(&small, &mut tmp, sw, sh, true);
+        box_pass(&tmp, &mut small, sw, sh, false);
+    }
+    // Big again, smoothly, and darker.
+    let keep = 1.0 - dim.clamp(0.0, 1.0);
+    let mut out = vec![0u8; w * h * 3];
+    for y in 0..h {
+        let fy = ((y as f32 + 0.5) / F as f32 - 0.5).clamp(0.0, (sh - 1) as f32);
+        let (y0, ty) = (fy.floor() as usize, fy.fract());
+        let y1 = (y0 + 1).min(sh - 1);
+        for x in 0..w {
+            let fx = ((x as f32 + 0.5) / F as f32 - 0.5).clamp(0.0, (sw - 1) as f32);
+            let (x0, tx) = (fx.floor() as usize, fx.fract());
+            let x1 = (x0 + 1).min(sw - 1);
+            for k in 0..3 {
+                let p = |xx: usize, yy: usize| small[(yy * sw + xx) * 3 + k];
+                let top = p(x0, y0) * (1.0 - tx) + p(x1, y0) * tx;
+                let bottom = p(x0, y1) * (1.0 - tx) + p(x1, y1) * tx;
+                out[(y * w + x) * 3 + k] = ((top * (1.0 - ty) + bottom * ty) * keep).round() as u8;
+            }
+        }
+    }
+    out
+}
+
+/// One box blur (radius 3) along rows (`across`) or columns.
+fn box_pass(src: &[f32], dst: &mut [f32], w: usize, h: usize, across: bool) {
+    const R: isize = 3;
+    let (len, lines) = if across { (w, h) } else { (h, w) };
+    let at = |line: usize, i: usize| if across { line * w + i } else { i * w + line };
+    for line in 0..lines {
+        for i in 0..len {
+            let mut sum = [0f32; 3];
+            for d in -R..=R {
+                let j = (i as isize + d).clamp(0, len as isize - 1) as usize;
+                for (k, s) in sum.iter_mut().enumerate() {
+                    *s += src[at(line, j) * 3 + k];
+                }
+            }
+            for k in 0..3 {
+                dst[at(line, i) * 3 + k] = sum[k] / (2 * R + 1) as f32;
+            }
+        }
+    }
+}
+
+/// A soft shadow for a panel `w` x `h` (rounded by `r`), `spread` px around it: an RGBA picture as big
+/// as the panel and its shadow.
+fn shadow(w: i32, h: i32, r: i32, spread: i32) -> Option<RgbImage> {
+    let (sw, sh) = (w + spread * 2, h + spread * 2);
+    let mut px = vec![0u8; (sw * sh * 4) as usize];
+    for y in 0..sh {
+        for x in 0..sw {
+            // How far outside the rounded panel (shifted down a little, as light comes from above).
+            let (cx, cy) = (x - spread, y - spread - 4);
+            let qx = (cx.max(r).min(w - r)) as f32;
+            let qy = (cy.max(r).min(h - r)) as f32;
+            let d = ((cx as f32 - qx).hypot(cy as f32 - qy) - r as f32).max(0.0);
+            let a = (1.0 - d / spread as f32).clamp(0.0, 1.0);
+            px[((y * sw + x) * 4 + 3) as usize] = (a * a * 110.0) as u8;
+        }
+    }
+    RgbImage::new(&px, sw, sh, fltk::enums::ColorDepth::Rgba8).ok()
+}
+
+/// A dialog `w` x `h` (its contents), titled `title` (no title row when empty). Build its widgets next
+/// (they go in it), then `run` it. Closing it (its X, Escape) cancels.
+pub fn window(w: i32, h: i32, title: &str) -> (Dialog, Answer) {
+    window_tone(w, h, title, Tone::Plain)
+}
+
+/// `window`, for something that is news, a question, a success, a warning or an error.
+pub fn window_tone(w: i32, h: i32, title: &str, tone: Tone) -> (Dialog, Answer) {
     crate::crash::step(&format!("dialog {title}"));
+    let answer: Answer = Rc::new(Cell::new(None));
+    let focus = app::focus().map(|f| f.as_base_widget());
+    // Made on its own (so what is built next goes in it, and nothing after its `end` does), and put in
+    // the app's window as it opens.
     let mut win = DoubleWindow::default().with_size(w, h).with_label(title);
     win.set_xclass("streamerz");
-    win.make_modal(true);
-    let answer: Answer = Rc::new(Cell::new(None));
     win.set_callback({
         let a = answer.clone();
         move |_| a.set(Some(false))
     });
-    (win, answer)
+    let Some(host) = host() else {
+        // No window to open in (it's in the tray): a window of its own, in the middle of the screen.
+        win.make_modal(true);
+        let (sx, sy, sw, sh) = app::screen_xywh(0);
+        win.set_pos(sx + (sw - w) / 2, sy + (sh - h) / 2);
+        return (
+            Dialog {
+                win,
+                scrim: None,
+                focus,
+                head: 0,
+                fade: Rc::default(),
+            },
+            answer,
+        );
+    };
+    win.set_frame(FrameType::FlatBox);
+    win.set_color(Color::Background);
+    // Tab goes round its controls, never out to the window behind.
+    win.handle(|w, ev| match ev {
+        Event::KeyDown if app::event_key() == Key::Tab => {
+            let back = app::event_state().contains(fltk::enums::EventState::Shift);
+            w.parent().is_some() && focusable(&w.as_group().expect("a window is a group"), back)
+        }
+        _ => false,
+    });
+    let head = head_for(title);
+    let fade = Rc::new(RefCell::new(frosted(&host)));
+    let shade: Rc<std::cell::RefCell<Option<Shade>>> = Rc::default();
+    let (tint, _) = tone.look();
+    let title = title.to_string();
+    let was = fltk::group::Group::try_current();
+    host.begin();
+    let mut scrim = Window::new(0, 0, host.w(), host.h(), None);
+    scrim.set_frame(FrameType::NoBox);
+    scrim.set_color(Color::Background);
+    // The blur and the panel first, then the close button on them.
+    scrim.super_draw_first(false);
+    let mut x = fltk::button::Button::new(0, 0, 28, 28, None);
+    x.set_frame(FrameType::NoBox);
+    x.set_down_frame(FrameType::NoBox);
+    x.clear_visible_focus();
+    x.set_tooltip(tr("dialogs.close"));
+    if title.is_empty() {
+        x.hide();
+    }
+    x.draw(|b| {
+        let hover = app::belowmouse::<fltk::widget::Widget>().is_some_and(|w| w.as_widget_ptr() == b.as_widget_ptr());
+        // It repaints alone on a hover: it clears what it drew before.
+        draw::set_draw_color(if hover {
+            super::rows::selected(Color::Background)
+        } else {
+            Color::Background
+        });
+        draw::draw_rounded_rectf(b.x(), b.y(), b.w(), b.h(), 6);
+        let ink = if hover { Color::Foreground } else { super::muted() };
+        if let Some(mut i) = super::icons::icon("x", ink, 16) {
+            i.draw(b.x() + 6, b.y() + 6, 16, 16);
+        }
+    });
+    x.handle(|b, ev| match ev {
+        Event::Enter | Event::Leave => {
+            b.redraw();
+            true
+        }
+        _ => false,
+    });
+    x.set_callback({
+        let mut win = win.clone();
+        move |_| win.do_callback()
+    });
+    scrim.end();
+    host.end();
+    fltk::group::Group::set_current(was.as_ref());
+    scrim.draw({
+        let (title, win, fade) = (title.clone(), win.clone(), fade.clone());
+        move |s| {
+            if s.damage_type() == Damage::Child {
+                return;
+            }
+            let (sw, sh) = (s.w(), s.h());
+            let f = fade.borrow();
+            match f.now.as_ref().or(f.under.as_ref()) {
+                Some(img) if img.w() == sw && img.h() == sh => img.clone().draw(0, 0, sw, sh),
+                Some(img) => {
+                    let mut i = img.clone();
+                    i.scale(sw, sh, false, true);
+                    i.draw(0, 0, sw, sh);
+                }
+                None => draw::draw_rect_fill(0, 0, sw, sh, Color::Background.darker()),
+            }
+            let (px, py, pw, ph) = panel(&win, head);
+            {
+                let mut cache = shade.borrow_mut();
+                if cache.as_ref().is_none_or(|(size, _)| *size != (pw, ph)) {
+                    *cache = shadow(pw, ph, RADIUS + 2, SHADOW).map(|i| ((pw, ph), i));
+                }
+                if let Some((_, img)) = cache.as_ref() {
+                    img.clone()
+                        .draw(px - SHADOW, py - SHADOW, pw + SHADOW * 2, ph + SHADOW * 2);
+                }
+            }
+            let back = Color::Background;
+            draw::set_draw_color(back);
+            draw::draw_rounded_rectf(px, py, pw, ph, RADIUS + 2);
+            let border = match tone {
+                Tone::Plain => Color::color_average(Color::Foreground, back, 0.2),
+                _ => Color::color_average(tint, back, 0.55),
+            };
+            draw::set_draw_color(border);
+            draw::draw_rounded_rect(px, py, pw, ph, RADIUS + 2);
+            if !title.is_empty() {
+                draw::set_font(Font::HelveticaBold, 15);
+                draw::set_draw_color(Color::Foreground);
+                draw::draw_text2(
+                    &title.replace('@', "@@"),
+                    px + 16,
+                    py + 4,
+                    pw - 64,
+                    HEAD - 4,
+                    Align::Left | Align::Inside | Align::Clip,
+                );
+            }
+        }
+    });
+    // Nothing behind it is reached while it's open: clicks, the wheel, keys and shortcuts stop here.
+    // Escape cancels, as closing a window did.
+    scrim.handle({
+        let mut win = win.clone();
+        move |_, ev| match ev {
+            Event::KeyDown | Event::Shortcut if app::event_key() == Key::Escape => {
+                win.do_callback();
+                true
+            }
+            Event::Push
+            | Event::Released
+            | Event::Drag
+            | Event::Move
+            | Event::Enter
+            | Event::MouseWheel
+            | Event::KeyDown
+            | Event::KeyUp
+            | Event::Shortcut
+            | Event::DndEnter
+            | Event::DndDrag
+            | Event::DndRelease
+            | Event::DndLeave
+            | Event::Paste => true,
+            _ => false,
+        }
+    });
+    scrim.resize_callback({
+        let (host, mut win) = (host.clone(), win.clone());
+        move |s, x, y, w, h| {
+            // Over the whole window, whatever FLTK made of it when the window was resized, and the
+            // panel in its middle.
+            if (x, y, w, h) != (0, 0, host.w(), host.h()) {
+                s.resize(0, 0, host.w(), host.h());
+                return;
+            }
+            place(&host, &mut win, head);
+            place_close(s, &win, head);
+            s.redraw();
+        }
+    });
+    (
+        Dialog {
+            win,
+            scrim: Some(scrim),
+            focus,
+            head,
+            fade,
+        },
+        answer,
+    )
+}
+
+/// A shadow drawn for a panel of this size.
+type Shade = ((i32, i32), RgbImage);
+
+/// How far a dialog's shadow spreads.
+const SHADOW: i32 = 22;
+
+/// The room above a dialog's contents: its title row, or with no title as much as below them, so the
+/// panel's top edge and round corners show (the contents are square and would cover them).
+fn head_for(title: &str) -> i32 {
+    if title.is_empty() {
+        RADIUS
+    } else {
+        HEAD
+    }
+}
+
+/// The panel a dialog's contents sit in (x, y, w, h): its title row above them, and room below them
+/// for its round corners.
+fn panel(win: &DoubleWindow, head: i32) -> (i32, i32, i32, i32) {
+    panel_around((win.x(), win.y(), win.w(), win.h()), head)
+}
+
+/// `panel` for contents at `(x, y, w, h)`. A pixel wider on each side than them: they never cover its
+/// border.
+fn panel_around((x, y, w, h): (i32, i32, i32, i32), head: i32) -> (i32, i32, i32, i32) {
+    (x - 1, y - head, w + 2, h + head + RADIUS)
+}
+
+/// Puts `win` in the middle of `host` (below its title row), made smaller to fit when it doesn't.
+fn place(host: &DoubleWindow, win: &mut DoubleWindow, head: i32) {
+    let (room_w, room_h) = (host.w() - MARGIN * 2, host.h() - MARGIN * 2 - head - RADIUS);
+    let (mut w, mut h) = (win.w(), win.h());
+    if w > room_w || h > room_h {
+        // Its contents follow (a window's children are moved and sized with it).
+        win.make_resizable(true);
+        w = w.min(room_w.max(200));
+        h = h.min(room_h.max(120));
+    }
+    let x = ((host.w() - w) / 2).max(0);
+    let y = ((host.h() - (h + head + RADIUS)) / 2).max(0) + head;
+    win.resize(x, y, w, h);
 }
 
 /// OK and Cancel at the right of a row; Enter is OK when `enter`.
@@ -55,37 +667,40 @@ pub fn ok_cancel(bar: &mut Flex, answer: &Answer, enter: bool) {
     });
 }
 
-/// Show and wait for an answer; `check` may refuse an OK (it says why itself). Hides the window.
-pub fn run(win: &mut Window, answer: &Answer, mut check: impl FnMut() -> bool) -> bool {
-    win.show();
+/// Show and wait for an answer; `check` may refuse an OK (it says why itself). Hides the dialog.
+pub fn run(win: &mut Dialog, answer: &Answer, mut check: impl FnMut() -> bool) -> bool {
+    run_layout(win, answer, &mut check, |_| {})
+}
+
+/// Reflow responsive contents on existing UI events, without an idle timer.
+fn run_layout(
+    win: &mut Dialog,
+    answer: &Answer,
+    mut check: impl FnMut() -> bool,
+    mut layout: impl FnMut(&mut Dialog),
+) -> bool {
+    layout(win);
+    win.open();
     loop {
         while win.shown() && answer.get().is_none() {
             if !super::nested_wait(None) {
                 break;
             }
+            layout(win);
         }
         match answer.get() {
             Some(true) if !check() => answer.set(None),
             a => {
-                win.hide();
+                win.close();
                 return a.unwrap_or(false);
             }
         }
     }
 }
 
-/// Puts `win` in the middle of the app's window, or of the screen.
-fn centre(win: &mut Window, w: i32, h: i32) {
-    let (cx, cy, cw, ch) = match app::first_window().filter(|f| f.visible()) {
-        Some(f) => (f.x(), f.y(), f.w(), f.h()),
-        None => app::screen_xywh(0),
-    };
-    win.set_pos(cx + (cw - w) / 2, cy + (ch - h) / 2);
-}
-
 /// `text` broken into lines no wider than `room` by `width` (words stay whole; a word wider than the room
 /// is cut). Newlines in `text` are kept.
-fn wrap(text: &str, room: i32, width: impl Fn(&str) -> i32) -> Vec<String> {
+pub(super) fn wrap(text: &str, room: i32, width: impl Fn(&str) -> i32) -> Vec<String> {
     let mut out = Vec::new();
     for para in text.split('\n') {
         let mut line = String::new();
@@ -123,40 +738,35 @@ fn wrap(text: &str, room: i32, width: impl Fn(&str) -> i32) -> Vec<String> {
     out
 }
 
-/// A small modal message: an icon in the app's colours, the text wrapped to fit, and its buttons (`no`
+/// A small message: an icon in its tone's colour, the text wrapped to fit, and its buttons (`no`
 /// is None for a plain notice). True when `yes` was pressed.
-fn notice(icon: &'static str, tint: Color, text: &str, no: Option<&str>, yes: &str) -> bool {
+fn notice(tone: Tone, text: &str, no: Option<&str>, yes: &str) -> bool {
     let buttons: Vec<&str> = no.into_iter().chain([yes]).collect();
-    notice_of(icon, tint, text, &buttons, buttons.len() - 1, no.is_some()) == Some(buttons.len() - 1)
+    notice_of(tone, text, &buttons, buttons.len() - 1, no.is_some()) == Some(buttons.len() - 1)
 }
 
 /// `notice` with any number of buttons: the one picked, or None when it is closed (or Escape, when
 /// `escapable`). Enter picks `default`.
-fn notice_of(
-    icon: &'static str,
-    tint: Color,
-    text: &str,
-    buttons: &[&str],
-    default: usize,
-    escapable: bool,
-) -> Option<usize> {
+fn notice_of(tone: Tone, text: &str, buttons: &[&str], default: usize, escapable: bool) -> Option<usize> {
     const PAD: i32 = 22;
     const PIC: i32 = 40;
     const GAP: i32 = 16;
     const LINE: i32 = 19;
+    let (tint, icon) = tone.look();
     draw::set_font(Font::Helvetica, 14);
     let button_w = |b: &str| (draw::width(b) as i32 + 56).max(90);
     let bar_w: i32 = buttons.iter().map(|b| button_w(b) + 8).sum();
-    // The window is as wide as its longest line wants (within reason), and wide enough for its buttons.
+    // As wide as its longest line wants (within reason), and wide enough for its buttons.
     let one_line = text.split('\n').map(|l| draw::width(l) as i32).max().unwrap_or(0);
     let room = one_line.clamp(220, 420).max(bar_w - PIC - GAP);
     let lines = wrap(text, room, |t| draw::width(t) as i32);
     let w = PAD * 2 + PIC + GAP + room;
     let body = (lines.len() as i32 * LINE).max(PIC);
-    let h = PAD * 2 + body + 18 + ROW;
-    let (mut win, answer) = window(w, h, "Streamerz");
-    centre(&mut win, w, h);
-    let mut col = Flex::new(PAD, PAD, w - PAD * 2, h - PAD * 2, None).column();
+    // The panel has room above and below the contents already (for its corners): PAD in all.
+    let (top, bottom) = (PAD - head_for(""), PAD - RADIUS);
+    let h = top + body + 18 + ROW + bottom;
+    let (mut win, answer) = window_tone(w, h, "", tone);
+    let mut col = Flex::new(PAD, top, w - PAD * 2, h - top - bottom, None).column();
     col.set_pad(18);
     let mut top = Flex::default().row();
     top.set_pad(GAP);
@@ -169,8 +779,8 @@ fn notice_of(
         }
     });
     top.fixed(&pic, PIC);
-    // Wrapped here, not by FLTK, so the window is sized for exactly these lines.
-    Frame::default()
+    // Wrapped here, not by FLTK, so the dialog is sized for exactly these lines.
+    let mut words = Frame::default()
         .with_label(&lines.join("\n").replace('@', "@@"))
         .with_align(Align::Left | Align::Inside | Align::Top);
     top.end();
@@ -197,41 +807,112 @@ fn notice_of(
     col.fixed(&bar, ROW);
     col.end();
     win.end();
-    let picked = run(&mut win, &answer, || true).then(|| picked.get());
-    app::delete_widget(win);
-    picked
+    let mut size = None;
+    run_layout(
+        &mut win,
+        &answer,
+        || true,
+        |win| {
+            let available = host().map(|host| (host.w(), host.h()));
+            if size == Some(available) {
+                return;
+            }
+            size = Some(available);
+            let width = available.map_or(w, |(width, _)| w.min((width - MARGIN * 2).max(200)));
+            draw::set_font(Font::Helvetica, 14);
+            let lines = wrap(text, (width - PAD * 2 - PIC - GAP).max(1), |s| draw::width(s) as i32);
+            let body = (lines.len() as i32 * LINE).max(PIC);
+            let inset = PAD - head_for("");
+            let height = inset + body + 18 + ROW + bottom;
+            words.set_label(&lines.join("\n").replace('@', "@@"));
+            let (x, y) = (win.x(), win.y());
+            win.resize(x, y, width, height);
+            col.resize(PAD, inset, width - PAD * 2, body + 18 + ROW);
+            col.layout();
+            top.layout();
+            win.resizer()(height);
+        },
+    )
+    .then(|| picked.get())
 }
 
 /// Asks what to do among `choices` (each a button): the index picked, or None when it is closed. The
 /// first is the one Escape picks.
 pub fn pick_one(text: &str, choices: &[&str]) -> Option<usize> {
-    notice_of("circle-help", Color::Selection, text, choices, 0, true)
+    notice_of(Tone::Question, text, choices, 0, true)
 }
 
-/// A problem, with an OK.
+/// Something to watch out for (it didn't stop anything), with an OK.
 pub fn alert(text: &str) {
-    notice(
-        "triangle-alert",
-        Color::from_rgb(0xe0, 0xa8, 0x30),
-        text,
-        None,
-        tr("dialogs.ok"),
-    );
+    notice(Tone::Warning, text, None, tr("dialogs.ok"));
+}
+
+/// Something that failed, with an OK.
+pub fn error(text: &str) {
+    notice(Tone::Error, text, None, tr("dialogs.ok"));
+}
+
+/// Something that worked, with an OK.
+pub fn success(text: &str) {
+    notice(Tone::Success, text, None, tr("dialogs.ok"));
 }
 
 /// News, with an OK.
 pub fn message(text: &str) {
-    notice("info", Color::Selection, text, None, tr("dialogs.ok"));
+    notice(Tone::Info, text, None, tr("dialogs.ok"));
+}
+
+/// The built-in reference, inside the same shared dialog used by the editors.
+pub fn reference(kind: &str, code: u32) {
+    let Some(text) = crate::docs::text(kind, code) else {
+        return;
+    };
+    let heading = text
+        .lines()
+        .next()
+        .map(|l| l.trim_start_matches("## ").trim())
+        .filter(|l| !l.is_empty());
+    let title = match heading {
+        Some(h) => format!("{}: {h}", tr("btn.help")),
+        None => tr("btn.help").to_string(),
+    };
+    let (mut win, answer) = window(680, 520, &title);
+    let mut col = Flex::new(10, 10, 660, 500, None).column();
+    col.set_pad(8);
+    let mut view = fltk::text::TextDisplay::default();
+    super::scroll::view(&mut view);
+    let mut buffer = TextBuffer::default();
+    buffer.set_text(&crate::docs::readable(text));
+    view.set_buffer(buffer);
+    view.set_text_font(Font::Helvetica);
+    view.wrap_mode(fltk::text::WrapMode::AtBounds, 0);
+    let mut bar = Flex::default().row();
+    Frame::default();
+    let mut close = button(&mut bar, tr("dialogs.ok"), 90);
+    close.set_shortcut(Shortcut::from_key(Key::Escape));
+    let done = answer.clone();
+    close.set_callback(move |_| done.set(Some(true)));
+    bar.end();
+    col.fixed(&bar, ROW + 4);
+    col.end();
+    win.end();
+    win.resizable(&col);
+    run(&mut win, &answer, || true);
 }
 
 /// A question: true for `yes`, false for `no` (or closing it).
 pub fn choice(text: &str, no: &str, yes: &str) -> bool {
     // No second button asked for: a notice, closed by its one button.
     if yes.is_empty() {
-        notice("info", Color::Selection, text, None, no);
+        notice(Tone::Info, text, None, no);
         return false;
     }
-    notice("circle-help", Color::Selection, text, Some(no), yes)
+    notice(Tone::Question, text, Some(no), yes)
+}
+
+/// A question about something that can't be undone (deleting, ending): its border and icon are red.
+pub fn danger(text: &str, no: &str, yes: &str) -> bool {
+    notice(Tone::Error, text, Some(no), yes)
 }
 
 pub fn row(label: &str) -> Flex {
@@ -247,16 +928,28 @@ pub fn row(label: &str) -> Flex {
 
 /// Edit a JSON value as text; the new value, if OK'd and valid (`valid` may refuse it with a reason).
 pub fn json_editor(title: &str, hint: &str, v: &Value, valid: impl Fn(&Value) -> Result<(), String>) -> Option<Value> {
+    json_editor_reference(title, hint, v, None, valid)
+}
+
+pub fn json_editor_reference(
+    title: &str,
+    hint: &str,
+    v: &Value,
+    help_ref: Option<(&'static str, u32)>,
+    valid: impl Fn(&Value) -> Result<(), String>,
+) -> Option<Value> {
     let (mut win, answer) = window(680, 520, title);
     let mut col = Flex::new(10, 10, 660, 500, None).column();
     col.set_pad(6);
     if !hint.is_empty() {
-        let h = Frame::default()
+        let mut h = Frame::default()
             .with_label(&hint.replace('@', "@@"))
             .with_align(Align::Left | Align::Inside | Align::Wrap);
+        h.set_label_color(super::muted());
         col.fixed(&h, 40);
     }
     let mut ed = TextEditor::default();
+    super::scroll::view(&mut ed);
     let buf = TextBuffer::default();
     ed.set_buffer(buf.clone());
     ed.set_text_font(Font::Courier);
@@ -264,6 +957,12 @@ pub fn json_editor(title: &str, hint: &str, v: &Value, valid: impl Fn(&Value) ->
     buf2.set_text(&serde_json::to_string_pretty(v).unwrap_or_default());
     let mut bar = Flex::default().row();
     bar.set_pad(8);
+    if let Some((kind, code)) = help_ref {
+        if crate::docs::text(kind, code).is_some() {
+            let mut help = button(&mut bar, tr("btn.help"), 90);
+            help.set_callback(move |_| reference(kind, code));
+        }
+    }
     ok_cancel(&mut bar, &answer, false);
     bar.end();
     col.fixed(&bar, ROW + 4);
@@ -278,12 +977,12 @@ pub fn json_editor(title: &str, hint: &str, v: &Value, valid: impl Fn(&Value) ->
                 true
             }
             Err(e) => {
-                dialog::alert_default(&e);
+                error(&e);
                 false
             }
         },
         Err(e) => {
-            dialog::alert_default(&trf("dialogs.not_valid_json", &[("error", &e.to_string())]));
+            error(&trf("dialogs.not_valid_json", &[("error", &e.to_string())]));
             false
         }
     });
@@ -307,6 +1006,7 @@ pub fn pick(title: &str, items: &[String]) -> Option<usize> {
                 (tr("dialogs.action.general").to_string(), name.clone())
             };
             super::picker::PickItem {
+                reference: None,
                 id: i,
                 title: item_title,
                 category: cat,
@@ -329,6 +1029,7 @@ pub fn action(a: &Action, groups: &[String], queues: &[(String, String)]) -> Opt
     col.fixed(&r, ROW);
     let r = row(tr("dialogs.action.group"));
     let mut group = InputChoice::default();
+    super::menu::input_choice(&mut group);
     for g in groups {
         group.add(&g.replace('/', "\\/").replace('&', "&&"));
     }
@@ -375,7 +1076,7 @@ pub fn action(a: &Action, groups: &[String], queues: &[(String, String)]) -> Opt
     let ok = run(&mut win, &answer, || {
         let empty = name.value().trim().is_empty();
         if empty {
-            dialog::alert_default(tr("dialogs.action.needs_name"));
+            alert(tr("dialogs.action.needs_name"));
         }
         !empty
     });
@@ -427,7 +1128,7 @@ pub fn import() -> Option<Obj> {
             }
             match std::fs::read_to_string(&f) {
                 Ok(s) => text.set_value(s.trim()),
-                Err(e) => dialog::alert_default(&trf(
+                Err(e) => error(&trf(
                     "dialogs.import.cant_read",
                     &[("file", &f.display().to_string()), ("error", &e.to_string())],
                 )),
@@ -441,7 +1142,7 @@ pub fn import() -> Option<Obj> {
             true
         }
         Err(e) => {
-            dialog::alert_default(&trf("dialogs.import.cant_import", &[("error", &e.to_string())]));
+            error(&trf("dialogs.import.cant_import", &[("error", &e.to_string())]));
             false
         }
     });
@@ -476,6 +1177,7 @@ pub fn export(
     sel_bar.end();
     col.fixed(&sel_bar, ROW);
     let mut list = CheckBrowser::default();
+    super::scroll::view(&mut list);
     for g in groups {
         list.add(&trf("dialogs.export.group", &[("name", g)]), false);
     }
@@ -540,7 +1242,7 @@ pub fn export(
                 .filter_map(|&i| ids.get(i.checked_sub(groups.len())?).cloned())
                 .collect();
             if chosen.is_empty() && chosen_groups.is_empty() {
-                return dialog::alert_default(tr("dialogs.export.tick_at_least_one"));
+                return alert(tr("dialogs.export.tick_at_least_one"));
             }
             let s = build(
                 &chosen,
@@ -558,7 +1260,7 @@ pub fn export(
         let (out, name) = (out.clone(), name.clone());
         move |_| {
             if out.value().is_empty() {
-                return dialog::alert_default(tr("dialogs.export.export_first"));
+                return alert(tr("dialogs.export.export_first"));
             }
             let mut fc = dialog::NativeFileChooser::new(dialog::NativeFileChooserType::BrowseSaveFile);
             fc.set_preset_file(&format!("{}.sb", name.value().trim()));
@@ -566,7 +1268,7 @@ pub fn export(
             let f = fc.filename();
             if !f.as_os_str().is_empty() {
                 if let Err(e) = std::fs::write(&f, out.value()) {
-                    dialog::alert_default(&trf(
+                    error(&trf(
                         "dialogs.export.cant_save",
                         &[("file", &f.display().to_string()), ("error", &e.to_string())],
                     ));
@@ -758,7 +1460,14 @@ fn name_value(title: &str, name: &str, value: &str) -> Option<(String, String)> 
     } else {
         v.take_focus()
     };
-    let ok = run(&mut win, &answer, || !n.value().trim().is_empty());
+    let ok = run(&mut win, &answer, || {
+        if n.value().trim().is_empty() {
+            alert(tr("dialogs.name_required"));
+            false
+        } else {
+            true
+        }
+    });
     ok.then(|| (n.value().trim().to_string(), v.value()))
 }
 
@@ -963,6 +1672,33 @@ mod wrap_tests {
     #[test]
     fn a_room_narrower_than_a_letter_still_ends() {
         assert_eq!(wrap("abc", 1, w).concat(), "abc");
+    }
+}
+
+#[cfg(test)]
+mod panel_tests {
+    use super::{head_for, panel_around, RADIUS};
+
+    /// Whether the point `(x, y)` is at least `gap` px inside the rounded rect `(px, py, pw, ph)`.
+    fn inside((x, y): (i32, i32), (px, py, pw, ph): (i32, i32, i32, i32), r: i32, gap: f32) -> bool {
+        let cx = x.clamp(px + r, px + pw - r);
+        let cy = y.clamp(py + r, py + ph - r);
+        let from_centre = ((x - cx) as f32).hypot((y - cy) as f32);
+        x >= px && y >= py && x <= px + pw && y <= py + ph && from_centre <= r as f32 - gap
+    }
+
+    #[test]
+    fn a_dialogs_border_shows_all_round_with_or_without_a_title() {
+        // The contents are square and painted over the panel: none of their corners may reach its
+        // border (a notice, with no title, covered its top edge and its round corners).
+        for title in ["", "OBS connection"] {
+            let (x, y, w, h) = (300, 200, 400, 120);
+            let p = panel_around((x, y, w, h), head_for(title));
+            assert!(p.1 < y, "{title:?}: the panel's top edge is above the contents");
+            for corner in [(x, y), (x + w - 1, y), (x, y + h - 1), (x + w - 1, y + h - 1)] {
+                assert!(inside(corner, p, RADIUS + 2, 0.5), "{title:?}: {corner:?} covers {p:?}");
+            }
+        }
     }
 }
 

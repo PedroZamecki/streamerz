@@ -328,7 +328,7 @@ impl Engine {
                 continue;
             };
 
-            if !commands::permitted(c, chat, &|g| self.user_in_group(g, &chat.user_id)) {
+            if !commands::permitted(c, chat, &|g| self.user_in_group(g, &chat.platform, &chat.user_id)) {
                 continue;
             }
             let id = s(c, "id").to_string();
@@ -473,6 +473,8 @@ impl Engine {
             text: text.into(),
             emotes: if platform == "kick" {
                 crate::kick::kick_emotes(text)
+            } else if platform == "tiktok" {
+                crate::tiktok::tiktok_emotes(with.unwrap_or(extra))
             } else {
                 Vec::new()
             },
@@ -519,13 +521,30 @@ impl Engine {
         looked.unwrap_or_else(|| login.to_string())
     }
 
-    fn user_in_group(&self, group: &str, user_id: &str) -> bool {
-        self.cfg.borrow().groups.iter().any(|g| {
-            s(g, "name").eq_ignore_ascii_case(group)
-                && g.get("userIds")
-                    .and_then(Value::as_array)
-                    .is_some_and(|u| u.iter().any(|x| x == user_id))
-        })
+    fn user_in_group(&self, group: &str, platform: &str, user_id: &str) -> bool {
+        let key = crate::usergroups::key(platform, user_id);
+        self.cfg
+            .borrow()
+            .groups
+            .iter()
+            .any(|g| s(g, "name").eq_ignore_ascii_case(group) && crate::usergroups::has(g, &key))
+    }
+
+    /// The user groups, each with whether `platform`'s user `user_id` is in it: (id, name, in).
+    pub fn groups_of(&self, platform: &str, user_id: &str) -> Vec<(String, String, bool)> {
+        let key = crate::usergroups::key(platform, user_id);
+        self.cfg
+            .borrow()
+            .groups
+            .iter()
+            .map(|g| {
+                (
+                    s(g, "id").to_string(),
+                    s(g, "name").to_string(),
+                    crate::usergroups::has(g, &key),
+                )
+            })
+            .collect()
     }
 
     /// (Re)start the timed actions: one task per enabled timer, none for disabled ones.
@@ -672,8 +691,8 @@ impl Engine {
     }
 
     /// Add (or remove) users to a group; each user is {userId, user, userName, userType,
-    /// isSubscribed}. Only users that weren't (or were) in it count.
-    #[allow(dead_code)] // ponytail: called by the platforms' user group sub-actions (phase 6+).
+    /// isSubscribed} (userType: their platform, Twitch when missing). They're kept as
+    /// `platform-id` (usergroups.rs). Only users that weren't (or were) in it count.
     pub fn group_users(self: &Rc<Self>, id: &str, users: &[Obj], add: bool) {
         let mut changed = Vec::new();
         let mut group = None;
@@ -681,18 +700,26 @@ impl Engine {
             let Some(g) = c.groups.iter_mut().find(|g| s(g, "id") == id) else {
                 return;
             };
-            let ids = g.entry("userIds").or_insert_with(|| Value::Array(vec![]));
-            if let Some(ids) = ids.as_array_mut() {
-                for u in users {
-                    let uid = u.get("userId").map(text).unwrap_or_default();
-                    let has = ids.iter().any(|x| text(x) == uid);
-                    if add && !has {
-                        ids.push(uid.into());
-                        changed.push(u.clone());
-                    } else if !add && has {
-                        ids.retain(|x| text(x) != uid);
-                        changed.push(u.clone());
-                    }
+            for u in users {
+                let uid = u.get("userId").map(text).unwrap_or_default();
+                let platform = u
+                    .get("userType")
+                    .or_else(|| u.get("platform"))
+                    .map(text)
+                    .unwrap_or_default();
+                let key = crate::usergroups::key(&platform, &uid);
+                let shown = u
+                    .get("userName")
+                    .or_else(|| u.get("user"))
+                    .map(text)
+                    .unwrap_or_default();
+                let did = if add {
+                    crate::usergroups::add(g, &key, &shown)
+                } else {
+                    crate::usergroups::remove(g, &key)
+                };
+                if did {
+                    changed.push(u.clone());
                 }
             }
             group = Some(g.clone());
@@ -967,7 +994,7 @@ impl Engine {
             }
             // Run Commercial (19)
             19 => {
-                let duration = n(o, "duration") as u64;
+                let duration = self.duration_number(ctx, o, "duration") as u64;
                 let len = if duration == 0 { 30 } else { duration };
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
@@ -1283,7 +1310,7 @@ impl Engine {
                     .map(|c| json!({"title": self.expand(ctx, c)}))
                     .collect();
                 let mut body = json!({"broadcaster_id": "{broadcaster_id}", "title": title, "choices": choices,
-                    "duration": (n(o, "duration") as u64).clamp(15, 1800)});
+                    "duration": (self.duration_number(ctx, o, "duration") as u64).clamp(15, 1800)});
                 let points = n(o, "channelPointsPerVote") as u64;
                 if points > 0 {
                     body["channel_points_voting_enabled"] = true.into();
@@ -1438,7 +1465,7 @@ impl Engine {
                     .iter()
                     .map(|c| json!({"title": self.expand(ctx, c)}))
                     .collect();
-                let window = (n(o, "predictionWindow") as u64).clamp(30, 1800);
+                let window = (self.duration_number(ctx, o, "predictionWindow") as u64).clamp(30, 1800);
                 let body = json!({"broadcaster_id": "{broadcaster_id}", "title": title, "outcomes": outcomes,
                     "prediction_window": window});
                 let Some(tw) = self.twitch() else { return };
@@ -1591,7 +1618,7 @@ impl Engine {
             // Slow Mode (14)
             14 => {
                 let status = b(o, "status", true);
-                let dur = n(o, "duration") as u64;
+                let dur = self.duration_number(ctx, o, "duration") as u64;
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
                         .helix(
@@ -1614,7 +1641,7 @@ impl Engine {
             // Follower Mode (28)
             28 => {
                 let status = b(o, "status", true);
-                let dur = n(o, "duration") as u64;
+                let dur = self.duration_number(ctx, o, "duration") as u64;
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
                         .helix(
@@ -1638,7 +1665,7 @@ impl Engine {
             20 => {
                 ctx.args.insert("timeoutResult".into(), false.into());
                 let login = self.expand(ctx, s(o, "userLogin"));
-                let dur = (n(o, "duration") as u64).max(1);
+                let dur = (self.duration_number(ctx, o, "duration") as u64).max(1);
                 let reason = self.expand(ctx, s(o, "reason"));
                 if let Some(tw) = self.twitch() {
                     if let Ok(uid) = tw.resolve_user_id(&login).await {
@@ -2001,7 +2028,7 @@ impl Engine {
             // Set Global Cooldown (204)
             204 => {
                 let rew_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
-                let cd = n(o, "cooldown") as u64;
+                let cd = self.duration_number(ctx, o, "cooldown") as u64;
                 if let Some(tw) = self.twitch() {
                     if let Err(e) = tw
                         .helix(
@@ -2382,11 +2409,13 @@ impl Engine {
                     .map(|g| s(g, "id").to_string());
                 match op {
                     Some(2) => {
+                        let member = crate::usergroups::key(platform, &id);
                         let found = gid.as_ref().is_some_and(|gid| {
-                            self.cfg.borrow().groups.iter().any(|g| {
-                                s(g, "id") == gid
-                                    && g["userIds"].as_array().is_some_and(|u| u.iter().any(|x| text(x) == id))
-                            })
+                            self.cfg
+                                .borrow()
+                                .groups
+                                .iter()
+                                .any(|g| s(g, "id") == gid && crate::usergroups::has(g, &member))
                         });
                         ctx.args.insert("inGroup".into(), found.into());
                         if found {
@@ -2405,7 +2434,7 @@ impl Engine {
                             u.insert("userId".into(), id.into());
                             u.insert("user".into(), login.as_str().into());
                             u.insert("userName".into(), login.as_str().into());
-                            u.insert("platform".into(), platform.into());
+                            u.insert("userType".into(), platform.into());
                             self.group_users(&gid, &[u], add);
                         }
                     }
@@ -2460,7 +2489,7 @@ impl Engine {
                     .ok()
                     .and_then(|v| v.pointer("/data/0").cloned())
                     .unwrap_or_default();
-                let duration = n(o, "duration").max(0.0) as u64;
+                let duration = self.duration_number(ctx, o, "duration").max(0.0) as u64;
                 let secs = duration.to_string();
                 let with = |id: &str, dur: bool| {
                     let mut q: Vec<(&str, String)> = who.iter().map(|(k, v)| (*k, v.to_string())).collect();
@@ -2587,7 +2616,7 @@ impl Engine {
                         continue;
                     }
                     if b(o, "hasPermission", false)
-                        && !commands::permitted(c, &chat, &|x| self.user_in_group(x, &chat.user_id))
+                        && !commands::permitted(c, &chat, &|x| self.user_in_group(x, &chat.platform, &chat.user_id))
                     {
                         continue;
                     }
@@ -3527,7 +3556,7 @@ impl Engine {
                 ctx.args.insert("timeoutResult".into(), false.into());
                 let broadcast = self.expand(ctx, s(o, "broadcast"));
                 let user_id = self.expand(ctx, s(o, "userId"));
-                let duration = n(o, "duration") as u64;
+                let duration = self.duration_number(ctx, o, "duration") as u64;
                 let yt = self.youtube_start();
                 ctx.args.insert("bannedUser".into(), user_id.clone().into());
                 ctx.args.insert("bannedUserName".into(), user_id.clone().into());
@@ -3779,7 +3808,7 @@ impl Engine {
             35042 => {
                 ctx.args.insert("timeoutResult".into(), false.into());
                 let user = self.expand(ctx, s(o, "userLogin"));
-                let duration = n(o, "duration") as u64;
+                let duration = self.duration_number(ctx, o, "duration") as u64;
                 let reason = self.expand(ctx, s(o, "reason"));
                 let kick = self.kick_start();
                 ctx.args.insert("timedOutUser".into(), user.clone().into());
@@ -3898,8 +3927,16 @@ impl Engine {
             }
             // TikTok Sub-actions
             // 43001: Send Message to Live Chat
+            // Sent as the browser's account (useBot and fallback don't apply).
             43001 => {
-                crate::error("TikTok chat is read-only in Streamerz".into());
+                let text = self.expand(ctx, s(o, "text"));
+                if let Err(err) = crate::tiktok_bridge::validate_message(&text) {
+                    crate::error(format!("TikTok: {err}"));
+                } else if !self.dev_out("tiktok", &text, false) {
+                    if let Err(err) = crate::tiktok_bridge::send_message(self, &text).await {
+                        crate::error(format!("TikTok: {err}"));
+                    }
+                }
             }
 
             // 43002: Get Top Gifters, 43003: Get Stream Info (this live's, as read)
@@ -4045,7 +4082,7 @@ impl Engine {
             20003 => {
                 let inst = self.expand(ctx, s(o, "instanceId"));
                 let sig = self.expand(ctx, s(o, "signalName"));
-                let timeout = n(o, "timeout") as u64;
+                let timeout = self.duration_number(ctx, o, "timeout") as u64;
                 let overwrite = b(o, "overwrite", false);
                 let got = self.wait_remote_signal(&inst, &sig, timeout).await;
                 match got {
@@ -4121,7 +4158,16 @@ impl Engine {
             // MIDI Out: Note On (9001), Control Change (9002), Generic Event (9003).
             9001..=9003 => {
                 let device = self.expand(ctx, s(o, "device"));
-                self.midi_out(kind, o, &device);
+                if o.get("duration").is_some_and(Value::is_string) {
+                    let mut request = o.clone();
+                    request.insert(
+                        "duration".into(),
+                        (self.duration_number(ctx, o, "duration").max(0.0) as u64).into(),
+                    );
+                    self.midi_out(kind, &request, &device);
+                } else {
+                    self.midi_out(kind, o, &device);
+                }
             }
 
             // Elgato Stream Deck (11001-11008): pushed to the connected plugins (`streamdeck.rs`).
@@ -4143,10 +4189,15 @@ impl Engine {
                 let file = self.expand(ctx, s(o, "file"));
                 let text = self.expand(ctx, s(o, "text"));
                 let append = b(o, "append", false);
-                let _ = tokio::task::spawn_blocking(move || {
+                let result = tokio::task::spawn_blocking(move || {
                     crate::fileio::write_to_file(std::path::Path::new(&file), &text, append)
                 })
                 .await;
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => crate::error(format!("Write To File: {error}")),
+                    Err(error) => crate::error(format!("Write To File: {error}")),
+                }
             }
 
             // Read Random Line From File (5)
@@ -4321,7 +4372,7 @@ impl Engine {
         let prog = self.expand(ctx, s(o, "command"));
         let args = self.expand(ctx, s(o, "arguments"));
         let dir = self.expand(ctx, s(o, "workingDir"));
-        let wait = n(o, "waitForExit");
+        let wait = self.duration_number(ctx, o, "waitForExit");
         let mut cmd = tokio::process::Command::new(&prog);
         #[cfg(windows)]
         {
@@ -4532,7 +4583,7 @@ mod tests {
         );
         let e = engine(json!({"actions": [a]}));
         e.cfg.send_modify(|c| {
-            c.groups = vec![json!({"id": "g1", "name": "Regulars", "userIds": ["123"]})
+            c.groups = vec![json!({"id": "g1", "name": "Regulars", "userIds": ["twitch-123"]})
                 .as_object()
                 .unwrap()
                 .clone()];
@@ -4540,7 +4591,11 @@ mod tests {
         let out = run(async move {
             e.queue("a1", Obj::new());
             tokio::time::sleep(Duration::from_millis(200)).await;
-            assert_eq!(e.cfg.borrow().groups[0]["userIds"], json!(["UCabc"]));
+            // Kick's 123 is someone else than Twitch's 123: removing it on Kick leaves Twitch's.
+            assert_eq!(
+                e.cfg.borrow().groups[0]["userIds"],
+                json!(["twitch-123", "youtube-UCabc"])
+            );
         });
         for w in [
             "T add True",
@@ -4737,7 +4792,9 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
             let out = e.dev_take().unwrap();
             assert_eq!(out[0], json!({"platform": "kick", "text": "hi bo", "bot": false}));
-            assert_eq!(out.len(), 1);
+            // TikTok's Send Message sends now (through the browser), so dev mode keeps it too.
+            assert_eq!(out[1], json!({"platform": "tiktok", "text": "tt bo", "bot": false}));
+            assert_eq!(out.len(), 2);
             assert!(e.dev_take().unwrap().is_empty());
         });
     }

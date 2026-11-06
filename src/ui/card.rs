@@ -39,6 +39,7 @@ pub struct Who {
     pub platform: String,
     pub user_id: String,
     pub name: String,
+    pub login: String,
     pub color: Color,
     /// Already in the user's words (broadcaster, moderator...): shown when there are no badges.
     pub roles: Vec<&'static str>,
@@ -56,6 +57,7 @@ impl Who {
             platform: l.platform.clone(),
             user_id: l.user_id.clone(),
             name: l.user.clone(),
+            login: l.handle.as_deref().unwrap_or(&l.user).to_string(),
             color,
             roles: roles.iter().filter(|r| r.0).map(|r| r.1).collect(),
         }
@@ -82,6 +84,11 @@ impl Who {
             platform: s("type"),
             user_id: s("id"),
             name: s("display"),
+            login: u
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_else(|| u.get("display").and_then(serde_json::Value::as_str).unwrap_or_default())
+                .to_string(),
             color,
             roles,
         }
@@ -355,6 +362,86 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
     }
     body.fixed(&badges_f, BADGE + 4);
 
+    // Their groups (kept by their id, so a new name keeps them in), and the button that changes them.
+    let mut groups_row = Flex::default().row();
+    groups_row.set_pad(8);
+    let in_groups = Frame::default()
+        .with_align(Align::Left | Align::Inside | Align::Clip)
+        .ellipsis();
+    let mut groups_btn = Button::default().with_label(tr("card.groups"));
+    groups_btn.set_image(super::icons::before_label("users", super::button_ink(), 14));
+    groups_btn.set_align(Align::ImageNextToText);
+    groups_btn.set_tooltip(tr("card.groups_tip"));
+    groups_row.fixed(&groups_btn, 100);
+    groups_row.end();
+    body.fixed(&groups_row, 28);
+    let show_groups = {
+        let (cmds, p, id, in_groups) = (
+            cmds.clone(),
+            who.platform.clone(),
+            who.user_id.clone(),
+            in_groups.clone(),
+        );
+        move || {
+            let (p, id, mut in_groups) = (p.clone(), id.clone(), in_groups.clone());
+            let all = query(&cmds, move |e| e.groups_of(&p, &id)).unwrap_or_default();
+            let names: Vec<&str> = all.iter().filter(|g| g.2).map(|g| g.1.as_str()).collect();
+            if names.is_empty() {
+                in_groups.set_label(tr("card.no_groups"));
+                in_groups.set_label_color(super::muted());
+            } else {
+                in_groups.set_label(&trf("card.in_groups", &[("groups", &names.join(", "))]).replace('@', "@@"));
+                in_groups.set_label_color(Color::Foreground);
+            }
+            in_groups.redraw();
+        }
+    };
+    show_groups();
+    groups_btn.set_callback({
+        let (cmds, show_groups) = (cmds.clone(), Rc::new(show_groups));
+        let user = {
+            let mut u = Obj::new();
+            u.insert("userId".into(), who.user_id.as_str().into());
+            u.insert("userName".into(), who.name.as_str().into());
+            u.insert("user".into(), who.login.as_str().into());
+            u.insert("userType".into(), who.platform.as_str().into());
+            u
+        };
+        let (p, id) = (who.platform.clone(), who.user_id.clone());
+        move |b| {
+            let all = query(&cmds, {
+                let (p, id) = (p.clone(), id.clone());
+                move |e| e.groups_of(&p, &id)
+            })
+            .unwrap_or_default();
+            let mut m = super::menu::Menu::new();
+            for (gid, name, inside) in all {
+                let (cmds, user, show) = (cmds.clone(), user.clone(), show_groups.clone());
+                m.tick(&name, inside, move || {
+                    tell(&cmds, move |e| e.group_users(&gid, &[user], !inside));
+                    show();
+                });
+            }
+            m.line();
+            let (cmds, user, show) = (cmds.clone(), user.clone(), show_groups.clone());
+            m.item(tr("lists.groups.new_group"), Some("plus"), move || {
+                let Some(name) = super::ask(tr("lists.groups.new_group"), tr("lists.ask_name"), "")
+                    .map(|n| n.trim().to_string())
+                    .filter(|n| !n.is_empty())
+                else {
+                    return;
+                };
+                tell(&cmds, move |e| {
+                    let gid = e.add_group(&name, false);
+                    e.group_users(&gid, &[user], true);
+                });
+                show();
+            });
+            m.under(b);
+            m.show();
+        }
+    });
+
     // What's known about them: label, value.
     let mut facts = Rows::new("");
     facts.set_column_widths(&[160]);
@@ -403,9 +490,13 @@ pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
 
     let login = seen
         .args
-        .get("userName")
+        .get(if who.platform == "tiktok" {
+            "uniqueId"
+        } else {
+            "userName"
+        })
         .map(text_of)
-        .unwrap_or_else(|| who.name.clone());
+        .unwrap_or_else(|| who.login.clone());
     let url = Rc::new(RefCell::new(profile_url(&who.platform, &login, &who.user_id)));
     open_profile.set_callback({
         let url = url.clone();

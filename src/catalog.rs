@@ -60,6 +60,24 @@ pub fn name_of(key: &str, id: &str) -> Option<String> {
     get(key).into_iter().find(|x| x.0 == id).map(|x| x.1)
 }
 
+/// Distinguish duplicate display names while keeping the selected identity stable.
+pub fn choices(key: &str) -> Items {
+    let list = get(key);
+    list.iter()
+        .map(|(id, name)| {
+            let duplicate = list.iter().filter(|(_, n)| n == name).take(2).count() > 1;
+            let label = if name.is_empty() {
+                id.clone()
+            } else if duplicate {
+                format!("{name} ({id})")
+            } else {
+                name.clone()
+            };
+            (id.clone(), label)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

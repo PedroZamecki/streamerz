@@ -10,7 +10,7 @@
       {"name": "on 41006", "triggers": [{"type": 41006}], "subActions": [{"type": 1009}]},
       {"name": "on 41007", "triggers": [{"type": 41007}], "subActions": [{"type": 1009}]},
       {"name": "on 41010", "triggers": [{"type": 41010}], "subActions": [{"type": 1009}]},
-      {"name": "info", "subActions": [{"type": 43002, "count": 5}, {"type": 43003}, {"type": 43001, "text": "can't send"}]}
+      {"name": "info", "subActions": [{"type": 43002, "count": 5}, {"type": 43003}, {"type": 43001, "text": "sent through the browser"}]}
     ],
     "steps": [
       {"event": {"platform": "tiktok", "type": "chat", "channel": "streamer", "data": {"uniqueId": "ana_tt", "nickname": "Ana", "userId": "u1", "comment": "hello", "msgId": "t1"}}, "ran": 1},
@@ -36,7 +36,7 @@
         {"action": "on 41010", "args": {"viewerCount": 321}},
         {"action": "info", "after": {"topGifter0": "Rich", "topGifter0Coins": 15, "isLive": false, "viewerCount": 321, "totalLikes": 120}}
       ],
-      "log": ["TikTok chat is read-only in Streamerz"]
+      "chat": [{"platform": "tiktok", "text": "sent through the browser"}]
     }
   }
 ]

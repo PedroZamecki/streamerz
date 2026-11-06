@@ -1,8 +1,10 @@
 # Streamerz reference
 
 A page for every trigger and sub-action Streamerz knows, written from what Streamerz itself does. It is built
-into the app: the MCP server's `docs`, `docs_search` and `describe` tools answer from it, and a test fails
-when a trigger or sub-action has no page.
+into the app: the editors' Help, picker details and MCP's `docs`, `docs_search` and `describe` use it.
+A test fails when a trigger or sub-action has no page, is indexed incorrectly, is documented twice,
+or lacks a nonempty Fields or Arguments section (and When for a trigger).
+See [Build an automation](../AUTOMATION.md) for gift filters, values, durations and editable recipes.
 
 - `subactions/`: what an action does, one file per category (`twitch-chat.md`, `obs-studio-scenes.md`...).
 - `triggers/`: what starts an action, one file per category.
@@ -27,7 +29,7 @@ Sends a message to the Twitch chat. Variables like `%user%` in the text are fill
 
 | Field | Key | What it holds |
 | --- | --- | --- |
-| Message | `message` | The text to send. |
+| Message | `text` | The text to send. |
 | Send as bot | `useBot` | On: the bot account sends it. |
 
 ### Arguments

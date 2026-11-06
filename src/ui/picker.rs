@@ -5,7 +5,6 @@ use super::fit::Ellipsis;
 use super::picker_icons;
 use super::{button, icons, ROW};
 use crate::types::{SUB_ACTION_INFO, TRIGGERS};
-use fltk::app;
 use fltk::enums::FrameType;
 use fltk::enums::{Align, Color, Event, Font, Key, Shortcut};
 use fltk::frame::Frame;
@@ -15,7 +14,7 @@ use fltk::input::Input;
 use fltk::prelude::*;
 use fltk::text::{TextBuffer, TextDisplay, WrapMode};
 use fltk::tree::{Tree, TreeConnectorStyle, TreeItem, TreeReason, TreeSelect};
-use fltk::window::DoubleWindow;
+use fltk::{app, draw};
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -26,20 +25,10 @@ pub struct PickItem {
     pub title: String,
     pub category: String,
     pub description: String,
+    pub reference: Option<(&'static str, u32)>,
 }
 
-/// A dialog window: centred, modal, closing it cancels.
-fn window(w: i32, h: i32, title: &str) -> (DoubleWindow, Rc<Cell<Option<bool>>>) {
-    let mut win = DoubleWindow::default().with_size(w, h).with_label(title);
-    win.set_xclass("streamerz");
-    win.make_modal(true);
-    let answer = Rc::new(Cell::new(None));
-    win.set_callback({
-        let a = answer.clone();
-        move |_| a.set(Some(false))
-    });
-    (win, answer)
-}
+use super::dialogs::window;
 
 /// Split PascalCase into words.
 pub fn split_pascal(s: &str) -> String {
@@ -57,6 +46,11 @@ pub fn split_pascal(s: &str) -> String {
 
 /// Clean human-readable title for a trigger.
 pub fn trigger_clean_title(name: &str) -> String {
+    match name {
+        "StreamerbotStarted" => return "Streamerz Started".to_string(),
+        "StreamerbotExiting" => return "Streamerz Exiting".to_string(),
+        _ => {}
+    }
     let stripped = name
         .strip_prefix("ElgatoCameraHubWebcam")
         .or_else(|| name.strip_prefix("ElgatoCameraHubPrompter"))
@@ -425,6 +419,9 @@ pub fn trigger_categorize(name: &str) -> String {
 
 /// Helpful description of what a trigger does and when it fires.
 pub fn trigger_description(code: u32, _raw_name: &str, title: &str, category: &str) -> String {
+    if let Some(text) = crate::docs::summary("trigger", code) {
+        return text.into();
+    }
     match code {
         1 => "Fires when triggered programmatically via ExecuteCodeTrigger or external API calls.".into(),
         101 => "Fires when a new viewer follows the channel on Twitch.".into(),
@@ -469,8 +466,8 @@ pub fn trigger_description(code: u32, _raw_name: &str, title: &str, category: &s
         703 => "Fires when an external application or process starts running.".into(),
         704 => "Fires when an external application or process terminates.".into(),
         705 => "Fires on multi-platform chat window actions.".into(),
-        706 => "Fires when Streamer.bot starts up and completes initialization.".into(),
-        707 => "Fires when Streamer.bot is shutting down.".into(),
+        706 => "Fires when Streamerz starts up and completes initialization.".into(),
+        707 => "Fires when Streamerz is shutting down.".into(),
         5001 => "Fires on each new heart rate reading from Pulsoid. Set heartRate for the BPM.".into(),
         6001 => "Fires on each new heart rate reading from HypeRate (about once a second while it broadcasts). \
 Set heartRate for the BPM."
@@ -539,6 +536,9 @@ not one you made). clipUrl holds the clip's address."
 
 /// Description of what a sub-action does.
 pub fn sub_action_description(code: u32, name: &str, category: &str) -> String {
+    if let Some(text) = crate::docs::summary("subaction", code) {
+        return text.into();
+    }
     let said = match code {
         1 => "Plays a sound file.",
         3 => "Writes or appends text to a file.",
@@ -547,7 +547,7 @@ pub fn sub_action_description(code: u32, name: &str, category: &str) -> String {
         7 => "Plays a random sound from a folder.",
         8 => "Turns a timer on, off, or toggles it.",
         10 | 35001 => "Sends a message to the chat, as the bot or the broadcaster.",
-        43001 => crate::i18n::tr("chat.tiktok_read_only"),
+        43001 => "Sends a message to the TikTok LIVE chat, as the account logged in to the browser with the Streamerz for TikTok extension.",
         15 => "Changes the stream title.",
         18 => "Makes a clip of the stream.",
         20 => "Times a user out for some seconds.",
@@ -584,36 +584,42 @@ pub fn sub_action_description(code: u32, name: &str, category: &str) -> String {
     out
 }
 
+pub(super) fn trigger_item_title(code: u32, raw_name: &str) -> String {
+    match code {
+        99804 => crate::i18n::tr("spotify.trigger_connected").to_string(),
+        99805 => crate::i18n::tr("spotify.trigger_disconnected").to_string(),
+        99806 => crate::i18n::tr("spotify.trigger_error").to_string(),
+        99807 => crate::i18n::tr("spotify.trigger_local_connected").to_string(),
+        99808 => crate::i18n::tr("spotify.trigger_local_disconnected").to_string(),
+        99809 => crate::i18n::tr("spotify.trigger_track_changed").to_string(),
+        99825 => crate::i18n::tr("spotify.trigger_playback_started").to_string(),
+        99826 => crate::i18n::tr("spotify.trigger_playback_paused").to_string(),
+        99836 => crate::i18n::tr("spotify.trigger_volume_changed").to_string(),
+        99837 => crate::i18n::tr("spotify.trigger_shuffle_changed").to_string(),
+        99838 => crate::i18n::tr("spotify.trigger_repeat_changed").to_string(),
+        99839 => crate::i18n::tr("spotify.trigger_device_changed").to_string(),
+        99840 => crate::i18n::tr("spotify.trigger_login_expired").to_string(),
+        99841 => crate::i18n::tr("spotify.trigger_song_liked").to_string(),
+        99842 => crate::i18n::tr("spotify.trigger_playlist_changed").to_string(),
+        _ => trigger_clean_title(raw_name),
+    }
+}
+
 /// Generate structured PickItem list for all triggers.
 pub fn trigger_pick_items() -> Vec<PickItem> {
     TRIGGERS
         .iter()
+        .filter(|(code, _)| crate::docs::available("trigger", *code))
         .map(|&(code, raw_name)| {
             let cat = trigger_categorize(raw_name);
-            let title = match code {
-                99804 => crate::i18n::tr("spotify.trigger_connected").to_string(),
-                99805 => crate::i18n::tr("spotify.trigger_disconnected").to_string(),
-                99806 => crate::i18n::tr("spotify.trigger_error").to_string(),
-                99807 => crate::i18n::tr("spotify.trigger_local_connected").to_string(),
-                99808 => crate::i18n::tr("spotify.trigger_local_disconnected").to_string(),
-                99809 => crate::i18n::tr("spotify.trigger_track_changed").to_string(),
-                99825 => crate::i18n::tr("spotify.trigger_playback_started").to_string(),
-                99826 => crate::i18n::tr("spotify.trigger_playback_paused").to_string(),
-                99836 => crate::i18n::tr("spotify.trigger_volume_changed").to_string(),
-                99837 => crate::i18n::tr("spotify.trigger_shuffle_changed").to_string(),
-                99838 => crate::i18n::tr("spotify.trigger_repeat_changed").to_string(),
-                99839 => crate::i18n::tr("spotify.trigger_device_changed").to_string(),
-                99840 => crate::i18n::tr("spotify.trigger_login_expired").to_string(),
-                99841 => crate::i18n::tr("spotify.trigger_song_liked").to_string(),
-                99842 => crate::i18n::tr("spotify.trigger_playlist_changed").to_string(),
-                _ => trigger_clean_title(raw_name),
-            };
+            let title = trigger_item_title(code, raw_name);
             let desc = trigger_description(code, raw_name, &title, &cat);
             PickItem {
                 id: code as usize,
                 title,
                 category: cat,
                 description: desc,
+                reference: Some(("trigger", code)),
             }
         })
         .collect()
@@ -644,7 +650,8 @@ pub(super) fn spotify_player_title(code: u32) -> Option<&'static str> {
 pub fn sub_action_pick_items() -> Vec<PickItem> {
     SUB_ACTION_INFO
         .iter()
-        .filter(|x| x.0 != 43001 && (!(99901..=99904).contains(&x.0) || x.0 == 99903))
+        .filter(|x| crate::docs::available("subaction", x.0))
+        .filter(|x| !(99901..=99904).contains(&x.0) || x.0 == 99903)
         .map(|&(code, name, category, _)| {
             let cat = if category.is_empty() {
                 "Core/General".to_string()
@@ -679,6 +686,7 @@ pub fn sub_action_pick_items() -> Vec<PickItem> {
                 },
                 category: cat,
                 description: desc,
+                reference: Some(("subaction", code)),
             }
         })
         .collect()
@@ -697,7 +705,41 @@ pub fn style_tree(tree: &mut Tree) {
     tree.set_user_icon_margin_left(2);
     tree.set_label_margin_left(4);
     tree.set_select_frame(FrameType::RFlatBox);
-    tree.set_selection_color(Color::color_average(Color::Background, Color::Foreground, 0.88));
+    tree.set_selection_color(super::rows::selected(tree.color()));
+}
+
+/// Over FLTK's dotted focus box on a tree's focused item: the rounded ring the lists draw. Call it
+/// last in the tree's draw.
+pub fn focus_ring(t: &Tree) {
+    if !t.has_focus() {
+        return;
+    }
+    let Some(item) = t.get_item_focus() else { return };
+    // Its place is only fresh when it was drawn: every group above it is open.
+    let mut up = item.parent();
+    while let Some(p) = up {
+        if !p.is_open() {
+            return;
+        }
+        up = p.parent();
+    }
+    // Where FLTK put the dots: the label box inset by one, one pixel short on the right and bottom.
+    let (x, y, w, h) = (
+        item.label_x() + 1,
+        item.label_y() + 1,
+        item.label_w() - 1,
+        item.label_h() - 1,
+    );
+    if w <= 4 || h <= 4 {
+        return;
+    }
+    draw::push_clip(t.x() + 1, t.y() + 1, t.w() - 2, t.h() - 2);
+    draw::set_draw_color(t.color());
+    draw::draw_rect(x, y, w, h);
+    draw::draw_rect(x, y, w - 1, h - 1);
+    draw::set_draw_color(Color::color_average(Color::Foreground, t.color(), 0.5));
+    draw::draw_rounded_rect(x, y, w, h, 5);
+    draw::pop_clip();
 }
 
 /// The size of every icon in the tree.
@@ -827,7 +869,16 @@ impl Detail {
 
     fn item(&mut self, it: &PickItem) {
         let icon = node_icon("", item_icon(it), true);
-        self.show(&it.title, &it.category.replace('/', " > "), &it.description, icon);
+        let text = it
+            .reference
+            .and_then(|(kind, code)| crate::docs::text(kind, code))
+            .map(crate::docs::readable);
+        self.show(
+            &it.title,
+            &it.category.replace('/', " > "),
+            text.as_deref().unwrap_or(&it.description),
+            icon,
+        );
     }
 
     fn group(&mut self, name: &str) {
@@ -876,6 +927,10 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
     tree.set_show_root(false);
     tree.set_select_mode(TreeSelect::Single);
     style_tree(&mut tree);
+    tree.draw(|t| {
+        focus_ring(t);
+        super::scroll::paint_bars(t);
+    });
 
     let mut detail_col = Flex::default().column();
     detail_col.set_pad(4);
@@ -893,6 +948,7 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
 
     let desc_buf = TextBuffer::default();
     let mut desc_disp = TextDisplay::default();
+    super::scroll::view(&mut desc_disp);
     desc_disp.set_buffer(desc_buf.clone());
     desc_disp.wrap_mode(WrapMode::AtBounds, 0);
     desc_disp.set_text_font(Font::Helvetica);
@@ -925,7 +981,7 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
         path: d_path,
         text: desc_buf,
     };
-    detail.show(tr("picker.title"), tr("picker.browse"), tr("picker.intro"), None);
+    detail.show(tr("picker.title"), "", tr("picker.intro"), None);
 
     let selected_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
     let node_map: Rc<RefCell<Vec<(TreeItem, usize)>>> = Rc::default();
@@ -939,20 +995,20 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
         let selected_id = selected_id.clone();
         let mut count_label = count_label.clone();
         let mut detail = detail.clone();
+        let mut ok_btn = ok_btn.clone();
         move |q: &str, force_expand: Option<bool>| {
             let q = q.trim().to_lowercase();
             let Some(root) = tree.root() else { return };
             tree.clear_children(&root);
             node_map.borrow_mut().clear();
+            // The tree is new: nothing in it is picked until a search selects its first match.
+            selected_id.set(None);
+            ok_btn.deactivate();
 
             let mut matched = 0;
             let mut root_node = CategoryNode::default();
             for it in &items {
-                let m = q.is_empty()
-                    || it.title.to_lowercase().contains(&q)
-                    || it.category.to_lowercase().contains(&q)
-                    || it.description.to_lowercase().contains(&q);
-                if !m {
+                if !matches_query(it, &q) {
                     continue;
                 }
                 matched += 1;
@@ -979,6 +1035,7 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
                 if !q.is_empty() {
                     let _ = tree.select_only(&first_item, false);
                     selected_id.set(Some(id));
+                    ok_btn.activate();
                     if let Some(it) = items.iter().find(|x| x.id == id) {
                         detail.item(it);
                     }
@@ -990,7 +1047,6 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
                     crate::i18n::tr("picker.try_other"),
                     None,
                 );
-                selected_id.set(None);
             }
             tree.redraw();
         }
@@ -1022,6 +1078,7 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
         let selected_id = selected_id.clone();
         let items = items_vec.clone();
         let mut detail = detail.clone();
+        let mut ok_btn = ok_btn.clone();
         move |t| {
             let Some(mut item) = t.callback_item() else { return };
             if t.callback_reason() != TreeReason::Selected {
@@ -1034,11 +1091,13 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
                 .map(|(_, id)| *id);
             if let Some(id) = id {
                 selected_id.set(Some(id));
+                ok_btn.activate();
                 if let Some(it) = items.iter().find(|x| x.id == id) {
                     detail.item(it);
                 }
             } else if let Some(name) = item.label() {
                 selected_id.set(None);
+                ok_btn.deactivate();
                 detail.group(&name);
                 if item.is_open() {
                     item.close();
@@ -1094,16 +1153,41 @@ pub fn pick_tree(win_title: &str, items: &[PickItem]) -> Option<usize> {
         move |_| answer.set(Some(false))
     });
 
+    let _ = filter.take_focus();
     let ok = super::dialogs::run(&mut win, &answer, || selected_id.get().is_some());
-    let res = if ok { selected_id.get() } else { None };
-    app::delete_widget(win);
-    res
+    if ok {
+        selected_id.get()
+    } else {
+        None
+    }
+}
+
+fn matches_query(it: &PickItem, q: &str) -> bool {
+    let q = q.trim().to_lowercase();
+    if q.is_empty() {
+        return true;
+    }
+    let title = it.title.to_lowercase();
+    let category = it.category.to_lowercase();
+    let description = it.description.to_lowercase();
+    q.split_whitespace()
+        .all(|word| title.contains(word) || category.contains(word) || description.contains(word))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use fltk::enums::Color;
+
+    #[test]
+    fn multi_word_search_matches_across_category_and_title() {
+        let triggers = trigger_pick_items();
+        assert!(triggers
+            .iter()
+            .any(|it| it.id == 41002 && matches_query(it, "tiktok gift")));
+        let subs = sub_action_pick_items();
+        assert!(subs.iter().any(|it| it.id == 30 && matches_query(it, "obs source")));
+    }
 
     /// Every group and every item of both pickers shows an icon: a logo or a Lucide icon we have.
     #[test]
