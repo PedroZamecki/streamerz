@@ -129,11 +129,43 @@ impl std::ops::DerefMut for Dialog {
     }
 }
 
+#[cfg(windows)]
+fn fix_child_window_stacking(win: &DoubleWindow, scrim: &Window) {
+    if win.was_deleted() || scrim.was_deleted() || !win.shown() || !scrim.shown() {
+        return;
+    }
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_STYLE, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE,
+        SWP_NOSIZE, WS_CLIPSIBLINGS,
+    };
+    let h_win = win.raw_handle();
+    let h_scrim = scrim.raw_handle();
+    if !h_win.is_null() && !h_scrim.is_null() {
+        unsafe {
+            let style_scrim = GetWindowLongPtrW(h_scrim as _, GWL_STYLE) as u32;
+            SetWindowLongPtrW(h_scrim as _, GWL_STYLE, (style_scrim | WS_CLIPSIBLINGS) as _);
+            let style_win = GetWindowLongPtrW(h_win as _, GWL_STYLE) as u32;
+            SetWindowLongPtrW(h_win as _, GWL_STYLE, (style_win | WS_CLIPSIBLINGS) as _);
+            SetWindowPos(
+                h_win as _,
+                HWND_TOP,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
+}
+
 impl Dialog {
     /// Shows it and gives the keyboard to its first control.
     pub fn open(&mut self) {
-        let Some(s) = &mut self.scrim else {
+        let Some(mut s) = self.scrim.clone() else {
             self.win.show();
+            #[cfg(windows)]
+            super::set_window_titlebar_theme(&self.win, super::system_is_dark());
             return;
         };
         if let Some(mut host) = host() {
@@ -142,12 +174,17 @@ impl Dialog {
                 host.add(&self.win);
                 let head = self.head;
                 place(&host, &mut self.win, head);
-                place_close(s, &self.win, head);
+                place_close(&mut s, &self.win, head);
             }
         }
         s.show();
         self.win.show();
+        #[cfg(windows)]
+        fix_child_window_stacking(&self.win, &s);
         self.animate(true);
+        #[cfg(windows)]
+        fix_child_window_stacking(&self.win, &s);
+        self.win.redraw();
         // Closing fades back to the window as it is then, not as it was.
         if !super::anim::on() {
             self.fade.borrow_mut().sharp = None;
@@ -178,12 +215,14 @@ impl Dialog {
             win.set_pos(x, y + drop);
             place_close(&mut scrim, &win, head);
             scrim.redraw();
+            win.redraw();
         });
         fade.borrow_mut().now = None;
         if !opening {
             win.set_pos(x, y);
             place_close(&mut scrim, &win, head);
         }
+        win.redraw();
     }
 
     /// What makes it `h` high later (its contents grew or shrank), kept in the middle of the window.
@@ -197,6 +236,8 @@ impl Dialog {
             }
             if let Some(mut s) = scrim.clone() {
                 place_close(&mut s, &win, head);
+                #[cfg(windows)]
+                fix_child_window_stacking(&win, &s);
                 s.redraw();
             }
             win.redraw();
@@ -590,7 +631,10 @@ pub fn window_tone(w: i32, h: i32, title: &str, tone: Tone) -> (Dialog, Answer) 
             }
             place(&host, &mut win, head);
             place_close(s, &win, head);
+            #[cfg(windows)]
+            fix_child_window_stacking(&win, s);
             s.redraw();
+            win.redraw();
         }
     });
     (

@@ -711,7 +711,7 @@ fn pane_layout(width: i32, height: i32) -> (bool, i32) {
 pub fn tab(tabs: &Wizard, cfg: Arc<watch::Sender<Config>>, cmds: UnboundedSender<UiCmd>) -> Rc<RefCell<Actions>> {
     let mut row = Flex::new(tabs.x(), tabs.y(), tabs.w(), tabs.h(), None)
         .row()
-        .with_label(tr("actions.heading"));
+        .with_label("Actions");
     row.set_margin(8);
     row.set_pad(8);
     let mut left = Flex::default().column();

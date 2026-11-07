@@ -1,2 +1,5 @@
 # Byte-exact Streamer.bot files (\r\n, BOM): never converted.
 tests/data/** -text
+
+# Markdown documentation: keep LF line endings consistent across platforms.
+*.md text eol=lf

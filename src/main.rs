@@ -1,6 +1,8 @@
 //! Streamerz: actions, triggers and the servers that tools already use, for Twitch, Kick, YouTube,
 //! OBS and Streamlabs Desktop, running on ~nothing.
 
+#![windows_subsystem = "windows"]
+
 mod agents;
 mod backup;
 mod brand;
@@ -1169,7 +1171,21 @@ pub(crate) fn cleanup_dev() {
     }
 }
 
+#[cfg(windows)]
+fn attach_parent_console() {
+    unsafe {
+        extern "system" {
+            fn AttachConsole(dw_process_id: u32) -> i32;
+        }
+        AttachConsole(u32::MAX);
+    }
+}
+
 fn main() {
+    #[cfg(windows)]
+    if std::env::args_os().len() > 1 {
+        attach_parent_console();
+    }
     // An MCP server for AI assistants, driving the running instance (mcp.rs); no window.
     if std::env::args_os().any(|a| a == "--mcp") {
         mcp::run();

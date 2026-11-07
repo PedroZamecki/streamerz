@@ -159,6 +159,19 @@ pub fn run(cmd: &str, pages: Option<&Wizard>) -> String {
             );
             out
         }
+        "click" => {
+            let Some(text) = a else {
+                return "usage: click TEXT [N]".into();
+            };
+            let Some(w) = windows.get(at(b)) else {
+                return "no such window".into();
+            };
+            if click_widget(&w.as_base_widget().as_group(), &text.to_lowercase()) {
+                "ok".into()
+            } else {
+                "not found".into()
+            }
+        }
         "chat" => super::chat::SHOWN
             .load(std::sync::atomic::Ordering::Relaxed)
             .to_string(),
@@ -376,6 +389,23 @@ fn find(g: &Option<fltk::group::Group>, text: &str, at: (i32, i32), out: &mut St
         }
         find(&c.as_group(), text, inner(&c, at), out);
     }
+}
+
+fn click_widget(g: &Option<fltk::group::Group>, text: &str) -> bool {
+    let Some(g) = g else { return false };
+    for i in 0..g.children() {
+        let Some(mut c) = g.child(i) else { continue };
+        let label = c.label();
+        let tooltip = c.tooltip().unwrap_or_default();
+        if c.visible_r() && (label.to_lowercase().contains(text) || tooltip.to_lowercase().contains(text)) {
+            c.do_callback();
+            return true;
+        }
+        if click_widget(&c.as_group(), text) {
+            return true;
+        }
+    }
+    false
 }
 
 /// A PNG of `rgb` pixels (`depth` bytes each): no compression to speak of, and no library.

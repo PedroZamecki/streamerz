@@ -131,7 +131,7 @@ fn accent_of(c: &crate::Config) -> Option<(u8, u8, u8)> {
 }
 
 /// The desktop's scheme is dark.
-fn system_is_dark() -> bool {
+pub(crate) fn system_is_dark() -> bool {
     SYSTEM_DARK.load(Ordering::Relaxed)
 }
 
@@ -443,13 +443,59 @@ pub fn logged() {
     wake(Msg::Log);
 }
 
+#[cfg(windows)]
+pub fn apply_windows_fonts() {
+    use fltk::enums::Font;
+    Font::set_font(Font::Helvetica, " Segoe UI");
+    Font::set_font(Font::HelveticaBold, "BSegoe UI");
+    Font::set_font(Font::HelveticaItalic, "ISegoe UI");
+    Font::set_font(Font::HelveticaBoldItalic, "PSegoe UI");
+}
+
+#[cfg(windows)]
+pub fn set_window_titlebar_theme(win: &impl fltk::prelude::WindowExt, dark: bool) {
+    if win.was_deleted() || !win.shown() {
+        return;
+    }
+    let hwnd = win.raw_handle();
+    if hwnd.is_null() {
+        return;
+    }
+    unsafe {
+        use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
+        let lib = LoadLibraryA(c"dwmapi.dll".as_ptr() as _);
+        if !lib.is_null() {
+            let func = GetProcAddress(lib, c"DwmSetWindowAttribute".as_ptr() as _);
+            if let Some(set_attr) = func {
+                type DwmSetWindowAttributeFn = unsafe extern "system" fn(
+                    windows_sys::Win32::Foundation::HWND,
+                    u32,
+                    *const std::ffi::c_void,
+                    u32,
+                ) -> i32;
+                let set_attr: DwmSetWindowAttributeFn = std::mem::transmute(set_attr);
+                let use_dark: i32 = if dark { 1 } else { 0 };
+                // 20 is DWMWA_USE_IMMERSIVE_DARK_MODE in Win10 20H1+ and Win11; 19 is used on older Win10 builds.
+                if set_attr(hwnd as _, 20, &use_dark as *const _ as _, 4) != 0 {
+                    set_attr(hwnd as _, 19, &use_dark as *const _ as _, 4);
+                }
+            }
+        }
+    }
+}
+
 pub fn app() -> app::App {
-    app::App::default().with_scheme(app::Scheme::Gtk)
+    let app = app::App::default().with_scheme(app::Scheme::Gtk);
+    #[cfg(windows)]
+    apply_windows_fonts();
+    app
 }
 
 /// Flat, rounded and quiet (zinc colours, like shadcn/ui): every button, field, list and tab is drawn
 /// by the two box functions below, so the whole window follows.
 fn theme(dark: bool, accent: Option<(u8, u8, u8)>) {
+    #[cfg(windows)]
+    apply_windows_fonts();
     if dark {
         app::background(24, 24, 27);
         app::background2(9, 9, 11);
@@ -1429,6 +1475,8 @@ pub fn run(
             views.refresh(&tabs);
             status_bar();
             win.show();
+            #[cfg(windows)]
+            set_window_titlebar_theme(win, is_dark(&cfg.borrow()));
             log.borrow_mut().refresh();
             if crate::secrets::is_locked() && !prompted_unlock.get() {
                 prompted_unlock.set(true);
@@ -1502,6 +1550,8 @@ pub fn run(
                     theme(dark, accent);
                     window_icons(dark);
                     for mut w in app::windows().unwrap_or_default() {
+                        #[cfg(windows)]
+                        set_window_titlebar_theme(&w, dark);
                         w.redraw();
                     }
                 }
