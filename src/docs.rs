@@ -78,8 +78,13 @@ pub fn text(kind: &str, code: u32) -> Option<&'static str> {
 }
 
 pub fn summary(kind: &str, code: u32) -> Option<&'static str> {
-    text(kind, code)?
-        .split("\n\n")
+    let t = text(kind, code)?;
+    let paras = if t.contains("\r\n\r\n") {
+        t.split("\r\n\r\n")
+    } else {
+        t.split("\n\n")
+    };
+    paras
         .skip(1)
         .find(|p| !p.starts_with('-') && !p.starts_with('#') && !p.trim().is_empty())
 }
@@ -255,12 +260,13 @@ mod tests {
                 .into_iter()
                 .chain((e.kind == "trigger").then_some("When"))
             {
-                let marker = format!("### {heading}\n");
+                let marker = format!("### {heading}");
                 let section = e
                     .text
-                    .split_once(&marker)
+                    .split(&marker)
+                    .nth(1)
+                    .and_then(|s| s.strip_prefix("\r\n").or_else(|| s.strip_prefix('\n')))
                     .unwrap_or_else(|| panic!("{} {} needs {heading} ({})", e.kind, e.code, e.file))
-                    .1
                     .split("\n### ")
                     .next()
                     .unwrap();
