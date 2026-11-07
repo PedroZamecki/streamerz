@@ -1,7 +1,7 @@
 //! Streamerz: actions, triggers and the servers that tools already use, for Twitch, Kick, YouTube,
 //! OBS and Streamlabs Desktop, running on ~nothing.
 
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![windows_subsystem = "windows"]
 
 mod agents;
 mod backup;
