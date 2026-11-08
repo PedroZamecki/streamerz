@@ -108,3 +108,7 @@ embed-resource = "3.0.11"
 [dev-dependencies]
 wasmi = { version = "2", default-features = false, features = ["std", "validate", "portable-dispatch", "wat"] }
 wat = "1"
+
+[patch.crates-io]
+tray-icon = { path = "patches/tray-icon" }
+

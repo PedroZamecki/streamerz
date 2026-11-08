@@ -694,9 +694,10 @@ fn ask_name(title: &str, current: &str) -> Option<String> {
 
 /// Keep enough room for the editor beside the action tree; otherwise stack the same panes.
 fn pane_layout(width: i32, height: i32) -> (bool, i32) {
-    let stacked = width < 860;
+    let stacked = width < 760;
     if !stacked {
-        return (false, 340);
+        let actions = (width * 38 / 100).clamp(280, 340);
+        return (false, actions);
     }
     // The page has 8px margins and an 8px gap between panes.
     let available = height.saturating_sub(24).max(0);
@@ -2045,8 +2046,9 @@ mod tests {
 
     #[test]
     fn action_editor_stacks_before_the_two_panes_become_cramped() {
-        assert_eq!(pane_layout(859, 654), (true, 210));
-        assert_eq!(pane_layout(860, 654), (false, 340));
+        assert_eq!(pane_layout(759, 654), (true, 210));
+        assert_eq!(pane_layout(760, 654), (false, 288));
+        assert_eq!(pane_layout(860, 654), (false, 326));
         assert_eq!(pane_layout(924, 754), (false, 340));
         assert_eq!(pane_layout(364, 654), (true, 210));
     }

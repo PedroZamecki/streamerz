@@ -1308,6 +1308,7 @@ fn main() {
         cfg.websockets.auto_start = true;
         cfg.spotify.enabled = false;
         cfg.spotify.local_monitor = false;
+        cfg.start_hidden = false;
         cfg.http.auto_start = false;
         cfg.udp.auto_start = false;
         for connection in &mut cfg.websockets.connections {

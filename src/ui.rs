@@ -446,10 +446,97 @@ pub fn logged() {
 #[cfg(windows)]
 pub fn apply_windows_fonts() {
     use fltk::enums::Font;
-    Font::set_font(Font::Helvetica, " Segoe UI");
-    Font::set_font(Font::HelveticaBold, "BSegoe UI");
-    Font::set_font(Font::HelveticaItalic, "ISegoe UI");
-    Font::set_font(Font::HelveticaBoldItalic, "PSegoe UI");
+    let names = fltk::app::get_font_names();
+    let has = |target: &str| {
+        names.iter().any(|name| {
+            let n = name.trim_start_matches([' ', 'B', 'I', 'P', '@']);
+            n.eq_ignore_ascii_case(target)
+        })
+    };
+    // Prioritize Liberation Sans and Liberation Mono so Wine on Linux uses the exact same
+    // font families and metrics as native Linux (which maps Sans/Monospace to Liberation).
+    let (h_reg, h_bold, h_it, h_bi) = if has("Liberation Sans") {
+        (
+            " Liberation Sans",
+            "BLiberation Sans",
+            "ILiberation Sans",
+            "PLiberation Sans",
+        )
+    } else if has("Arial") {
+        (" Arial", "BArial", "IArial", "PArial")
+    } else if has("Segoe UI") {
+        (" Segoe UI", "BSegoe UI", "ISegoe UI", "PSegoe UI")
+    } else {
+        (" Tahoma", "BTahoma", "ITahoma", "PTahoma")
+    };
+
+    let (c_reg, c_bold, c_it, c_bi) = if has("Liberation Mono") {
+        (
+            " Liberation Mono",
+            "BLiberation Mono",
+            "ILiberation Mono",
+            "PLiberation Mono",
+        )
+    } else if has("JetBrains Mono") {
+        (
+            " JetBrains Mono",
+            "BJetBrains Mono",
+            "IJetBrains Mono",
+            "PJetBrains Mono",
+        )
+    } else if has("Consolas") {
+        (" Consolas", "BConsolas", "IConsolas", "PConsolas")
+    } else {
+        (" Courier New", "BCourier New", "ICourier New", "PCourier New")
+    };
+
+    Font::set_font(Font::Helvetica, h_reg);
+    Font::set_font(Font::HelveticaBold, h_bold);
+    Font::set_font(Font::HelveticaItalic, h_it);
+    Font::set_font(Font::HelveticaBoldItalic, h_bi);
+    Font::set_font(Font::Courier, c_reg);
+    Font::set_font(Font::CourierBold, c_bold);
+    Font::set_font(Font::CourierItalic, c_it);
+    Font::set_font(Font::CourierBoldItalic, c_bi);
+    unsafe {
+        use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
+        let lib = LoadLibraryA(c"user32.dll".as_ptr() as _);
+        if !lib.is_null() {
+            let func = GetProcAddress(lib, c"SystemParametersInfoW".as_ptr() as _);
+            if let Some(spi) = func {
+                type SpiFn = unsafe extern "system" fn(u32, u32, *mut std::ffi::c_void, u32) -> i32;
+                let spi: SpiFn = std::mem::transmute(spi);
+                // 0x004B = SPI_SETFONTSMOOTHING (TRUE = 1)
+                // 0x0003 = SPIF_UPDATEINIFILE | SPIF_SENDCHANGE
+                spi(0x004B, 1, std::ptr::null_mut(), 3);
+                // 0x200B = SPI_SETFONTSMOOTHINGTYPE (2 = FE_FONTSMOOTHINGCLEARTYPE)
+                spi(0x200B, 0, 2 as _, 3);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+pub fn apply_windows_scaling() {
+    let current = fltk::app::screen_scale(0);
+    // If FLTK already detected a non-default monitor DPI scale factor (e.g. on real Windows with 125% DPI), keep it.
+    if (current - 1.0).abs() > 0.05 {
+        return;
+    }
+    // Under Wine on Linux, Wine defaults to 96 DPI (1.0x) even when the host desktop uses fractional scaling (e.g. 1.25x).
+    // Read the user's host zoom level from inherited environment variables:
+    let env_scale = std::env::var("FLTK_SCALING_FACTOR")
+        .or_else(|_| std::env::var("GDK_SCALE"))
+        .or_else(|_| std::env::var("QT_SCALE_FACTOR"))
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .filter(|&s| s > 0.5 && s < 5.0);
+
+    if let Some(scale) = env_scale {
+        if (scale - 1.0).abs() > 0.05 {
+            fltk::app::set_screen_scale(0, scale);
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -488,6 +575,8 @@ pub fn app() -> app::App {
     let app = app::App::default().with_scheme(app::Scheme::Gtk);
     #[cfg(windows)]
     apply_windows_fonts();
+    #[cfg(windows)]
+    apply_windows_scaling();
     app
 }
 
@@ -624,7 +713,14 @@ fn placeholder(i: &mut fltk::input::Input, text: &str) {
             draw::set_font(Font::Helvetica, i.text_size());
             draw::set_draw_color(muted());
             let shown = fit::ellipsize(&text, i.w() - 12, |t| draw::width(t) as i32);
-            draw::draw_text2(&shown, i.x() + 6, i.y(), i.w() - 12, i.h(), Align::Left | Align::Clip);
+            draw::draw_text2(
+                &shown,
+                i.x() + 6,
+                i.y(),
+                i.w() - 12,
+                i.h(),
+                Align::Left | Align::Inside | Align::Clip,
+            );
         }
     });
     i.handle(|i, ev| {
@@ -1246,7 +1342,7 @@ pub fn run(
     top.end();
     top.resize_callback({
         let (mut label, level, open) = (l.clone(), level.clone(), open_logs.clone());
-        let open_width = open_logs.w();
+        let open_width = fit::grown(120 + 20, tr("btn.open_folder"), true);
         move |row, _, _, width, _| {
             if width < 600 {
                 label.hide();
@@ -1307,7 +1403,11 @@ pub fn run(
     bar.end();
     bar.resize_callback({
         let buttons = [save.clone(), hide.clone(), quit.clone()];
-        let normal = buttons.each_ref().map(|button| button.w());
+        let normal = [
+            fit::grown(90 + 20, tr("btn.save"), true),
+            fit::grown(90 + 20, tr("btn.hide"), true),
+            fit::grown(90 + 20, tr("btn.quit"), true),
+        ];
         let conns = conns.clone();
         move |bar, _, _, width, _| {
             let (widths, status) = footer_sizes(width, normal);
@@ -1773,5 +1873,27 @@ mod tests {
         let at = line.find("WARN").unwrap();
         assert_eq!(&st[at..at + 5], "EEEEE");
         assert!(st.ends_with(&"A".repeat("Conexão perdida".len())));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_font_and_scaling_test() {
+        let _app = app::App::default();
+        apply_windows_fonts();
+        let h = fltk::enums::Font::Helvetica.get_name();
+        let c = fltk::enums::Font::Courier.get_name();
+        assert!(["Liberation Sans", "Arial", "Segoe UI", "Tahoma"]
+            .iter()
+            .any(|f| h.contains(f)));
+        assert!(["Liberation Mono", "JetBrains Mono", "Consolas", "Courier New"]
+            .iter()
+            .any(|f| c.contains(f)));
+
+        unsafe { std::env::set_var("GDK_SCALE", "1.25") };
+        apply_windows_scaling();
+        let scale = fltk::app::screen_scale(0);
+        assert!((scale - 1.25).abs() < 0.05);
+        unsafe { std::env::remove_var("GDK_SCALE") };
+        fltk::app::set_screen_scale(0, 1.0);
     }
 }
