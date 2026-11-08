@@ -12,6 +12,11 @@
   ask: "Now is a great time to finish, want to release a new version on GitHub?". Merging the PR is the
   release.
 - Test it here, by hand, before closing a version: CI runs only when the version's PR is pushed.
+- Save GitHub Actions usage: before any push, run every applicable CI/CD check locally, including
+  formatting, lint, tests, scenarios, locales, secrets, workflow validation and release packaging.
+  Record the commands and results in `docs/TESTING.md`. Report unavailable platform, signing, store
+  and GitHub-only checks explicitly; never call an untested check passed. Fix local failures before
+  pushing. Use `python3 -P dev/check.py` for the shared local checks.
 - Branch names (suggested, not enforced): `type/short-description`, e.g. `feat/twitch-chat`,
   `fix/obs-reconnect`, using the same types as commits.
 - Before committing, `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` must pass

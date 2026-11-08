@@ -648,3 +648,13 @@ There is no per-page score threshold or repeated scoring requirement. Track the 
 - [ ] Investigate free trusted signing and SmartScreen reputation for Windows releases.
 
 - [ ] Prepare SignPath Foundation onboarding, Windows metadata and a verified signed artifact flow that preserves build reuse.
+
+## Version 1.6.0: review and cleanup
+
+- [x] Carry pending work onto one version branch, without pushing or opening a PR.
+- [x] Require local CI/CD verification before pushing, with a report of unavailable checks.
+- [ ] Review pending changes and remove only material proven unused.
+- [ ] Share repeated logic without changing behavior or adding runtime work.
+- [ ] Run local CI checks, scenarios, packaging and hidden-display smoke.
+- [ ] Record removal evidence, validation results and remaining platform/service limits.
+- [ ] Keep the version open for further requested changes.
