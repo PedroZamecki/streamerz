@@ -11,3 +11,13 @@ community.json*
 /sz.pid
 plugins/dice/target
 __pycache__/
+dist/
+.cache/
+
+# Local Secrets & Environment
+.env
+.env.*
+!.env.example
+
+# Local release packages
+/Streamerz-linux-x86_64.AppImage*
