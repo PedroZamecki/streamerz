@@ -69,6 +69,12 @@ program, so the guide offers the address and extension folder to copy. Enable De
 choose Load unpacked in the browser. Streamerz then detects pairing and opens login only if needed.
 The guide closes after pairing; the Streamerz dialog stays open and shows progress.
 
+Browser status tracks both extension installation and browser lifecycle (`is_running()` via
+`SingletonLock` on Linux, and `lockfile` exclusive share checks / `ToolHelp32` process scans on Windows).
+If the browser is closed during streaming, chat displays an actionable notice and Accounts offers
+one-click relaunch directly to the TikTok session. Browsers are detected via standard program paths,
+`ProgramW6432`, and the Windows Registry (`App Paths`), and display official platform vector marks.
+
 Development builds keep the unpacked extension and pairing in a stable cache folder, separate from
 production settings. Reopening setup refreshes the files without requiring an extension reload just
 for a changed port or pairing token.

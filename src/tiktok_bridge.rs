@@ -19,6 +19,8 @@ use tokio_tungstenite::tungstenite::Message;
 pub const PATH: &str = "/streamerz/tiktok";
 /// Fixed by the public key in the extension's manifest.
 pub const EXTENSION_ID: &str = "lhijoeeghjcohapolkfkacipklhbnecc";
+/// The current extension version bundled with Streamerz.
+pub const EXTENSION_VERSION: &str = "1.1.0";
 /// The messages this side speaks; an extension with another needs reinstalling.
 const PROTOCOL: u64 = 2;
 /// How long one request in the tab may take (the first one opens and loads it).
@@ -79,9 +81,12 @@ const COMMON: [&str; 30] = [
     "webcast_language",
 ];
 
-/// Whether a WebSocket handshake comes from the extension.
+/// Whether a WebSocket handshake comes from a browser extension.
 pub fn from_extension(origin: Option<&str>) -> bool {
-    origin.is_some_and(|o| o.trim_end_matches('/') == format!("chrome-extension://{EXTENSION_ID}"))
+    origin.is_some_and(|o| {
+        let clean = o.trim_end_matches('/');
+        clean.starts_with("chrome-extension://") || clean.starts_with("moz-extension://")
+    })
 }
 
 /// The extension's folder (the browser loads it from there): see `extension_folder`.
@@ -314,8 +319,20 @@ pub fn remove(e: &Rc<Engine>) {
 /// For the MCP tool and the WebSocket request.
 pub fn status(e: &Engine) -> Value {
     let b = &e.tiktok_bridge;
-    json!({"setUp": set_up(&e.config()), "connected": b.is_connected(), "user": b.user(), "avatar": b.avatar(), "ready": b.ready(), "loginRequired": b.login_required(), "error": b.error(),
-        "folder": folder().display().to_string(), "extensionId": EXTENSION_ID})
+    json!({
+        "setUp": set_up(&e.config()),
+        "connected": b.is_connected(),
+        "user": b.user(),
+        "avatar": b.avatar(),
+        "ready": b.ready(),
+        "loginRequired": b.login_required(),
+        "error": b.error(),
+        "version": b.version(),
+        "latestVersion": EXTENSION_VERSION,
+        "outdated": b.is_outdated(),
+        "folder": folder().display().to_string(),
+        "extensionId": EXTENSION_ID
+    })
 }
 
 struct Link {
@@ -356,6 +373,7 @@ pub struct Bridge {
     user: RefCell<String>,
     uid: RefCell<String>,
     avatar: RefCell<String>,
+    version: RefCell<String>,
     ready: std::cell::Cell<bool>,
     login_required: std::cell::Cell<bool>,
     error: RefCell<String>,
@@ -375,6 +393,15 @@ impl Bridge {
 
     pub fn avatar(&self) -> String {
         self.avatar.borrow().clone()
+    }
+
+    pub fn version(&self) -> String {
+        self.version.borrow().clone()
+    }
+
+    pub fn is_outdated(&self) -> bool {
+        let v = self.version.borrow();
+        !v.is_empty() && v.as_str() != EXTENSION_VERSION
     }
 
     pub fn ready(&self) -> bool {
@@ -419,6 +446,7 @@ impl Bridge {
         self.user.borrow_mut().clear();
         self.uid.borrow_mut().clear();
         self.avatar.borrow_mut().clear();
+        self.version.borrow_mut().clear();
         crate::roles::clear("tiktok");
         self.ready.set(false);
         self.login_required.set(false);
@@ -805,6 +833,8 @@ where
     b.serial.set(serial);
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
     b.disconnect();
+    let ver = hello["version"].as_str().unwrap_or("").to_string();
+    *b.version.borrow_mut() = ver;
     *b.link.borrow_mut() = Some(Link {
         tx,
         pending: HashMap::new(),
@@ -949,10 +979,14 @@ mod tests {
         assert!(from_extension(Some(
             "chrome-extension://lhijoeeghjcohapolkfkacipklhbnecc"
         )));
-        assert!(!from_extension(Some(
-            "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        assert!(from_extension(Some(
+            "chrome-extension://storeextensionid1234567890abcdef"
+        )));
+        assert!(from_extension(Some(
+            "moz-extension://a3b2c1d0-1234-5678-9abc-def012345678"
         )));
         assert!(!from_extension(Some("https://www.tiktok.com")));
+        assert!(!from_extension(Some("http://localhost:8080")));
         assert!(!from_extension(None));
         assert!(same("abc", "abc") && !same("abc", "abd") && !same("abc", "ab"));
     }

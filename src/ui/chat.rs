@@ -499,6 +499,11 @@ fn items(cmds: &Cmds, l: &Line, tag: bool, width: i32) -> Vec<It> {
         if let Some(p) = img::get(cmds, &l.picture, BADGE + 4, false) {
             v.push(It::Pic(p, None));
             v.push(It::Gap(6));
+        } else if let Some(s) =
+            img::logo(&l.platform, BADGE + 4).or_else(|| icons::icon("circle-user-round", ink, BADGE + 4))
+        {
+            v.push(It::Svg(s));
+            v.push(It::Gap(6));
         }
         v.push(It::Text(l.tag.clone(), Font::HelveticaBold, ink));
         v.push(It::Gap(8));
@@ -2955,7 +2960,11 @@ impl ChatColumn {
         let browser_hint = if !browser_error.is_empty() {
             browser_error
         } else if !browser_connected {
-            tr("accounts.tiktok_sending.waiting").to_string()
+            if crate::browsers::is_any_running() {
+                tr("accounts.tiktok_sending.waiting").to_string()
+            } else {
+                tr("accounts.tiktok_sending.browser_closed").to_string()
+            }
         } else if !browser_ready {
             tr("accounts.tiktok_sending.loading").to_string()
         } else if browser_user.is_empty() {
@@ -3079,6 +3088,10 @@ impl Chat {
         let mut limits = self.cfg.borrow().window.chat.clamped();
         if crate::memory_saver() {
             limits.save_history = false;
+            limits.per_platform = 0;
+            limits.total = 0;
+            limits.fade_in = 0;
+            limits.fade_out = 0;
         }
         // Disable each composer, including its emote button, when chat is disabled.
         for column in std::iter::once(&self.main).chain(self.side.iter()) {

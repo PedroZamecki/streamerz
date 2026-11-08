@@ -850,6 +850,8 @@ impl Accounts {
                 e.tiktok_bridge.user(),
                 e.tiktok_bridge.ready(),
                 e.tiktok_bridge.error(),
+                e.tiktok_bridge.is_outdated(),
+                e.tiktok_bridge.version(),
             )
         })
         .unwrap_or_default();
@@ -906,13 +908,20 @@ impl Accounts {
                     _ if !crate::tiktok_bridge::set_up(&c) => {
                         (H::Off, tr("accounts.tiktok_sending.not_set_up").to_string())
                     }
-                    (false, _, _, _) => (H::Standby, tr("accounts.tiktok_sending.waiting").to_string()),
-                    (_, _, _, error) if !error.is_empty() => (H::Off, error.clone()),
-                    (_, _, false, _) => (H::Standby, tr("accounts.tiktok_sending.loading").to_string()),
-                    (true, user, _, _) if user.is_empty() => {
+                    (false, _, _, _, _, _) => (H::Standby, tr("accounts.tiktok_sending.waiting").to_string()),
+                    (_, _, _, error, _, _) if !error.is_empty() => (H::Off, error.clone()),
+                    (_, _, false, _, _, _) => (H::Standby, tr("accounts.tiktok_sending.loading").to_string()),
+                    (true, _user, _, _, true, ver) => (
+                        H::Standby,
+                        trf(
+                            "accounts.tiktok_sending.outdated",
+                            &[("installed", ver), ("latest", crate::tiktok_bridge::EXTENSION_VERSION)],
+                        ),
+                    ),
+                    (true, user, _, _, _, _) if user.is_empty() => {
                         (H::Standby, tr("accounts.tiktok_sending.login_needed").to_string())
                     }
-                    (true, user, _, _) => (H::Up, trf("accounts.tiktok_sending.connected", &[("user", user)])),
+                    (true, user, _, _, _, _) => (H::Up, trf("accounts.tiktok_sending.connected", &[("user", user)])),
                 };
                 h.show(status, &text);
                 status.set_tooltip(&text.replace('@', "@@"));
@@ -932,7 +941,7 @@ impl Accounts {
                 (tr("accounts.channel_placeholder").to_string(), None)
             } else {
                 let (name, pic) = room(&self.cmds, &self.cfg, r.p.slug(), 18);
-                (if name.is_empty() { shown } else { name }, pic)
+                (if name.is_empty() { shown.clone() } else { name }, pic)
             };
             match pic {
                 Some(pic) => {
@@ -940,8 +949,11 @@ impl Accounts {
                     r.channel.set_label(&format!("  {}", label.replace('@', "@@")));
                 }
                 None => {
-                    r.channel
-                        .set_image(super::icons::before_label("search", super::button_ink(), 14));
+                    let icon = (!shown.is_empty())
+                        .then(|| super::img::logo(r.p.name(), 18))
+                        .flatten()
+                        .or_else(|| super::icons::before_label("search", super::button_ink(), 14));
+                    r.channel.set_image(icon);
                     r.channel.set_label(&label.replace('@', "@@"));
                 }
             }
@@ -981,7 +993,11 @@ impl Accounts {
                     }
                 }
                 let raw_name = r.p.raw_account_name(&c, bot == 1);
-                pic.set_image(raw_name.and_then(|n| picture(&self.cmds, &self.cfg, r.p, bot == 1, &n, ROW - 4)));
+                pic.set_image(
+                    raw_name
+                        .as_ref()
+                        .and_then(|n| picture(&self.cmds, &self.cfg, r.p, bot == 1, n, ROW - 4)),
+                );
                 // It comes in after the page was drawn (a download): show it when it does.
                 pic.redraw();
             }
@@ -1394,7 +1410,8 @@ fn tiktok_sending(cmds: &Cmds) {
         .with_align(Align::Left | Align::Inside);
     title.set_label_font(fltk::enums::Font::HelveticaBold);
     col.fixed(&title, 22);
-    let picked: Rc<RefCell<Option<crate::browsers::Browser>>> = Rc::default();
+    let picked: Rc<RefCell<Option<crate::browsers::Browser>>> =
+        Rc::new(RefCell::new(crate::browsers::running_browser()));
     let mut states = Vec::new();
     let mut none_row = if browsers.is_empty() {
         let f = Frame::default().with_align(Align::Left | Align::Inside | Align::ImageNextToText);
@@ -1407,7 +1424,7 @@ fn tiktok_sending(cmds: &Cmds) {
         let mut row = Flex::default().row();
         row.set_pad(8);
         let mut logo = Frame::default();
-        logo.set_image(super::icons::icon("globe", super::muted(), 16));
+        logo.set_image(super::img::logo(b.name, 16).or_else(|| super::icons::icon("globe", super::muted(), 16)));
         row.fixed(&logo, 22);
         let mut name = Frame::default()
             .with_label(b.name)
@@ -1430,6 +1447,19 @@ fn tiktok_sending(cmds: &Cmds) {
                 .unwrap_or(false)
                 {
                     tiktok_login(&cmds);
+                    return;
+                }
+                let installed =
+                    b.has_extension_from(crate::tiktok_bridge::EXTENSION_ID, &crate::tiktok_bridge::folder());
+                if installed && !b.is_running() {
+                    // Browser has extension but is closed: launch it to reconnect!
+                    if let Err(error) = b.command("https://www.tiktok.com/live/history/center").spawn() {
+                        return dialogs::error(&trf(
+                            "accounts.tiktok_sending.cant_open",
+                            &[("browser", b.name), ("error", &error.to_string())],
+                        ));
+                    }
+                    *picked.borrow_mut() = Some(b.clone());
                     return;
                 }
                 let folder = match query(&cmds, crate::tiktok_bridge::install) {
@@ -1523,7 +1553,7 @@ fn tiktok_sending(cmds: &Cmds) {
     let mut asked_login = false;
     let mut last = None;
     let mut update = |win: &mut dialogs::Dialog, steps: &mut Vec<Frame>| {
-        let Some((set_up, connected, user, ready, login_required, error)) = query(cmds, |e| {
+        let Some((set_up, connected, user, ready, login_required, error, outdated, version)) = query(cmds, |e| {
             let b = &e.tiktok_bridge;
             (
                 crate::tiktok_bridge::set_up(&e.config()),
@@ -1532,6 +1562,8 @@ fn tiktok_sending(cmds: &Cmds) {
                 b.ready(),
                 b.login_required(),
                 b.error(),
+                b.is_outdated(),
+                b.version(),
             )
         }) else {
             return;
@@ -1548,6 +1580,8 @@ fn tiktok_sending(cmds: &Cmds) {
             ready,
             login_required,
             error.clone(),
+            outdated,
+            version.clone(),
             browser,
             available,
         );
@@ -1588,14 +1622,26 @@ fn tiktok_sending(cmds: &Cmds) {
                 *known = true;
             }
             let installed = *known;
+            let is_running = b.is_running();
+            let state_text = if installed && is_running {
+                tr("accounts.tiktok_sending.installed_running")
+            } else if installed {
+                tr("accounts.tiktok_sending.installed_closed")
+            } else if is_running {
+                tr("accounts.tiktok_sending.running")
+            } else {
+                tr("accounts.tiktok_sending.not_installed")
+            };
             H::show(
-                if installed { H::Up } else { H::Off },
-                state,
-                tr(if installed {
-                    "accounts.tiktok_sending.installed"
+                if installed && is_running {
+                    H::Up
+                } else if installed {
+                    H::Standby
                 } else {
-                    "accounts.tiktok_sending.not_installed"
-                }),
+                    H::Off
+                },
+                state,
+                state_text,
             );
             go.set_label(tr(if connected && login_required && installed {
                 "btn.login"
@@ -1607,6 +1653,7 @@ fn tiktok_sending(cmds: &Cmds) {
             super::with_icon(go);
         }
         let installed = connected || states.iter().any(|(_, _, _, known, _)| *known);
+        let any_running = states.iter().any(|(b, _, _, _, _)| b.is_running());
         let logged = connected && ready && !user.is_empty();
         let step = |done: bool, now: bool| match (done, now) {
             (true, _) => H::Up,
@@ -1652,14 +1699,33 @@ fn tiktok_sending(cmds: &Cmds) {
             f.set_align(Align::Left | Align::Inside | Align::ImageNextToText);
             f.set_tooltip(&text.replace('@', "@@"));
         }
-        let (health, text) = if logged {
-            (H::Up, tr("accounts.tiktok_sending.complete").to_string())
+        let (health, text) = if logged && outdated {
+            (
+                H::Standby,
+                trf(
+                    "accounts.tiktok_sending.outdated_warning",
+                    &[
+                        ("installed", &version),
+                        ("latest", crate::tiktok_bridge::EXTENSION_VERSION),
+                    ],
+                ),
+            )
+        } else if logged {
+            (
+                H::Up,
+                trf(
+                    "accounts.tiktok_sending.complete_version",
+                    &[("version", crate::tiktok_bridge::EXTENSION_VERSION)],
+                ),
+            )
         } else if login_required {
             (H::Standby, tr("accounts.tiktok_sending.login_needed").to_string())
         } else if !error.is_empty() {
             (H::Down, error)
         } else if connected {
             (H::Busy, tr("accounts.tiktok_sending.loading").to_string())
+        } else if installed && !any_running {
+            (H::Standby, tr("accounts.tiktok_sending.browser_closed").to_string())
         } else {
             (H::Standby, tr("accounts.tiktok_sending.waiting").to_string())
         };
