@@ -304,6 +304,7 @@ effect does](CHAT.md).
 - Platform logos: [Simple Icons](https://simpleicons.org) (CC0 1.0).
 - Emoji pictures: [Twemoji](https://github.com/jdecked/twemoji) by Twitter and contributors (CC-BY 4.0), loaded from jsDelivr when shown.
 - Emoji list: Unicode's [emoji-test.txt](https://unicode.org/Public/emoji/latest/emoji-test.txt) (Unicode License v3).
+- Windows signing support: [SignPath.io](https://signpath.io) and [SignPath Foundation](https://signpath.org), when configured.
 
 ## Thank you
 
