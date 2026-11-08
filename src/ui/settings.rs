@@ -424,13 +424,41 @@ pub fn tab(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) {
             tr("settings.memory.files"),
         ]
         .join("\n"),
-        44,
+        180,
     );
+    let mut row = Flex::default().row();
+    row.set_pad(8);
     let mut saver = switch(cfg.borrow().memory_saver);
-    done(r, &saver);
+    row.fixed(&saver, 44);
+    let mut restart_btn = button(&mut row, tr("update.restart"), 120);
+    restart_btn.set_image(icons::before_label("rotate-cw", super::button_ink(), 14));
+    restart_btn.set_align(Align::ImageNextToText);
+    restart_btn.set_tooltip(tr("settings.restart_required"));
+    row.fixed(&restart_btn, 120);
+    let pending_restart = cfg.borrow().memory_saver != crate::memory_saver();
+    if !pending_restart {
+        restart_btn.hide();
+    }
+    restart_btn.set_callback(|_| {
+        crate::ui::restart();
+    });
+    row.end();
+    done(r, &row);
     saver.set_callback({
         let cfg = cfg.clone();
-        move |b| put(&cfg, |c| c.memory_saver = b.value())
+        let mut restart_btn = restart_btn.clone();
+        let mut row = row.clone();
+        move |b| {
+            put(&cfg, |c| c.memory_saver = b.value());
+            let pending = b.value() != crate::memory_saver();
+            if pending {
+                restart_btn.show();
+            } else {
+                restart_btn.hide();
+            }
+            row.layout();
+            row.redraw();
+        }
     });
     // The chat's own settings are on the Chat page (Options, Chat settings): here, a way to them.
     section(&mut col, tr("settings.chat"), "message-square");
@@ -727,6 +755,10 @@ fn chat_rows(col: &mut Flex, rows: &mut Vec<SettingRow>, cfg: &Cfg, cmds: &Cmds)
         check.deactivate();
     }
     done(r, &check);
+
+    if crate::memory_saver() {
+        return;
+    }
 
     // What the chat keeps and how it comes and goes: a number each, read and set in the limits.
     type Limit = (

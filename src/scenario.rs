@@ -214,7 +214,6 @@ fn run_engine(s: &Value, name: String, http: Option<std::net::TcpListener>) -> O
         e.watchers();
         e.processes_sync();
         e.midi_sync();
-        e.speech_sync();
         let mut failures = Vec::new();
         let mut sent: Vec<Value> = Vec::new();
         for (i, step) in s["steps"].as_array().into_iter().flatten().enumerate() {
@@ -374,11 +373,6 @@ fn step_once(e: &Rc<Engine>, step: &Value) -> Result<Option<usize>, String> {
                 };
                 e.midi_fire(&g("device"), &g("device"), &m, 0);
             }
-            // The recognizer heard a phrase (what the system reports).
-            "speech" => e.speech_heard(&crate::speech::Heard {
-                text: g("text"),
-                confidence: step["confidence"].as_f64().unwrap_or(1.0),
-            }),
             // A toast was clicked (what the system reports).
             "toastClicked" => e.toast_activated(&crate::notify::Toast {
                 id: g("id"),

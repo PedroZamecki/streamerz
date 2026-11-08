@@ -44,16 +44,7 @@ fn url(c: &crate::Config) -> String {
 
 /// An agent's logo, or an icon when it has none.
 fn lead(name: &str) -> String {
-    let key = if super::img::has_logo(name) {
-        name
-    } else {
-        match name {
-            "Antigravity" => "rocket",
-            "Kiro" => "ghost",
-            "Crush" => "terminal",
-            _ => "bot",
-        }
-    };
+    let key = if super::img::has_logo(name) { name } else { "bot" };
     format!("{key}|{name}")
 }
 

@@ -39,3 +39,9 @@ This is checked, not assumed:
 - `streamerz.json*`, `community.json*`, backups and logs are in `.gitignore`.
 
 If you find something private in the history, say so through the link above.
+
+## Code signing and software integrity
+
+The release workflow supports Windows code signing through [SignPath.io](https://signpath.io) and the [SignPath Foundation](https://signpath.org). Signing runs only when the repository's signing credentials are configured. Otherwise, releases are unsigned.
+
+Release builds run on GitHub-hosted runners. Pull request binaries are reused on merge when their version and source tree match.

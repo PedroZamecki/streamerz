@@ -9,7 +9,7 @@ function worker() {
   const chrome = {
     runtime: { id: "lhijoeeghjcohapolkfkacipklhbnecc", getContexts: async () => state.contexts,
       getManifest: () => ({ version: "1.1.0" }), sendMessage: async m => { state.messages.push(m); return state.reply(m); },
-      getURL: path => "chrome-extension://test/" + path, onStartup: { addListener() {} }, onInstalled: { addListener() {} } },
+      getURL: path => "chrome-extension://lhijoeeghjcohapolkfkacipklhbnecc/" + path, onStartup: { addListener() {} }, onInstalled: { addListener() {} } },
     offscreen: { createDocument: async () => { state.creates++; state.contexts = [{}]; },
       closeDocument: async () => { state.closes++; state.contexts = []; } },
     declarativeNetRequest: { updateSessionRules: async r => { state.rules.push(r); } },
@@ -24,9 +24,13 @@ function worker() {
     alarms: { create() {}, onAlarm: { addListener() {} } },
   };
   state.settings = {};
+  state.timers = new Map();
+  let nextTimer = 0;
   state.sockets = [];
   class Socket { static OPEN = 1; constructor(url) { this.url = url; this.readyState = 1; state.sockets.push(this); } send() {} }
-  const context = vm.createContext({ chrome, fetch: async () => ({ ok: true, json: async () => ({ ...state.settings }) }), self: { STREAMERZ: {} }, importScripts() {}, setInterval() {}, WebSocket: Socket, console });
+  const context = vm.createContext({ chrome, URL, fetch: async () => ({ ok: true, json: async () => ({ ...state.settings }) }), self: { STREAMERZ: {} }, importScripts() {}, setInterval() {},
+    setTimeout(callback, ms) { const id = ++nextTimer; state.timers.set(id, { callback, ms }); return id; },
+    clearTimeout(id) { state.timers.delete(id); }, WebSocket: Socket, console });
   vm.runInContext(readFileSync(new URL("../assets/tiktok-extension/bridge.js", import.meta.url), "utf8"), context);
   const call = request => vm.runInContext(`handle(${JSON.stringify(request)})`, context);
   return { state, context, call };
@@ -157,4 +161,17 @@ test("reconnecting rereads pairing settings, wakes on setup tab, and cleans up s
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(state.tabs.some(t => (t.url || "").includes("tiktok-setup.html")), false);
   assert.equal(state.tabs.length, 1);
+});
+
+
+test("activity replaces the idle timer and expiry releases the hidden context", async () => {
+  const { state, call } = worker();
+  await call({ op: "page" });
+  await call({ op: "page" });
+  assert.equal(state.timers.size, 1);
+  const timer = [...state.timers.values()][0];
+  assert.equal(timer.ms, 90000);
+  timer.callback();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(state.contexts.length, 0);
 });

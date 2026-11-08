@@ -28,7 +28,6 @@ pub mod plugins;
 mod processes;
 mod rest;
 mod songs;
-mod speech;
 mod watchers;
 
 pub const DEFAULT_QUEUE: &str = "00000000-0000-0000-0000-000000000000";
@@ -140,9 +139,6 @@ struct State {
     chat_lines: u64,
     /// The running timers, stopped when timers change.
     timers: Vec<tokio::task::AbortHandle>,
-    /// The speech recognizer, while an action uses Speech to Text (`speech.rs`).
-    speech: Option<(crate::speech::Listening, tokio::task::AbortHandle)>,
-    voice_input: (String, String),
     /// The Stream Deck plugins connected (`streamdeck.rs`): their ids and what pushes to them.
     stream_decks: Vec<(u64, tokio::sync::mpsc::UnboundedSender<String>)>,
     /// The running file watchers and tails (`watchers.rs`).
@@ -1012,10 +1008,6 @@ impl Engine {
                 "instanceName": instance_name
             })
         });
-    }
-
-    pub fn set_voice_input(self: &Rc<Self>, device_id: &str, device_name: &str) {
-        self.st.borrow_mut().voice_input = (device_id.to_string(), device_name.to_string());
     }
 
     pub fn fire_chat_window_action(
@@ -2287,18 +2279,22 @@ pub(crate) mod tests {
             .enable_all()
             .build()
             .unwrap();
+        crate::capture(true);
         tokio::task::LocalSet::new().block_on(&rt, f);
-        let mut out = Vec::new();
-        crate::status(|s| {
-            out = s
-                .log
-                .iter()
-                .filter(|x| x.2.starts_with("T "))
-                .map(|x| x.2.clone())
-                .collect();
-            s.log.clear();
+        crate::capture(false)
+            .into_iter()
+            .filter(|line| line.starts_with("T "))
+            .collect()
+    }
+
+    #[test]
+    fn a_tests_log_survives_shared_history_being_cleared() {
+        let _guard = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let out = run(async {
+            crate::say("T this test".into());
+            crate::status(|status| status.log.clear());
         });
-        out
+        assert_eq!(out, ["T this test"]);
     }
 
     pub(crate) async fn settle() {
@@ -2603,47 +2599,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn inputs_hotkeys_midi_and_voice_control() {
+    fn inputs_hotkeys_and_midi() {
         let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-
-        // 1. Actions with triggers
-        let a_voice_dict = json!({
-            "id": "a_dict",
-            "name": "Speech Dictation",
-            "enabled": true,
-            "group": "",
-            "queue": crate::engine::DEFAULT_QUEUE,
-            "triggers": [{
-                "id": "t_dict",
-                "type": crate::inputs::T_SPEECH_DICTATION,
-                "enabled": true,
-                "culture": "en-US"
-            }],
-            "subActions": [log("T dictation %spokenText% %spokenTextConfidencePercent%")]
-        });
-
-        let a_voice_cmd = json!({
-            "id": "a_cmd",
-            "name": "Speech Command",
-            "enabled": true,
-            "group": "",
-            "queue": crate::engine::DEFAULT_QUEUE,
-            "triggers": [{
-                "id": "t_cmd",
-                "type": crate::inputs::T_SPEECH_COMMAND,
-                "enabled": true,
-                "commandId": "vcmd1"
-            }],
-            "subActions": [
-                log("T speech_cmd %commandId% %spokenCommand%"),
-                // Change voice command state and audio device
-                json!({"type": crate::inputs::S_SET_VOICE_COMMAND, "commandId": "vcmd1", "command": "turn off the lights"}),
-                json!({"type": crate::inputs::S_SET_VOICE_COMMAND_STATE, "commandId": "vcmd1", "state": 1}),
-                json!({"type": crate::inputs::S_SET_VOICE_INPUT, "audioDeviceId": "mic1", "audioDeviceName": "Blue Yeti"}),
-                // Test keyboard press subaction
-                json!({"type": crate::inputs::S_KEYBOARD_PRESS, "key": "F13", "modifiers": 2})
-            ]
-        });
 
         let a_midi = json!({
             "id": "a_midi",
@@ -2661,10 +2618,11 @@ pub(crate) mod tests {
             }],
             "subActions": [
                 log("T midi %deviceName% %channel% %noteName% %velocity%"),
-                // MIDI subactions
+                // MIDI subactions and keyboard press
                 json!({"type": crate::inputs::S_MIDI_NOTE_ON, "device": "Launchpad", "name": "L1", "channel": 1, "note": 60, "velocity": 127, "sendNoteOff": true, "duration": 100}),
                 json!({"type": crate::inputs::S_MIDI_CONTROL_CHANGE, "device": "Launchpad", "name": "L1", "channel": 1, "controller": 7, "value": 100}),
-                json!({"type": crate::inputs::S_MIDI_GENERIC, "device": "Launchpad", "name": "L1", "command": "PitchBend", "channel": 1, "data1": 0, "data2": 64})
+                json!({"type": crate::inputs::S_MIDI_GENERIC, "device": "Launchpad", "name": "L1", "command": "PitchBend", "channel": 1, "data1": 0, "data2": 64}),
+                json!({"type": crate::inputs::S_KEYBOARD_PRESS, "key": "F13", "modifiers": 2})
             ]
         });
 
@@ -2701,23 +2659,10 @@ pub(crate) mod tests {
         let e = engine(json!({
             "blocking": false,
             "queues": [],
-            "actions": [a_voice_dict, a_voice_cmd, a_midi, a_input_key, a_input_mouse]
+            "actions": [a_midi, a_input_key, a_input_mouse]
         }));
 
         let out = run(async {
-            // Fire speech dictation
-            e.change(|c| {
-                c.voice_commands = vec![json!({"id": "vcmd1", "name": "Lights On", "enabled": true,
-                    "command": "turn on the lights", "location": 0})
-                .as_object()
-                .unwrap()
-                .clone()];
-            });
-            // What the recognizer heard: Dictation, and the command it says.
-            e.speech_heard(&crate::speech::Heard {
-                text: "turn on the lights".into(),
-                confidence: 0.95,
-            });
             // MIDI note on (0x90 = NoteOn, channel 1)
             e.midi_fire(
                 "Launchpad",
@@ -2739,23 +2684,10 @@ pub(crate) mod tests {
             settle().await;
         });
 
-        assert!(
-            out.contains(&"T dictation turn on the lights 95".to_string()),
-            "{out:?}"
-        );
-        assert!(out.contains(&"T speech_cmd vcmd1 turn on the lights".to_string()));
         assert!(out.contains(&"T midi Launchpad 1 C5 100".to_string()), "{out:?}");
         assert_eq!(out.iter().filter(|l| l.starts_with("T key")).count(), 1, "{out:?}");
         assert!(out.contains(&"T key -4095 18 True False True".to_string()), "{out:?}");
         assert!(out.contains(&"T mouse 2 1 300 450".to_string()), "{out:?}");
-
-        // Check voice command state and voice input changes
-        let st = e.st.borrow();
-        let c = e.config();
-        assert_eq!(c.voice_commands[0]["command"], "turn off the lights");
-        assert_eq!(c.voice_commands[0]["enabled"], false);
-        assert_eq!(st.voice_input.0, "mic1");
-        assert_eq!(st.voice_input.1, "Blue Yeti");
     }
 
     #[test]

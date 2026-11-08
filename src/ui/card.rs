@@ -294,7 +294,7 @@ fn badge_row(cmds: &Cmds, platform: &str, badges: Rc<Vec<(String, String, String
 /// Opens the card near `at` (a point in the window).
 pub fn open(cmds: &Cmds, who: Who, at: (i32, i32)) {
     // Check before any card data, profile or background image is requested.
-    if crate::memory_saver() || !query(cmds, |e| e.config().window.chat.save_history).unwrap_or(false) {
+    if !query(cmds, |e| e.config().window.chat.save_history || crate::memory_saver()).unwrap_or(false) {
         return;
     }
     let Some(host) = app::first_window() else { return };

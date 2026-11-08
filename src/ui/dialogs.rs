@@ -1038,7 +1038,6 @@ pub fn json_editor_reference(
 }
 
 /// Pick one of `items` using the tree picker dialog.
-#[allow(dead_code)]
 pub fn pick(title: &str, items: &[String]) -> Option<usize> {
     let pick_items: Vec<super::picker::PickItem> = items
         .iter()

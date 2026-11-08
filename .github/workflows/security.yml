@@ -3,8 +3,16 @@ name: security
 
 on:
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LOCALIZATION.md'
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LOCALIZATION.md'
   schedule:
     - cron: "17 5 * * 1"
   workflow_dispatch:

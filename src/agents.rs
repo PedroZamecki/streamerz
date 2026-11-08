@@ -76,7 +76,36 @@ impl Places {
             path.push(home.join(d));
         }
         #[cfg(windows)]
-        path.push(config.join("npm"));
+        {
+            path.push(config.join("npm"));
+            path.push(local.join("npm"));
+            path.push(home.join(".opencode").join("bin"));
+            path.push(home.join("scoop").join("shims"));
+            path.push(home.join("scoop").join("apps").join("opencode").join("current"));
+            path.push(local.join("Programs").join("opencode-desktop"));
+            path.push(
+                local
+                    .join("Programs")
+                    .join("opencode-desktop")
+                    .join("resources")
+                    .join("bin"),
+            );
+            path.push(local.join("Programs").join("OpenCode"));
+            path.push(local.join("Programs").join("opencode"));
+            path.push(local.join("opencode"));
+            path.push(PathBuf::from(r"C:\Program Files\OpenCode"));
+            path.push(PathBuf::from(r"C:\Program Files\opencode"));
+            path.push(PathBuf::from(r"C:\ProgramData\chocolatey\bin"));
+            if let Some(p) = std::env::var_os("OPENCODE_INSTALL_DIR").map(PathBuf::from) {
+                path.push(p.join("bin"));
+                path.push(p);
+            }
+            if let Some(p) = std::env::var_os("OPENCODE_BIN").map(PathBuf::from) {
+                if let Some(d) = p.parent() {
+                    path.push(d.to_path_buf());
+                }
+            }
+        }
         #[cfg(not(windows))]
         path.extend(["/usr/local/bin", "/opt/homebrew/bin"].map(PathBuf::from));
         Places {
@@ -94,10 +123,33 @@ impl Places {
         #[cfg(windows)]
         let names: Vec<String> = ["exe", "cmd", "bat", "ps1"]
             .iter()
-            .map(|x| format!("{name}.{x}"))
+            .flat_map(|x| {
+                let mut v = vec![format!("{name}.{x}")];
+                if name == "opencode" {
+                    v.push(format!("OpenCode.{x}"));
+                    v.push(format!("opencode-cli.{x}"));
+                } else if name == "zed" {
+                    v.push(format!("zedit.{x}"));
+                } else if name == "kiro-cli" {
+                    v.push(format!("kiro.{x}"));
+                }
+                v
+            })
             .collect();
         #[cfg(not(windows))]
-        let names = [name.to_string()];
+        let names = if name == "opencode" {
+            vec![
+                "opencode".to_string(),
+                "opencode-cli".to_string(),
+                "OpenCode".to_string(),
+            ]
+        } else if name == "zed" {
+            vec!["zed".to_string(), "zedit".to_string()]
+        } else if name == "kiro-cli" {
+            vec!["kiro-cli".to_string(), "kiro".to_string()]
+        } else {
+            vec![name.to_string()]
+        };
         self.path
             .iter()
             .flat_map(|d| names.iter().map(move |n| d.join(n)))
@@ -119,6 +171,162 @@ pub struct Kind {
 }
 
 const MCP: Format = Format::Json("mcpServers", Extra::None);
+
+fn opencode_file(p: &Places) -> PathBuf {
+    if let Some(f) = std::env::var_os("OPENCODE_CONFIG").map(PathBuf::from) {
+        if f.is_file() && (p.home != Path::new("/h") || f.starts_with("/h")) {
+            return f;
+        }
+    }
+    if let Some(dir) = std::env::var_os("OPENCODE_CONFIG_DIR").map(PathBuf::from) {
+        if p.home != Path::new("/h") || dir.starts_with("/h") {
+            let jsonc = dir.join("opencode.jsonc");
+            if jsonc.is_file() {
+                return jsonc;
+            }
+            let json = dir.join("opencode.json");
+            if json.is_file() {
+                return json;
+            }
+        }
+    }
+    let default_dir = p.home.join(".config").join("opencode");
+    let default_json = default_dir.join("opencode.json");
+    let default_jsonc = default_dir.join("opencode.jsonc");
+    if default_json.is_file() {
+        return default_json;
+    }
+    if default_jsonc.is_file() {
+        return default_jsonc;
+    }
+    #[cfg(windows)]
+    {
+        let win_json = p.config.join("opencode").join("opencode.json");
+        let win_jsonc = p.config.join("opencode").join("opencode.jsonc");
+        if win_json.is_file() {
+            return win_json;
+        }
+        if win_jsonc.is_file() {
+            return win_jsonc;
+        }
+        let local_json = p.local.join("opencode").join("opencode.json");
+        let local_jsonc = p.local.join("opencode").join("opencode.jsonc");
+        if local_json.is_file() {
+            return local_json;
+        }
+        if local_jsonc.is_file() {
+            return local_jsonc;
+        }
+    }
+    default_json
+}
+
+fn opencode_app(p: &Places) -> PathBuf {
+    for d in [
+        p.home.join(".opencode"),
+        p.home.join(".config").join("opencode"),
+        p.config.join("opencode"),
+        p.local.join("opencode"),
+        p.local.join("Programs").join("opencode-desktop"),
+        p.local.join("Programs").join("OpenCode"),
+        p.local.join("Programs").join("opencode"),
+        p.config.join("ai.opencode.desktop"),
+    ] {
+        if d.is_dir() {
+            return d;
+        }
+    }
+    #[cfg(windows)]
+    for d in [
+        PathBuf::from(r"C:\Program Files\OpenCode"),
+        PathBuf::from(r"C:\Program Files\opencode"),
+    ] {
+        if d.is_dir() {
+            return d;
+        }
+    }
+    p.home.join(".opencode")
+}
+
+fn cline_file(p: &Places) -> PathBuf {
+    p.config
+        .join("Code")
+        .join("User")
+        .join("globalStorage")
+        .join("saoudrizwan.claude-dev")
+        .join("settings")
+        .join("cline_mcp_settings.json")
+}
+
+fn cline_app(p: &Places) -> PathBuf {
+    p.config
+        .join("Code")
+        .join("User")
+        .join("globalStorage")
+        .join("saoudrizwan.claude-dev")
+}
+
+fn zed_file(p: &Places) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        p.home
+            .join("Library")
+            .join("Application Support")
+            .join("Zed")
+            .join("settings.json")
+    }
+    #[cfg(windows)]
+    {
+        p.config.join("Zed").join("settings.json")
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        p.config.join("zed").join("settings.json")
+    }
+}
+
+fn zed_app(p: &Places) -> PathBuf {
+    if p.config.join("zed").is_dir() {
+        return p.config.join("zed");
+    }
+    #[cfg(windows)]
+    if p.config.join("Zed").is_dir() {
+        return p.config.join("Zed");
+    }
+    p.config.join("zed")
+}
+
+fn roo_file(p: &Places) -> PathBuf {
+    p.config
+        .join("Code")
+        .join("User")
+        .join("globalStorage")
+        .join("rooveterinaryinc.roo-cline")
+        .join("settings")
+        .join("cline_mcp_settings.json")
+}
+
+fn roo_app(p: &Places) -> PathBuf {
+    p.config
+        .join("Code")
+        .join("User")
+        .join("globalStorage")
+        .join("rooveterinaryinc.roo-cline")
+}
+
+fn auggie_app(p: &Places) -> PathBuf {
+    if p.home.join(".auggie").is_dir() {
+        return p.home.join(".auggie");
+    }
+    p.home.join(".augment")
+}
+
+fn crush_app(p: &Places) -> PathBuf {
+    if p.home.join(".config").join("crush").is_dir() {
+        return p.home.join(".config").join("crush");
+    }
+    p.local.join("crush")
+}
 
 pub const KINDS: &[Kind] = &[
     Kind {
@@ -147,9 +355,8 @@ pub const KINDS: &[Kind] = &[
         name: "OpenCode",
         cli: Some("opencode"),
         format: Format::Json("mcp", Extra::Opencode),
-        // ~/.config on every system.
-        file: |p| p.home.join(".config").join("opencode").join("opencode.json"),
-        app: None,
+        file: opencode_file,
+        app: Some(opencode_app),
     },
     Kind {
         id: "gemini",
@@ -229,7 +436,7 @@ pub const KINDS: &[Kind] = &[
         cli: Some("crush"),
         format: Format::Json("mcp", Extra::Stdio),
         file: |p| p.local.join("crush").join("crush.json"),
-        app: None,
+        app: Some(crush_app),
     },
     Kind {
         id: "amp",
@@ -246,6 +453,62 @@ pub const KINDS: &[Kind] = &[
         format: MCP,
         file: |p| p.home.join(".lmstudio").join("mcp.json"),
         app: Some(|p| p.home.join(".lmstudio")),
+    },
+    Kind {
+        id: "cline",
+        name: "Cline",
+        cli: Some("cline"),
+        format: MCP,
+        file: cline_file,
+        app: Some(cline_app),
+    },
+    Kind {
+        id: "zed",
+        name: "Zed",
+        cli: Some("zed"),
+        format: Format::Json("context_servers", Extra::None),
+        file: zed_file,
+        app: Some(zed_app),
+    },
+    Kind {
+        id: "roo-code",
+        name: "Roo Code",
+        cli: None,
+        format: MCP,
+        file: roo_file,
+        app: Some(roo_app),
+    },
+    Kind {
+        id: "devin",
+        name: "Devin",
+        cli: Some("devin"),
+        format: MCP,
+        file: |p| p.home.join(".devin").join("mcp.json"),
+        app: Some(|p| p.home.join(".devin")),
+    },
+    Kind {
+        id: "vibe",
+        name: "Mistral Vibe",
+        cli: Some("vibe"),
+        format: MCP,
+        file: |p| p.home.join(".vibe").join("mcp.json"),
+        app: Some(|p| p.home.join(".vibe")),
+    },
+    Kind {
+        id: "kimi",
+        name: "Kimi Code",
+        cli: Some("kimi"),
+        format: MCP,
+        file: |p| p.home.join(".kimi").join("mcp.json"),
+        app: Some(|p| p.home.join(".kimi")),
+    },
+    Kind {
+        id: "auggie",
+        name: "Auggie",
+        cli: Some("auggie"),
+        format: MCP,
+        file: |p| p.home.join(".augment").join("mcp.json"),
+        app: Some(auggie_app),
     },
 ];
 
@@ -351,10 +614,101 @@ pub fn found(places: &Places, server: &Server) -> Vec<Found> {
         .collect()
 }
 
+fn strip_jsonc_comments(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let chars: Vec<char> = input.chars().collect();
+    let n = chars.len();
+    let mut i = 0;
+    let mut in_str = false;
+    let mut escape = false;
+
+    while i < n {
+        let c = chars[i];
+        if in_str {
+            out.push(c);
+            if escape {
+                escape = false;
+            } else if c == '\\' {
+                escape = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if c == '"' {
+            in_str = true;
+            out.push(c);
+            i += 1;
+        } else if c == '/' && i + 1 < n && chars[i + 1] == '/' {
+            i += 2;
+            while i < n && chars[i] != '\n' {
+                i += 1;
+            }
+        } else if c == '/' && i + 1 < n && chars[i + 1] == '*' {
+            i += 2;
+            while i + 1 < n && !(chars[i] == '*' && chars[i + 1] == '/') {
+                i += 1;
+            }
+            i = (i + 2).min(n);
+        } else if c == ',' {
+            let mut j = i + 1;
+            let mut is_trailing = false;
+            while j < n {
+                let next = chars[j];
+                if next.is_whitespace() {
+                    j += 1;
+                } else if next == '/' && j + 1 < n && chars[j + 1] == '/' {
+                    j += 2;
+                    while j < n && chars[j] != '\n' {
+                        j += 1;
+                    }
+                } else if next == '/' && j + 1 < n && chars[j + 1] == '*' {
+                    j += 2;
+                    while j + 1 < n && !(chars[j] == '*' && chars[j + 1] == '/') {
+                        j += 1;
+                    }
+                    j = (j + 2).min(n);
+                } else if next == '}' || next == ']' {
+                    is_trailing = true;
+                    break;
+                } else {
+                    break;
+                }
+            }
+            if !is_trailing {
+                out.push(',');
+            }
+            i += 1;
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    out
+}
+
 fn read_json(file: &Path) -> Result<Value, String> {
     match std::fs::read(file) {
         Ok(b) if b.iter().all(u8::is_ascii_whitespace) => Ok(json!({})),
-        Ok(b) => serde_json::from_slice(&b).map_err(|e| format!("{}: {e}", file.display())),
+        Ok(b) => {
+            if let Ok(v) = serde_json::from_slice(&b) {
+                return Ok(v);
+            }
+            let is_jsonc = file.extension().is_some_and(|e| e == "jsonc")
+                || file.to_string_lossy().contains("opencode")
+                || file.to_string_lossy().contains("zed");
+            if is_jsonc {
+                if let Ok(s) = std::str::from_utf8(&b) {
+                    let cleaned = strip_jsonc_comments(s);
+                    if let Ok(v) = serde_json::from_str(&cleaned) {
+                        return Ok(v);
+                    }
+                }
+            }
+            serde_json::from_slice(&b).map_err(|e| format!("{}: {e}", file.display()))
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(json!({})),
         Err(e) => Err(format!("{}: {e}", file.display())),
     }
@@ -364,7 +718,15 @@ fn state(format: Format, file: &Path, server: &Server) -> State {
     match format {
         Format::Json(key, extra) => {
             let v = read_json(file).unwrap_or_default();
-            match v.get(key).and_then(|m| m.get(&server.name)) {
+            let entry = if extra == Extra::Opencode {
+                v.get("mcp")
+                    .and_then(|m| m.get("servers"))
+                    .and_then(|s| s.get(&server.name))
+                    .or_else(|| v.get("mcp").and_then(|m| m.get(&server.name)))
+            } else {
+                v.get(key).and_then(|m| m.get(&server.name))
+            };
+            match entry {
                 None => State::Ready,
                 // Other settings the user added (timeouts...) don't count.
                 Some(e) if same(e, &server.entry(extra)) => State::Added,
@@ -433,7 +795,39 @@ pub fn set(kind: &Kind, places: &Places, server: &Server, on: bool) -> Result<()
             if !v.is_object() {
                 return Err(format!("{}: not a JSON object", file.display()));
             }
-            if on {
+            if extra == Extra::Opencode {
+                if on {
+                    if !v["mcp"].is_object() {
+                        v["mcp"] = json!({});
+                    }
+                    if !v["mcp"]["servers"].is_object() {
+                        v["mcp"]["servers"] = json!({});
+                    }
+                    v["mcp"]["servers"][&server.name] = server.entry(extra);
+                    if let Some(m) = v.get_mut("mcp").and_then(Value::as_object_mut) {
+                        m.shift_remove(&server.name);
+                    }
+                } else {
+                    let mut removed = false;
+                    if let Some(servers) = v
+                        .get_mut("mcp")
+                        .and_then(|m| m.get_mut("servers"))
+                        .and_then(Value::as_object_mut)
+                    {
+                        if servers.shift_remove(&server.name).is_some() {
+                            removed = true;
+                        }
+                    }
+                    if let Some(m) = v.get_mut("mcp").and_then(Value::as_object_mut) {
+                        if m.shift_remove(&server.name).is_some() {
+                            removed = true;
+                        }
+                    }
+                    if !removed {
+                        return Ok(());
+                    }
+                }
+            } else if on {
                 if !v[key].is_object() {
                     v[key] = json!({});
                 }
@@ -506,7 +900,15 @@ pub fn workspace(server: &Server) -> Result<PathBuf, String> {
          anything. Answer in the language the user writes in.\n",
         server.name
     );
-    for f in ["AGENTS.md", "CLAUDE.md", "GEMINI.md", "QWEN.md"] {
+    for f in [
+        "AGENTS.md",
+        "CLAUDE.md",
+        "GEMINI.md",
+        "QWEN.md",
+        "OPENCODE.md",
+        "ZED.md",
+        "CLINE.md",
+    ] {
         let p = dir.join(f);
         if std::fs::read_to_string(&p).ok().as_deref() != Some(notes.as_str()) {
             std::fs::write(&p, &notes).map_err(|e| e.to_string())?;
@@ -752,5 +1154,74 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), KINDS.len());
         assert!(KINDS.iter().all(|k| (k.file)(&p).starts_with("/h")));
+    }
+
+    #[test]
+    fn opencode_v2_nested_servers_format_is_detected_and_managed() {
+        let d = tmp("opencode_v2");
+        let p = places(&d);
+        let s = server(Some("ws://127.0.0.1:8090/"));
+        let f = d.join(".config").join("opencode").join("opencode.json");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+
+        // Initially ready
+        assert_eq!(state(kind("opencode").format, &f, &s), State::Ready);
+
+        // Set writes OpenCode v2 structure: mcp -> servers -> streamerz
+        set(kind("opencode"), &p, &s, true).unwrap();
+        let v: Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
+        assert!(v["mcp"]["servers"].get("streamerz").is_some());
+        assert_eq!(state(kind("opencode").format, &f, &s), State::Added);
+
+        // Removing clears it from servers
+        set(kind("opencode"), &p, &s, false).unwrap();
+        let v_after: Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
+        assert!(v_after["mcp"]["servers"].get("streamerz").is_none());
+        assert_eq!(state(kind("opencode").format, &f, &s), State::Ready);
+
+        // Also detects legacy v1 mcp -> streamerz format as Added
+        std::fs::write(
+            &f,
+            json!({ "mcp": { "streamerz": s.entry(Extra::Opencode) } }).to_string(),
+        )
+        .unwrap();
+        assert_eq!(state(kind("opencode").format, &f, &s), State::Added);
+
+        // Setting migrates legacy v1 to v2 servers table
+        set(kind("opencode"), &p, &s, true).unwrap();
+        let v_migrated: Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
+        assert!(v_migrated["mcp"]["servers"].get("streamerz").is_some());
+        assert!(v_migrated["mcp"].get("streamerz").is_none());
+
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn opencode_v2_jsonc_with_comments_is_supported() {
+        let d = tmp("opencode_jsonc");
+        let p = places(&d);
+        let s = server(None);
+        let f = d.join(".config").join("opencode").join("opencode.jsonc");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+
+        let jsonc = r#"{
+            // OpenCode v2 configuration
+            "mcp": {
+                /* local servers */
+                "servers": {
+                    "other": { "type": "local", "command": ["other-tool"], },
+                },
+            },
+        }"#;
+        std::fs::write(&f, jsonc).unwrap();
+
+        // State detection works despite comments and trailing commas
+        assert_eq!(state(kind("opencode").format, &f, &s), State::Ready);
+
+        // Adding updates the jsonc configuration
+        set(kind("opencode"), &p, &s, true).unwrap();
+        assert_eq!(state(kind("opencode").format, &f, &s), State::Added);
+
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

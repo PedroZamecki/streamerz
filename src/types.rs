@@ -1,6 +1,5 @@
 //! Streamer.bot's type codes and their names, generated from Streamer.bot.exe's metadata (see
 //! DEVELOPING.md). Streamerz extensions are marked separately.
-#![allow(dead_code)] // ponytail: the engine (phase 3) and the editor (phase 5) use it.
 
 /// Sub-action `type` codes (`subActions[].type`).
 pub const SUB_ACTIONS: &[(u32, &str)] = &[
@@ -195,14 +194,11 @@ pub const SUB_ACTIONS: &[(u32, &str)] = &[
     (1015, "GetCommandGroupState"),
     (1016, "GetActionState"),
     (1017, "GetActionGroupState"),
-    (1018, "SetVoiceControlCommand"),
-    (1019, "SetVoiceControlCommandState"),
     (1020, "LogEntry"),
     (1021, "ReadSpecificLineFromFile"),
     (1022, "SetActionQueueBlockingState"),
     (1023, "GetInput"),
     (1024, "ToastNotification"),
-    (1025, "SetVoiceControlInput"),
     (1026, "ResetFirstWords"),
     (1027, "ResetCredits"),
     (1028, "SetSubActionState"),
@@ -561,8 +557,6 @@ pub const TRIGGERS: &[(u32, &str)] = &[
     (204, "StreamlabsDisconnected"),
     (205, "StreamlabsCharityDonation"),
     (206, "StreamlabsAuthenticated"),
-    (301, "SpeechToTextDictation"),
-    (302, "SpeechToTextCommand"),
     (401, "CommandTriggered"),
     (402, "CommandCooldown"),
     (451, "TwitchChatEmoteModeOn"),
@@ -1609,18 +1603,6 @@ pub const SUB_ACTION_INFO: &[(u32, &str, &str, &[&str])] = &[
     (1015, "Get Command Group State", "Core/Commands", &["groupName"]),
     (1016, "Get Action State", "Core/Actions", &["actionId"]),
     (1017, "Get Action Group State", "Core/Actions", &["groupName"]),
-    (
-        1018,
-        "Set Voice Control Command",
-        "Core/Voice Control",
-        &["commandId", "command"],
-    ),
-    (
-        1019,
-        "Set Voice Control Command State",
-        "Core/Voice Control",
-        &["commandId", "state"],
-    ),
     (1020, "Log", "Core/Misc", &["logLevel", "message"]),
     (
         1021,
@@ -1645,12 +1627,6 @@ pub const SUB_ACTION_INFO: &[(u32, &str, &str, &[&str])] = &[
         "Toast Notification",
         "Core/System",
         &["toastId", "title", "text", "attribution", "iconPath"],
-    ),
-    (
-        1025,
-        "Set Voice Control Input",
-        "Settings",
-        &["audioDeviceId", "audioDeviceName"],
     ),
     (1026, "Reset First Words", "Settings", &[]),
     (1027, "Reset Credits", "Settings", &[]),

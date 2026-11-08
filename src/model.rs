@@ -1,7 +1,6 @@
 //! Streamer.bot's data: its `actions.json` (v24) and import/export strings, read and written back
 //! byte-for-byte the way Streamer.bot (Newtonsoft.Json) writes them. Field names and order are
 //! Streamer.bot's; unknown fields are kept (at the end of their object) so nothing is lost.
-#![allow(dead_code)] // ponytail: the engine (phase 3) and the editor (phase 5) use it.
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};

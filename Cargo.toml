@@ -57,6 +57,14 @@ opt-level = 2
 inherits = "dev"
 opt-level = 1
 
+# CI test profile: fast compilation, opt-level 1 for speedy scenario execution, no LTO
+[profile.ci-test]
+inherits = "dev"
+opt-level = 1
+debug = false
+incremental = false
+
+
 [profile.release]
 opt-level = "z"
 lto = "thin"
@@ -75,7 +83,7 @@ libc = "0.2"
 [target."cfg(windows)".dependencies]
 fltk = { version = "1.5.23", features = ["static-msvcrt"] }
 tray-icon = { version = "0.26.0", default-features = false }
-windows = { version = "0.62", features = ["Data_Xml_Dom", "Foundation", "Foundation_Collections", "Media_Control", "UI_Notifications", "Win32_Media_Speech", "Win32_System_Com", "Win32_System_Ole", "Win32_System_Variant", "Win32_System_WinRT"] }
+windows = { version = "0.62", features = ["Data_Xml_Dom", "Foundation", "Foundation_Collections", "Media_Control", "UI_Notifications", "Win32_System_WinRT"] }
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Globalization",
@@ -100,3 +108,7 @@ embed-resource = "3.0.11"
 [dev-dependencies]
 wasmi = { version = "2", default-features = false, features = ["std", "validate", "portable-dispatch", "wat"] }
 wat = "1"
+
+[patch.crates-io]
+tray-icon = { path = "patches/tray-icon" }
+

@@ -1,0 +1,51 @@
+name: publish-extensions
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "assets/tiktok-extension/**"
+      - "dev/package-extensions.py"
+      - "dev/publish-extensions.py"
+  workflow_dispatch:
+
+jobs:
+  package-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Restore extension build cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/tiktok-extension-cache.json
+          key: tiktok-extension-${{ hashFiles('assets/tiktok-extension/**') }}
+          restore-keys: |
+            tiktok-extension-
+
+      - name: Check changes, package, and auto-publish
+        env:
+          CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
+          CHROME_CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
+          CHROME_REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
+          CHROME_EXTENSION_ID: ${{ secrets.CHROME_EXTENSION_ID }}
+          EDGE_PRODUCT_ID: ${{ secrets.EDGE_PRODUCT_ID }}
+          EDGE_CLIENT_ID: ${{ secrets.EDGE_CLIENT_ID }}
+          EDGE_TENANT_ID: ${{ secrets.EDGE_TENANT_ID }}
+          EDGE_API_KEY: ${{ secrets.EDGE_API_KEY }}
+          AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+          AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          python3 dev/publish-extensions.py
+
+      - name: Upload extension artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamerz-tiktok-extensions
+          path: dist/*.zip

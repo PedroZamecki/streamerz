@@ -90,7 +90,7 @@
       "remote boom red from inst1", "signal n=5 timeout=False"]}
   },
   {
-    "name": "devices: MIDI out to a missing device, Stream Deck with no plugin, Decks skipped, voice control",
+    "name": "devices: MIDI out to a missing device, Stream Deck with no plugin, Decks skipped",
     "debug": true,
     "actions": [{"name": "dev", "subActions": [
       {"type": 9002, "device": "no such pad", "channel": 2, "controller": 7, "value": 64},
@@ -103,8 +103,6 @@
       {"type": 21005, "deckName": "Main", "itemName": "Mute", "name": "mic", "state": 0}, {"type": 21006, "deckName": "Main", "itemName": "Mute", "value": "1", "state": 0},
       {"type": 21007, "deckName": "Main", "title": "Hi", "description": "d"}, {"type": 21008, "deckName": "Main", "page": 2},
       {"type": 21009, "deckName": "Main"}, {"type": 21010, "deckName": "Main"},
-      {"type": 1018, "commandId": "v1", "command": "lights off"}, {"type": 1019, "commandId": "v1", "state": 1},
-      {"type": 1025, "audioDeviceId": "mic1", "audioDeviceName": "Blue Yeti"},
       {"type": 1012, "key": "NoSuchKey", "modifiers": 0},
       {"type": 1020, "logLevel": 2, "message": "devices done"}]}],
     "steps": [{"run": "dev"}],

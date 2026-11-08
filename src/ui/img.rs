@@ -46,6 +46,7 @@ pub fn logo(name: &str, size: i32) -> Option<SvgImage> {
         "Codex" => include_str!("../../assets/icons/codex.svg"),
         "OpenCode" => include_str!("../../assets/icons/opencode.svg"),
         "Gemini CLI" => include_str!("../../assets/icons/gemini.svg"),
+        "Antigravity" => include_str!("../../assets/icons/antigravity.svg"),
         "Cursor" => include_str!("../../assets/icons/cursor.svg"),
         "Windsurf" => include_str!("../../assets/icons/windsurf.svg"),
         "VS Code (Copilot)" => include_str!("../../assets/icons/vscode.svg"),
@@ -53,7 +54,24 @@ pub fn logo(name: &str, size: i32) -> Option<SvgImage> {
         "LM Studio" => include_str!("../../assets/icons/lmstudio.svg"),
         "Qwen Code" => include_str!("../../assets/icons/qwen.svg"),
         "Amp" => include_str!("../../assets/icons/amp.svg"),
+        "Kiro" => include_str!("../../assets/icons/kiro.svg"),
+        "Crush" => include_str!("../../assets/icons/crush.svg"),
+        "Cline" => include_str!("../../assets/icons/cline.svg"),
+        "Zed" => include_str!("../../assets/icons/zed.svg"),
+        "Devin" => include_str!("../../assets/icons/devin.svg"),
+        "Mistral Vibe" | "Mistral" | "Vibe" => include_str!("../../assets/icons/mistral.svg"),
+        "Kimi Code" | "Kimi" => include_str!("../../assets/icons/kimi.svg"),
+        "Auggie" => include_str!("../../assets/icons/auggie.svg"),
+        "Roo Code" => include_str!("../../assets/icons/roocode.svg"),
         "Pally.gg" => include_str!("../../assets/icons/pallygg.svg"),
+        "Google Chrome" | "Chrome" => include_str!("../../assets/icons/googlechrome.svg"),
+        "Microsoft Edge" | "Edge" => include_str!("../../assets/icons/microsoftedge.svg"),
+        "Brave" => include_str!("../../assets/icons/brave.svg"),
+        "Chromium" => include_str!("../../assets/icons/chromium.svg"),
+        "Vivaldi" => include_str!("../../assets/icons/vivaldi.svg"),
+        "Opera" => include_str!("../../assets/icons/opera.svg"),
+        "Opera GX" => include_str!("../../assets/icons/operagx.svg"),
+        "Mozilla Firefox" | "Firefox" => include_str!("../../assets/icons/firefox.svg"),
         _ => return None,
     };
     let mut i = SvgImage::from_data(svg).ok()?;
@@ -206,7 +224,11 @@ impl Shown {
         if let Some(old) = self.pics.insert(key, (pic, self.clock, size)) {
             self.bytes -= old.2;
         }
-        while self.bytes > SHOWN_BYTES && self.pics.len() > 1 {
+        self.evict_to(SHOWN_BYTES);
+    }
+
+    fn evict_to(&mut self, target: usize) {
+        while self.bytes > target && self.pics.len() > 1 {
             let Some(oldest) = self.pics.iter().min_by_key(|e| e.1 .1).map(|e| e.0.clone()) else {
                 break;
             };
@@ -217,15 +239,7 @@ impl Shown {
     }
 
     fn trim(&mut self) {
-        const TARGET: usize = 2 * 1024 * 1024;
-        while self.bytes > TARGET && self.pics.len() > 1 {
-            let Some(oldest) = self.pics.iter().min_by_key(|e| e.1 .1).map(|e| e.0.clone()) else {
-                break;
-            };
-            if let Some(gone) = self.pics.remove(&oldest) {
-                self.bytes -= gone.2;
-            }
-        }
+        self.evict_to(2 * 1024 * 1024);
         self.pics.shrink_to_fit();
     }
 }
@@ -859,6 +873,10 @@ mod tests {
         assert!(shown.get(&key(1)).is_none(), "the least recently used is gone");
         assert!(shown.get(&key(0)).is_some() && shown.get(&key(2)).is_some());
         assert!(shown.bytes <= SHOWN_BYTES);
+        shown.trim();
+        assert_eq!(shown.pics.len(), 1, "idle trim retains the newest picture");
+        assert!(shown.get(&key(2)).is_some());
+        assert_eq!(shown.bytes, 4 * 1024 * 1024);
     }
 
     #[test]

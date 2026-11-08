@@ -10,7 +10,25 @@ name: build
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - '.githooks/**'
+      - 'commitlint.config.mjs'
+      - 'CONTRIBUTING.md'
+      - 'LOCALIZATION.md'
+      - 'SECURITY.md'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - '.githooks/**'
+      - 'commitlint.config.mjs'
+      - 'CONTRIBUTING.md'
+      - 'LOCALIZATION.md'
+      - 'SECURITY.md'
   workflow_dispatch:
 
 # Read only by default: only the release job writes (a fork's pull request never can).
@@ -26,6 +44,10 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  RUSTC_WRAPPER: "sccache"
+  SCCACHE_GHA_ENABLED: "true"
+  CMAKE_C_COMPILER_LAUNCHER: "sccache"
+  CMAKE_CXX_COMPILER_LAUNCHER: "sccache"
 
 jobs:
   version:
@@ -43,12 +65,15 @@ jobs:
         run: echo "hash=$(git rev-parse HEAD^{tree})" >> "$GITHUB_OUTPUT"
       - id: next
         shell: bash
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
           last=$(git describe --tags --abbrev=0 2>/dev/null || true)
           last=${last:-v0.0.0}
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            log=$(git log origin/${{ github.base_ref }}..HEAD --format=%s 2>/dev/null || true)
-            if [ -z "$log" ]; then log="${{ github.event.pull_request.title }}"; fi
+            log=$(git log "origin/$BASE_REF..HEAD" --format=%s 2>/dev/null || true)
+            if [ -z "$log" ]; then log="$PR_TITLE"; fi
           else
             log=$(git log ${last:+"$last.."}HEAD --format=%s)
           fi
@@ -81,10 +106,48 @@ jobs:
             fi
           done
 
+  # Fast Linux check gate: fails in ~20 seconds on broken code before expensive Windows runner boots
+  check:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && !github.event.pull_request.draft
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.apt-cache
+          key: apt-deps-${{ runner.os }}-${{ hashFiles('.github/workflows/*.yml') }}
+          restore-keys: |
+            apt-deps-${{ runner.os }}-
+      - name: Install dependencies
+        run: |
+          mkdir -p ~/.apt-cache
+          sudo cp -n ~/.apt-cache/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list /etc/apt/sources.list.d/* /etc/apt/apt-mirrors.txt 2>/dev/null || true
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libx11-dev libxext-dev libxft-dev libxinerama-dev libxcursor-dev libxrender-dev \
+            libxfixes-dev libpango1.0-dev libgl1-mesa-dev libglu1-mesa-dev libwayland-dev \
+            wayland-protocols libdbus-1-dev libxkbcommon-dev libegl-dev libopengl-dev
+          cp -n /var/cache/apt/archives/*.deb ~/.apt-cache/ 2>/dev/null || true
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+        with:
+          version: "v0.10.0"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "streamerz-deps"
+          cache-all-crates: false
+          cache-workspace-crates: false
+      - name: Fast check
+        run: cargo check --locked
+
   windows:
-    needs: version
-    if: always() && (github.event_name != 'push' || needs.version.outputs.tag != '')
+    needs: [version, check]
+    if: always() && (needs.check.result == 'success' || needs.check.result == 'skipped') && (github.event_name != 'push' || needs.version.outputs.tag != '') && !github.event.pull_request.draft
     runs-on: windows-latest
+    env:
+      CMAKE_GENERATOR: "Ninja"
     defaults:
       run:
         shell: bash
@@ -99,8 +162,17 @@ jobs:
           github-token: ${{ github.token }}
       - if: needs.version.outputs.reuse == ''
         uses: actions/checkout@v4
+      - name: Set up sccache
+        if: needs.version.outputs.reuse == ''
+        uses: mozilla-actions/sccache-action@v0.0.9
+        with:
+          version: "v0.10.0"
       - if: needs.version.outputs.reuse == ''
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "streamerz-windows-deps"
+          cache-all-crates: false
+          cache-workspace-crates: false
       - if: needs.version.outputs.reuse == ''
         run: |
           cargo fetch --locked
@@ -112,10 +184,10 @@ jobs:
         env:
           STREAMERZ_VERSION: ${{ needs.version.outputs.tag || 'dev' }}
       # Every unit test on real Windows (the Windows-only ones too: DPAPI, the Run key, Toolhelp, the file
-      # watcher, Windows line endings), on the PR runner.
+      # watcher, Windows line endings), on the PR runner. Using ci-test profile for fast compilation without LTO.
       - if: github.event_name == 'pull_request'
         name: Run the unit tests on Windows
-        run: cargo test --release --locked --bin Streamerz
+        run: cargo test --profile ci-test --locked --bin Streamerz
       # Every scenario (tests/scenarios) on the exe just built, on real Windows.
       - if: github.event_name == 'pull_request' && needs.version.outputs.reuse == ''
         name: Run the scenarios on the Windows exe
@@ -140,14 +212,50 @@ jobs:
               $info.ProductVersion -ne $expected -or $info.FileVersion -ne $expected) {
             throw "Unexpected Windows metadata: $($info | Format-List | Out-String)"
           }
+      - name: Prune transient build artifacts before caching
+        if: needs.version.outputs.reuse == ''
+        run: |
+          rm -rf target/release/incremental target/ci-test/incremental target/debug/incremental 2>/dev/null || true
+          find target -type f -name "*.d" -delete 2>/dev/null || true
+      # Sign the Windows executable for releases when SignPath secrets are configured.
+      - name: Upload Windows binary for SignPath signing
+        id: upload-for-signpath
+        if: github.event_name == 'push' && needs.version.outputs.tag != '' && env.SIGNPATH_API_TOKEN != ''
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-windows-binary
+          path: dist/Streamerz-windows-x86_64.exe
+          retention-days: 1
+      - name: Sign Windows executable via SignPath
+        if: github.event_name == 'push' && needs.version.outputs.tag != '' && env.SIGNPATH_API_TOKEN != ''
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'streamerz' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          github-artifact-id: ${{ steps.upload-for-signpath.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed-bin
+      - name: Stage signed Windows binary
+        if: github.event_name == 'push' && needs.version.outputs.tag != '' && env.SIGNPATH_API_TOKEN != ''
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+        run: |
+          cp signed-bin/Streamerz-windows-x86_64.exe dist/Streamerz-windows-x86_64.exe
       - uses: actions/upload-artifact@v4
         with:
           name: streamerz-windows-${{ needs.version.outputs.tag || 'dev' }}-${{ needs.version.outputs.tree }}
           path: dist/Streamerz-windows-x86_64.exe
+          retention-days: 3
 
   linux:
-    needs: version
-    if: always() && (github.event_name != 'push' || needs.version.outputs.tag != '')
+    needs: [version, check]
+    if: always() && (needs.check.result == 'success' || needs.check.result == 'skipped') && (github.event_name != 'push' || needs.version.outputs.tag != '') && !github.event.pull_request.draft
     runs-on: ubuntu-latest
     steps:
       - name: Take the pull request's binaries
@@ -160,6 +268,11 @@ jobs:
           github-token: ${{ github.token }}
       - if: needs.version.outputs.reuse == ''
         uses: actions/checkout@v4
+      - name: Set up sccache
+        if: needs.version.outputs.reuse == ''
+        uses: mozilla-actions/sccache-action@v0.0.9
+        with:
+          version: "v0.10.0"
       - if: needs.version.outputs.reuse == ''
         name: Cache apt packages
         uses: actions/cache@v4
@@ -185,14 +298,19 @@ jobs:
             libx11-dev libxext-dev libxft-dev libxinerama-dev libxcursor-dev libxrender-dev \
             libxfixes-dev libpango1.0-dev libgl1-mesa-dev libglu1-mesa-dev libwayland-dev \
             wayland-protocols libdbus-1-dev libxkbcommon-dev libegl-dev libopengl-dev \
-            libfuse2
+            libfuse2 mold
           cp -n /var/cache/apt/archives/*.deb ~/.apt-cache/ 2>/dev/null || true
       - if: needs.version.outputs.reuse == ''
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "streamerz-deps"
+          cache-all-crates: false
+          cache-workspace-crates: false
       - if: needs.version.outputs.reuse == ''
         run: cargo build --release --locked
         env:
           STREAMERZ_VERSION: ${{ needs.version.outputs.tag || 'dev' }}
+          RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=mold"
       - if: needs.version.outputs.reuse == ''
         run: dev/appimage.sh "${{ needs.version.outputs.tag || 'dev' }}"
       - if: needs.version.outputs.reuse == ''
@@ -200,10 +318,16 @@ jobs:
         run: |
           mkdir -p dist
           cp Streamerz-linux-x86_64.AppImage* dist/
+      - name: Prune transient build artifacts before caching
+        if: needs.version.outputs.reuse == ''
+        run: |
+          rm -rf target/release/incremental target/ci-test/incremental target/debug/incremental 2>/dev/null || true
+          find target -type f -name "*.d" -delete 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         with:
           name: streamerz-linux-${{ needs.version.outputs.tag || 'dev' }}-${{ needs.version.outputs.tree }}
           path: dist/*
+          retention-days: 3
 
   release:
     needs: [version, windows, linux]
@@ -248,51 +372,3 @@ jobs:
           --notes-file notes.md
         env:
           GH_TOKEN: ${{ github.token }}
-
-  # After a release made from a pull request's binaries, nothing built on main: build once more, off the
-  # release's path, so the next pull request starts from main's cache (a pull request can read main's
-  # cache, but main can't read a pull request's).
-  warm-cache:
-    needs: [version, release]
-    if: needs.version.outputs.reuse != ''
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - name: Cache apt packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.apt-cache
-          key: apt-deps-${{ runner.os }}-${{ hashFiles('.github/workflows/*.yml') }}
-          restore-keys: |
-            apt-deps-${{ runner.os }}-
-      - name: Install dependencies
-        run: |
-          mkdir -p ~/.apt-cache
-          sudo cp -n ~/.apt-cache/*.deb /var/cache/apt/archives/ 2>/dev/null || true
-          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list /etc/apt/sources.list.d/* /etc/apt/apt-mirrors.txt 2>/dev/null || true
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            libx11-dev libxext-dev libxft-dev libxinerama-dev libxcursor-dev libxrender-dev \
-            libxfixes-dev libpango1.0-dev libgl1-mesa-dev libglu1-mesa-dev libwayland-dev \
-            wayland-protocols libdbus-1-dev libxkbcommon-dev libegl-dev libopengl-dev
-          cp -n /var/cache/apt/archives/*.deb ~/.apt-cache/ 2>/dev/null || true
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --locked
-
-  warm-cache-windows:
-    needs: [version, release]
-    if: needs.version.outputs.reuse != ''
-    runs-on: windows-latest
-    continue-on-error: true
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-      - run: |
-          cargo fetch --locked
-          f=$(ls "${CARGO_HOME:-$HOME/.cargo}"/registry/src/*/fltk-sys-*/cfltk/fltk/CMake/options.cmake)
-          perl -pi -e 's/(option\(FLTK_MSVC_RUNTIME_DLL .*)ON\)/${1}OFF)/' $f
-      - run: cargo build --release --locked --bin Streamerz

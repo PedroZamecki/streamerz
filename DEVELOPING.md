@@ -63,9 +63,9 @@ the `.bak` is loaded instead and the broken file is left alone.
 ## Checks (same as the hooks and CI)
 
 ```
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+python3 -P dev/check.py
+# Also build the Linux package and type-check Windows:
+python3 -P dev/check.py --release --windows
 ```
 
 Windows-only code (tray, autostart) can be type-checked from Linux with the official rustc and the

@@ -160,7 +160,6 @@ pub async fn run(e: Rc<Engine>) {
         // Opt-in: the process list is watched only while Process Started or Stopped is used.
         e.processes_sync();
         e.midi_sync();
-        e.speech_sync();
         if rx.changed().await.is_err() {
             return;
         }

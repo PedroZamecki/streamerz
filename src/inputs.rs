@@ -1,27 +1,17 @@
-//! Inputs, Hotkeys, MIDI and Voice Control (Phase 15).
+//! Inputs, Hotkeys and MIDI (Phase 15).
 //!
 //! Sub-actions:
 //! - 1012: Keyboard Press (key, modifiers)
-//! - 1018: Set Voice Control Command (commandId, command)
-//! - 1019: Set Voice Control Command State (commandId, state)
-//! - 1025: Set Voice Control Input (audioDeviceId, audioDeviceName)
 //! - 9001: MIDI Note On (device, name, sendNoteOff, channel, note, velocity, duration)
 //! - 9002: MIDI Control Change (device, name, channel, controller, value)
 //! - 9003: MIDI Generic Event (device, name, command, channel, data1, data2)
 //!
 //! Triggers:
-//! - 301: SpeechToTextDictation
-//! - 302: SpeechToTextCommand
 //! - 15001: MidiMessage
 
-pub const T_SPEECH_DICTATION: u32 = 301;
-pub const T_SPEECH_COMMAND: u32 = 302;
 pub const T_MIDI_MESSAGE: u32 = 15001;
 
 pub const S_KEYBOARD_PRESS: u32 = 1012;
-pub const S_SET_VOICE_COMMAND: u32 = 1018;
-pub const S_SET_VOICE_COMMAND_STATE: u32 = 1019;
-pub const S_SET_VOICE_INPUT: u32 = 1025;
 pub const S_MIDI_NOTE_ON: u32 = 9001;
 pub const S_MIDI_CONTROL_CHANGE: u32 = 9002;
 pub const S_MIDI_GENERIC: u32 = 9003;

@@ -4113,20 +4113,6 @@ impl Engine {
                 }
             }
 
-            // Set Voice Control Command (1018)
-            1018 => {
-                let cmd_id = self.expand(ctx, s(o, "commandId"));
-                let cmd_phrase = self.expand(ctx, s(o, "command"));
-                self.set_voice_command(&cmd_id, &cmd_phrase);
-            }
-
-            // Set Voice Control Command State (1019)
-            1019 => {
-                let cmd_id = self.expand(ctx, s(o, "commandId"));
-                let state = n(o, "state");
-                self.set_voice_command_state(&cmd_id, state);
-            }
-
             // Toast Notification (1024): a click on it fires Toast Activation.
             1024 => {
                 let attribution = match self.expand(ctx, s(o, "attribution")) {
@@ -4147,12 +4133,6 @@ impl Engine {
                     let me = self.clone();
                     crate::notify::toast(t, move |t| me.toast_activated(t));
                 }
-            }
-            // Set Voice Control Input (1025)
-            1025 => {
-                let dev_id = self.expand(ctx, s(o, "audioDeviceId"));
-                let dev_name = self.expand(ctx, s(o, "audioDeviceName"));
-                self.set_voice_input(&dev_id, &dev_name);
             }
 
             // MIDI Out: Note On (9001), Control Change (9002), Generic Event (9003).

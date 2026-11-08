@@ -1,0 +1,58 @@
+# Periodic maintenance workflow: purges stale GitHub Actions caches and old artifacts
+# to prevent storage limits and cache quota eviction.
+name: cleanup
+
+on:
+  schedule:
+    - cron: "0 3 * * 0" # Weekly on Sunday at 03:00 UTC
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  prune-caches:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prune stale caches
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          echo "Scanning GitHub Actions caches..."
+          # Fetch all caches and delete those not accessed in the last 7 days
+          gh cache list --limit 100 --json id,lastAccessedAt,sizeInBytes | jq -c '.[]' | while read -r line; do
+            id=$(echo "$line" | jq -r '.id')
+            accessed=$(echo "$line" | jq -r '.lastAccessedAt')
+            # Check if accessed more than 7 days ago
+            accessed_epoch=$(date -d "$accessed" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$accessed" +%s)
+            seven_days_ago=$(date -d "7 days ago" +%s 2>/dev/null || date -v-7d +%s)
+            if [ "$accessed_epoch" -lt "$seven_days_ago" ]; then
+              echo "Deleting stale cache $id (last accessed $accessed)..."
+              gh cache delete "$id" || true
+            fi
+          done
+
+  prune-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prune old workflow artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          echo "Scanning workflow artifacts..."
+          # Delete any temporary workflow artifact older than 7 days
+          seven_days_ago=$(date -d "7 days ago" +%s 2>/dev/null || date -v-7d +%s)
+          gh api "repos/${{ github.repository }}/actions/artifacts?per_page=100" --paginate --jq '.artifacts[] | @json' | while read -r line; do
+            id=$(echo "$line" | jq -r '.id')
+            created=$(echo "$line" | jq -r '.created_at')
+            created_epoch=$(date -d "$created" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$created" +%s)
+            if [ "$created_epoch" -lt "$seven_days_ago" ]; then
+              echo "Deleting old artifact $id (created $created)..."
+              gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id" || true
+            fi
+          done

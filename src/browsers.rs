@@ -28,7 +28,7 @@ type Known = (
     &'static str,
 );
 
-const KNOWN: [Known; 6] = [
+const KNOWN: [Known; 8] = [
     (
         "Google Chrome",
         &["google-chrome-stable", "google-chrome"],
@@ -36,6 +36,14 @@ const KNOWN: [Known; 6] = [
         "google-chrome",
         r"Google\Chrome\User Data",
         "chrome://extensions",
+    ),
+    (
+        "Mozilla Firefox",
+        &["firefox", "firefox-bin"],
+        r"Mozilla Firefox\firefox.exe",
+        ".mozilla/firefox",
+        r"Mozilla\Firefox\Profiles",
+        "about:addons",
     ),
     (
         "Microsoft Edge",
@@ -77,6 +85,14 @@ const KNOWN: [Known; 6] = [
         r"Opera Software\Opera Stable",
         "opera://extensions",
     ),
+    (
+        "Opera GX",
+        &["opera-gx"],
+        r"Programs\Opera GX\opera.exe",
+        "opera-gx",
+        r"Opera Software\Opera GX Stable",
+        "opera://extensions",
+    ),
 ];
 
 /// The browsers installed, in the order above (the most used first).
@@ -84,22 +100,36 @@ pub fn installed() -> Vec<Browser> {
     KNOWN.iter().filter_map(find).collect()
 }
 
+/// The first browser from `installed()` that is currently running, if any.
+pub fn running_browser() -> Option<Browser> {
+    installed().into_iter().find(|b| b.is_running())
+}
+
+/// Whether any installed Chromium browser is currently running.
+pub fn is_any_running() -> bool {
+    installed().iter().any(|b| b.is_running())
+}
+
 #[cfg(not(windows))]
 fn find(k: &Known) -> Option<Browser> {
     let (name, programs, _, data, _, page) = *k;
     let exe = programs.iter().find_map(|p| on_path(p))?;
-    let roots: Vec<PathBuf> = ["CHROME_CONFIG_HOME", "XDG_CONFIG_HOME"]
-        .iter()
-        .filter_map(std::env::var_os)
-        .filter(|p| !p.is_empty())
-        .map(PathBuf::from)
-        .chain(std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .collect();
-    let candidates: Vec<PathBuf> = roots.iter().map(|root| root.join(data)).collect();
-    let explicit = std::env::var_os("CHROME_USER_DATA_DIR")
-        .filter(|p| !p.is_empty())
-        .map(PathBuf::from);
-    let data = data_dir(explicit, &candidates)?;
+    let data = if name.contains("Firefox") {
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(data))?
+    } else {
+        let roots: Vec<PathBuf> = ["CHROME_CONFIG_HOME", "XDG_CONFIG_HOME"]
+            .iter()
+            .filter_map(std::env::var_os)
+            .filter(|p| !p.is_empty())
+            .map(PathBuf::from)
+            .chain(std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+            .collect();
+        let candidates: Vec<PathBuf> = roots.iter().map(|root| root.join(data)).collect();
+        let explicit = std::env::var_os("CHROME_USER_DATA_DIR")
+            .filter(|p| !p.is_empty())
+            .map(PathBuf::from);
+        data_dir(explicit, &candidates)?
+    };
     Some(Browser {
         name,
         exe,
@@ -124,14 +154,19 @@ fn data_dir(explicit: Option<PathBuf>, candidates: &[PathBuf]) -> Option<PathBuf
 fn find(k: &Known) -> Option<Browser> {
     let (name, _, program, _, data, page) = *k;
     let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?;
-    let roots = ["ProgramFiles", "ProgramFiles(x86)"]
+    let roots: Vec<PathBuf> = ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"]
         .iter()
         .filter_map(std::env::var_os)
         .map(PathBuf::from)
-        .chain([local.clone()]);
-    let exe = roots.map(|r| r.join(program)).find(|p| p.is_file())?;
-    // Opera keeps its profile in the roaming folder.
-    let data = if name == "Opera" {
+        .chain([local.clone()])
+        .collect();
+    let exe = roots
+        .iter()
+        .map(|r| r.join(program))
+        .find(|p| p.is_file())
+        .or_else(|| registry_app_path(program))?;
+    // Opera, Opera GX, and Firefox keep their profiles in the roaming folder.
+    let data = if name.starts_with("Opera") || name.contains("Firefox") {
         std::env::var_os("APPDATA").map(PathBuf::from)?.join(data)
     } else {
         local.join(data)
@@ -142,6 +177,38 @@ fn find(k: &Known) -> Option<Browser> {
         data,
         extensions_page: page,
     })
+}
+
+#[cfg(windows)]
+fn registry_app_path(program: &str) -> Option<PathBuf> {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+    let file = Path::new(program).file_name()?.to_str()?;
+    let subkey = format!(r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{file}");
+    let subkey_w: Vec<u16> = subkey.encode_utf16().chain([0]).collect();
+    for root in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
+        let mut buf = [0u16; 512];
+        let mut size = (buf.len() * 2) as u32;
+        let res = unsafe {
+            RegGetValueW(
+                root,
+                subkey_w.as_ptr(),
+                std::ptr::null(),
+                RRF_RT_REG_SZ,
+                std::ptr::null_mut(),
+                buf.as_mut_ptr().cast(),
+                &mut size,
+            )
+        };
+        if res == 0 && size > 2 {
+            let len = (size as usize / 2).saturating_sub(1);
+            let s = String::from_utf16_lossy(&buf[..len]);
+            let path = PathBuf::from(s.trim_matches('"'));
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 /// `program` in the folders of PATH.
@@ -168,7 +235,7 @@ impl Browser {
         let mut found: Vec<PathBuf> = dir
             .flatten()
             .map(|e| e.path())
-            .filter(|p| p.join("Preferences").is_file())
+            .filter(|p| p.join("Preferences").is_file() || p.join("prefs.js").is_file())
             .collect();
         if self.data.join("Preferences").is_file() {
             found.push(self.data.clone());
@@ -205,9 +272,11 @@ impl Browser {
     /// Reuse the selected browser's data and last-used profile, including a running instance.
     pub(crate) fn command(&self, url: &str) -> std::process::Command {
         let mut c = std::process::Command::new(&self.exe);
-        c.arg(format!("--user-data-dir={}", self.data.display()));
-        if let Some(profile) = self.preferred_profile() {
-            c.arg(format!("--profile-directory={profile}"));
+        if !self.name.contains("Firefox") {
+            c.arg(format!("--user-data-dir={}", self.data.display()));
+            if let Some(profile) = self.preferred_profile() {
+                c.arg(format!("--profile-directory={profile}"));
+            }
         }
         c.arg(url).env_remove("GDK_BACKEND");
         #[cfg(not(windows))]
@@ -257,6 +326,83 @@ impl Browser {
     /// second browser window instead; a `file://` setup page opens as a tab in the existing window.
     pub fn open_setup(&self, page: &Path) -> std::io::Result<()> {
         self.command(&file_url(page)).spawn().map(drop)
+    }
+
+    /// Whether this browser is currently running (has an active lock or running process).
+    pub fn is_running(&self) -> bool {
+        #[cfg(not(windows))]
+        {
+            if running_profile(&self.data) {
+                return true;
+            }
+            for profile in self.profiles() {
+                if running_profile(&profile) {
+                    return true;
+                }
+            }
+            #[cfg(target_os = "linux")]
+            if let Some(exe_name) = self.exe.file_name().and_then(|n| n.to_str()) {
+                if let Ok(entries) = std::fs::read_dir("/proc") {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_dir() {
+                            if let Ok(comm) = std::fs::read_to_string(path.join("comm")) {
+                                let c = comm.trim();
+                                if c == exe_name
+                                    || exe_name.starts_with(c)
+                                    || (exe_name.contains("firefox") && c.contains("firefox"))
+                                {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            false
+        }
+        #[cfg(windows)]
+        {
+            let lockfile = self.data.join("lockfile");
+            if lockfile.is_file() {
+                if std::fs::OpenOptions::new().write(true).open(&lockfile).is_err() {
+                    return true;
+                }
+            }
+            if let Some(exe_name) = self.exe.file_name().and_then(|n| n.to_str()) {
+                let exe_lower = exe_name.to_ascii_lowercase();
+                use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+                use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+                    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+                };
+                unsafe {
+                    let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+                    if snap != INVALID_HANDLE_VALUE {
+                        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+                        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+                        if Process32FirstW(snap, &mut entry) != 0 {
+                            loop {
+                                let len = entry
+                                    .szExeFile
+                                    .iter()
+                                    .position(|&c| c == 0)
+                                    .unwrap_or(entry.szExeFile.len());
+                                let name = String::from_utf16_lossy(&entry.szExeFile[..len]).to_ascii_lowercase();
+                                if name == exe_lower {
+                                    CloseHandle(snap);
+                                    return true;
+                                }
+                                if Process32NextW(snap, &mut entry) == 0 {
+                                    break;
+                                }
+                            }
+                        }
+                        CloseHandle(snap);
+                    }
+                }
+            }
+            false
+        }
     }
 }
 
@@ -408,5 +554,40 @@ mod tests {
         .unwrap();
         assert!(!b.has_extension_from("abc", &ext));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn browser_is_running_reflects_profile_state() {
+        let dir = std::env::temp_dir().join(format!("streamerz-running-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let b = Browser {
+            name: "Test",
+            exe: "/nonexistent-browser-exe".into(),
+            data: dir.clone(),
+            extensions_page: "chrome://extensions",
+        };
+        // Not running initially
+        assert!(!b.is_running());
+
+        #[cfg(target_os = "linux")]
+        {
+            // Simulate running via SingletonLock symlink to our own PID
+            let lock = dir.join("SingletonLock");
+            let _ = std::os::unix::fs::symlink(format!("host-{}", std::process::id()), &lock);
+            assert!(b.is_running());
+            let _ = std::fs::remove_file(lock);
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn all_known_browsers_have_official_logos() {
+        for (name, ..) in KNOWN {
+            assert!(
+                crate::ui::img::logo(name, 16).is_some(),
+                "Browser {name} must have an SVG logo in img::logo"
+            );
+        }
     }
 }

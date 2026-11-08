@@ -304,3 +304,64 @@ earlier builds were sampled in different states and do not provide a comparable 
 The required hidden Twitch + OBS before/after measurement and the 25 MB budget remain unverified;
 these disconnected RSS samples are already above that target. Final screenshots and metrics are in
 `/tmp/streamerz-automation-ui-5wwp7qvi`; the general smoke is in `/tmp/szsmoke`.
+
+### Version 1.6.0 cleanup review (2026-11-08)
+
+The version stays open on `release/1.6.0`. No push, pull request, tag or release was created.
+Removal evidence, review scope and release blockers are in [REVIEW_1.6.0.md](REVIEW_1.6.0.md).
+
+| Check | Result |
+|---|---|
+| `cargo fmt --check` and `cargo clippy --all-targets --locked -- -D warnings` | Passed, including the commit hooks for each change. |
+| `cargo test --profile ci-test --locked` | 533 passed, zero failed, 13 ignored. |
+| Four ignored automatic UI tests, run separately on DISPLAY=:99 | Passed: wrapped help, grid redraw, rapid sidebar folding, JSON draft preservation. |
+| `node --test dev/tiktok-extension.test.mjs` | 12 passed. Includes idle cleanup and the extension-origin restriction. |
+| `node dev/test-subathon-overlay.cjs` | Passed. |
+| `python3 -P -m unittest discover -s dev -p 'test_*.py'` | Six passed. Covers instance isolation, publishing-cache failure handling and hostile PR titles. |
+| `python3 -P -m compileall -q dev` | Passed (syntax only for optional manual helpers). |
+| `python3 dev/locale.py check` | Passed. 28 Portuguese entries still match English, a non-failing translation notice. |
+| `actionlint` 1.7.12 | Passed. Shellcheck was not installed, so its optional embedded-shell analysis was not run. |
+| Staged secret scanner | Passed for every commit. |
+| `python3 dev/scan_secrets.py --history` | Failed: nine existing personal-path findings in historical memory results. No suppression or history rewrite. |
+| `cargo audit` 0.22.2 | Exit 0, with five allowed advisory warnings listed in the review. |
+| Linux release build and `--scenario tests/scenarios` | Passed, all 149 scenarios. Platform exclusions are printed by the runner. |
+| `dev/appimage.sh dev` | Failed on this Arch host's library format and linuxdeploy's old strip. |
+| `NO_STRIP=1 dev/appimage.sh dev` | Passed, created the AppImage and zsync file. |
+| AppImage with `APPIMAGE_EXTRACT_AND_RUN=1`, scenarios | Passed, all 149 scenarios. |
+| `cargo xwin check --all-targets --locked --target x86_64-pc-windows-msvc --target-dir target/xwin` | Passed. |
+| Windows MSVC release build and executable icon check | Passed. Cross-linking reports missing optional MSVC debug symbols, not a build failure. |
+| Windows executable, scenarios under Wine | Passed, all 149 scenarios. |
+| Windows unit tests under Wine | 519 passed, zero failed, 11 ignored, with four test threads. |
+| `python3 -P dev/smoke.py target/fast/Streamerz` | Passed, every page, menus and card. Screenshots in `/tmp/szsmoke`. Visual inspection found a narrow three-button dialog defect that the smoke's text bounds check misses. |
+| `python3 -P dev/mcp_smoke.py target/fast/Streamerz` | All 54 advertised tools passed. |
+| `python3 -P dev/automation-smoke.py target/fast/Streamerz` | Passed. Narrow and wide editor screenshots in `/tmp/streamerz-automation-ui-grse2dbq`. |
+| Settings restart-state and narrow/wide screenshots | Passed through `dev/memory.py --visit-settings`, in `/tmp/streamerz-settings-final/off`. |
+| Native Windows UAC, Linux polkit/sudo installation, signing and store publication | Not executed. Requires native/manual or external-service verification. |
+| GitHub permissions, artifact reuse and publication | Not executed. No Actions usage was triggered. |
+
+The first Windows unit run aborted on a misaligned file notification. A checked byte parser and packed
+record fixture fix that crash without adding allocation to event parsing. The next run completed with
+517 passing tests and one failing log assertion: another test had cleared the shared history. The test
+helper now uses the application's existing thread-local capture, with a regression that clears shared
+history while preserving the test's own log. Both suites were rerun after these fixes.
+
+The automatic Linux suite keeps 13 tests ignored by default. Four automatic UI tests were run explicitly;
+the remaining ignored cases are manual dialogs/notifications, Spotify/live-chat checks, a benchmark,
+and type/coverage report generators. They were not silently counted as passed.
+
+A disconnected optimized development sample used 39,964 KiB RSS after 50 synthetic messages and zero
+CPU seconds over 15 idle seconds. Settings were also checked at 700 and 1200 pixels. An older release
+binary did not complete the same development-isolation harness, so there is no comparable version
+baseline. The required hidden Twitch + OBS measurements and 25 MB budget remain unverified.
+
+The aggregate `dev/check.py --windows` run found the historical scanner failure and Python import-path
+pollution in the new publishing test. The test now restores `sys.path`; the six Python tests pass on
+rerun. Final Rust and Windows results in the table supersede earlier diagnostic runs. The known history-scan
+failure means this version is not yet CI-clean. Live browser accounts, authenticated store uploads,
+notification interaction and connected service behavior have not been established by the fixtures.
+
+Final release candidates were also built with `STREAMERZ_VERSION=v1.6.0` on Linux and for MSVC.
+Both binaries and the packaged AppImage passed all 149 scenarios. The Windows PE resources contain
+Streamerz as ProductName and FileDescription, with FileVersion and ProductVersion both `1.6.0.0`;
+the four-size executable icon check passed. AppImage packaging still required `NO_STRIP=1` locally.
+Commitlint passed over every local version commit. The working tree was clean after recording results.

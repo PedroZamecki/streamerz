@@ -1,7 +1,15 @@
 // MAIN world: TikTok's own fetch wrapper signs the requests. Only our parent may ask for one.
 (() => {
   if (window.parent === window) return;
-  const parentOrigin = "chrome-extension://lhijoeeghjcohapolkfkacipklhbnecc";
+  let parentOrigin = "chrome-extension://lhijoeeghjcohapolkfkacipklhbnecc";
+  try {
+    if (document.referrer) {
+      const u = new URL(document.referrer);
+      if (u.protocol === "moz-extension:" || u.protocol === "chrome-extension:") {
+        parentOrigin = u.origin;
+      }
+    }
+  } catch {}
   const send = data => parent.postMessage({ streamerz: true, ...data }, parentOrigin);
   if (location.pathname.startsWith("/login")) {
     send({ ready: true, error: "Log in to TikTok from Accounts > TikTok > Set up.", code: "login_required" });
@@ -36,7 +44,8 @@
     return { status: res.status, body: await res.text() };
   }
   window.addEventListener("message", async e => {
-    if (e.source !== parent || e.origin !== parentOrigin || e.data?.streamerz !== true) return;
+    if (e.source !== parent || (e.origin !== parentOrigin && !e.origin.startsWith("moz-extension://") && !e.origin.startsWith("chrome-extension://")) || e.data?.streamerz !== true) return;
+    if (e.origin.startsWith("moz-extension://") || e.origin.startsWith("chrome-extension://")) parentOrigin = e.origin;
     let result;
     try { result = await request(e.data.request); } catch (err) { result = { error: String(err.message || err) }; }
     send({ id: e.data.id, result });
@@ -44,7 +53,14 @@
   // Only while loading, never an idle poll.
   (async () => {
     for (let i = 0; i < 60; i++) {
-      if (window.byted_acrawler && window.secsdk && common()) { send({ ready: true }); return; }
+      if (window.byted_acrawler && window.secsdk && common()) {
+        send({ ready: true });
+        try {
+          window.requestAnimationFrame = () => 0;
+          window.stop();
+        } catch {}
+        return;
+      }
       await new Promise(resolve => setTimeout(resolve, 500));
     }
   })();
