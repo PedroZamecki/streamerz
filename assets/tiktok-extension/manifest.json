@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Streamerz for TikTok",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Connects Streamerz to your TikTok account for search and LIVE chat, without a visible helper tab.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAp3CQvIljXyRI0FtLK3f0RT+g2lw/UgxPL0VJvvMZBy1J4WiaiYLpiud65kYd2+9wpU0deRezWR1gAVERl+aRvqh+irwsdiiIPvFpn3//ZJ+vlrFSBe4s72NILRC1KJjZRK4/iN3TV1G+zyAoo1Vhb7PhK2sWfVQnJDxSIbVqSA3tquredPd6dqBtObrUHznDBOzSCmuyb8BpvRydo9dsJQl95thyc1nQ6h7+CTifYIBbHptWNl97WD1vj9SlYADI3VmfkvxTP65TnMCUdcafcN0R2nenFIt+mQqkffrU953LZdwLi53ossCXmLCdiQRYIfRuuyAbnfRPcDREr3cJAQIDAQAB",
   "permissions": [

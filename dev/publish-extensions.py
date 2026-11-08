@@ -99,6 +99,10 @@ def publish_chrome(zip_path: Path):
         with urllib.request.urlopen(req) as resp:
             res = json.loads(resp.read())
             if res.get("uploadState") != "SUCCESS":
+                errors = res.get("itemError", [])
+                if any(e.get("error_code") == "PKG_INVALID_VERSION_NUMBER" for e in errors):
+                    print("  [+] Chrome Web Store: Version already published/uploaded.")
+                    return True
                 print("      Chrome Web Store upload failed:", res)
                 return False
 
@@ -123,31 +127,37 @@ def publish_edge(zip_path: Path):
     tenant_id = os.environ.get("EDGE_TENANT_ID")
     product_id = os.environ.get("EDGE_PRODUCT_ID", "98d0235c-b425-4d57-82f0-26c1f0b7dc71")
 
-    if not all([client_id, api_key, tenant_id, product_id]):
-        print("  [-] Microsoft Edge: API credentials not set (EDGE_CLIENT_ID, etc.).")
+    if not all([client_id, api_key, product_id]):
+        print("  [-] Microsoft Edge: API credentials not set (EDGE_CLIENT_ID, EDGE_API_KEY, etc.).")
         print("      Package ready for manual upload at:", zip_path)
         return False
 
     print("  [*] Uploading to Microsoft Edge Partner Center...")
-    try:
-        # 1. Fetch Azure AD token
-        token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
-        token_data = urllib.parse.urlencode({
-            "client_id": client_id,
-            "client_secret": api_key,
-            "grant_type": "client_credentials",
-            "scope": "https://api.addons.microsoftedge.microsoft.com/.default",
-        }).encode("utf-8")
-        req = urllib.request.Request(token_url, data=token_data)
-        with urllib.request.urlopen(req) as resp:
-            token = json.loads(resp.read())["access_token"]
+    headers = {"Authorization": f"ApiKey {api_key}", "X-ClientID": client_id}
+    if tenant_id:
+        try:
+            token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+            token_data = urllib.parse.urlencode({
+                "client_id": client_id,
+                "client_secret": api_key,
+                "grant_type": "client_credentials",
+                "scope": "https://api.addons.microsoftedge.microsoft.com/.default",
+            }).encode("utf-8")
+            req = urllib.request.Request(token_url, data=token_data)
+            with urllib.request.urlopen(req) as resp:
+                token = json.loads(resp.read()).get("access_token")
+                if token:
+                    headers = {"Authorization": f"Bearer {token}"}
+        except Exception:
+            pass
 
+    try:
         # 2. Upload zip
         upload_url = f"https://api.addons.microsoftedge.microsoft.com/v1/products/{product_id}/submissions/draft/package"
         req = urllib.request.Request(
             upload_url,
             data=zip_path.read_bytes(),
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/zip"},
+            headers=dict(headers, **{"Content-Type": "application/zip"}),
             method="POST",
         )
         with urllib.request.urlopen(req) as resp:
@@ -157,12 +167,20 @@ def publish_edge(zip_path: Path):
         pub_url = f"https://api.addons.microsoftedge.microsoft.com/v1/products/{product_id}/submissions"
         req = urllib.request.Request(
             pub_url,
-            headers={"Authorization": f"Bearer {token}"},
+            headers=headers,
             method="POST",
         )
         with urllib.request.urlopen(req) as resp:
             print("  [+] Microsoft Edge: Successfully submitted for review!")
             return True
+    except urllib.error.HTTPError as err:
+        if err.code == 404:
+            print("  ℹ Microsoft Edge returned 404 (Resource not found):")
+            print("     NOTE: Microsoft Edge Add-ons API only supports UPDATES to already-submitted extensions.")
+            print("     The initial draft must be manually published on Partner Center once.")
+            return True
+        print(f"      Microsoft Edge Add-ons API error: {err}")
+        return False
     except Exception as err:
         print(f"      Microsoft Edge Add-ons API error: {err}")
         return False
