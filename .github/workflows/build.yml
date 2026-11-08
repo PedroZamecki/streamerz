@@ -134,8 +134,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: "streamerz-windows-deps"
-          cache-all-crates: false
-          cache-workspace-crates: false
+          cache-all-crates: true
       - if: needs.version.outputs.reuse == ''
         run: |
           cargo fetch --locked
@@ -147,10 +146,10 @@ jobs:
         env:
           STREAMERZ_VERSION: ${{ needs.version.outputs.tag || 'dev' }}
       # Every unit test on real Windows (the Windows-only ones too: DPAPI, the Run key, Toolhelp, the file
-      # watcher, Windows line endings), on the PR runner. Using ci-test profile for fast compilation without LTO.
+      # watcher, Windows line endings), on the PR runner. Reuses release profile artifacts already built.
       - if: github.event_name == 'pull_request'
         name: Run the unit tests on Windows
-        run: cargo test --profile ci-test --locked --bin Streamerz
+        run: cargo test --release --locked --bin Streamerz
       # Every scenario (tests/scenarios) on the exe just built, on real Windows.
       - if: github.event_name == 'pull_request' && needs.version.outputs.reuse == ''
         name: Run the scenarios on the Windows exe
@@ -267,8 +266,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: "streamerz-deps"
-          cache-all-crates: false
-          cache-workspace-crates: false
+          cache-all-crates: true
       - if: needs.version.outputs.reuse == ''
         run: cargo build --release --locked
         env:
