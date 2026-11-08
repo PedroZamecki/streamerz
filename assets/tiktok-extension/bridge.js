@@ -6,34 +6,84 @@ let creating = null;
 let generation = 0;
 let connecting = false;
 
+let idleTimer = null;
+function touch() {
+  if (idleTimer) clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => { closeContext().catch(() => {}); }, 90000);
+}
+
+const hasOffscreen = typeof chrome !== "undefined" && typeof chrome.offscreen !== "undefined";
+let ffFrame = null;
+let ffPending = new Map();
+let ffNext = 0;
+let ffReadyResolve = null;
+let ffReady = new Promise(resolve => { ffReadyResolve = resolve; });
+
+function setupFirefoxListener() {
+  window.addEventListener("message", e => {
+    if (e.source !== ffFrame?.contentWindow || e.data?.streamerz !== true) return;
+    if (e.data.ready) { ffReadyResolve?.({ error: e.data.error, code: e.data.code }); return; }
+    const p = ffPending.get(e.data.id);
+    if (p) { clearTimeout(p.timer); ffPending.delete(e.data.id); p.resolve(e.data.result); }
+  });
+}
+
 async function closeContext() {
+  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
   if (creating) await creating.catch(() => {});
-  if ((await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] })).length) {
-    await chrome.offscreen.closeDocument();
+  if (hasOffscreen) {
+    if ((await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] })).length) {
+      await chrome.offscreen.closeDocument();
+    }
+  } else if (ffFrame) {
+    ffFrame.remove();
+    ffFrame = null;
+    ffReadyResolve = null;
+    ffPending.clear();
   }
-  await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [1, 2, 3, 4] });
+  await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [1, 2, 3, 4, 5, 6] });
 }
 
 async function context() {
   if (creating) return creating;
   creating = (async () => {
-    if ((await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] })).length) return;
+    if (hasOffscreen) {
+      if ((await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] })).length) return;
+    } else if (ffFrame) {
+      return;
+    }
     const cookies = await chrome.cookies.getAll({ url: "https://www.tiktok.com/" });
     if (!cookies.some(c => c.name === "sessionid" && c.value)) throw Object.assign(new Error("Log in to TikTok from Accounts > TikTok > Set up."), { code: "login_required" });
     const block = { type: "block" };
-    await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [1, 2, 3, 4], addRules: [
+    await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [1, 2, 3, 4, 5, 6], addRules: [
       { id: 1, priority: 1, action: block, condition: { tabIds: [-1],
         requestDomains: ["tiktok.com", "tiktokcdn.com", "tiktokcdn-us.com", "tiktokcdn-eu.com", "tiktokv.com", "ibyteimg.com", "ibytedtos.com", "ttwstatic.com"],
-        resourceTypes: ["image", "media", "font"] } },
+        resourceTypes: ["image", "media", "font", "stylesheet"] } },
       { id: 2, priority: 1, action: block, condition: { tabIds: [-1],
-        requestDomains: ["mon.tiktokv.com", "mon-sg.tiktokv.com", "mcs-sg.tiktokv.com", "libraweb-sg.tiktok.com"] } },
+        requestDomains: ["mon.tiktokv.com", "mon-sg.tiktokv.com", "mcs-sg.tiktokv.com", "libraweb-sg.tiktok.com", "analytics.tiktok.com"] } },
       { id: 3, priority: 1, action: block, condition: { tabIds: [-1], urlFilter: "||webcast.tiktok.com/webcast/feed/" } },
-      // Only our offscreen frame may embed this one page. Normal browser tabs keep their headers.
+      // Only our offscreen frame / background iframe may embed this one page. Normal browser tabs keep their headers.
       { id: 4, priority: 1, action: { type: "modifyHeaders", responseHeaders: [{ header: "x-frame-options", operation: "remove" }] },
-        condition: { initiatorDomains: [chrome.runtime.id], urlFilter: "|" + PAGE + "|", resourceTypes: ["sub_frame"] } },
+        condition: { urlFilter: "|" + PAGE + "|", resourceTypes: ["sub_frame"],
+          initiatorDomains: [new URL(chrome.runtime.getURL("")).hostname] } },
+      // Block video players and sentry error tracking to slash background RAM
+      { id: 5, priority: 1, action: block, condition: { tabIds: [-1], urlFilter: "||tiktokcdn.com/*xgplayer*" } },
+      { id: 6, priority: 1, action: block, condition: { tabIds: [-1], urlFilter: "*sentry*" } },
     ] });
-    await chrome.offscreen.createDocument({ url: "offscreen.html", reasons: ["IFRAME_SCRIPTING"],
-      justification: "Use TikTok's signed requests without opening a tab or window." });
+    if (hasOffscreen) {
+      await chrome.offscreen.createDocument({ url: "offscreen.html", reasons: ["IFRAME_SCRIPTING"],
+        justification: "Use TikTok's signed requests without opening a tab or window." });
+    } else {
+      ffReady = new Promise(resolve => { ffReadyResolve = resolve; });
+      ffFrame = document.createElement("iframe");
+      ffFrame.src = PAGE;
+      ffFrame.style.display = "none";
+      if (!window.__ffListener) {
+        window.__ffListener = true;
+        setupFirefoxListener();
+      }
+      document.body.appendChild(ffFrame);
+    }
   })();
   try { await creating; } finally { creating = null; }
 }
@@ -59,21 +109,33 @@ async function handle(m) {
   if (!["page", "fetch", "search"].includes(m.op)) throw new Error("unknown request " + m.op);
   await context();
   if (epoch !== generation) throw new Error("Streamerz closed");
-  // A browser may discard a context. Recreate it once, then give the actual error to Streamerz.
   let result;
-  try { result = await chrome.runtime.sendMessage({ target: "offscreen", request: m }); }
-  catch (error) {
-    if (epoch !== generation) throw error;
-    await closeContext();
-    // A lost reply is ambiguous: a message may already have reached TikTok. Never send it twice.
-    if (m.op === "fetch" && (m.init?.method || "GET").toUpperCase() !== "GET") throw error;
-    await context();
-    if (epoch !== generation) throw new Error("Streamerz closed");
-    result = await chrome.runtime.sendMessage({ target: "offscreen", request: m });
+  if (hasOffscreen) {
+    try { result = await chrome.runtime.sendMessage({ target: "offscreen", request: m }); }
+    catch (error) {
+      if (epoch !== generation) throw error;
+      await closeContext();
+      if (m.op === "fetch" && (m.init?.method || "GET").toUpperCase() !== "GET") throw error;
+      await context();
+      if (epoch !== generation) throw new Error("Streamerz closed");
+      result = await chrome.runtime.sendMessage({ target: "offscreen", request: m });
+    }
+  } else {
+    const state = await Promise.race([ffReady, new Promise((_, reject) => {
+      const timer = setTimeout(() => reject(new Error("TikTok didn't load. Try again, or log in from Accounts.")), 30000);
+      ffReady.then(() => clearTimeout(timer));
+    })]);
+    if (state.error) throw Object.assign(new Error(state.error), { code: state.code });
+    result = await new Promise(resolve => {
+      const id = ++ffNext;
+      const timer = setTimeout(() => { ffPending.delete(id); resolve({ error: "TikTok didn't answer. Try again." }); }, 30000);
+      ffPending.set(id, { resolve, timer });
+      ffFrame.contentWindow.postMessage({ streamerz: true, id, request: m }, "https://www.tiktok.com");
+    });
   }
   if (result?.error) await closeContext();
+  else touch();
   return result;
-
 }
 
 const SETUP_RE = /^file:\/\/.*\/tiktok-setup\.html([?#]|$)/;
