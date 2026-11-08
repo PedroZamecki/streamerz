@@ -47,6 +47,22 @@ pub fn name_of(p: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// Directory notifications may be packed at two-byte boundaries (including under Wine).
+#[cfg(any(windows, test))]
+fn notify_header(bytes: &[u8]) -> Option<(usize, u32, usize)> {
+    let word = |at| Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?));
+    let next = word(0)? as usize;
+    let action = word(4)?;
+    let length = word(8)? as usize;
+    if !length.is_multiple_of(2) || length > bytes.len().checked_sub(12)? {
+        return None;
+    }
+    if next != 0 && (next < 12 + length || !next.is_multiple_of(2) || next > bytes.len().checked_sub(12)?) {
+        return None;
+    }
+    Some((next, action, length / 2))
+}
+
 #[cfg(target_os = "linux")]
 mod imp {
     use super::Change;
@@ -253,8 +269,7 @@ mod imp {
         CreateFileW, ReadDirectoryChangesW, FILE_ACTION_ADDED, FILE_ACTION_MODIFIED, FILE_ACTION_REMOVED,
         FILE_ACTION_RENAMED_NEW_NAME, FILE_ACTION_RENAMED_OLD_NAME, FILE_FLAG_BACKUP_SEMANTICS, FILE_LIST_DIRECTORY,
         FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE,
-        FILE_NOTIFY_CHANGE_SIZE, FILE_NOTIFY_INFORMATION, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        OPEN_EXISTING,
+        FILE_NOTIFY_CHANGE_SIZE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
     };
     use windows_sys::Win32::System::IO::CancelIoEx;
 
@@ -327,13 +342,19 @@ mod imp {
                 // 0 bytes: more changed than the buffer holds (they are lost).
                 if got > 0 {
                     loop {
-                        // SAFETY: the OS filled whole, DWORD-aligned records.
-                        let rec = unsafe { &*(bytes.add(at) as *const FILE_NOTIFY_INFORMATION) };
-                        let len = rec.FileNameLength as usize / 2;
-                        // SAFETY: FileName holds `len` UTF-16 units.
-                        let name = unsafe { std::slice::from_raw_parts(rec.FileName.as_ptr(), len) };
+                        if got as usize > buf.len() * 4 || at >= got as usize {
+                            break;
+                        }
+                        // SAFETY: the initialized buffer holds `got` bytes; `at` is in bounds.
+                        let remaining = unsafe { std::slice::from_raw_parts(bytes.add(at), got as usize - at) };
+                        let Some((next, action, len)) = super::notify_header(remaining) else {
+                            break;
+                        };
+                        // SAFETY: header validation bounds the UTF-16 name and keeps offsets even.
+                        // The u32 buffer is aligned; no reference to a misaligned u32 record is made.
+                        let name = unsafe { std::slice::from_raw_parts(bytes.add(at + 12).cast::<u16>(), len) };
                         let path = dir.join(std::ffi::OsString::from_wide(name));
-                        let change = match rec.Action {
+                        let change = match action {
                             FILE_ACTION_ADDED => Some(Change::Created(path)),
                             FILE_ACTION_REMOVED => Some(Change::Deleted(path)),
                             FILE_ACTION_MODIFIED => Some(Change::Modified(path)),
@@ -352,10 +373,10 @@ mod imp {
                                 break;
                             }
                         }
-                        if rec.NextEntryOffset == 0 {
+                        if next == 0 {
                             break;
                         }
-                        at += rec.NextEntryOffset as usize;
+                        at += next;
                     }
                 }
             };
@@ -381,6 +402,25 @@ mod imp {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn packed_windows_notifications_do_not_require_u32_alignment() {
+        let record = |next: u32, name: u16| {
+            [
+                next.to_le_bytes().as_slice(),
+                &1u32.to_le_bytes(),
+                &2u32.to_le_bytes(),
+                &name.to_le_bytes(),
+            ]
+            .concat()
+        };
+        let data = [record(14, 65), record(0, 66)].concat();
+        assert_eq!(super::notify_header(&data), Some((14, 1, 1)));
+        assert_eq!(super::notify_header(&data[14..]), Some((0, 1, 1)));
+        assert!(super::notify_header(&data[..13]).is_none());
+        assert!(super::notify_header(&record(3, 65)).is_none());
+        assert!(super::notify_header(&record(u32::MAX, 65)).is_none());
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn rename_pairs_events_from_separate_reads() {
