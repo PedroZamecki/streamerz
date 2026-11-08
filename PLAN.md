@@ -39,7 +39,7 @@ phase, following `CLAUDE.md`.
 | TikTok | Public LIVE reading is native through `webcast.rs`. The optional extension is the single account for signed search, authenticated reading and sending (`tiktok_bridge.rs`). It uses TikTok's own scripts in an offscreen browser frame, with no visible helper tab, and recovers discarded contexts on demand. Chromium background mode permits use with all browser windows closed. Separate broadcaster and bot logins are retired; reader cookies are requested from the browser only when connecting and remain in memory. |
 | Chat commands | Commands keep Streamer.bot's `sources` bitmask (Twitch 1/2/8, YouTube 1024, Kick 2097152, TikTok 4194304), so each command chooses its platforms. Built-in commands (`!commands`, `!command add/edit/remove`, `!command platforms`, `!so`, `!uptime`, `!title`) are normal commands created on first run, editable and disable-able. Replies go to the platform the command came from; a command can opt in to reply on all connected platforms. |
 | Not in scope | Meld, PolyPop, Elgato, VTube Studio/Voicemod/Speaker.bot/TITS/Crowd Control/HypeRate/Pulsoid/Lumia/Streamfog/mtion, the Streamer.bot website integration/cloud, C# and plugins. |
-| Later (own phases, after phase 14) | Quotes, credits, points, users/first words; sounds and TTS; file I/O, file tail, folder watcher, process triggers; hotkeys/inputs, MIDI, voice control; Decks, HTML overlay, multi-platform chat window. |
+| Later (own phases, after phase 14) | Quotes, credits, points, users/first words; sounds and TTS; file I/O, file tail, folder watcher, process triggers; hotkeys/inputs and MIDI; Decks, HTML overlay, multi-platform chat window. |
 
 ## Architecture
 
@@ -205,7 +205,7 @@ platform handles through channels, never through shared locks held across awaits
   (socket, REST or webhook through the same tunnel as Kick) and ask if one needs Streamer.bot's cloud.
 - [x] 14. Webhooks and remote: Discord webhook, IFTTT, pronouns (alejo.io), Streamer.bot remote instances
   (signals/triggers between instances, also with a real Streamer.bot).
-- [ ] 15. Hotkeys, inputs, MIDI and voice control: keyboard simulation, mouse click trigger, MIDI In/Out, Speech to Text triggers and voice control sub-actions.
+- [ ] 15. Hotkeys, inputs and MIDI: keyboard simulation, mouse click trigger and MIDI In/Out. Speech recognition and voice control were retired for 1.6.0.
 - [ ] 16. Streamer.bot Decks, Stream Deck, HTML overlay and chat window: Stream Deck sub-actions and triggers, Decks item/page controls, and multi-platform chat window action triggers.
 - [ ] 17. File I/O, file tail, watcher and process triggers: File sub-actions (write, read lines, read specific/random line, file/folder exists, set file tail state), file watcher triggers, file tail trigger, process started/stopped triggers.
 - [x] 18. Command sources and test hooks: fix Kick's (2097152) and TikTok's (4194304) command source bits
@@ -653,8 +653,16 @@ There is no per-page score threshold or repeated scoring requirement. Track the 
 
 - [x] Carry pending work onto one version branch, without pushing or opening a PR.
 - [x] Require local CI/CD verification before pushing, with a report of unavailable checks.
-- [ ] Review pending changes and remove only material proven unused.
-- [ ] Share repeated logic without changing behavior or adding runtime work.
-- [ ] Run local CI checks, scenarios, packaging and hidden-display smoke.
-- [ ] Record removal evidence, validation results and remaining platform/service limits.
+- [x] Review pending changes and remove only material proven unused.
+- [x] Share repeated logic without changing behavior or adding runtime work.
+- [x] Run local CI checks, scenarios, packaging and hidden-display smoke (limits in docs/REVIEW_1.6.0.md).
+- [x] Record removal evidence, validation results and remaining platform/service limits.
 - [ ] Keep the version open for further requested changes.
+
+Version 1.6.0 decisions: speech and voice control are retired. Browser discovery and extension-store
+publishing stay in scope. Unmapped sub-actions keep the JSON editor until their form fields have
+explicit types; never guess widget types from field names.
+
+Protected-folder updates retain elevation, with private installation staging and encoded Windows
+commands. Packed Windows file notifications are parsed without assuming four-byte record alignment.
+The version remains open; release blockers are tracked in `docs/REVIEW_1.6.0.md`.
