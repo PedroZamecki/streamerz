@@ -359,3 +359,9 @@ pollution in the new publishing test. The test now restores `sys.path`; the six 
 rerun. Final Rust and Windows results in the table supersede earlier diagnostic runs. The known history-scan
 failure means this version is not yet CI-clean. Live browser accounts, authenticated store uploads,
 notification interaction and connected service behavior have not been established by the fixtures.
+
+Final release candidates were also built with `STREAMERZ_VERSION=v1.6.0` on Linux and for MSVC.
+Both binaries and the packaged AppImage passed all 149 scenarios. The Windows PE resources contain
+Streamerz as ProductName and FileDescription, with FileVersion and ProductVersion both `1.6.0.0`;
+the four-size executable icon check passed. AppImage packaging still required `NO_STRIP=1` locally.
+Commitlint passed over every local version commit. The working tree was clean after recording results.
