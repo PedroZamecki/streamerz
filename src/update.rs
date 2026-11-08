@@ -321,6 +321,24 @@ mod tests {
     }
 
     #[test]
+    fn an_inherited_appimage_cannot_replace_the_running_program() {
+        let root = std::env::temp_dir().join(format!("streamerz-appimage-{}", crate::engine::uuid()));
+        let mount = root.join("mount");
+        std::fs::create_dir_all(mount.join("usr/bin")).unwrap();
+        let own = mount.join("usr/bin/Streamerz");
+        let child = root.join("Streamerz");
+        let image = root.join("parent.AppImage");
+        for path in [&own, &child, &image] {
+            std::fs::write(path, b"test").unwrap();
+        }
+        assert_eq!(super::own_appimage(&own, &mount, &image), Some(image.clone()));
+        assert_eq!(super::own_appimage(&child, &mount, &image), None);
+        assert_eq!(super::own_appimage(&own, &root.join("missing"), &image), None);
+        assert_eq!(super::own_appimage(&own, &mount, &root.join("missing")), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn versions_compare() {
         assert!(semver("v1.10.0") > semver("v1.9.3"));
         assert_eq!(semver("v2.0.1"), Some((2, 0, 1)));
