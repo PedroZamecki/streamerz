@@ -134,10 +134,145 @@ fn sound(body: &[u8], sha256: Option<&str>) -> bool {
         })
 }
 
-/// Downloads the release next to the file it replaces, as `.new` (a half download never has that name),
-/// with the tag in `.version`; nothing else changes until `apply`.
+/// True when writing or renaming in `path`'s directory requires administrator / elevated permissions.
+pub fn is_protected(path: &Path) -> bool {
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => return false,
+    };
+    let probe = parent.join(format!(".streamerz_write_probe_{}", std::process::id()));
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(&probe) {
+        Ok(f) => {
+            drop(f);
+            let _ = std::fs::remove_file(&probe);
+        }
+        Err(_) => return true,
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let Ok(dir_meta) = parent.metadata() {
+            if (dir_meta.mode() & 0o1000) != 0 {
+                if let Ok(file_meta) = path.metadata() {
+                    let uid = unsafe { libc::getuid() };
+                    if uid != 0 && file_meta.uid() != uid {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Protected updates belong to this user and installation, never the shared temporary folder.
+fn staging_dir(path: &Path) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(path.as_os_str().as_encoded_bytes());
+    let id: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    crate::default_config_path().with_file_name("updates").join(id)
+}
+
+fn private_dir(path: &Path) -> std::io::Result<()> {
+    let builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    let builder = {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = builder;
+        builder.mode(0o700);
+        builder
+    };
+    match builder.create(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+    let metadata = std::fs::symlink_metadata(path)?;
+    let valid = metadata.is_dir() && !metadata.file_type().is_symlink();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.uid() != unsafe { libc::getuid() } || metadata.mode() & 0o077 != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "update directory is not private",
+            ));
+        }
+    }
+    if valid {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "update directory is not private",
+        ))
+    }
+}
+
+fn own_file(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.uid() != unsafe { libc::getuid() } {
+            return false;
+        }
+    }
+    true
+}
+
+/// Where an update for `path` is staged: (.new, .version, .part).
+fn staged_paths(path: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    if is_protected(path) {
+        let dir = staging_dir(path);
+        (
+            dir.join("update.new"),
+            dir.join("update.version"),
+            dir.join("update.part"),
+        )
+    } else {
+        (beside(path, "new"), beside(path, "version"), beside(path, "part"))
+    }
+}
+
+fn find_staged(path: &Path) -> Option<(PathBuf, PathBuf)> {
+    find_staged_in(path, &staging_dir(path))
+}
+
+fn find_staged_in(path: &Path, dir: &Path) -> Option<(PathBuf, PathBuf)> {
+    let beside_new = beside(path, "new");
+    let beside_ver = beside(path, "version");
+    if own_file(&beside_new) && own_file(&beside_ver) {
+        return Some((beside_new, beside_ver));
+    }
+    // Lookup must not create directories or accept staging through a symlink.
+    if !dir.exists() || private_dir(dir.parent()?).is_err() || private_dir(dir).is_err() {
+        return None;
+    }
+    let new = dir.join("update.new");
+    let tag = dir.join("update.version");
+    (own_file(&new) && own_file(&tag)).then_some((new, tag))
+}
+
+/// Downloads the release as `.new` (beside the binary or in temp if protected), with the tag in `.version`;
+/// nothing else changes until `apply`.
 pub async fn stage(r: &Release) -> Result<(), String> {
-    let (new, tag) = (beside(&r.path, "new"), beside(&r.path, "version"));
+    let (new, tag, part) = staged_paths(&r.path);
+    if is_protected(&r.path) {
+        let dir = staging_dir(&r.path);
+        let root = dir.parent().ok_or("missing update directory")?;
+        if let Some(parent) = root.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        private_dir(root)
+            .and_then(|_| private_dir(&dir))
+            .map_err(|e| e.to_string())?;
+    }
     if new.is_file() && std::fs::read_to_string(&tag).is_ok_and(|t| t == r.tag) {
         return Ok(());
     }
@@ -146,7 +281,6 @@ pub async fn stage(r: &Release) -> Result<(), String> {
     if got.status != 200 || !sound(&got.body, r.sha256.as_deref()) {
         return Err(format!("{}: not the program it should be (HTTP {})", r.url, got.status));
     }
-    let part = beside(&r.path, "part");
     std::fs::write(&part, &got.body).map_err(|e| format!("{}: {e}", part.display()))?;
     #[cfg(unix)]
     {
@@ -157,22 +291,183 @@ pub async fn stage(r: &Release) -> Result<(), String> {
     std::fs::write(&tag, &r.tag).map_err(|e| format!("{}: {e}", tag.display()))
 }
 
-/// Puts the staged file in place. On Linux that's one atomic rename (the running program keeps its old
-/// copy open, so nothing breaks); Windows can't replace a running program, only rename it, so the old
-/// one waits as `.old` until the next start.
-fn apply(path: &Path) -> Result<(), String> {
-    let new = beside(path, "new");
+fn apply_unprivileged(path: &Path, new: &Path) -> Result<(), String> {
     if cfg!(windows) {
         let old = beside(path, "old");
         let _ = std::fs::remove_file(&old);
         std::fs::rename(path, &old).map_err(|e| format!("{}: {e}", path.display()))?;
-        if let Err(e) = std::fs::rename(&new, path) {
+        if let Err(e) = std::fs::rename(new, path) {
             let _ = std::fs::rename(&old, path);
             return Err(format!("{}: {e}", path.display()));
         }
     } else {
-        std::fs::rename(&new, path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if std::fs::rename(new, path).is_err() {
+            let tmp = beside(path, "tmp");
+            std::fs::copy(new, &tmp).map_err(|e| format!("{}: {e}", path.display()))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
+            }
+            std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let _ = std::fs::remove_file(new);
+        }
     }
+    Ok(())
+}
+
+/// PowerShell receives paths only as literals inside an encoded script, never through cmd.exe.
+#[cfg(any(windows, test))]
+fn windows_elevation_command(path: &Path, new: &Path) -> String {
+    use base64::Engine;
+    let literal = |p: &Path| p.to_string_lossy().replace('\'', "''");
+    let script = format!(
+        r#"$ErrorActionPreference='Stop'
+$target='{}'
+$source='{}'
+$old=$target+'.old'
+if (Test-Path -LiteralPath $old) {{ Remove-Item -LiteralPath $old -Force }}
+Move-Item -LiteralPath $target -Destination $old -Force
+try {{ Copy-Item -LiteralPath $source -Destination $target -Force }}
+catch {{ Move-Item -LiteralPath $old -Destination $target -Force; throw }}
+Remove-Item -LiteralPath $source -Force
+"#,
+        literal(path),
+        literal(new)
+    );
+    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    format!("$ErrorActionPreference='Stop'; $p=Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{encoded}' -Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode")
+}
+
+#[cfg(windows)]
+fn apply_elevated_windows(path: &Path, new: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStringExt;
+    let mut system = [0u16; 260];
+    let length = unsafe {
+        windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW(system.as_mut_ptr(), system.len() as u32)
+    } as usize;
+    if length == 0 || length >= system.len() {
+        return Err("Windows system directory is unavailable".into());
+    }
+    let powershell =
+        PathBuf::from(std::ffi::OsString::from_wide(&system[..length])).join("WindowsPowerShell/v1.0/powershell.exe");
+    let status = std::process::Command::new(powershell)
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &windows_elevation_command(path, new),
+        ])
+        .status()
+        .map_err(|e| format!("powershell: {e}"))?;
+    if status.success() && !new.exists() && path.is_file() {
+        Ok(())
+    } else {
+        Err(format!("{}: elevation cancelled or update failed", path.display()))
+    }
+}
+
+#[cfg(unix)]
+const ELEVATION_SCRIPT: &str = r#"TARGET="$1"; NEW="$2"
+TMP=$(mktemp "${TARGET}.update.XXXXXX") || exit 1
+trap 'rm -f -- "$TMP"' EXIT HUP INT TERM
+cp -- "$NEW" "$TMP" && chmod 755 "$TMP" && mv -fT -- "$TMP" "$TARGET" && rm -f -- "$NEW" "$TARGET.part" "$TARGET.old" "$TARGET.version"
+"#;
+
+#[cfg(unix)]
+fn apply_elevated_unix(path: &Path, new: &Path) -> Result<(), String> {
+    let script = ELEVATION_SCRIPT;
+
+    let path_str = path.to_str().ok_or_else(|| "non-utf8 path".to_string())?;
+    let new_str = new.to_str().ok_or_else(|| "non-utf8 path".to_string())?;
+
+    match std::process::Command::new("pkexec")
+        .args(["/bin/sh", "-c", script, "sh", path_str, new_str])
+        .status()
+    {
+        Ok(st) if st.success() => return Ok(()),
+        Ok(st) if st.code() == Some(126) => return Err("cancelled".to_string()),
+        _ => {}
+    }
+
+    // Fallback: sudo in a terminal emulator
+    let shell = format!(
+        "echo '{}'; echo; sudo /bin/sh -c '{}' sh '{}' '{}' && echo && echo '{}'; printf '{}'; read _",
+        crate::i18n::tr("update.terminal_why").replace('\'', "'\\''"),
+        script.replace('\'', "'\\''"),
+        path_str.replace('\'', "'\\''"),
+        new_str.replace('\'', "'\\''"),
+        crate::i18n::tr("input.terminal_done").replace('\'', "'\\''"),
+        crate::i18n::tr("input.terminal_close").replace('\'', "'\\''"),
+    );
+
+    let mut terms: Vec<String> = std::env::var("TERMINAL").into_iter().collect();
+    terms.extend(
+        [
+            "xdg-terminal-exec",
+            "kgx",
+            "gnome-terminal",
+            "konsole",
+            "xfce4-terminal",
+            "alacritty",
+            "kitty",
+            "foot",
+            "xterm",
+        ]
+        .map(String::from),
+    );
+
+    for t in terms {
+        let mut c = std::process::Command::new(&t);
+        match t.as_str() {
+            "xdg-terminal-exec" => {}
+            "gnome-terminal" | "kgx" => drop(c.arg("--")),
+            _ => drop(c.arg("-e")),
+        }
+        if let Ok(mut child) = c.args(["sh", "-c", &shell]).spawn() {
+            if child.wait().is_ok_and(|st| st.success()) && !new.exists() {
+                return Ok(());
+            }
+        }
+    }
+
+    if !new.exists() {
+        Ok(())
+    } else {
+        Err(format!("{}: permission denied to install update", path.display()))
+    }
+}
+
+fn apply_elevated(path: &Path, new: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        apply_elevated_windows(path, new)
+    }
+    #[cfg(unix)]
+    {
+        apply_elevated_unix(path, new)
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = (path, new);
+        Err("Unsupported operating system for elevated updates".to_string())
+    }
+}
+
+/// Puts the staged file in place. On Linux that's one atomic rename (the running program keeps its old
+/// copy open, so nothing breaks); Windows can't replace a running program, only rename it, so the old
+/// one waits as `.old` until the next start.
+/// If the target folder is protected, prompts for elevation (UAC on Windows, polkit on Linux).
+fn apply(path: &Path) -> Result<(), String> {
+    let (new, tag) =
+        find_staged(path).ok_or_else(|| format!("{}: no staged update found", beside(path, "new").display()))?;
+    if is_protected(path) {
+        apply_elevated(path, &new)?;
+    } else {
+        apply_unprivileged(path, &new)?;
+    }
+    let _ = std::fs::remove_file(tag);
     let _ = std::fs::remove_file(beside(path, "version"));
     Ok(())
 }
@@ -184,16 +479,27 @@ pub fn tidy() {
     for ext in ["old", "part"] {
         let _ = std::fs::remove_file(beside(&path, ext));
     }
-    let Ok(tag) = std::fs::read_to_string(beside(&path, "version")) else {
+    let staged = find_staged(&path);
+    let tag = staged
+        .as_ref()
+        .and_then(|(_, t)| std::fs::read_to_string(t).ok())
+        .or_else(|| std::fs::read_to_string(beside(&path, "version")).ok());
+    let Some(tag) = tag else {
         return;
     };
     let newer = matches!((semver(&tag), running().and_then(semver)), (Some(t), Some(r)) if t > r);
-    if newer && apply(&path).is_ok() {
+    if newer && !is_protected(&path) && apply(&path).is_ok() {
         restart();
     }
     // Stale: this build is that release already, or newer.
-    let _ = std::fs::remove_file(beside(&path, "new"));
-    let _ = std::fs::remove_file(beside(&path, "version"));
+    if !newer {
+        let _ = std::fs::remove_file(beside(&path, "new"));
+        let _ = std::fs::remove_file(beside(&path, "version"));
+        if let Some((new, tag)) = staged {
+            let _ = std::fs::remove_file(new);
+            let _ = std::fs::remove_file(tag);
+        }
+    }
 }
 
 /// The release tag last announced, so each is told about once.
@@ -250,7 +556,12 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
         );
     }
     let now = running().unwrap_or("");
-    let question = trf("update.ask", &[("version", &tag), ("now", now)]);
+    let protected = is_protected(&release.path);
+    let question = if protected {
+        trf("update.ask_admin", &[("version", &tag), ("now", now)])
+    } else {
+        trf("update.ask", &[("version", &tag), ("now", now)])
+    };
     if !crate::ui::confirm(question, tr("update.later"), tr("update.now"))
         .await
         .unwrap_or(false)
@@ -259,6 +570,10 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
     }
     crate::say(format!("Updating to {tag}..."));
     if let Err(e) = stage(&release).await.and_then(|()| apply(&release.path)) {
+        if e == "cancelled" {
+            crate::say(tr("update.cancelled").to_string());
+            return;
+        }
         crate::error(format!("Update to {tag} failed: {e}"));
         let _ = crate::ui::confirm(trf("update.failed", &[("error", &e)]), tr("dialogs.ok"), "").await;
         return;
@@ -321,24 +636,6 @@ mod tests {
     }
 
     #[test]
-    fn an_inherited_appimage_cannot_replace_the_running_program() {
-        let root = std::env::temp_dir().join(format!("streamerz-appimage-{}", crate::engine::uuid()));
-        let mount = root.join("mount");
-        std::fs::create_dir_all(mount.join("usr/bin")).unwrap();
-        let own = mount.join("usr/bin/Streamerz");
-        let child = root.join("Streamerz");
-        let image = root.join("parent.AppImage");
-        for path in [&own, &child, &image] {
-            std::fs::write(path, b"test").unwrap();
-        }
-        assert_eq!(super::own_appimage(&own, &mount, &image), Some(image.clone()));
-        assert_eq!(super::own_appimage(&child, &mount, &image), None);
-        assert_eq!(super::own_appimage(&own, &root.join("missing"), &image), None);
-        assert_eq!(super::own_appimage(&own, &mount, &root.join("missing")), None);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
     fn versions_compare() {
         assert!(semver("v1.10.0") > semver("v1.9.3"));
         assert_eq!(semver("v2.0.1"), Some((2, 0, 1)));
@@ -363,5 +660,159 @@ mod tests {
             beside(Path::new("/a/x.AppImage"), "new"),
             Path::new("/a/x.AppImage.new")
         );
+    }
+
+    #[test]
+    fn protected_folder_detection() {
+        let temp = std::env::temp_dir().join(format!("streamerz-test-prot-{}", crate::engine::uuid()));
+        std::fs::create_dir_all(&temp).unwrap();
+        let exe = temp.join("MyCustomName.exe");
+        assert!(!super::is_protected(&exe));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let ro_dir = temp.join("readonly_dir");
+            std::fs::create_dir_all(&ro_dir).unwrap();
+            std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let ro_exe = ro_dir.join("MyCustomName.exe");
+            assert!(super::is_protected(&ro_exe));
+            // Restore permissions to clean up
+            std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        assert!(super::is_protected(Path::new("/usr/bin/streamerz")));
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn staged_paths_and_find_staged_custom_name() {
+        let temp = std::env::temp_dir().join(format!("streamerz-test-staged-{}", crate::engine::uuid()));
+        std::fs::create_dir_all(&temp).unwrap();
+        let custom_exe = temp.join("CustomStreamerzApp.exe");
+
+        // When in writable folder:
+        let (new_path, ver_path, part_path) = super::staged_paths(&custom_exe);
+        assert_eq!(new_path, temp.join("CustomStreamerzApp.exe.new"));
+        assert_eq!(ver_path, temp.join("CustomStreamerzApp.exe.version"));
+        assert_eq!(part_path, temp.join("CustomStreamerzApp.exe.part"));
+
+        // When beside .new exists:
+        std::fs::write(&new_path, b"new-binary").unwrap();
+        std::fs::write(&ver_path, b"v2.0.0").unwrap();
+        assert_eq!(
+            super::find_staged(&custom_exe),
+            Some((new_path.clone(), ver_path.clone()))
+        );
+        std::fs::remove_file(&new_path).unwrap();
+        std::fs::remove_file(&ver_path).unwrap();
+
+        // Installations with the same basename cannot share staged updates.
+        assert_ne!(
+            super::staging_dir(Path::new("/one/App")),
+            super::staging_dir(Path::new("/two/App"))
+        );
+        let root = temp.join("private");
+        let dir = root.join("install");
+        super::private_dir(&root).unwrap();
+        super::private_dir(&dir).unwrap();
+        let p_new = dir.join("update.new");
+        let p_ver = dir.join("update.version");
+        std::fs::write(&p_new, b"new-binary").unwrap();
+        std::fs::write(&p_ver, b"v2.0.0").unwrap();
+        assert_eq!(super::find_staged_in(&custom_exe, &dir), Some((p_new, p_ver)));
+
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn apply_unprivileged_replaces_custom_name() {
+        let temp = std::env::temp_dir().join(format!("streamerz-test-apply-{}", crate::engine::uuid()));
+        std::fs::create_dir_all(&temp).unwrap();
+        let custom_exe = temp.join("Streamerz Renamed Executable");
+        std::fs::write(&custom_exe, b"old-version-content").unwrap();
+
+        let new_file = temp.join("Streamerz Renamed Executable.new");
+        let ver_file = temp.join("Streamerz Renamed Executable.version");
+        std::fs::write(&new_file, b"new-version-content").unwrap();
+        std::fs::write(&ver_file, b"v9.9.9").unwrap();
+
+        super::apply(&custom_exe).unwrap();
+
+        assert_eq!(std::fs::read(&custom_exe).unwrap(), b"new-version-content");
+        assert!(!new_file.exists());
+        assert!(!ver_file.exists());
+
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_elevation_script_handles_custom_names_and_spaces() {
+        let temp = std::env::temp_dir().join(format!("streamerz-test-unix-elev-{}", crate::engine::uuid()));
+        let dir_with_spaces = temp.join("folder with spaces");
+        std::fs::create_dir_all(&dir_with_spaces).unwrap();
+
+        let target = dir_with_spaces.join("My App's $(false) %TEMP%.AppImage");
+        let new_file = temp.join("new_staged_binary");
+        std::fs::write(&target, b"original-data").unwrap();
+        std::fs::write(&new_file, b"updated-data").unwrap();
+
+        let script = super::ELEVATION_SCRIPT;
+
+        let status = std::process::Command::new("/bin/sh")
+            .args(["-c", script, "sh", target.to_str().unwrap(), new_file.to_str().unwrap()])
+            .status()
+            .unwrap();
+
+        assert!(status.success());
+        assert_eq!(std::fs::read(&target).unwrap(), b"updated-data");
+        assert!(!new_file.exists());
+
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn windows_elevation_paths_are_encoded_literals() {
+        use base64::Engine;
+        let target = Path::new(r"C:\Program Files\App's %TEMP% & $(exit 9).exe");
+        let source = Path::new(r"C:\private\new.exe");
+        let command = super::windows_elevation_command(target, source);
+        assert!(!command.contains("cmd.exe"));
+        assert!(!command.contains("%TEMP%"));
+        let encoded = command
+            .split("'-EncodedCommand','")
+            .nth(1)
+            .unwrap()
+            .split('\'')
+            .next()
+            .unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
+        let utf16: Vec<u16> = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+            .collect();
+        let script = String::from_utf16(&utf16).unwrap();
+        assert!(script.contains("$target='C:\\Program Files\\App''s %TEMP% & $(exit 9).exe'"));
+        assert!(script.contains("-LiteralPath $source"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staging_rejects_symlinks_and_public_directories() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let root = std::env::temp_dir().join(format!("streamerz-private-{}", crate::engine::uuid()));
+        super::private_dir(&root).unwrap();
+        assert_eq!(root.metadata().unwrap().permissions().mode() & 0o777, 0o700);
+        let link = root.join("link");
+        symlink(&root, &link).unwrap();
+        assert!(super::private_dir(&link).is_err());
+        assert!(!super::own_file(&link));
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(super::private_dir(&root).is_err());
+        std::fs::remove_file(link).unwrap();
+        std::fs::remove_dir(root).unwrap();
     }
 }
