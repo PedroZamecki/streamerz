@@ -105,46 +105,9 @@ jobs:
               break
             fi
           done
-
-  # Fast Linux check gate: fails in ~20 seconds on broken code before expensive Windows runner boots
-  check:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' && !github.event.pull_request.draft
-    steps:
-      - uses: actions/checkout@v4
-      - name: Cache apt packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.apt-cache
-          key: apt-deps-${{ runner.os }}-${{ hashFiles('.github/workflows/*.yml') }}
-          restore-keys: |
-            apt-deps-${{ runner.os }}-
-      - name: Install dependencies
-        run: |
-          mkdir -p ~/.apt-cache
-          sudo cp -n ~/.apt-cache/*.deb /var/cache/apt/archives/ 2>/dev/null || true
-          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list /etc/apt/sources.list.d/* /etc/apt/apt-mirrors.txt 2>/dev/null || true
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            libx11-dev libxext-dev libxft-dev libxinerama-dev libxcursor-dev libxrender-dev \
-            libxfixes-dev libpango1.0-dev libgl1-mesa-dev libglu1-mesa-dev libwayland-dev \
-            wayland-protocols libdbus-1-dev libxkbcommon-dev libegl-dev libopengl-dev
-          cp -n /var/cache/apt/archives/*.deb ~/.apt-cache/ 2>/dev/null || true
-      - name: Set up sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-        with:
-          version: "v0.10.0"
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "streamerz-deps"
-          cache-all-crates: false
-          cache-workspace-crates: false
-      - name: Fast check
-        run: cargo check --locked
-
   windows:
-    needs: [version, check]
-    if: always() && (needs.check.result == 'success' || needs.check.result == 'skipped') && (github.event_name != 'push' || needs.version.outputs.tag != '') && !github.event.pull_request.draft
+    needs: [version]
+    if: (github.event_name != 'push' || needs.version.outputs.tag != '') && !github.event.pull_request.draft
     runs-on: windows-latest
     env:
       CMAKE_GENERATOR: "Ninja"
@@ -171,8 +134,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: "streamerz-windows-deps"
-          cache-all-crates: false
-          cache-workspace-crates: false
+          cache-all-crates: true
       - if: needs.version.outputs.reuse == ''
         run: |
           cargo fetch --locked
@@ -184,10 +146,10 @@ jobs:
         env:
           STREAMERZ_VERSION: ${{ needs.version.outputs.tag || 'dev' }}
       # Every unit test on real Windows (the Windows-only ones too: DPAPI, the Run key, Toolhelp, the file
-      # watcher, Windows line endings), on the PR runner. Using ci-test profile for fast compilation without LTO.
+      # watcher, Windows line endings), on the PR runner. Reuses release profile artifacts already built.
       - if: github.event_name == 'pull_request'
         name: Run the unit tests on Windows
-        run: cargo test --profile ci-test --locked --bin Streamerz
+        run: cargo test --release --locked --bin Streamerz
       # Every scenario (tests/scenarios) on the exe just built, on real Windows.
       - if: github.event_name == 'pull_request' && needs.version.outputs.reuse == ''
         name: Run the scenarios on the Windows exe
@@ -254,8 +216,8 @@ jobs:
           retention-days: 3
 
   linux:
-    needs: [version, check]
-    if: always() && (needs.check.result == 'success' || needs.check.result == 'skipped') && (github.event_name != 'push' || needs.version.outputs.tag != '') && !github.event.pull_request.draft
+    needs: [version]
+    if: (github.event_name != 'push' || needs.version.outputs.tag != '') && !github.event.pull_request.draft
     runs-on: ubuntu-latest
     steps:
       - name: Take the pull request's binaries
@@ -304,8 +266,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: "streamerz-deps"
-          cache-all-crates: false
-          cache-workspace-crates: false
+          cache-all-crates: true
       - if: needs.version.outputs.reuse == ''
         run: cargo build --release --locked
         env:
@@ -331,7 +292,7 @@ jobs:
 
   release:
     needs: [version, windows, linux]
-    if: needs.version.outputs.tag != '' && github.event_name == 'push'
+    if: always() && !cancelled() && needs.version.outputs.tag != '' && github.event_name == 'push' && needs.windows.result == 'success' && needs.linux.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write

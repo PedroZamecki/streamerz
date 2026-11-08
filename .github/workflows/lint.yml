@@ -54,10 +54,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "streamerz-deps"
-          cache-all-crates: false
-          cache-workspace-crates: false
-      - run: cargo clippy --all-targets --locked -- -D warnings
+          cache-all-crates: true
       - run: cargo test --profile ci-test --locked
+      - run: cargo clippy --profile ci-test --all-targets --locked -- -D warnings
       - name: Prune transient build artifacts before caching
         run: |
           rm -rf target/release/incremental target/ci-test/incremental target/debug/incremental 2>/dev/null || true

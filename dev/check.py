@@ -21,8 +21,8 @@ def main():
     checks = [
         ["git", "diff", "--check"],
         ["cargo", "fmt", "--check"],
-        ["cargo", "clippy", "--all-targets", "--locked", "--", "-D", "warnings"],
         ["cargo", "test", "--profile", "ci-test", "--locked"],
+        ["cargo", "clippy", "--profile", "ci-test", "--all-targets", "--locked", "--", "-D", "warnings"],
         ["cargo", "test", "--profile", "ci-test", "--locked", "--", "--ignored", "--list"],
         [python, "-P", "dev/locale.py", "check"],
         ["node", "--test", "dev/tiktok-extension.test.mjs"],
