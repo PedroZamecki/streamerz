@@ -121,7 +121,6 @@ pub(super) fn title(col: &mut Flex, t: &str) {
         "WebSocket servers" => "server",
         "Pending" => "hourglass",
         "File and folder watchers" => "folder-open",
-        "Voice commands" => "message-square",
         "File tails" => "scroll-text",
         _ => "",
     };
@@ -443,60 +442,6 @@ pub static TIMERS: Kind = Kind {
         ]
     },
     after: Some(|e| e.timers()),
-};
-
-pub static VOICE_COMMANDS: Kind = Kind {
-    what: "lists.voice.what",
-    get: |c| &c.voice_commands,
-    get_mut: |c| &mut c.voice_commands,
-    fields: &[
-        ("name", "Name", Text),
-        ("enabled", "Enabled", Bool),
-        ("command", "Phrases (one per line)", Multi),
-        (
-            "location",
-            "Where it's said",
-            Pick(&["The whole phrase", "At the start", "Anywhere"]),
-        ),
-        ("overrideGlobalConfidence", "Its own confidence", Bool),
-        ("confidenceThreshold", "Confidence (0 to 1)", Num),
-    ],
-    new: || {
-        json!({"id": "", "name": "New voice command", "enabled": true, "command": "", "location": 0,
-            "overrideGlobalConfidence": false, "confidenceThreshold": 0.0})
-    },
-    columns: &[52, 180, 300, 140, 120],
-    titles: &[
-        "lists.on",
-        "lists.voice.name",
-        "lists.voice.phrases",
-        "lists.voice.where",
-        "lists.voice.confidence",
-    ],
-    cells: &[Some(Switch), None, None, Some(Note), Some(Note)],
-    live: None,
-    empty: "lists.voice.empty",
-    label: |o| {
-        let at = match o.get("location").and_then(Value::as_u64).unwrap_or(0) {
-            1 => tr("lists.voice.at_start"),
-            2 => tr("lists.voice.anywhere"),
-            _ => tr("lists.voice.whole"),
-        };
-        let confidence = if on(o, "overrideGlobalConfidence") {
-            let c = o.get("confidenceThreshold").and_then(Value::as_f64).unwrap_or(0.0);
-            format!("{}%", (c * 100.0).round())
-        } else {
-            tr("lists.voice.default_confidence").into()
-        };
-        vec![
-            switch(o, "enabled"),
-            s(o, "name").into(),
-            s(o, "command").lines().collect::<Vec<_>>().join(", "),
-            note("mic", at),
-            note("gauge", confidence),
-        ]
-    },
-    after: None,
 };
 
 pub static FILE_WATCHERS: Kind = Kind {
@@ -1244,9 +1189,6 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
     let chat = super::chat::tab(tabs, cfg, cmds);
     let mut col = tab(tabs, "Commands");
     let commands = list(&mut col, cfg, cmds, &COMMANDS, Some("enabled"));
-    title(&mut col, tr("lists.voice.title"));
-    super::hint(&mut col, tr("lists.voice.guide"), 36);
-    let voice = list(&mut col, cfg, cmds, &VOICE_COMMANDS, Some("enabled"));
     col.end();
 
     let mut col = tab(tabs, "Timers");
@@ -1297,7 +1239,7 @@ pub fn tabs(tabs: &Wizard, cfg: &Cfg, cmds: &Cmds) -> Views {
     let agents = super::agents::tab(tabs, cfg);
 
     Views {
-        lists: vec![commands, voice, timers, watchers, tails, clients, custom, obs, slobs],
+        lists: vec![commands, timers, watchers, tails, clients, custom, obs, slobs],
         queues,
         history,
         globals,
@@ -2972,7 +2914,6 @@ mod tests {
         for kind in [
             &COMMANDS,
             &TIMERS,
-            &VOICE_COMMANDS,
             &FILE_WATCHERS,
             &FILE_TAILS,
             &CLIENTS,

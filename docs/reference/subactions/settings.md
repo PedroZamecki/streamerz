@@ -24,31 +24,6 @@ None set.
 
 - The saved keys are `alpha`, `red`, `green`, `blue`, `random` and `variableName`.
 
-## Set Voice Control Input
-
-- Kind: sub-action
-- Code: 1025
-- Type: SetVoiceControlInput
-- Category: Settings
-- Needs: nothing
-
-Sets the audio input device for voice control, by its id and name.
-
-### Fields
-
-| Field | Key | What it holds |
-| --- | --- | --- |
-| Audio Device ID | `audioDeviceId` | The id of the device. |
-| Audio Device Name | `audioDeviceName` | The name of the device. |
-
-### Arguments
-
-None set.
-
-### Notes
-
-- The choice is kept while Streamerz runs, but the recognizer always listens on the default microphone (Windows only), so it changes nothing yet.
-
 ## Reset First Words
 
 - Kind: sub-action

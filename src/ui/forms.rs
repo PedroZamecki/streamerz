@@ -60,7 +60,6 @@ pub enum W {
     Timer,
     FileWatcher,
     FileTail,
-    VoiceCommand,
     Command,
     UserGroup,
     Client,
@@ -118,7 +117,6 @@ impl W {
             Timer => "timer id".into(),
             FileWatcher => "file watcher id".into(),
             FileTail => "file tail id".into(),
-            VoiceCommand => "voice command id".into(),
             Command => "command id".into(),
             UserGroup => "user group name".into(),
             Client => "WebSocket client id".into(),
@@ -1003,18 +1001,6 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("timeout", "automation.duration_timeout", Duration(1)),
         ],
         1012 => &[("key", "Key", Text), ("modifiers", "Modifiers", Int)],
-        1018 => &[
-            ("commandId", "Voice command", VoiceCommand),
-            ("command", "Phrases (one per line)", Multi),
-        ],
-        1019 => &[
-            ("commandId", "Voice command", VoiceCommand),
-            ("state", "State", Pick(STATE)),
-        ],
-        1025 => &[
-            ("audioDeviceId", "Audio Device ID", Text),
-            ("audioDeviceName", "Audio Device Name", Text),
-        ],
         9001 => &[
             ("device", "Device (none: the first)", Suggest("midi.outputs")),
             ("name", "Name", Text),
@@ -1244,8 +1230,6 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
         29001 | 29002 => &[("instanceId", "Instance", Text)],
         29003 => &[("instanceId", "Instance", Text), ("eventName", "Event Name", Text)],
         29004 => &[("instanceId", "Instance", Text), ("signalName", "Signal Name", Text)],
-        301 => &[],
-        302 => &[("commandId", "Voice command (none: any)", VoiceCommand)],
         15001 => &[
             ("device", "Device (none: any)", Suggest("midi.inputs")),
             ("commandCode", "Command (none: any)", Pick(crate::midi::COMMANDS)),
@@ -1281,7 +1265,6 @@ pub struct Lists {
     timers: Ids,
     file_watchers: Ids,
     file_tails: Ids,
-    voice_commands: Ids,
     commands: Ids,
     user_groups: Ids,
     clients: Ids,
@@ -1351,7 +1334,6 @@ impl Lists {
             timers: ids(&c.timers),
             file_watchers: ids(&c.file_watchers),
             file_tails: ids(&c.file_tails),
-            voice_commands: ids(&c.voice_commands),
             commands: ids(&c.commands),
             user_groups: ids(&c.groups),
             clients: ids(&c.websockets.connections),
@@ -1733,8 +1715,8 @@ fn form_inner(
                 c.set_value(v.and_then(Value::as_i64).unwrap_or(0) as i32);
                 Widget::Pick(c)
             }
-            Action | Queue | Timer | FileWatcher | FileTail | VoiceCommand | Command | UserGroup | Client | Server
-            | ObsConnection | SlobsConnection | Sub | Trigger => {
+            Action | Queue | Timer | FileWatcher | FileTail | Command | UserGroup | Client | Server | ObsConnection
+            | SlobsConnection | Sub | Trigger => {
                 let mut c = super::fit::choice();
                 let list = match w {
                     Action => lists.actions.iter().map(|a| (a.0.clone(), a.1.clone())).collect(),
@@ -1742,7 +1724,6 @@ fn form_inner(
                     Timer => lists.timers.clone(),
                     FileWatcher => lists.file_watchers.clone(),
                     FileTail => lists.file_tails.clone(),
-                    VoiceCommand => lists.voice_commands.clone(),
                     Command => lists.commands.clone(),
                     UserGroup => lists.user_groups.clone(),
                     Client => lists.clients.clone(),
@@ -2448,12 +2429,19 @@ mod tests {
         .chain(36001..=36004)
         .chain(37001..=37003)
         .chain(29001..=29004)
-        .chain([301, 302, 15001, 16001, 16002])
+        .chain([15001, 16001, 16002])
         .chain([705, 17001, 17002, 17003, 17004])
         .chain(501..=504)
         .chain([511, 703, 704])
         {
             assert!(trigger_fields(k).is_some(), "trigger {k} has no form");
         }
+    }
+
+    #[test]
+    fn unmapped_actions_keep_the_json_editor() {
+        // Streamer.bot adds fields without widget types; names cannot determine their JSON types.
+        assert!(sub_fields(u64::MAX).is_none());
+        assert!(sub_fields(120).is_some(), "explicit forms stay available");
     }
 }

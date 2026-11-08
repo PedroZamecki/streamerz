@@ -167,27 +167,5 @@
       {"action": "any", "args": {"webhook.name": "deploy", "data.repo": "streamerz", "data.ok": true}},
       {"action": "deploys", "args": {"webhook.name": "deploy"}},
       {"action": "any", "args": {"webhook.name": "other", "webhook.body": "plain text"}}]}
-  },
-  {
-    "name": "speech to text: dictation, and commands by location and confidence; no recognizer is a warning, not a crash",
-    "config": {"speech_confidence": 0.5, "voice_commands": [
-      {"id": "v1", "name": "Lights", "enabled": true, "command": "lights on", "location": 0},
-      {"id": "v2", "name": "Play", "enabled": true, "command": "play song", "location": 1},
-      {"id": "v3", "name": "Sure", "enabled": true, "command": "scene", "location": 2, "overrideGlobalConfidence": true, "confidenceThreshold": 0.9}]},
-    "actions": [
-      {"name": "dictation", "triggers": [{"type": 301}], "subActions": [{"type": 1009}]},
-      {"name": "command", "triggers": [{"type": 302}], "subActions": [{"type": 1009}]},
-      {"name": "play only", "triggers": [{"type": 302, "commandId": "v2"}], "subActions": [{"type": 1009}]}
-    ],
-    "steps": [
-      {"app": "speech", "text": "Lights on", "confidence": 0.8, "ran": 2},
-      {"app": "speech", "text": "play song Never Gonna", "confidence": 0.7, "ran": 3},
-      {"app": "speech", "text": "next scene", "confidence": 0.7, "ran": 1},
-      {"app": "speech", "text": "lights on", "confidence": 0.2, "ran": 1}],
-    "expect": {"log": ["Speech to Text"], "runs": [
-      {"action": "dictation", "args": {"spokenText": "Lights on", "spokenTextConfidence": 0.8, "spokenTextConfidencePercent": 80, "eventSource": "voicecontrol"}},
-      {"action": "command", "args": {"spokenCommand": "lights on", "commandId": "v1", "commandName": "Lights"}},
-      {"action": "command", "args": {"spokenCommand": "play song", "spokenTextInput": "Never Gonna"}},
-      {"action": "play only", "args": {"commandId": "v2"}}]}
   }
 ]

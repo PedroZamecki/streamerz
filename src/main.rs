@@ -48,7 +48,6 @@ pub mod servers;
 mod slash;
 mod slobs;
 mod songrequests;
-mod speech;
 mod spotify;
 mod storage;
 mod streamdeck;
@@ -156,12 +155,6 @@ pub struct Config {
     file_watchers: Vec<model::Obj>,
     /// The server for the Stream Deck plugin (Streamer.bot's streamDeckSettings): off unless turned on.
     stream_deck: streamdeck::Settings,
-    /// Voice commands (Streamer.bot's speechToText.commands: id, name, enabled, command (one phrase per
-    /// line), location (0 exact, 1 start, 2 anywhere), overrideGlobalConfidence, confidenceThreshold),
-    /// the confidence they need (0 to 1) and whether the log says what was heard.
-    voice_commands: Vec<model::Obj>,
-    speech_confidence: f64,
-    speech_log_spoken: bool,
     file_tails: Vec<model::Obj>,
     /// Quotes, in Streamer.bot's quotes.dat shape (id, timestamp, userId, user, platform, gameId,
     /// gameName, quote).
@@ -241,9 +234,6 @@ impl Default for Config {
             groups: Vec::new(),
             file_watchers: Vec::new(),
             stream_deck: Default::default(),
-            voice_commands: Vec::new(),
-            speech_confidence: 0.0,
-            speech_log_spoken: false,
             file_tails: Vec::new(),
             counters: Map::new(),
             quotes: Vec::new(),
