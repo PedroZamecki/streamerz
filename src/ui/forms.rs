@@ -2442,6 +2442,8 @@ mod tests {
     fn unmapped_actions_keep_the_json_editor() {
         // Streamer.bot adds fields without widget types; names cannot determine their JSON types.
         assert!(sub_fields(u64::MAX).is_none());
+        assert!(crate::types::SUB_ACTION_INFO.iter().any(|info| info.0 == 701));
+        assert!(sub_fields(701).is_none(), "unmapped PolyPop actions keep their JSON");
         assert!(sub_fields(120).is_some(), "explicit forms stay available");
     }
 }

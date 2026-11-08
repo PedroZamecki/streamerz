@@ -1,5 +1,4 @@
 //! On-demand Spotify authorization and Web API operations. No background task is started.
-#![allow(dead_code)] // The integration UI and action wiring are added separately.
 
 use crate::engine::Engine;
 use crate::ports::{Fut, MusicPort};
@@ -925,19 +924,6 @@ pub async fn like(token: &str, uri: &str) -> Result<(), String> {
     }
 }
 
-pub async fn add_to_queue(token: &str, query: &str) -> Result<String, String> {
-    add_at(API, token, query).await
-}
-
-/// Control playback on Spotify's active device.
-pub async fn playback(token: &str, command: &str) -> Result<(), String> {
-    playback_at(API, token, command).await
-}
-
-async fn playback_at(base: &str, token: &str, command: &str) -> Result<(), String> {
-    playback_on(base, token, command, "").await
-}
-
 async fn playback_on(base: &str, token: &str, command: &str, device: &str) -> Result<(), String> {
     let (method, path) = match command {
         "play" => ("PUT", "/me/player/play"),
@@ -954,14 +940,22 @@ async fn playback_on(base: &str, token: &str, command: &str, device: &str) -> Re
     request(base, method, &path, token).await?;
     Ok(())
 }
-async fn add_at(base: &str, token: &str, query: &str) -> Result<String, String> {
-    let t = find_at(base, token, query).await?;
-    add_uri_at(base, token, &t.uri, "", std::time::Duration::from_secs(1)).await?;
-    Ok(t.uri)
-}
-
 #[cfg(test)]
 mod tests {
+    pub async fn add_to_queue(token: &str, query: &str) -> Result<String, String> {
+        add_at(API, token, query).await
+    }
+
+    async fn playback_at(base: &str, token: &str, command: &str) -> Result<(), String> {
+        playback_on(base, token, command, "").await
+    }
+
+    async fn add_at(base: &str, token: &str, query: &str) -> Result<String, String> {
+        let t = find_at(base, token, query).await?;
+        add_uri_at(base, token, &t.uri, "", std::time::Duration::from_secs(1)).await?;
+        Ok(t.uri)
+    }
+
     #[test]
     fn transfers_to_the_requested_device() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

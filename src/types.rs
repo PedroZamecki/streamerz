@@ -1,6 +1,5 @@
 //! Streamer.bot's type codes and their names, generated from Streamer.bot.exe's metadata (see
 //! DEVELOPING.md). Streamerz extensions are marked separately.
-#![allow(dead_code)] // ponytail: the engine (phase 3) and the editor (phase 5) use it.
 
 /// Sub-action `type` codes (`subActions[].type`).
 pub const SUB_ACTIONS: &[(u32, &str)] = &[
