@@ -2279,18 +2279,22 @@ pub(crate) mod tests {
             .enable_all()
             .build()
             .unwrap();
+        crate::capture(true);
         tokio::task::LocalSet::new().block_on(&rt, f);
-        let mut out = Vec::new();
-        crate::status(|s| {
-            out = s
-                .log
-                .iter()
-                .filter(|x| x.2.starts_with("T "))
-                .map(|x| x.2.clone())
-                .collect();
-            s.log.clear();
+        crate::capture(false)
+            .into_iter()
+            .filter(|line| line.starts_with("T "))
+            .collect()
+    }
+
+    #[test]
+    fn a_tests_log_survives_shared_history_being_cleared() {
+        let _guard = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let out = run(async {
+            crate::say("T this test".into());
+            crate::status(|status| status.log.clear());
         });
-        out
+        assert_eq!(out, ["T this test"]);
     }
 
     pub(crate) async fn settle() {
