@@ -23,6 +23,7 @@ def main():
         ["cargo", "fmt", "--check"],
         ["cargo", "clippy", "--all-targets", "--locked", "--", "-D", "warnings"],
         ["cargo", "test", "--profile", "ci-test", "--locked"],
+        ["cargo", "test", "--profile", "ci-test", "--locked", "--", "--ignored", "--list"],
         [python, "-P", "dev/locale.py", "check"],
         ["node", "--test", "dev/tiktok-extension.test.mjs"],
         ["node", "dev/test-subathon-overlay.cjs"],

@@ -57,6 +57,14 @@ opt-level = 2
 inherits = "dev"
 opt-level = 1
 
+# CI test profile: fast compilation, opt-level 1 for speedy scenario execution, no LTO
+[profile.ci-test]
+inherits = "dev"
+opt-level = 1
+debug = false
+incremental = false
+
+
 [profile.release]
 opt-level = "z"
 lto = "thin"

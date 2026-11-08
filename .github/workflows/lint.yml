@@ -3,11 +3,24 @@ name: lint
 
 on:
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LOCALIZATION.md'
+      - 'SECURITY.md'
   workflow_dispatch:
 
 concurrency:
   group: lint-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTC_WRAPPER: "sccache"
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=mold"
 
 jobs:
   rust:
@@ -32,11 +45,23 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libx11-dev libxext-dev libxft-dev libxinerama-dev libxcursor-dev libxrender-dev \
             libxfixes-dev libpango1.0-dev libgl1-mesa-dev libglu1-mesa-dev libwayland-dev \
-            wayland-protocols libdbus-1-dev libxkbcommon-dev libegl-dev libopengl-dev
+            wayland-protocols libdbus-1-dev libxkbcommon-dev libegl-dev libopengl-dev mold
           cp -n /var/cache/apt/archives/*.deb ~/.apt-cache/ 2>/dev/null || true
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+        with:
+          version: "v0.10.0"
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "streamerz-deps"
+          cache-all-crates: false
+          cache-workspace-crates: false
       - run: cargo clippy --all-targets --locked -- -D warnings
-      - run: cargo test --locked
+      - run: cargo test --profile ci-test --locked
+      - name: Prune transient build artifacts before caching
+        run: |
+          rm -rf target/release/incremental target/ci-test/incremental target/debug/incremental 2>/dev/null || true
+          find target -type f -name "*.d" -delete 2>/dev/null || true
       - name: Test TikTok extension lifecycle
         run: node --test dev/tiktok-extension.test.mjs
 
