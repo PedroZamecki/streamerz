@@ -206,7 +206,11 @@ impl Shown {
         if let Some(old) = self.pics.insert(key, (pic, self.clock, size)) {
             self.bytes -= old.2;
         }
-        while self.bytes > SHOWN_BYTES && self.pics.len() > 1 {
+        self.evict_to(SHOWN_BYTES);
+    }
+
+    fn evict_to(&mut self, target: usize) {
+        while self.bytes > target && self.pics.len() > 1 {
             let Some(oldest) = self.pics.iter().min_by_key(|e| e.1 .1).map(|e| e.0.clone()) else {
                 break;
             };
@@ -217,15 +221,7 @@ impl Shown {
     }
 
     fn trim(&mut self) {
-        const TARGET: usize = 2 * 1024 * 1024;
-        while self.bytes > TARGET && self.pics.len() > 1 {
-            let Some(oldest) = self.pics.iter().min_by_key(|e| e.1 .1).map(|e| e.0.clone()) else {
-                break;
-            };
-            if let Some(gone) = self.pics.remove(&oldest) {
-                self.bytes -= gone.2;
-            }
-        }
+        self.evict_to(2 * 1024 * 1024);
         self.pics.shrink_to_fit();
     }
 }
@@ -859,6 +855,10 @@ mod tests {
         assert!(shown.get(&key(1)).is_none(), "the least recently used is gone");
         assert!(shown.get(&key(0)).is_some() && shown.get(&key(2)).is_some());
         assert!(shown.bytes <= SHOWN_BYTES);
+        shown.trim();
+        assert_eq!(shown.pics.len(), 1, "idle trim retains the newest picture");
+        assert!(shown.get(&key(2)).is_some());
+        assert_eq!(shown.bytes, 4 * 1024 * 1024);
     }
 
     #[test]
