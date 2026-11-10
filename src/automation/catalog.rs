@@ -255,7 +255,7 @@ pub fn trigger_categorize(name: &str) -> String {
     }
     // TikTok
     else if let Some(rest) = name.strip_prefix("TikTok") {
-        if rest.contains("Chat") {
+        if rest.contains("Chat") || rest.contains("Pin") {
             "TikTok/Chat".into()
         } else if rest.contains("Gift") {
             "TikTok/Gifts & Coins".into()
@@ -481,6 +481,8 @@ not one you made). clipUrl holds the clip's address."
         35010 => "Fires on every chat message in the Kick chat.".into(),
         35011 => "Fires when someone follows the channel on Kick.".into(),
         35014 => "Fires when someone subscribes on Kick.".into(),
+        35026 => "Fires when an ad break starts on Kick.".into(),
+        35027 => "Fires when an ad break ends on Kick.".into(),
         4003 => "Fires on every message in the YouTube live chat.".into(),
         4006 => "Fires when a Super Chat comes in on YouTube.".into(),
         4007 => "Fires when a Super Sticker comes in on YouTube.".into(),
@@ -496,6 +498,7 @@ not one you made). clipUrl holds the clip's address."
         41010 => "Fires when the TikTok live's viewer count changes (with the top viewers by coins).".into(),
         41011 => "Fires when a new TikTok live is found (the first connection to its room).".into(),
         41012 => "Fires when the TikTok live ends, with its viewers, likes and coins.".into(),
+        41013 => "Fires when a chat comment is pinned or unpinned on TikTok Live.".into(),
         42001 => "Fires when the system clipboard content changes.".into(),
         _ => {
             // The service: "HypeRate" in "Integrations/HypeRate", "Twitch" in "Twitch/Channel/Emotes".
@@ -668,4 +671,23 @@ pub fn sub_action_pick_items() -> Vec<PickItem> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trigger_categorize_and_descriptions() {
+        assert_eq!(trigger_categorize("KickAdBreakBegin"), "Kick/Channel & Stream");
+        assert_eq!(trigger_categorize("KickAdBreakEnd"), "Kick/Channel & Stream");
+        assert_eq!(trigger_categorize("TikTokRoomPin"), "TikTok/Chat");
+
+        let desc35026 = trigger_description(35026, "KickAdBreakBegin", "Ad Break Begin", "Kick/Channel & Stream");
+        assert!(desc35026.contains("ad break starts"));
+        let desc35027 = trigger_description(35027, "KickAdBreakEnd", "Ad Break End", "Kick/Channel & Stream");
+        assert!(desc35027.contains("ad break ends"));
+        let desc41013 = trigger_description(41013, "TikTokRoomPin", "Room Pin", "TikTok/Chat");
+        assert!(desc41013.contains("pinned or unpinned"));
+    }
 }

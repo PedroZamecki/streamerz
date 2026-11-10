@@ -130,6 +130,31 @@ pub fn sub_label(o: &Obj, names: &Names) -> String {
         },
         1009 => v("value"),
         1020 => v("message"),
+        4013 => {
+            let b = v("broadcast");
+            let f = v("file");
+            if b.is_empty() {
+                f
+            } else {
+                format!("{b}: {f}")
+            }
+        }
+        4014 | 35050 => {
+            let d = v("duration");
+            if d.is_empty() {
+                "30s".into()
+            } else {
+                format!("{d}s")
+            }
+        }
+        35032 => o
+            .get("tags")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
+            .unwrap_or_else(|| v("tags")),
+        35033 => v("tag"),
+        43010 => v("title"),
+        43011 | 43012 => v("msgId"),
         _ => o
             .iter()
             .filter(|(k, _)| {
@@ -267,5 +292,30 @@ mod tests {
         assert!(!trigger_icon(101).is_empty());
         assert_eq!(trigger_icon(u32::MAX), "puzzle");
         assert_eq!(sub_icon(u32::MAX), "puzzle");
+
+        // New sub-actions labels
+        let mut sub4013 = edit::new_sub(4013);
+        sub4013.insert("file".into(), "/tmp/thumb.png".into());
+        assert_eq!(sub_label(&sub4013, &names), "Set Thumbnail: /tmp/thumb.png");
+
+        let mut sub4014 = edit::new_sub(4014);
+        sub4014.insert("duration".into(), "60".into());
+        assert_eq!(sub_label(&sub4014, &names), "Run Commercial: 60s");
+
+        let mut sub35032 = edit::new_sub(35032);
+        sub35032.insert("tags".into(), serde_json::json!(["gaming", "chill"]));
+        assert_eq!(sub_label(&sub35032, &names), "Set Channel Tags: gaming, chill");
+
+        let mut sub35050 = edit::new_sub(35050);
+        sub35050.insert("duration".into(), "45".into());
+        assert_eq!(sub_label(&sub35050, &names), "Run Commercial: 45s");
+
+        let mut sub43010 = edit::new_sub(43010);
+        sub43010.insert("title".into(), "New Stream".into());
+        assert_eq!(sub_label(&sub43010, &names), "Set Stream Title: New Stream");
+
+        let mut sub43011 = edit::new_sub(43011);
+        sub43011.insert("msgId".into(), "msg123".into());
+        assert_eq!(sub_label(&sub43011, &names), "Pin Comment: msg123");
     }
 }

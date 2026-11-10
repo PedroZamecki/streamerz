@@ -870,6 +870,14 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("options", "Options (one per line)", Lines),
         ],
         4012 => &[("broadcast", "Broadcast", Text)],
+        4013 => &[
+            ("broadcast", "Broadcast (empty: active)", Text),
+            ("file", "Image File", Text),
+        ],
+        4014 => &[
+            ("broadcast", "Broadcast (empty: active)", Text),
+            ("duration", "Duration (seconds)", Int),
+        ],
         35001 => &[
             ("text", "Message", Text),
             ("useBot", "Use Bot Account", Bool),
@@ -896,6 +904,11 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("categoryName", "Category name", Text),
             ("categoryId", "Category ID", Text),
         ],
+        35032 => &[("tags", "Tags (one per line)", Lines)],
+        35033 => &[("tag", "Tag", Text)],
+        35034 => &[],
+        35050 => &[("duration", "Duration (seconds)", Int)],
+        35051 => &[],
         35040 => &[("userLogin", "User login", Text), ("reason", "Reason", Text)],
         35041 | 35043 => &[("userLogin", "User login", Text)],
         35042 => &[
@@ -938,6 +951,9 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         1036 => &[("quoteId", "Quote ID", Int)],
         1037 => &[("quoteVariable", "Quote", Text)],
         43001 => &[("text", "Message", Text)],
+        43010 => &[("title", "Stream Title", Text)],
+        43011 => &[("msgId", "Message ID", Text)],
+        43012 => &[("msgId", "Message ID", Text)],
         7001 => &[
             ("name", "Name", Text),
             ("username", "Username", Text),
@@ -1171,12 +1187,12 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
             ("minCoins", "automation.min_coins", Int),
             ("maxCoins", "automation.max_coins", Int),
         ],
-        41001..=41012 => &[],
+        41001..=41013 => &[],
         101..=196
         | 451..=498
         | 4001..=4031
         | 35001..=35003
-        | 35008..=35025
+        | 35008..=35027
         | 202..=204
         | 206
         | 1202..=1205
@@ -1233,4 +1249,27 @@ pub(crate) fn parse_duration_field(value: &str, unit: u64) -> Result<Value, Stri
     .filter(|ms| ms.is_multiple_of(unit))
     .ok_or_else(|| crate::i18n::tr("automation.duration_error").to_string())?;
     Ok(Value::from(ms / unit))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_sub_and_trigger_fields_exist() {
+        assert!(sub_fields(4013).is_some());
+        assert!(sub_fields(4014).is_some());
+        assert!(sub_fields(35032).is_some());
+        assert!(sub_fields(35033).is_some());
+        assert!(sub_fields(35034).unwrap().is_empty());
+        assert!(sub_fields(35050).is_some());
+        assert!(sub_fields(35051).unwrap().is_empty());
+        assert!(sub_fields(43010).is_some());
+        assert!(sub_fields(43011).is_some());
+        assert!(sub_fields(43012).is_some());
+
+        assert!(trigger_fields(35026).unwrap().is_empty());
+        assert!(trigger_fields(35027).unwrap().is_empty());
+        assert!(trigger_fields(41013).unwrap().is_empty());
+    }
 }
