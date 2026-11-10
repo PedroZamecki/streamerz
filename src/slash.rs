@@ -36,6 +36,159 @@ pub enum Cmd {
     Say(String),
 }
 
+/// One command as the box suggests it.
+pub struct Info {
+    pub name: &'static str,
+    /// What follows the name, as Twitch's own hint writes it: `[length]`, `<user>`.
+    pub args: &'static str,
+    /// The i18n key of what it does.
+    pub about: &'static str,
+    /// Values worth one click after the name: `/commercial 30`.
+    pub presets: &'static [&'static str],
+}
+
+const fn info(name: &'static str, args: &'static str, about: &'static str, presets: &'static [&'static str]) -> Info {
+    Info {
+        name,
+        args,
+        about,
+        presets,
+    }
+}
+
+/// Every command, as the chat box lists them while a `/` is typed.
+pub const COMMANDS: &[Info] = &[
+    info(
+        "commercial",
+        "[length]",
+        "slash.commercial",
+        &["30", "60", "90", "120", "150", "180"],
+    ),
+    info("clear", "", "slash.clear", &[]),
+    info("delete", "<message id>", "slash.delete", &[]),
+    info(
+        "timeout",
+        "<user> [length] [reason]",
+        "slash.timeout",
+        &["10m", "1h", "1d", "1w"],
+    ),
+    info("ban", "<user> [reason]", "slash.ban", &[]),
+    info("unban", "<user>", "slash.unban", &[]),
+    info("slow", "[seconds]", "slash.slow", &["10", "30", "60", "120"]),
+    info("slowoff", "", "slash.slowoff", &[]),
+    info(
+        "followers",
+        "[length]",
+        "slash.followers",
+        &["0", "10m", "1h", "1d", "1w"],
+    ),
+    info("followersoff", "", "slash.followersoff", &[]),
+    info("subscribers", "", "slash.subscribers", &[]),
+    info("subscribersoff", "", "slash.subscribersoff", &[]),
+    info("emoteonly", "", "slash.emoteonly", &[]),
+    info("emoteonlyoff", "", "slash.emoteonlyoff", &[]),
+    info("uniquechat", "", "slash.uniquechat", &[]),
+    info("uniquechatoff", "", "slash.uniquechatoff", &[]),
+    info("shoutout", "<channel>", "slash.shoutout", &[]),
+    info("announce", "<message>", "slash.announce", &[]),
+    info("announceblue", "<message>", "slash.announceblue", &[]),
+    info("announcegreen", "<message>", "slash.announcegreen", &[]),
+    info("announceorange", "<message>", "slash.announceorange", &[]),
+    info("announcepurple", "<message>", "slash.announcepurple", &[]),
+    info("raid", "<channel>", "slash.raid", &[]),
+    info("unraid", "", "slash.unraid", &[]),
+    info("mod", "<user>", "slash.mod", &[]),
+    info("unmod", "<user>", "slash.unmod", &[]),
+    info("vip", "<user>", "slash.vip", &[]),
+    info("unvip", "<user>", "slash.unvip", &[]),
+    info("marker", "[description]", "slash.marker", &[]),
+    info("me", "<message>", "slash.me", &[]),
+];
+
+/// One line of the box's list.
+#[derive(Debug, PartialEq, Clone)]
+pub struct Suggestion {
+    /// What the box holds once it's picked.
+    pub fill: String,
+    /// `/commercial`, or `/commercial 30` for a preset.
+    pub title: String,
+    pub args: &'static str,
+    pub about: &'static str,
+    /// Typing on completes it (a space follows): it takes more words, or has presets.
+    pub more: bool,
+}
+
+/// Kick's chat commands that its API can do (kick.com's help lists more: its chat modes have no API).
+pub const KICK_COMMANDS: &[Info] = &[
+    info("ban", "<user> [reason]", "slash.ban", &[]),
+    info("unban", "<user>", "slash.unban_kick", &[]),
+    info(
+        "timeout",
+        "<user> [seconds]",
+        "slash.timeout_kick",
+        &["60", "600", "3600", "86400"],
+    ),
+    info("title", "<new title>", "slash.title", &[]),
+];
+
+/// The commands to suggest for what is typed so far in `platform`'s box, those whose name starts with what
+/// follows the `/`, or, once a command with presets is typed in full and a space after it, its presets.
+/// Nothing is hidden for what our role may not do (Twitch and Kick answer that when it's tried), only
+/// what is known to be impossible: `commercials` is false for a channel that isn't an affiliate or partner.
+pub fn suggestions(typed: &str, platform: &str, commercials: bool) -> Vec<Suggestion> {
+    let Some(body) = typed.strip_prefix('/').filter(|b| !b.starts_with('/')) else {
+        return Vec::new();
+    };
+    let list = match platform {
+        "twitch" => COMMANDS,
+        "kick" => KICK_COMMANDS,
+        _ => return Vec::new(),
+    };
+    let usable = |c: &&Info| commercials || c.name != "commercial";
+    match body.split_once(char::is_whitespace) {
+        None => list
+            .iter()
+            .filter(usable)
+            .filter(|c| c.name.starts_with(&body.to_lowercase()))
+            .map(|c| Suggestion {
+                fill: format!("/{}", c.name),
+                title: format!("/{}", c.name),
+                args: c.args,
+                about: c.about,
+                more: !c.args.is_empty(),
+            })
+            .collect(),
+        Some((name, rest)) => {
+            let Some(c) = list.iter().filter(usable).find(|c| c.name == name.to_lowercase()) else {
+                return Vec::new();
+            };
+            let rest = rest.trim_start();
+            // Presets are for the first word only.
+            let typing_first = !rest.contains(char::is_whitespace);
+            if c.presets.is_empty() || !typing_first {
+                return vec![Suggestion {
+                    fill: typed.to_string(),
+                    title: format!("/{}", c.name),
+                    args: c.args,
+                    about: c.about,
+                    more: false,
+                }];
+            }
+            c.presets
+                .iter()
+                .filter(|p| p.starts_with(rest))
+                .map(|p| Suggestion {
+                    fill: format!("/{} {p}", c.name),
+                    title: format!("/{} {p}", c.name),
+                    args: "",
+                    about: c.about,
+                    more: false,
+                })
+                .collect()
+        }
+    }
+}
+
 /// Whether `text` is a command this module handles (not a plain message, and not `/me`).
 pub fn is_command(text: &str) -> bool {
     let t = text.trim_start();
@@ -534,6 +687,49 @@ mod tests {
         assert_eq!(parse("hello").unwrap(), Cmd::Say("hello".into()));
         assert_eq!(parse("//not a command").unwrap(), Cmd::Say("//not a command".into()));
         assert!(parse("/nonsense").unwrap_err().contains("isn't a command"));
+    }
+
+    #[test]
+    fn every_listed_command_parses_with_its_arguments() {
+        for c in COMMANDS.iter().filter(|c| c.name != "me") {
+            // Those that take a number first, and those that take a name first.
+            let numeric = matches!(c.name, "commercial" | "slow" | "followers");
+            let lead = if numeric { "" } else { "someone " };
+            for p in c.presets {
+                let text = format!("/{} {lead}{p}", c.name);
+                assert!(parse(&text).is_ok(), "{text}: {:?}", parse(&text));
+            }
+            if c.presets.is_empty() {
+                let text = format!("/{} x", c.name);
+                assert!(parse(&text).is_ok(), "{text}: {:?}", parse(&text));
+            }
+        }
+    }
+
+    #[test]
+    fn the_box_suggests_by_prefix() {
+        let names = |t: &str, p, c| suggestions(t, p, c).into_iter().map(|s| s.title).collect::<Vec<_>>();
+        assert_eq!(names("/comm", "twitch", true), ["/commercial"]);
+        // A channel that isn't an affiliate or partner can't run commercials: not offered.
+        assert!(names("/comm", "twitch", false).is_empty());
+        assert!(names("/co", "twitch", false).iter().all(|n| n != "/commercial"));
+        // Nothing is hidden for a role: Twitch answers that when it's tried.
+        assert!(names("/ban", "twitch", true).contains(&"/ban".to_string()));
+        assert!(names("hello", "twitch", true).is_empty());
+        assert!(names("//x", "twitch", true).is_empty());
+        assert!(names("/", "youtube", true).is_empty());
+        assert_eq!(names("/commercial ", "twitch", true).len(), 6);
+        assert_eq!(
+            names("/commercial 1", "twitch", true),
+            ["/commercial 120", "/commercial 150", "/commercial 180"]
+        );
+        assert_eq!(names("/timeout bob 10m", "twitch", true), ["/timeout"]);
+        assert_eq!(names("/timeout ", "twitch", true).len(), 4);
+        let s = &suggestions("/ban", "twitch", true)[0];
+        assert!(s.more && s.fill == "/ban");
+        // Kick's own commands.
+        assert_eq!(names("/ti", "kick", true), ["/timeout", "/title"]);
+        assert_eq!(names("/timeout ", "kick", true).len(), 4);
     }
 
     #[test]

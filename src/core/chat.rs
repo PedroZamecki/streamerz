@@ -394,6 +394,70 @@ struct Show {
     badges: bool,
 }
 
+/// The list that opens above a chat box: Twitch's and Kick's chat commands while a `/` is typed, and the
+/// names of who chatted while an `@` is. `start` is where the word being typed begins (in characters), so
+/// a pick replaces it; `more` means typing goes on after the pick.
+pub fn suggest(users: &[String], platform: &str, text: &str, cursor: usize, commercials: bool) -> Value {
+    let before: String = text.chars().take(cursor).collect();
+    let start = before
+        .rfind(char::is_whitespace)
+        .map_or(0, |at| at + before[at..].chars().next().map_or(1, char::len_utf8));
+    let token = &before[start..];
+    let mention = token.starts_with('@');
+    let mut rows: Vec<Value> = if let Some(prefix) = token.strip_prefix('@') {
+        users
+            .iter()
+            .filter(|name| name.to_lowercase().starts_with(&prefix.to_lowercase()))
+            .map(|name| json!({"fill": format!("@{name}"), "title": format!("@{name}"), "args": "", "about": tr("chat.mention_hint"), "more": true}))
+            .collect()
+    } else {
+        crate::slash::suggestions(text, platform, commercials)
+            .into_iter()
+            .map(|row| json!({"fill": row.fill, "title": row.title, "args": row.args, "about": tr(row.about), "more": row.more}))
+            .collect()
+    };
+    rows.truncate(7);
+    json!({"mention": mention, "start": before[..start].chars().count(), "rows": rows,
+        "header": tr(if mention { "chat.mention_header" } else { "slash.header" }).to_uppercase()})
+}
+
+/// The names of the accounts logged in, lower case: what an `@name` is checked against to be a mention of us.
+fn my_names(config: &crate::Config) -> Vec<String> {
+    let mut names: Vec<String> = [
+        config
+            .twitch
+            .broadcaster
+            .as_ref()
+            .map(|a| [a.login.clone(), a.display_name.clone()]),
+        config
+            .twitch
+            .bot
+            .as_ref()
+            .map(|a| [a.login.clone(), a.display_name.clone()]),
+        config
+            .youtube
+            .broadcaster
+            .as_ref()
+            .map(|a| [a.name.clone(), String::new()]),
+        config.youtube.bot.as_ref().map(|a| [a.name.clone(), String::new()]),
+        config
+            .kick
+            .broadcaster
+            .as_ref()
+            .map(|a| [a.username.clone(), String::new()]),
+        config.kick.bot.as_ref().map(|a| [a.username.clone(), String::new()]),
+    ]
+    .into_iter()
+    .flatten()
+    .flatten()
+    .map(|name| name.trim().trim_start_matches('@').to_lowercase())
+    .filter(|name| !name.is_empty())
+    .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// What the chat shows: "all" (every chat together), "side" (a column each) or one platform's id. The
 /// saved choice may be a word of 1.6.0 (its own language); a platform that is not there falls back to all.
 fn view(config: &crate::Config, present: &[&str]) -> String {
@@ -621,7 +685,7 @@ pub fn read(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     Ok(json!({"domain": "chat", "chat": {
         "gen": generation, "reset": reset, "look": look, "seq": last.max(asked.unwrap_or(0)), "lines": models,
         "platforms": list, "connected": connected, "history": config.window.chat.save_history && !crate::memory_saver(),
-        "pins": pins, "modes": modes(engine), "texts": texts(), "fadeIn": config.window.chat.fade_in,
+        "pins": pins, "modes": modes(engine), "texts": texts(), "fadeIn": config.window.chat.fade_in, "me": my_names(&config),
         "view": view(&config, &list.iter().filter(|platform| platform["present"] == true).filter_map(|platform| platform["id"].as_str()).collect::<Vec<_>>()),
     }}))
 }
@@ -671,6 +735,17 @@ pub async fn request(engine: &Rc<Engine>, request: &Value) -> Result<Value, Stri
             CLEARED.set(engine.chat_last_seq());
             crate::host::chat();
             accepted()
+        }
+        "suggest" => {
+            let platform = request["platform"].as_str().unwrap_or_default();
+            let text = request["text"].as_str().unwrap_or_default();
+            let cursor = request["cursor"].as_u64().unwrap_or(u64::MAX) as usize;
+            let users: Vec<String> = if PLATFORMS.contains(&platform) {
+                engine.chatters(platform).into_iter().map(|(name, _)| name).collect()
+            } else {
+                Vec::new()
+            };
+            Ok(json!({"suggest": suggest(&users, platform, text, cursor, crate::twitch::commercials_possible())}))
         }
         "reconnect" => {
             let platform = request["platform"].as_str().unwrap_or_default().to_owned();
@@ -1455,6 +1530,47 @@ mod tests {
             assert_eq!(page(&engine)["view"], "all");
             assert!(request_sync(&engine, json!({"op": "reconnect", "platform": "nope"})).is_err());
         });
+    }
+
+    #[test]
+    fn the_box_lists_commands_after_a_slash_and_names_after_an_at() {
+        let users = vec!["Pedro".to_owned(), "pam".to_owned(), "ana".to_owned()];
+        let slash = suggest(&users, "twitch", "/tim", 4, true);
+        assert_eq!(slash["mention"], false);
+        assert_eq!(slash["rows"][0]["fill"], "/timeout");
+        assert_eq!(slash["rows"][0]["more"], true);
+        assert_eq!(slash["start"], 0);
+        // A platform without commands lists none.
+        assert!(suggest(&users, "youtube", "/tim", 4, true)["rows"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        // Names narrow by what is typed, ignoring case, from the word at the cursor.
+        let at = suggest(&users, "twitch", "hi @p and", 5, true);
+        assert_eq!(at["mention"], true);
+        assert_eq!(at["start"], 3);
+        let fills: Vec<&str> = at["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| row["fill"].as_str())
+            .collect();
+        assert_eq!(fills, ["@Pedro", "@pam"]);
+        assert!(suggest(&users, "twitch", "plain words", 11, true)["rows"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn our_own_names_are_what_makes_a_mention() {
+        let mut config = crate::Config::default();
+        assert!(my_names(&config).is_empty());
+        config.kick.bot = Some(crate::kick::KickAccount {
+            username: "@Helper".into(),
+            ..Default::default()
+        });
+        assert_eq!(my_names(&config), ["helper"]);
     }
 
     #[test]
