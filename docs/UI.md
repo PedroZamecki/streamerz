@@ -4,23 +4,57 @@ Use this pattern for every new or changed Streamerz screen. It describes the int
 screens may still need to be brought into line when they are changed. Follow `PLAN.md` for behavior and
 the project rules in `AGENTS.md` for implementation and verification.
 
+## GPUI migration
+
+GPUI is the frontend for the current rewrite. Shared controls live in `frontend/src/controls/` and
+use GPUI Component, the shadcn family and Lucide. The production adapter below remains the visual and
+behavior reference while pages are migrated. Do not introduce new screens into that adapter.
+
+| Need | GPUI shared block |
+|---|---|
+| Editable entity lists, singleton settings, selection, filtering and actions | `controls/list.rs` |
+| Virtualized tables, cell rendering and matching context menus | `controls/rows.rs` |
+| Schema forms and masked secrets | `controls/form.rs` |
+| Input, confirmation and choice prompts | `controls/prompt.rs` |
+| Validation messages | `controls/notice.rs` |
+| Connection and file health | `controls/health.rs` |
+| Zinc colors and component tokens | `theme.rs` |
+| Lucide bodies and brand assets | `assets/lucide.rs`, `frontend/src/assets.rs` |
+
+All dialogs stay inside the GPUI window. Pending core prompts belong to `src/core/prompts.rs` and are
+answered through the same dispatcher as MCP. Closing the renderer must preserve pending prompts.
+Forms send changed field values to the core; validation, wire types and persistence belong to
+`src/automation/`. Keep unknown imported fields and unchanged values intact.
+Singleton server schemas and their atomic saves live in `src/core/settings.rs`. Settings rows reuse
+the same forms and expose Edit in both their buttons and context menus. A displayed settings section
+does not allocate a table or search input.
+
+The frontend process is disposable. Pages query core models through inherited pipes, keep selection
+by stable IDs and discard responses from a previous page generation. Updates follow core events.
+No page may add a refresh timer or start an integration merely to display its state.
+
+The sections below describe the shared production patterns that the GPUI blocks must preserve.
+
 ## Page
 
 Give each page one clear purpose. Put its main content first, with a short title or column headings where
 needed. Keep related controls together and use the same order and names for the same actions across pages.
 Use the existing sidebar for navigation. Avoid adding another navigation system for a single feature.
 
-Use the shared zinc theme and controls from `src/ui.rs`. Use `muted()` for secondary text and `Health` for
-connection state. Use Lucide icons from `src/ui/icons.rs` and the existing brand assets. Don't introduce
+Use the shared zinc theme (`frontend/src/theme.rs`) and the controls in `frontend/src/controls/`. Use the muted
+text colour for secondary text and `Health` for connection state. Use Lucide icons from `assets/lucide.rs` and the
+existing brand assets. Don't introduce
 local colors, decorative symbols or custom widget styling for one screen.
 
 ## Building blocks
 
-The UI is modular: a look or behaviour used in more than one place lives in one module under `src/ui/`,
-and every screen uses that module instead of styling FLTK by hand. To change how something looks
+The UI is modular: a look or behaviour used in more than one place lives in one shared block, and every
+screen uses that block instead of styling a widget by hand. The table below was written for the retired FLTK
+window (the module names are its); in GPUI the same blocks are the controls in `frontend/src/controls/`
+(rows, lists, trees, forms, prompts for dialogs and questions, notices, tabs, health) and the shared theme.
+The rules and what each block is for still hold. To change how something looks
 everywhere, change its module. When a screen needs something new that others could use, add it to the
-right module (or a new one) first, then use it. `src/ui/rules.rs` fails the tests when a screen uses the
-raw FLTK widget for something a block covers.
+right module (or a new one) first, then use it.
 
 | Need | Use | Never |
 |---|---|---|
@@ -220,7 +254,7 @@ A channel picker shows search failures plainly and still accepts a pasted handle
   the screenshots for clipping, readable labels, alignment and usable actions; check relevant empty,
   populated, error and disabled states, including the right-click menu.
 - Run input-driven checks serially on the shared hidden display so one test cannot send input to
-  another instance. `python3 dev/ui-review.py` captures every page in both themes and sizes with
-  isolated settings; its disconnected memory sample is separate from the live integration budget.
+  another instance. `python3 dev/gpui-shot.py PAGE...` captures pages and `python3 dev/gpui-smoke.py` visits every page with
+  isolated settings (`dev/ui-review.py` captures the released 1.6.0 reference); its disconnected memory sample is separate from the live integration budget.
 - Exercise the main task, cancellation and validation by hand. Add a regression test for each bug fixed,
-  or a smoke step when a unit test is not suitable. Run `dev/smoke.py` before closing the version.
+  or a smoke step when a unit test is not suitable. Run `dev/gpui-smoke.py` before closing the version.

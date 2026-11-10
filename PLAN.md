@@ -1,6 +1,6 @@
 # Streamerz plan
 
-Streamerz is a light stream automation app in Rust, built like songrequestz and tikstream: one small exe, FLTK window + tray,
+Streamerz is a light stream automation app in Rust, built like songrequestz and tikstream: one small exe, GPUI window + tray,
 ~nothing idle. Same model as Streamer.bot (actions made of sub-actions, fired by triggers, with
 variables, commands, timers and queues), same data format (imports Streamer.bot exports, reads its
 `actions.json`), and the same WebSocket/HTTP/UDP servers, so songrequestz, tikstream and existing overlays
@@ -24,7 +24,7 @@ phase, following `CLAUDE.md`.
 | Unsupported on import | Kept untouched (so a re-export loses nothing), shown disabled, logged once, skipped at run. This applies to C# code, out-of-scope integrations and the later extras. |
 | Scripting | No C#. The "Run a Program" sub-action is extended: it runs any exe/script, passes the arguments as JSON on stdin, and reads `key=value` lines or a JSON object from stdout back into arguments. No embedded interpreter. |
 | Variables | Full Streamer.bot parity: `%arg%`, `~global~`, persisted and temporary globals, user globals, inline functions (`$math()$` style, same names and syntax as the docs), same argument names per trigger. `$math()$` covers a common subset of mXparser: numbers, `+ - * / ^ %`, parentheses, comparisons, `& | ~`, abs round floor ceil min max sqrt exp ln log log10 sin cos tan asin acos atan sign rand/rnd, pi and e; anything else gives NaN with a log line, as Streamer.bot does. `%x:format%` follows .NET format strings in the OS locale (glibc locale data on Linux, Windows' own on Windows). |
-| Editor | Native FLTK window + tray (starts hidden), with the same tabs and panes as Streamer.bot: Actions (groups tree, sub-actions list, triggers list), Commands, Platforms, Stream Apps, Integrations, Servers/Clients, Settings, Log. Plain FLTK look with the dark theme. Tools: action history (last N runs with their args, re-run), pending queue view (running/queued per queue, clear), test trigger (fire any trigger with sample args). |
+| Editor | Native GPUI window + tray (starts hidden), with the same tabs and panes as Streamer.bot: Actions (groups tree, sub-actions list, triggers list), Commands, Platforms, Stream Apps, Integrations, Servers/Clients, Settings, Log. Plain FLTK look with the dark theme. Tools: action history (last N runs with their args, re-run), pending queue view (running/queued per queue, clear), test trigger (fire any trigger with sample args). |
 | Storage | One `streamerz.json` next to the exe: settings, actions, commands, timers, queues, globals, user data and tokens. Gitignored. Written atomically (temp file + rename) with a `.bak` of the previous version. |
 | Twitch | EventSub WebSocket for chat and every event, Helix REST for sub-actions, no IRC. Broadcaster account plus an optional bot account (chat is sent as the bot when set, as in Streamer.bot). Device-code OAuth with our public client ID, so there's no secret in the exe. |
 | Kick | Read through Kick's public Pusher websocket (what kick.com uses): chat, follows, subs, gifts and more, with no login. The official API with OAuth is used to send chat and moderate. That needs the **user's own Kick app** (client ID + secret pasted in Settings), because Kick requires a secret even for refresh. Official webhooks are optional, through a user-run tunnel to the local HTTP server, with signatures verified (RSA-SHA256, Kick's public key). |
@@ -35,16 +35,56 @@ phase, following `CLAUDE.md`.
 | Integrations | Opt-in and off by default; a disabled one opens nothing. In scope: donations/shops (Ko-fi, StreamElements, Streamlabs, Patreon, Fourthwall, Throne, Tipeee, Treatstream, DonorDrive, Pally, Shopify, Streamloots) and webhooks/remote (Discord, IFTTT, pronouns, Streamer.bot remote instances). |
 | OS | Windows + Linux (Wayland, ksni tray). CI releases a Windows exe and the Linux AppImage on every release. |
 | Budget | Hidden window, Twitch + OBS connected: < 25 MB RSS and ~0% idle CPU, measured and written in every PR. Streamer.bot uses ~300 MB. |
-| Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, fltk, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only). No webview (wry/tao were removed in 1.1.0: TikTok uses the user's own browser). **image-webp** (WebP emotes and avatars; FLTK decodes the other formats itself). HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. **tokio-native-tls** (the crate tokio-tungstenite's native-tls feature uses, for HTTPS), **regex-lite** (If/Else, While, Switch and regex commands; .NET's backreferences and lookaround aren't supported). Anything else needs a question first. |
+| Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only). No webview (wry/tao were removed in 1.1.0: TikTok uses the user's own browser). Pictures are decoded by the window, not the core. The window is the `frontend/` crate (GPUI and gpui-kit), kept out of the core's dependencies. HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. **tokio-native-tls** (the crate tokio-tungstenite's native-tls feature uses, for HTTPS), **regex-lite** (If/Else, While, Switch and regex commands; .NET's backreferences and lookaround aren't supported). Anything else needs a question first. |
 | TikTok | Public LIVE reading is native through `webcast.rs`. The optional extension is the single account for signed search, authenticated reading and sending (`tiktok_bridge.rs`). It uses TikTok's own scripts in an offscreen browser frame, with no visible helper tab, and recovers discarded contexts on demand. Chromium background mode permits use with all browser windows closed. Separate broadcaster and bot logins are retired; reader cookies are requested from the browser only when connecting and remain in memory. |
 | Chat commands | Commands keep Streamer.bot's `sources` bitmask (Twitch 1/2/8, YouTube 1024, Kick 2097152, TikTok 4194304), so each command chooses its platforms. Built-in commands (`!commands`, `!command add/edit/remove`, `!command platforms`, `!so`, `!uptime`, `!title`) are normal commands created on first run, editable and disable-able. Replies go to the platform the command came from; a command can opt in to reply on all connected platforms. |
 | Not in scope | Meld, PolyPop, Elgato, VTube Studio/Voicemod/Speaker.bot/TITS/Crowd Control/HypeRate/Pulsoid/Lumia/Streamfog/mtion, the Streamer.bot website integration/cloud, C# and plugins. |
 | Later (own phases, after phase 14) | Quotes, credits, points, users/first words; sounds and TTS; file I/O, file tail, folder watcher, process triggers; hotkeys/inputs and MIDI; Decks, HTML overlay, multi-platform chat window. |
 
+## GPUI rewrite (current version)
+
+The frontend uses GPUI. Application behavior belongs to a toolkit-independent core, and every core
+operation is available through MCP. Frontends display core state and submit core operations; they do
+not own validation, persistence, platform behavior or automation rules. Replacing the frontend must
+not require changes to those rules.
+
+Shared controls use GPUI Component in the shadcn family, with Lucide icons and the zinc theme.
+Optional syntax and speech features stay disabled. Custom controls, if needed, live in shared modules.
+
+The backend launches a separate GPUI frontend process from the same executable. Hiding exits the
+frontend and releases its renderer. The backend, tray, integrations and MCP keep running. Communication
+uses inherited anonymous pipes and the shared core request dispatcher, with event-driven updates.
+
+Production Streamerz 1.6.0 is the behavior and visual reference. Keep the existing feature set,
+translations, settings compatibility and shared design patterns while simplifying implementation.
+Do not close this version until Linux and Windows under Wine have been compared page by page,
+including dialogs, context menus, special buttons, validation and cancellation.
+
+- [x] Create `refactor/GPUI` from the clean production source.
+- [x] Execute the installed 1.6.0 with isolated settings and capture all 22 pages in both themes and sizes.
+- [ ] Inventory and exercise every page action and dialog against 1.6.0.
+- [ ] Extract automation metadata, validation, commands, queries and host interactions into the core.
+  - [x] Move automation schemas, picker metadata, emote catalogs and metadata caching out of the UI.
+  - [x] Share validated entity edits and semantic list queries between MCP and the frontend pipe.
+  - [x] Move built-in server schemas and atomic settings edits into the core; isolate listener restarts.
+  - [ ] Finish all host interactions, account setup, settings and page-specific core operations.
+    - [x] Queues, globals, history, backups, crashes, plugins, log, settings, donations, MCP, groups, integrations, the status line and cancellable browser logins.
+    - [x] Accounts, Actions, Chat, Community and Polls built (gaps per page in docs/GPUI-PARITY.md; the Wine smoke has an intermittent hang at the prompt-survives-restart step).
+- [ ] Make every core operation accessible through MCP and test access without a frontend.
+- [ ] Replace shared controls and all pages with GPUI; remove the old frontend and dependencies.
+  - [x] Establish shared GPUI tables, forms, health states and Lucide assets.
+  - [ ] Finish shared dialogs, selectors, JSON editing and keyboard behavior.
+  - [x] Complete every page and retire the production adapter.
+  - [x] Remove the FLTK window and everything only it used: `src/ui*`, the `fltk` dependency and its build and CI
+    steps (CMake, Pango, Xft packages), the `--gpui` opt-in and the `gpui` feature (GPUI is the only window;
+    `gpui-dev` stays for the development instrumentation), the legacy smoke drivers and their locale texts.
+- [ ] Compare production, Linux development and Windows development under Wine for every page and function.
+- [ ] Run local checks and release packaging; record hidden RSS and idle CPU before and after.
+
 ## Architecture
 
-- `main.rs`: config, shared `Status`, and the single-thread tokio runtime on its own thread. FLTK runs on
-  the main thread (as in songrequestz).
+- `main.rs`: config, shared `Status`, and the single-thread tokio runtime. The window is the `frontend/` crate
+  (GPUI), a child process of the same executable (`--frontend`) that the core (`src/core/`) serves over pipes.
 - `model.rs`: Streamer.bot data types (serde, unknown fields kept as raw JSON so nothing is lost) and
   `types.rs`, the code↔name table.
 - `engine.rs`: trigger dispatch, action runner, queues (blocking/concurrent, pause), random/weights,

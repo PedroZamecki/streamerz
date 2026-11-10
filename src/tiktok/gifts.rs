@@ -132,7 +132,7 @@ fn publish(c: &Catalog) {
         "tiktok.gifts",
         c.gifts.iter().map(|g| (g.id.clone(), g.name.clone())).collect(),
     );
-    crate::ui::changed();
+    crate::host::changed();
 }
 
 /// A received gift also teaches us about gifts missing from a list or added during this live.

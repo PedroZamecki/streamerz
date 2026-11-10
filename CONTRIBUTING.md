@@ -8,9 +8,9 @@ Not a programmer? You can still help a lot: [report a bug](https://github.com/Pe
 
 ## Build and run
 
-You need [Rust](https://rustup.rs) (stable) and, on Linux, the libraries FLTK builds against
-(`libx11-dev libxft-dev libxinerama-dev libxcursor-dev libpango1.0-dev libwayland-dev libdbus-1-dev
-libxkbcommon-dev` and friends: [lint.yml](.github/workflows/lint.yml) has the full list).
+You need [Rust](https://rustup.rs) (stable) and, on Linux, the libraries GPUI builds against
+(`libx11-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig-dev
+libfreetype-dev libssl-dev`: [lint.yml](.github/workflows/lint.yml) has the full list).
 
 ```sh
 cargo fbuild        # a quick build, in target/fast
@@ -19,7 +19,7 @@ STREAMERZ_DEV=1 target/fast/Streamerz
 ```
 
 [DEVELOPING.md](DEVELOPING.md) explains the code, the dev mode and how to test against the real services.
-`dev/smoke.py` opens the app on a hidden display and visits every page.
+`dev/gpui-smoke.py` opens the app on a hidden display and visits every page.
 
 ## Send a change
 
@@ -39,7 +39,7 @@ STREAMERZ_DEV=1 target/fast/Streamerz
    minor release, `fix` and `perf` a patch, `type!:` a major one.
 5. Open a pull request. Every commit stays in the history (it is merged, never squashed), so keep each
    commit clean. CI builds Windows and Linux, runs the tests and the security checks.
-6. A bug fix comes with a test (a unit test, or a step in `dev/smoke.py` for what only shows on screen).
+6. A bug fix comes with a test (a unit test, or a step in `dev/gpui-smoke.py` for what only shows on screen).
 
 ## Rules worth knowing
 
@@ -47,8 +47,8 @@ STREAMERZ_DEV=1 target/fast/Streamerz
 - **Opt-in.** An integration with nothing set up opens no socket, timer or task.
 - **No secrets.** Logins live in the keyring. Never commit tokens, `streamerz.json` or Streamer.bot's data:
   `dev/scan_secrets.py` checks, and [SECURITY.md](SECURITY.md) says how to report a leak.
-- **One look.** Colours, icons and widgets come from the helpers in `src/ui.rs` (see DEVELOPING.md); icons
-  are [Lucide](https://lucide.dev) in `src/ui/icons.rs`.
+- **One look.** Colours, icons and widgets come from the shared controls in `frontend/src/controls/` and
+  `frontend/src/theme.rs` (see DEVELOPING.md); icons are [Lucide](https://lucide.dev) in `assets/lucide.rs`.
 - **Streamer.bot is the reference** for names, protocols and formats (https://docs.streamer.bot).
 - [PLAN.md](PLAN.md) is the spec: say so in the issue before starting something it doesn't cover.
 
