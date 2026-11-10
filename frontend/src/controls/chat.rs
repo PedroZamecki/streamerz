@@ -608,7 +608,11 @@ impl ChatView {
             return;
         }
         let seq = card["seq"].clone();
-        let body = cx.new(|_| CardView { card, images });
+        let body = cx.new(|_| CardView {
+            card,
+            images,
+            details: false,
+        });
         self.card = Some(body.clone());
         let owner = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _, _| {
@@ -653,10 +657,19 @@ impl ChatView {
 struct CardView {
     card: Value,
     images: HashMap<String, PathBuf>,
+    /// The box shows what actions get for them, not what they said.
+    details: bool,
 }
 impl Render for CardView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        card_body(&self.card, &self.images, cx)
+        let this = cx.entity();
+        let toggle = move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+            this.update(cx, |view, cx| {
+                view.details = !view.details;
+                cx.notify();
+            });
+        };
+        card_body(&self.card, &self.images, self.details, toggle, cx)
     }
 }
 
@@ -683,7 +696,13 @@ fn color(hex: &str, fallback: Hsla) -> Hsla {
 
 /// The user card as the platforms draw theirs: the banner with their picture, name and account age, their
 /// badges and groups, what the platform says, what they said, and what we may do to them.
-fn card_body(card: &Value, images: &HashMap<String, PathBuf>, cx: &mut App) -> impl IntoElement {
+fn card_body(
+    card: &Value,
+    images: &HashMap<String, PathBuf>,
+    details: bool,
+    toggle: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &mut App,
+) -> impl IntoElement {
     let theme = cx.theme().clone();
     let muted = theme.muted_foreground;
     let seq = card["seq"].as_u64().unwrap_or(0);
@@ -943,6 +962,44 @@ fn card_body(card: &Value, images: &HashMap<String, PathBuf>, cx: &mut App) -> i
     for (at, message) in messages.iter().enumerate() {
         said = said.child(div().flex().child(line_content(message, images, 900_000 + at, cx)));
     }
+    // What actions get for them: a click copies the value.
+    let copied = card["copied"].as_str().unwrap_or_default().to_owned();
+    let mut table = div()
+        .id("card-details-table")
+        .h(px(190.))
+        .overflow_y_scroll()
+        .flex()
+        .flex_col()
+        .px_2()
+        .rounded(theme.radius)
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.table);
+    for (at, row) in card["details"].as_array().into_iter().flatten().enumerate() {
+        let value = row["value"].as_str().unwrap_or_default().to_owned();
+        let copied = copied.clone();
+        table = table.child(
+            div()
+                .id(("card-detail", at))
+                .flex()
+                .gap_2()
+                .min_h(px(26.))
+                .items_center()
+                .cursor_pointer()
+                .child(
+                    div()
+                        .w(px(170.))
+                        .flex_shrink_0()
+                        .text_color(muted)
+                        .child(row["key"].as_str().unwrap_or_default().to_owned()),
+                )
+                .child(div().flex_1().min_w_0().truncate().child(value.clone()))
+                .on_click(move |_, window, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
+                    window.push_notification(copied.clone(), cx);
+                }),
+        );
+    }
     let mut actions = div().flex().flex_wrap().gap_2();
     for act in card["acts"].as_array().into_iter().flatten().filter_map(Value::as_str) {
         let (icon, secs) = match act {
@@ -975,10 +1032,34 @@ fn card_body(card: &Value, images: &HashMap<String, PathBuf>, cx: &mut App) -> i
             .child(facts)
             .child(
                 div()
-                    .font_weight(FontWeight::BOLD)
-                    .child(card["recent"].as_str().unwrap_or_default().to_owned()),
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div().font_weight(FontWeight::BOLD).child(
+                            card[if details { "detailsLabel" } else { "recent" }]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_owned(),
+                        ),
+                    )
+                    .child(
+                        Button::new("card-details")
+                            .small()
+                            .label(
+                                card[if details { "recentShort" } else { "detailsLabel" }]
+                                    .as_str()
+                                    .unwrap_or_default()
+                                    .to_owned(),
+                            )
+                            .on_click(toggle),
+                    ),
             )
-            .child(said)
+            .child(if details {
+                table.into_any_element()
+            } else {
+                said.into_any_element()
+            })
             .when(has_actions, |body| body.child(actions)),
     )
 }

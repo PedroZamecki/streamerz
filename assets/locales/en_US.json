@@ -241,6 +241,7 @@
   "card.messages": "Messages sent",
   "card.no_groups": "Not in a group",
   "card.recent": "What they said",
+  "card.recent_short": "Messages",
   "chat.acct_note": "The emote picker shows what the chosen account can use.",
   "chat.acct_win_title": "Sending Account",
   "chat.act_ban": "Ban...",

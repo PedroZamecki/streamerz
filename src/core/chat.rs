@@ -1086,12 +1086,30 @@ async fn card(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         .map(|(group, name, member)| json!({"id": group, "name": name, "member": member}))
         .collect();
     let id = format!("{platform}|{}", line.user_id);
+    // What the actions get for this person (%userName%...), for the curious.
+    let mut details: Vec<Value> = seen
+        .as_ref()
+        .map(|seen| {
+            seen.args
+                .iter()
+                .filter(|(key, _)| key.as_str() != "user")
+                .map(|(key, value)| {
+                    let value = value.as_str().map_or_else(|| value.to_string(), str::to_owned);
+                    json!({"key": key, "value": value.replace(['\n', '\t'], " ")})
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if !details.iter().any(|row| row["key"] == "userId") {
+        details.push(json!({"key": "userId", "value": line.user_id}));
+    }
     Ok(json!({"card": {
+        "details": details, "detailsLabel": tr("card.details"), "recentShort": tr("card.recent_short"), "copied": tr("chat.copied"),
         "id": id, "seq": line.seq, "loading": !lookup, "pending": pending, "user": shown_name(&line, true), "userId": line.user_id,
         "platform": platform, "platformName": name(&platform), "color": name_color(&line), "role": role,
         "picture": picture, "banner": banner, "created": created, "facts": shown, "messages": messages, "groups": groups,
         "badges": badges(engine, &line), "acts": actions(&line, false).into_iter().filter(|act| !matches!(*act, "copy" | "pin" | "unpin")).collect::<Vec<_>>(),
-        "createdText": if created.is_empty() { String::new() } else { trf("card.created_on", &[("date", &created)]) }, "detailsLabel": tr("card.details"), "groupsLabel": tr("card.groups"), "noGroups": tr("card.no_groups"),
+        "createdText": if created.is_empty() { String::new() } else { trf("card.created_on", &[("date", &created)]) }, "groupsLabel": tr("card.groups"), "noGroups": tr("card.no_groups"),
         "groupsTip": tr("card.groups_tip"), "recent": tr("card.recent"),
         "labels": {"timeout": tr("chat.timeout_10m"), "ban": tr("chat.act_ban"), "delete": tr("chat.act_delete_message"),
             "profile": tr("btn.open_profile"), "close": tr("dialogs.close")},
@@ -1654,6 +1672,11 @@ mod tests {
             // they said as lines (words and badges), not bare text.
             assert_eq!(card["card"]["id"], "twitch|ana");
             assert!(card["card"]["groups"].is_array());
+            assert!(card["card"]["details"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["key"] == "userId"));
             assert_eq!(card["card"]["messages"][0]["parts"][0]["t"], "hello");
             // Asking ahead only starts the platform's lookup.
             let ahead = request_sync(

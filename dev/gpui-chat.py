@@ -117,6 +117,12 @@ def main():
             subprocess.run(["xdotool", "mousemove", str(at[0]), str(at[1]), "click", "1"], env=env)
             time.sleep(2)
             print(ui("shot " + str(args.out / f"chat-card-{args.size}.png")))
+            # Details swaps what they said for what actions get.
+            more = [e for e in json.loads(ui("bounds Details")) if e["label"] == "Details" and e.get("enabled", True)]
+            if more:
+                subprocess.run(["xdotool", "mousemove", str(round(more[0]["x"] + more[0]["w"] / 2)), str(round(more[0]["y"] + more[0]["h"] / 2)), "click", "1"], env=env)
+                time.sleep(0.5)
+                print(ui("shot " + str(args.out / f"chat-card-details-{args.size}.png")))
             subprocess.run(["xdotool", "key", "Escape"], env=env)
             time.sleep(0.5)
             for _ in range(20):
