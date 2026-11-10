@@ -77,12 +77,21 @@ right module (or a new one) first, then use it.
 Scrolling: the wheel scrolls what is under the pointer when it can scroll (a list, a text view), else the
 page. A list that has nothing to scroll passes the wheel on. A page never has blank room to scroll into.
 
-Dialogs: always inside the app's window, in its middle, over the window blurred and dimmed, never a
-window of their own (those land anywhere on Wayland and tiling desktops, and could be opened twice). Only one
-can be in front: nothing behind it takes clicks, the wheel or keys until it closes. A title row with a
-close button (X, and Escape, cancel), a rounded panel with a soft shadow, and its contents. A tone colours
-the border and the icon: plain, info, question, success, warning, error. Messages rewrap and stay centered
-when the app is resized. A dialog grows or shrinks with its contents (`Dialog::resizer`). Only when the window is hidden in the tray does a dialog get a window of its own.
+Dialogs: always inside the app's window, in its middle, over the window dimmed (no window of their own:
+those land anywhere on Wayland and tiling desktops, and could be opened twice). Only one can be in front:
+nothing behind it takes clicks, the wheel or keys until it closes. Every dialog has the same three parts,
+from `controls/dialog.rs`:
+
+- **Header** (`dialog::shell`): the title, 13px bold, with the close button (X, and Escape, cancel) at its
+  right, and a line under it. `shell` also centres the dialog, sets its width and gives it its shadow.
+- **Body** (`dialog::body`): the contents, inset from the edges. A long one scrolls; the header and footer
+  stay put.
+- **Footer** (`dialog::footer`): the buttons, under a line. The main ones (OK, Cancel, Delete) sit at the
+  right, the main action last; one that stands apart (Edit JSON) sits at the left. A dialog that only shows
+  something gets a Close button there (`dialog::close_footer`). Buttons never go in the body.
+
+A form or a prompt hands its buttons to the footer (`Form::buttons_view`, `Prompt::buttons_view`). The user
+card is the one dialog with a header of its own: its banner (picture, name, account age, open and close).
 
 Motion: a dialog rises into place while the window behind it fades from sharp to blurred, and sinks as it
 closes; a menu or a popover unrolls from the top. Everything moves through `anim::play` (eased out, under a
@@ -165,7 +174,7 @@ scrollable trigger rows to keep the sub-action editor usable. Preserve selection
 
 ## Forms and dialogs
 
-Use `dialogs::window`, `dialogs::row`, `dialogs::ok_cancel` and the existing form helpers where they fit.
+Use `dialog::shell`, `dialog::body`, `dialog::footer` and the form helpers in `controls/form.rs`.
 Group fields by task, label them clearly and put common fields before advanced options. Use placeholders as
 examples or hints, not as the only label. Keep the user's entries when validation fails and explain what
 needs to be fixed. Cancel or closing a dialog must leave the original values unchanged.
