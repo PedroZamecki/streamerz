@@ -154,10 +154,42 @@ fn flat(text: &str) -> String {
     text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
 }
 
-/// What a line's words are made of: text and pictures (emotes, emoji), in order. A part is
-/// `{"t": text}` or `{"e": name, "u": picture URL}`.
-fn parts(engine: &Rc<Engine>, line: &Line) -> Vec<Value> {
-    let text = flat(&line.text);
+/// The emote called `word` of this message, if it has one: the platform's own for the line, a chatter's own
+/// 7TV, or one of the platform's catalogs.
+type Lookup<'a> = &'a dyn Fn(&str) -> Option<String>;
+
+/// A word with brackets or parentheses around its emotes ("RainTime[PETPET]"): the runs of letters that are
+/// emotes become pictures and the rest stays text. `None` when the word has no bracket or no emote in it.
+fn split_around_brackets(word: &str, lookup: Lookup) -> Option<Vec<(String, Option<String>)>> {
+    if !word.contains(['[', ']', '(', ')']) {
+        return None;
+    }
+    let mut out: Vec<(String, Option<String>)> = Vec::new();
+    let mut run = String::new();
+    let mut hit = false;
+    let end_run = |run: &mut String, out: &mut Vec<(String, Option<String>)>, hit: &mut bool| {
+        if run.is_empty() {
+            return;
+        }
+        let url = lookup(run).filter(|url| !url.is_empty());
+        *hit |= url.is_some();
+        out.push((std::mem::take(run), url));
+    };
+    for ch in word.chars() {
+        if ch.is_alphanumeric() || ch == '_' {
+            run.push(ch);
+        } else {
+            end_run(&mut run, &mut out, &mut hit);
+            out.push((ch.to_string(), None));
+        }
+    }
+    end_run(&mut run, &mut out, &mut hit);
+    hit.then_some(out)
+}
+
+/// What words are made of: text and pictures (emotes, emoji), in order. A part is `{"t": text}` or
+/// `{"e": name, "u": picture URL}`; `big` marks the emote drawn large (the word at `big_word`).
+fn build_parts(text: &str, lookup: Lookup, big_word: Option<usize>) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     let mut plain = String::new();
     let flush = |plain: &mut String, out: &mut Vec<Value>| {
@@ -165,35 +197,25 @@ fn parts(engine: &Rc<Engine>, line: &Line) -> Vec<Value> {
             out.push(json!({"t": std::mem::take(plain)}));
         }
     };
-    if line.deleted {
-        return vec![json!({"t": text})];
-    }
-    let _ = engine;
-    crate::emotes::want_personal(&line.platform, &line.user_id);
-    // A gigantified message draws its last emote big.
-    let last = if line.huge {
-        text.split(' ')
-            .enumerate()
-            .filter(|(_, word)| line.emotes.iter().any(|emote| emote.0 == *word))
-            .map(|(at, _)| at)
-            .last()
-    } else {
-        None
-    };
     for (at, word) in text.split(' ').enumerate() {
         if at > 0 {
             plain.push(' ');
         }
-        let known = line
-            .emotes
-            .iter()
-            .find(|emote| emote.0 == word)
-            .map(|emote| emote.1.clone())
-            .or_else(|| crate::emotes::personal(&line.platform, &line.user_id, word))
-            .or_else(|| crate::emotes::third(&line.platform, word));
-        if let Some(url) = known.filter(|url| !url.is_empty()) {
+        if let Some(url) = lookup(word).filter(|url| !url.is_empty()) {
             flush(&mut plain, &mut out);
-            out.push(json!({"e": word, "u": url, "big": last == Some(at)}));
+            out.push(json!({"e": word, "u": url, "big": big_word == Some(at)}));
+            continue;
+        }
+        if let Some(pieces) = split_around_brackets(word, lookup) {
+            for (piece, url) in pieces {
+                match url {
+                    Some(url) => {
+                        flush(&mut plain, &mut out);
+                        out.push(json!({"e": piece, "u": url}));
+                    }
+                    None => plain.push_str(&piece),
+                }
+            }
             continue;
         }
         // Emoji inside the word become pictures, the rest stays text.
@@ -209,6 +231,65 @@ fn parts(engine: &Rc<Engine>, line: &Line) -> Vec<Value> {
     }
     flush(&mut plain, &mut out);
     out
+}
+
+/// What a line's words are made of (see `build_parts`).
+fn parts(engine: &Rc<Engine>, line: &Line) -> Vec<Value> {
+    let text = flat(&line.text);
+    if line.deleted {
+        return vec![json!({"t": text})];
+    }
+    let _ = engine;
+    crate::emotes::want_personal(&line.platform, &line.user_id);
+    // A gigantified message draws its last emote big.
+    let last = if line.huge {
+        text.split(' ')
+            .enumerate()
+            .filter(|(_, word)| line.emotes.iter().any(|emote| emote.0 == *word))
+            .map(|(at, _)| at)
+            .last()
+    } else {
+        None
+    };
+    let lookup = |word: &str| {
+        line.emotes
+            .iter()
+            .find(|emote| emote.0 == word)
+            .map(|emote| emote.1.clone())
+            .or_else(|| crate::emotes::personal(&line.platform, &line.user_id, word))
+            .or_else(|| crate::emotes::third(&line.platform, word))
+    };
+    build_parts(&text, &lookup, last)
+}
+
+/// What a message being typed will look like: its emotes and emoji as pictures. The ones the platform's
+/// catalogs know, the ones seen in this chat lately and Kick's tags are found (a word that is none stays
+/// text). Empty when nothing in it is a picture, so the box shows nothing extra.
+pub fn preview(engine: &Rc<Engine>, platform: &str, text: &str) -> Vec<Value> {
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
+    let seen = if PLATFORMS.contains(&platform) {
+        engine.chat_emotes(platform)
+    } else {
+        Vec::new()
+    };
+    let lookup = |word: &str| {
+        crate::emotes::third(platform, word)
+            .or_else(|| seen.iter().find(|emote| emote.0 == word).map(|emote| emote.1.clone()))
+            .or_else(|| {
+                // A Kick tag's picture is by its number.
+                let tag = crate::emotes::kick_tag(word)?;
+                let id = tag.strip_prefix("[emote:")?.split(':').next()?;
+                Some(format!("https://files.kick.com/emotes/{id}/fullsize"))
+            })
+    };
+    let parts = build_parts(&flat(text), &lookup, None);
+    if parts.iter().any(|part| part["e"].is_string()) {
+        parts
+    } else {
+        Vec::new()
+    }
 }
 
 /// The badges a chatter wears: key, the name to show, the picture (empty: draw an icon instead).
@@ -745,7 +826,10 @@ pub async fn request(engine: &Rc<Engine>, request: &Value) -> Result<Value, Stri
             } else {
                 Vec::new()
             };
-            Ok(json!({"suggest": suggest(&users, platform, text, cursor, crate::twitch::commercials_possible())}))
+            Ok(
+                json!({"suggest": suggest(&users, platform, text, cursor, crate::twitch::commercials_possible()),
+                "preview": preview(engine, platform, text)}),
+            )
         }
         "reconnect" => {
             let platform = request["platform"].as_str().unwrap_or_default().to_owned();
@@ -1571,6 +1655,31 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(my_names(&config), ["helper"]);
+    }
+
+    #[test]
+    fn emotes_stuck_to_brackets_are_found_and_other_words_stay_text() {
+        let known = |word: &str| match word {
+            "RainTime" | "PETPET" | "Kappa" => Some(format!("https://e.test/{word}")),
+            _ => None,
+        };
+        let parts = build_parts("RainTime[PETPET] hi", &known, None);
+        let shown: Vec<String> = parts
+            .iter()
+            .map(|part| {
+                part["e"].as_str().map_or_else(
+                    || format!("t:{}", part["t"].as_str().unwrap_or("")),
+                    |name| format!("e:{name}"),
+                )
+            })
+            .collect();
+        assert_eq!(shown, ["e:RainTime", "t:[", "e:PETPET", "t:] hi"]);
+        // As on the platforms, an emote is a word of its own: punctuation after it makes it text.
+        let parts = build_parts("Kappa! (hi)", &known, None);
+        assert!(parts.iter().all(|part| part["e"].is_null()), "{parts:?}");
+        // The big one is the word asked for.
+        let parts = build_parts("a Kappa", &known, Some(1));
+        assert_eq!(parts[1]["big"], true);
     }
 
     #[test]
