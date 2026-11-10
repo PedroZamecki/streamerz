@@ -510,7 +510,7 @@ impl Render for Frontend {
             navigation = navigation.child(if narrow {
                 // Folded: a line between groups instead of a label (none above the first).
                 div()
-                    .h(px(if section_index == 0 { 0. } else { 17. }))
+                    .h(px(if section_index == 0 { 1. } else { 18. }))
                     .flex()
                     .justify_center()
                     .child(

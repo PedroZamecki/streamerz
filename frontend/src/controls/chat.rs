@@ -96,6 +96,8 @@ pub struct ChatView {
     me: Vec<String>,
     /// The list open above a send box: what the core suggested for what is typed.
     suggest: Option<Suggest>,
+    /// What is typed in a box with its emotes as pictures (the pane and the parts), while it has any.
+    preview: Option<(usize, Vec<Value>)>,
     /// When each line that came while the page was open appeared, for its fade in (lines are dropped
     /// from here once they are fully in).
     born: HashMap<u64, std::time::Instant>,
@@ -165,6 +167,7 @@ impl ChatView {
             wants_pictures: false,
             me: Vec::new(),
             suggest: None,
+            preview: None,
             born: HashMap::new(),
             fading: false,
             view_ids: Vec::new(),
@@ -440,8 +443,8 @@ impl ChatView {
         };
         let input = self.panes[pane].input.read(cx);
         let text = input.value().to_string();
-        if !text.starts_with('/') && !text.contains('@') {
-            if self.suggest.take().is_some() {
+        if text.is_empty() {
+            if self.suggest.take().is_some() || self.preview.take().is_some() {
                 cx.notify();
             }
             return;
@@ -688,6 +691,15 @@ impl ChatView {
             }
             _ if operation.starts_with("suggest:") => {
                 let pane = operation["suggest:".len()..].parse::<usize>().unwrap_or(0);
+                // The words typed, with their emotes as pictures (their pictures asked for).
+                let parts = value["preview"].as_array().cloned().unwrap_or_default();
+                for part in &parts {
+                    if let Some(url) = part["u"].as_str().filter(|url| !self.images.contains_key(*url)) {
+                        self.missing.insert(url.to_owned());
+                    }
+                }
+                self.ask_images();
+                self.preview = (!failed && !parts.is_empty()).then_some((pane, parts));
                 let found = &value["suggest"];
                 let rows = found["rows"].as_array().cloned().unwrap_or_default();
                 self.suggest = (!failed && !rows.is_empty() && pane < self.panes.len()).then(|| Suggest {
@@ -2111,6 +2123,45 @@ impl ChatView {
                     .accessibility_label(text("send"))
                     .on_click(cx.listener(move |view, _, window, cx| view.submit(pane, window, cx))),
             );
+        // What is typed, with the emotes it holds drawn as pictures (1.6.0 drew them inside the box).
+        if let Some((_, parts)) = self.preview.as_ref().filter(|(at, _)| *at == pane) {
+            let mut strip = div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_x_1()
+                .px_2()
+                .py_1()
+                .min_h(px(30.))
+                .flex_shrink_0()
+                .rounded(theme.radius)
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.table);
+            for (index, part) in parts.iter().enumerate() {
+                if let Some(text) = part["t"].as_str() {
+                    for word in text.split(' ').filter(|word| !word.is_empty()) {
+                        strip = strip.child(div().text_color(theme.muted_foreground).child(word.to_owned()));
+                    }
+                } else if let Some(file) = part["u"].as_str().and_then(|url| self.images.get(url)) {
+                    let tip = PictureTip {
+                        file: Some(file.clone()),
+                        art: None,
+                        name: part["e"].as_str().unwrap_or_default().to_owned(),
+                        height: 112.,
+                    };
+                    strip = strip.child(
+                        div()
+                            .id(("preview-emote", pane * 64 + index))
+                            .child(picture(Some(file), 24., ("preview-picture", pane * 64 + index)))
+                            .tooltip(move |_, cx| cx.new(|_| tip.clone()).into()),
+                    );
+                } else if let Some(name) = part["e"].as_str() {
+                    strip = strip.child(div().text_color(theme.muted_foreground).child(name.to_owned()));
+                }
+            }
+            column = column.child(strip);
+        }
         // The commands or names that fit what is typed, over the list above the box.
         if let Some(open) = self.suggest.as_ref().filter(|open| open.pane == pane) {
             let mut popup = div()
