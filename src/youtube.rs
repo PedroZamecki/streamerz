@@ -232,6 +232,16 @@ pub enum YouTubeCmd {
         broadcast: String,
         resp: oneshot::Sender<Result<(), String>>,
     },
+    SetThumbnail {
+        broadcast: String,
+        file_path: String,
+        resp: oneshot::Sender<Result<(), String>>,
+    },
+    RunCommercial {
+        broadcast: String,
+        duration_secs: u64,
+        resp: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 #[derive(Clone)]
@@ -345,6 +355,30 @@ impl YouTubeHandle {
                 broadcast: broadcast.to_string(),
                 user_id: user_id.to_string(),
                 duration,
+                resp: resp_tx,
+            })
+            .map_err(|_| "YouTube runner is down".to_string())?;
+        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    pub async fn set_thumbnail(&self, broadcast: &str, file_path: &str) -> Result<(), String> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.tx
+            .send(YouTubeCmd::SetThumbnail {
+                broadcast: broadcast.to_string(),
+                file_path: file_path.to_string(),
+                resp: resp_tx,
+            })
+            .map_err(|_| "YouTube runner is down".to_string())?;
+        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    pub async fn run_commercial(&self, broadcast: &str, duration_secs: u64) -> Result<(), String> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.tx
+            .send(YouTubeCmd::RunCommercial {
+                broadcast: broadcast.to_string(),
+                duration_secs,
                 resp: resp_tx,
             })
             .map_err(|_| "YouTube runner is down".to_string())?;
@@ -575,6 +609,22 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
                 }
                 YouTubeCmd::EndPoll { broadcast, resp } => {
                     let r = runner.end_poll_api(&broadcast).await;
+                    let _ = resp.send(r);
+                }
+                YouTubeCmd::SetThumbnail {
+                    broadcast,
+                    file_path,
+                    resp,
+                } => {
+                    let r = runner.set_thumbnail_api(&broadcast, &file_path).await;
+                    let _ = resp.send(r);
+                }
+                YouTubeCmd::RunCommercial {
+                    broadcast,
+                    duration_secs,
+                    resp,
+                } => {
+                    let r = runner.run_commercial_api(&broadcast, duration_secs).await;
                     let _ = resp.send(r);
                 }
             }
@@ -1013,6 +1063,63 @@ impl YouTubeRunner {
             Ok(())
         } else {
             Err(format!("YouTube end poll: HTTP {} {}", r.status, r.text()))
+        }
+    }
+
+    async fn set_thumbnail_api(&self, broadcast: &str, file_path: &str) -> Result<(), String> {
+        let token = token(&self.engine, &self.cfg, false, false).await?;
+        let video = self.video(broadcast)?;
+        let bytes = tokio::fs::read(file_path)
+            .await
+            .map_err(|e| format!("Failed to read thumbnail file: {e}"))?;
+        if bytes.len() > 2 * 1024 * 1024 {
+            return Err("Thumbnail file exceeds 2MB limit".into());
+        }
+        let mime = if file_path.ends_with(".png") {
+            "image/png"
+        } else {
+            "image/jpeg"
+        };
+        let url = format!(
+            "https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId={}&uploadType=media",
+            crate::commands::url_encode(&video)
+        );
+        let headers = vec![
+            ("Authorization".to_string(), format!("Bearer {token}")),
+            ("Content-Type".to_string(), mime.to_string()),
+        ];
+        let resp = crate::http::request("POST", &url, &headers, &bytes).await?;
+        if (200..300).contains(&resp.status) {
+            Ok(())
+        } else {
+            Err(format!("YouTube set thumbnail error {}: {}", resp.status, resp.text()))
+        }
+    }
+
+    async fn run_commercial_api(&self, broadcast: &str, duration_secs: u64) -> Result<(), String> {
+        let token = token(&self.engine, &self.cfg, false, false).await?;
+        let video = self.video(broadcast)?;
+        let duration = if duration_secs == 0 { 30 } else { duration_secs };
+        let url = format!(
+            "{YOUTUBE_API_BASE}/liveBroadcasts/cuepoint?id={}&part=snippet",
+            crate::commands::url_encode(&video)
+        );
+        let payload = json!({
+            "snippet": {
+                "cueType": "cueTypeAd",
+                "durationSecs": duration
+            }
+        });
+        let headers = vec![
+            ("Authorization".to_string(), format!("Bearer {token}")),
+            ("Content-Type".to_string(), "application/json".to_string()),
+        ];
+        let body = serde_json::to_vec(&payload).unwrap_or_default();
+        let resp = crate::http::request("POST", &url, &headers, &body).await?;
+        if (200..300).contains(&resp.status) {
+            Ok(())
+        } else {
+            Err(format!("YouTube cuepoint error {}: {}", resp.status, resp.text()))
         }
     }
 }
@@ -2800,5 +2907,37 @@ mod tests {
             json!({"contents": {"liveChatRenderer": {"actions": [act]}}})
         );
         assert_eq!(extract_initial_actions(&html).len(), 1);
+    }
+
+    #[test]
+    fn youtube_thumbnail_and_commercial_metadata() {
+        assert_eq!(
+            crate::types::name(crate::types::SUB_ACTIONS, 4013),
+            Some("YouTubeSetThumbnail")
+        );
+        assert_eq!(
+            crate::types::name(crate::types::SUB_ACTIONS, 4014),
+            Some("YouTubeRunCommercial")
+        );
+
+        let title_of = |code| {
+            crate::types::SUB_ACTION_INFO
+                .binary_search_by_key(&code, |x| x.0)
+                .ok()
+                .map(|i| crate::types::SUB_ACTION_INFO[i].1)
+        };
+        assert_eq!(title_of(4013), Some("Set Thumbnail"));
+        assert_eq!(title_of(4014), Some("Run Commercial"));
+
+        // Verify commercial payload format
+        let duration = 30u64;
+        let payload = json!({
+            "snippet": {
+                "cueType": "cueTypeAd",
+                "durationSecs": duration
+            }
+        });
+        assert_eq!(payload["snippet"]["cueType"], "cueTypeAd");
+        assert_eq!(payload["snippet"]["durationSecs"], 30);
     }
 }

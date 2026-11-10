@@ -205,6 +205,22 @@ async fn kick(f: Rc<Fakes>, mut rx: UnboundedReceiver<crate::kick::KickCmd>) {
                 category_name,
                 resp,
             } => drop(resp.send(f.unit(P, "category", json!({"id": category_id, "name": category_name})))),
+            C::SetChannelTags { tags, resp } => drop(resp.send(f.unit(P, "tags", json!({"tags": tags})))),
+            C::StartAdBreak {
+                duration_seconds,
+                resp,
+            } => drop(resp.send(f.call(
+                P,
+                "adBreak",
+                json!({"duration": duration_seconds}),
+                json!({"data": {"id": "fake-ad-id", "break_duration_seconds": duration_seconds}}),
+            ))),
+            C::GetAdStatus { resp } => drop(resp.send(f.call(
+                P,
+                "adStatus",
+                json!({}),
+                json!({"data": {"opted_in": true, "ads_blocked": false, "auto_ads_active": false, "remaining_ad_breaks": 5}}),
+            ))),
             C::BanUser {
                 user_login,
                 reason,
@@ -300,6 +316,20 @@ async fn youtube(f: Rc<Fakes>, mut rx: UnboundedReceiver<crate::youtube::YouTube
                 drop(resp.send(text(f.call(P, "createPoll", detail, "poll1".into()), "poll1")));
             }
             C::EndPoll { broadcast, resp } => drop(resp.send(f.unit(P, "endPoll", json!({"broadcast": broadcast})))),
+            C::SetThumbnail {
+                broadcast,
+                file_path,
+                resp,
+            } => drop(resp.send(f.unit(P, "setThumbnail", json!({"broadcast": broadcast, "file": file_path})))),
+            C::RunCommercial {
+                broadcast,
+                duration_secs,
+                resp,
+            } => drop(resp.send(f.unit(
+                P,
+                "runCommercial",
+                json!({"broadcast": broadcast, "duration": duration_secs}),
+            ))),
         }
     }
 }

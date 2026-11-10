@@ -32,3 +32,28 @@ Fires for each chat comment as it arrives. Comments posted before Streamerz join
 ### Notes
 
 None.
+
+## Room Pin
+
+- Kind: trigger
+- Code: 41013
+- Type: TikTokRoomPin
+- Category: TikTok/Chat
+- Needs: a TikTok channel set and connected
+
+Fires when a comment is pinned or unpinned in TikTok LIVE chat.
+
+### Fields
+
+None.
+
+### Arguments
+
+- `user`: the user whose comment was pinned.
+- `message`: the content of the pinned comment.
+- `channel`: the TikTok channel name.
+- `action`: the pin action (pin or unpin).
+
+### When
+
+When a comment is pinned or unpinned during the TikTok LIVE.

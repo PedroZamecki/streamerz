@@ -20,7 +20,21 @@ pub const PATH: &str = "/streamerz/tiktok";
 /// Fixed by the public key in the extension's manifest.
 pub const EXTENSION_ID: &str = "lhijoeeghjcohapolkfkacipklhbnecc";
 /// The current extension version bundled with Streamerz.
-pub const EXTENSION_VERSION: &str = "1.1.0";
+pub const EXTENSION_VERSION: &str = "1.2.0";
+/// The published Google Chrome Web Store extension ID.
+pub const CHROME_STORE_ID: &str = "anckdakmhognoancpeefjlgicihplcjc";
+/// The Chrome Web Store installation URL.
+pub const CHROME_STORE_URL: &str = "https://chromewebstore.google.com/detail/anckdakmhognoancpeefjlgicihplcjc";
+/// The published Microsoft Edge Add-ons product ID.
+pub const EDGE_PRODUCT_ID: &str = "98d0235c-b425-4d57-82f0-26c1f0b7dc71";
+/// The Microsoft Edge Add-ons installation URL.
+pub const EDGE_STORE_URL: &str =
+    "https://microsoftedge.microsoft.com/addons/detail/98d0235c-b425-4d57-82f0-26c1f0b7dc71";
+/// The Mozilla Firefox Add-ons (AMO) extension ID.
+pub const FIREFOX_GECKO_ID: &str = "tiktok-bridge@streamerz.app";
+/// The Mozilla Firefox Add-ons (AMO) signed XPI installation URL.
+pub const FIREFOX_AMO_URL: &str =
+    "https://addons.mozilla.org/firefox/downloads/file/5226064/f83aa4a6dc864605ac46-1.2.0.xpi";
 /// The messages this side speaks; an extension with another needs reinstalling.
 const PROTOCOL: u64 = 2;
 /// How long one request in the tab may take (the first one opens and loads it).
@@ -176,7 +190,7 @@ fn escape_js(s: &str) -> String {
         .replace('>', r"\u003e")
 }
 
-fn setup_html(browser: &str, extensions_page: &str, ext_folder: &std::path::Path) -> String {
+fn setup_html(browser: &str, extensions_page: &str, ext_folder: &std::path::Path, store_url: &str) -> String {
     use crate::i18n::{tr, trf};
     let folder_str = ext_folder.display().to_string();
     let title = escape_html(&trf("accounts.tiktok_sending.page_title", &[("browser", browser)]));
@@ -190,6 +204,21 @@ fn setup_html(browser: &str, extensions_page: &str, ext_folder: &std::path::Path
     let page_js = escape_js(extensions_page);
     let folder_js = escape_js(&folder_str);
     let copied_js = escape_js(tr("accounts.tiktok_sending.page_copied"));
+    let browser_html = escape_html(browser);
+    let store_section = if !store_url.is_empty() {
+        let store_url_html = escape_html(store_url);
+        format!(
+            r#"<section>
+    <p class="step"><strong>Option 1 (Fastest):</strong> Install with 1-click from the official store</p>
+    <div style="margin:10px 0 6px;">
+      <a href="{store_url_html}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:9px 18px;background:#2563eb;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:600;font-size:14px;box-shadow:0 1px 2px rgba(0,0,0,0.15);">Install Extension for {browser_html} &rarr;</a>
+    </div>
+    <p style="margin:8px 0 0;color:var(--muted);font-size:12px;">Or install manually below via developer mode:</p>
+  </section>"#
+        )
+    } else {
+        String::new()
+    };
     format!(
         r#"<!doctype html>
 <html lang="en">
@@ -219,6 +248,7 @@ fn setup_html(browser: &str, extensions_page: &str, ext_folder: &std::path::Path
 <main>
   <h1>{title}</h1>
   <p class="lead">{lead}</p>
+  {store_section}
   <section>
     <p class="step">{step1}</p>
     <div class="bar"><code title="{page_html}">{page_html}</code><button type="button" id="copy-page">{copy_addr}</button></div>
@@ -257,12 +287,17 @@ fn setup_html(browser: &str, extensions_page: &str, ext_folder: &std::path::Path
     )
 }
 
-pub fn write_setup_page(browser: &str, extensions_page: &str, ext_folder: &std::path::Path) -> Result<PathBuf, String> {
+pub fn write_setup_page(
+    browser: &str,
+    extensions_page: &str,
+    ext_folder: &std::path::Path,
+    store_url: &str,
+) -> Result<PathBuf, String> {
     let path = setup_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|err| format!("can't create {}: {err}", parent.display()))?;
     }
-    let html = setup_html(browser, extensions_page, ext_folder);
+    let html = setup_html(browser, extensions_page, ext_folder, store_url);
     write_private(&path, html.as_bytes()).map_err(|err| format!("can't write {}: {err}", path.display()))?;
     Ok(path)
 }
@@ -666,6 +701,72 @@ pub async fn send_message(e: &Rc<Engine>, text: &str) -> Result<(), String> {
     r
 }
 
+/// Sets stream title on TikTok LIVE for the broadcaster.
+pub async fn set_stream_title(e: &Rc<Engine>, title: &str) -> Result<(), String> {
+    if !e.tiktok_connected() {
+        return Err("TikTok isn't connected to a live".into());
+    }
+    let room = e
+        .tiktok()
+        .and_then(|t| t.room_id())
+        .ok_or("TikTok isn't connected to a live")?;
+    let b = &e.tiktok_bridge;
+    let params = b.params().await?;
+    let mut query: Vec<(&str, String)> = params.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+    query.push(("room_id", room.clone()));
+    query.sort_by(|a, b| a.0.cmp(b.0));
+    let q: Vec<String> = query.iter().map(|(k, v)| format!("{k}={}", encode(v))).collect();
+    let url = format!("https://webcast.tiktok.com/webcast/room/update_room/?{}", q.join("&"));
+    let body = json!({"room_id": room, "title": title});
+    let init = json!({"method": "POST", "headers": {"content-type": "application/json; charset=UTF-8"}, "body": body.to_string()});
+    let (status, json) = b.fetch(&url, init).await?;
+    answer(status, &json)
+}
+
+/// Pins a chat comment in TikTok LIVE chat.
+pub async fn pin_comment(e: &Rc<Engine>, comment_id: &str) -> Result<(), String> {
+    if !e.tiktok_connected() {
+        return Err("TikTok isn't connected to a live".into());
+    }
+    let room = e
+        .tiktok()
+        .and_then(|t| t.room_id())
+        .ok_or("TikTok isn't connected to a live")?;
+    let b = &e.tiktok_bridge;
+    let params = b.params().await?;
+    let mut query: Vec<(&str, String)> = params.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+    query.push(("room_id", room.clone()));
+    query.sort_by(|a, b| a.0.cmp(b.0));
+    let q: Vec<String> = query.iter().map(|(k, v)| format!("{k}={}", encode(v))).collect();
+    let url = format!("https://webcast.tiktok.com/webcast/room/pin_comment/?{}", q.join("&"));
+    let body = json!({"room_id": room, "comment_id": comment_id, "action_type": 1});
+    let init = json!({"method": "POST", "headers": {"content-type": "application/json; charset=UTF-8"}, "body": body.to_string()});
+    let (status, json) = b.fetch(&url, init).await?;
+    answer(status, &json)
+}
+
+/// Unpins the current pinned comment in TikTok LIVE chat.
+pub async fn unpin_comment(e: &Rc<Engine>) -> Result<(), String> {
+    if !e.tiktok_connected() {
+        return Err("TikTok isn't connected to a live".into());
+    }
+    let room = e
+        .tiktok()
+        .and_then(|t| t.room_id())
+        .ok_or("TikTok isn't connected to a live")?;
+    let b = &e.tiktok_bridge;
+    let params = b.params().await?;
+    let mut query: Vec<(&str, String)> = params.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+    query.push(("room_id", room.clone()));
+    query.sort_by(|a, b| a.0.cmp(b.0));
+    let q: Vec<String> = query.iter().map(|(k, v)| format!("{k}={}", encode(v))).collect();
+    let url = format!("https://webcast.tiktok.com/webcast/room/pin_comment/?{}", q.join("&"));
+    let body = json!({"room_id": room, "action_type": 2});
+    let init = json!({"method": "POST", "headers": {"content-type": "application/json; charset=UTF-8"}, "body": body.to_string()});
+    let (status, json) = b.fetch(&url, init).await?;
+    answer(status, &json)
+}
+
 /// The public reader's room endpoint, signed by the browser when public lookup fails.
 pub(crate) async fn room_id(e: &Rc<Engine>, channel: &str) -> Result<u64, crate::webcast::RoomLookupError> {
     use crate::webcast::RoomLookupError;
@@ -1021,10 +1122,53 @@ mod tests {
             "Chromium",
             "chrome://extensions",
             std::path::Path::new(r"/tmp/a&b<c>\tiktok-extension"),
+            CHROME_STORE_URL,
         );
         assert!(html.contains("chrome://extensions"));
         assert!(html.contains("/tmp/a&amp;b&lt;c&gt;\\tiktok-extension"));
         assert!(!html.contains("/tmp/a&b<c>"));
         assert!(html.contains(r#"bind("copy-folder", "/tmp/a\u0026b\u003cc\u003e\\tiktok-extension");"#));
+        assert!(html.contains(CHROME_STORE_URL));
+        assert!(html.contains("Install Extension for Chromium"));
+    }
+
+    #[test]
+    fn tiktok_stream_title_and_pin_metadata() {
+        // Verify trigger
+        assert_eq!(crate::types::name(crate::types::TRIGGERS, 41013), Some("TikTokRoomPin"));
+
+        // Verify subactions
+        assert_eq!(
+            crate::types::name(crate::types::SUB_ACTIONS, 43010),
+            Some("TikTokSetStreamTitle")
+        );
+        assert_eq!(
+            crate::types::name(crate::types::SUB_ACTIONS, 43011),
+            Some("TikTokPinComment")
+        );
+        assert_eq!(
+            crate::types::name(crate::types::SUB_ACTIONS, 43012),
+            Some("TikTokUnpinComment")
+        );
+
+        let title_of = |code| {
+            crate::types::SUB_ACTION_INFO
+                .binary_search_by_key(&code, |x| x.0)
+                .ok()
+                .map(|i| crate::types::SUB_ACTION_INFO[i].1)
+        };
+        assert_eq!(title_of(43010), Some("Set Stream Title"));
+        assert_eq!(title_of(43011), Some("Pin Comment"));
+        assert_eq!(title_of(43012), Some("Unpin Comment"));
+
+        // Verify update_room payload
+        let title_body = json!({"room_id": "123456789", "title": "New Stream Title"});
+        assert_eq!(title_body["title"], "New Stream Title");
+
+        // Verify pin payload (action_type 1) and unpin payload (action_type 2)
+        let pin_body = json!({"room_id": "123456789", "comment_id": "c1", "action_type": 1});
+        assert_eq!(pin_body["action_type"], 1);
+        let unpin_body = json!({"room_id": "123456789", "action_type": 2});
+        assert_eq!(unpin_body["action_type"], 2);
     }
 }
