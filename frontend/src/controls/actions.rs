@@ -212,7 +212,7 @@ impl ActionsPage {
         let label = spec["confirmLabel"].as_str().unwrap_or_default().to_owned();
         let danger = spec["danger"] == true;
         let owner = cx.entity().downgrade();
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, _, cx| {
             let (owner, spec, node) = (owner.clone(), spec.clone(), node.clone());
             let confirm = Button::new("confirm-action")
                 .label(label.clone())
@@ -221,27 +221,24 @@ impl ActionsPage {
                     let _ = owner.update(cx, |page, cx| page.run(pane, spec, node, None, cx));
                     window.close_dialog(cx);
                 });
-            dialog
-                .centered()
-                .pt(px(12.))
-                .title(crate::controls::dialog_title(label.clone()))
-                .child(question.clone())
-                .footer(
-                    div()
-                        .id("action-confirmation")
-                        .test_support()
-                        .role(Role::Group)
-                        .aria_label(label.clone())
-                        .flex()
-                        .justify_end()
-                        .gap_2()
-                        .child(
-                            Button::new("cancel-action")
-                                .label(tr("dialogs.cancel"))
-                                .on_click(|_, window, cx| window.close_dialog(cx)),
-                        )
-                        .child(if danger { confirm.danger() } else { confirm }),
+            let buttons = div()
+                .id("action-confirmation")
+                .test_support()
+                .role(Role::Group)
+                .aria_label(label.clone())
+                .flex()
+                .justify_end()
+                .gap_2()
+                .child(
+                    Button::new("cancel-action")
+                        .label(tr("dialogs.cancel"))
+                        .on_click(|_, window, cx| window.close_dialog(cx)),
                 )
+                .child(if danger { confirm.danger() } else { confirm });
+            let footer = crate::controls::dialog::footer(None, buttons, cx);
+            crate::controls::dialog::shell(dialog, label.clone(), 448., cx)
+                .child(crate::controls::dialog::body(question.clone()))
+                .footer(footer)
         });
     }
 
@@ -301,13 +298,10 @@ impl ActionsPage {
                 }
             }),
         );
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog
-                .centered()
-                .pt(px(12.))
-                .title(crate::controls::dialog_title(title.clone()))
-                .width(px(640.))
-                .child(picker.clone())
+        window.open_dialog(cx, move |dialog, _, cx| {
+            crate::controls::dialog::shell(dialog, title.clone(), 640., cx)
+                .child(crate::controls::dialog::body(picker.clone()))
+                .footer(crate::controls::dialog::close_footer(cx))
         });
     }
 
@@ -322,13 +316,10 @@ impl ActionsPage {
         }));
         self.form = Some(form.clone());
         let owner = cx.entity().downgrade();
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog
-                .centered()
-                .pt(px(12.))
-                .title(crate::controls::dialog_title(title.clone()))
-                .width(px(600.))
-                .child(form.clone())
+        window.open_dialog(cx, move |dialog, _, cx| {
+            crate::controls::dialog::shell(dialog, title.clone(), 600., cx)
+                .child(crate::controls::dialog::body(form.clone()))
+                .footer(form.read(cx).buttons_view())
                 .on_cancel({
                     let (form, owner) = (form.clone(), owner.clone());
                     move |_, _, cx| {

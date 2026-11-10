@@ -3,6 +3,7 @@ pub mod actions;
 pub mod body;
 pub mod card;
 pub mod chat;
+pub mod dialog;
 pub mod emotes;
 pub mod form;
 pub mod health;

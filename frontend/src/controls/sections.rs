@@ -210,13 +210,10 @@ impl Sections {
                         cx.notify();
                     }));
                 self.form = Some(form.clone());
-                window.open_dialog(cx, move |dialog, _, _| {
-                    dialog
-                        .centered()
-                        .pt(px(12.))
-                        .title(crate::controls::dialog_title(title.clone()))
-                        .width(px(560.))
-                        .child(form.clone())
+                window.open_dialog(cx, move |dialog, _, cx| {
+                    crate::controls::dialog::shell(dialog, title.clone(), 560., cx)
+                        .child(crate::controls::dialog::body(form.clone()))
+                        .footer(form.read(cx).buttons_view())
                 });
                 false
             }

@@ -15,6 +15,7 @@ pub struct Prompt {
     selected: Option<String>,
     pub pending: bool,
     pub error: String,
+    buttons_view: Entity<PromptButtons>,
 }
 impl Prompt {
     pub fn new(model: Value, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -26,6 +27,10 @@ impl Prompt {
             selected: None,
             pending: false,
             error: String::new(),
+            buttons_view: {
+                let weak = cx.entity().downgrade();
+                cx.new(|_| PromptButtons(weak))
+            },
         }
     }
     pub fn answer(&mut self, value: Value, cx: &mut Context<Self>) {
@@ -106,6 +111,17 @@ impl Render for Prompt {
                 .child(label.clone())
                 .child(Input::new(&self.input).aria_label(label).disabled(self.pending));
         }
+        body
+    }
+}
+
+impl Prompt {
+    /// The prompt's buttons, for its dialog's footer.
+    pub fn buttons(&self, cx: &mut Context<Self>) -> Div {
+        let waiting = self.model["kind"] == "wait";
+        let notice = self.model["kind"] == "notice";
+        let confirm = self.model["kind"] == "confirm";
+        let choice = self.model["kind"] == "choice";
         let no = if confirm {
             self.model["no"].as_str().unwrap_or_default()
         } else {
@@ -116,37 +132,51 @@ impl Render for Prompt {
         } else {
             tr("dialogs.ok")
         };
-        body.child(
-            div()
-                .flex()
-                .justify_end()
-                .gap_2()
-                .when(!notice, |row| {
-                    row.child(
-                        Button::new("cancel-prompt")
-                            .label(no.to_owned())
-                            .disabled(self.pending)
-                            .on_click(cx.listener(|prompt, _, _, cx| prompt.cancel(cx))),
-                    )
-                })
-                .when(!waiting, |row| {
-                    row.child(
-                        Button::new("answer-prompt")
-                            .primary()
-                            .label(yes.to_owned())
-                            .disabled(self.pending || choice && self.selected.is_none())
-                            .on_click(cx.listener(move |prompt, _, _, cx| {
-                                let value = if confirm {
-                                    json!(true)
-                                } else if choice {
-                                    json!(prompt.selected)
-                                } else {
-                                    json!(prompt.input.read(cx).value().to_string())
-                                };
-                                prompt.answer(value, cx);
-                            })),
-                    )
-                }),
-        )
+        let right = div()
+            .flex()
+            .gap_2()
+            .when(!notice, |row| {
+                row.child(
+                    Button::new("cancel-prompt")
+                        .label(no.to_owned())
+                        .disabled(self.pending)
+                        .on_click(cx.listener(|prompt, _, _, cx| prompt.cancel(cx))),
+                )
+            })
+            .when(!waiting, |row| {
+                row.child(
+                    Button::new("answer-prompt")
+                        .primary()
+                        .label(yes.to_owned())
+                        .disabled(self.pending || choice && self.selected.is_none())
+                        .on_click(cx.listener(move |prompt, _, _, cx| {
+                            let value = if confirm {
+                                json!(true)
+                            } else if choice {
+                                json!(prompt.selected)
+                            } else {
+                                json!(prompt.input.read(cx).value().to_string())
+                            };
+                            prompt.answer(value, cx);
+                        })),
+                )
+            });
+        super::dialog::footer(None, right, cx)
+    }
+
+    /// The buttons as their own view, for a dialog's footer slot.
+    pub fn buttons_view(&self) -> Entity<PromptButtons> {
+        self.buttons_view.clone()
+    }
+}
+
+/// A prompt's buttons, drawn in its dialog's footer.
+pub struct PromptButtons(WeakEntity<Prompt>);
+impl Render for PromptButtons {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        match self.0.upgrade() {
+            Some(prompt) => prompt.update(cx, |prompt, cx| prompt.buttons(cx)).into_any_element(),
+            None => div().into_any_element(),
+        }
     }
 }

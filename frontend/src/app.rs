@@ -238,7 +238,13 @@ impl Frontend {
                         ),
                 );
             }
-            dialog.centered().pt(px(12.)).title(crate::controls::dialog_title(tr("conns.title"))).width(px(560.)).child(list)
+            let close = Button::new("conns-close")
+                .label(tr("dialogs.close"))
+                .on_click(|_, window, cx| window.close_dialog(cx));
+            let footer = crate::controls::dialog::footer(None, close, cx);
+            crate::controls::dialog::shell(dialog, tr("conns.title"), 600., cx)
+                .child(crate::controls::dialog::body(list))
+                .footer(footer)
         });
     }
     pub fn select(&mut self, page: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -296,12 +302,10 @@ impl Frontend {
                 self.prompt_id = model["id"].as_u64();
                 let prompt = cx.new(|cx| Prompt::new(model.clone(), window, cx));
                 self.prompt = Some(prompt.clone());
-                window.open_dialog(cx, move |dialog, _, _| {
-                    dialog
-                        .centered()
-                        .pt(px(12.))
-                        .title(crate::controls::dialog_title(title.clone()))
-                        .child(prompt.clone())
+                window.open_dialog(cx, move |dialog, _, cx| {
+                    crate::controls::dialog::shell(dialog, title.clone(), 448., cx)
+                        .child(crate::controls::dialog::body(prompt.clone()))
+                        .footer(prompt.read(cx).buttons_view())
                         .on_cancel({
                             let prompt = prompt.clone();
                             move |_, _, cx| {

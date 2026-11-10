@@ -32,6 +32,7 @@ pub struct Form {
     json_editor: Option<Entity<TextareaState>>,
     pub error: String,
     pub pending: bool,
+    buttons_view: Entity<FormButtons>,
     _subscriptions: Vec<Subscription>,
 }
 impl EventEmitter<Cancelled> for Form {}
@@ -128,6 +129,10 @@ impl Form {
             json_editor,
             error: String::new(),
             pending: false,
+            buttons_view: {
+                let weak = cx.entity().downgrade();
+                cx.new(|_| FormButtons(weak))
+            },
             _subscriptions: subscriptions,
         }
     }
@@ -350,19 +355,35 @@ impl Render for Form {
                 index += 1;
             }
         }
-        let height = (wanted + 42.).min((f32::from(window.viewport_size().height) - 170.).clamp(160., 600.));
-        let mut footer = div().flex().items_center().gap_2();
-        if self.json_editor.is_none() && self.model["json"] != false {
-            footer = footer.child(
-                Button::new("edit-json")
-                    .icon(gpui_kit::component::Icon::empty().path("icons/pencil.svg"))
-                    .label(tr("btn.edit_json"))
-                    .disabled(self.pending)
-                    .on_click(cx.listener(|form, _, _, cx| form.submit(true, cx))),
-            );
-        }
-        footer = footer
-            .child(div().flex_1())
+        let height = wanted.min((f32::from(window.viewport_size().height) - 220.).clamp(120., 560.));
+        div()
+            .id("editor-form")
+            .test_support()
+            .role(Role::Group)
+            .aria_label(self.model["title"].as_str().unwrap_or_default().to_owned())
+            .text_size(px(14.))
+            .flex()
+            .flex_col()
+            .gap_3()
+            .h(px(height))
+            .child(body)
+    }
+}
+
+impl Form {
+    /// The form's buttons, for the dialog's footer: Edit JSON at the left, OK and Cancel at the right.
+    pub fn buttons(&self, cx: &mut Context<Self>) -> Div {
+        let left = (self.json_editor.is_none() && self.model["json"] != false).then(|| {
+            Button::new("edit-json")
+                .icon(gpui_kit::component::Icon::empty().path("icons/pencil.svg"))
+                .label(tr("btn.edit_json"))
+                .disabled(self.pending)
+                .on_click(cx.listener(|form, _, _, cx| form.submit(true, cx)))
+                .into_any_element()
+        });
+        let right = div()
+            .flex()
+            .gap_2()
             .child(
                 Button::new("save-form")
                     .label(
@@ -382,18 +403,23 @@ impl Render for Form {
                         window.close_dialog(cx);
                     })),
             );
-        div()
-            .id("editor-form")
-            .test_support()
-            .role(Role::Group)
-            .aria_label(self.model["title"].as_str().unwrap_or_default().to_owned())
-            .text_size(px(14.))
-            .flex()
-            .flex_col()
-            .gap_3()
-            .h(px(height))
-            .child(body)
-            .child(footer)
+        super::dialog::footer(left, right, cx)
+    }
+
+    /// The buttons as their own view, for a dialog's footer slot.
+    pub fn buttons_view(&self) -> Entity<FormButtons> {
+        self.buttons_view.clone()
+    }
+}
+
+/// A form's buttons, drawn where its dialog puts them (the footer).
+pub struct FormButtons(WeakEntity<Form>);
+impl Render for FormButtons {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        match self.0.upgrade() {
+            Some(form) => form.update(cx, |form, cx| form.buttons(cx)).into_any_element(),
+            None => div().into_any_element(),
+        }
     }
 }
 
