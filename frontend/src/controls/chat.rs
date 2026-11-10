@@ -532,7 +532,7 @@ impl ChatView {
         }
     }
 
-    fn card_urls(card: &Value) -> Vec<String> {
+    pub(super) fn card_urls(card: &Value) -> Vec<String> {
         let mut urls: Vec<String> = [card["picture"].as_str(), card["banner"].as_str()]
             .into_iter()
             .flatten()
@@ -669,7 +669,7 @@ impl Render for CardView {
                 cx.notify();
             });
         };
-        card_body(&self.card, &self.images, self.details, toggle, cx)
+        card_body("chat", &self.card, &self.images, self.details, toggle, cx)
     }
 }
 
@@ -696,7 +696,8 @@ fn color(hex: &str, fallback: Hsla) -> Hsla {
 
 /// The user card as the platforms draw theirs: the banner with their picture, name and account age, their
 /// badges and groups, what the platform says, what they said, and what we may do to them.
-fn card_body(
+pub(super) fn card_body(
+    route: &str,
     card: &Value,
     images: &HashMap<String, PathBuf>,
     details: bool,
@@ -830,10 +831,10 @@ fn card_body(
                         .tooltip(label("profile"))
                         .accessibility_label(label("profile"))
                         .on_click({
-                            let id = id.clone();
+                            let (id, route) = (id.clone(), route.to_owned());
                             move |_, _, _| {
                                 send(json!({"request": "StreamerzCoreAction", "domain": "community",
-                                    "action": "open_profile", "itemId": id, "id": "chat:card-open"}))
+                                    "action": "open_profile", "itemId": id, "id": &format!("{route}:card-open")}))
                             }
                         }),
                 )
@@ -887,16 +888,17 @@ fn card_body(
                     .label(groups_label.clone())
                     .tooltip(groups_tip.clone())
                     .dropdown_menu({
-                        let id = id.clone();
+                        let (id, route) = (id.clone(), route.to_owned());
                         move |mut menu, _, _| {
                             for group in &groups_menu {
+                                let route = route.clone();
                                 let item = format!("{id}|{}", group["id"].as_str().unwrap_or_default());
                                 menu = menu.item(
                                     PopupMenuItem::new(group["name"].as_str().unwrap_or_default().to_owned())
                                         .checked(group["member"] == true)
                                         .on_click(move |_, _, _| {
                                             send(json!({"request": "StreamerzCoreAction", "domain": "community",
-                                                "action": "card_group", "itemId": item, "id": "chat:card-act"}))
+                                                "action": "card_group", "itemId": item, "id": format!("{route}:card-act")}))
                                         }),
                                 );
                             }
@@ -1014,9 +1016,21 @@ fn card_body(
                 .small()
                 .icon(Icon::empty().path(format!("icons/{icon}.svg")))
                 .label(label(act))
-                .on_click(move |_, window, cx| {
-                    send(json!({"request": "StreamerzChat", "op": "act", "seq": seq, "act": name, "secs": secs, "id": "chat:act"}));
-                    window.close_dialog(cx);
+                .on_click({
+                    let who = id.split_once('|').map(|(platform, user)| (platform.to_owned(), user.to_owned()));
+                    move |_, window, cx| {
+                        // A chat line is the one to act on; a person without one is asked by who they are.
+                        let mut request = json!({"request": "StreamerzChat", "op": "act", "act": name, "secs": secs, "id": "chat:act"});
+                        match (&who, seq) {
+                            (Some((platform, user)), 0) => {
+                                request["platform"] = platform.clone().into();
+                                request["userId"] = user.clone().into();
+                            }
+                            _ => request["seq"] = seq.into(),
+                        }
+                        send(request);
+                        window.close_dialog(cx);
+                    }
                 }),
         );
     }

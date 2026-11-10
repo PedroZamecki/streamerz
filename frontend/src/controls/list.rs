@@ -491,7 +491,6 @@ impl List {
         }
         match operation {
             "dialog-view" if value["card"].is_object() => {
-                let title = value["card"]["title"].as_str().unwrap_or_default().to_owned();
                 let card = cx.new(|_| Card::new(value["card"].clone(), self.route.clone()));
                 self.card = Some(card.clone());
                 let owner = cx.entity().downgrade();
@@ -499,7 +498,11 @@ impl List {
                     let owner = owner.clone();
                     dialog
                         .centered()
-                        .title(title.clone())
+                        .close_button(false)
+                        .pt(px(0.))
+                        .pb(px(0.))
+                        .pl(px(0.))
+                        .pr(px(0.))
                         .width(px(520.))
                         .child(card.clone())
                         .on_cancel(move |_, _, cx| {
