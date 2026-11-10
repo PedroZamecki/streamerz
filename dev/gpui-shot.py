@@ -4,7 +4,7 @@
 Usage: dev/gpui-shot.py PAGE [PAGE...] [--bin target/fast/Streamerz] [--out target/gpui-shots]
                         [--size 1100x800] [--theme dark|light] [--config JSON-FILE]
 A page is a navigation id ("Queues", "Stream Apps"). A page may be followed by ":STEPS" (separated by ;) run after it loads: a frontend command
-or "click LABEL[#N]" (the Nth match top to bottom), "wait SECONDS", for example "Queues:click Add". Each capture is PAGE-SIZE.png.
+or "click LABEL[#N]" (dblclick: twice) (the Nth match top to bottom), "wait SECONDS", for example "Queues:click Add". Each capture is PAGE-SIZE.png.
 """
 import argparse
 import glob
@@ -100,8 +100,9 @@ def main():
                 for step in filter(None, (part.strip() for part in command.split(";"))):
                     if step.startswith("wait "):
                         time.sleep(float(step[5:]))
-                    elif step.startswith("click "):
-                        label, _, nth = step[6:].partition("#")
+                    elif step.startswith(("click ", "dblclick ")):
+                        double = step.startswith("dblclick ")
+                        label, _, nth = step.split(" ", 1)[1].partition("#")
                         found = [e for e in json.loads(ui("bounds " + label)) if e["label"] == label and e.get("enabled", True)]
                         found.sort(key=lambda e: (e["y"], e["x"]))
                         if len(found) <= int(nth or 0):
@@ -109,7 +110,7 @@ def main():
                             continue
                         e = found[int(nth or 0)]
                         x, y = round(e["x"] + e["w"] / 2), round(e["y"] + e["h"] / 2)
-                        subprocess.run(["xdotool", "mousemove", str(x), str(y), "click", "1"], env=env)
+                        subprocess.run(["xdotool", "mousemove", str(x), str(y), "click", *(["--repeat", "2", "--delay", "80"] if double else []), "1"], env=env)
                         print("   clicked", label, "at", x, y)
                     else:
                         print("  ", step, "->", ui(step))
