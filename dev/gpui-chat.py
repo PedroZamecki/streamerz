@@ -42,6 +42,7 @@ def main():
     parser.add_argument("--size", default="1100x800")
     parser.add_argument("--theme", default="dark")
     parser.add_argument("--view", default="", help="the Show choice: side, or a platform id (default: all together)")
+    parser.add_argument("--down", default="", help="a platform whose chat is disconnected after its lines came")
     parser.add_argument("--lines", type=int, default=0, help="extra lines to inject, to test scrolling")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
@@ -92,6 +93,8 @@ def main():
             if window:
                 subprocess.run(["xdotool", "windowsize", "--sync", window, str(width), str(height)], env=env)
             print("page", ui("page Chat"))
+            if args.down:
+                ws.ask({"request": "SimulateChatConnection", "platform": args.down, "connected": False, "id": "d"})
             for _ in range(100):
                 if ui("pageready") == "true":
                     break

@@ -436,7 +436,7 @@ fn platforms(engine: &Rc<Engine>) -> Vec<Value> {
             json!({
                 "sender": sender, "senders": senders, "room": super::accounts::room(engine, platform),
                 "id": platform, "name": name(platform), "connected": connected, "send": sends && connected,
-                "present": connected || engine.chat_has(platform),
+                "present": (connected || engine.chat_has(platform)) && !hidden.iter().any(|shown| shown == platform),
                 "shown": !hidden.iter().any(|shown| shown == platform),
                 "viewers": viewers[at].map(compact_viewers),
                 "ended": engine.chat_stream_ended(platform),
@@ -527,7 +527,7 @@ fn modes(engine: &Rc<Engine>) -> Vec<String> {
 }
 
 fn texts() -> Value {
-    json!({
+    let mut texts = json!({
         "show": tr("chat.show"), "hint": tr("chat.hint"), "messageAll": tr("chat.message_all_btn").trim(),
         "messageAllTip": tr("chat.message_all_tooltip"), "options": tr("chat.options"), "clear": tr("btn.clear"),
         "empty": tr("chat.no_connection"), "accounts": tr("nav.page.accounts"),
@@ -544,7 +544,16 @@ fn texts() -> Value {
         "senderTitle": tr("chat.acct_win_title"), "senderNote": tr("chat.acct_note"), "manageAccounts": tr("chat.manage_accounts"),
         "notLoggedIn": tr("accounts.not_logged_in"),
         "historyOff": tr("chat.history_disabled_title"), "historyOffAbout": tr("chat.history_disabled_desc"),
-    })
+    });
+    // Kept out of the macro above, which is at its size limit.
+    for (key, text) in [
+        ("disconnected", tr("chat.disconnected")),
+        ("reconnect", tr("chat.reconnect")),
+        ("hideChat", tr("chat.hide_chat")),
+    ] {
+        texts[key] = text.into();
+    }
+    texts
 }
 
 /// The page: the platforms and the lines newer than the frontend's `seq` (or all of them).
@@ -662,6 +671,13 @@ pub async fn request(engine: &Rc<Engine>, request: &Value) -> Result<Value, Stri
             CLEARED.set(engine.chat_last_seq());
             crate::host::chat();
             accepted()
+        }
+        "reconnect" => {
+            let platform = request["platform"].as_str().unwrap_or_default().to_owned();
+            if !PLATFORMS.contains(&platform.as_str()) {
+                return Err(format!("unknown platform {platform}"));
+            }
+            super::accounts::act(engine, "accounts", &format!("{platform}.connect"), "")
         }
         "view" => {
             let view = request["view"].as_str().unwrap_or("all");
@@ -1415,6 +1431,30 @@ mod tests {
         // Twitch has real pictures only; another platform's art is never used for it.
         assert_eq!(badge_art("twitch", "moderator"), None);
         assert_eq!(badge_art("kick", "tiktok:host"), None);
+    }
+
+    #[test]
+    fn the_view_is_set_by_an_operation_and_a_hidden_chat_leaves_it() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            engine.dev_mode();
+            engine.change(|config| config.window.chat.save_history = true);
+            engine
+                .inject_chat("twitch", "Ana", "ana", "viewer", "hi", &json!({}))
+                .unwrap();
+            let page = |engine: &Rc<Engine>| read(engine, &json!({})).unwrap()["chat"].clone();
+            assert_eq!(page(&engine)["view"], "all");
+            assert!(request_sync(&engine, json!({"op": "view", "view": "nope"})).is_err());
+            request_sync(&engine, json!({"op": "view", "view": "twitch"})).unwrap();
+            assert_eq!(page(&engine)["view"], "twitch");
+            assert_eq!(page(&engine)["platforms"][0]["present"], true);
+            // Hiding the chat takes it out of the choices, and the view falls back to all together.
+            request_sync(&engine, json!({"op": "show", "platform": "twitch", "shown": false})).unwrap();
+            assert_eq!(page(&engine)["platforms"][0]["present"], false);
+            assert_eq!(page(&engine)["view"], "all");
+            assert!(request_sync(&engine, json!({"op": "reconnect", "platform": "nope"})).is_err());
+        });
     }
 
     #[test]

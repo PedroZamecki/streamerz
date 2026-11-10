@@ -520,7 +520,7 @@ impl ChatView {
                     );
                 }
             }
-            "send" | "act" | "show" | "clear" | "sender" | "card-open" | "prefetch" => {
+            "send" | "act" | "show" | "clear" | "sender" | "card-open" | "prefetch" | "reconnect" => {
                 self.error = if failed {
                     value["error"].as_str().unwrap_or_default().to_owned()
                 } else {
@@ -1605,8 +1605,44 @@ impl ChatView {
         let Some(platform) = platform else {
             return column;
         };
-        // The send box: who sends, what, the emotes and Send.
         let id = platform["id"].as_str().unwrap_or_default().to_owned();
+        // A chat that is down has no send box: it says so and offers to reconnect or hide it.
+        if platform["connected"] == false {
+            let (again, away) = (id.clone(), id.clone());
+            return column.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap_1()
+                    .h(px(36.))
+                    .flex_shrink_0()
+                    .child(div().text_xs().text_color(theme.muted_foreground).child(text("disconnected")))
+                    .child(
+                        Button::new(SharedString::from(format!("chat-reconnect-{pane}")))
+                            .small()
+                            .ghost()
+                            .icon(Icon::empty().path("icons/refresh-cw.svg"))
+                            .tooltip(text("reconnect"))
+                            .accessibility_label(text("reconnect"))
+                            .on_click(move |_, _, _| {
+                                send(json!({"request": "StreamerzChat", "op": "reconnect", "platform": again, "id": "chat:reconnect"}))
+                            }),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("chat-hide-{pane}")))
+                            .small()
+                            .ghost()
+                            .icon(Icon::empty().path("icons/eye-off.svg"))
+                            .tooltip(text("hideChat"))
+                            .accessibility_label(text("hideChat"))
+                            .on_click(move |_, _, _| {
+                                send(json!({"request": "StreamerzChat", "op": "show", "platform": away, "shown": false, "id": "chat:show"}))
+                            }),
+                    ),
+            );
+        }
+        // The send box: who sends, what, the emotes and Send.
         if let Some((seq, who, said)) = self.reply.clone().filter(|(seq, _, _)| {
             self.lines
                 .iter()
