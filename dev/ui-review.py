@@ -2,6 +2,8 @@
 """Capture every page at review sizes using isolated settings and the app's own UI tool.
 
 Run UI input checks serially on DISPLAY=:99. This never reads the user's configuration.
+The binary is a released 1.6.0 build, the visual reference: this repository builds only the GPUI window,
+which dev/gpui-smoke.py and dev/gpui-shot.py drive.
   python3 dev/ui-review.py [binary] --out /tmp/streamerz-ui-current
 """
 import sys
@@ -22,7 +24,7 @@ import tempfile
 import time
 import uuid
 
-import smoke
+import harness as smoke
 
 
 PAGES = ("Chat", "Accounts", "Community", "Polls", "Actions", "Commands", "Timers", "Files",
@@ -31,7 +33,7 @@ PAGES = ("Chat", "Accounts", "Community", "Polls", "Actions", "Commands", "Timer
 SIZES = ((1100, 800), (540, 700))
 
 
-def capture(binary, out, port, theme, pages=PAGES, history=True):
+def capture(binary, out, port, theme, pages=PAGES, history=True, dialogs=False):
     smoke.require_free_port(port)
     instance_name = "Streamerz UI review " + uuid.uuid4().hex
     with tempfile.TemporaryDirectory(prefix="streamerz-ui-review-") as config:
@@ -85,6 +87,32 @@ def capture(binary, out, port, theme, pages=PAGES, history=True):
                         raise RuntimeError(f"{page}: expected {width}x{height}, got {actual}")
                     tree = ui("tree")
                     (out / (stem + ".txt")).write_text(tree)
+                    if dialogs:
+                        forms = {
+                            "Commands": ("command",), "Timers": ("timer",),
+                            "Files": ("file_watcher", "file_tail"),
+                            "Stream Apps": ("obs_connection", "slobs_connection"),
+                            "Servers": ("websocket_client", "websocket_server"),
+                        }
+                        cases = [("Add", index, kind) for index, kind in enumerate(forms.get(page, ()))]
+                        if page == "Servers":
+                            cases = [("Edit", index, kind) for index, kind in enumerate(("server_websocket", "server_http", "server_udp", "server_stream_deck"))] + cases
+                        for action, index, kind in cases:
+                            buttons = [item for item in json.loads(ui("bounds " + action)) if item["label"].strip() == action]
+                            buttons.sort(key=lambda item: (item["y"], item["x"]))
+                            if len(buttons) <= index:
+                                raise RuntimeError(f"{page}: missing Add button for {kind}")
+                            button = buttons[index]
+                            subprocess.run(["xdotool", "mousemove", str(button["x"] + button["w"] // 2),
+                                            str(button["y"] + button["h"] // 2), "click", "1"], env=env, check=True)
+                            time.sleep(.3)
+                            form_stem = f"{theme}-{kind}-form-{width}x{height}"
+                            result = ui(f"shot {out}/{form_stem}.png")
+                            if not result.startswith("saved "):
+                                raise RuntimeError(f"{kind}: {result}")
+                            (out / (form_stem + ".txt")).write_text(ui("tree"))
+                            subprocess.run(["xdotool", "key", "Escape"], env=env, check=True)
+                            time.sleep(.3)
                     if page == "Chat" and not history:
                         if not re.search(r'"\s*Message all"[^\n]*\(disabled\)', tree):
                             raise RuntimeError("Message all is available while chat history is off")
@@ -143,10 +171,11 @@ def main():
     parser.add_argument("--port", type=int, default=8097)
     parser.add_argument("--pages", nargs="+", choices=PAGES, default=PAGES)
     parser.add_argument("--history-off", action="store_true")
+    parser.add_argument("--dialogs", action="store_true", help="Also capture Add forms for the shared entity lists")
     args = parser.parse_args()
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
-    results = [capture(Path(args.binary).resolve(), out, args.port, theme, args.pages, not args.history_off) for theme in ("dark", "light")]
+    results = [capture(Path(args.binary).resolve(), out, args.port, theme, args.pages, not args.history_off, args.dialogs) for theme in ("dark", "light")]
     (out / "measurements.json").write_text(json.dumps(results, indent=2) + "\n")
     print(f"Captured {len(args.pages)} pages in both themes and sizes: {out}")
 
