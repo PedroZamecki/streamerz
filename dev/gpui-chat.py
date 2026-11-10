@@ -44,6 +44,7 @@ def main():
     parser.add_argument("--view", default="", help="the Show choice: side, or a platform id (default: all together)")
     parser.add_argument("--down", default="", help="a platform whose chat is disconnected after its lines came")
     parser.add_argument("--fade", type=int, default=0, help="the fade in of new lines, in ms")
+    parser.add_argument("--type", default="", help="text typed into the first send box once the lines are in")
     parser.add_argument("--lines", type=int, default=0, help="extra lines to inject, to test scrolling")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
@@ -51,7 +52,10 @@ def main():
     with tempfile.TemporaryDirectory() as folder:
         config = {"start_hidden": False, "locale": "en_US", "theme": args.theme, "updates": "ignore",
                   "instance_name": "gpui-shot", "websockets": {"port": smoke.PORT},
-                  "window": {"chat": {"saveHistory": True, "fadeIn": args.fade}, "chat_view": args.view}}
+                  "window": {"chat": {"saveHistory": True, "fadeIn": args.fade}, "chat_view": args.view},
+                  # A fake Twitch account, so the send box is on (dev mode keeps what it sends).
+                  "twitch": {"broadcaster": {"userId": "1", "login": "streamer", "displayName": "Streamer",
+                                             "token": {"accessToken": "fake", "expiresAt": 4102444800}}}}
         path = Path(folder) / "fixture.json"
         path.write_text(json.dumps(config))
         env = dict(os.environ, DISPLAY=":99", STREAMERZ_DEV="1", STREAMERZ_DEV_PORT=str(smoke.PORT), XDG_CONFIG_HOME=folder)
@@ -131,6 +135,16 @@ def main():
                 print(ui("shot " + str(args.out / f"chat-fading-{args.size}.png")))
             time.sleep(max(1, args.fade / 1000 + 0.5))
             print(ui("shot " + str(args.out / f"chat-live-{args.size}.png")))
+            if args.type:
+                boxes = [e for e in json.loads(ui("bounds Send a message")) if e.get("enabled", True)]
+                if boxes:
+                    subprocess.run(["xdotool", "mousemove", str(round(boxes[0]["x"] + 20)), str(round(boxes[0]["y"] + boxes[0]["h"] / 2)), "click", "1"], env=env)
+                    time.sleep(0.3)
+                    subprocess.run(["xdotool", "type", "--delay", "60", args.type], env=env)
+                    time.sleep(1.2)
+                    print(ui("shot " + str(args.out / f"chat-typed-{args.size}.png")))
+                else:
+                    print("no send box found")
             # Hover: an emote shows its picture large; a line shows its actions.
             options = json.loads(ui("bounds Options"))
             ox = round(options[0]["x"] + options[0]["w"] / 2 - 947) if options else 0
