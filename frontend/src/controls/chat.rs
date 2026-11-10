@@ -22,6 +22,28 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// The names of our accounts, from the page's model.
+fn value_me(model: &Value) -> Vec<String> {
+    model["chat"]["me"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|name| name.as_str().map(str::to_owned))
+        .collect()
+}
+
+/// What is listed above a send box while a command or a name is being typed.
+struct Suggest {
+    pane: usize,
+    /// Typing a name (an `@`), not a command.
+    mention: bool,
+    header: String,
+    /// Where the word being typed starts, in characters.
+    start: usize,
+    rows: Vec<Value>,
+    at: usize,
+}
+
 /// The line whose name the pointer rests on (0: none).
 static HOVERED: AtomicU64 = AtomicU64::new(0);
 
@@ -70,6 +92,10 @@ pub struct ChatView {
     error: String,
     /// A header or account picture is on its way: the page is read again when pictures land.
     wants_pictures: bool,
+    /// The names of our own accounts (lower case): a tag of one is a mention of us.
+    me: Vec<String>,
+    /// The list open above a send box: what the core suggested for what is typed.
+    suggest: Option<Suggest>,
     /// When each line that came while the page was open appeared, for its fade in (lines are dropped
     /// from here once they are fully in).
     born: HashMap<u64, std::time::Instant>,
@@ -95,11 +121,15 @@ impl ChatView {
             let input = cx.new(|cx| InputState::new(window, cx).placeholder(hint.clone()));
             let at = panes.len();
             subscriptions.push(
-                cx.subscribe_in(&input, window, move |view, _, event: &InputEvent, window, cx| {
-                    if matches!(event, InputEvent::PressEnter { .. }) {
-                        view.submit(at, window, cx);
-                    }
-                }),
+                cx.subscribe_in(
+                    &input,
+                    window,
+                    move |view, _, event: &InputEvent, window, cx| match event {
+                        InputEvent::PressEnter { .. } => view.submit(at, window, cx),
+                        InputEvent::Change => view.ask_suggest(at, cx),
+                        _ => {}
+                    },
+                ),
             );
             panes.push(Pane {
                 platform,
@@ -133,6 +163,8 @@ impl ChatView {
             read_again: false,
             error: String::new(),
             wants_pictures: false,
+            me: Vec::new(),
+            suggest: None,
             born: HashMap::new(),
             fading: false,
             view_ids: Vec::new(),
@@ -204,6 +236,7 @@ impl ChatView {
             let owner = owner.clone();
             dialog
                 .centered()
+                .pt(px(12.))
                 .title(title.clone())
                 .width(px(460.))
                 .child(picker.clone())
@@ -278,6 +311,7 @@ impl ChatView {
         self.generation = chat["gen"].as_u64().unwrap_or(0);
         self.seq = chat["seq"].as_u64().unwrap_or(0);
         self.model = value;
+        self.me = value_me(&self.model);
         self.wants_pictures = self.platforms_wait();
         self.sync_view(window, cx);
         if let Some(reply) = &self.reply {
@@ -399,6 +433,92 @@ impl ChatView {
         cx.notify();
     }
 
+    /// Ask the core what fits what is typed: Twitch's and Kick's commands after a `/`, names after an `@`.
+    fn ask_suggest(&mut self, pane: usize, cx: &mut Context<Self>) {
+        let Some(platform) = self.panes[pane].platform else {
+            return;
+        };
+        let input = self.panes[pane].input.read(cx);
+        let text = input.value().to_string();
+        if !text.starts_with('/') && !text.contains('@') {
+            if self.suggest.take().is_some() {
+                cx.notify();
+            }
+            return;
+        }
+        let cursor = input.cursor_position().character as usize;
+        send(
+            json!({"request": "StreamerzChat", "op": "suggest", "platform": platform, "text": text,
+            "cursor": cursor, "id": format!("chat:suggest:{pane}")}),
+        );
+    }
+
+    /// Put the picked row in the box: a name replaces the word being typed, a command is the whole text.
+    fn complete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(open) = self.suggest.take() else { return };
+        let Some(row) = open.rows.get(open.at) else { return };
+        let fill = row["fill"].as_str().unwrap_or_default().to_owned();
+        let more = row["more"] == true;
+        let input = self.panes[open.pane].input.clone();
+        let text = input.read(cx).value().to_string();
+        let cursor = input.read(cx).cursor_position().character as usize;
+        let chars: Vec<char> = text.chars().collect();
+        let cursor = cursor.min(chars.len());
+        let (new, at) = if open.mention {
+            let before: String = chars[..open.start.min(cursor)].iter().collect();
+            let after: String = chars[cursor..].iter().collect();
+            let inserted = before.chars().count() + fill.chars().count() + 1;
+            (format!("{before}{fill} {after}"), inserted)
+        } else {
+            let done = if more { format!("{fill} ") } else { fill };
+            let length = done.chars().count();
+            (done, length)
+        };
+        input.update(cx, |input, cx| {
+            input.set_value(new, window, cx);
+            input.set_cursor_position(
+                gpui_kit::component::input::Position {
+                    line: 0,
+                    character: at as u32,
+                },
+                window,
+                cx,
+            );
+        });
+        self.ask_suggest(open.pane, cx);
+        cx.notify();
+    }
+
+    /// Keys while the list is up: the arrows pick, Tab finishes, Escape closes, and Enter finishes a
+    /// command that is not typed in full (a finished one is sent).
+    fn suggest_key(&mut self, pane: usize, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(open) = self.suggest.as_mut().filter(|open| open.pane == pane) else {
+            return;
+        };
+        let count = open.rows.len().max(1);
+        match event.keystroke.key.as_str() {
+            "down" => open.at = (open.at + 1) % count,
+            "up" => open.at = (open.at + count - 1) % count,
+            "tab" => self.complete(window, cx),
+            "escape" => self.suggest = None,
+            "enter" => {
+                let typed = self.panes[pane].input.read(cx).value().to_string();
+                let sendable = open
+                    .rows
+                    .get(open.at)
+                    .is_some_and(|row| row["fill"] == typed.as_str() && row["more"] != true);
+                if sendable {
+                    self.suggest = None;
+                    return;
+                }
+                self.complete(window, cx);
+            }
+            _ => return,
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
     /// "Message all" (or a reply when all the chats show together): one box that sends to every chat.
     fn submit_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.all_input.read(cx).value().trim().to_owned();
@@ -428,37 +548,42 @@ impl ChatView {
         window.open_dialog(cx, move |dialog, _, cx| {
             let owner = owner.clone();
             let theme = cx.theme().clone();
-            dialog.centered().title(title.clone()).width(px(520.)).child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .when_some(reply.clone(), |column, (_, who, said)| {
-                        column.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .text_xs()
-                                .text_color(theme.muted_foreground)
-                                .child(Icon::empty().path("icons/corner-up-left.svg").size_3().flex_shrink_0())
-                                .child(div().min_w_0().truncate().child(format!("@{who}: {said}"))),
-                        )
-                    })
-                    .child(Input::new(&input).small())
-                    .child(
-                        div().flex().justify_end().child(
-                            Button::new("message-all-send")
-                                .small()
-                                .primary()
-                                .icon(Icon::empty().path("icons/send.svg"))
-                                .label(send_label.clone())
-                                .on_click(move |_, window, cx| {
-                                    let _ = owner.update(cx, |view, cx| view.submit_all(window, cx));
-                                }),
+            dialog
+                .centered()
+                .pt(px(12.))
+                .title(title.clone())
+                .width(px(520.))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .when_some(reply.clone(), |column, (_, who, said)| {
+                            column.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(Icon::empty().path("icons/corner-up-left.svg").size_3().flex_shrink_0())
+                                    .child(div().min_w_0().truncate().child(format!("@{who}: {said}"))),
+                            )
+                        })
+                        .child(Input::new(&input).small())
+                        .child(
+                            div().flex().justify_end().child(
+                                Button::new("message-all-send")
+                                    .small()
+                                    .primary()
+                                    .icon(Icon::empty().path("icons/send.svg"))
+                                    .label(send_label.clone())
+                                    .on_click(move |_, window, cx| {
+                                        let _ = owner.update(cx, |view, cx| view.submit_all(window, cx));
+                                    }),
+                            ),
                         ),
-                    ),
-            )
+                )
         });
     }
 
@@ -518,6 +643,7 @@ impl ChatView {
                         let owner = owner.clone();
                         dialog
                             .centered()
+                            .pt(px(12.))
                             .title(title.clone())
                             .width(px(560.))
                             .child(
@@ -559,6 +685,24 @@ impl ChatView {
                 if let Some(picker) = self.picker.clone() {
                     picker.update(cx, |picker, cx| picker.images(&value, cx));
                 }
+            }
+            _ if operation.starts_with("suggest:") => {
+                let pane = operation["suggest:".len()..].parse::<usize>().unwrap_or(0);
+                let found = &value["suggest"];
+                let rows = found["rows"].as_array().cloned().unwrap_or_default();
+                self.suggest = (!failed && !rows.is_empty() && pane < self.panes.len()).then(|| Suggest {
+                    pane,
+                    mention: found["mention"] == true,
+                    header: found["header"].as_str().unwrap_or_default().to_owned(),
+                    start: found["start"].as_u64().unwrap_or(0) as usize,
+                    at: self
+                        .suggest
+                        .as_ref()
+                        .filter(|old| old.pane == pane)
+                        .map_or(0, |old| old.at.min(rows.len() - 1)),
+                    rows,
+                });
+                cx.notify();
             }
             "card-act" => {
                 // A group changed: draw the card again with what the core has now.
@@ -668,6 +812,7 @@ impl ChatView {
             let owner = owner.clone();
             dialog
                 .centered()
+                .pt(px(12.))
                 .close_button(false)
                 .pt(px(0.))
                 .pb(px(0.))
@@ -1011,7 +1156,7 @@ pub(super) fn card_body(
         );
     }
     for (at, message) in messages.iter().enumerate() {
-        said = said.child(div().flex().child(line_content(message, images, 900_000 + at, cx)));
+        said = said.child(div().flex().child(line_content(message, images, 900_000 + at, &[], cx)));
     }
     // What actions get for them: a click copies the value.
     let copied = card["copied"].as_str().unwrap_or_default().to_owned();
@@ -1188,7 +1333,7 @@ impl Render for PictureTip {
 
 /// What one line says: its badges, the name (a click opens the person's card), the event and the words
 /// with their pictures. A chat list and a person's card draw lines the same way; `at` keeps ids apart.
-fn line_content(line: &Value, images: &HashMap<String, PathBuf>, at: usize, cx: &App) -> Div {
+fn line_content(line: &Value, images: &HashMap<String, PathBuf>, at: usize, me: &[String], cx: &App) -> Div {
     let theme = cx.theme();
     let muted = theme.muted_foreground;
     let seq = line["seq"].as_u64().unwrap_or(0);
@@ -1289,22 +1434,31 @@ fn line_content(line: &Value, images: &HashMap<String, PathBuf>, at: usize, cx: 
     for part in line["parts"].as_array().into_iter().flatten() {
         if let Some(text) = part["t"].as_str() {
             for word in text.split(' ').filter(|word| !word.is_empty()) {
-                // A mention is a chip, as the platforms draw it.
-                let mention = word.len() > 1 && word.starts_with('@') && !deleted;
+                // A tag of one of our own names is a chip, as the platforms draw it; a comma or "!" after it
+                // stays outside.
+                let name = word.trim_end_matches(|c: char| !c.is_alphanumeric());
+                let ours = !deleted
+                    && name.len() > 1
+                    && name.starts_with('@')
+                    && me.iter().any(|mine| *mine == name[1..].to_lowercase());
+                let (chip, rest) = if ours { word.split_at(name.len()) } else { (word, "") };
                 body = body.child(
                     div()
                         .text_color(if action { name_color } else { text_color })
                         .when(action, |word| word.italic())
                         .when(deleted, |word| word.line_through())
-                        .when(mention, |word| {
+                        .when(ours, |word| {
                             word.px_1()
                                 .rounded(px(4.))
                                 .bg(theme.muted)
                                 .border_1()
                                 .border_color(theme.border)
                         })
-                        .child(word.to_owned()),
+                        .child(chip.to_owned()),
                 );
+                if !rest.is_empty() {
+                    body = body.child(div().text_color(text_color).child(rest.to_owned()));
+                }
             }
         } else if let Some(emote) = part["e"].as_str() {
             let size = if part["big"] == true { 72. } else { 24. };
@@ -1380,7 +1534,7 @@ impl ChatView {
         }
         let accent = line["accent"].as_str().map(|hex| color(hex, theme.border));
         let name = line["user"].as_str().unwrap_or_default().to_owned();
-        let body = line_content(line, &self.images, at, cx);
+        let body = line_content(line, &self.images, at, &self.me, cx);
         let mut column = div().flex().flex_col().flex_1().min_w_0().gap_0p5();
         if let Some(tag) = line["tag"].as_str() {
             column = column.child(
@@ -1774,7 +1928,7 @@ impl ChatView {
                 .border_color(theme.border)
                 .bg(theme.table)
         };
-        let mut column = div().flex().flex_col().gap_1().flex_1().min_w_0().min_h_0();
+        let mut column = div().relative().flex().flex_col().gap_1().flex_1().min_w_0().min_h_0();
         if let Some(platform) = &platform {
             column = column.child(self.head(platform, cx));
         }
@@ -1914,12 +2068,19 @@ impl ChatView {
             .flex_shrink_0()
             .child(self.sender_button(&platform, &texts, cx))
             .child(
-                div().flex_1().min_w_0().child(
-                    Input::new(&input)
-                        .small()
-                        .disabled(!can_send)
-                        .aria_label(text("sendPlaceholder")),
-                ),
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    // Before the box sees them: the arrows, Tab, Escape and Enter belong to the list while it is up.
+                    .capture_key_down(cx.listener(move |view, event: &KeyDownEvent, window, cx| {
+                        view.suggest_key(pane, event, window, cx)
+                    }))
+                    .child(
+                        Input::new(&input)
+                            .small()
+                            .disabled(!can_send)
+                            .aria_label(text("sendPlaceholder")),
+                    ),
             )
             .child(
                 Button::new(SharedString::from(format!("chat-emotes-{pane}")))
@@ -1934,13 +2095,90 @@ impl ChatView {
             .child(
                 Button::new(SharedString::from(format!("chat-send-{pane}")))
                     .small()
-                    .primary()
-                    .icon(Icon::empty().path("icons/send.svg"))
+                    .ghost()
+                    .child(
+                        Icon::empty()
+                            .path("icons/send-horizontal.svg")
+                            .size(px(18.))
+                            .text_color(if can_send {
+                                theme.primary
+                            } else {
+                                theme.muted_foreground
+                            }),
+                    )
                     .disabled(!can_send)
                     .tooltip(text("send"))
                     .accessibility_label(text("send"))
                     .on_click(cx.listener(move |view, _, window, cx| view.submit(pane, window, cx))),
             );
+        // The commands or names that fit what is typed, over the list above the box.
+        if let Some(open) = self.suggest.as_ref().filter(|open| open.pane == pane) {
+            let mut popup = div()
+                .absolute()
+                .left_0()
+                .bottom(px(40.))
+                .w(px(420.))
+                .max_w_full()
+                .flex()
+                .flex_col()
+                .gap_0p5()
+                .p_2()
+                .rounded(theme.radius_lg)
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.popover)
+                .occlude()
+                .child(
+                    div()
+                        .px_2()
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme.muted_foreground)
+                        .child(open.header.clone()),
+                );
+            for (index, row) in open.rows.iter().enumerate() {
+                popup = popup.child(
+                    div()
+                        .id(("suggest", pane * 16 + index))
+                        .flex()
+                        .flex_col()
+                        .px_2()
+                        .py_1()
+                        .rounded(theme.radius)
+                        .cursor_pointer()
+                        .when(index == open.at, |row| row.bg(theme.muted))
+                        .hover(|row| row.bg(theme.muted))
+                        .child(
+                            div()
+                                .flex()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::BOLD)
+                                        .child(row["title"].as_str().unwrap_or_default().to_owned()),
+                                )
+                                .child(
+                                    div()
+                                        .text_color(theme.muted_foreground)
+                                        .child(row["args"].as_str().unwrap_or_default().to_owned()),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child(row["about"].as_str().unwrap_or_default().to_owned()),
+                        )
+                        .on_click(cx.listener(move |view, _, window, cx| {
+                            if let Some(open) = view.suggest.as_mut() {
+                                open.at = index;
+                            }
+                            view.complete(window, cx);
+                        })),
+                );
+            }
+            column = column.child(popup);
+        }
         column.child(composer)
     }
 }
