@@ -43,6 +43,7 @@ def main():
     parser.add_argument("--theme", default="dark")
     parser.add_argument("--view", default="", help="the Show choice: side, or a platform id (default: all together)")
     parser.add_argument("--down", default="", help="a platform whose chat is disconnected after its lines came")
+    parser.add_argument("--fade", type=int, default=0, help="the fade in of new lines, in ms")
     parser.add_argument("--lines", type=int, default=0, help="extra lines to inject, to test scrolling")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
@@ -50,7 +51,7 @@ def main():
     with tempfile.TemporaryDirectory() as folder:
         config = {"start_hidden": False, "locale": "en_US", "theme": args.theme, "updates": "ignore",
                   "instance_name": "gpui-shot", "websockets": {"port": smoke.PORT},
-                  "window": {"chat": {"saveHistory": True}, "chat_view": args.view}}
+                  "window": {"chat": {"saveHistory": True, "fadeIn": args.fade}, "chat_view": args.view}}
         path = Path(folder) / "fixture.json"
         path.write_text(json.dumps(config))
         env = dict(os.environ, DISPLAY=":99", STREAMERZ_DEV="1", STREAMERZ_DEV_PORT=str(smoke.PORT), XDG_CONFIG_HOME=folder)
@@ -103,7 +104,10 @@ def main():
             print(ui("shot " + str(args.out / f"chat-{args.size}.png")))
             # A message that arrives while the page is open streams in.
             ws.ask({"request": "InjectChat", "platform": "kick", "user": "gabi", "role": "viewer", "text": "streamed in live", "id": "m"})
-            time.sleep(1)
+            if args.fade:
+                time.sleep(args.fade / 4000)
+                print(ui("shot " + str(args.out / f"chat-fading-{args.size}.png")))
+            time.sleep(max(1, args.fade / 1000 + 0.5))
             print(ui("shot " + str(args.out / f"chat-live-{args.size}.png")))
             page = ws.ask({"request": "StreamerzCoreView", "domain": "chat", "id": "p"})
             first = page["chat"]["lines"][0]["seq"]

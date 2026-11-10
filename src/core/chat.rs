@@ -621,7 +621,7 @@ pub fn read(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     Ok(json!({"domain": "chat", "chat": {
         "gen": generation, "reset": reset, "look": look, "seq": last.max(asked.unwrap_or(0)), "lines": models,
         "platforms": list, "connected": connected, "history": config.window.chat.save_history && !crate::memory_saver(),
-        "pins": pins, "modes": modes(engine), "texts": texts(),
+        "pins": pins, "modes": modes(engine), "texts": texts(), "fadeIn": config.window.chat.fade_in,
         "view": view(&config, &list.iter().filter(|platform| platform["present"] == true).filter_map(|platform| platform["id"].as_str()).collect::<Vec<_>>()),
     }}))
 }

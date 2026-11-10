@@ -70,6 +70,10 @@ pub struct ChatView {
     error: String,
     /// A header or account picture is on its way: the page is read again when pictures land.
     wants_pictures: bool,
+    /// When each line that came while the page was open appeared, for its fade in (lines are dropped
+    /// from here once they are fully in).
+    born: HashMap<u64, std::time::Instant>,
+    fading: bool,
     /// The Show box's choices (ids) and the box.
     view_ids: Vec<String>,
     view_select: Option<Entity<SelectState<Vec<String>>>>,
@@ -129,6 +133,8 @@ impl ChatView {
             read_again: false,
             error: String::new(),
             wants_pictures: false,
+            born: HashMap::new(),
+            fading: false,
             view_ids: Vec::new(),
             view_select: None,
             options: None,
@@ -249,10 +255,21 @@ impl ChatView {
         if replaced {
             self.lines.clear();
         }
+        let fade = value["chat"]["fadeIn"].as_u64().unwrap_or(0);
+        let now = std::time::Instant::now();
         for line in &fresh {
             self.want(line);
+            // A line that comes while the page is open fades in; the ones of a fresh read are just there.
+            if fade > 0 && !replaced && !cx.reduce_motion() {
+                if let Some(seq) = line["seq"].as_u64() {
+                    self.born.insert(seq, now);
+                }
+            }
         }
         self.lines.extend(fresh);
+        if !self.born.is_empty() && !self.fading {
+            self.fade_on(fade, cx);
+        }
         let over = self.lines.len().saturating_sub(MOST);
         if over > 0 {
             self.lines.drain(..over);
@@ -274,6 +291,38 @@ impl ChatView {
             self.refresh();
         }
         cx.notify();
+    }
+
+    /// Redraw about 30 times a second while lines are fading in, and not at all when none is.
+    fn fade_on(&mut self, fade: u64, cx: &mut Context<Self>) {
+        self.fading = true;
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(33))
+                .await;
+            let more = this
+                .update(cx, |view, cx| {
+                    let span = std::time::Duration::from_millis(fade);
+                    view.born.retain(|_, born| born.elapsed() < span);
+                    cx.notify();
+                    let more = !view.born.is_empty();
+                    view.fading = more;
+                    more
+                })
+                .unwrap_or(false);
+            if !more {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    /// How much of a line shows, 0 to 1: coming in over `fade` ms from when it came.
+    fn shown(&self, seq: u64) -> f32 {
+        let fade = self.model["chat"]["fadeIn"].as_f64().unwrap_or(0.).max(1.);
+        self.born
+            .get(&seq)
+            .map_or(1., |born| (born.elapsed().as_secs_f64() * 1000. / fade).min(1.) as f32)
     }
 
     /// Whether a platform's header or account picture is still on its way (the core has the name only).
@@ -1287,8 +1336,10 @@ impl ChatView {
             .collect::<String>();
         let (user_id, who) = (line["userId"].as_str().unwrap_or_default().to_owned(), name.clone());
         let view = this.downgrade();
+        let shown = self.shown(seq);
         div()
             .id(("line", at))
+            .opacity(shown)
             .flex()
             .gap_2()
             .px_2()
