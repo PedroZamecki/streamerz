@@ -221,22 +221,27 @@ impl ActionsPage {
                     let _ = owner.update(cx, |page, cx| page.run(pane, spec, node, None, cx));
                     window.close_dialog(cx);
                 });
-            dialog.centered().title(label.clone()).child(question.clone()).footer(
-                div()
-                    .id("action-confirmation")
-                    .test_support()
-                    .role(Role::Group)
-                    .aria_label(label.clone())
-                    .flex()
-                    .justify_end()
-                    .gap_2()
-                    .child(
-                        Button::new("cancel-action")
-                            .label(tr("dialogs.cancel"))
-                            .on_click(|_, window, cx| window.close_dialog(cx)),
-                    )
-                    .child(if danger { confirm.danger() } else { confirm }),
-            )
+            dialog
+                .centered()
+                .pt(px(12.))
+                .title(label.clone())
+                .child(question.clone())
+                .footer(
+                    div()
+                        .id("action-confirmation")
+                        .test_support()
+                        .role(Role::Group)
+                        .aria_label(label.clone())
+                        .flex()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            Button::new("cancel-action")
+                                .label(tr("dialogs.cancel"))
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(if danger { confirm.danger() } else { confirm }),
+                )
         });
     }
 
@@ -299,6 +304,7 @@ impl ActionsPage {
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
                 .centered()
+                .pt(px(12.))
                 .title(title.clone())
                 .width(px(640.))
                 .child(picker.clone())
@@ -319,6 +325,7 @@ impl ActionsPage {
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
                 .centered()
+                .pt(px(12.))
                 .title(title.clone())
                 .width(px(600.))
                 .child(form.clone())

@@ -238,7 +238,7 @@ impl Frontend {
                         ),
                 );
             }
-            dialog.centered().title(tr("conns.title")).width(px(560.)).child(list)
+            dialog.centered().pt(px(12.)).title(tr("conns.title")).width(px(560.)).child(list)
         });
     }
     pub fn select(&mut self, page: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -297,13 +297,18 @@ impl Frontend {
                 let prompt = cx.new(|cx| Prompt::new(model.clone(), window, cx));
                 self.prompt = Some(prompt.clone());
                 window.open_dialog(cx, move |dialog, _, _| {
-                    dialog.centered().title(title.clone()).child(prompt.clone()).on_cancel({
-                        let prompt = prompt.clone();
-                        move |_, _, cx| {
-                            prompt.update(cx, |prompt, cx| prompt.cancel(cx));
-                            false
-                        }
-                    })
+                    dialog
+                        .centered()
+                        .pt(px(12.))
+                        .title(title.clone())
+                        .child(prompt.clone())
+                        .on_cancel({
+                            let prompt = prompt.clone();
+                            move |_, _, cx| {
+                                prompt.update(cx, |prompt, cx| prompt.cancel(cx));
+                                false
+                            }
+                        })
                 });
             }
             cx.notify();
@@ -581,10 +586,15 @@ impl Render for Frontend {
             .border_t_1()
             .border_color(rgb(if cx.theme().is_dark() { 0x2b2b2e } else { 0xdcdcdd }))
             .child(
-                img("brands/streamerz.svg")
-                    .id("sidebar-logo")
-                    .size(px(24.))
-                    .flex_shrink_0(),
+                // The logo of the look: the dark one on the dark theme, as 1.6.0 draws it.
+                img(if cx.theme().is_dark() {
+                    "brands/streamerz-dark.svg"
+                } else {
+                    "brands/streamerz.svg"
+                })
+                .id("sidebar-logo")
+                .size(px(24.))
+                .flex_shrink_0(),
             )
             .when(!narrow, |footer| {
                 footer.child(
@@ -595,12 +605,12 @@ impl Render for Frontend {
                         .child(
                             div()
                                 .font_weight(FontWeight::BOLD)
-                                .text_size(px(12.))
+                                .text_size(px(13.))
                                 .child(name.to_owned()),
                         )
                         .child(
                             div()
-                                .text_size(px(11.))
+                                .text_size(px(12.))
                                 .text_color(crate::theme::quiet(cx))
                                 .truncate()
                                 .child(version.to_owned()),

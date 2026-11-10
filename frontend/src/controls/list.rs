@@ -401,22 +401,27 @@ impl List {
                                         send(request.clone());
                                         window.close_dialog(cx);
                                     });
-                            dialog.centered().title(label.clone()).child(question.clone()).footer(
-                                div()
-                                    .id("action-confirmation")
-                                    .test_support()
-                                    .role(Role::Group)
-                                    .aria_label(label.clone())
-                                    .flex()
-                                    .justify_end()
-                                    .gap_2()
-                                    .child(
-                                        Button::new("cancel-action")
-                                            .label(tr("dialogs.cancel"))
-                                            .on_click(|_, window, cx| window.close_dialog(cx)),
-                                    )
-                                    .child(if danger { confirm.danger() } else { confirm }),
-                            )
+                            dialog
+                                .centered()
+                                .pt(px(12.))
+                                .title(label.clone())
+                                .child(question.clone())
+                                .footer(
+                                    div()
+                                        .id("action-confirmation")
+                                        .test_support()
+                                        .role(Role::Group)
+                                        .aria_label(label.clone())
+                                        .flex()
+                                        .justify_end()
+                                        .gap_2()
+                                        .child(
+                                            Button::new("cancel-action")
+                                                .label(tr("dialogs.cancel"))
+                                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                                        )
+                                        .child(if danger { confirm.danger() } else { confirm }),
+                                )
                         });
                     }
                 }
@@ -449,7 +454,7 @@ impl List {
                 let confirm_label = tr("btn.delete_named").replace("{name}", name);
                 window.open_dialog(cx, move |dialog, _, _| {
                     let kind = kind.clone(); let id = id.clone(); let route = route.clone();
-                    dialog.centered().title(tr("btn.delete")).child(question.clone()).footer(div().id("delete-confirmation").test_support().role(Role::Group).aria_label(confirm_label.clone()).flex().justify_end().gap_2()
+                    dialog.centered().pt(px(12.)).title(tr("btn.delete")).child(question.clone()).footer(div().id("delete-confirmation").test_support().role(Role::Group).aria_label(confirm_label.clone()).flex().justify_end().gap_2()
                         .child(Button::new("cancel-delete").label(tr("dialogs.cancel")).on_click(|_, window, cx| window.close_dialog(cx)))
                         .child(Button::new("confirm-delete").danger().label(tr("btn.delete")).accessibility_label(confirm_label.clone()).on_click(move |_, window, cx| { send(json!({"request": "StreamerzDelete", "what": kind, "itemId": id, "id": format!("{route}:delete")})); window.close_dialog(cx); })))
                 });
@@ -498,6 +503,7 @@ impl List {
                     let owner = owner.clone();
                     dialog
                         .centered()
+                        .pt(px(12.))
                         .close_button(false)
                         .pt(px(0.))
                         .pb(px(0.))
@@ -541,6 +547,7 @@ impl List {
                     let owner = owner.clone();
                     dialog
                         .centered()
+                        .pt(px(12.))
                         .title(title.clone())
                         .width(px(560.))
                         .child(div().h(px(360.)).child(nested.clone()))
@@ -577,6 +584,7 @@ impl List {
                 window.open_dialog(cx, move |dialog, _, _| {
                     dialog
                         .centered()
+                        .pt(px(12.))
                         .title(title.clone())
                         .width(px(560.))
                         .child(form.clone())
@@ -1100,34 +1108,39 @@ fn show_values(values: &Value, window: &mut Window, cx: &mut App) {
         })
         .collect();
     window.open_dialog(cx, move |dialog, _, cx| {
-        dialog.centered().title(title.clone()).width(px(640.)).child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(div().text_color(cx.theme().muted_foreground).child(hint.clone()))
-                .child(
-                    div()
-                        .id("values")
-                        .max_h(px(360.))
-                        .overflow_y_scroll()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .children(rows.iter().map(|(name, value)| {
-                            div()
-                                .flex()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .w(px(200.))
-                                        .flex_shrink_0()
-                                        .font_weight(FontWeight::BOLD)
-                                        .child(name.clone()),
-                                )
-                                .child(div().flex_1().min_w_0().child(value.clone()))
-                        })),
-                ),
-        )
+        dialog
+            .centered()
+            .pt(px(12.))
+            .title(title.clone())
+            .width(px(640.))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(div().text_color(cx.theme().muted_foreground).child(hint.clone()))
+                    .child(
+                        div()
+                            .id("values")
+                            .max_h(px(360.))
+                            .overflow_y_scroll()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .children(rows.iter().map(|(name, value)| {
+                                div()
+                                    .flex()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .w(px(200.))
+                                            .flex_shrink_0()
+                                            .font_weight(FontWeight::BOLD)
+                                            .child(name.clone()),
+                                    )
+                                    .child(div().flex_1().min_w_0().child(value.clone()))
+                            })),
+                    ),
+            )
     });
 }

@@ -190,6 +190,7 @@ impl Sections {
                     let owner = owner.clone();
                     dialog
                         .centered()
+                        .pt(px(12.))
                         .title(title.clone())
                         .width(px(560.))
                         .child(nested.clone())
@@ -212,6 +213,7 @@ impl Sections {
                 window.open_dialog(cx, move |dialog, _, _| {
                     dialog
                         .centered()
+                        .pt(px(12.))
                         .title(title.clone())
                         .width(px(560.))
                         .child(form.clone())

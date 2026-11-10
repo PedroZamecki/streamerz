@@ -12,7 +12,8 @@ pub fn apply(dark: bool, cx: &mut App) {
         colors.border = rgb(if dark { 0x3f3f46 } else { 0xd4d4d8 }).into();
         colors.muted = rgb(if dark { 0x27272a } else { 0xe4e4e7 }).into();
         colors.muted_foreground = rgb(if dark { 0x919196 } else { 0x71717a }).into();
-        colors.overlay = gpui_kit::rgba(if dark { 0x0000004a } else { 0x00000039 }).into();
+        // The window behind a dialog is dimmed, as 1.6.0 darkens and blurs what is behind its dialogs.
+        colors.overlay = gpui_kit::hsla(0., 0., 0., if dark { 0.62 } else { 0.4 });
         colors.accent = colors.muted;
         colors.accent_foreground = colors.foreground;
         colors.sidebar = rgb(if dark { 0x101013 } else { 0xf9f9fa }).into();
