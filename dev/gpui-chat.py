@@ -77,6 +77,28 @@ def main():
                 ws.ask({"request": "SimulateChatConnection", "platform": platform, "connected": True, "id": "c"})
             if args.view:
                 ws.ask({"request": "StreamerzChat", "op": "view", "view": args.view, "id": "v"})
+            # Emotes of several shapes, in the picture cache under made-up addresses (nothing is downloaded).
+            from PIL import Image, ImageDraw
+            import hashlib
+            shapes = {"WIDE": (112, 28, (220, 60, 60)), "SQUARE": (56, 56, (60, 200, 90)), "TALL": (28, 56, (70, 120, 240))}
+            pairs = []
+            import glob
+            # A dev run keeps its settings and cache in its own temporary folder: the newest one is ours.
+            dev_dirs = sorted(glob.glob(os.path.join(tempfile.gettempdir(), "streamerz-dev-*")), key=os.path.getmtime)
+            for name, (w, h, colour) in shapes.items():
+                url = f"https://emotes.test/{name}.png"
+                folder_img = Path(dev_dirs[-1] if dev_dirs else folder) / "cache" / "img"
+                folder_img.mkdir(parents=True, exist_ok=True)
+                image = Image.new("RGBA", (w, h), colour + (255,))
+                ImageDraw.Draw(image).rectangle([0, 0, w - 1, h - 1], outline=(255, 255, 255, 255))
+                image.save(folder_img / (hashlib.sha256(url.encode()).hexdigest()[:24] + ".png"))
+                pairs.append([name, url])
+            ws.ask({"request": "InjectChat", "platform": "twitch", "user": "emoter", "role": "viewer",
+                    "text": "look WIDE then SQUARE and TALL end", "emotes": pairs, "id": "e1"})
+            ws.ask({"request": "InjectChat", "platform": "twitch", "user": "giant", "role": "viewer",
+                    "text": "big SQUARE", "emotes": pairs, "args": {"rewardType": "gigantify_an_emote"}, "id": "e2"})
+            ws.ask({"request": "InjectChat", "platform": "twitch", "user": "giantwide", "role": "viewer",
+                    "text": "bigger WIDE", "emotes": pairs, "args": {"rewardType": "gigantify_an_emote"}, "id": "e3"})
             for platform, user, role, text in MESSAGES:
                 ws.ask({"request": "InjectChat", "platform": platform, "user": user, "role": role, "text": text, "id": "m"})
             for number in range(args.lines):
@@ -109,6 +131,14 @@ def main():
                 print(ui("shot " + str(args.out / f"chat-fading-{args.size}.png")))
             time.sleep(max(1, args.fade / 1000 + 0.5))
             print(ui("shot " + str(args.out / f"chat-live-{args.size}.png")))
+            # Hover: an emote shows its picture large; a line shows its actions.
+            options = json.loads(ui("bounds Options"))
+            ox = round(options[0]["x"] + options[0]["w"] / 2 - 947) if options else 0
+            oy = round(options[0]["y"] + options[0]["h"] / 2 - 22) if options else 0
+            for name, point in (("emote", (372, 62)), ("line", (700, 140)), ("badge", (290, 140))):
+                subprocess.run(["xdotool", "mousemove", str(point[0] + ox), str(point[1] + oy)], env=env)
+                time.sleep(1.3)
+                print(ui("shot " + str(args.out / f"chat-hover-{name}-{args.size}.png")))
             page = ws.ask({"request": "StreamerzCoreView", "domain": "chat", "id": "p"})
             first = page["chat"]["lines"][0]["seq"]
             print("card op:", json.dumps(ws.ask({"request": "StreamerzChat", "op": "card", "seq": first, "id": "k"}))[:300])

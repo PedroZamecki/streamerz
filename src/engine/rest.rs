@@ -471,12 +471,21 @@ impl Engine {
             subscriber: role == "subscriber",
             msg_id: super::uuid(),
             text: text.into(),
-            emotes: if platform == "kick" {
-                crate::kick::kick_emotes(text)
-            } else if platform == "tiktok" {
-                crate::tiktok::tiktok_emotes(with.unwrap_or(extra))
-            } else {
-                Vec::new()
+            emotes: {
+                let mut emotes = if platform == "kick" {
+                    crate::kick::kick_emotes(text)
+                } else if platform == "tiktok" {
+                    crate::tiktok::tiktok_emotes(with.unwrap_or(extra))
+                } else {
+                    Vec::new()
+                };
+                // A test can say which words are emotes and where their pictures are: "emotes": [[name, url]].
+                for pair in extra.get("emotes").and_then(Value::as_array).into_iter().flatten() {
+                    if let (Some(name), Some(url)) = (pair[0].as_str(), pair[1].as_str()) {
+                        emotes.push((name.to_owned(), url.to_owned()));
+                    }
+                }
+                emotes
             },
             args,
             ..Default::default()
