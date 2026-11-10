@@ -105,11 +105,6 @@ pub fn running_browser() -> Option<Browser> {
     installed().into_iter().find(|b| b.is_running())
 }
 
-/// Whether any installed Chromium browser is currently running.
-pub fn is_any_running() -> bool {
-    installed().iter().any(|b| b.is_running())
-}
-
 #[cfg(not(windows))]
 fn find(k: &Known) -> Option<Browser> {
     let (name, programs, _, data, _, page) = *k;
@@ -579,15 +574,5 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn all_known_browsers_have_official_logos() {
-        for (name, ..) in KNOWN {
-            assert!(
-                crate::ui::img::logo(name, 16).is_some(),
-                "Browser {name} must have an SVG logo in img::logo"
-            );
-        }
     }
 }

@@ -490,12 +490,12 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
                     runner.live.borrow_mut().1.clear();
                     runner.engine.chat_polls_clear("youtube");
                     runner.engine.chat_unpinned("youtube", "");
-                    crate::ui::polls_changed();
+                    crate::host::polls_changed();
                     if active {
                         active = false;
                         connected.store(false, Ordering::Relaxed);
                         standby.store(false, Ordering::Relaxed);
-                        crate::ui::changed();
+                        crate::host::changed();
                         if let Some(task) = poll_task.take() {
                             task.abort();
                         }
@@ -1295,7 +1295,7 @@ pub async fn read_chat_with_standby(
             ch |= s.swap(sb, Ordering::Relaxed) != sb;
         }
         if ch {
-            crate::ui::changed();
+            crate::host::changed();
         }
     };
     let headers = [
@@ -1320,7 +1320,7 @@ pub async fn read_chat_with_standby(
         } else if !channel.is_empty() {
             let lives = discover_channel_lives(engine, cfg, web, &channel, run_once).await;
             if lives.len() > 1 {
-                let rx = crate::ui::ask_youtube_stream(lives.clone());
+                let rx = crate::host::ask_youtube_stream(lives.clone());
                 match rx.await {
                     Ok(Some(chosen)) => Ok(chosen),
                     _ => Ok(lives[0].0.clone()),
@@ -1360,7 +1360,7 @@ pub async fn read_chat_with_standby(
                     }
                     engine.chat_polls_clear("youtube");
                     engine.chat_unpinned("youtube", "");
-                    crate::ui::polls_changed();
+                    crate::host::polls_changed();
                 }
                 if run_once {
                     return;
@@ -1418,7 +1418,7 @@ pub async fn read_chat_with_standby(
         clear_poll();
         engine.chat_polls_clear("youtube");
         engine.chat_unpinned("youtube", "");
-        crate::ui::polls_changed();
+        crate::host::polls_changed();
         crate::say(format!("YouTube: connected to live chat ({label}, video {video})"));
         engine.settle_role("youtube");
         let joined_usec = (crate::fmt::unix_now().as_millis() as i64) * 1000;
@@ -1536,7 +1536,7 @@ pub async fn read_chat_with_standby(
         clear_poll();
         engine.chat_polls_clear("youtube");
         engine.chat_unpinned("youtube", "");
-        crate::ui::polls_changed();
+        crate::host::polls_changed();
         if let Some(t) = extras {
             t.abort();
         }
@@ -2104,7 +2104,7 @@ pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value]) {
                 ends: None,
                 over: None,
             });
-            crate::ui::polls_changed();
+            crate::host::polls_changed();
             if shown.is_some() {
                 yt(engine, T_YT_POLL_STARTED, "YouTubePollStarted", "PollStarted", &args);
             } else {
@@ -2116,7 +2116,7 @@ pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value]) {
             if args.is_empty() {
                 continue;
             }
-            crate::ui::polls_changed();
+            crate::host::polls_changed();
             engine.chat_polls_clear("youtube");
             args.insert("panelId".into(), close["targetPanelId"].clone());
             yt(engine, T_YT_POLL_CLOSED, "YouTubePollClosed", "PollClosed", &args);
@@ -2180,7 +2180,7 @@ fn broadcast_ended(engine: &Rc<Engine>) {
     clear_poll();
     engine.chat_polls_clear("youtube");
     engine.chat_unpinned("youtube", "");
-    crate::ui::polls_changed();
+    crate::host::polls_changed();
     let b = BROADCAST.with_borrow_mut(std::mem::take);
     if !b.is_empty() {
         yt(

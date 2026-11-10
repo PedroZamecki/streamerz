@@ -176,7 +176,7 @@ impl Shared {
         if let Ok(mut m) = self.status.lock() {
             *m = s;
         }
-        crate::ui::changed();
+        crate::host::changed();
     }
 }
 
@@ -263,7 +263,7 @@ impl Runner {
                     }
                     self.engine.chat_polls_clear("tiktok");
                     self.engine.chat_unpinned("tiktok", "");
-                    crate::ui::polls_changed();
+                    crate::host::polls_changed();
                     self.shared.set(TikTokStatus::Disconnected);
                     crate::say("TikTok: disconnected".into());
                 }

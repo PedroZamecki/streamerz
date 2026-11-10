@@ -3,14 +3,13 @@
 //! scheme (not the app's theme): the light-panel logo or the dark-panel one, changing as the desktop does.
 
 use crate::brand::{tray as icon, SIZE};
+use crate::host::{Message as Msg, Sender};
 use crate::i18n::tr;
-use crate::ui::Msg;
 use crate::version;
-use fltk::app::Sender;
 
 /// The tray: the window's sender, and whether the desktop is dark (the icon follows it).
 #[cfg(target_os = "linux")]
-struct Tray(Sender<Msg>, bool);
+struct Tray(Sender, bool);
 
 #[cfg(target_os = "linux")]
 impl ksni::Tray for Tray {
@@ -135,7 +134,7 @@ async fn desktop_dark(settings: &zbus::Proxy<'_>) -> Option<bool> {
 }
 
 #[cfg(target_os = "linux")]
-pub async fn run(ui: Sender<Msg>) {
+pub async fn run(ui: Sender) {
     use futures_util::StreamExt;
     use ksni::TrayMethods;
     use zbus::{Connection, Proxy};
@@ -156,11 +155,11 @@ pub async fn run(ui: Sender<Msg>) {
         Some(s) => desktop_dark(s).await.unwrap_or(true),
         None => true,
     };
-    crate::ui::system_dark(dark);
+    crate::host::system_dark(dark);
     if let Some(s) = &settings {
-        crate::ui::system_accent(desktop_accent(s).await);
+        crate::host::system_accent(desktop_accent(s).await);
     }
-    match (Tray(ui, dark)).spawn().await {
+    match (Tray(ui.clone(), dark)).spawn().await {
         // The tray lives as long as its handle; its icon follows the desktop's colours.
         Ok(handle) => {
             if let Some(s) = &settings {
@@ -172,7 +171,7 @@ pub async fn run(ui: Sender<Msg>) {
                             continue;
                         };
                         if key == "accent-color" {
-                            crate::ui::system_accent(desktop_accent(s).await);
+                            crate::host::system_accent(desktop_accent(s).await);
                             continue;
                         }
                         if space != "org.freedesktop.appearance" || key != "color-scheme" {
@@ -180,7 +179,7 @@ pub async fn run(ui: Sender<Msg>) {
                         }
                         if let Some(now) = desktop_dark(s).await.filter(|&n| n != dark) {
                             dark = now;
-                            crate::ui::system_dark(now);
+                            crate::host::system_dark(now);
                             handle.update(|t| t.1 = now).await;
                         }
                     }
@@ -245,11 +244,14 @@ fn reg_dword(key: &str, name: &str) -> Option<u32> {
 }
 
 #[cfg(windows)]
-pub async fn run(ui: Sender<Msg>) {
+pub async fn run(ui: Sender) {
     use tray_icon::menu::{Menu, MenuEvent, MenuItem};
     use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
     use windows_sys::Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, TranslateMessage, MSG};
 
+    // The system's colour scheme and accent, as Windows has them at start.
+    crate::host::system_dark(apps_dark());
+    crate::host::system_accent(accent());
     // Win32 delivers tray clicks to the thread that created the icon, so it gets its own
     // thread with a message loop.
     std::thread::spawn(move || {
@@ -264,7 +266,7 @@ pub async fn run(ui: Sender<Msg>) {
             return fail(e.to_string());
         }
         let (open_id, close_id) = (open.id().clone(), close.id().clone());
-        let menu_ui = ui;
+        let menu_ui = ui.clone();
         MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
             if e.id == open_id {
                 menu_ui.send(Msg::Toggle);
@@ -273,7 +275,7 @@ pub async fn run(ui: Sender<Msg>) {
             }
         }));
         // Left click toggles the window; right click opens the menu.
-        let click_ui = ui;
+        let click_ui = ui.clone();
         TrayIconEvent::set_event_handler(Some(move |e| {
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
@@ -315,8 +317,8 @@ pub async fn run(ui: Sender<Msg>) {
 }
 
 /// Windows ends the session (logout, shutdown, restart) by telling each top-level window, then ends
-/// the process. FLTK doesn't listen, and its window may not exist yet (started hidden): a hidden window
-/// of this thread listens instead, saves and quits like Quit does, so the next start sees no crash.
+/// the process. The renderer is another process and its window may not exist yet (started hidden): a hidden
+/// window of this thread listens instead, saves and quits like Quit does, so the next start sees no crash.
 #[cfg(windows)]
 fn watch_session_end() {
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
@@ -361,7 +363,7 @@ fn watch_session_end() {
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
-pub async fn run(ui: Sender<Msg>) {
+pub async fn run(ui: Sender) {
     ui.send(Msg::NoTray);
 }
 

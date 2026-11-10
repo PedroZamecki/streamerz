@@ -36,23 +36,6 @@ impl Kind {
         )
     }
 
-    /// The rule: the active local session's user may read these devices (systemd's `uaccess`, the same
-    /// tag that shares sound cards and webcams). Sorted before 73-seat-late.rules, which applies it.
-    pub fn rule(self) -> String {
-        let (what, props): (&str, &[&str]) = match self {
-            Kind::Mice => (
-                "mice and touchpads (Mouse Click trigger)",
-                &["ID_INPUT_MOUSE", "ID_INPUT_TOUCHPAD"],
-            ),
-            Kind::Keyboards => ("keyboards (Key Press trigger)", &["ID_INPUT_KEYBOARD"]),
-        };
-        let mut s = format!("# Streamerz: lets the person at this computer read {what}. Delete to undo.\n");
-        for p in props {
-            s += &format!("SUBSYSTEM==\"input\", KERNEL==\"event*\", ENV{{{p}}}==\"1\", TAG+=\"uaccess\"\n");
-        }
-        s
-    }
-
     /// Whether a device's udev properties (/run/udev/data) make it one of these.
     fn is(self, props: &str) -> bool {
         let has = |k: &str| {
@@ -117,80 +100,6 @@ pub fn access(kind: Kind) -> Access {
 
 pub fn rule_installed(kind: Kind) -> bool {
     Path::new(&kind.file()).exists()
-}
-
-/// The script that adds (or removes) the rule, run as root: shown in the password dialog's details.
-pub fn script(kind: Kind, install: bool) -> String {
-    let f = kind.file();
-    let change = if install {
-        format!("cat > {f} <<'EOF'\n{}EOF\n", kind.rule())
-    } else {
-        format!("rm -f {f}\n")
-    };
-    format!(
-        "set -e\n{change}udevadm control --reload\nudevadm trigger --subsystem-match=input --action=change\nudevadm settle --timeout=5 || true\n"
-    )
-}
-
-/// Runs the script as root: polkit's password dialog, else a terminal with sudo. Blocks until done.
-pub fn grant(kind: Kind, install: bool) -> Result<(), String> {
-    let s = script(kind, install);
-    match std::process::Command::new("pkexec")
-        .args(["/bin/sh", "-c", &s])
-        .status()
-    {
-        Ok(st) if st.success() => return Ok(()),
-        // 126: the dialog was dismissed.
-        Ok(st) if st.code() == Some(126) => return Err(crate::i18n::tr("input.cancelled").into()),
-        // No pkexec, or no polkit agent to ask the password (127): sudo in a terminal.
-        _ => {}
-    }
-    let shell = format!(
-        "echo '{}'; echo; printf '%s\\n' \"$0\"; sudo sh -c \"$0\" && echo && echo '{}'; printf '{}'; read _",
-        crate::i18n::tr("input.terminal_why").replace('\'', "'\\''"),
-        crate::i18n::tr("input.terminal_done").replace('\'', "'\\''"),
-        crate::i18n::tr("input.terminal_close").replace('\'', "'\\''"),
-    );
-    let mut terms: Vec<String> = std::env::var("TERMINAL").into_iter().collect();
-    terms.extend(
-        [
-            "xdg-terminal-exec",
-            "kgx",
-            "gnome-terminal",
-            "konsole",
-            "xfce4-terminal",
-            "alacritty",
-            "kitty",
-            "foot",
-            "xterm",
-        ]
-        .map(String::from),
-    );
-    for t in terms {
-        let mut c = std::process::Command::new(&t);
-        // gnome-terminal and kgx take the command after `--`; the others after -e (xdg-terminal-exec
-        // takes it as is).
-        match t.as_str() {
-            "xdg-terminal-exec" => {}
-            "gnome-terminal" | "kgx" => drop(c.arg("--")),
-            _ => drop(c.arg("-e")),
-        }
-        c.args(["sh", "-c", &shell, &s]);
-        if let Ok(mut child) = c.spawn() {
-            let _ = child.wait();
-            let done = match kind {
-                _ if install => access(kind) == Access::Ready || rule_installed(kind),
-                _ => !rule_installed(kind),
-            };
-            return if done {
-                Ok(())
-            } else {
-                Err(crate::i18n::tr("input.not_done").into())
-            };
-        }
-    }
-    crate::warn(format!("Input access: run this as administrator (sudo sh):\n{s}"));
-    Err(crate::i18n::tr("input.no_terminal").into())
 }
 
 /// What a device said, already filtered to what a trigger wants.
@@ -366,21 +275,6 @@ mod tests {
         assert!(Kind::Keyboards.is(combo));
         // Not fooled by a longer name.
         assert!(!Kind::Mice.is("E:ID_INPUT_MOUSE_EXTRA=1\n"));
-    }
-
-    #[test]
-    fn the_rules_grant_one_kind_to_the_user_at_the_computer() {
-        let m = Kind::Mice.rule();
-        assert!(m.contains("ENV{ID_INPUT_MOUSE}==\"1\", TAG+=\"uaccess\""));
-        assert!(m.contains("ID_INPUT_TOUCHPAD") && !m.contains("KEYBOARD") && !m.contains("MODE"));
-        assert!(Kind::Keyboards.rule().contains("ID_INPUT_KEYBOARD") && !Kind::Keyboards.rule().contains("MOUSE"));
-        // Before 73-seat-late.rules, which turns the tag into the permission.
-        assert!(Kind::Mice.file().as_str() < "/etc/udev/rules.d/73");
-        let add = script(Kind::Mice, true);
-        assert!(add.starts_with("set -e\ncat > /etc/udev/rules.d/70-streamerz-mice.rules <<'EOF'\n# Streamerz"));
-        assert!(add.contains("udevadm trigger --subsystem-match=input --action=change"));
-        let remove = script(Kind::Mice, false);
-        assert!(remove.contains("rm -f /etc/udev/rules.d/70-streamerz-mice.rules") && !remove.contains("cat >"));
     }
 
     #[test]

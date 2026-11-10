@@ -526,7 +526,7 @@ pub fn for_platform(text: &str, platform: &str, kick_known: &[String]) -> String
                     .iter()
                     .find(|k| shown(k) == w && *k != w)
                     .cloned()
-                    .or_else(|| crate::ui::emotes::kick_tag(w))
+                    .or_else(|| crate::emotes::kick_tag(w))
                     .unwrap_or_else(|| w.to_string())
             } else {
                 shown(w).to_string()
@@ -691,7 +691,7 @@ impl Engine {
             let due = oldest.map(|t| (t + life).saturating_sub(now).max((life / 10).max(1000)));
             (life, due.filter(|_| life > 0 && !log.sweeping))
         };
-        crate::ui::chat();
+        crate::host::chat();
         if let (true, Some(wait)) = (life > 0, due) {
             self.chat_log_mut().sweeping = true;
             let me = self.clone();
@@ -706,7 +706,7 @@ impl Engine {
     /// Chat history is never kept on disk: the platforms give it back when we join. This removes the file
     /// older versions wrote.
     pub fn forget_saved_chat_history() {
-        crate::ui::img::forget_saved("chat-history");
+        crate::cache::forget_saved("chat-history");
     }
 
     /// Merge `fetched` recent messages for `platform` (oldest-to-newest) with any cached historical
@@ -734,8 +734,8 @@ impl Engine {
         if platform == "youtube" {
             crate::youtube::clear_poll();
         }
-        crate::ui::polls_changed();
-        crate::ui::chat();
+        crate::host::polls_changed();
+        crate::host::chat();
     }
 
     pub fn chat_welcome(self: &Rc<Self>, platform: &str, fetched: Vec<Line>) {
@@ -771,7 +771,7 @@ impl Engine {
                 f.welcome = false;
                 for (name, url) in &f.emotes {
                     let tok = if platform == "kick" {
-                        crate::ui::emotes::kick_tag(name).unwrap_or_else(|| name.clone())
+                        crate::emotes::kick_tag(name).unwrap_or_else(|| name.clone())
                     } else {
                         name.clone()
                     };
@@ -822,7 +822,7 @@ impl Engine {
             }
         }
         self.chat_sweep_soon();
-        crate::ui::chat();
+        crate::host::chat();
     }
 
     /// Keep a chat message for the window (called by `chat`).
@@ -842,7 +842,7 @@ impl Engine {
         let shown = crate::roles::Role::from_flags(c.broadcaster, lead, c.moderator, c.vip);
         if crate::roles::seen_self(&c.platform, &c.user_id, shown) {
             crate::say(format!("{}: this account is now a {} here", c.platform, shown.name()));
-            crate::ui::changed();
+            crate::host::changed();
         }
         {
             let mut guard = self.chat_log_mut();
@@ -985,7 +985,7 @@ impl Engine {
                     (line.broadcaster, line.moderator, line.vip, line.subscriber);
                 log.reset_gen += 1;
                 drop(guard);
-                crate::ui::chat();
+                crate::host::chat();
                 return;
             }
             // Deduplicate if a message arrived both in pre-join history and right as the live socket opened.
@@ -1002,7 +1002,7 @@ impl Engine {
             log.push(line);
         }
         self.chat_sweep_soon();
-        crate::ui::chat();
+        crate::host::chat();
     }
 
     /// What a trigger shows in the chat, if anything (see `event_of`).
@@ -1045,7 +1045,7 @@ impl Engine {
             ..Default::default()
         });
         self.chat_sweep_soon();
-        crate::ui::chat();
+        crate::host::chat();
     }
 
     /// A line from Streamerz itself (a failed send, a dev-mode send).
@@ -1058,7 +1058,7 @@ impl Engine {
             note: true,
             ..Default::default()
         });
-        crate::ui::chat();
+        crate::host::chat();
     }
 
     /// Whether `platform`'s chat is in the log.
@@ -1086,6 +1086,28 @@ impl Engine {
         }
     }
 
+    /// How many lines up to `seq` are in the log, leaving out those of the `hidden` platforms: what a
+    /// view that holds them all must have, to know it is still in step.
+    pub fn chat_count(&self, seq: u64, hidden: &[&str]) -> usize {
+        self.st
+            .borrow()
+            .chat_log
+            .lines
+            .iter()
+            .filter(|l| l.seq <= seq && !hidden.contains(&l.platform.as_str()))
+            .count()
+    }
+
+    /// The line with this `seq`, if it is still in the log.
+    pub fn chat_line(&self, seq: u64) -> Option<Line> {
+        self.st.borrow().chat_log.lines.iter().find(|l| l.seq == seq).cloned()
+    }
+
+    /// The `seq` of the newest line (0: none yet).
+    pub fn chat_last_seq(&self) -> u64 {
+        self.st.borrow().chat_log.seq
+    }
+
     /// Re-resolve badge URLs on existing lines of `platform` (e.g. once Twitch Helix badge sets finish seeding).
     pub fn refresh_chat_badges(&self, platform: &str, mut resolve: impl FnMut(&str) -> Option<String>) {
         let mut changed = false;
@@ -1111,7 +1133,7 @@ impl Engine {
             }
         }
         if changed {
-            crate::ui::chat();
+            crate::host::chat();
         }
     }
 
@@ -1240,6 +1262,17 @@ impl Engine {
             cards.insert(key, (std::time::Instant::now(), found.clone()));
         }
         found
+    }
+
+    /// What the platform said about a chatter lately, if it is kept (the card opens with it at once).
+    pub fn chatter_cached(&self, platform: &str, user_id: &str) -> Option<Vec<(String, String)>> {
+        let key = (platform.to_string(), user_id.to_string());
+        let st = self.st.borrow();
+        st.chat_log
+            .cards
+            .get(&key)
+            .filter(|(at, _)| at.elapsed() < CARD_FOR)
+            .map(|(_, found)| found.clone())
     }
 
     async fn chatter_ask(
@@ -1453,7 +1486,7 @@ impl Engine {
         if self.dev() {
             if let Some(i) = PLATFORMS.iter().position(|p| *p == platform) {
                 self.st.borrow_mut().chat_log.simulated_connections[i] = connected;
-                crate::ui::changed();
+                crate::host::changed();
             }
         }
     }
@@ -1509,7 +1542,7 @@ impl Engine {
         if changed {
             log.reset_gen += 1;
             drop(st);
-            crate::ui::chat();
+            crate::host::chat();
         }
     }
 
@@ -1555,7 +1588,7 @@ impl Engine {
         pins.push(pin);
         st.chat_log.reset_gen += 1;
         drop(st);
-        crate::ui::chat();
+        crate::host::chat();
     }
 
     /// `platform`'s pin was taken down (`msg_id`: only if it's that one; "" any).
@@ -1573,7 +1606,7 @@ impl Engine {
         }
         st.chat_log.reset_gen += 1;
         drop(st);
-        crate::ui::chat();
+        crate::host::chat();
     }
 
     /// The messages pinned now, one per platform at most.
@@ -1593,7 +1626,7 @@ impl Engine {
                 None => polls.push(p),
             }
         }
-        crate::ui::chat();
+        crate::host::chat();
     }
 
     /// The latest live viewer count, or none when it is unavailable.
@@ -1620,7 +1653,7 @@ impl Engine {
                 }
             };
             if changed {
-                crate::ui::chat();
+                crate::host::chat();
                 self.emit("Overlay", "viewers", || self.viewers_value());
             }
         }
@@ -1651,7 +1684,7 @@ impl Engine {
         self.chat_polls_clear(platform);
         self.chat_unpinned(platform, "");
         if changed {
-            crate::ui::changed();
+            crate::host::changed();
         }
     }
 
@@ -1709,8 +1742,8 @@ impl Engine {
             }
         };
         if before || platform == "youtube" {
-            crate::ui::polls_changed();
-            crate::ui::chat();
+            crate::host::polls_changed();
+            crate::host::chat();
         }
     }
 
@@ -1790,7 +1823,7 @@ impl Engine {
             return;
         }
         if crate::roles::set(platform, role, &me) {
-            crate::ui::changed();
+            crate::host::changed();
         }
         // Not the owner: Kick says what we are in a channel; elsewhere our earlier messages in the history
         // do (see `chat_welcome`), and our next message.
@@ -1851,7 +1884,7 @@ impl Engine {
             if role.moderates() {
                 crate::say(format!("kick: this account is a {} here", role.name()));
             }
-            crate::ui::changed();
+            crate::host::changed();
         }
     }
 
@@ -1870,7 +1903,7 @@ impl Engine {
         let role = crate::roles::Role::from_flags(l.broadcaster, lead, l.moderator, l.vip);
         if crate::roles::seen_self(platform, &me, role) {
             crate::say(format!("{platform}: this account is a {} here", role.name()));
-            crate::ui::changed();
+            crate::host::changed();
         }
     }
 
@@ -1965,7 +1998,7 @@ impl Engine {
         });
         let seq = log.seq;
         drop(guard);
-        crate::ui::chat();
+        crate::host::chat();
         Some(seq)
     }
 
@@ -1978,7 +2011,7 @@ impl Engine {
         if log.lines.len() != before {
             log.reset_gen += 1;
             drop(st);
-            crate::ui::chat();
+            crate::host::chat();
         }
     }
 
@@ -1992,7 +2025,7 @@ impl Engine {
             mine.local = false;
             log.reset_gen += 1;
             drop(st);
-            crate::ui::chat();
+            crate::host::chat();
         }
     }
 

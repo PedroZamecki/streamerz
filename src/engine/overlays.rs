@@ -51,10 +51,10 @@ impl Engine {
         Value::Object(v)
     }
 
-    /// The live count is polled when the chat window shows it, an action uses its trigger, or an overlay
-    /// listens to `viewers`.
+    /// The live count is polled when the window shows it (the Chat page), an action uses its trigger, or an
+    /// overlay listens to `viewers`.
     pub fn viewers_wanted(&self) -> bool {
-        crate::ui::chat::viewers_visible() || self.listening("Overlay", "viewers")
+        crate::host::viewers_visible() || self.listening("Overlay", "viewers")
     }
 
     /// An ad break started: tell overlays, and that it ended when its time is up.

@@ -1,6 +1,6 @@
 //! X11 sessions: key combinations grabbed on the root window (XGrabKey) and mouse clicks from XInput2's
-//! raw events, both given by the X server to any program: no permission and no setup. libX11 is already
-//! loaded (FLTK draws with it); libXi is opened only when a Mouse Click trigger is used.
+//! raw events, both given by the X server to any program: no permission and no setup. libX11 is linked
+//! (the renderer uses it too); libXi is opened only when a Mouse Click trigger is used.
 
 use std::ffi::{c_char, c_int, c_long, c_uint, c_ulong, c_void, CString};
 use std::os::fd::{AsRawFd, RawFd};

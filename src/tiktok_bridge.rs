@@ -453,7 +453,7 @@ impl Bridge {
         self.warming.set(false);
         self.refresh_pending.set(false);
         self.error.borrow_mut().clear();
-        crate::ui::changed();
+        crate::host::changed();
     }
 
     /// One request to the extension; its answer, or its error.
@@ -485,7 +485,7 @@ impl Bridge {
                     l.pending.retain(|_, tx| !tx.is_closed());
                 }
                 self.ready.set(false);
-                crate::ui::changed();
+                crate::host::changed();
                 return Err("TikTok didn't answer. Try again, or check Accounts > TikTok.".into());
             }
         };
@@ -495,14 +495,14 @@ impl Bridge {
                 self.login_required
                     .set(v["code"] == "login_required" || err.starts_with("Log in to TikTok"));
                 *self.error.borrow_mut() = err.to_string();
-                crate::ui::changed();
+                crate::host::changed();
                 Err(err.to_string())
             }
             None => {
                 if v.get("params").is_some() || v.get("status").is_some() {
                     self.ready.set(true);
                     self.error.borrow_mut().clear();
-                    crate::ui::changed();
+                    crate::host::changed();
                 }
                 Ok(v)
             }
@@ -715,7 +715,7 @@ fn warm(e: &Rc<Engine>, serial: u64) {
     crate::roles::clear("tiktok");
     b.params.borrow_mut().take();
     b.error.borrow_mut().clear();
-    crate::ui::changed();
+    crate::host::changed();
     let e = e.clone();
     tokio::task::spawn_local(async move {
         let b = &e.tiktok_bridge;
@@ -789,7 +789,7 @@ fn warm(e: &Rc<Engine>, serial: u64) {
                 }
             }
         }
-        crate::ui::changed();
+        crate::host::changed();
         b.warming.set(false);
         if b.refresh_pending.replace(false) {
             warm(&e, serial);
@@ -842,7 +842,7 @@ where
         serial,
     });
     crate::say("TikTok: the browser extension connected".into());
-    crate::ui::changed();
+    crate::host::changed();
     warm(&e, serial);
     loop {
         tokio::select! {

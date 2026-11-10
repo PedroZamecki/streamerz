@@ -41,6 +41,24 @@ pub struct WsSettings {
     pub allowed_origins: String,
 }
 
+impl WsSettings {
+    /// Listener changes exclude client/server lists, without cloning and discarding those lists.
+    fn listener_settings(&self) -> Self {
+        Self {
+            auto_start: self.auto_start,
+            address: self.address.clone(),
+            port: self.port,
+            endpoint: self.endpoint.clone(),
+            enable_auth: self.enable_auth,
+            auth_enforce: self.auth_enforce,
+            auth_password: self.auth_password.clone(),
+            allowed_origins: self.allowed_origins.clone(),
+            connections: Vec::new(),
+            servers: Vec::new(),
+        }
+    }
+}
+
 impl Default for WsSettings {
     fn default() -> Self {
         WsSettings {
@@ -98,7 +116,7 @@ pub async fn run(e: Rc<Engine>) {
         e.change(|c| c.instance_id = crate::engine::uuid());
     }
     let mut rx = e.subscribe();
-    let mut running: Vec<tokio::task::AbortHandle> = Vec::new();
+    let mut running: [Option<tokio::task::AbortHandle>; 3] = Default::default();
     let mut extra: Vec<tokio::task::AbortHandle> = Vec::new();
     let mut last = None;
     let mut last_extra = None;
@@ -134,27 +152,38 @@ pub async fn run(e: Rc<Engine>) {
         }
         let now = {
             let c = rx.borrow_and_update();
-            let mut ws = c.websockets.clone();
-            // Clients and custom servers don't restart these.
-            (ws.connections, ws.servers) = (Vec::new(), Vec::new());
-            (ws, c.http.clone(), c.udp.clone())
+            (c.websockets.listener_settings(), c.http.clone(), c.udp.clone())
         };
-        if last.as_ref() != Some(&now) {
-            for h in running.drain(..) {
-                h.abort();
+        let (ws, http, udp) = now.clone();
+        if last
+            .as_ref()
+            .map(|previous: &(WsSettings, HttpSettings, UdpSettings)| &previous.0)
+            != Some(&ws)
+        {
+            if let Some(task) = running[0].take() {
+                task.abort();
             }
-            let (ws, http, udp) = now.clone();
             if ws.auto_start {
-                running.push(tokio::task::spawn_local(websocket(e.clone(), ws)).abort_handle());
+                running[0] = Some(tokio::task::spawn_local(websocket(e.clone(), ws)).abort_handle());
+            }
+        }
+        if last.as_ref().map(|previous| &previous.1) != Some(&http) {
+            if let Some(task) = running[1].take() {
+                task.abort();
             }
             if http.auto_start {
-                running.push(tokio::task::spawn_local(http_server(e.clone(), http)).abort_handle());
+                running[1] = Some(tokio::task::spawn_local(http_server(e.clone(), http)).abort_handle());
+            }
+        }
+        if last.as_ref().map(|previous| &previous.2) != Some(&udp) {
+            if let Some(task) = running[2].take() {
+                task.abort();
             }
             if udp.auto_start {
-                running.push(tokio::task::spawn_local(udp_server(e.clone(), udp)).abort_handle());
+                running[2] = Some(tokio::task::spawn_local(udp_server(e.clone(), udp)).abort_handle());
             }
-            last = Some(now);
         }
+        last = Some(now);
         // Opt-in: listens only while a Hotkey Press (or Mouse Click) trigger is used.
         e.hotkeys_sync();
         // Opt-in: the process list is watched only while Process Started or Stopped is used.
@@ -490,6 +519,150 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
     let get = |k: &str| req.get(k).and_then(Value::as_str).unwrap_or("");
     let persisted = req.get("persisted").and_then(Value::as_bool).unwrap_or(true);
     Some(match get("request") {
+        "StreamerzPrompts" | "StreamerzAnswerPrompt" if !authed && e.config().websockets.enable_auth => {
+            error(&id, "Authentication required to use this method")
+        }
+        "StreamerzPrompts" => ok(&id, json!({"prompts": crate::core::prompts::list()})),
+        "StreamerzAnswerPrompt" => match req["promptId"]
+            .as_u64()
+            .ok_or_else(|| "promptId: an integer".to_owned())
+            .and_then(|prompt| crate::core::prompts::answer(prompt, req["value"].clone()))
+        {
+            Ok(()) => ok(&id, json!({"answered": true})),
+            Err(message) => error(&id, &message),
+        },
+        "StreamerzConnection" if !authed && e.config().websockets.enable_auth => {
+            error(&id, "Authentication required to use this method")
+        }
+        "StreamerzConnection" => match crate::core::connections::apply(e, get("kind"), get("itemId"), get("action")) {
+            Ok(value) => ok(&id, value),
+            Err(message) => error(&id, &message),
+        },
+        "StreamerzEntitySchema" => match crate::automation::entities::describe(get("kind")) {
+            Ok(value) => ok(&id, value),
+            Err(message) => error(&id, &message),
+        },
+        "StreamerzEntityForm" | "StreamerzEditEntity" | "StreamerzEntityDraft" | "StreamerzToggleEntity"
+            if !authed && e.config().websockets.enable_auth =>
+        {
+            error(&id, "Authentication required to use this method")
+        }
+        "StreamerzEntityForm" if crate::core::actions::handles(get("kind")) => {
+            match crate::core::actions::form_for(e, req) {
+                Ok(value) => ok(&id, value),
+                Err(message) => error(&id, &message),
+            }
+        }
+        "StreamerzEditEntity" | "StreamerzEntityDraft" if crate::core::actions::handles(get("kind")) => {
+            match crate::core::actions::edit_form(e, req, get("request") == "StreamerzEntityDraft") {
+                Ok(value) => ok(&id, value),
+                Err(message) => error(&id, &message),
+            }
+        }
+        "StreamerzEntityForm" => {
+            let form = crate::core::pages::external_form(e, get("kind"), get("itemId"))
+                .unwrap_or_else(|| crate::automation::entities::form(&e.config(), get("kind"), get("itemId")));
+            match form {
+                Ok(value) => ok(&id, value),
+                Err(message) => error(&id, &message),
+            }
+        }
+        "StreamerzToggleEntity" => {
+            let toggle = || -> Result<Value, String> {
+                let kind = get("kind");
+                let form = crate::automation::entities::form(&e.config(), kind, get("itemId"))?;
+                let field = crate::automation::entities::fields(kind)
+                    .ok_or("unknown entity kind")?
+                    .iter()
+                    .position(|(key, _, _)| ["enabled", "autoConnect", "autoStart"].contains(key))
+                    .ok_or("entity has no on/off field")?;
+                let edit = json!({"request": "StreamerzEditEntity", "id": id, "kind": kind, "itemId": get("itemId"), "changes": [{"field": field, "value": !form["fields"][field]["value"].as_bool().unwrap_or(false)}]});
+                answer(e, &edit, authed).ok_or_else(|| "entity edit is unavailable".into())
+            };
+            match toggle() {
+                Ok(value) => value,
+                Err(message) => error(&id, &message),
+            }
+        }
+        "StreamerzEditEntity" | "StreamerzEntityDraft" => {
+            let apply = || -> Result<Value, String> {
+                let kind = get("kind");
+                let item = match (
+                    crate::core::pages::external_form(e, kind, get("itemId")),
+                    crate::core::pages::external_fields(e, kind),
+                ) {
+                    (Some(form), Some(fields)) => crate::automation::entities::draft_with(form?, fields, req)?,
+                    _ => crate::automation::entities::draft(&e.config(), kind, get("itemId"), req)?,
+                };
+                if get("request") == "StreamerzEntityDraft" {
+                    let text = serde_json::to_string_pretty(&item).map_err(|error| error.to_string())?;
+                    return Ok(json!({"item": item, "json": text}));
+                }
+                if crate::core::settings::fields(kind).is_some() {
+                    return crate::core::settings::save(e, kind, item);
+                }
+                if let Some(saved) = crate::core::pages::save_external(e, kind, get("itemId"), item.clone()) {
+                    return saved;
+                }
+                authoring(e, &json!({"request": "StreamerzSave", "what": kind, "item": item}))
+            };
+            match apply() {
+                Ok(value) => ok(&id, value),
+                Err(message) => error(&id, &message),
+            }
+        }
+        "StreamerzCoreStatus" | "StreamerzCoreSave" | "StreamerzCoreQuit"
+            if !authed && e.config().websockets.enable_auth =>
+        {
+            error(&id, "Authentication required to use this method")
+        }
+        "StreamerzCoreStatus" => ok(&id, crate::core::status::summary(e)),
+        "StreamerzCoreSave" => match crate::core::status::save(e) {
+            Ok(value) => ok(&id, value),
+            Err(message) => error(&id, &message),
+        },
+        "StreamerzCoreQuit" => {
+            crate::host::quit();
+            ok(&id, json!({"accepted": true}))
+        }
+        "StreamerzCoreAction" | "StreamerzCoreSetting" if !authed && e.config().websockets.enable_auth => {
+            error(&id, "Authentication required to use this method")
+        }
+        "StreamerzCoreAction" => {
+            let result = if crate::core::sections::supports(get("domain")) {
+                crate::core::sections::act(e, get("domain"), get("action"))
+            } else if crate::core::actions::supports(get("domain")) {
+                crate::core::actions::act(e, req)
+            } else if crate::core::polls::supports(get("domain")) {
+                crate::core::polls::act(e, get("action"))
+            } else if crate::core::accounts::supports(get("domain")) || get("domain") == "connections" {
+                crate::core::accounts::act(e, get("domain"), get("action"), get("itemId"))
+            } else {
+                crate::core::pages::act(e, get("domain"), get("action"), get("itemId"))
+            };
+            match result {
+                Ok(value) => ok(&id, value),
+                Err(message) => error(&id, &message),
+            }
+        }
+        "StreamerzCoreSetting" => match crate::core::sections::set(e, get("domain"), get("key"), &req["value"]) {
+            Ok(value) => ok(&id, value),
+            Err(message) => error(&id, &message),
+        },
+        "StreamerzCoreView" if !authed && e.config().websockets.enable_auth => {
+            error(&id, "Authentication required to use this method")
+        }
+        "StreamerzCoreView" => match crate::core::view::read_request(e, req) {
+            Ok(value) => ok(&id, value),
+            Err(message) => error(&id, &message),
+        },
+        "StreamerzCoreRead" if !authed && e.config().websockets.enable_auth => {
+            error(&id, "Authentication required to use this method")
+        }
+        "StreamerzCoreRead" => match crate::core::read::read(e, get("domain")) {
+            Ok(value) => ok(&id, value),
+            Err(message) => error(&id, &message),
+        },
         "StreamerzFirstWords" if e.dev() => ok(&id, json!({"first":e.first_words(get("platform"), get("user"))})),
         "StreamerzMemory" => {
             if let Some(enabled) = req.get("enabled").and_then(Value::as_bool) {
@@ -1162,10 +1335,32 @@ fn group_request(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
 /// Legacy clients can still use id for selection; MCP keeps it for request correlation.
 fn authoring(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
     let what = req.get("what").and_then(Value::as_str).unwrap_or("");
-    if !KINDS.contains(&what) {
+    if crate::core::settings::fields(what).is_some() {
+        return match req["request"].as_str().unwrap_or_default() {
+            "StreamerzGet" => Ok(json!({"item":crate::core::settings::read(&e.config(),what)})),
+            "StreamerzSave" => {
+                crate::core::settings::save(e, what, req["item"].as_object().cloned().ok_or("item: an object")?)
+            }
+            _ => Err("settings cannot be deleted".into()),
+        };
+    }
+    if what == "global" {
+        let item_id = req.get("itemId").and_then(Value::as_str).unwrap_or_default();
+        return match req["request"].as_str().unwrap_or_default() {
+            "StreamerzGet" => crate::core::pages::global_item(e, item_id).map(|item| json!({"item": item})),
+            "StreamerzSave" => {
+                crate::core::pages::save_global(e, item_id, req["item"].as_object().cloned().ok_or("item: an object")?)
+            }
+            _ => crate::core::pages::delete_global(e, item_id),
+        };
+    }
+    if !KINDS.contains(&what) && crate::automation::entities::fields(what).is_none() {
         return Err(format!("what: one of {}", KINDS.join(", ")));
     }
     let list = |c: &crate::Config| -> Vec<Value> {
+        if let Some(items) = crate::automation::entities::items(c, what) {
+            return items.iter().cloned().map(Value::Object).collect();
+        }
         match what {
             "action" => c
                 .actions
@@ -1219,10 +1414,9 @@ fn authoring(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
             } else {
                 e.change(|c| {
                     let l = match what {
-                        "command" => &mut c.commands,
-                        "timer" => &mut c.timers,
                         "group" => &mut c.groups,
-                        _ => &mut c.actions.queues,
+                        "queue" => &mut c.actions.queues,
+                        _ => crate::automation::entities::items_mut(c, what).expect("validated entity kind"),
                     };
                     let same = |x: &crate::model::Obj| x.get("id").and_then(Value::as_str) == Some(new_id.as_str());
                     match l.iter_mut().find(|x| same(x)) {
@@ -1232,6 +1426,17 @@ fn authoring(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
                 });
                 if what == "timer" {
                     e.timers();
+                }
+                if matches!(what, "file_watcher" | "file_tail") {
+                    e.watchers();
+                }
+                if what == "queue" {
+                    // Through the engine, so a queue no longer blocking starts what's waiting.
+                    let blocking = e.config().actions.queues.iter().any(|queue| {
+                        queue.get("id").and_then(Value::as_str) == Some(new_id.as_str())
+                            && queue.get("blocking").and_then(Value::as_bool) == Some(true)
+                    });
+                    e.set_blocking(&new_id, blocking);
                 }
             }
             Ok(json!({ "saved": new_id }))
@@ -1248,10 +1453,9 @@ fn authoring(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
                     (before, c.actions.actions.len())
                 } else {
                     let l = match what {
-                        "command" => &mut c.commands,
-                        "timer" => &mut c.timers,
                         "group" => &mut c.groups,
-                        _ => &mut c.actions.queues,
+                        "queue" => &mut c.actions.queues,
+                        _ => crate::automation::entities::items_mut(c, what).expect("validated entity kind"),
                     };
                     let before = l.len();
                     l.retain(|x| x.get("id").and_then(Value::as_str) != Some(want_id.as_str()));
@@ -1260,6 +1464,24 @@ fn authoring(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
                 gone = after < before;
             });
             if gone {
+                if what == "queue" {
+                    e.change(|c| {
+                        for action in c
+                            .actions
+                            .actions
+                            .iter_mut()
+                            .filter(|a| a.queue.as_deref() == Some(want_id.as_str()))
+                        {
+                            action.queue = Some(crate::engine::DEFAULT_QUEUE.into());
+                        }
+                    });
+                }
+                if what == "timer" {
+                    e.timers();
+                }
+                if matches!(what, "file_watcher" | "file_tail") {
+                    e.watchers();
+                }
                 Ok(json!({}))
             } else {
                 Err(format!("no {what} {want_id}"))
@@ -1398,6 +1620,113 @@ pub(crate) async fn spotify_request(e: &Rc<Engine>, req: &Value) -> Result<Value
     }
 }
 
+/// Shared application request dispatcher for MCP, network clients and the private frontend pipe.
+/// Connection authentication and subscriptions stay in the transport adapter.
+pub(crate) async fn request(e: &Rc<Engine>, req: &Value, auth_required: bool, authed: bool) -> Value {
+    let id = req.get("id").cloned().unwrap_or(Value::Null);
+    let kind = req.get("request").and_then(Value::as_str).unwrap_or("");
+    match kind {
+        "StreamerzRunSubaction" => {
+            if auth_required && !authed {
+                error(&id, "Authentication required to use this method")
+            } else {
+                match req.get("item").and_then(Value::as_object).cloned() {
+                    Some(item) => match item.get("type").and_then(Value::as_u64) {
+                        Some(code)
+                            if code <= u32::MAX as u64
+                                && crate::types::name(crate::types::SUB_ACTIONS, code as u32).is_some() =>
+                        {
+                            let (args, outcome) = e.execute_one(code, item).await;
+                            ok(
+                                &id,
+                                json!({"args": args, "executionStatus": outcome.status(), "outcome": outcome}),
+                            )
+                        }
+                        _ => error(&id, "unknown sub-action type"),
+                    },
+                    None => error(&id, "item: an object"),
+                }
+            }
+        }
+
+        "StreamerzChat" => {
+            if auth_required && !authed {
+                error(&id, "Authentication required to use this method")
+            } else {
+                match crate::core::chat::request(e, req).await {
+                    Ok(v) => ok(&id, v),
+                    Err(err) => error(&id, &err),
+                }
+            }
+        }
+        "StreamerzSearchChannels" => {
+            if auth_required && !authed {
+                error(&id, "Authentication required to use this method")
+            } else {
+                match search_request(e, req).await {
+                    Ok(v) => ok(&id, v),
+                    Err(err) => error(&id, &err),
+                }
+            }
+        }
+        "StreamerzTikTokGifts" if req["refresh"] == true => {
+            if auth_required && !authed {
+                error(&id, "Authentication required to use this method")
+            } else {
+                match crate::tiktok::gifts::refresh(e).await {
+                    Ok(value) => ok(&id, value),
+                    Err(err) => error(&id, &err),
+                }
+            }
+        }
+        "StreamerzTikTokBridge" if req["action"] == "login" => {
+            if auth_required && !authed {
+                error(&id, "Authentication required to use this method")
+            } else {
+                match e.tiktok_bridge.login().await {
+                    Ok(()) => ok(&id, crate::tiktok_bridge::status(e)),
+                    Err(err) => error(&id, &err),
+                }
+            }
+        }
+        "StreamerzSpotifyLocal"
+        | "StreamerzSpotifyCurrent"
+        | "StreamerzSpotifyQueue"
+        | "StreamerzSpotifyFind"
+        | "StreamerzSpotifyPlayer"
+        | "StreamerzSpotifyPlayback" => {
+            if auth_required && !authed {
+                error(&id, "Authentication required to use this method")
+            } else {
+                match spotify_request(e, req).await {
+                    Ok(fields) => ok(&id, fields),
+                    Err(message) => {
+                        if kind != "StreamerzSpotifyLocal" {
+                            crate::spotify::event(e, 99806, &message);
+                        }
+                        error(&id, &message)
+                    }
+                }
+            }
+        }
+        "StreamerzConnectors" | "StreamerzObsRequest" => {
+            if auth_required && !authed {
+                error(&id, "Authentication required to use this method")
+            } else if kind == "StreamerzConnectors" {
+                ok(&id, connectors(e))
+            } else if !e.dev() {
+                error(&id, "StreamerzObsRequest needs STREAMERZ_DEV=1")
+            } else {
+                match obs_request(e, req).await {
+                    Ok(fields) => ok(&id, fields),
+                    Err(message) => error(&id, &message),
+                }
+            }
+        }
+        _ => answer(e, req, authed).unwrap_or_else(|| json!({"id": id})),
+    }
+}
+
 async fn connection(e: &Rc<Engine>, s: &WsSettings, tcp: TcpStream, conn: u64) -> Result<(), String> {
     let bridge = crate::tiktok_bridge::set_up(&e.config());
     let (ws, is_bridge) = accept(tcp, s.endpoint.clone(), s.allowed_origins.clone(), bridge).await?;
@@ -1458,63 +1787,16 @@ async fn connection(e: &Rc<Engine>, s: &WsSettings, tcp: TcpStream, conn: u64) -
                         e.listen(conn, &subs, &tx);
                         ok(&id, json!({"events": ev}))
                     }
-                    "StreamerzSearchChannels" => {
-                        if s.enable_auth && !authed { error(&id, "Authentication required to use this method") }
-                        else { match search_request(e, &req).await { Ok(v) => ok(&id, v), Err(err) => error(&id, &err) } }
-                    }
-                    "StreamerzTikTokGifts" if req["refresh"] == true => {
-                        if s.enable_auth && !authed { error(&id, "Authentication required to use this method") }
-                        else { match crate::tiktok::gifts::refresh(e).await {
-                            Ok(value) => ok(&id, value), Err(err) => error(&id, &err),
-                        } }
-                    }
-                    "StreamerzTikTokBridge" if req["action"] == "login" => {
-                        if s.enable_auth && !authed { error(&id, "Authentication required to use this method") }
-                        else { match e.tiktok_bridge.login().await { Ok(()) => ok(&id, crate::tiktok_bridge::status(e)), Err(err) => error(&id, &err) } }
-                    }
-                    "StreamerzSpotifyLocal"
-                    | "StreamerzSpotifyCurrent"
-                    | "StreamerzSpotifyQueue"
-                    | "StreamerzSpotifyFind"
-                    | "StreamerzSpotifyPlayer"
-                    | "StreamerzSpotifyPlayback" => {
-                        if s.enable_auth && !authed {
-                            error(&id, "Authentication required to use this method")
-                        } else {
-                            match spotify_request(e, &req).await {
-                                Ok(fields) => ok(&id, fields),
-                                Err(message) => {
-                                    if kind != "StreamerzSpotifyLocal" {
-                                        crate::spotify::event(e, 99806, &message);
-                                    }
-                                    error(&id, &message)
-                                },
-                            }
-                        }
-                    }
-                    "StreamerzConnectors" | "StreamerzObsRequest" => {
-                        if s.enable_auth && !authed {
-                            error(&id, "Authentication required to use this method")
-                        } else if kind == "StreamerzConnectors" {
-                            ok(&id, connectors(e))
-                        } else if !e.dev() {
-                            error(&id, "StreamerzObsRequest needs STREAMERZ_DEV=1")
-                        } else {
-                            match obs_request(e, &req).await {
-                                Ok(fields) => ok(&id, fields),
-                                Err(message) => error(&id, &message),
-                            }
-                        }
-                    }
                     // Dev mode: what the window looks like, and where things are (see ui/dev.rs).
                     "StreamerzUi" if e.dev() => {
                         let cmd = req.get("do").and_then(Value::as_str).unwrap_or_default().to_string();
-                        match crate::ui::dev(cmd) {
+                        if cmd == "toggle" { crate::host::toggle(); ok(&id, json!({"result": "ok"})) }
+                        else { match crate::host::dev(cmd) {
                             Some(rx) => ok(&id, json!({"result": rx.await.unwrap_or_default()})),
                             None => error(&id, "no window"),
-                        }
+                        } }
                     }
-                    _ => answer(e, &req, authed).unwrap_or_else(|| json!({"id": id})),
+                    _ => request(e, &req, s.enable_auth, authed).await,
                 };
                 sink.send(text(reply)).await.map_err(|e| e.to_string())?;
             }
@@ -1732,6 +2014,114 @@ async fn udp_server(e: Rc<Engine>, s: UdpSettings) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn disabled_http_and_udp_edits_keep_the_existing_websocket_session() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let port = std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port();
+            let engine = crate::engine::tests::engine(json!({"actions":[]}));
+            engine.change(|config| config.websockets.port = port);
+            tokio::task::spawn_local(run(engine.clone()));
+            let url = format!("ws://127.0.0.1:{port}/");
+            let mut socket = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    if let Ok((socket, _)) = crate::http::ws_connect(&url).await {
+                        break socket;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(matches!(socket.next().await, Some(Ok(Message::Text(_)))));
+            for which in 0..2 {
+                engine.change(|config| {
+                    if which == 0 {
+                        config.http.port += 1;
+                    } else {
+                        config.udp.port += 1;
+                    }
+                });
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                socket
+                    .send(Message::Text(
+                        json!({"request":"GetInfo","id":which}).to_string().into(),
+                    ))
+                    .await
+                    .unwrap();
+                let reply = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                let reply: Value = serde_json::from_str(reply.to_text().unwrap()).unwrap();
+                assert_eq!(reply["status"], "ok");
+                assert_eq!(reply["id"], which);
+            }
+        });
+    }
+
+    #[test]
+    fn core_entity_validation_is_atomic_and_preserves_imported_fields() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(serde_json::json!({"actions": []}));
+            let original = serde_json::json!({"id":"cmd","name":"Before","enabled":true,"command":"!test","sources":8,"globalCooldown":0,"unknown":{"keep":true}});
+            let save = super::answer(
+                &engine,
+                &serde_json::json!({"request":"StreamerzSave","what":"command","item":original}),
+                true,
+            )
+            .unwrap();
+            assert_eq!(save["status"], "ok");
+            let form = super::answer(
+                &engine,
+                &serde_json::json!({"request":"StreamerzEntityForm","kind":"command","itemId":"cmd"}),
+                true,
+            )
+            .unwrap();
+            let fields = form["fields"].as_array().unwrap();
+            let index = |key| fields.iter().position(|field| field["key"] == key).unwrap();
+            let bad = super::answer(&engine, &serde_json::json!({"request":"StreamerzEditEntity","kind":"command","itemId":"cmd","changes":[{"field":index("name"),"value":"After"},{"field":index("globalCooldown"),"value":"bad"}]}), true).unwrap();
+            assert_eq!(bad["status"], "error");
+            assert_eq!(engine.config().commands[0]["name"], "Before");
+            let good = super::answer(&engine, &serde_json::json!({"request":"StreamerzEditEntity","kind":"command","itemId":"cmd","changes":[{"field":index("name"),"value":"After"},{"field":index("globalCooldown"),"value":"10"},{"field":index("sources"),"value":true}]}), true).unwrap();
+            assert_eq!(good["saved"], "cmd");
+            assert_eq!(engine.config().commands.len(), 1);
+            assert_eq!(engine.config().commands[0]["unknown"], original["unknown"]);
+            assert_eq!(engine.config().commands[0]["sources"], 9);
+            let toggle = super::answer(
+                &engine,
+                &serde_json::json!({"request":"StreamerzToggleEntity","kind":"command","itemId":"cmd"}),
+                true,
+            )
+            .unwrap();
+            assert_eq!(toggle["status"], "ok");
+            assert_eq!(engine.config().commands[0]["enabled"], false);
+            engine.change(|config| config.websockets.enable_auth = true);
+            for request in [
+                "StreamerzEntityForm",
+                "StreamerzEditEntity",
+                "StreamerzToggleEntity",
+                "StreamerzCoreRead",
+                "StreamerzCoreView",
+            ] {
+                let result = super::answer(
+                    &engine,
+                    &serde_json::json!({"request":request,"kind":"command","itemId":"cmd","domain":"commands"}),
+                    false,
+                )
+                .unwrap();
+                assert_eq!(result["status"], "error", "{request}");
+            }
+            assert_eq!(engine.config().commands[0]["enabled"], false);
+        });
+    }
+
     use super::*;
 
     #[test]

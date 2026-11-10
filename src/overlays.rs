@@ -95,12 +95,6 @@ fn head_end(html: &str) -> usize {
     after("<head").or_else(|| after("<!doctype")).unwrap_or(0)
 }
 
-/// A copy of an overlay that works from a file (OBS "local file"): the script and the address inside.
-pub fn standalone_at(base: &str, settings: &Value, group: &str, f: &groups::File) -> Option<String> {
-    let html = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(&f.content).ok()?).ok()?;
-    Some(page(&html, settings, group, base))
-}
-
 fn mime(name: &str) -> &'static str {
     match name.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str() {
         "html" | "htm" => "text/html; charset=utf-8",

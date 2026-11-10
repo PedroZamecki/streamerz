@@ -167,6 +167,7 @@ pub struct ChatModes {
 }
 
 pub struct Engine {
+    prompts_enabled: std::cell::Cell<bool>,
     local_spotify: RefCell<Option<tokio::task::JoinHandle<()>>>,
     music: &'static dyn crate::ports::MusicPort,
     /// Song requests, and the lock that makes each look at them and change them in one turn.
@@ -210,6 +211,10 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Unattended scenario runs cancel input instead of waiting for a human or MCP client.
+    pub fn allow_prompts(&self, enabled: bool) {
+        self.prompts_enabled.set(enabled);
+    }
     pub fn set_chat_modes(&self, platform: &str, modes: Option<ChatModes>) {
         let index = match platform {
             "twitch" => 0,
@@ -219,7 +224,7 @@ impl Engine {
         let mut state = self.st.borrow_mut();
         if state.chat_modes[index] != modes {
             state.chat_modes[index] = modes;
-            crate::ui::changed();
+            crate::host::changed();
         }
     }
 
@@ -324,13 +329,29 @@ impl Engine {
     /// Runs one sub-action of `kind` with the settings `o`, as an action would, and gives the variables
     /// it set (the Polls page drives Twitch's and YouTube's poll and prediction sub-actions so).
     pub async fn run_one(self: &Rc<Self>, kind: u64, o: Obj) -> Obj {
+        self.execute_one(kind, o).await.0
+    }
+
+    /// A direct execution reports observed errors and skips using the normal runner's outcome.
+    pub async fn execute_one(self: &Rc<Self>, kind: u64, mut o: Obj) -> (Obj, RunOutcome) {
         let mut ctx = Ctx {
             args: Obj::new(),
             group: String::new(),
         };
-        self.rest(&mut ctx, &o, kind).await;
-        ctx.args
+        o.insert("type".into(), kind.into());
+        let outcome = RUN_OUTCOME
+            .scope(RefCell::new(RunOutcome::default()), async {
+                self.one(&mut ctx, &o).await;
+                RUN_OUTCOME.with(|state| state.borrow().clone())
+            })
+            .await;
+        (ctx.args, outcome)
     }
+}
+
+/// The engine's command queue, once it runs (none in a tool or a test).
+pub fn commands() -> Option<&'static tokio::sync::mpsc::UnboundedSender<UiCmd>> {
+    CMDS.get()
 }
 
 /// Lets `save_on_crash` reach `e`. Call on the engine's thread.
@@ -509,6 +530,7 @@ impl Engine {
         }
         let memory_saver = cfg.borrow().memory_saver;
         Rc::new(Engine {
+            prompts_enabled: std::cell::Cell::new(true),
             local_spotify: RefCell::new(None),
             music,
             songs: RefCell::default(),
@@ -642,7 +664,7 @@ impl Engine {
                 self.cfg.send_replace(next);
                 (self.save)(&self.cfg.borrow());
                 self.auto_connect();
-                crate::ui::changed();
+                crate::host::changed();
             }
         }
         Ok(unlocked)
@@ -795,7 +817,7 @@ impl Engine {
     /// Run `f` on the config, and save it soon (once for a burst of changes).
     pub fn change(self: &Rc<Self>, f: impl FnOnce(&mut Config)) {
         self.cfg.send_modify(f);
-        crate::ui::changed();
+        crate::host::changed();
         let mut st = self.st.borrow_mut();
         if st.save_pending {
             return;
@@ -812,6 +834,11 @@ impl Engine {
     /// The settings' sender, for code that takes it (platform event handlers in scenarios).
     pub(crate) fn cfg_tx(&self) -> &Arc<watch::Sender<Config>> {
         &self.cfg
+    }
+
+    /// The shared config handle, for background tasks that outlive one call.
+    pub fn config_sender(&self) -> Arc<watch::Sender<Config>> {
+        self.cfg.clone()
     }
 
     pub fn config(&self) -> watch::Ref<'_, Config> {
@@ -1252,7 +1279,7 @@ impl Engine {
             .waiting
             .push_back(run);
         self.pump(&queue);
-        crate::ui::changed();
+        crate::host::changed();
         Some(out)
     }
 
@@ -1340,7 +1367,7 @@ impl Engine {
             ms: started.0.elapsed().as_secs_f64() * 1000.0,
         });
         drop(st);
-        crate::ui::changed();
+        crate::host::changed();
     }
 
     /// Run a sub-action list: in order, or one of the enabled ones at random (by weight).
@@ -1675,16 +1702,23 @@ impl Engine {
                 }
                 // Get Input: a dialog in the window.
                 1023 => {
-                    let rx = crate::ui::input(
-                        self.expand(ctx, s(o, "title")),
-                        self.expand(ctx, s(o, "prompt")),
-                        self.expand(ctx, s(o, "originalText")),
-                    );
+                    let answer = if self.prompts_enabled.get() {
+                        crate::host::input(
+                            self.expand(ctx, s(o, "title")),
+                            self.expand(ctx, s(o, "prompt")),
+                            self.expand(ctx, s(o, "originalText")),
+                        )
+                        .await
+                        .ok()
+                        .flatten()
+                    } else {
+                        None
+                    };
                     let mut var = self.simple(ctx, s(o, "outputVariable"));
                     if var.is_empty() {
                         var = "inputResult".into();
                     }
-                    match rx.await.ok().flatten() {
+                    match answer {
                         Some(v) => {
                             let v = if b(o, "autoTypeOutput", false) {
                                 auto_type(&v)
@@ -2044,7 +2078,7 @@ impl Engine {
             }
             self.pump(&q);
         }
-        crate::ui::changed();
+        crate::host::changed();
     }
 
     /// Drop a queue's waiting runs.
@@ -2052,7 +2086,7 @@ impl Engine {
         if let Some(q) = self.st.borrow_mut().queues.get_mut(queue) {
             q.waiting.clear();
         }
-        crate::ui::changed();
+        crate::host::changed();
     }
 
     /// Set a queue's Blocking (and start what it can run now).

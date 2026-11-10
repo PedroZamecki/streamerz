@@ -24,15 +24,6 @@ pub enum Kind {
     Choice,
 }
 
-pub const KINDS: &[Kind] = &[
-    Kind::Text,
-    Kind::Integer,
-    Kind::Number,
-    Kind::Boolean,
-    Kind::Duration,
-    Kind::Choice,
-];
-
 impl Kind {
     pub fn name(self) -> &'static str {
         match self {

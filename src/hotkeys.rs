@@ -25,14 +25,13 @@ pub const CTRL: i64 = 2;
 pub const META: i64 = 4;
 pub const ALT: i64 = 8;
 
-/// A key: SharpHook's code, its name, its X keysym name (the portal's and Hyprland's), FLTK's key
-/// value, the Windows virtual key, and the Linux evdev code (a key's place on the keyboard, read from
+/// A key: SharpHook's code, its name, its X keysym name (the portal's and Hyprland's), the
+/// Windows virtual key, and the Linux evdev code (a key's place on the keyboard, read from
 /// the device where nothing else can give the key).
 pub struct Key {
     pub code: i64,
     pub name: String,
     pub keysym: String,
-    pub fltk: i32,
     pub vk: u16,
     pub evdev: u16,
 }
@@ -40,11 +39,10 @@ pub struct Key {
 pub fn keys() -> &'static [Key] {
     static K: OnceLock<Vec<Key>> = OnceLock::new();
     K.get_or_init(|| {
-        let k = |code: i64, name: &str, keysym: &str, fltk: i32, vk: u16, evdev: u16| Key {
+        let k = |code: i64, name: &str, keysym: &str, vk: u16, evdev: u16| Key {
             code,
             name: name.into(),
             keysym: keysym.into(),
-            fltk,
             vk,
             evdev,
         };
@@ -61,7 +59,6 @@ pub fn keys() -> &'static [Key] {
                 65 + i64::from(i),
                 &c.to_ascii_uppercase().to_string(),
                 &c.to_string(),
-                c as i32,
                 0x41 + u16::from(i),
                 LETTERS[usize::from(i)],
             ));
@@ -72,7 +69,6 @@ pub fn keys() -> &'static [Key] {
                 48 + i64::from(i),
                 &c.to_string(),
                 &c.to_string(),
-                c as i32,
                 0x30 + u16::from(i),
                 DIGITS[usize::from(i)],
             ));
@@ -81,7 +77,6 @@ pub fn keys() -> &'static [Key] {
                 96 + i64::from(i),
                 &format!("Num {i}"),
                 &n,
-                0xffb0 + i32::from(i),
                 0x60 + u16::from(i),
                 KEYPAD[usize::from(i)],
             ));
@@ -99,54 +94,54 @@ pub fn keys() -> &'static [Key] {
                 10 | 11 => 77 + i,
                 _ => 171 + i,
             };
-            v.push(k(code, &n, &n, 0xffbe + i32::from(i), 0x70 + i, evdev));
+            v.push(k(code, &n, &n, 0x70 + i, evdev));
         }
-        for (code, name, keysym, fltk, vk, evdev) in [
-            (27, "Esc", "Escape", 0xff1b, 0x1b, 1),
-            (192, "`", "grave", '`' as i32, 0xc0, 41),
-            (45, "-", "minus", '-' as i32, 0xbd, 12),
-            (61, "=", "equal", '=' as i32, 0xbb, 13),
-            (8, "Backspace", "BackSpace", 0xff08, 0x08, 14),
-            (9, "Tab", "Tab", 0xff09, 0x09, 15),
-            (91, "[", "bracketleft", '[' as i32, 0xdb, 26),
-            (92, "]", "bracketright", ']' as i32, 0xdd, 27),
-            (93, "\\", "backslash", '\\' as i32, 0xdc, 43),
-            (59, ";", "semicolon", ';' as i32, 0xba, 39),
-            (222, "'", "apostrophe", '\'' as i32, 0xde, 40),
-            (10, "Enter", "Return", 0xff0d, 0x0d, 28),
-            (44, ",", "comma", ',' as i32, 0xbc, 51),
-            (46, ".", "period", '.' as i32, 0xbe, 52),
-            (47, "/", "slash", '/' as i32, 0xbf, 53),
-            (32, "Space", "space", ' ' as i32, 0x20, 57),
-            (154, "Print Screen", "Print", 0xff61, 0x2c, 99),
-            (145, "Scroll Lock", "Scroll_Lock", 0xff14, 0x91, 70),
-            (19, "Pause", "Pause", 0xff13, 0x13, 119),
-            (155, "Insert", "Insert", 0xff63, 0x2d, 110),
-            (127, "Delete", "Delete", 0xffff, 0x2e, 111),
-            (36, "Home", "Home", 0xff50, 0x24, 102),
-            (35, "End", "End", 0xff57, 0x23, 107),
-            (33, "Page Up", "Prior", 0xff55, 0x21, 104),
-            (34, "Page Down", "Next", 0xff56, 0x22, 109),
-            (38, "Up", "Up", 0xff52, 0x26, 103),
-            (37, "Left", "Left", 0xff51, 0x25, 105),
-            (39, "Right", "Right", 0xff53, 0x27, 106),
-            (40, "Down", "Down", 0xff54, 0x28, 108),
-            (111, "Num /", "KP_Divide", 0xffaf, 0x6f, 98),
-            (106, "Num *", "KP_Multiply", 0xffaa, 0x6a, 55),
-            (109, "Num -", "KP_Subtract", 0xffad, 0x6d, 74),
-            (107, "Num +", "KP_Add", 0xffab, 0x6b, 78),
-            (110, "Num .", "KP_Decimal", 0xffae, 0x6e, 83),
-            (125, "Num Enter", "KP_Enter", 0xff8d, 0x0d, 96),
-            (525, "Menu", "Menu", 0xff67, 0x5d, 127),
-            (-8158, "Play/Pause", "XF86AudioPlay", 0xef14, 0xb3, 164),
-            (-8156, "Stop", "XF86AudioStop", 0xef15, 0xb2, 166),
-            (-8176, "Previous", "XF86AudioPrev", 0xef16, 0xb1, 165),
-            (-8167, "Next", "XF86AudioNext", 0xef17, 0xb0, 163),
-            (-8160, "Mute", "XF86AudioMute", 0xef12, 0xad, 113),
-            (-8144, "Volume Down", "XF86AudioLowerVolume", 0xef11, 0xae, 114),
-            (-8146, "Volume Up", "XF86AudioRaiseVolume", 0xef13, 0xaf, 115),
+        for (code, name, keysym, vk, evdev) in [
+            (27, "Esc", "Escape", 0x1b, 1),
+            (192, "`", "grave", 0xc0, 41),
+            (45, "-", "minus", 0xbd, 12),
+            (61, "=", "equal", 0xbb, 13),
+            (8, "Backspace", "BackSpace", 0x08, 14),
+            (9, "Tab", "Tab", 0x09, 15),
+            (91, "[", "bracketleft", 0xdb, 26),
+            (92, "]", "bracketright", 0xdd, 27),
+            (93, "\\", "backslash", 0xdc, 43),
+            (59, ";", "semicolon", 0xba, 39),
+            (222, "'", "apostrophe", 0xde, 40),
+            (10, "Enter", "Return", 0x0d, 28),
+            (44, ",", "comma", 0xbc, 51),
+            (46, ".", "period", 0xbe, 52),
+            (47, "/", "slash", 0xbf, 53),
+            (32, "Space", "space", 0x20, 57),
+            (154, "Print Screen", "Print", 0x2c, 99),
+            (145, "Scroll Lock", "Scroll_Lock", 0x91, 70),
+            (19, "Pause", "Pause", 0x13, 119),
+            (155, "Insert", "Insert", 0x2d, 110),
+            (127, "Delete", "Delete", 0x2e, 111),
+            (36, "Home", "Home", 0x24, 102),
+            (35, "End", "End", 0x23, 107),
+            (33, "Page Up", "Prior", 0x21, 104),
+            (34, "Page Down", "Next", 0x22, 109),
+            (38, "Up", "Up", 0x26, 103),
+            (37, "Left", "Left", 0x25, 105),
+            (39, "Right", "Right", 0x27, 106),
+            (40, "Down", "Down", 0x28, 108),
+            (111, "Num /", "KP_Divide", 0x6f, 98),
+            (106, "Num *", "KP_Multiply", 0x6a, 55),
+            (109, "Num -", "KP_Subtract", 0x6d, 74),
+            (107, "Num +", "KP_Add", 0x6b, 78),
+            (110, "Num .", "KP_Decimal", 0x6e, 83),
+            (125, "Num Enter", "KP_Enter", 0x0d, 96),
+            (525, "Menu", "Menu", 0x5d, 127),
+            (-8158, "Play/Pause", "XF86AudioPlay", 0xb3, 164),
+            (-8156, "Stop", "XF86AudioStop", 0xb2, 166),
+            (-8176, "Previous", "XF86AudioPrev", 0xb1, 165),
+            (-8167, "Next", "XF86AudioNext", 0xb0, 163),
+            (-8160, "Mute", "XF86AudioMute", 0xad, 113),
+            (-8144, "Volume Down", "XF86AudioLowerVolume", 0xae, 114),
+            (-8146, "Volume Up", "XF86AudioRaiseVolume", 0xaf, 115),
         ] {
-            v.push(k(code, name, keysym, fltk, vk, evdev));
+            v.push(k(code, name, keysym, vk, evdev));
         }
         v
     })
@@ -154,11 +149,6 @@ pub fn keys() -> &'static [Key] {
 
 pub fn by_code(code: i64) -> Option<&'static Key> {
     keys().iter().find(|k| k.code == code)
-}
-
-pub fn by_fltk(key: i32) -> Option<&'static Key> {
-    // Letters come lower case; the keypad's digits also as their own keys.
-    keys().iter().find(|k| k.fltk == key)
 }
 
 /// The mask with right-hand modifiers counted as left ones.
@@ -215,18 +205,6 @@ pub fn button_name(n: i64) -> &'static str {
         5 => "input.button_forward",
         _ => "input.button_any",
     })
-}
-
-/// FLTK's mouse button (1 left, 2 middle, 3 right, 4 back, 5 forward) as SharpHook's.
-pub fn from_fltk_button(b: i32) -> Option<i64> {
-    match b {
-        1 => Some(1),
-        2 => Some(3),
-        3 => Some(2),
-        4 => Some(4),
-        5 => Some(5),
-        _ => None,
-    }
 }
 
 /// What the Press the Keys dialog says about how the shortcut is caught here.
@@ -1002,15 +980,9 @@ mod tests {
         assert_eq!(hyprland_requests(44, CTRL, false).unwrap().0.split(", ").count(), 5);
         assert_eq!(hyprland_modmask(CTRL | SHIFT << 4), 5);
         assert_eq!(hyprland_modmask(ALT | META), 72);
-        // The Mouse Click form catches FLTK's buttons as SharpHook's.
-        assert_eq!(
-            (1..=5).map(from_fltk_button).collect::<Vec<_>>(),
-            [1, 3, 2, 4, 5].map(Some)
-        );
-        assert_eq!(from_fltk_button(0), None);
         assert_eq!(parse_id(&id(-4095, 3)), Some((-4095, 3)));
-        assert_eq!(by_fltk(0xffbe).map(|k| k.code), Some(112));
-        assert_eq!(by_fltk('q' as i32).map(|k| k.vk), Some(0x51));
+        assert_eq!(by_code(112).map(|k| k.name.as_str()), Some("F1"));
+        assert_eq!(by_code(81).map(|k| k.vk), Some(0x51));
         // Codes are unique.
         let mut codes: Vec<i64> = keys().iter().map(|k| k.code).collect();
         codes.sort_unstable();

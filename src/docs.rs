@@ -104,67 +104,6 @@ pub fn available(kind: &str, code: u32) -> bool {
         | 27001..=27012 | 30001..=30004 | 33001..=33012)
 }
 
-/// The same reference presented as readable text, without storage metadata or Markdown tables.
-pub fn readable(text: &str) -> String {
-    let mut out = String::new();
-    for line in text.lines() {
-        if ["- Kind:", "- Code:", "- Type:", "- Category:"]
-            .iter()
-            .any(|p| line.starts_with(p))
-        {
-            continue;
-        }
-        if line.starts_with('|') {
-            let cells: Vec<_> = line.split('|').map(str::trim).filter(|c| !c.is_empty()).collect();
-            if cells.len() < 3 || cells[0] == "Field" || cells[0].starts_with('-') {
-                continue;
-            }
-            out.push_str(&format!("{}: {}\n", cells[0], cells[2].replace('`', "")));
-        } else {
-            out.push_str(
-                &line
-                    .trim_start_matches('#')
-                    .trim_start()
-                    .replace('`', "")
-                    .replace("**", ""),
-            );
-            out.push('\n');
-        }
-    }
-    out
-}
-
-pub fn field_help(kind: &str, code: u32, key: &str) -> Option<&'static str> {
-    text(kind, code)?
-        .lines()
-        .filter(|line| line.starts_with('|'))
-        .find_map(|line| {
-            let mut cells = line.split('|').skip(1).map(str::trim);
-            cells.next()?;
-            (cells.next()?.trim_matches('`') == key).then(|| cells.next()).flatten()
-        })
-}
-
-/// Documented values, for insertion menus. Some depend on the triggering event or branch.
-pub fn argument_names(kind: &str, code: u32) -> Vec<&'static str> {
-    let Some(text) = text(kind, code).and_then(|s| s.split("### Arguments").nth(1)) else {
-        return Vec::new();
-    };
-    let text = text.split("\n### ").next().unwrap_or(text);
-    text.lines()
-        .filter(|s| s.starts_with("- "))
-        .flat_map(|line| {
-            line.split(':')
-                .next()
-                .unwrap_or(line)
-                .split('`')
-                .skip(1)
-                .step_by(2)
-                .filter(|s| !s.is_empty() && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'.'))
-        })
-        .collect()
-}
-
 /// The guides (everything outside the reference): their names.
 pub fn guides() -> Vec<&'static str> {
     DOCS.iter()
@@ -283,20 +222,11 @@ mod tests {
     }
 
     #[test]
-    fn help_explains_fields_without_exposing_storage_metadata() {
-        let text = text("trigger", 41002).unwrap();
-        let shown = readable(text);
-        assert!(!shown.contains("- Code:"));
-        assert!(!shown.contains("| ---"));
+    fn the_reference_summarizes_and_knows_what_is_available() {
         assert!(summary("trigger", 41002).unwrap().contains("gift"));
-        assert!(field_help("subaction", 10, "text").is_some());
         assert!(!available("subaction", 99999));
         assert!(!available("trigger", 5001));
         assert!(available("trigger", 41002));
-        assert!(argument_names("trigger", 99831).contains(&"spotifyReason"));
-        assert!(!argument_names("trigger", 99831).contains(&"spotifyError"));
-        assert_eq!(argument_names("subaction", 99832), ["spotifyOk"]);
-        assert!(argument_names("subaction", 99811).contains(&"spotifyResult"));
     }
 
     #[test]
@@ -322,7 +252,7 @@ mod tests {
     #[test]
     #[ignore]
     fn dump_types() {
-        use crate::ui::{forms, picker};
+        use crate::automation::{catalog as picker, schema as forms};
         let form_state = |f: Option<&'static [forms::F]>| match f {
             Some([]) => "no settings",
             Some(_) => "form",

@@ -37,6 +37,21 @@ fn server() -> crate::agents::Server {
 
 /// (name, description, input schema properties, required)
 const TOOLS: &[(&str, &str, &str, &[&str])] = &[
+    ("prompts", "Read pending core input, confirmation and choice prompts. Reading does not consume them; they survive closing the frontend.", "{}", &[]),
+    ("answer_prompt", "Answer a pending prompt exactly once: a string for input, a boolean for confirmation, an option ID for a choice. Null cancels input or a choice.", r#"{"promptId":{"type":"integer"},"value":{}}"#, &["promptId","value"]),
+    ("connection", "Connect, disconnect or refresh OBS Studio or Streamlabs Desktop. Omit itemId for all configured connections. Refresh only reads state.", r#"{"kind":{"type":"string","enum":["obs_connection","slobs_connection"]},"action":{"type":"string","enum":["connect","disconnect","refresh"]},"itemId":{"type":"string"}}"#, &["kind","action"]),
+    ("core_view", "Read a core list model, including semantic cells and current connection state, without a frontend.", r#"{"domain":{"type":"string","enum":["commands","timers","files","stream_apps","servers","queues","globals","history","backups","crashes","settings","notifications","donations","groups","plugins","mcp","community","integrations","polls","user_card","accounts","tiktok_sending","actions","actions_picker"]},"itemId":{"type":"string","description":"The row id for user_card (platform|user id)"},"actionId":{"type":"string","description":"actions: the action (id, or the a:<id> row id) whose triggers and sub-actions to include"},"kind":{"type":"string","description":"actions_picker: trigger, sub or template"},"view":{"type":"object","description":"A page's view state by table kind: {\"tab\":\"quote\",\"community_user\":{\"sort\":{\"column\":\"name\",\"desc\":false},\"hidden\":[\"tiktok\"]}}"}}"#, &["domain"]),
+    ("core_status", "How many of the connections that are set up are up, and each one's state.", r#"{}"#, &[]),
+    ("core_save", "Write the settings to disk now.", r#"{}"#, &[]),
+    ("core_action", "Run a page operation from a core_view model's actions (for example queues: pause, pause_all; history: run_again, clear; backups: backup_now, restore, delete; crashes: delete; community: card, card_group (itemId platform|user id|group id), open_profile, quote_delete, credits_reset, credits_test; polls: end, lock, resolve, cancel, refresh, started with entity_form/edit_entity kinds poll and prediction). accounts: <platform>.connect, .disconnect, .login, .logout, .bot_login, .bot_logout, .channel (twitch.login, kick.channel; logins and the channel search open prompts to answer with answer_prompt), unlock; tiktok_sending: setup:N, retry, remove, copy_path; connections: retry with itemId the connection key from core_status; Advanced settings are entity_form/edit_entity kinds account_twitch, account_youtube, account_kick, account_tiktok. itemId is the row id from the model. actions (the Actions page; core_view actions with actionId lists groups, actions and the open action's triggers and sub-actions; ids are a:<action id>, g:<group>, or the trigger or sub-action id): action_toggle, action_delete, action_run, action_move (to=group), group_delete, group_icon_clear, template_add (code=template name), and with actionId and itemId: trigger_toggle, trigger_delete, trigger_help, sub_toggle, sub_delete, sub_help, sub_up, sub_down, sub_in, sub_out, sub_move (to=target). Forms are entity_form kinds act:action_add, act:action_edit, act:action_duplicate, act:group_add, act:group_rename, act:group_icon, act:group_settings, act:import, act:export, act:trigger_add (actionId, code), act:trigger_edit, act:trigger_test, act:sub_add (actionId, code, anchor), act:sub_edit; use the kind in the reply with edit_entity.", r#"{"domain":{"type":"string","enum":["queues","history","backups","crashes","settings","groups","community","plugins","mcp","polls","accounts","tiktok_sending","connections","actions"]},"action":{"type":"string"},"itemId":{"type":"string"},"actionId":{"type":"string","description":"actions: the open action, for trigger_* and sub_* operations"},"code":{"type":"string","description":"actions: the picked template name (template_add)"},"to":{"type":"string","description":"actions: the group (action_move) or the target sub-action id (sub_move)"}}"#, &["domain", "action"]),
+    ("core_setting", "Change one setting of a core_view sections page (settings, notifications) by its row key. Choices are their index, switches true/false, text a string. mcp: address, port and endpoint (the MCP page's connection).", r#"{"domain":{"type":"string","enum":["settings","notifications","mcp"]},"key":{"type":"string"},"value":{}}"#, &["domain", "key", "value"]),
+    ("entity_form", "Read a core entity form, including current values and field types. Omit itemId for a new item. Action editor forms (kinds act:...) also take actionId, code (the trigger or sub-action type, from core_view actions_picker) and anchor (the sub-action to add beside); use the kind in the reply when saving.", r#"{"kind":{"type":"string"},"itemId":{"type":"string"},"actionId":{"type":"string"},"code":{"type":"string"},"anchor":{"type":"string"}}"#, &["kind"]),
+    ("edit_entity", "Save changed fields or JSON through core validation. Changes use field indexes from entity_form. JSON must keep the item ID.", r#"{"kind":{"type":"string"},"itemId":{"type":"string"},"changes":{"type":"array","items":{"type":"object"}},"json":{"type":"string"}}"#, &["kind"]),
+    ("entity_draft", "Validate changed fields or JSON and return an unsaved draft. This does not write settings.", r#"{"kind":{"type":"string"},"itemId":{"type":"string"},"changes":{"type":"array","items":{"type":"object"}},"json":{"type":"string"}}"#, &["kind"]),
+
+    ("run_subaction", "Execute a sub-action directly on the core and return its resulting arguments. This performs real operations. Use describe first.", r#"{"item":{"type":"object"}}"#, &["item"]),
+    ("describe_entity", "Shared fields and a default item for a configurable core entity. Works without a frontend or a running instance.", r#"{"kind":{"type":"string","enum":["command","timer","file_watcher","file_tail","websocket_client","websocket_server","obs_connection","slobs_connection","server_websocket","server_http","server_udp","server_stream_deck"]}}"#, &["kind"]),
+    ("core_read", "Read a core domain without a frontend. Account credentials are omitted.", r#"{"domain":{"type":"string","enum":["actions","commands","timers","files","queues","groups","globals","community","history","chat","polls","accounts","servers","stream_apps","integrations","donations","plugins","settings","log","crashes","backups","mcp"]}}"#, &["domain"]),
     ("action_history", "Recent action runs, reported errors, failed step type and skipped steps. Completed means no error was reported, not a remote delivery receipt.", "{}", &[]),
     ("tiktok_gifts", "Read the current live's dynamic gift catalog (IDs, names, coin values, combo support and pictures). Refresh uses the paired browser account.", r#"{"refresh":{"type":"boolean"}}"#, &[]),
     ("preview_gift_trigger", "Test a TikTok gift against an exact ID, combo phase and total coin bounds. Uses the live matcher. Offline and sends nothing.", r#"{"trigger":{"type":"object"},"gift":{"type":"object"}}"#, &["trigger","gift"]),
@@ -48,12 +63,13 @@ const TOOLS: &[(&str, &str, &str, &[&str])] = &[
     ("list_triggers", "Trigger type codes and names (e.g. 101 TwitchFollow), filtered by a word.", r#"{"filter": {"type": "string"}}"#, &[]),
     ("fire_trigger", "Fire a trigger (code or name) with arguments as its platform would: every action using it runs. Returns how many ran. Needs STREAMERZ_DEV=1.", r#"{"trigger": {"type": ["integer", "string"]}, "args": {"type": "object", "description": "e.g. {\"user\": \"ana\", \"viewers\": 10}"}}"#, &["trigger"]),
     ("inject_chat", "A fake chat message from a platform, run through the commands; returns how many ran and what streamerz would have sent back (nothing is sent). Needs STREAMERZ_DEV=1.", r#"{"platform": {"type": "string", "enum": ["twitch", "youtube", "kick", "tiktok"]}, "user": {"type": "string"}, "userId": {"type": "string", "description": "A real account's id, so its user card can be tried; the name otherwise"}, "role": {"type": "string", "enum": ["viewer", "subscriber", "vip", "moderator", "broadcaster"]}, "text": {"type": "string"}, "badges": {"type": "array", "description": "As Streamer.bot's badges: [{\"name\": \"broadcaster\", \"version\": 1, \"imageUrl\": \"https://...\"}]"}, "args": {"type": "object", "description": "More of what the message carries, as the trigger's arguments (messageType, messageRewardId, messageRewardTitle, messageRewardCost, messageRewardImage...)"}}"#, &["platform", "text"]),
+    ("chat", "The Chat page's model and operations, as the app's Chat page uses them. op read: the lines newer than seq (omit seq for all) with the platforms bar; send: text to platform (or all connected) with an optional replySeq; act: delete, timeout (secs), ban (confirmed true skips the prompt), pin (secs 30 to 1800, 0 until the stream ends) or unpin on the line seq; card: a chatter's card from the line seq (lookup true asks the platform and answers pending until done; prefetch true only starts the asking); clear: empty the view; show: hide or show a platform's chat; view: what the Chat page shows (all, side, or a platform id); sender: send as broadcaster or bot; emotes: the picker tabs and sections for platform (provider tab id, query searches every tab); favorite: toggle an emote (name, url) in the favorites; images: files for picture URLs. Sending in dev mode (STREAMERZ_DEV=1) keeps the message instead of sending.", r#"{"op":{"type":"string","enum":["read","send","act","card","clear","show","view","sender","emotes","favorite","images"]},"seq":{"type":"integer"},"gen":{"type":"integer"},"have":{"type":"integer"},"platform":{"type":"string"},"text":{"type":"string"},"replySeq":{"type":"integer"},"act":{"type":"string","enum":["reply","copy","pin","unpin","delete","timeout","ban"]},"secs":{"type":"integer"},"confirmed":{"type":"boolean"},"shown":{"type":"boolean"},"view":{"type":"string"},"lookup":{"type":"boolean"},"prefetch":{"type":"boolean"},"broadcaster":{"type":"boolean"},"urls":{"type":"array","items":{"type":"string"}},"provider":{"type":"string","enum":["favorites","platform","7tv","bttv","ffz","emoji"]},"query":{"type":"string"},"name":{"type":"string"},"url":{"type":"string"}}"#, &["op"]),
     ("chat_out", "The chat messages streamerz would have sent since the last call (dev mode keeps them instead of sending). Needs STREAMERZ_DEV=1.", "{}", &[]),
     ("list_subactions", "Sub-action type codes and names (e.g. 10 TwitchSendMessage), filtered by a word.", r#"{"filter": {"type": "string"}}"#, &[]),
     ("describe", "What a sub-action or trigger type does and its fields (JSON key, label, what it holds), plus a new one ready to fill in. Use before writing one.", r#"{"kind": {"type": "string", "enum": ["subaction", "trigger"]}, "code": {"type": "integer"}}"#, &["kind", "code"]),
-    ("get", "What's set up: all actions, commands, timers, user groups or queues, or one by id or name, as stored (Streamer.bot's shapes).", r#"{"what": {"type": "string", "enum": ["action", "command", "timer", "group", "queue"]}, "id": {"type": "string"}, "name": {"type": "string"}}"#, &["what"]),
-    ("save", "Add or replace an action, command, timer, user group or queue (same id replaces; no id adds one). For an action: {name, group, enabled, triggers: [...], subActions: [...]}, items from describe. Applies at once.", r#"{"what": {"type": "string", "enum": ["action", "command", "timer", "group", "queue"]}, "item": {"type": "object"}}"#, &["what", "item"]),
-    ("delete", "Delete an action, command, timer, user group or queue by id.", r#"{"what": {"type": "string", "enum": ["action", "command", "timer", "group", "queue"]}, "id": {"type": "string"}}"#, &["what", "id"]),
+    ("get", "What's set up: all actions, commands, timers, user groups or queues, or one by id or name, as stored (Streamer.bot's shapes).", r#"{"what": {"type": "string", "enum": ["action", "command", "timer", "group", "queue", "file_watcher", "file_tail", "websocket_client", "websocket_server", "obs_connection", "slobs_connection"]}, "id": {"type": "string"}, "name": {"type": "string"}}"#, &["what"]),
+    ("save", "Add or replace an action, command, timer, user group or queue (same id replaces; no id adds one). For an action: {name, group, enabled, triggers: [...], subActions: [...]}, items from describe. Applies at once.", r#"{"what": {"type": "string", "enum": ["action", "command", "timer", "group", "queue", "file_watcher", "file_tail", "websocket_client", "websocket_server", "obs_connection", "slobs_connection"]}, "item": {"type": "object"}}"#, &["what", "item"]),
+    ("delete", "Delete an action, command, timer, user group or queue by id.", r#"{"what": {"type": "string", "enum": ["action", "command", "timer", "group", "queue", "file_watcher", "file_tail", "websocket_client", "websocket_server", "obs_connection", "slobs_connection"]}, "id": {"type": "string"}}"#, &["what", "id"]),
     ("new_action", "A new, empty action (name, group) ready to fill with triggers and sub-actions from describe, then save.", r#"{"name": {"type": "string"}, "group": {"type": "string"}}"#, &["name"]),
     ("manage_action_group", "Create, rename, or delete an action group. Deleting ungroups its actions and removes its variables and icon.", r#"{"operation": {"type": "string", "enum": ["create", "rename", "delete"]}, "group": {"type": "string"}, "name": {"type": "string"}}"#, &["operation", "group"]),
     ("list_action_groups", "List action groups.", "{}", &[]),
@@ -240,6 +256,20 @@ impl Client {
             "tiktok_gifts" => self.ask(json!({"request":"StreamerzTikTokGifts", "refresh":a["refresh"]})).await,
             "preview_gift_trigger" => crate::tiktok::gifts::preview(
                 a["trigger"].as_object().ok_or("trigger must be an object")?, &a["gift"]),
+            "entity_form" => self.ask(json!({"request": "StreamerzEntityForm", "kind": s("kind"), "itemId": s("itemId"), "actionId": s("actionId"), "code": s("code"), "anchor": s("anchor")})).await,
+            "prompts" => self.ask(json!({"request": "StreamerzPrompts"})).await,
+            "answer_prompt" => self.ask(json!({"request": "StreamerzAnswerPrompt", "promptId": a["promptId"], "value": a["value"]})).await,
+            "connection" => self.ask(json!({"request": "StreamerzConnection", "kind": s("kind"), "itemId": s("itemId"), "action": s("action")})).await,
+            "core_view" => self.ask(json!({"request": "StreamerzCoreView", "domain": s("domain"), "itemId": s("itemId"), "actionId": s("actionId"), "kind": s("kind"), "view": a["view"]})).await,
+            "core_status" => self.ask(json!({"request": "StreamerzCoreStatus"})).await,
+            "core_save" => self.ask(json!({"request": "StreamerzCoreSave"})).await,
+            "core_setting" => self.ask(json!({"request": "StreamerzCoreSetting", "domain": s("domain"), "key": s("key"), "value": a["value"]})).await,
+            "core_action" => self.ask(json!({"request": "StreamerzCoreAction", "domain": s("domain"), "action": s("action"), "itemId": s("itemId"), "actionId": s("actionId"), "code": s("code"), "to": s("to")})).await,
+            "edit_entity" => self.ask(json!({"request": "StreamerzEditEntity", "kind": s("kind"), "itemId": s("itemId"), "changes": a["changes"], "json": a["json"]})).await,
+            "entity_draft" => self.ask(json!({"request": "StreamerzEntityDraft", "kind": s("kind"), "itemId": s("itemId"), "changes": a["changes"], "json": a["json"]})).await,
+            "describe_entity" => crate::automation::entities::describe(&s("kind")),
+            "run_subaction" => self.ask(json!({"request": "StreamerzRunSubaction", "item": a["item"]})).await,
+            "core_read" => self.ask(json!({"request": "StreamerzCoreRead", "domain": s("domain")})).await,
             "status" => self.ask(json!({"request": "GetStatus"})).await,
             "log" => {
                 self.ask(json!({"request": "GetLog", "lines": a["lines"].as_u64().unwrap_or(50)}))
@@ -289,6 +319,20 @@ impl Client {
                 let out = self.ask(json!({"request": "GetChatOut"})).await?;
                 Ok(json!({"ran": r["ran"], "chatOut": out["messages"]}))
             }
+            "chat" if s("op") == "read" => {
+                let mut request = json!({"request": "StreamerzCoreView", "domain": "chat"});
+                for key in ["seq", "gen", "have"] {
+                    request[key] = a[key].clone();
+                }
+                self.ask(request).await
+            }
+            "chat" => {
+                let mut request = json!({"request": "StreamerzChat", "op": s("op")});
+                for key in ["seq", "platform", "text", "replySeq", "act", "secs", "confirmed", "shown", "view", "lookup", "prefetch", "broadcaster", "urls", "provider", "query", "name", "url"] {
+                    request[key] = a[key].clone();
+                }
+                self.ask(request).await
+            }
             "chat_out" => self.ask(json!({"request": "GetChatOut"})).await,
             "list_subactions" => {
                 let f = s("filter").to_lowercase();
@@ -300,53 +344,8 @@ impl Client {
                 Ok(json!({ "subActions": list }))
             }
             "describe" => {
-                let code = a["code"].as_u64().ok_or("code: a number")?;
-                let sub = s("kind") == "subaction";
-                let table = if sub {
-                    crate::types::SUB_ACTIONS
-                } else {
-                    crate::types::TRIGGERS
-                };
-                let name = crate::types::name(table, code as u32).ok_or(format!("no {} {code}", s("kind")))?;
-                use crate::ui::{forms, picker};
-                let cat = if sub {
-                    String::new()
-                } else {
-                    picker::trigger_categorize(name)
-                };
-                let (about, fields, new) = if sub {
-                    (
-                        picker::sub_action_description(code as u32, name, &cat),
-                        forms::sub_fields(code),
-                        Value::Object(crate::edit::new_sub(code)),
-                    )
-                } else {
-                    let title = picker::trigger_clean_title(name);
-                    (
-                        picker::trigger_description(code as u32, name, &title, &cat),
-                        forms::trigger_fields(code),
-                        Value::Object(crate::edit::new_trigger(code as u32)),
-                    )
-                };
-                let form_state = match fields {
-                    Some([]) => "no_settings",
-                    Some(_) => "form",
-                    None => "json",
-                };
-                let fields: Vec<Value> = fields
-                    .unwrap_or(&[])
-                    .iter()
-                    .filter(|f| !f.0.is_empty())
-                    .map(|(k, l, w)| json!({"key": k, "label": forms::field_label(l), "holds": w.about()}))
-                    .collect();
-                let kind = if sub { "subaction" } else { "trigger" };
-                let docs = crate::docs::entry(kind, code as u32).map(|e| e.text).unwrap_or_default();
-                Ok(
-                    json!({"code": code, "name": name, "about": about, "fields": fields, "new": new, "docs": docs,
-                    "formState": form_state, "available": crate::docs::available(kind, code as u32),
-                    "preservedFields": if sub { forms::preserved_fields(code) } else { &[][..] },
-                    "note": if form_state == "json" { "Advanced JSON editing; see the built-in reference for limitations." } else { "" }}),
-                )
+                let code = a["code"].as_u64().and_then(|c| u32::try_from(c).ok()).ok_or("code: a 32-bit number")?;
+                crate::automation::describe(&s("kind"), code)
             }
             "run_scenario" => {
                 let sc = a["scenario"].clone();
@@ -782,6 +781,29 @@ mod tests {
         assert_eq!(t["tools"].as_array().unwrap().len(), TOOLS.len());
         for tool in t["tools"].as_array().unwrap() {
             assert!(tool["inputSchema"]["properties"].is_object(), "{}", tool["name"]);
+        }
+    }
+
+    #[test]
+    fn the_action_editor_is_reachable_through_the_core_tools() {
+        let tool = |name: &str| TOOLS.iter().find(|tool| tool.0 == name).expect("tool");
+        for (name, keys) in [
+            ("core_view", &["actionId", "kind"][..]),
+            ("core_action", &["actionId", "code", "to"][..]),
+            ("entity_form", &["actionId", "code", "anchor"][..]),
+        ] {
+            let props: Value = serde_json::from_str(tool(name).2).unwrap();
+            for key in keys {
+                assert!(props.get(*key).is_some(), "{name} lacks {key}");
+            }
+        }
+        for (name, word) in [
+            ("core_view", "actions_picker"),
+            ("core_action", "\"actions\""),
+            ("core_action", "act:sub_add"),
+        ] {
+            let tool = tool(name);
+            assert!(tool.1.contains(word) || tool.2.contains(word), "{name} omits {word}");
         }
     }
 }

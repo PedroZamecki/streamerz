@@ -4,11 +4,14 @@
 #![windows_subsystem = "windows"]
 
 mod agents;
+mod automation;
 mod backup;
 mod brand;
 mod browsers;
+mod cache;
 mod catalog;
 mod commands;
+pub mod core;
 mod crash;
 pub mod decks;
 #[cfg(not(windows))]
@@ -17,12 +20,14 @@ mod docs;
 pub mod donations;
 mod edit;
 mod emote_events;
+mod emotes;
 pub mod engine;
 pub mod fileio;
 mod fmt;
 mod fswatch;
 mod group_icons;
 mod groups;
+mod host;
 pub mod hotkeys;
 pub mod http;
 mod i18n;
@@ -57,7 +62,6 @@ mod tiktok_bridge;
 mod tray;
 pub mod twitch;
 pub mod types;
-mod ui;
 mod update;
 mod usergroups;
 mod vars;
@@ -79,6 +83,40 @@ pub fn trim_memory() {
 
 #[cfg(not(all(target_os = "linux", not(target_env = "musl"))))]
 pub fn trim_memory() {}
+
+/// Asks the kernel to reclaim this program's read-only mapped code and data while it idles hidden: they
+/// are file backed and come back from the page cache when touched, so only the resident size drops.
+/// Writable mappings are left alone (their pages may hold changes).
+#[cfg(target_os = "linux")]
+pub fn release_code_pages() {
+    const MADV_PAGEOUT: libc::c_int = 21;
+    let Ok(exe) = std::env::current_exe() else { return };
+    let Ok(maps) = std::fs::read_to_string("/proc/self/maps") else {
+        return;
+    };
+    let exe = exe.to_string_lossy();
+    for line in maps.lines() {
+        let mut parts = line.split_whitespace();
+        let (Some(range), Some(perms)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        if perms.contains('w') || !line.trim_end().trim_end_matches(" (deleted)").ends_with(&*exe) {
+            continue;
+        }
+        let Some((start, end)) = range.split_once('-') else {
+            continue;
+        };
+        let (Ok(start), Ok(end)) = (usize::from_str_radix(start, 16), usize::from_str_radix(end, 16)) else {
+            continue;
+        };
+        unsafe {
+            libc::madvise(start as *mut libc::c_void, end - start, MADV_PAGEOUT);
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn release_code_pages() {}
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -113,7 +151,7 @@ pub struct Config {
     dark: bool,
     /// Follow the system, or always dark or light. None: an older file, which only has `dark`.
     #[serde(default)]
-    theme: Option<ui::Theme>,
+    theme: Option<host::Theme>,
     /// The language of the app (a code from `i18n`); empty follows the system's.
     locale: String,
     start_hidden: bool,
@@ -210,7 +248,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             dark: true,
-            theme: Some(ui::Theme::System),
+            theme: Some(host::Theme::System),
             locale: String::new(),
             start_hidden: true,
             memory_saver: false,
@@ -620,7 +658,7 @@ fn log(level: Level, line: String) {
         s.log.push_back((level, fmt::unix_now().as_secs() as i64, line));
         s.logged += 1;
     });
-    ui::logged();
+    host::logged();
 }
 
 /// Something that happened, worth knowing.
@@ -1172,6 +1210,13 @@ fn attach_parent_console() {
 }
 
 fn main() {
+    if std::env::args_os().any(|arg| arg == "--frontend") {
+        if let Err(error) = streamerz_frontend::run() {
+            eprintln!("Streamerz frontend: {error}");
+        }
+        return;
+    }
+
     #[cfg(windows)]
     if std::env::args_os().len() > 1 {
         attach_parent_console();
@@ -1225,7 +1270,7 @@ fn main() {
     }
     if brand::IS_DEV {
         // Resolve the source before selecting the private path. The source is only read.
-        let source = default_config_path();
+        let source = explicit_config().unwrap_or_else(default_config_path);
         let _ = DEV_SOURCE.set(source.clone());
         let dir = match prepare_dev(&source) {
             Ok(dir) => dir,
@@ -1252,7 +1297,6 @@ fn main() {
         std::env::set_var("STREAMERZ_CONFIG", dir.join("streamerz.json"));
         let _ = DEV_DIR.set(dir);
     }
-    let app = ui::app();
     if !brand::IS_DEV {
         update::tidy();
     }
@@ -1329,19 +1373,25 @@ fn main() {
     set_debug_log(cfg.debug_log);
     fmt::set_shown_as(&cfg.date_format, &cfg.time_format);
     say(format!("config: {}", config_path().display()));
-    let (ui_tx, ui_rx) = fltk::app::channel();
     // ponytail: one runtime thread is plenty for a few sockets, and lighter than one per core.
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
-    rt.spawn(tray::run(ui_tx));
+    let (shell_tx, mut shell_rx) = tokio::sync::mpsc::unbounded_channel();
+    let tray_sender = {
+        let sender = shell_tx.clone();
+        host::Sender::new(move |message| {
+            let _ = sender.send(message);
+        })
+    };
+    rt.spawn(tray::run(tray_sender));
     let cfg = Arc::new(watch::channel(cfg).0);
     let engine_cfg = cfg.clone();
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<engine::UiCmd>();
     let crash_tx = cmd_tx.clone();
     // The engine isn't Send (one thread, no locks): it lives in a LocalSet on the runtime thread.
-    std::thread::spawn(move || {
+    let backend = move || {
         tokio::task::LocalSet::new().block_on(&rt, async move {
             let e = engine::Engine::new(engine_cfg.clone(), |c| {
                 save_later(c);
@@ -1369,13 +1419,10 @@ fn main() {
             }
             #[cfg(unix)]
             tokio::task::spawn_local(ended(e.clone()));
-            while let Some(f) = cmd_rx.recv().await {
-                f(&e);
-            }
-            std::future::pending::<()>().await
+            core::parent::run(e.clone(), &mut cmd_rx, &mut shell_rx, shell_tx).await;
         })
-    });
-    ui::run(app, cfg, cmd_tx, ui_tx, ui_rx);
+    };
+    backend();
     cleanup_dev();
 }
 

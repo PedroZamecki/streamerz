@@ -31,7 +31,7 @@ fn mode() -> Mode {
 }
 
 /// Only the columns needed by the Community list. Full records stay packed in the engine.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct UserRow {
     #[serde(rename = "type")]

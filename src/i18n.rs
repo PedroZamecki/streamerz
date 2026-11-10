@@ -103,24 +103,18 @@ pub fn tr(key: &'static str) -> &'static str {
         .map_or(key, String::as_str)
 }
 
+/// Send the effective catalog to a separate presentation process, including fallback entries.
+pub fn snapshot() -> serde_json::Value {
+    let mut messages = catalog(0).clone();
+    messages.extend(catalog(ACTIVE.load(Ordering::Relaxed)).clone());
+    serde_json::to_value(messages).expect("translation strings serialize")
+}
+
 /// The text of `key` with each `{name}` in it replaced by its value in `args`.
 pub fn trf(key: &'static str, args: &[(&str, &str)]) -> String {
     args.iter().fold(tr(key).to_string(), |s, (name, value)| {
         s.replace(&format!("{{{name}}}"), value)
     })
-}
-
-/// Which common button a label is (`add` for the `btn.add` key, in any language), if it is one: the
-/// icon and the behaviour of a button follow this id, never its words. A trailing "..." or "…" is ignored.
-pub fn button_id(label: &str) -> Option<&'static str> {
-    let label = label.trim_end_matches(['.', '…']);
-    let find = |i: usize| {
-        catalog(i)
-            .iter()
-            .find(|(k, v)| k.starts_with("btn.") && v.as_str() == label)
-            .map(|(k, _)| &k["btn.".len()..])
-    };
-    find(ACTIVE.load(Ordering::Relaxed)).or_else(|| find(0))
 }
 
 #[cfg(test)]
@@ -170,6 +164,7 @@ mod tests {
     fn keys_used_in_the_code_exist_and_keys_in_the_files_are_used() {
         let mut files = Vec::new();
         sources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+        sources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("frontend/src"), &mut files);
         let code = files.join("\n");
         // Every `tr("key")` call (not `str("`, `attr("`...) names a key the English file has.
         for (at, _) in code.match_indices("tr(\"") {
@@ -180,35 +175,13 @@ mod tests {
             assert!(catalog(0).contains_key(key), "tr(\"{key}\") is not in en_US.json");
         }
         for key in catalog(0).keys() {
-            if !key.starts_with("btn.") && key != "locale.name" {
+            if key != "locale.name" {
                 assert!(
                     code.contains(&format!("\"{key}\"")),
                     "\"{key}\" is in en_US.json but unused"
                 );
             }
         }
-    }
-
-    #[test]
-    fn button_words_are_unique_so_the_id_is_certain() {
-        for (i, l) in LOCALES.iter().enumerate() {
-            let words: Vec<&String> = catalog(i)
-                .iter()
-                .filter(|(k, _)| k.starts_with("btn."))
-                .map(|(_, v)| v)
-                .collect();
-            let unique: BTreeSet<_> = words.iter().collect();
-            assert_eq!(
-                words.len(),
-                unique.len(),
-                "{}.json has two buttons with the same words",
-                l.0
-            );
-        }
-        assert_eq!(button_id("Add"), Some("add"));
-        assert_eq!(button_id("Edit…"), Some("edit"));
-        assert_eq!(button_id("Connect all"), Some("connect_all"));
-        assert_eq!(button_id("Nothing like it"), None);
     }
 
     #[test]
@@ -237,9 +210,6 @@ mod tests {
         set("pt_BR");
         assert_eq!(LOCALES[ACTIVE.load(Ordering::Relaxed)].0, "pt_BR");
         assert_eq!(tr("tray.quit"), "Encerrar");
-        assert_eq!(button_id("Adicionar"), Some("add"));
-        assert_eq!(button_id("Editar…"), Some("edit"));
-        assert_eq!(button_id("Conectar todos"), Some("connect_all"));
 
         set("xx_XX");
         assert_eq!(ACTIVE.load(Ordering::Relaxed), 0);

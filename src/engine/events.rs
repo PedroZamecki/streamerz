@@ -48,7 +48,7 @@ impl Engine {
     pub fn emit(&self, source: &str, kind: &str, data: impl FnOnce() -> Value) {
         // A connection came or went: the window's status and chat follow.
         if kind.ends_with("Connected") || kind == "BroadcastMonitoringStarted" {
-            crate::ui::changed();
+            crate::host::changed();
         }
         let mut hub = self.hub.borrow_mut();
         if !hub.iter().any(|l| wants(&l.subs, source, kind)) {

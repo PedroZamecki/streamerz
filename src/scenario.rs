@@ -209,6 +209,7 @@ fn run_engine(s: &Value, name: String, http: Option<std::net::TcpListener>) -> O
     let failures = tokio::task::LocalSet::new().block_on(&rt, async {
         let e = Engine::with_music(Arc::new(tokio::sync::watch::channel(cfg).0), |_| {}, &fakes::MUSIC);
         e.dev_mode();
+        e.allow_prompts(false);
         let fk = fakes::install(&e, s.get("fakes").unwrap_or(&Value::Null), http);
         // As the app starts them (each only when set up or used).
         e.watchers();
@@ -349,7 +350,7 @@ fn step_once(e: &Rc<Engine>, step: &Value) -> Result<Option<usize>, String> {
             // The clipboard changed (what the window reports).
             "clipboard" => {
                 let text = step.get("text").and_then(Value::as_str);
-                e.clipboard_changed(crate::ui::clipboard::args(
+                e.clipboard_changed(crate::core::clipboard::args(
                     text.is_some(),
                     step["image"] == true,
                     text.unwrap_or(""),

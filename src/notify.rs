@@ -54,7 +54,7 @@ pub fn send(kind: Kind, title: &str, body: &str) {
 /// A login ran out: a popup asks to log in again (even with the window hidden), and a notification says
 /// so too. Asked once per login until it's done again, so a retry loop doesn't repeat it.
 pub fn login_needed(platform: &'static str, bot: bool) {
-    if crate::ui::relogin(platform, bot) {
+    if crate::host::relogin(platform, bot) {
         let key = if bot { "relogin.ask_bot" } else { "relogin.ask" };
         send(Kind::Login, platform, &crate::i18n::trf(key, &[("platform", platform)]));
     }

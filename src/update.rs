@@ -521,7 +521,7 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
                 Some(v) => trf("update.newest", &[("version", v)]),
                 None => tr("update.dev").to_string(),
             };
-            let _ = crate::ui::confirm(what, tr("dialogs.ok"), "").await;
+            let _ = crate::host::confirm(what, tr("dialogs.ok"), "").await;
         }
         return;
     };
@@ -562,7 +562,7 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
     } else {
         trf("update.ask", &[("version", &tag), ("now", now)])
     };
-    if !crate::ui::confirm(question, tr("update.later"), tr("update.now"))
+    if !crate::host::confirm(question, tr("update.later"), tr("update.now"))
         .await
         .unwrap_or(false)
     {
@@ -575,15 +575,15 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
             return;
         }
         crate::error(format!("Update to {tag} failed: {e}"));
-        let _ = crate::ui::confirm(trf("update.failed", &[("error", &e)]), tr("dialogs.ok"), "").await;
+        let _ = crate::host::confirm(trf("update.failed", &[("error", &e)]), tr("dialogs.ok"), "").await;
         return;
     }
     let done = trf("update.done", &[("version", &tag)]);
-    if crate::ui::confirm(done, tr("update.later"), tr("update.restart"))
+    if crate::host::confirm(done, tr("update.later"), tr("update.restart"))
         .await
         .unwrap_or(false)
     {
-        crate::ui::restart();
+        crate::host::restart();
     } else {
         crate::say(format!("Updated to {tag}: it runs from the next start."));
     }

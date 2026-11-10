@@ -1001,9 +1001,9 @@ impl Runner {
         self.session_id = None;
         self.engine.chat_polls_clear("twitch");
         self.engine.chat_unpinned("twitch", "");
-        crate::ui::polls_changed();
+        crate::host::polls_changed();
         if self.is_connected.swap(false, Ordering::Relaxed) {
-            crate::ui::changed();
+            crate::host::changed();
             self.engine.fire(
                 T_EVENTSUB_DISCONNECTED,
                 "Broadcaster EventSub Disconnected",
@@ -1037,7 +1037,7 @@ impl Runner {
             }
             crate::say("Twitch: disconnected".into());
             crate::roles::clear("twitch");
-            crate::ui::changed();
+            crate::host::changed();
         }
     }
 
@@ -1390,7 +1390,7 @@ async fn supervise_eventsub(
                     if !logged_locked {
                         crate::warn("Twitch: waiting for system keyring to unlock saved login...".into());
                         logged_locked = true;
-                        crate::ui::changed();
+                        crate::host::changed();
                     }
                     drop(c);
                     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -1402,7 +1402,7 @@ async fn supervise_eventsub(
                 ));
                 crate::notify::login_needed("Twitch", false);
                 wanted.store(false, Ordering::Relaxed);
-                crate::ui::changed();
+                crate::host::changed();
                 break;
             }
             logged_locked = false;
@@ -1427,7 +1427,7 @@ async fn supervise_eventsub(
             Err(e) => {
                 crate::error(format!("Twitch: {e}"));
                 wanted.store(false, Ordering::Relaxed);
-                crate::ui::changed();
+                crate::host::changed();
                 break;
             }
         };
@@ -1450,7 +1450,7 @@ async fn supervise_eventsub(
         };
 
         is_connected.store(true, Ordering::Relaxed);
-        crate::ui::changed();
+        crate::host::changed();
 
         let bot_task = bot.map(|bot_acct| {
             let bot_engine = engine.clone();
@@ -1502,7 +1502,7 @@ async fn supervise_eventsub(
                 .is_some_and(|b| !b.token.access_token.is_empty());
             if !still_has_token {
                 wanted.store(false, Ordering::Relaxed);
-                crate::ui::changed();
+                crate::host::changed();
                 break;
             }
         }
@@ -1744,7 +1744,7 @@ async fn run_eventsub_loop(
         engine.emit("Twitch", "BotEventSubDisconnected", || json!(args));
         engine.emit("Twitch", "BotChatDisconnected", || json!(args));
     }
-    crate::ui::changed();
+    crate::host::changed();
 }
 
 async fn run_bot_eventsub_loop(
@@ -1903,7 +1903,7 @@ async fn channel_role(token: &str, bid: &str, me: &str, login: &str) -> crate::r
         role
     };
     if crate::roles::set("twitch", role, me) {
-        crate::ui::changed();
+        crate::host::changed();
     }
     match role {
         Role::Broadcaster => {}
@@ -3131,7 +3131,7 @@ pub(crate) fn handle_notification(
             go(engine, code, name, "Twitch/Channel Points", ev, &args);
         }
         "channel.poll.begin" | "channel.poll.progress" | "channel.poll.end" => {
-            crate::ui::polls_changed();
+            crate::host::polls_changed();
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
             // EventSub has no duration: it's from the start to the end.
@@ -3198,7 +3198,7 @@ pub(crate) fn handle_notification(
         | "channel.prediction.progress"
         | "channel.prediction.lock"
         | "channel.prediction.end" => {
-            crate::ui::polls_changed();
+            crate::host::polls_changed();
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
             let mut p = event.clone();

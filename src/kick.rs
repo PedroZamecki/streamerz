@@ -491,7 +491,7 @@ impl Runner {
         }
         self.engine.chat_polls_clear("kick");
         self.engine.chat_unpinned("kick", "");
-        crate::ui::polls_changed();
+        crate::host::polls_changed();
         if self.connected.swap(false, Ordering::Relaxed) {
             crate::say("Kick: disconnected".into());
             let args = Obj::new();
@@ -965,7 +965,7 @@ pub async fn run_pusher_loop_url(
                 failures = 0;
 
                 connected.store(true, Ordering::Relaxed);
-                crate::ui::changed();
+                crate::host::changed();
                 crate::say(format!("Kick: connected (@{channel}, chatroom {cr_id})"));
                 engine.settle_role("kick");
                 // The channel's rewards, for the editors' pickers and the price in the chat: kick.com's own
@@ -1114,7 +1114,7 @@ pub async fn run_pusher_loop_url(
                 }
 
                 connected.store(false, Ordering::Relaxed);
-                crate::ui::changed();
+                crate::host::changed();
                 let args = Obj::new();
                 engine.fire(
                     T_KICK_DISCONNECTED,

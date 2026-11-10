@@ -4485,7 +4485,7 @@ mod tests {
 
     #[test]
     fn obs_state_lists_match_what_the_engine_reads() {
-        use crate::ui::forms::*;
+        use crate::automation::schema::*;
         // 0 shows, starts, enables, mutes, plays: new_state and the OBS arms read it so.
         assert_eq!(STATE_HIDE_SHOW_TOGGLE[0], "Show");
         assert_eq!(STREAM_STATE[..2], ["Start", "Stop"]);
