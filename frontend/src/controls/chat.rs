@@ -237,7 +237,7 @@ impl ChatView {
             dialog
                 .centered()
                 .pt(px(12.))
-                .title(title.clone())
+                .title(crate::controls::dialog_title(title.clone()))
                 .width(px(460.))
                 .child(picker.clone())
                 .on_cancel(move |_, _, cx| {
@@ -551,7 +551,7 @@ impl ChatView {
             dialog
                 .centered()
                 .pt(px(12.))
-                .title(title.clone())
+                .title(crate::controls::dialog_title(title.clone()))
                 .width(px(520.))
                 .child(
                     div()
@@ -644,7 +644,7 @@ impl ChatView {
                         dialog
                             .centered()
                             .pt(px(12.))
-                            .title(title.clone())
+                            .title(crate::controls::dialog_title(title.clone()))
                             .width(px(560.))
                             .child(
                                 div()

@@ -191,7 +191,7 @@ impl Sections {
                     dialog
                         .centered()
                         .pt(px(12.))
-                        .title(title.clone())
+                        .title(crate::controls::dialog_title(title.clone()))
                         .width(px(560.))
                         .child(nested.clone())
                         .on_cancel(move |_, _, cx| {
@@ -214,7 +214,7 @@ impl Sections {
                     dialog
                         .centered()
                         .pt(px(12.))
-                        .title(title.clone())
+                        .title(crate::controls::dialog_title(title.clone()))
                         .width(px(560.))
                         .child(form.clone())
                 });

@@ -238,7 +238,7 @@ impl Frontend {
                         ),
                 );
             }
-            dialog.centered().pt(px(12.)).title(tr("conns.title")).width(px(560.)).child(list)
+            dialog.centered().pt(px(12.)).title(crate::controls::dialog_title(tr("conns.title"))).width(px(560.)).child(list)
         });
     }
     pub fn select(&mut self, page: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -300,7 +300,7 @@ impl Frontend {
                     dialog
                         .centered()
                         .pt(px(12.))
-                        .title(title.clone())
+                        .title(crate::controls::dialog_title(title.clone()))
                         .child(prompt.clone())
                         .on_cancel({
                             let prompt = prompt.clone();

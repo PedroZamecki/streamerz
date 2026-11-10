@@ -404,7 +404,7 @@ impl List {
                             dialog
                                 .centered()
                                 .pt(px(12.))
-                                .title(label.clone())
+                                .title(crate::controls::dialog_title(label.clone()))
                                 .child(question.clone())
                                 .footer(
                                     div()
@@ -454,7 +454,7 @@ impl List {
                 let confirm_label = tr("btn.delete_named").replace("{name}", name);
                 window.open_dialog(cx, move |dialog, _, _| {
                     let kind = kind.clone(); let id = id.clone(); let route = route.clone();
-                    dialog.centered().pt(px(12.)).title(tr("btn.delete")).child(question.clone()).footer(div().id("delete-confirmation").test_support().role(Role::Group).aria_label(confirm_label.clone()).flex().justify_end().gap_2()
+                    dialog.centered().pt(px(12.)).title(crate::controls::dialog_title(tr("btn.delete"))).child(question.clone()).footer(div().id("delete-confirmation").test_support().role(Role::Group).aria_label(confirm_label.clone()).flex().justify_end().gap_2()
                         .child(Button::new("cancel-delete").label(tr("dialogs.cancel")).on_click(|_, window, cx| window.close_dialog(cx)))
                         .child(Button::new("confirm-delete").danger().label(tr("btn.delete")).accessibility_label(confirm_label.clone()).on_click(move |_, window, cx| { send(json!({"request": "StreamerzDelete", "what": kind, "itemId": id, "id": format!("{route}:delete")})); window.close_dialog(cx); })))
                 });
@@ -548,7 +548,7 @@ impl List {
                     dialog
                         .centered()
                         .pt(px(12.))
-                        .title(title.clone())
+                        .title(crate::controls::dialog_title(title.clone()))
                         .width(px(560.))
                         .child(div().h(px(360.)).child(nested.clone()))
                         .on_cancel(move |_, _, cx| {
@@ -585,7 +585,7 @@ impl List {
                     dialog
                         .centered()
                         .pt(px(12.))
-                        .title(title.clone())
+                        .title(crate::controls::dialog_title(title.clone()))
                         .width(px(560.))
                         .child(form.clone())
                         .on_cancel({
@@ -1111,7 +1111,7 @@ fn show_values(values: &Value, window: &mut Window, cx: &mut App) {
         dialog
             .centered()
             .pt(px(12.))
-            .title(title.clone())
+            .title(crate::controls::dialog_title(title.clone()))
             .width(px(640.))
             .child(
                 div()

@@ -224,7 +224,7 @@ impl ActionsPage {
             dialog
                 .centered()
                 .pt(px(12.))
-                .title(label.clone())
+                .title(crate::controls::dialog_title(label.clone()))
                 .child(question.clone())
                 .footer(
                     div()
@@ -305,7 +305,7 @@ impl ActionsPage {
             dialog
                 .centered()
                 .pt(px(12.))
-                .title(title.clone())
+                .title(crate::controls::dialog_title(title.clone()))
                 .width(px(640.))
                 .child(picker.clone())
         });
@@ -326,7 +326,7 @@ impl ActionsPage {
             dialog
                 .centered()
                 .pt(px(12.))
-                .title(title.clone())
+                .title(crate::controls::dialog_title(title.clone()))
                 .width(px(600.))
                 .child(form.clone())
                 .on_cancel({
