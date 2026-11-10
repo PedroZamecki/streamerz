@@ -722,17 +722,17 @@ impl Render for CardView {
     }
 }
 
-/// A picture of the core's cache, or an empty box of the same size while it is on its way.
-fn picture(file: Option<&PathBuf>, size: f32, id: impl Into<ElementId>) -> AnyElement {
+/// A picture of the core's cache at `height`, as wide as its own proportions make it (a wide emote stays
+/// wide, a tall one tall), or an empty box of the same height while it is on its way.
+fn picture(file: Option<&PathBuf>, height: f32, id: impl Into<ElementId>) -> AnyElement {
     match file {
         Some(file) => img(file.clone())
             .id(id)
-            .w(px(size))
-            .h(px(size))
+            .h(px(height))
             .flex_shrink_0()
             .object_fit(ObjectFit::Contain)
             .into_any_element(),
-        None => div().w(px(size)).h(px(size)).flex_shrink_0().into_any_element(),
+        None => div().w(px(height)).h(px(height)).flex_shrink_0().into_any_element(),
     }
 }
 
@@ -1153,6 +1153,39 @@ fn badge_icon(badge: &Value, file: Option<&PathBuf>, at: usize, size: f32) -> An
     }
 }
 
+/// What the pointer shows over an emote or a badge: the picture large, and its name.
+#[derive(Clone)]
+struct PictureTip {
+    file: Option<PathBuf>,
+    /// A badge drawn by the app (a file of `assets/badges`), when it has no picture file.
+    art: Option<String>,
+    name: String,
+    height: f32,
+}
+impl Render for PictureTip {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap_1()
+            .p_2()
+            .rounded(theme.radius)
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.popover)
+            .text_color(theme.foreground)
+            .when_some(self.file.clone(), |tip, file| {
+                tip.child(img(file).h(px(self.height)).object_fit(ObjectFit::Contain))
+            })
+            .when_some(self.art.clone(), |tip, art| {
+                tip.child(img(format!("badges/{art}.svg")).size(px(self.height)))
+            })
+            .child(div().text_xs().child(self.name.clone()))
+    }
+}
+
 /// What one line says: its badges, the name (a click opens the person's card), the event and the words
 /// with their pictures. A chat list and a person's card draw lines the same way; `at` keeps ids apart.
 fn line_content(line: &Value, images: &HashMap<String, PathBuf>, at: usize, cx: &App) -> Div {
@@ -1166,7 +1199,24 @@ fn line_content(line: &Value, images: &HashMap<String, PathBuf>, at: usize, cx: 
     let mut body = div().flex().flex_wrap().items_center().gap_x_1().flex_1().min_w_0();
     for (index, badge) in line["badges"].as_array().into_iter().flatten().enumerate() {
         let file = badge["url"].as_str().and_then(|url| images.get(url));
-        body = body.child(badge_icon(badge, file, at * 8 + index, 16.));
+        let uid = at * 8 + index;
+        let tip = PictureTip {
+            file: file.cloned(),
+            art: badge["art"].as_str().filter(|_| file.is_none()).map(str::to_owned),
+            name: badge["label"]
+                .as_str()
+                .filter(|label| !label.is_empty())
+                .unwrap_or_else(|| badge["key"].as_str().unwrap_or_default())
+                .to_owned(),
+            height: 48.,
+        };
+        body = body.child(
+            div()
+                .id(("badge-tip", uid))
+                .flex_shrink_0()
+                .child(badge_icon(badge, file, uid, 16.))
+                .tooltip(move |_, cx| cx.new(|_| tip.clone()).into()),
+        );
     }
     let name = line["user"].as_str().unwrap_or_default().to_owned();
     let clickable = line["userId"].as_str().is_some_and(|id| !id.is_empty());
@@ -1198,14 +1248,44 @@ fn line_content(line: &Value, images: &HashMap<String, PathBuf>, at: usize, cx: 
             })
         });
     body = body.child(user);
-    if let Some(event) = line["event"].as_str() {
+    let tint = accent.unwrap_or(theme.primary);
+    if let Some(icon) = line["icon"].as_str().filter(|icon| !icon.is_empty()) {
         body = body.child(
-            div()
-                .text_color(accent.unwrap_or(theme.primary))
-                .child(event.to_owned()),
+            Icon::empty()
+                .path(format!("icons/{icon}.svg"))
+                .size(px(14.))
+                .text_color(tint),
         );
     }
+    if let Some(event) = line["event"].as_str() {
+        body = body.child(div().text_color(tint).child(event.to_owned()));
+    }
+    // What it cost (bits, points), with its picture or its icon.
+    if let Some(cost) = line["cost"].as_u64() {
+        let mut price = div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .text_color(tint)
+            .font_weight(FontWeight::BOLD);
+        match line["costIcon"].as_str().filter(|icon| !icon.is_empty()) {
+            Some(url) if url.starts_with("http") => {
+                price = price.child(picture(images.get(url), 16., ("cost", at)));
+            }
+            Some(icon) => {
+                price = price.child(Icon::empty().path(format!("icons/{icon}.svg")).size(px(14.)));
+            }
+            None => {}
+        }
+        body = body.child(price.child(cost.to_string()));
+    }
+    // The picture an event brings (a reward's emote, a giant one drawn big).
+    if let Some(file) = line["picture"].as_str().and_then(|url| images.get(url)) {
+        let height = if line["huge"] == true { 72. } else { 28. };
+        body = body.child(picture(Some(file), height, ("event-picture", at)));
+    }
     let action = line["action"] == true;
+    let mut emotes = 0;
     for part in line["parts"].as_array().into_iter().flatten() {
         if let Some(text) = part["t"].as_str() {
             for word in text.split(' ').filter(|word| !word.is_empty()) {
@@ -1229,8 +1309,22 @@ fn line_content(line: &Value, images: &HashMap<String, PathBuf>, at: usize, cx: 
         } else if let Some(emote) = part["e"].as_str() {
             let size = if part["big"] == true { 72. } else { 24. };
             let file = part["u"].as_str().and_then(|url| images.get(url));
+            emotes += 1;
             body = body.child(match file {
-                Some(_) => picture(file, size, ("emote", at)),
+                Some(file) => {
+                    let tip = PictureTip {
+                        file: Some(file.clone()),
+                        art: None,
+                        name: emote.to_owned(),
+                        height: 112.,
+                    };
+                    div()
+                        .id(("emote-tip", at * 64 + emotes))
+                        .flex_shrink_0()
+                        .child(picture(Some(file), size, ("emote", at * 64 + emotes)))
+                        .tooltip(move |_, cx| cx.new(|_| tip.clone()).into())
+                        .into_any_element()
+                }
                 None => div().text_color(muted).child(emote.to_owned()).into_any_element(),
             });
         }
@@ -1337,9 +1431,81 @@ impl ChatView {
         let (user_id, who) = (line["userId"].as_str().unwrap_or_default().to_owned(), name.clone());
         let view = this.downgrade();
         let shown = self.shown(seq);
+        // The actions of this message, on the line while the pointer is over it (the right click has them too).
+        let group = SharedString::from(format!("line-{at}"));
+        let mut bar = div()
+            .absolute()
+            .top(px(-6.))
+            .right(px(8.))
+            .flex()
+            .items_center()
+            .gap_0p5()
+            .p_0p5()
+            .rounded(theme.radius)
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.popover)
+            .invisible()
+            .group_hover(group.clone(), |style| style.visible());
+        for (index, act) in acts.iter().enumerate() {
+            let tip = texts[act.as_str()].as_str().unwrap_or_default().to_owned();
+            let icon = match act.as_str() {
+                "reply" => "corner-up-left",
+                "copy" => "copy",
+                "pin" => "pin",
+                "unpin" => "pin-off",
+                "delete" => "trash-2",
+                "timeout" => "clock",
+                _ => "ban",
+            };
+            let button = Button::new(("line-act", at * 8 + index))
+                .xsmall()
+                .ghost()
+                .icon(Icon::empty().path(format!("icons/{icon}.svg")))
+                .tooltip(tip.clone())
+                .accessibility_label(tip);
+            let (view, who, text, act) = (view.clone(), who.clone(), text.clone(), act.clone());
+            bar = bar.child(match act.as_str() {
+                "reply" => button
+                    .on_click(move |_, window, cx| {
+                        let (who, text) = (who.clone(), text.clone());
+                        let _ = view.update(cx, |this, cx| this.start_reply(seq, who, text, window, cx));
+                    })
+                    .into_any_element(),
+                "copy" => button
+                    .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.clone())))
+                    .into_any_element(),
+                "pin" | "timeout" => {
+                    let durations = texts[if act == "pin" { "pins" } else { "timeouts" }].clone();
+                    button
+                        .dropdown_menu(move |mut menu, _, _| {
+                            for choice in durations.as_array().into_iter().flatten() {
+                                let (secs, name) =
+                                    (choice[0].as_u64().unwrap_or(0), choice[1].as_str().unwrap_or_default().to_owned());
+                                let act = act.clone();
+                                menu = menu.item(PopupMenuItem::new(name).on_click(move |_, _, _| {
+                                    send(json!({"request": "StreamerzChat", "op": "act", "seq": seq, "act": act, "secs": secs, "id": "chat:act"}));
+                                }));
+                            }
+                            menu
+                        })
+                        .into_any_element()
+                }
+                _ => button
+                    .on_click(move |_, _, _| {
+                        send(json!({"request": "StreamerzChat", "op": "act", "seq": seq, "act": act, "id": "chat:act"}));
+                    })
+                    .into_any_element(),
+            });
+        }
+        let has_bar = !acts.is_empty();
+        let hover = theme.muted.opacity(0.35);
         div()
             .id(("line", at))
             .opacity(shown)
+            .relative()
+            .group(group)
+            .hover(move |style| style.bg(hover))
             .flex()
             .gap_2()
             .px_2()
@@ -1350,6 +1516,7 @@ impl ChatView {
             })
             .children(logo)
             .child(column)
+            .when(has_bar, |row| row.child(bar))
             .context_menu(move |mut menu, window, cx| {
                 let label = |key: &str| texts[key].as_str().unwrap_or_default().to_owned();
                 let item = |text: String, icon: &str| PopupMenuItem::new(text).icon(Icon::empty().path(format!("icons/{icon}.svg")));
