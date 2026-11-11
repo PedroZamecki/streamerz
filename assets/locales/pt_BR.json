@@ -41,7 +41,7 @@
   "accounts.spotify.name": "Spotify",
   "accounts.spotify.need_client_id": "Cole primeiro o client ID do seu app do Spotify.",
   "accounts.spotify.setup": "Configurar Spotify",
-  "accounts.standby_default": "Em espera, conecta quando a transmissão começar",
+  "accounts.standby_default": "Conectado, esperando a live começar",
   "accounts.tiktok_sending.not_set_up": "Não configurado: o Streamerz só lê o chat do TikTok",
   "accounts.tiktok_sending.waiting": "Esperando a extensão do navegador",
   "accounts.tiktok_sending.connected": "@{user}",
@@ -478,9 +478,9 @@
   "conns.keyring_locked": "Chaveiro bloqueado, clique para desbloquear",
   "conns.nothing_set_up": "Nada configurado",
   "conns.off": "Desligado",
-  "conns.standby": "Em espera",
+  "conns.standby": "Esperando a live",
   "conns.summary": "{up} de {total} conectados",
-  "conns.summary_standby": "{up} de {total} conectados, {standby} em espera",
+  "conns.summary_standby": "{up} de {total} conectados, {standby} esperando a live",
   "conns.title": "Conexões",
   "countdown.action_about": "Adiciona tempo ou reinicia a contagem de um modelo.",
   "countdown.action_name": "Contagem regressiva",
@@ -1112,5 +1112,9 @@
   "accounts.field.google_client_id": "Client ID do Google",
   "accounts.field.google_client_secret": "Client secret do Google",
   "accounts.field.client_id": "Client ID",
-  "accounts.field.client_secret": "Client secret"
+  "accounts.field.client_secret": "Client secret",
+  "conns.check": "Verificar agora se a live começou",
+  "conns.connected_tip": "Conectado: o chat e os eventos estão chegando.",
+  "conns.standby_tip": "Pronto, esperando a live começar: o chat abre sozinho. Verifica a cada minuto mais ou menos, e na hora quando o OBS, o Streamlabs, a Twitch ou a Kick avisam que a transmissão começou.",
+  "conns.off_tip": "Não conectado."
 }

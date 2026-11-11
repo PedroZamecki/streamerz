@@ -173,7 +173,7 @@ impl Frontend {
     fn show_connections(&mut self, connections: Value, window: &mut Window, cx: &mut Context<Self>) {
         let owner = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _, cx| {
-            let mut list = div().flex().flex_col().gap_2().min_w(px(360.));
+            let mut list = div().flex().flex_col().gap_1().min_w(px(360.));
             let items = connections.as_array().cloned().unwrap_or_default();
             if items.is_empty() {
                 list = list.child(
@@ -185,14 +185,18 @@ impl Frontend {
             for (index, item) in items.iter().enumerate() {
                 let page = item["page"].as_str().unwrap_or_default().to_owned();
                 let owner = owner.clone();
-                let up = item["up"] == true;
                 let key = item["key"].as_str().unwrap_or_default().to_owned();
-                let state = item["state"].as_str().unwrap_or_default().to_owned();
+                // Its state as an icon in its colour, a short word, and the rest on hover.
+                let (icon, color) = crate::controls::health::appearance(item["health"].as_str().unwrap_or("off"), cx);
+                let tip = item["tip"].as_str().unwrap_or_default().to_owned();
+                let action = item["button"].as_str().unwrap_or_default().to_owned();
+                let settings = tr("btn.settings");
                 list = list.child(
                     div()
                         .flex()
                         .items_center()
                         .gap_2()
+                        .h(px(30.))
                         .child(
                             img(format!("brands/{}.svg", item["brand"].as_str().unwrap_or_default()))
                                 .id(("conn-logo", index))
@@ -203,33 +207,47 @@ impl Frontend {
                             div()
                                 .flex_1()
                                 .min_w_0()
+                                .truncate()
                                 .child(item["name"].as_str().unwrap_or_default().to_owned()),
                         )
                         .child(
                             div()
-                                .text_color(if up {
-                                    cx.theme().success
-                                } else {
-                                    cx.theme().muted_foreground
-                                })
-                                .child(state),
+                                .id(("conn-state", index))
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .flex_shrink_0()
+                                .text_color(color)
+                                .child(Icon::empty().path(format!("icons/{icon}.svg")).size(px(14.)))
+                                .child(item["state"].as_str().unwrap_or_default().to_owned())
+                                .when(!tip.is_empty(), |state| {
+                                    state.tooltip(move |window, cx| {
+                                        gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                                    })
+                                }),
                         )
-                        .when(!up, |row| {
-                            let key = key.clone();
-                            row.child(
+                        // A fixed slot, so the buttons line up whether or not a row has this one.
+                        .child(div().w(px(30.)).flex_shrink_0().when(!action.is_empty(), |slot| {
+                            let icon = if item["standby"] == true { "refresh-cw" } else { "plug" };
+                            slot.child(
                                 Button::new(("conn-retry", index))
                                     .small()
-                                    .icon(Icon::empty().path("icons/refresh-cw.svg"))
-                                    .label(tr("btn.retry"))
+                                    .w(px(30.))
+                                    .icon(Icon::empty().path(format!("icons/{icon}.svg")))
+                                    .tooltip(action.clone())
+                                    .accessibility_label(action.clone())
                                     .on_click(move |_, _, _| {
                                         send(json!({"request": "StreamerzCoreAction", "domain": "connections", "action": "retry", "itemId": key, "id": "retry"}));
                                     }),
                             )
-                        })
+                        }))
                         .child(
                             Button::new(("conn-settings", index))
                                 .small()
-                                .label(tr("btn.settings"))
+                                .w(px(30.))
+                                .icon(Icon::empty().path("icons/settings.svg"))
+                                .tooltip(settings)
+                                .accessibility_label(settings)
                                 .on_click(move |_, window, cx| {
                                     let page = page.clone();
                                     let _ = owner.update(cx, |this, cx| this.select(&page, window, cx));
@@ -242,7 +260,7 @@ impl Frontend {
                 .label(tr("dialogs.close"))
                 .on_click(|_, window, cx| window.close_dialog(cx));
             let footer = crate::controls::dialog::footer(None, close, cx);
-            crate::controls::dialog::shell(dialog, tr("conns.title"), 600., cx)
+            crate::controls::dialog::shell(dialog, tr("conns.title"), 460., cx)
                 .child(crate::controls::dialog::body(list))
                 .footer(footer)
         });

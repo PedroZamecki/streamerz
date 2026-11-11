@@ -34,7 +34,7 @@
   "accounts.spotify.name": "Spotify",
   "accounts.spotify.need_client_id": "Paste the client ID of your Spotify app first.",
   "accounts.spotify.setup": "Spotify setup",
-  "accounts.standby_default": "Standby, connects when the stream starts",
+  "accounts.standby_default": "Connected, waiting for the stream to go live",
   "accounts.tiktok_sending.not_set_up": "Not set up: Streamerz only reads TikTok chat",
   "accounts.tiktok_sending.waiting": "Waiting for the browser extension",
   "accounts.tiktok_sending.connected": "@{user}",
@@ -471,9 +471,9 @@
   "conns.keyring_locked": "Keyring locked, click to unlock",
   "conns.nothing_set_up": "Nothing set up",
   "conns.off": "Off",
-  "conns.standby": "Standby",
+  "conns.standby": "Waiting for live",
   "conns.summary": "{up} of {total} connected",
-  "conns.summary_standby": "{up} of {total} connected, {standby} on standby",
+  "conns.summary_standby": "{up} of {total} connected, {standby} waiting for live",
   "conns.title": "Connections",
   "countdown.action_about": "Adds time to or resets a template countdown.",
   "countdown.action_name": "Countdown",
@@ -1112,5 +1112,9 @@
   "accounts.field.google_client_id": "Google client ID",
   "accounts.field.google_client_secret": "Google client secret",
   "accounts.field.client_id": "Client ID",
-  "accounts.field.client_secret": "Client secret"
+  "accounts.field.client_secret": "Client secret",
+  "conns.check": "Check now if the stream is live",
+  "conns.connected_tip": "Connected: chat and events are coming in.",
+  "conns.standby_tip": "Ready and waiting for the stream to go live: the chat opens by itself. It checks every minute or so, and at once when OBS, Streamlabs, Twitch or Kick says the stream started.",
+  "conns.off_tip": "Not connected."
 }

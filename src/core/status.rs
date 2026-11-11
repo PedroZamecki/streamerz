@@ -157,10 +157,20 @@ pub fn summary(engine: &Rc<Engine>) -> Value {
         )
     };
     json!({"health": health, "text": text, "up": up, "total": total,
-        "connections": connections.iter().map(|connection| json!({
-            "name": connection.name, "brand": connection.brand, "up": connection.up, "standby": connection.standby, "page": connection.page, "key": connection.key,
-            "state": if connection.up { tr("conns.connected") } else if connection.standby { tr("conns.standby") } else { tr("conns.off") },
-        })).collect::<Vec<_>>()})
+        "connections": connections.iter().map(|connection| {
+            // What it is doing, its health (the icon and colour), what hovering it explains, and what
+            // its button does: a standby is connected and only waiting, so it checks; off connects.
+            let (health, state, tip, button) = if connection.up {
+                ("up", tr("conns.connected"), tr("conns.connected_tip"), "")
+            } else if connection.standby {
+                ("standby", tr("conns.standby"), tr("conns.standby_tip"), tr("conns.check"))
+            } else {
+                ("off", tr("conns.off"), tr("conns.off_tip"), tr("btn.connect"))
+            };
+            json!({"name": connection.name, "brand": connection.brand, "up": connection.up,
+                "standby": connection.standby, "page": connection.page, "key": connection.key,
+                "health": health, "state": state, "tip": tip, "button": button})
+        }).collect::<Vec<_>>()})
 }
 
 /// Write the settings now instead of when the debounce fires.
