@@ -771,7 +771,17 @@ impl Engine {
                 f.welcome = false;
                 for (name, url) in &f.emotes {
                     let tok = if platform == "kick" {
-                        crate::emotes::kick_tag(name).unwrap_or_else(|| name.clone())
+                        if let Some(tag) = crate::emotes::kick_tag(name) {
+                            tag
+                        } else if let Some(id) = url
+                            .strip_prefix("https://files.kick.com/emotes/")
+                            .and_then(|s| s.strip_suffix("/fullsize"))
+                        {
+                            crate::emotes::remember_kick_tag(name, id);
+                            format!("[emote:{id}:{name}]")
+                        } else {
+                            name.clone()
+                        }
                     } else {
                         name.clone()
                     };
@@ -849,7 +859,23 @@ impl Engine {
             let log = &mut *guard;
             let Some(i) = index(&c.platform) else { return };
             for e in &c.emotes {
-                log.remember_emote(i, e.0.clone(), e.1.clone());
+                let tok = if c.platform == "kick" {
+                    if let Some(tag) = crate::emotes::kick_tag(&e.0) {
+                        tag
+                    } else if let Some(id) =
+                        e.1.strip_prefix("https://files.kick.com/emotes/")
+                            .and_then(|s| s.strip_suffix("/fullsize"))
+                    {
+                        let name = self::shown(&e.0);
+                        crate::emotes::remember_kick_tag(name, id);
+                        format!("[emote:{id}:{name}]")
+                    } else {
+                        e.0.clone()
+                    }
+                } else {
+                    e.0.clone()
+                };
+                log.remember_emote(i, tok, e.1.clone());
             }
             let was_action = c.args.get("isAction").and_then(Value::as_bool).unwrap_or(false);
             let (plain, action) = match action_of(&c.text) {
@@ -1959,8 +1985,12 @@ impl Engine {
             user: r.user.clone(),
             text: r.text.clone(),
         });
-        let plain = reply_info.as_ref().map_or(plain.clone(), |r| r.strip(&plain));
-        let (plain, emotes) = normalize_line_emotes(platform, plain, &[]);
+        let kick_raw_emotes = if platform == "kick" {
+            crate::kick::kick_emotes(&plain)
+        } else {
+            Vec::new()
+        };
+        let (plain, emotes) = normalize_line_emotes(platform, plain, &kick_raw_emotes);
         let mut guard = self.chat_log_mut();
         let log = &mut *guard;
         // Our name's colour and badges as the chat showed them last, until the platform's own copy says.
@@ -3379,6 +3409,28 @@ mod tests {
             e.chat_stream("twitch", false);
             assert!(e.chat_polls().is_empty());
             assert!(e.chat_pins().is_empty());
+        });
+    }
+
+    #[test]
+    fn chat_local_normalizes_kick_native_emotes() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
+            e.change(|config| {
+                config.window.chat.save_history = true;
+                config.kick.broadcaster = Some(crate::kick::KickAccount {
+                    user_id: 9999,
+                    username: "streamer".into(),
+                    token: Default::default(),
+                });
+            });
+            let seq = e.chat_local("kick", "[emote:4055795:GnomeDisco]", false, None).unwrap();
+            let line = e.chat_line(seq).unwrap();
+            assert_eq!(line.text, "GnomeDisco");
+            assert_eq!(line.emotes.len(), 1);
+            assert_eq!(line.emotes[0].0, "GnomeDisco");
+            assert_eq!(line.emotes[0].1, "https://files.kick.com/emotes/4055795/fullsize");
         });
     }
 }

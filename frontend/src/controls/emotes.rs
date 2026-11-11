@@ -23,8 +23,8 @@ const PICTURE: f32 = 28.;
 /// Pictures asked for in one request.
 const BATCH: usize = 48;
 
-/// An emote was picked: its name, and whether the picker stays open for more.
-pub struct Picked(pub String, pub bool);
+/// An emote was picked: its name, picture URL, and whether the picker stays open for more.
+pub struct Picked(pub String, pub String, pub bool);
 impl EventEmitter<Picked> for EmotePicker {}
 
 enum Row {
@@ -82,6 +82,11 @@ impl EmotePicker {
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.input.update(cx, |input, cx| input.focus(window, cx));
+    }
+
+    /// The downloaded file for an emote's picture URL, if cached.
+    pub fn image_file(&self, url: &str) -> Option<&PathBuf> {
+        self.images.get(url)
     }
 
     /// Ask the core for the open tab, or for a search across them.
@@ -298,7 +303,7 @@ impl Render for EmotePicker {
                             .flex()
                             .children(cells.iter().enumerate().map(|(column, (name, url))| {
                                 let favorite = view.favorites.contains(name);
-                                let (pick, keep, star) = (name.clone(), (name.clone(), url.clone()), favorite);
+                                let (pick, picked_url, keep, star) = (name.clone(), url.clone(), (name.clone(), url.clone()), favorite);
                                 let picture = view.images.get(url).map(|file| {
                                     img(file.clone()).w(px(PICTURE)).h(px(PICTURE)).object_fit(ObjectFit::Contain)
                                 });
@@ -318,7 +323,7 @@ impl Render for EmotePicker {
                                     })
                                     .when(star, |cell| cell.border_1().border_color(theme.primary))
                                     .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
-                                        cx.emit(Picked(pick.clone(), event.modifiers().shift));
+                                        cx.emit(Picked(pick.clone(), picked_url.clone(), event.modifiers().shift));
                                     }))
                                     .on_mouse_down(
                                         MouseButton::Right,

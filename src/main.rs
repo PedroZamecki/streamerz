@@ -58,7 +58,7 @@ mod storage;
 mod streamdeck;
 mod templates;
 pub mod tiktok;
-mod tiktok_bridge;
+pub mod tiktok_bridge;
 mod tray;
 pub mod twitch;
 pub mod types;
@@ -704,7 +704,11 @@ async fn ended(e: std::rc::Rc<engine::Engine>) {
 }
 
 fn version() -> String {
-    format!("Streamerz {}", brand::VERSION)
+    if brand::IS_DEV {
+        "Streamerz (dev)".to_string()
+    } else {
+        format!("Streamerz {}", brand::VERSION)
+    }
 }
 
 fn default_config_path() -> PathBuf {
@@ -1400,6 +1404,7 @@ fn main() {
             engine::Engine::forget_saved_chat_history();
             e.load_community();
             e.add_builtins();
+            crate::emotes::load_local(&e.config());
             if !brand::IS_DEV {
                 e.plugins_start();
                 e.auto_connect();

@@ -9,17 +9,22 @@ use super::sections::Sections;
 use crate::send;
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
-    input::{Input, InputEvent, InputState},
+    checkbox::Checkbox,
+    input::{InlineToken, InlineTokenContext, Input, InputContent, InputEvent, InputState},
     menu::{ContextMenuExt, DropdownMenu, PopupMenuItem},
     message_scroller::{MessageScroller, MessageScrollerState},
+    popover::Popover,
     select::{Select, SelectEvent, SelectState},
+    tooltip::Tooltip,
     ActiveTheme, Disableable, Icon, IndexPath, Sizable, WindowExt,
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The names of our accounts, from the page's model.
@@ -70,6 +75,8 @@ struct Pane {
     seqs: Vec<u64>,
     at: Vec<usize>,
     input: Entity<InputState>,
+    /// The text last asked about: an answer for other text is out of date.
+    typed: String,
 }
 
 pub struct ChatView {
@@ -96,8 +103,6 @@ pub struct ChatView {
     me: Vec<String>,
     /// The list open above a send box: what the core suggested for what is typed.
     suggest: Option<Suggest>,
-    /// What is typed in a box with its emotes as pictures (the pane and the parts), while it has any.
-    preview: Option<(usize, Vec<Value>)>,
     /// When each line that came while the page was open appeared, for its fade in (lines are dropped
     /// from here once they are fully in).
     born: HashMap<u64, std::time::Instant>,
@@ -108,6 +113,9 @@ pub struct ChatView {
     options: Option<Entity<Sections>>,
     card: Option<Entity<CardView>>,
     picker: Option<Entity<EmotePicker>>,
+    all_targets: HashSet<String>,
+    all_bot: bool,
+    all_fallback: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -139,6 +147,7 @@ impl ChatView {
                 seqs: Vec::new(),
                 at: Vec::new(),
                 input,
+                typed: String::new(),
             });
         }
         let all_input = cx.new(|cx| InputState::new(window, cx).placeholder(hint));
@@ -167,7 +176,6 @@ impl ChatView {
             wants_pictures: false,
             me: Vec::new(),
             suggest: None,
-            preview: None,
             born: HashMap::new(),
             fading: false,
             view_ids: Vec::new(),
@@ -175,6 +183,9 @@ impl ChatView {
             options: None,
             card: None,
             picker: None,
+            all_targets: PLATFORMS.iter().map(|p| (*p).to_string()).collect(),
+            all_bot: false,
+            all_fallback: true,
             _subscriptions: subscriptions,
         };
         view.update_model(model, window, cx);
@@ -212,42 +223,38 @@ impl ChatView {
         }
         self.asking = Some(pane);
         let hint = self.texts()["emoteSearch"].as_str().unwrap_or_default().to_owned();
-        let title = self.texts()["emoteTip"].as_str().unwrap_or_default().to_owned();
         let platform = self.panes[pane].platform.unwrap_or("all").to_owned();
         let picker = cx.new(|cx| EmotePicker::new(&platform, hint, window, cx));
         self._subscriptions
             .push(cx.subscribe_in(&picker, window, |view, _, event: &Picked, window, cx| {
-                let Picked(name, keep) = event;
-                let input = view.panes[view.asking.unwrap_or(0)].input.clone();
-                let text = input.read(cx).value().to_string();
-                let joined = if text.is_empty() || text.ends_with(' ') {
-                    format!("{text}{name} ")
-                } else {
-                    format!("{text} {name} ")
-                };
-                input.update(cx, |input, cx| input.set_value(joined, window, cx));
+                let Picked(name, url, keep) = event;
+                let pane = view.asking.unwrap_or(0);
+                let input = view.panes[pane].input.clone();
+                input.update(cx, |input, cx| put_emote(input, name, url, window, cx));
+                if let Some(picker_ref) = view.picker.as_ref() {
+                    if let Some(file) = picker_ref.read(cx).image_file(url) {
+                        view.images.insert(url.clone(), file.clone());
+                    }
+                }
+                if !url.is_empty() && !view.images.contains_key(url) {
+                    view.missing.insert(url.clone());
+                    view.ask_images();
+                }
+                view.ask_suggest(pane, cx);
                 if !keep {
-                    window.close_dialog(cx);
-                    view.picker = None;
+                    view.close_picker(window, cx);
                     input.update(cx, |input, cx| input.focus(window, cx));
                 }
             }));
         self.picker = Some(picker.clone());
         picker.update(cx, |picker, cx| picker.focus(window, cx));
-        let owner = cx.entity().downgrade();
-        window.open_dialog(cx, move |dialog, _, _| {
-            let owner = owner.clone();
-            dialog
-                .centered()
-                .pt(px(12.))
-                .title(crate::controls::dialog_title(title.clone()))
-                .width(px(460.))
-                .child(picker.clone())
-                .on_cancel(move |_, _, cx| {
-                    let _ = owner.update(cx, |view, _| view.picker = None);
-                    true
-                })
-        });
+        cx.notify();
+    }
+
+    fn close_picker(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.picker = None;
+        self.asking = None;
+        cx.notify();
     }
 
     fn ask_images(&mut self) {
@@ -433,27 +440,66 @@ impl ChatView {
         send(request);
         input.update(cx, |input, cx| input.set_value("", window, cx));
         self.reply = None;
+        self.suggest = None;
         cx.notify();
     }
 
     /// Ask the core what fits what is typed: Twitch's and Kick's commands after a `/`, names after an `@`.
     fn ask_suggest(&mut self, pane: usize, cx: &mut Context<Self>) {
-        let Some(platform) = self.panes[pane].platform else {
-            return;
-        };
+        let platform = self.panes.get(pane).and_then(|p| p.platform).unwrap_or("all");
         let input = self.panes[pane].input.read(cx);
         let text = input.value().to_string();
+        let cursor = input.cursor_position().character as usize;
+        self.panes[pane].typed.clone_from(&text);
         if text.is_empty() {
-            if self.suggest.take().is_some() || self.preview.take().is_some() {
+            if self.suggest.take().is_some() {
                 cx.notify();
             }
             return;
         }
-        let cursor = input.cursor_position().character as usize;
         send(
             json!({"request": "StreamerzChat", "op": "suggest", "platform": platform, "text": text,
             "cursor": cursor, "id": format!("chat:suggest:{pane}")}),
         );
+    }
+
+    /// Draw the emotes the core found in what is typed as pictures inside the box: each one is an inline
+    /// token over its word, so the text (and what is sent) stays the same.
+    fn inline_emotes(&mut self, pane: usize, parts: &[Value], window: &mut Window, cx: &mut Context<Self>) {
+        let input = self.panes[pane].input.clone();
+        let state = input.read(cx);
+        let text = state.value().to_string();
+        if text != self.panes[pane].typed {
+            return;
+        }
+        let selection = state.selected_range();
+        let old: Vec<(Range<usize>, String)> = state
+            .tokens()
+            .iter()
+            .map(|span| (span.range(), span.token().id().to_string()))
+            .collect();
+        let caret = selection.is_empty().then_some(selection.start);
+        let Some(spans) = emote_spans(&text, parts, &old, caret) else {
+            return;
+        };
+        if spans == old {
+            return;
+        }
+        let mut content = InputContent::new(text.clone());
+        for (range, id) in spans {
+            let token = InlineToken::new(id, text[range.clone()].to_owned());
+            match content.with_token(range, token) {
+                Ok(next) => content = next,
+                Err(_) => return,
+            }
+        }
+        input.update(cx, |input, cx| {
+            if input.marked_text_range(window, cx).is_some() {
+                return;
+            }
+            input.set_value(content, window, cx);
+            input.set_selected_range(selection, cx);
+        });
     }
 
     /// Put the picked row in the box: a name replaces the word being typed, a command is the whole text.
@@ -528,8 +574,17 @@ impl ChatView {
         if text.is_empty() {
             return;
         }
-        let mut request =
-            json!({"request": "StreamerzChat", "op": "send", "platform": "all", "text": text, "id": "chat:send"});
+        let targets: Vec<String> = self.all_targets.iter().cloned().collect();
+        let mut request = json!({
+            "request": "StreamerzChat",
+            "op": "send",
+            "platform": "all",
+            "text": text,
+            "targets": targets,
+            "use_bot": self.all_bot,
+            "fallback": self.all_fallback,
+            "id": "chat:send"
+        });
         if let Some((seq, _, _)) = &self.reply {
             request["replySeq"] = (*seq).into();
         }
@@ -547,20 +602,83 @@ impl ChatView {
         let reply = self.reply.clone();
         let input = self.all_input.clone();
         let owner = cx.entity().downgrade();
+        let platforms = self.model["chat"]["platforms"].as_array().cloned().unwrap_or_default();
         input.update(cx, |input, cx| input.focus(window, cx));
         window.open_dialog(cx, move |dialog, _, cx| {
             let owner = owner.clone();
             let theme = cx.theme().clone();
-            dialog
-                .centered()
-                .pt(px(12.))
-                .title(crate::controls::dialog_title(title.clone()))
-                .width(px(520.))
+            let texts = owner.upgrade().map(|o| o.read(cx).texts().clone()).unwrap_or_default();
+            let (all_targets, all_bot, all_fallback) = owner
+                .upgrade()
+                .map(|o| {
+                    let v = o.read(cx);
+                    (v.all_targets.clone(), v.all_bot, v.all_fallback)
+                })
+                .unwrap_or_default();
+            let plat_checks = platforms.iter().map(|p| {
+                let id = p["id"].as_str().unwrap_or_default().to_owned();
+                let name = p["name"].as_str().unwrap_or_default().to_owned();
+                let sends = p["send"] == true;
+                let tip = p["tip"].as_str().unwrap_or_default().to_owned();
+                let checked = all_targets.contains(&id);
+                let owner = owner.clone();
+                let target_id = id.clone();
+                let mut wrap = div()
+                    .id(SharedString::from(format!("msg-all-wrap-{id}")))
+                    .flex()
+                    .items_center()
+                    .gap_1();
+                if !tip.is_empty() {
+                    let tip = tip.clone();
+                    wrap = wrap.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx));
+                }
+                wrap.child(
+                    Checkbox::new(SharedString::from(format!("msg-all-plat-{id}")))
+                        .small()
+                        .label(name)
+                        .checked(checked)
+                        .disabled(!sends)
+                        .on_click(move |checked, _, cx| {
+                            let target_id = target_id.clone();
+                            let is_checked = *checked;
+                            let _ = owner.update(cx, |view, _| {
+                                if is_checked {
+                                    view.all_targets.insert(target_id);
+                                } else {
+                                    view.all_targets.remove(&target_id);
+                                }
+                            });
+                        }),
+                )
+            });
+            let owner_role = owner.clone();
+            let owner_fb = owner.clone();
+            let send_owner = owner.clone();
+            let buttons = div()
+                .flex()
+                .gap_2()
                 .child(
+                    Button::new("message-all-cancel")
+                        .label(crate::i18n::tr("dialogs.cancel").to_owned())
+                        .on_click(|_, window, cx| window.close_dialog(cx)),
+                )
+                .child(
+                    Button::new("message-all-send")
+                        .primary()
+                        .icon(Icon::empty().path("icons/send.svg"))
+                        .label(send_label.clone())
+                        .on_click(move |_, window, cx| {
+                            let _ = send_owner.update(cx, |view, cx| view.submit_all(window, cx));
+                        }),
+                );
+            let footer = crate::controls::dialog::footer(None, buttons, cx);
+            crate::controls::dialog::shell(dialog, title.clone(), 520., cx)
+                .footer(footer)
+                .child(crate::controls::dialog::body(
                     div()
                         .flex()
                         .flex_col()
-                        .gap_2()
+                        .gap_3()
                         .when_some(reply.clone(), |column, (_, who, said)| {
                             column.child(
                                 div()
@@ -573,20 +691,36 @@ impl ChatView {
                                     .child(div().min_w_0().truncate().child(format!("@{who}: {said}"))),
                             )
                         })
-                        .child(Input::new(&input).small())
+                        .child(div().flex().flex_wrap().items_center().gap_3().children(plat_checks))
                         .child(
-                            div().flex().justify_end().child(
-                                Button::new("message-all-send")
-                                    .small()
-                                    .primary()
-                                    .icon(Icon::empty().path("icons/send.svg"))
-                                    .label(send_label.clone())
-                                    .on_click(move |_, window, cx| {
-                                        let _ = owner.update(cx, |view, cx| view.submit_all(window, cx));
-                                    }),
-                            ),
-                        ),
-                )
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap_2()
+                                .child(
+                                    Checkbox::new("msg-all-bot")
+                                        .small()
+                                        .label(texts["sendAs"].as_str().unwrap_or("Bot").to_owned())
+                                        .checked(all_bot)
+                                        .on_click(move |checked, _, cx| {
+                                            let is_checked = *checked;
+                                            let _ = owner_role.update(cx, |view, _| view.all_bot = is_checked);
+                                        }),
+                                )
+                                .child(
+                                    Checkbox::new("msg-all-fallback")
+                                        .small()
+                                        .label(texts["fallback"].as_str().unwrap_or("Fallback").to_owned())
+                                        .checked(all_fallback)
+                                        .on_click(move |checked, _, cx| {
+                                            let is_checked = *checked;
+                                            let _ = owner_fb.update(cx, |view, _| view.all_fallback = is_checked);
+                                        }),
+                                ),
+                        )
+                        .child(Input::new(&input).small()),
+                ))
         });
     }
 
@@ -642,21 +776,19 @@ impl ChatView {
                     self.options = Some(sections.clone());
                     let owner = cx.entity().downgrade();
                     let title = self.texts()["options"].as_str().unwrap_or_default().to_owned();
-                    window.open_dialog(cx, move |dialog, _, _| {
+                    window.open_dialog(cx, move |dialog, _, cx| {
                         let owner = owner.clone();
-                        dialog
-                            .centered()
-                            .pt(px(12.))
-                            .title(crate::controls::dialog_title(title.clone()))
-                            .width(px(560.))
-                            .child(
+                        let close = crate::controls::dialog::close_footer(cx);
+                        crate::controls::dialog::shell(dialog, title.clone(), 560., cx)
+                            .child(crate::controls::dialog::body(
                                 div()
                                     .id("chat-options")
                                     .max_h(px(520.))
                                     .overflow_y_scroll()
                                     .pr_2()
                                     .child(sections.clone()),
-                            )
+                            ))
+                            .footer(close)
                             .on_cancel(move |_, _, cx| {
                                 let _ = owner.update(cx, |view, _| view.options = None);
                                 true
@@ -691,7 +823,7 @@ impl ChatView {
             }
             _ if operation.starts_with("suggest:") => {
                 let pane = operation["suggest:".len()..].parse::<usize>().unwrap_or(0);
-                // The words typed, with their emotes as pictures (their pictures asked for).
+                // The words typed, with their emotes drawn as pictures in the box (their pictures asked for).
                 let parts = value["preview"].as_array().cloned().unwrap_or_default();
                 for part in &parts {
                     if let Some(url) = part["u"].as_str().filter(|url| !self.images.contains_key(*url)) {
@@ -699,7 +831,9 @@ impl ChatView {
                     }
                 }
                 self.ask_images();
-                self.preview = (!failed && !parts.is_empty()).then_some((pane, parts));
+                if !failed && pane < self.panes.len() {
+                    self.inline_emotes(pane, &parts, window, cx);
+                }
                 let found = &value["suggest"];
                 let rows = found["rows"].as_array().cloned().unwrap_or_default();
                 self.suggest = (!failed && !rows.is_empty() && pane < self.panes.len()).then(|| Suggest {
@@ -806,25 +940,41 @@ impl ChatView {
                 if again {
                     self.ask_card_later(cx);
                 }
+                return;
+            } else {
+                let again = card["pending"] == true;
+                let seq = card["seq"].clone();
+                open.update(cx, |open, cx| {
+                    open.card = card;
+                    open.images = images;
+                    open.details = false;
+                    cx.notify();
+                });
+                if again {
+                    self.ask_card_later(cx);
+                }
+                send(json!({"request": "StreamerzChat", "op": "card", "seq": seq, "lookup": true, "id": "chat:card"}));
+                return;
             }
-            return;
         }
         if card["loading"] != true {
             return;
         }
         let seq = card["seq"].clone();
+        let owner = cx.entity().downgrade();
         let body = cx.new(|_| CardView {
+            owner: owner.clone(),
             card,
             images,
             details: false,
         });
         self.card = Some(body.clone());
-        let owner = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _, _| {
-            let owner = owner.clone();
+            let owner_close = owner.clone();
+            let owner_cancel = owner.clone();
             dialog
                 .centered()
-                .pt(px(12.))
+                .overflow_hidden()
                 .close_button(false)
                 .pt(px(0.))
                 .pb(px(0.))
@@ -833,8 +983,11 @@ impl ChatView {
                 .width(px(520.))
                 .child(body.clone())
                 .on_cancel(move |_, _, cx| {
-                    let _ = owner.update(cx, |view, _| view.card = None);
+                    let _ = owner_cancel.update(cx, |view, _| view.card = None);
                     true
+                })
+                .on_close(move |_, _, cx| {
+                    let _ = owner_close.update(cx, |view, _| view.card = None);
                 })
         });
         send(json!({"request": "StreamerzChat", "op": "card", "seq": seq, "lookup": true, "id": "chat:card"}));
@@ -861,11 +1014,14 @@ impl ChatView {
 
 /// The open user card: the page updates it when the platform's facts arrive.
 struct CardView {
+    owner: WeakEntity<ChatView>,
     card: Value,
     images: HashMap<String, PathBuf>,
     /// The box shows what actions get for them, not what they said.
     details: bool,
 }
+type CardClose = Option<Rc<dyn Fn(&mut Window, &mut App)>>;
+
 impl Render for CardView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let this = cx.entity();
@@ -875,12 +1031,119 @@ impl Render for CardView {
                 cx.notify();
             });
         };
-        card_body("chat", &self.card, &self.images, self.details, toggle, cx)
+        let owner = self.owner.clone();
+        let on_close = Rc::new(move |window: &mut Window, cx: &mut App| {
+            window.close_dialog(cx);
+            let _ = owner.update(cx, |view, _| view.card = None);
+        });
+        card_body(
+            "chat",
+            &self.card,
+            &self.images,
+            self.details,
+            toggle,
+            Some(on_close),
+            cx,
+        )
     }
 }
 
 /// A picture of the core's cache at `height`, as wide as its own proportions make it (a wide emote stays
 /// wide, a tall one tall), or an empty box of the same height while it is on its way.
+/// Where the emotes of what is typed go: `parts` is the core's split of `text` (its words and emotes, in
+/// order), `old` the pictures the box shows now (range, picture URL) and `caret` where the caret is.
+/// A word still being typed at the caret waits until it ends, a picture the box has keeps its own, and
+/// one the core does not know (picked from the list) stays while it is a word of its own. `None` when
+/// the parts are not of this text.
+fn emote_spans(
+    text: &str,
+    parts: &[Value],
+    old: &[(Range<usize>, String)],
+    caret: Option<usize>,
+) -> Option<Vec<(Range<usize>, String)>> {
+    let mut spans: Vec<(Range<usize>, String)> = Vec::new();
+    let mut at = 0;
+    for part in parts {
+        if let Some(plain) = part["t"].as_str() {
+            at += plain.len();
+            continue;
+        }
+        let name = part["e"].as_str()?;
+        let range = at..at + name.len();
+        at = range.end;
+        if text.get(range.clone()) != Some(name) {
+            return None;
+        }
+        let Some(url) = part["u"].as_str().filter(|url| !url.is_empty()) else {
+            continue;
+        };
+        match old.iter().find(|(had, _)| *had == range) {
+            Some((_, id)) => spans.push((range, id.clone())),
+            None if caret == Some(range.end) => {}
+            None => spans.push((range, url.to_owned())),
+        }
+    }
+    if !parts.is_empty() && at != text.len() {
+        return None;
+    }
+    for (range, id) in old {
+        let alone = text[..range.start].chars().next_back().is_none_or(|c| c == ' ')
+            && text[range.end..].chars().next().is_none_or(|c| c == ' ');
+        let taken = spans
+            .iter()
+            .any(|(span, _)| span.start < range.end && range.start < span.end);
+        if alone && !taken {
+            spans.push((range.clone(), id.clone()));
+        }
+    }
+    spans.sort_by_key(|(range, _)| range.start);
+    Some(spans)
+}
+
+/// Put a picked emote at the caret as one picture in the text, with a space on each side.
+fn put_emote(input: &mut InputState, name: &str, url: &str, window: &mut Window, cx: &mut Context<InputState>) {
+    let start = input.selected_range().start;
+    if input.value()[..start].chars().next_back().is_some_and(|c| c != ' ') {
+        input.replace(" ", window, cx);
+    }
+    let token = InlineToken::new(url.to_owned(), name.to_owned());
+    if url.is_empty() || input.replace_with_token(token, window, cx).is_err() {
+        input.replace(name.to_owned(), window, cx);
+    }
+    let caret = input.cursor();
+    if input.value()[caret..].starts_with(' ') {
+        input.set_selected_range(caret + 1..caret + 1, cx);
+    } else {
+        input.insert(" ", window, cx);
+    }
+}
+
+/// An emote in the send box: its picture as tall as the line (its name until the picture is here).
+fn emote_token(token: &InlineTokenContext, owner: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    let file = owner
+        .upgrade()
+        .and_then(|view| view.read(cx).images.get(token.token().id().as_ref()).cloned());
+    let height = token.line_height();
+    div()
+        .flex()
+        .items_center()
+        .h(height)
+        .max_w(token.available_width())
+        .rounded(theme.radius)
+        .when(token.is_selected(), |shown| shown.bg(theme.selection))
+        .when(token.is_disabled(), |shown| shown.opacity(0.5))
+        .child(match file {
+            Some(file) => img(file)
+                .h(height)
+                .flex_shrink_0()
+                .object_fit(ObjectFit::Contain)
+                .into_any_element(),
+            None => div().child(token.token().label().clone()).into_any_element(),
+        })
+        .into_any_element()
+}
+
 fn picture(file: Option<&PathBuf>, height: f32, id: impl Into<ElementId>) -> AnyElement {
     match file {
         Some(file) => img(file.clone())
@@ -900,6 +1163,16 @@ fn color(hex: &str, fallback: Hsla) -> Hsla {
         .map_or(fallback, |value| rgb(value).into())
 }
 
+fn brand_color(platform: &str) -> Hsla {
+    match platform {
+        "twitch" => rgb(0x9146ff).into(),
+        "youtube" => rgb(0xff0033).into(),
+        "kick" => rgb(0x53fc18).into(),
+        "tiktok" => rgb(0x25f4ee).into(),
+        _ => rgb(0x888888).into(),
+    }
+}
+
 /// The user card as the platforms draw theirs: the banner with their picture, name and account age, their
 /// badges and groups, what the platform says, what they said, and what we may do to them.
 pub(super) fn card_body(
@@ -908,6 +1181,7 @@ pub(super) fn card_body(
     images: &HashMap<String, PathBuf>,
     details: bool,
     toggle: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    on_close: CardClose,
     cx: &mut App,
 ) -> impl IntoElement {
     let theme = cx.theme().clone();
@@ -1051,7 +1325,16 @@ pub(super) fn card_body(
                         .icon(Icon::empty().path("icons/x.svg"))
                         .tooltip(label("close"))
                         .accessibility_label(label("close"))
-                        .on_click(|_, window, cx| window.close_dialog(cx)),
+                        .on_click({
+                            let on_close = on_close.clone();
+                            move |_, window, cx| {
+                                if let Some(close) = &on_close {
+                                    close(window, cx);
+                                } else {
+                                    window.close_dialog(cx);
+                                }
+                            }
+                        }),
                 ),
         );
     // Their badges, and the groups they are in.
@@ -1224,6 +1507,7 @@ pub(super) fn card_body(
                 .label(label(act))
                 .on_click({
                     let who = id.split_once('|').map(|(platform, user)| (platform.to_owned(), user.to_owned()));
+                    let on_close = on_close.clone();
                     move |_, window, cx| {
                         // A chat line is the one to act on; a person without one is asked by who they are.
                         let mut request = json!({"request": "StreamerzChat", "op": "act", "act": name, "secs": secs, "id": "chat:act"});
@@ -1235,53 +1519,64 @@ pub(super) fn card_body(
                             _ => request["seq"] = seq.into(),
                         }
                         send(request);
-                        window.close_dialog(cx);
+                        if let Some(close) = &on_close {
+                            close(window, cx);
+                        } else {
+                            window.close_dialog(cx);
+                        }
                     }
                 }),
         );
     }
     let has_actions = card["acts"].as_array().is_some_and(|acts| !acts.is_empty());
-    div().flex().flex_col().w_full().child(banner).child(
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .p_4()
-            .child(badges)
-            .child(group_row)
-            .child(facts)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div().font_weight(FontWeight::BOLD).child(
-                            card[if details { "detailsLabel" } else { "recent" }]
-                                .as_str()
-                                .unwrap_or_default()
-                                .to_owned(),
-                        ),
-                    )
-                    .child(
-                        Button::new("card-details")
-                            .small()
-                            .label(
-                                card[if details { "recentShort" } else { "detailsLabel" }]
+    div()
+        .flex()
+        .flex_col()
+        .w_full()
+        .overflow_hidden()
+        .rounded(theme.radius_lg)
+        .child(banner)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .p_4()
+                .child(badges)
+                .child(group_row)
+                .child(facts)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div().font_weight(FontWeight::BOLD).child(
+                                card[if details { "detailsLabel" } else { "recent" }]
                                     .as_str()
                                     .unwrap_or_default()
                                     .to_owned(),
-                            )
-                            .on_click(toggle),
-                    ),
-            )
-            .child(if details {
-                table.into_any_element()
-            } else {
-                said.into_any_element()
-            })
-            .when(has_actions, |body| body.child(actions)),
-    )
+                            ),
+                        )
+                        .child(
+                            Button::new("card-details")
+                                .small()
+                                .label(
+                                    card[if details { "recentShort" } else { "detailsLabel" }]
+                                        .as_str()
+                                        .unwrap_or_default()
+                                        .to_owned(),
+                                )
+                                .on_click(toggle),
+                        ),
+                )
+                .child(if details {
+                    table.into_any_element()
+                } else {
+                    said.into_any_element()
+                })
+                .when(has_actions, |body| body.child(actions)),
+        )
 }
 
 fn badge_icon(badge: &Value, file: Option<&PathBuf>, at: usize, size: f32) -> AnyElement {
@@ -1345,7 +1640,7 @@ impl Render for PictureTip {
 
 /// What one line says: its badges, the name (a click opens the person's card), the event and the words
 /// with their pictures. A chat list and a person's card draw lines the same way; `at` keeps ids apart.
-fn line_content(line: &Value, images: &HashMap<String, PathBuf>, at: usize, me: &[String], cx: &App) -> Div {
+fn line_content(line: &Value, images: &HashMap<String, PathBuf>, at: usize, me: &[String], cx: &App) -> AnyElement {
     let theme = cx.theme();
     let muted = theme.muted_foreground;
     let seq = line["seq"].as_u64().unwrap_or(0);
@@ -1353,7 +1648,18 @@ fn line_content(line: &Value, images: &HashMap<String, PathBuf>, at: usize, me: 
     let accent = line["accent"].as_str().map(|hex| color(hex, theme.border));
     let name_color = color(line["color"].as_str().unwrap_or_default(), theme.foreground);
     let text_color = if deleted { muted } else { theme.foreground };
-    let mut body = div().flex().flex_wrap().items_center().gap_x_1().flex_1().min_w_0();
+    let mut body = div()
+        .id(("line-content", at))
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap_x_1()
+        .flex_1()
+        .min_w_0();
+    if let Some(orig) = line["original"].as_str().filter(|_| deleted) {
+        let orig = format!("Deleted: {orig}");
+        body = body.tooltip(move |window, cx| Tooltip::new(orig.clone()).build(window, cx));
+    }
     for (index, badge) in line["badges"].as_array().into_iter().flatten().enumerate() {
         let file = badge["url"].as_str().and_then(|url| images.get(url));
         let uid = at * 8 + index;
@@ -1443,19 +1749,38 @@ fn line_content(line: &Value, images: &HashMap<String, PathBuf>, at: usize, me: 
     }
     let action = line["action"] == true;
     let mut emotes = 0;
+    let mut words = 0;
     for part in line["parts"].as_array().into_iter().flatten() {
         if let Some(text) = part["t"].as_str() {
             for word in text.split(' ').filter(|word| !word.is_empty()) {
-                // A tag of one of our own names is a chip, as the platforms draw it; a comma or "!" after it
-                // stays outside.
-                let name = word.trim_end_matches(|c: char| !c.is_alphanumeric());
-                let ours = !deleted
-                    && name.len() > 1
-                    && name.starts_with('@')
-                    && me.iter().any(|mine| *mine == name[1..].to_lowercase());
-                let (chip, rest) = if ours { word.split_at(name.len()) } else { (word, "") };
+                words += 1;
+                let name = word.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_');
+                let is_mention = !deleted && name.len() > 1 && name.starts_with('@');
+                let ours = is_mention && me.iter().any(|mine| *mine == name[1..].to_lowercase());
+                let (chip, rest) = if is_mention {
+                    word.split_at(name.len())
+                } else {
+                    (word, "")
+                };
+                let target_user = if is_mention {
+                    name[1..].to_owned()
+                } else {
+                    String::new()
+                };
+                let line_plat = line["platform"].as_str().unwrap_or("twitch").to_owned();
+                let word_el = div().id(("word", at * 256 + words)).when(is_mention, |el| {
+                    el.cursor_pointer().on_click(move |_, _, _| {
+                        send(json!({
+                            "request": "StreamerzChat",
+                            "op": "card",
+                            "platform": line_plat,
+                            "user": target_user,
+                            "id": "chat:card"
+                        }));
+                    })
+                });
                 body = body.child(
-                    div()
+                    word_el
                         .text_color(if action { name_color } else { text_color })
                         .when(action, |word| word.italic())
                         .when(deleted, |word| word.line_through())
@@ -1498,7 +1823,7 @@ fn line_content(line: &Value, images: &HashMap<String, PathBuf>, at: usize, me: 
     if let Some(file) = line["gif"].as_str().and_then(|url| images.get(url)) {
         body = body.child(picture(Some(file), 96., ("gif", at)));
     }
-    body
+    body.into_any_element()
 }
 
 impl ChatView {
@@ -1545,8 +1870,8 @@ impl ChatView {
                 .into_any_element();
         }
         let accent = line["accent"].as_str().map(|hex| color(hex, theme.border));
-        let name = line["user"].as_str().unwrap_or_default().to_owned();
-        let body = line_content(line, &self.images, at, &self.me, cx);
+        let line_id = if seq > 0 { seq as usize } else { at };
+        let body = line_content(line, &self.images, line_id, &self.me, cx);
         let mut column = div().flex().flex_col().flex_1().min_w_0().gap_0p5();
         if let Some(tag) = line["tag"].as_str() {
             column = column.child(
@@ -1594,7 +1919,10 @@ impl ChatView {
             .flatten()
             .map(|part| part["t"].as_str().or_else(|| part["e"].as_str()).unwrap_or_default())
             .collect::<String>();
-        let (user_id, who) = (line["userId"].as_str().unwrap_or_default().to_owned(), name.clone());
+        let (user_id, who) = (
+            line["userId"].as_str().unwrap_or_default().to_owned(),
+            line["user"].as_str().unwrap_or_default().to_owned(),
+        );
         let view = this.downgrade();
         let shown = self.shown(seq);
         // The actions of this message, on the line while the pointer is over it (the right click has them too).
@@ -1666,9 +1994,11 @@ impl ChatView {
         }
         let has_bar = !acts.is_empty();
         let hover = theme.muted.opacity(0.35);
+        // Ours, waiting for the platform's copy: dimmed until it comes.
+        let pending = line["pending"] == true;
         div()
             .id(("line", at))
-            .opacity(shown)
+            .opacity(if pending { shown * 0.5 } else { shown })
             .relative()
             .group(group)
             .hover(move |style| style.bg(hover))
@@ -2091,19 +2421,49 @@ impl ChatView {
                         Input::new(&input)
                             .small()
                             .disabled(!can_send)
-                            .aria_label(text("sendPlaceholder")),
+                            .aria_label(text("sendPlaceholder"))
+                            .token({
+                                let owner = cx.entity().downgrade();
+                                move |token, _, cx| emote_token(token, &owner, cx)
+                            }),
                     ),
             )
-            .child(
-                Button::new(SharedString::from(format!("chat-emotes-{pane}")))
-                    .small()
-                    .ghost()
-                    .icon(Icon::empty().path("icons/smile.svg"))
-                    .disabled(!can_send)
-                    .tooltip(text("emoteTip"))
-                    .accessibility_label(text("emoteTip"))
-                    .on_click(cx.listener(move |view, _, window, cx| view.open_picker(pane, window, cx))),
-            )
+            .child({
+                let is_picker_open = self.picker.is_some() && self.asking == Some(pane);
+                let owner = cx.entity().downgrade();
+                let owner_change = owner.clone();
+                Popover::new(SharedString::from(format!("chat-emotes-popover-{pane}")))
+                    .anchor(Anchor::BottomRight)
+                    .open(is_picker_open)
+                    .on_open_change(move |open, window, cx| {
+                        let _ = owner_change.update(cx, |view, cx| {
+                            if *open {
+                                if can_send {
+                                    view.open_picker(pane, window, cx);
+                                }
+                            } else {
+                                view.close_picker(window, cx);
+                            }
+                        });
+                    })
+                    .trigger(
+                        Button::new(SharedString::from(format!("chat-emotes-{pane}")))
+                            .small()
+                            .ghost()
+                            .icon(Icon::empty().path("icons/smile.svg"))
+                            .disabled(!can_send)
+                            .tooltip(text("emoteTip"))
+                            .accessibility_label(text("emoteTip")),
+                    )
+                    .content(move |_, _, cx| {
+                        if let Some(chat) = owner.upgrade() {
+                            if let Some(picker) = chat.read(cx).picker.clone() {
+                                return div().child(picker).into_any_element();
+                            }
+                        }
+                        div().into_any_element()
+                    })
+            })
             .child(
                 Button::new(SharedString::from(format!("chat-send-{pane}")))
                     .small()
@@ -2123,45 +2483,6 @@ impl ChatView {
                     .accessibility_label(text("send"))
                     .on_click(cx.listener(move |view, _, window, cx| view.submit(pane, window, cx))),
             );
-        // What is typed, with the emotes it holds drawn as pictures (1.6.0 drew them inside the box).
-        if let Some((_, parts)) = self.preview.as_ref().filter(|(at, _)| *at == pane) {
-            let mut strip = div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap_x_1()
-                .px_2()
-                .py_1()
-                .min_h(px(30.))
-                .flex_shrink_0()
-                .rounded(theme.radius)
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.table);
-            for (index, part) in parts.iter().enumerate() {
-                if let Some(text) = part["t"].as_str() {
-                    for word in text.split(' ').filter(|word| !word.is_empty()) {
-                        strip = strip.child(div().text_color(theme.muted_foreground).child(word.to_owned()));
-                    }
-                } else if let Some(file) = part["u"].as_str().and_then(|url| self.images.get(url)) {
-                    let tip = PictureTip {
-                        file: Some(file.clone()),
-                        art: None,
-                        name: part["e"].as_str().unwrap_or_default().to_owned(),
-                        height: 112.,
-                    };
-                    strip = strip.child(
-                        div()
-                            .id(("preview-emote", pane * 64 + index))
-                            .child(picture(Some(file), 24., ("preview-picture", pane * 64 + index)))
-                            .tooltip(move |_, cx| cx.new(|_| tip.clone()).into()),
-                    );
-                } else if let Some(name) = part["e"].as_str() {
-                    strip = strip.child(div().text_color(theme.muted_foreground).child(name.to_owned()));
-                }
-            }
-            column = column.child(strip);
-        }
         // The commands or names that fit what is typed, over the list above the box.
         if let Some(open) = self.suggest.as_ref().filter(|open| open.pane == pane) {
             let mut popup = div()
@@ -2248,6 +2569,7 @@ impl Render for ChatView {
             .cloned()
             .collect();
         let idle = chat["connected"] == false && self.lines.is_empty();
+        let history_off = chat["historyDisabled"] == true;
         // The top bar: what the chat shows, then the page's actions.
         let mut shows = div()
             .flex()
@@ -2262,6 +2584,41 @@ impl Render for ChatView {
                     .when(narrow, |select| select.flex_1())
                     .when(!narrow, |select| select.w(px(136.)))
                     .child(Select::new(select).small().disabled(present.is_empty())),
+            );
+        }
+        if let Some(total) = chat["totalViewers"].as_str() {
+            let breakdown: String = chat["viewersBreakdown"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|item| {
+                            let plat = item.get(0)?.as_str()?;
+                            let count = item.get(1)?.as_str()?;
+                            Some(format!("{plat}: {count}"))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            let viewers_tip = if breakdown.is_empty() {
+                format!("{}: {total}", text("viewers"))
+            } else {
+                format!("{}: {total} ({breakdown})", text("viewers"))
+            };
+            shows = shows.child(
+                div()
+                    .id("chat-total-viewers")
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .px_1p5()
+                    .py_0p5()
+                    .rounded(theme.radius)
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .tooltip(move |window, cx| Tooltip::new(viewers_tip.clone()).build(window, cx))
+                    .child(Icon::empty().path("icons/users.svg").size_3().flex_shrink_0())
+                    .child(div().child(total.to_owned())),
             );
         }
         let action = |id: &'static str, label: String, icon: &'static str| {
@@ -2296,16 +2653,12 @@ impl Render for ChatView {
                 )
             })
             .child(
-                action(
-                    "message-all",
-                    text("messageAll"),
-                    if idle { "megaphone" } else { "send" },
-                )
-                .disabled(idle)
-                .on_click(cx.listener(|view, _, window, cx| {
-                    view.reply = None;
-                    view.message_all(window, cx);
-                })),
+                action("message-all", text("messageAll"), "megaphone")
+                    .disabled(idle || history_off)
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        view.reply = None;
+                        view.message_all(window, cx);
+                    })),
             )
             .child(
                 Button::new("chat-options")
@@ -2332,35 +2685,214 @@ impl Render for ChatView {
         if !self.error.is_empty() {
             page = page.child(super::notice::error(&self.error, cx));
         }
-        for pin in chat["pins"].as_array().into_iter().flatten() {
+        if history_off {
             page = page.child(
                 div()
                     .flex()
                     .items_center()
                     .gap_2()
-                    .px_2()
-                    .py_1()
+                    .px_3()
+                    .py_1p5()
                     .rounded(theme.radius)
+                    .bg(theme.muted.opacity(0.4))
                     .border_1()
                     .border_color(theme.border)
                     .text_xs()
-                    .child(Icon::empty().path("icons/pin.svg").size_3().flex_shrink_0())
+                    .text_color(theme.muted_foreground)
+                    .child(Icon::empty().path("icons/eye-off.svg").size_3p5().flex_shrink_0())
+                    .child(div().child(text("off"))),
+            );
+        }
+        for (poll_idx, poll) in chat["polls"].as_array().into_iter().flatten().enumerate() {
+            let platform = poll["platform"].as_str().unwrap_or("twitch");
+            let is_prediction = poll["prediction"] == true;
+            let kind = if is_prediction {
+                text("prediction")
+            } else {
+                text("poll")
+            };
+            let title = poll["title"].as_str().unwrap_or_default().to_owned();
+            let when = poll["when"].as_str().unwrap_or_default().to_owned();
+            let icon_path = if is_prediction {
+                "icons/trending-up.svg"
+            } else {
+                "icons/vote.svg"
+            };
+            let mut choices_col = div().flex().flex_col().gap_1();
+            for choice in poll["choices"].as_array().into_iter().flatten() {
+                let label = choice["label"].as_str().unwrap_or_default().to_owned();
+                let votes = choice["votes"].as_u64().unwrap_or(0);
+                let share = choice["share"].as_f64().unwrap_or(0.0) as f32;
+                let is_best = choice["best"] == true && votes > 0;
+                let stat = if is_prediction {
+                    votes.to_string()
+                } else {
+                    format!("{}% ({votes})", (share * 100.0).round() as u64)
+                };
+                choices_col = choices_col.child(
+                    div()
+                        .relative()
+                        .h(px(22.))
+                        .rounded(px(4.))
+                        .bg(theme.muted.opacity(0.5))
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .relative()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .px_2()
+                                .size_full()
+                                .text_xs()
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .when(is_best, |t| t.font_weight(FontWeight::BOLD))
+                                        .child(label),
+                                )
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .when(is_best, |t| t.font_weight(FontWeight::BOLD))
+                                        .child(stat),
+                                ),
+                        ),
+                );
+            }
+            page = page.child(
+                div()
+                    .id(SharedString::from(format!("poll-card-{poll_idx}")))
+                    .flex()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .rounded(theme.radius)
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.table)
                     .child(
                         div()
-                            .font_weight(FontWeight::BOLD)
-                            .child(pin["user"].as_str().unwrap_or_default().to_owned()),
+                            .w(px(3.))
+                            .rounded(px(2.))
+                            .bg(brand_color(platform))
+                            .flex_shrink_0(),
                     )
                     .child(
                         div()
                             .flex_1()
+                            .flex()
+                            .flex_col()
+                            .gap_1p5()
                             .min_w_0()
-                            .truncate()
-                            .child(pin["text"].as_str().unwrap_or_default().to_owned()),
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_1p5()
+                                            .child(Icon::empty().path(icon_path).size_3p5().flex_shrink_0())
+                                            .child(div().font_weight(FontWeight::BOLD).child(kind)),
+                                    )
+                                    .when(!when.is_empty(), |header| header.child(div().child(when))),
+                            )
+                            .child(div().font_weight(FontWeight::BOLD).text_sm().child(title))
+                            .child(choices_col),
+                    ),
+            );
+        }
+        for (pin_idx, pin) in chat["pins"].as_array().into_iter().flatten().enumerate() {
+            let platform = pin["platform"].as_str().unwrap_or("twitch");
+            let user = pin["user"].as_str().unwrap_or_default().to_owned();
+            let text_val = pin["text"].as_str().unwrap_or_default().to_owned();
+            let by = pin["by"].as_str().unwrap_or_default().to_owned();
+            let when = pin["when"].as_str().unwrap_or_default().to_owned();
+            let can_unpin = pin["canUnpin"] == true;
+            let msg_id = pin["msgId"].as_str().unwrap_or_default().to_owned();
+            let plat_id = platform.to_owned();
+            page = page.child(
+                div()
+                    .id(SharedString::from(format!("pin-card-{pin_idx}")))
+                    .flex()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .rounded(theme.radius)
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.table)
+                    .child(
+                        div()
+                            .w(px(3.))
+                            .rounded(px(2.))
+                            .bg(brand_color(platform))
+                            .flex_shrink_0(),
                     )
                     .child(
                         div()
-                            .text_color(theme.muted_foreground)
-                            .child(pin["by"].as_str().unwrap_or_default().to_owned()),
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_1()
+                                            .child(Icon::empty().path("icons/pin.svg").size_3().flex_shrink_0())
+                                            .child(div().child(by)),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .when(!when.is_empty(), |header| header.child(div().child(when)))
+                                            .when(can_unpin && !msg_id.is_empty(), |header| {
+                                                header.child(
+                                                    Button::new(SharedString::from(format!("unpin-{pin_idx}")))
+                                                        .xsmall()
+                                                        .ghost()
+                                                        .icon(Icon::empty().path("icons/pin-off.svg"))
+                                                        .tooltip(text("unpin"))
+                                                        .accessibility_label(text("unpin"))
+                                                        .on_click(move |_, _, _| {
+                                                            send(json!({
+                                                                "request": "StreamerzChat",
+                                                                "op": "act",
+                                                                "platform": plat_id,
+                                                                "msgId": msg_id,
+                                                                "act": "unpin",
+                                                                "id": "chat:act"
+                                                            }));
+                                                        }),
+                                                )
+                                            }),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap_1p5()
+                                    .text_xs()
+                                    .child(div().font_weight(FontWeight::BOLD).child(format!("{user}:")))
+                                    .child(div().flex_1().min_w_0().truncate().child(text_val)),
+                            ),
                     ),
             );
         }
@@ -2409,5 +2941,87 @@ impl Render for ChatView {
             _ => div().flex().flex_1().min_h_0().child(self.column(0, None, cx)),
         };
         page.child(body)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::emote_spans;
+    use serde_json::json;
+
+    fn url(name: &str) -> String {
+        format!("https://e/{name}")
+    }
+
+    #[test]
+    fn a_finished_emote_word_becomes_a_picture_and_the_one_being_typed_waits() {
+        let text = "hi Kappa LUL";
+        let parts = [
+            json!({"t": "hi "}),
+            json!({"e": "Kappa", "u": url("Kappa")}),
+            json!({"t": " "}),
+            json!({"e": "LUL", "u": url("LUL")}),
+        ];
+        let spans = emote_spans(text, &parts, &[], Some(text.len())).unwrap();
+        assert_eq!(spans, vec![(3..8, url("Kappa"))]);
+        // With the caret elsewhere both are pictures.
+        let spans = emote_spans(text, &parts, &[], Some(0)).unwrap();
+        assert_eq!(spans, vec![(3..8, url("Kappa")), (9..12, url("LUL"))]);
+    }
+
+    #[test]
+    fn a_picture_keeps_its_own_url_and_one_the_core_does_not_know_stays_while_alone() {
+        let text = "mine Kappa ";
+        let old = vec![
+            (0..4, "https://picked/mine".to_owned()),
+            (5..10, "https://picked/kappa".to_owned()),
+        ];
+        let parts = [
+            json!({"t": "mine "}),
+            json!({"e": "Kappa", "u": url("Kappa")}),
+            json!({"t": " "}),
+        ];
+        let spans = emote_spans(text, &parts, &old, Some(text.len())).unwrap();
+        assert_eq!(spans, old);
+    }
+
+    #[test]
+    fn a_picture_whose_word_grew_goes_back_to_text() {
+        // "Kappa" was a picture and an "s" was typed right after it.
+        let text = "Kappas";
+        let old = vec![(0..5, url("Kappa"))];
+        assert_eq!(emote_spans(text, &[], &old, Some(6)).unwrap(), vec![]);
+        // Grown into another emote: that one, once it is not being typed.
+        let parts = [json!({"e": "Kappas", "u": url("Kappas")})];
+        assert_eq!(emote_spans(text, &parts, &old, Some(6)).unwrap(), vec![]);
+        assert_eq!(
+            emote_spans(text, &parts, &old, None).unwrap(),
+            vec![(0..6, url("Kappas"))]
+        );
+    }
+
+    #[test]
+    fn parts_of_other_text_are_ignored() {
+        let parts = [json!({"t": "hello "}), json!({"e": "Kappa", "u": url("Kappa")})];
+        assert_eq!(emote_spans("hello Kapp", &parts, &[], None), None);
+        assert_eq!(emote_spans("hello Kappa more", &parts, &[], None), None);
+    }
+
+    #[test]
+    fn emotes_next_to_brackets_and_emoji_are_pictures_too() {
+        let text = "RainTime[PETPET] 😀 ";
+        let parts = [
+            json!({"e": "RainTime", "u": url("RainTime")}),
+            json!({"t": "["}),
+            json!({"e": "PETPET", "u": url("PETPET")}),
+            json!({"t": "] "}),
+            json!({"e": "😀", "u": url("smile")}),
+            json!({"t": " "}),
+        ];
+        let spans = emote_spans(text, &parts, &[], Some(text.len())).unwrap();
+        assert_eq!(
+            spans,
+            vec![(0..8, url("RainTime")), (9..15, url("PETPET")), (17..21, url("smile"))]
+        );
     }
 }

@@ -45,6 +45,7 @@ def main():
     parser.add_argument("--down", default="", help="a platform whose chat is disconnected after its lines came")
     parser.add_argument("--fade", type=int, default=0, help="the fade in of new lines, in ms")
     parser.add_argument("--type", default="", help="text typed into the first send box once the lines are in")
+    parser.add_argument("--pick", default="", help="after --type: an emote searched for in the list and picked")
     parser.add_argument("--lines", type=int, default=0, help="extra lines to inject, to test scrolling")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
@@ -143,6 +144,25 @@ def main():
                     subprocess.run(["xdotool", "type", "--delay", "60", args.type], env=env)
                     time.sleep(1.2)
                     print(ui("shot " + str(args.out / f"chat-typed-{args.size}.png")))
+                    # A pick from the list goes in at the caret as a picture.
+                    if args.pick:
+                        button = [e for e in json.loads(ui("bounds Emotes & emoji")) if e.get("enabled", True)]
+                        if button:
+                            b = button[0]
+                            subprocess.run(["xdotool", "mousemove", str(round(b["x"] + b["w"] / 2)), str(round(b["y"] + b["h"] / 2)), "click", "1"], env=env)
+                            time.sleep(1)
+                            subprocess.run(["xdotool", "type", "--delay", "60", args.pick], env=env)
+                            time.sleep(1.5)
+                            print(ui("shot " + str(args.out / f"chat-picker-{args.size}.png")))
+                            search = json.loads(ui("bounds Search emotes"))
+                            if search:
+                                s = search[0]
+                                # The first cell sits under the search box, the hint and the section title.
+                                subprocess.run(["xdotool", "mousemove", str(round(s["x"] + 20)), str(round(s["y"] + s["h"] + 95)), "click", "1"], env=env)
+                                time.sleep(1.2)
+                                print(ui("shot " + str(args.out / f"chat-picked-{args.size}.png")))
+                        else:
+                            print("no emote button found")
                 else:
                     print("no send box found")
             # Hover: an emote shows its picture large; a line shows its actions.
@@ -180,13 +200,15 @@ def main():
                 if json.loads(ui("bounds Options")):
                     break
                 time.sleep(0.25)
-            for label, name in (("Options", "chat-options"),):
+            for label, name in (("Options", "chat-options"), ("Message all", "chat-message-all")):
                 found = [e for e in json.loads(ui("bounds " + label)) if e["label"] == label and e.get("enabled", True)]
                 if found:
                     e = found[0]
                     subprocess.run(["xdotool", "mousemove", str(round(e["x"] + e["w"] / 2)), str(round(e["y"] + e["h"] / 2)), "click", "1"], env=env)
                     time.sleep(1)
                     print(ui("shot " + str(args.out / f"{name}-{args.size}.png")))
+                    subprocess.run(["xdotool", "key", "Escape"], env=env)
+                    time.sleep(0.5)
         finally:
             app.terminate()
             try:

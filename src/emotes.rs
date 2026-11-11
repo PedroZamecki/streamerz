@@ -210,13 +210,21 @@ pub fn twemoji(e: &str) -> String {
 
 /// The third-party or catalog emote called `word` on `platform`, if loaded.
 pub fn third(platform: &str, word: &str) -> Option<String> {
+    let s = store().lock().ok()?;
+    if platform == "all" {
+        return s.lookup[0]
+            .get(word)
+            .or_else(|| s.lookup[1].get(word))
+            .or_else(|| s.lookup[2].get(word))
+            .cloned();
+    }
     let i = match platform {
         "twitch" => 0,
         "kick" => 1,
         "youtube" => 2,
         _ => return None,
     };
-    store().lock().ok()?.lookup[i].get(word).cloned()
+    s.lookup[i].get(word).cloned()
 }
 
 /// What a chatter's own 7TV emotes are: `Some(name -> url)` once looked up, `None` while it's asked.
@@ -301,6 +309,20 @@ fn parse_7tv_personal(v: &Value, x: u8) -> Vec<(String, String)> {
 /// Kick's native `[emote:id:name]` tag for `word`, if loaded from Kick's emote catalog.
 pub fn kick_tag(word: &str) -> Option<String> {
     store().lock().ok()?.kick_tags.get(word).cloned()
+}
+
+/// Remember a Kick native emote tag dynamically (from chat messages or API).
+#[allow(dead_code)]
+pub fn remember_kick_tag(name: &str, id: &str) {
+    if id.is_empty() || name.is_empty() {
+        return;
+    }
+    if let Ok(mut st) = store().lock() {
+        let tag = format!("[emote:{id}:{name}]");
+        let url = format!("https://files.kick.com/emotes/{id}/fullsize");
+        st.kick_tags.entry(name.to_string()).or_insert(tag);
+        st.lookup[1].entry(name.to_string()).or_insert(url);
+    }
 }
 
 /// Sections for `(platform, provider, as_broadcaster)`, merged with `seen` emotes from live chat.
@@ -470,7 +492,20 @@ fn rebuild_lookups(cat: &Catalog) -> [HashMap<String, String>; 3] {
     [tw, kick, yt]
 }
 
+/// Pictures of each platform's own emotes put on disk ahead of the list (two screens of them), so it
+/// opens with them drawn. Files only: nothing is decoded until the list shows it.
+const PREFETCH: usize = 96;
+
+fn prefetch(cat: &Catalog) {
+    for sections in [&cat.twitch_native[0], &cat.twitch_native[1], &cat.kick_native] {
+        for (_, url) in sections.iter().flat_map(|section| &section.emotes).take(PREFETCH) {
+            crate::core::images::lookup(url);
+        }
+    }
+}
+
 fn apply_catalog(cat: Catalog) {
+    prefetch(&cat);
     let lookup = rebuild_lookups(&cat);
     if let Ok(mut st) = store().lock() {
         st.lookup = lookup;
@@ -482,6 +517,7 @@ fn apply_catalog(cat: Catalog) {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct LoadParams {
     cache_key: String,
     file_name: String,
@@ -491,6 +527,8 @@ struct LoadParams {
     tw_bot: Option<(String, String)>,
     kick_slug: String,
     kick_uid: String,
+    kick_user_slug: Option<String>,
+    kick_token: Option<String>,
     yt_chan_id: String,
 }
 
@@ -528,6 +566,19 @@ impl LoadParams {
         // and FFZ sets are the ones chat uses.
         let tw_chan_id = crate::twitch::channel_id(cfg);
         let kick_slug = kick_slug(cfg);
+        let kick_user_slug = cfg
+            .kick
+            .broadcaster
+            .as_ref()
+            .map(|b| b.username.to_lowercase())
+            .filter(|s| !s.is_empty());
+        let kick_token = cfg
+            .kick
+            .broadcaster
+            .as_ref()
+            .map(|b| b.token.access_token.clone())
+            .or_else(|| cfg.kick.bot.as_ref().map(|b| b.token.access_token.clone()))
+            .filter(|t| !t.is_empty());
         let kick_uid = cfg
             .kick
             .channel_id
@@ -540,9 +591,11 @@ impl LoadParams {
         let b_tok = tw_broadcaster.as_ref().map_or("", |(_, t)| t.as_str());
         let bot_id = tw_bot.as_ref().map_or("", |(id, _)| id.as_str());
         let bot_tok = tw_bot.as_ref().map_or("", |(_, t)| t.as_str());
+        let k_user = kick_user_slug.as_deref().unwrap_or("");
+        let k_has_tok = kick_token.is_some();
         let cache_key =
-            format!("{tw_chan_id}:{b_id}:{b_tok}:{bot_id}:{bot_tok}:{kick_slug}:{kick_uid}:{yt_chan_id}:{x}x");
-        let file_id = format!("{tw_chan_id}-{b_id}-{bot_id}-{kick_slug}-{yt_chan_id}-{x}x")
+            format!("{tw_chan_id}:{b_id}:{b_tok}:{bot_id}:{bot_tok}:{kick_slug}:{kick_uid}:{k_user}:{k_has_tok}:{yt_chan_id}:{x}x");
+        let file_id = format!("{tw_chan_id}-{b_id}-{bot_id}-{kick_slug}-{k_user}-{yt_chan_id}-{x}x")
             .chars()
             .map(|c| {
                 if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
@@ -561,6 +614,8 @@ impl LoadParams {
             tw_bot,
             kick_slug,
             kick_uid,
+            kick_user_slug,
+            kick_token,
             yt_chan_id,
         }
     }
@@ -880,15 +935,23 @@ async fn fetch_twitch_account_emotes(
 pub fn parse_kick_emotes_payload(v: &Value) -> (Vec<EmoteSection>, HashMap<String, String>) {
     let mut chan_free = Vec::new();
     let mut chan_sub = Vec::new();
+    let mut collectibles = Vec::new();
+    let mut user_unlocked = Vec::new();
     let mut globals = Vec::new();
     let mut tags = HashMap::new();
     for set in v.as_array().into_iter().flatten() {
-        let is_global = set["id"]
-            .as_str()
-            .is_some_and(|s| s.eq_ignore_ascii_case("global") || s.eq_ignore_ascii_case("emojis"))
-            || set["name"]
-                .as_str()
-                .is_some_and(|s| s.eq_ignore_ascii_case("global") || s.eq_ignore_ascii_case("emojis"));
+        let id_str = set["id"].as_str().unwrap_or_default();
+        let name_str = set["name"].as_str().unwrap_or_default();
+        let is_global = id_str.eq_ignore_ascii_case("global")
+            || id_str.eq_ignore_ascii_case("emojis")
+            || name_str.eq_ignore_ascii_case("global")
+            || name_str.eq_ignore_ascii_case("emojis");
+        let is_collectible_set =
+            id_str.to_lowercase().contains("collectible") || name_str.to_lowercase().contains("collectible");
+        let is_user_set = id_str.eq_ignore_ascii_case("user")
+            || id_str.eq_ignore_ascii_case("unlocked")
+            || name_str.to_lowercase().contains("user");
+
         for e in set["emotes"].as_array().into_iter().flatten() {
             let id = e["id"]
                 .as_u64()
@@ -907,6 +970,10 @@ pub fn parse_kick_emotes_payload(v: &Value) -> (Vec<EmoteSection>, HashMap<Strin
             let sub_only = e["subscribers_only"].as_bool().unwrap_or(false);
             let dst = if is_global {
                 &mut globals
+            } else if is_collectible_set || name.to_lowercase().starts_with("collectibles") {
+                &mut collectibles
+            } else if is_user_set {
+                &mut user_unlocked
             } else if sub_only {
                 &mut chan_sub
             } else {
@@ -925,11 +992,25 @@ pub fn parse_kick_emotes_payload(v: &Value) -> (Vec<EmoteSection>, HashMap<Strin
             emotes: chan_free,
         });
     }
+    if !collectibles.is_empty() {
+        secs.push(EmoteSection {
+            title: tr("emotes.kick_collectibles").into(),
+            note: None,
+            emotes: collectibles,
+        });
+    }
     if !chan_sub.is_empty() {
         secs.push(EmoteSection {
             title: tr("emotes.kick_subscriber_emotes").into(),
             note: None,
             emotes: chan_sub,
+        });
+    }
+    if !user_unlocked.is_empty() {
+        secs.push(EmoteSection {
+            title: tr("emotes.user_unlocked_emotes").into(),
+            note: None,
+            emotes: user_unlocked,
         });
     }
     if !globals.is_empty() {
@@ -942,24 +1023,75 @@ pub fn parse_kick_emotes_payload(v: &Value) -> (Vec<EmoteSection>, HashMap<Strin
     (secs, tags)
 }
 
-async fn fetch_kick_native(slug: &str) -> (Vec<EmoteSection>, HashMap<String, String>) {
-    if slug.is_empty() {
-        return (Vec::new(), HashMap::new());
-    }
-    let headers = [
+async fn fetch_kick_native(
+    slug: &str,
+    user_slug: Option<&str>,
+    token: Option<&str>,
+) -> (Vec<EmoteSection>, HashMap<String, String>) {
+    let mut headers = vec![
         ("Accept".to_string(), "application/json".to_string()),
         (
             "User-Agent".to_string(),
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36".to_string(),
         ),
     ];
-    let url = format!("https://kick.com/emotes/{}", crate::commands::url_encode(slug));
-    let (status, body) = get_json(&url, &headers).await;
-    if status == 200 {
-        parse_kick_emotes_payload(&body)
-    } else {
-        (Vec::new(), HashMap::new())
+    if let Some(tok) = token.filter(|t| !t.is_empty()) {
+        headers.push(("Authorization".to_string(), format!("Bearer {tok}")));
     }
+
+    let mut all_secs: Vec<EmoteSection> = Vec::new();
+    let mut all_tags: HashMap<String, String> = HashMap::new();
+
+    let mut merge = |(new_secs, new_tags): (Vec<EmoteSection>, HashMap<String, String>)| {
+        all_tags.extend(new_tags);
+        for s in new_secs {
+            if let Some(existing) = all_secs.iter_mut().find(|e| e.title == s.title) {
+                for (name, url) in s.emotes {
+                    if !existing.emotes.iter().any(|(n, _)| n == &name) {
+                        existing.emotes.push((name, url));
+                    }
+                }
+            } else {
+                all_secs.push(s);
+            }
+        }
+    };
+
+    // 1. If user is authenticated, query /emotes to get user unlocked sets / collectibles
+    if token.is_some() {
+        let (status, body) = get_json("https://kick.com/emotes", &headers).await;
+        if status == 200 {
+            merge(parse_kick_emotes_payload(&body));
+        }
+    }
+
+    // 2. Fetch channel emotes for the channel slug (or user_slug if slug is empty)
+    let target_slug = if !slug.is_empty() {
+        slug
+    } else {
+        user_slug.unwrap_or_default()
+    };
+
+    if !target_slug.is_empty() {
+        let url = format!("https://kick.com/emotes/{}", crate::commands::url_encode(target_slug));
+        let (status, body) = get_json(&url, &headers).await;
+        if status == 200 {
+            merge(parse_kick_emotes_payload(&body));
+        }
+    }
+
+    // 3. If broadcaster slug is different from channel slug, also fetch broadcaster's own channel emotes
+    if let Some(u_slug) = user_slug {
+        if !u_slug.is_empty() && u_slug != target_slug {
+            let url = format!("https://kick.com/emotes/{}", crate::commands::url_encode(u_slug));
+            let (status, body) = get_json(&url, &headers).await;
+            if status == 200 {
+                merge(parse_kick_emotes_payload(&body));
+            }
+        }
+    }
+
+    (all_secs, all_tags)
 }
 
 /// A 7TV GraphQL answer (its REST answers carry every emote's whole description: 2 MB for a big set,
@@ -1028,7 +1160,7 @@ async fn fetch_all(p: &LoadParams) -> Catalog {
         get_json("https://7tv.io/v3/emote-sets/global", &[]),
         fetch_twitch_account_emotes(&p.tw_chan_id, p.tw_broadcaster.as_ref(), false, x),
         fetch_twitch_account_emotes(&p.tw_chan_id, p.tw_bot.as_ref(), true, x),
-        fetch_kick_native(&p.kick_slug),
+        fetch_kick_native(&p.kick_slug, p.kick_user_slug.as_deref(), p.kick_token.as_deref()),
     );
 
     let ffz_global = parse_ffz_vec(&ffz_global_v["sets"], x);
@@ -1112,17 +1244,41 @@ async fn fetch_all(p: &LoadParams) -> Catalog {
         secs
     };
 
-    let bot_7tv_extra = match p.tw_bot.as_ref().map(|(id, _)| id.as_str()) {
-        Some(bot_id) if !bot_id.is_empty() && bot_id != p.tw_chan_id => {
-            Some(fetch_7tv_user_set("twitch", bot_id, x).await.1)
+    let broad_7tv_personal = match p.tw_broadcaster.as_ref().map(|(id, _)| id.as_str()) {
+        Some(b_id) if !b_id.is_empty() => {
+            let set = fetch_7tv_personal("TWITCH", b_id, x).await;
+            (!set.is_empty()).then_some(set)
         }
         _ => None,
     };
-    let twitch_7tv = [build_tw_7tv(None), build_tw_7tv(bot_7tv_extra)];
+    let bot_7tv_extra = match p.tw_bot.as_ref().map(|(id, _)| id.as_str()) {
+        Some(bot_id) if !bot_id.is_empty() => {
+            let mut set = fetch_7tv_personal("TWITCH", bot_id, x).await;
+            if bot_id != p.tw_chan_id {
+                let (_, user_set) = fetch_7tv_user_set("twitch", bot_id, x).await;
+                for (k, v) in user_set {
+                    if !set.iter().any(|(n, _)| n == &k) {
+                        set.push((k, v));
+                    }
+                }
+            }
+            (!set.is_empty()).then_some(set)
+        }
+        _ => None,
+    };
+    let twitch_7tv = [build_tw_7tv(broad_7tv_personal), build_tw_7tv(bot_7tv_extra)];
 
     // Kick 7TV
     let mut kick_7tv = Vec::new();
     if !p.kick_uid.is_empty() {
+        let personal = fetch_7tv_personal("KICK", &p.kick_uid, x).await;
+        if !personal.is_empty() {
+            kick_7tv.push(EmoteSection {
+                title: tr("emotes.account_7tv").into(),
+                note: None,
+                emotes: personal,
+            });
+        }
         let (_, k7) = fetch_7tv_user_set("kick", &p.kick_uid, x).await;
         kick_7tv.push(EmoteSection {
             title: tr("emotes.channel_7tv").into(),
@@ -1309,5 +1465,32 @@ mod tests {
         assert_eq!(secs.len(), 3);
         assert_eq!(tags.get("KEKW").map(String::as_str), Some("[emote:37226:KEKW]"));
         assert_eq!(tags.get("chanSub").map(String::as_str), Some("[emote:1002:chanSub]"));
+    }
+
+    #[test]
+    fn parses_kick_collectibles_and_remembers_tags() {
+        let payload = json!([
+            {
+                "id": "collectibles",
+                "name": "Collectibles",
+                "emotes": [
+                    { "id": 5748016, "name": "collectiblesWIDEGIGACHAD", "subscribers_only": false }
+                ]
+            }
+        ]);
+        let (secs, tags) = parse_kick_emotes_payload(&payload);
+        assert_eq!(secs.len(), 1);
+        assert_eq!(secs[0].title, tr("emotes.kick_collectibles"));
+        assert_eq!(secs[0].emotes[0].0, "collectiblesWIDEGIGACHAD");
+        assert_eq!(
+            tags.get("collectiblesWIDEGIGACHAD").map(String::as_str),
+            Some("[emote:5748016:collectiblesWIDEGIGACHAD]")
+        );
+
+        remember_kick_tag("collectiblesWIDEGIGACHAD", "5748016");
+        assert_eq!(
+            kick_tag("collectiblesWIDEGIGACHAD"),
+            Some("[emote:5748016:collectiblesWIDEGIGACHAD]".into())
+        );
     }
 }

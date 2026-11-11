@@ -907,12 +907,13 @@ pub fn kick_emotes(text: &str) -> Vec<(String, String)> {
     while let Some(i) = rest.find("[emote:") {
         let Some(j) = rest[i..].find(']') else { break };
         let tag = &rest[i..i + j + 1];
-        if tag[7..tag.len() - 1]
-            .split_once(':')
-            .is_some_and(|(id, _)| id.bytes().all(|b| b.is_ascii_digit()))
-        {
-            let id = tag[7..].split(':').next().unwrap_or("");
-            out.push((tag.to_string(), format!("https://files.kick.com/emotes/{id}/fullsize")));
+        if let Some((id, name)) = tag[7..tag.len() - 1].split_once(':') {
+            if id.bytes().all(|b| b.is_ascii_digit()) {
+                if !name.is_empty() {
+                    crate::emotes::remember_kick_tag(name, id);
+                }
+                out.push((tag.to_string(), format!("https://files.kick.com/emotes/{id}/fullsize")));
+            }
         }
         rest = &rest[i + j + 1..];
     }

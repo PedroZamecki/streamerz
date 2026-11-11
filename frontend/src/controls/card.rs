@@ -114,6 +114,6 @@ impl Render for Card {
                 cx.notify();
             });
         };
-        super::chat::card_body(&self.route, &card, &self.images, self.details, toggle, cx)
+        super::chat::card_body(&self.route, &card, &self.images, self.details, toggle, None, cx)
     }
 }
