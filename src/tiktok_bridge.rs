@@ -316,7 +316,7 @@ pub fn write_setup_page(
 fn write_files(c: &crate::Config) -> Result<PathBuf, String> {
     let dir = folder();
     std::fs::create_dir_all(&dir).map_err(|err| format!("can't create {}: {err}", dir.display()))?;
-    let settings = json!({"url": server_url(c), "token": c.tiktok.bridge_token});
+    let settings = json!({"url": server_url(c), "token": c.tiktok.bridge_token, "build": build()});
     let config = format!("self.STREAMERZ = {settings};\n");
     let config_json = settings.to_string();
     let files = FILES.iter().map(|(n, b)| (*n, *b)).chain([
@@ -332,6 +332,18 @@ fn write_files(c: &crate::Config) -> Result<PathBuf, String> {
         write_private(&path, bytes).map_err(|err| format!("can't write {}: {err}", path.display()))?;
     }
     Ok(dir)
+}
+
+/// A fingerprint of the extension's files: the extension restarts itself when it changes (a new
+/// Streamerz wrote new ones), so the browser never runs old code against this version.
+fn build() -> String {
+    use sha2::Digest;
+    let mut hash = sha2::Sha256::new();
+    for (name, bytes) in FILES {
+        hash.update(name.as_bytes());
+        hash.update(bytes);
+    }
+    hash.finalize()[..6].iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Only the owner can read them: config.js holds the token.

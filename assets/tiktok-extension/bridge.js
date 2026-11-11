@@ -175,11 +175,17 @@ async function pairFromOpenTabs() {
   }
 }
 
+// The files this copy was started with (config.json's "build"): when Streamerz writes new ones, the
+// next connection attempt restarts the extension once, so the browser runs them.
+let loadedBuild;
 async function settings() {
   try {
     const response = await fetch(chrome.runtime.getURL("config.json"), { cache: "no-store" });
     if (response.ok) {
       const s = await response.json();
+      const build = s.build || "";
+      if (loadedBuild === undefined) loadedBuild = build;
+      else if (build !== loadedBuild) { chrome.runtime.reload(); return null; }
       if (s.url && s.token) return s;
     }
   } catch {}
