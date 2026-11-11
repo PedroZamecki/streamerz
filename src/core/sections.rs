@@ -525,6 +525,9 @@ pub fn set(engine: &Rc<Engine>, domain: &str, key: &str, value: &Value) -> Resul
             let value = need_bool()?;
             engine.change(|config| config.start_hidden = value);
         }
+        ("accounts", key) if key.ends_with(".autostart") => {
+            super::accounts::set_autostart(engine, key.trim_end_matches(".autostart"), need_bool()?)?;
+        }
         ("settings", "autostart") => {
             let value = need_bool()?;
             engine.change(|config| config.autostart = value);

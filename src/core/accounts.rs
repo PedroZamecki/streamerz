@@ -707,17 +707,19 @@ fn accounts(engine: &Rc<Engine>) -> Vec<Value> {
                 ("off", trf("accounts.off_why", &[("why", &why)]))
             }
         };
-        let mut advanced = button("advanced", &format!("{}…", tr("btn.advanced")), "sliders-horizontal");
-        advanced["form"] = format!("account_{slug}").into();
-        advanced["tooltip"] = tr("accounts.advanced_tooltip").into();
-        let mut rows = vec![json!({"status": state(health, &text), "control": buttons(vec![
-            if active {
-                button(&format!("{slug}.disconnect"), tr("btn.disconnect"), "unplug")
-            } else {
-                button(&format!("{slug}.connect"), tr("btn.connect"), "plug")
-            },
-            advanced,
-        ])})];
+        let mut line = vec![if active {
+            button(&format!("{slug}.disconnect"), tr("btn.disconnect"), "unplug")
+        } else {
+            button(&format!("{slug}.connect"), tr("btn.connect"), "plug")
+        }];
+        // The rarely needed settings, behind the gear (TikTok has none).
+        if external_fields(&format!("account_{slug}")).is_some() {
+            let mut settings = button("settings", tr("accounts.settings_tooltip"), "settings");
+            settings["form"] = format!("account_{slug}").into();
+            settings["icon_only"] = true.into();
+            line.push(settings);
+        }
+        let mut rows = vec![json!({"status": state(health, &text), "control": buttons(line)})];
         if p != P::TikTok {
             for bot in [false, true] {
                 let name = p.raw_account_name(&config, bot);
@@ -769,6 +771,10 @@ fn accounts(engine: &Rc<Engine>) -> Vec<Value> {
             }
             rows.push(sending);
         }
+        rows.push(
+            json!({"key": format!("{slug}.autostart"), "label": tr("accounts.autostart"),
+            "value": tr("accounts.autostart_about"), "muted": true, "control": {"type": "switch", "value": p.auto(&config)}}),
+        );
         sections.push(section(p.name(), slug, rows));
     }
     sections.push(section("", "", vec![json!({"about": tr("accounts.guide")})]));
@@ -777,7 +783,7 @@ fn accounts(engine: &Rc<Engine>) -> Vec<Value> {
 
 /// Whose chat is read: the typed channel (or "your own"), and what the logged-in account is there.
 fn channel_row(engine: &Rc<Engine>, p: P, config: &crate::Config) -> Value {
-    let shown = p.typed_channel(config).to_owned();
+    let shown = typed_channel(engine, p, config);
     // A channel that was picked shows as the platform writes it ("umaNanaAi"), with its picture.
     let room = if shown.is_empty() {
         Value::Null
@@ -789,10 +795,9 @@ fn channel_row(engine: &Rc<Engine>, p: P, config: &crate::Config) -> Value {
         .filter(|name| !name.is_empty())
         .map_or(shown, str::to_owned);
     let (role, _) = crate::roles::get(&p.name().to_lowercase());
-    let whose = if p.channel(config).is_empty() || p.raw_account_name(config, false).is_none() {
+    // "Your own channel" says whose it is; another one says what the account is there.
+    let whose = if shown.is_empty() || p.raw_account_name(config, false).is_none() {
         String::new()
-    } else if p.own(config) {
-        tr("accounts.channel_yours").into()
     } else if role.moderates() {
         trf("accounts.channel_moderator", &[("role", role.name())])
     } else if role >= crate::roles::Role::Viewer {
@@ -815,6 +820,21 @@ fn channel_row(engine: &Rc<Engine>, p: P, config: &crate::Config) -> Value {
         row["about"] = whose.into();
     }
     row
+}
+
+/// What the channel shows as typed: nothing while it is the account's own (TikTok's: the browser
+/// account's, the one it sends as).
+fn typed_channel(engine: &Rc<Engine>, p: P, config: &crate::Config) -> String {
+    if p == P::TikTok {
+        let user = engine.tiktok_bridge.user();
+        let channel = crate::tiktok::clean_tiktok_channel(&config.tiktok.channel);
+        return if !user.is_empty() && user.eq_ignore_ascii_case(&channel) {
+            String::new()
+        } else {
+            config.tiktok.channel.clone()
+        };
+    }
+    p.typed_channel(config).to_owned()
 }
 
 /// Whether version `a` ("1.2.0") comes before `b`.
@@ -1098,22 +1118,17 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
 
 // Advanced forms
 
-const TWITCH_ADVANCED: &[F] = &[
-    ("autoConnect", "Connect when Streamerz starts", Bool),
-    ("subCounterRollover", "Sub counter rollover (0: never)", Int),
-];
+// The labels are locale keys.
+const TWITCH_ADVANCED: &[F] = &[("subCounterRollover", "accounts.field.sub_counter_rollover", Int)];
 const YOUTUBE_ADVANCED: &[F] = &[
-    ("autoConnect", "Connect when Streamerz starts", Bool),
-    ("videoId", "Video ID (optional)", Text),
-    ("clientId", "Google client ID", Text),
-    ("clientSecret", "Google client secret", Secret),
+    ("videoId", "accounts.field.video_id", Text),
+    ("clientId", "accounts.field.google_client_id", Text),
+    ("clientSecret", "accounts.field.google_client_secret", Secret),
 ];
 const KICK_ADVANCED: &[F] = &[
-    ("autoConnect", "Connect when Streamerz starts", Bool),
-    ("clientId", "Client ID", Text),
-    ("clientSecret", "Client secret", Secret),
+    ("clientId", "accounts.field.client_id", Text),
+    ("clientSecret", "accounts.field.client_secret", Secret),
 ];
-const TIKTOK_ADVANCED: &[F] = &[("autoConnect", "Connect when Streamerz starts", Bool)];
 
 fn advanced_platform(kind: &str) -> Option<P> {
     P::from_slug(kind.strip_prefix("account_")?)
@@ -1125,12 +1140,12 @@ pub fn external_fields(kind: &str) -> Option<&'static [F]> {
         P::Twitch => TWITCH_ADVANCED,
         P::YouTube => YOUTUBE_ADVANCED,
         P::Kick => KICK_ADVANCED,
-        P::TikTok => TIKTOK_ADVANCED,
+        P::TikTok => return None,
     })
 }
 
 fn advanced_item(config: &crate::Config, p: P) -> Value {
-    let mut item = json!({"id": "", "autoConnect": p.auto(config)});
+    let mut item = json!({"id": ""});
     match p {
         P::Twitch => item["subCounterRollover"] = config.twitch.sub_counter_rollover.into(),
         P::YouTube => {
@@ -1162,14 +1177,21 @@ pub fn external_form(engine: &Rc<Engine>, kind: &str) -> Option<Result<Value, St
     let fields = external_fields(kind)?;
     let item = advanced_item(&engine.config(), p);
     let object = item.as_object()?;
-    let mut form = json!({"kind": kind, "title": trf("accounts.advanced_title", &[("platform", p.name())]),
-        "hint": hint(p), "new": item.clone(),
+    // A few plain fields: no JSON to edit.
+    let mut form = json!({"kind": kind, "title": trf("accounts.settings_title", &[("platform", p.name())]),
+        "hint": hint(p), "new": item.clone(), "json": false,
         "fields": fields.iter().map(|(key, label, widget)| json!({
-            "key": key, "label": crate::automation::schema::field_label(label), "widget": widget,
+            "key": key, "label": tr(label), "widget": widget,
             "holds": widget.about(), "value": crate::automation::edits::shown(widget, object.get(*key))})).collect::<Vec<_>>()});
-    form["fields"][0]["label"] = tr("accounts.connect_on_start").into();
     form["item"] = item;
     Some(Ok(form))
+}
+
+/// Whether `platform` connects when Streamerz starts (the Autostart switch on its card).
+pub fn set_autostart(engine: &Rc<Engine>, platform: &str, on: bool) -> Result<(), String> {
+    let p = P::from_slug(platform).ok_or_else(|| format!("accounts has no platform {platform}"))?;
+    engine.change(|config| *p.manual_mut(config) = !on);
+    Ok(())
 }
 
 /// Save an Advanced form's item.
@@ -1182,23 +1204,19 @@ pub fn save_external(engine: &Rc<Engine>, kind: &str, item: crate::model::Obj) -
             .trim()
             .to_owned()
     };
-    let on_start = item.get("autoConnect").and_then(Value::as_bool).unwrap_or(true);
     let rollover = item.get("subCounterRollover").and_then(Value::as_u64).unwrap_or(0);
-    engine.change(|config| {
-        *p.manual_mut(config) = !on_start;
-        match p {
-            P::Kick => {
-                config.kick.client_id = text("clientId");
-                config.kick.client_secret = text("clientSecret");
-            }
-            P::YouTube => {
-                config.youtube.video_id = crate::youtube::clean_youtube_video(&text("videoId"));
-                config.youtube.client_id = text("clientId");
-                config.youtube.client_secret = text("clientSecret");
-            }
-            P::Twitch => config.twitch.sub_counter_rollover = rollover,
-            P::TikTok => {}
+    engine.change(|config| match p {
+        P::Kick => {
+            config.kick.client_id = text("clientId");
+            config.kick.client_secret = text("clientSecret");
         }
+        P::YouTube => {
+            config.youtube.video_id = crate::youtube::clean_youtube_video(&text("videoId"));
+            config.youtube.client_id = text("clientId");
+            config.youtube.client_secret = text("clientSecret");
+        }
+        P::Twitch => config.twitch.sub_counter_rollover = rollover,
+        P::TikTok => {}
     });
     Some(Ok(json!({"saved": kind})))
 }
@@ -1495,7 +1513,7 @@ fn finder(engine: &Rc<Engine>, p: P) -> Value {
     json!({"finder": {
         "platform": p.slug(), "title": trf("find.title", &[("platform", p.name())]),
         "placeholder": tr("find.placeholder"), "searchable": searchable, "note": note,
-        "typed": p.typed_channel(&engine.config()),
+        "typed": typed_channel(engine, p, &engine.config()),
         "labels": {"channel": tr("find.channel"), "followers": tr("find.followers"), "live": tr("find.live"),
             "empty": tr("find.empty"), "searching": tr("find.searching"), "none": tr("find.none"),
             "own": tr("find.own"), "ok": tr("dialogs.ok"), "cancel": tr("dialogs.cancel")},
@@ -1858,7 +1876,8 @@ mod tests {
                 .find(|row| row["key"] == "kick.channel")
                 .unwrap();
             assert_eq!(channel["value"], tr("accounts.channel_placeholder"));
-            assert_eq!(channel["about"], tr("accounts.channel_yours"));
+            // "Your own channel" says it all: no note beside it.
+            assert!(channel["about"].is_null());
             set_channel(&engine, P::Kick, "Bia", None).await;
             let model = read(&engine, "accounts").unwrap();
             let channel = rows(&model)
@@ -1866,43 +1885,76 @@ mod tests {
                 .find(|row| row["key"] == "kick.channel")
                 .unwrap();
             assert_eq!(channel["value"], "Bia");
+            // TikTok's own channel is the browser account's, and says so like the others.
+            engine.tiktok_bridge.test_account("pedro", "1");
+            engine.change(|config| config.tiktok.channel = "@Pedro".into());
+            let model = read(&engine, "accounts").unwrap();
+            let channel = rows(&model)
+                .into_iter()
+                .find(|row| row["key"] == "tiktok.channel")
+                .unwrap();
+            assert_eq!(channel["value"], tr("accounts.channel_placeholder"));
+            engine.change(|config| config.tiktok.channel = "bia".into());
+            let model = read(&engine, "accounts").unwrap();
+            let channel = rows(&model)
+                .into_iter()
+                .find(|row| row["key"] == "tiktok.channel")
+                .unwrap();
+            assert_eq!(channel["value"], "bia");
         });
     }
 
     #[test]
-    fn advanced_forms_edit_start_up_and_credentials_for_each_platform() {
+    fn settings_forms_hold_only_the_rare_settings_and_autostart_is_a_switch_on_the_card() {
         let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         crate::engine::tests::run(async {
             let engine = engine();
-            for kind in ["account_twitch", "account_youtube", "account_kick", "account_tiktok"] {
+            for kind in ["account_twitch", "account_youtube", "account_kick"] {
                 let form = external_form(&engine, kind).unwrap().unwrap();
-                assert_eq!(form["fields"][0]["value"], true, "connects at start by default");
-                assert_eq!(
-                    form["fields"].as_array().unwrap().len(),
-                    external_fields(kind).unwrap().len()
-                );
+                assert_eq!(form["json"], false, "no Edit JSON for a few plain fields");
+                let fields = form["fields"].as_array().unwrap();
+                assert_eq!(fields.len(), external_fields(kind).unwrap().len());
+                assert!(fields
+                    .iter()
+                    .all(|field| field["key"] != "autoConnect"
+                        && !field["label"].as_str().unwrap().starts_with("accounts.")));
             }
+            // TikTok has nothing rare to set: no gear on its card.
+            assert!(external_form(&engine, "account_tiktok").is_none());
             assert!(external_form(&engine, "account_orkut").is_none());
-            let item = json!({"id": "", "autoConnect": false, "videoId": " https://youtu.be/abcdefghijk ", "clientId": " id ", "clientSecret": "shh"});
+            let model = read(&engine, "accounts").unwrap();
+            let gears = model["sections"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|section| section["rows"][0]["control"]["buttons"][1]["icon_only"] == true)
+                .count();
+            assert_eq!(gears, 3);
+            // Autostart is on by default, and its switch turns it off.
+            let autostart = rows(&model)
+                .into_iter()
+                .find(|row| row["key"] == "kick.autostart")
+                .unwrap();
+            assert_eq!(autostart["control"]["value"], true);
+            crate::core::sections::set(&engine, "accounts", "kick.autostart", &json!(false)).unwrap();
+            assert!(engine.config().kick.manual_connect);
+            assert!(crate::core::sections::set(&engine, "accounts", "orkut.autostart", &json!(false)).is_err());
+            let item = json!({"id": "", "videoId": " https://youtu.be/abcdefghijk ", "clientId": " id ", "clientSecret": "shh"});
             save_external(&engine, "account_youtube", item.as_object().unwrap().clone())
                 .unwrap()
                 .unwrap();
             let config = engine.config();
-            assert!(
-                config.youtube.manual_connect
-                    && config.youtube.client_id == "id"
-                    && config.youtube.client_secret == "shh"
-            );
+            assert!(config.youtube.client_id == "id" && config.youtube.client_secret == "shh");
+            assert!(!config.youtube.manual_connect, "the form leaves autostart alone");
             assert_eq!(config.youtube.video_id, "abcdefghijk");
             drop(config);
-            let item = json!({"id": "", "autoConnect": true, "subCounterRollover": 50});
+            let item = json!({"id": "", "subCounterRollover": 50});
             save_external(&engine, "account_twitch", item.as_object().unwrap().clone())
                 .unwrap()
                 .unwrap();
             assert_eq!(engine.config().twitch.sub_counter_rollover, 50);
-            assert!(!engine.config().twitch.manual_connect);
             let form = external_form(&engine, "account_twitch").unwrap().unwrap();
-            assert_eq!(form["fields"][1]["value"], "50");
+            assert_eq!(form["fields"][0]["value"], "50");
         });
     }
 
@@ -2034,10 +2086,14 @@ mod tests {
             let form = ask(json!({"request":"StreamerzEntityForm","kind":"account_kick"}));
             assert_eq!(form["status"], "ok");
             let saved = ask(
-                json!({"request":"StreamerzEditEntity","kind":"account_kick","changes":[{"field":0,"value":false},{"field":1,"value":"abc"}]}),
+                json!({"request":"StreamerzEditEntity","kind":"account_kick","changes":[{"field":0,"value":"abc"}]}),
             );
             assert_eq!(saved["status"], "ok");
-            assert!(engine.config().kick.manual_connect && engine.config().kick.client_id == "abc");
+            assert_eq!(engine.config().kick.client_id, "abc");
+            let set =
+                ask(json!({"request":"StreamerzCoreSetting","domain":"accounts","key":"kick.autostart","value":false}));
+            assert_eq!(set["status"], "ok");
+            assert!(engine.config().kick.manual_connect);
             let status = crate::core::status::summary(&engine);
             assert!(status["connections"]
                 .as_array()

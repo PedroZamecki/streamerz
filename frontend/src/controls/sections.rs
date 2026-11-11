@@ -290,7 +290,8 @@ impl Sections {
                 let login = spec["id"]
                     .as_str()
                     .is_some_and(|id| id.ends_with("login") || id.ends_with("logout"));
-                let icon_only = fold && !login && spec["icon"].is_string();
+                // A gear and the like are always just their icon (the label is its tooltip).
+                let icon_only = (fold && !login && spec["icon"].is_string()) || spec["icon_only"] == true;
                 let mut widget = Button::new((
                     SharedString::from(format!("{key}-{}", spec["id"].as_str().unwrap_or_default())),
                     index,

@@ -1,8 +1,6 @@
 {
   "chat.viewers": "Viewers",
   "chat.viewers_unavailable": "N/A",
-  "accounts.advanced_title": "{platform} - Advanced",
-  "accounts.advanced_tooltip": "Start-up and the rarely needed settings",
   "accounts.browser_login_failed": "{what} login failed: {error}",
   "accounts.browser_login_msg": "Log in with your {what} {who} account in the browser window that opened.\nThis closes by itself when you're done.",
   "accounts.browser_login_title": "{what} login ({who})",
@@ -13,8 +11,6 @@
   "accounts.channel_theirs": "Someone else's: you read and moderate it with your account",
   "accounts.channel_tooltip": "Click to search for a channel. Empty: your own.",
   "accounts.channel_viewer": "Someone else's: you're only a viewer there, so you can read and chat but not moderate. Ask the channel to make you a moderator",
-  "accounts.channel_yours": "Yours",
-  "accounts.connect_on_start": "Connect when Streamerz starts",
   "accounts.guide": "Account is who you log in as. It doesn't have to own the channel: to moderate someone else's chat, type their channel. On Twitch, what needs the owner's login (channel points, bits, polls) is left out.\nChanging the channel starts a clean chat and community for it; the old ones come back if you type it again.",
   "accounts.integrations.intro": "Services your actions can control. Each one stays off, with nothing running, until you set it up.",
   "accounts.keyring_locked_above": "Keyring locked, unlock above",
@@ -168,7 +164,6 @@
   "btn.add": "Add",
   "btn.add_group": "Add group",
   "btn.add_streamerz": "Add Streamerz",
-  "btn.advanced": "Advanced",
   "btn.backup_now": "Back up now",
   "btn.ban": "Ban",
   "btn.blocking": "Blocking",
@@ -1107,5 +1102,15 @@
   "slash.unraid": "Cancel the raid you started",
   "slash.unvip": "Take a user's VIP status away",
   "slash.vip": "Make a user a VIP",
-  "slash.header": "Chat commands"
+  "slash.header": "Chat commands",
+  "accounts.autostart": "Autostart",
+  "accounts.autostart_about": "Connects when Streamerz starts",
+  "accounts.settings_title": "{platform} settings",
+  "accounts.settings_tooltip": "Settings",
+  "accounts.field.sub_counter_rollover": "Sub counter rollover (0: never)",
+  "accounts.field.video_id": "Video ID (optional)",
+  "accounts.field.google_client_id": "Google client ID",
+  "accounts.field.google_client_secret": "Google client secret",
+  "accounts.field.client_id": "Client ID",
+  "accounts.field.client_secret": "Client secret"
 }
