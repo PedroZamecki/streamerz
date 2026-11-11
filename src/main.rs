@@ -1423,6 +1423,8 @@ fn main() {
                 e.plugins_start();
                 e.auto_connect();
             }
+            // A login that needs redoing is asked about now, not when something first uses it.
+            core::accounts::check_logins(&e, !brand::IS_DEV);
             if !brand::IS_DEV && secrets::is_locked() {
                 engine::spawn_secret_recovery(e.clone());
             }

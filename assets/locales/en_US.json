@@ -1116,5 +1116,7 @@
   "conns.check": "Check now if the stream is live",
   "conns.connected_tip": "Connected: chat and events are coming in.",
   "conns.standby_tip": "Ready and waiting for the stream to go live: the chat opens by itself. It checks every minute or so, and at once when OBS, Streamlabs, Twitch or Kick says the stream started.",
-  "conns.off_tip": "Not connected."
+  "conns.off_tip": "Not connected.",
+  "relogin.ask_permissions": "Streamerz now needs more {platform} permissions. Log in again to give them.",
+  "relogin.ask_permissions_bot": "Streamerz now needs more {platform} bot permissions. Log in again to give them."
 }

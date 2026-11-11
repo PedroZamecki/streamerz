@@ -664,6 +664,7 @@ impl Engine {
                 self.cfg.send_replace(next);
                 (self.save)(&self.cfg.borrow());
                 self.auto_connect();
+                crate::core::accounts::check_logins(self, !crate::brand::IS_DEV);
                 crate::host::changed();
             }
         }

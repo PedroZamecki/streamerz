@@ -824,6 +824,12 @@ thread_local! {
     static REFRESHING: Rc<tokio::sync::Mutex<()>> = Rc::default();
 }
 
+/// Renew the logins about to run out, outside a connection (the check at start): a refused one asks
+/// for a new login.
+pub async fn renew_logins(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) {
+    refresh_accounts(engine, cfg, false).await;
+}
+
 /// Refresh broadcaster and/or bot tokens when about to expire (or unconditionally if `force`).
 async fn refresh_accounts(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>, force: bool) {
     refresh_with(

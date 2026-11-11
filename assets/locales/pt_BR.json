@@ -1116,5 +1116,7 @@
   "conns.check": "Verificar agora se a live começou",
   "conns.connected_tip": "Conectado: o chat e os eventos estão chegando.",
   "conns.standby_tip": "Pronto, esperando a live começar: o chat abre sozinho. Verifica a cada minuto mais ou menos, e na hora quando o OBS, o Streamlabs, a Twitch ou a Kick avisam que a transmissão começou.",
-  "conns.off_tip": "Não conectado."
+  "conns.off_tip": "Não conectado.",
+  "relogin.ask_permissions": "O Streamerz agora precisa de mais permissões da {platform}. Entre de novo para concedê-las.",
+  "relogin.ask_permissions_bot": "O Streamerz agora precisa de mais permissões do bot da {platform}. Entre de novo para concedê-las."
 }

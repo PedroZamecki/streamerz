@@ -60,6 +60,18 @@ pub fn login_needed(platform: &'static str, bot: bool) {
     }
 }
 
+/// A login lacks permissions Streamerz now asks for: asked like one that ran out, said as what it is.
+pub fn permissions_needed(platform: &'static str, bot: bool) {
+    if crate::host::relogin(platform, bot) {
+        let key = if bot {
+            "relogin.ask_permissions_bot"
+        } else {
+            "relogin.ask_permissions"
+        };
+        send(Kind::Login, platform, &crate::i18n::trf(key, &[("platform", platform)]));
+    }
+}
+
 /// A toast from the Show Toast sub-action; clicking it fires Toast Activation.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Toast {

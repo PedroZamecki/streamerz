@@ -86,6 +86,14 @@ impl P {
     /// A warning on the account: a locked keyring, an expired token or new scopes.
     fn account_note(self, c: &crate::Config, bot: bool) -> Option<&'static str> {
         let locked = crate::secrets::is_locked();
+        // No token left: the keyring holds it, or the login ran out.
+        let gone = |locked: bool| {
+            tr(if locked {
+                "accounts.note.keyring_locked"
+            } else {
+                "accounts.note.login_expired"
+            })
+        };
         match self {
             P::Twitch => {
                 let a = if bot { &c.twitch.bot } else { &c.twitch.broadcaster }.as_ref()?;
@@ -95,11 +103,7 @@ impl P {
                     crate::twitch::BROADCASTER_SCOPES
                 };
                 if a.token.access_token.is_empty() {
-                    Some(if locked {
-                        tr("accounts.note.keyring_locked")
-                    } else {
-                        tr("accounts.note.login_expired")
-                    })
+                    Some(gone(locked))
                 } else if want.iter().any(|w| !a.token.scope.iter().any(|g| g == w)) {
                     Some(tr("accounts.note.new_permissions"))
                 } else {
@@ -108,13 +112,11 @@ impl P {
             }
             P::YouTube => {
                 let a = if bot { &c.youtube.bot } else { &c.youtube.broadcaster }.as_ref()?;
-                (a.token.access_token.is_empty() && a.token.refresh_token.is_empty() && locked)
-                    .then_some(tr("accounts.note.keyring_locked"))
+                (a.token.access_token.is_empty() && a.token.refresh_token.is_empty()).then(|| gone(locked))
             }
             P::Kick => {
                 let a = if bot { &c.kick.bot } else { &c.kick.broadcaster }.as_ref()?;
-                (a.token.access_token.is_empty() && a.token.refresh_token.is_empty() && locked)
-                    .then_some(tr("accounts.note.keyring_locked"))
+                (a.token.access_token.is_empty() && a.token.refresh_token.is_empty()).then(|| gone(locked))
             }
             P::TikTok => None,
         }
@@ -1312,14 +1314,64 @@ fn logout(engine: &Rc<Engine>, p: P, bot: bool) {
     }
 }
 
+/// Look at every saved login once, whether or not its platform connects (at start, and when the keyring
+/// opens): one that ran out, or lacks permissions Streamerz now needs, is asked about at once instead of
+/// when something first uses it. `remote` also renews the tokens about to run out, which tells a login
+/// the platform turned down (off in dev mode, which shares the logins: a renewal there would spend them).
+pub fn check_logins(engine: &Rc<Engine>, remote: bool) {
+    if crate::secrets::is_locked() {
+        return;
+    }
+    let config = engine.config();
+    let mut present = Vec::new();
+    for p in [P::Twitch, P::YouTube, P::Kick] {
+        for bot in [false, true] {
+            if p.raw_account_name(&config, bot).is_none() {
+                continue;
+            }
+            match p.account_note(&config, bot) {
+                Some(note) if note == tr("accounts.note.new_permissions") => {
+                    crate::notify::permissions_needed(p.name(), bot)
+                }
+                Some(note) if note == tr("accounts.note.login_expired") => crate::notify::login_needed(p.name(), bot),
+                _ => present.push((p, bot)),
+            }
+        }
+    }
+    drop(config);
+    if !remote || present.is_empty() {
+        return;
+    }
+    let engine = engine.clone();
+    tokio::task::spawn_local(async move {
+        let cfg = engine.config_sender();
+        // Each renewal says so itself when the platform refuses it.
+        for (p, bot) in present {
+            match p {
+                P::Twitch => crate::twitch::renew_logins(&engine, &cfg).await,
+                P::YouTube => drop(crate::youtube::token(&engine, &cfg, bot, false).await),
+                P::Kick => drop(crate::kick::token(&engine, &cfg, bot, false).await),
+                P::TikTok => {}
+            }
+        }
+    });
+}
+
 /// A login ran out: ask, in a dialog, whether to log in again now (1.6.0's popup). "Log in" runs the same
 /// login as the Accounts button.
 pub fn ask_relogin(engine: &Rc<Engine>, platform: &'static str, bot: bool) {
     let Some(p) = ALL.into_iter().find(|p| p.name() == platform) else {
         return;
     };
+    // A login that works but lacks what Streamerz now asks for says so, not that it ran out.
+    let permissions = p.account_note(&engine.config(), bot) == Some(tr("accounts.note.new_permissions"));
     let text = trf(
-        if bot { "relogin.ask_bot" } else { "relogin.ask" },
+        match (permissions, bot) {
+            (true, false) => "relogin.ask_permissions",
+            (true, true) => "relogin.ask_permissions_bot",
+            (false, false) => "relogin.ask",
+            (false, true) => "relogin.ask_bot",
+        },
         &[("platform", platform)],
     );
     let answer = crate::host::confirm(text, tr("relogin.later"), tr("relogin.now"));
@@ -1758,9 +1810,11 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .find(|row| row["value"] == "Ana")
+                .find(|row| row["value"].as_str().unwrap_or_default().starts_with("Ana"))
                 .unwrap();
             assert!(account["picture"].is_null());
+            // A saved account with no token left is a login that ran out, and says so.
+            assert_eq!(account["value"], format!("Ana ({})", tr("accounts.note.login_expired")));
         });
     }
 
@@ -2055,6 +2109,76 @@ mod tests {
             assert_eq!(engine.config().kick.channel, "");
             // TikTok's own channel needs the browser account.
             assert!(act(&engine, "accounts", "tiktok.own_channel", "").is_err());
+        });
+    }
+
+    #[test]
+    fn saved_logins_are_checked_at_start_whether_or_not_they_connect() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            // No desktop popups from a test.
+            crate::notify::configure(crate::notify::Settings {
+                login: false,
+                ..Default::default()
+            });
+            let engine = engine();
+            let asked = || {
+                crate::host::RELOGINS
+                    .lock()
+                    .map(|mut queue| std::mem::take(&mut *queue))
+                    .unwrap()
+            };
+            let forget = || {
+                for p in ALL {
+                    for bot in [false, true] {
+                        crate::host::relogin_done(p.name(), bot);
+                    }
+                }
+            };
+            forget();
+            asked();
+            engine.change(|c| {
+                // Twitch: a working token with every permission; Kick: its token is gone.
+                c.twitch.broadcaster = Some(crate::twitch::TwitchAccount {
+                    display_name: "Ana".into(),
+                    token: crate::twitch::TwitchToken {
+                        access_token: "a".into(),
+                        scope: crate::twitch::BROADCASTER_SCOPES
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                });
+                c.twitch.manual_connect = true;
+                c.kick.broadcaster = Some(crate::kick::KickAccount {
+                    username: "Ana".into(),
+                    ..Default::default()
+                });
+            });
+            check_logins(&engine, false);
+            assert_eq!(asked(), vec![("Kick", false)], "asked though Kick never connected");
+            // Asked once: the next check doesn't ask again until it's done.
+            check_logins(&engine, false);
+            assert!(asked().is_empty());
+            // Permissions Streamerz now needs are asked for as such.
+            engine.change(|c| c.twitch.broadcaster.as_mut().unwrap().token.scope.clear());
+            check_logins(&engine, false);
+            assert_eq!(asked(), vec![("Twitch", false)]);
+            let before = super::super::prompts::list().len();
+            ask_relogin(&engine, "Twitch", false);
+            let prompt = serde_json::to_string(&super::super::prompts::list().last().unwrap().content).unwrap();
+            assert!(
+                prompt.contains(&trf("relogin.ask_permissions", &[("platform", "Twitch")])),
+                "{prompt}"
+            );
+            let id = super::super::prompts::list().last().unwrap().id;
+            super::super::prompts::answer(id, json!(false)).unwrap();
+            tokio::task::yield_now().await;
+            assert_eq!(super::super::prompts::list().len(), before);
+            forget();
+            crate::notify::configure(crate::notify::Settings::default());
         });
     }
 
