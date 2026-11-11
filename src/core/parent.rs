@@ -76,6 +76,9 @@ pub async fn run(
                         else { renderer = open(engine.clone(), changes.clone(), requests_tx.clone()); }
                     }
                     Some(Message::Input) => {
+                        // Logins that ran out: each becomes a question in the window (a prompt).
+                        let relogins = crate::host::RELOGINS.lock().map(|mut queue| std::mem::take(&mut *queue)).unwrap_or_default();
+                        for (platform, bot) in relogins { super::accounts::ask_relogin(&engine, platform, bot); }
                         let pending = !super::prompts::list().is_empty() || crate::host::RELOGINS.lock().is_ok_and(|items| !items.is_empty());
                         if pending && renderer.is_none() { renderer = open(engine.clone(), changes.clone(), requests_tx.clone()); }
                     }

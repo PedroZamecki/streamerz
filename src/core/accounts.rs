@@ -735,12 +735,14 @@ fn accounts(engine: &Rc<Engine>) -> Vec<Value> {
                 let mut row = json!({"key": key, "label": label, "control": buttons(vec![label_button])});
                 match &name {
                     Some(name) => {
-                        row["value"] = name.clone().into();
+                        // A warning goes with the name, as 1.6.0 shows it: "Streamer (log in again: ...)".
+                        row["value"] = match p.account_note(&config, bot) {
+                            Some(note) => format!("{name} ({note})"),
+                            None => name.clone(),
+                        }
+                        .into();
                         if let Some(file) = picture(engine, p, bot, name) {
                             row["picture"] = file.into();
-                        }
-                        if let Some(note) = p.account_note(&config, bot) {
-                            row["about"] = note.into();
                         }
                     }
                     None => {
@@ -758,8 +760,14 @@ fn accounts(engine: &Rc<Engine>) -> Vec<Value> {
             let (health, text) = sending_state(&config, bridge);
             let mut set_up = button("tiktok.sending", tr("btn.set_up"), "puzzle");
             set_up["dialog"] = "tiktok_sending".into();
-            rows.push(json!({"key": "tiktok.sending", "label": tr("accounts.row_sending"),
-                "status": state(health, &text), "control": buttons(vec![set_up])}));
+            let mut sending = json!({"key": "tiktok.sending", "label": tr("accounts.row_sending"),
+                "status": state(health, &text), "control": buttons(vec![set_up])});
+            // The browser account's picture, as the other accounts have theirs.
+            let face = account_picture(engine, "tiktok", false);
+            if !face.is_empty() && !bridge.user().is_empty() {
+                sending["picture"] = face.into();
+            }
+            rows.push(sending);
         }
         sections.push(section(p.name(), slug, rows));
     }
@@ -924,7 +932,16 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
             "control": buttons(row_btns),
         });
         if is_advanced {
-            row["about"] = b.data.display().to_string().into();
+            // The home folder as ~, so the path fits beside the buttons.
+            let path = b.data.display().to_string();
+            let home = std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .unwrap_or_default();
+            row["about"] = match path.strip_prefix(&home).filter(|_| !home.is_empty()) {
+                Some(rest) => format!("~{rest}"),
+                None => path,
+            }
+            .into();
         }
         rows.push(row);
     }
@@ -1275,6 +1292,25 @@ fn logout(engine: &Rc<Engine>, p: P, bot: bool) {
     if p == P::Twitch && !bot {
         p.connect(engine, false);
     }
+}
+
+/// A login ran out: ask, in a dialog, whether to log in again now (1.6.0's popup). "Log in" runs the same
+/// login as the Accounts button.
+pub fn ask_relogin(engine: &Rc<Engine>, platform: &'static str, bot: bool) {
+    let Some(p) = ALL.into_iter().find(|p| p.name() == platform) else {
+        return;
+    };
+    let text = trf(
+        if bot { "relogin.ask_bot" } else { "relogin.ask" },
+        &[("platform", platform)],
+    );
+    let answer = crate::host::confirm(text, tr("relogin.later"), tr("relogin.now"));
+    let engine = engine.clone();
+    tokio::task::spawn_local(async move {
+        if answer.await == Ok(true) {
+            login(&engine, p, bot);
+        }
+    });
 }
 
 fn who(bot: bool) -> String {
@@ -1759,7 +1795,12 @@ mod tests {
             );
             let all = rows(&model);
             let account = all.iter().find(|row| row["key"] == "twitch.account").unwrap();
-            assert_eq!(account["value"], "Ana");
+            // The name, with what it needs said beside it, as 1.6.0 shows it (this login lacks scopes).
+            assert_eq!(
+                account["value"],
+                format!("Ana ({})", tr("accounts.note.new_permissions"))
+            );
+            assert!(account["about"].is_null());
             assert_eq!(account["control"]["buttons"][0]["id"], "twitch.logout");
             // The channel box is empty on the account's own channel.
             let channel = all.iter().find(|row| row["key"] == "twitch.channel").unwrap();
@@ -1902,6 +1943,27 @@ mod tests {
                 !model.to_string().contains(&engine.config().tiktok.bridge_token)
                     || engine.config().tiktok.bridge_token.is_empty()
             );
+        });
+    }
+
+    #[test]
+    fn a_login_that_ran_out_asks_in_a_dialog() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = engine();
+            let before = super::super::prompts::list().len();
+            ask_relogin(&engine, "Kick", true);
+            let prompts = super::super::prompts::list();
+            assert_eq!(prompts.len(), before + 1);
+            let asked = serde_json::to_string(&prompts.last().unwrap().content).unwrap();
+            assert!(asked.contains("Kick") && asked.contains(tr("relogin.now")), "{asked}");
+            // "Later" closes it and nothing else happens.
+            super::super::prompts::answer(prompts.last().unwrap().id, json!(false)).unwrap();
+            tokio::task::yield_now().await;
+            assert_eq!(super::super::prompts::list().len(), before);
+            // A platform it doesn't know asks nothing.
+            ask_relogin(&engine, "Nowhere", false);
+            assert_eq!(super::super::prompts::list().len(), before);
         });
     }
 

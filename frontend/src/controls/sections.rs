@@ -588,6 +588,14 @@ impl Render for Sections {
                                     .on_click(cx.listener(move |sections, _, window, cx| {
                                         sections.press(spec.clone(), window, cx)
                                     })),
+                            )
+                            // Whose channel it is, beside the button (1.6.0).
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(about.clone()),
                             ),
                     );
                 } else if let Some(value) = value {
@@ -660,7 +668,18 @@ impl Render for Sections {
                                     .gap(px(7.))
                                     .flex_1()
                                     .min_w_0()
-                                    .pl(px(34.))
+                                    .when(row["picture"].is_null(), |line| line.pl(px(34.)))
+                                    .when_some(row["picture"].as_str(), |line, file| {
+                                        line.child(
+                                            img(std::path::PathBuf::from(file))
+                                                .id(SharedString::from(format!("picture-{key}")))
+                                                .size(px(24.))
+                                                .rounded_full()
+                                                .flex_shrink_0()
+                                                .mr(px(3.))
+                                                .object_fit(ObjectFit::Cover),
+                                        )
+                                    })
                                     .text_color(color)
                                     .child(Icon::empty().path(format!("icons/{icon}.svg")).small().flex_shrink_0())
                                     .child(
@@ -698,7 +717,7 @@ impl Render for Sections {
                             .child(label),
                     );
                 }
-                if !about.is_empty() {
+                if !about.is_empty() && !channel {
                     text = text.child(
                         div()
                             .when(!roomy, |about| about.px(px(3.)).text_size(px(13.4)))

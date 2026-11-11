@@ -950,6 +950,8 @@
   "update.terminal_why": "O Streamerz precisa da sua senha para instalar a atualização em uma pasta protegida. Isto é o que ele executa:",
   "relogin.ask": "O seu login da {platform} expirou. Entre de novo para manter a conexão.",
   "relogin.ask_bot": "O login do bot da {platform} expirou. Entre de novo para manter a conexão.",
+  "relogin.later": "Depois",
+  "relogin.now": "Entrar",
   "accounts.tiktok_sending.loading": "Conectando ao TikTok…",
   "accounts.tiktok_sending.login_needed": "Entre no TikTok no seu navegador",
   "accounts.tiktok_sending.no_browser": "Nenhum Chrome, Edge, Brave, Chromium, Vivaldi ou Opera encontrado. Instale um, ou carregue a extensão à mão pela pasta que Copiar caminho copia.",

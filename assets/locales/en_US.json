@@ -943,6 +943,8 @@
   "update.terminal_why": "Streamerz needs your password to install the update into a protected folder. This is what it runs:",
   "relogin.ask": "Your {platform} login ran out. Log in again to keep it connected.",
   "relogin.ask_bot": "Your {platform} bot login ran out. Log in again to keep it connected.",
+  "relogin.later": "Later",
+  "relogin.now": "Log in",
   "accounts.tiktok_sending.loading": "Connecting to TikTok…",
   "accounts.tiktok_sending.login_needed": "Log in to TikTok in your browser",
   "accounts.tiktok_sending.no_browser": "No Chrome, Edge, Brave, Chromium, Vivaldi or Opera found. Install one, or load the extension by hand from the folder Copy path copies.",
