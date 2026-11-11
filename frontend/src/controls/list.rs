@@ -930,6 +930,8 @@ impl Render for List {
                         DataTable::new(table)
                             .accessibility_label(self.model["title"].as_str().unwrap_or_default().to_owned())
                             .bordered(false)
+                            // Columns shrink to the table's width (rows::fit_widths): never a sideways bar.
+                            .scrollbar_visible(true, false)
                             .header_row_height(px(23.))
                             .with_size(gpui_kit::component::Size::Size(px(28.))),
                     )
