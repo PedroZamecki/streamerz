@@ -32,6 +32,11 @@
     }
     return params;
   };
+  // TikTok's own request signing is running: its old globals, a request it already signed (X-Bogus,
+  // X-Gnarly in the address), or its wrapper in place of the browser's fetch.
+  const signed = () => !!(window.byted_acrawler || window.secsdk)
+    || performance.getEntriesByType("resource").some(e => /[?&]X-(Bogus|Gnarly)=/.test(e.name))
+    || !/\[native code\]/.test(Function.prototype.toString.call(window.fetch));
   async function request(m) {
     if (m.op === "page") {
       const params = common();
@@ -65,7 +70,7 @@
   // Only while loading, never an idle poll.
   (async () => {
     for (let i = 0; i < 50; i++) {
-      if (window.byted_acrawler && window.secsdk && common()) {
+      if (signed() && common()) {
         send({ ready: true });
         try {
           window.requestAnimationFrame = () => 0;
@@ -76,7 +81,7 @@
       await new Promise(resolve => setTimeout(resolve, 500));
     }
     // Given up: say what is missing, so the log tells why.
-    const missing = [!window.byted_acrawler && "signer", !window.secsdk && "security SDK", !common() && "request details"].filter(Boolean);
+    const missing = [!signed() && "signer", !common() && "request details"].filter(Boolean);
     send({ ready: true, error: "TikTok's page didn't finish loading (no " + missing.join(", ") + "). Try again." });
   })();
 })();
