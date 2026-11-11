@@ -4,7 +4,7 @@
 Usage: dev/gpui-shot.py PAGE [PAGE...] [--bin target/fast/Streamerz] [--out target/gpui-shots]
                         [--size 1100x800] [--theme dark|light] [--config JSON-FILE]
 A page is a navigation id ("Queues", "Stream Apps"). A page may be followed by ":STEPS" (separated by ;) run after it loads: a frontend command
-or "click LABEL[#N]" (dblclick: twice) (the Nth match top to bottom), "wait SECONDS", "type TEXT" (into what has the focus), "key NAME" (Return, Escape), for example "Queues:click Add". Each capture is PAGE-SIZE.png.
+or "click LABEL[#N]" (dblclick: twice) (the Nth match top to bottom), "wait SECONDS", "type TEXT" (into what has the focus), "at X Y" (a click there), "key NAME" (Return, Escape), for example "Queues:click Add". Each capture is PAGE-SIZE.png.
 """
 import argparse
 import glob
@@ -102,6 +102,12 @@ def main():
                         time.sleep(float(step[5:]))
                     elif step.startswith("type "):
                         subprocess.run(["xdotool", "type", "--delay", "40", step[5:]], env=env)
+                    elif step.startswith("at "):
+                        # A click at window coordinates, for what has no label to find (the status line).
+                        x, y = step[3:].split()
+                        window = subprocess.run(["xdotool", "search", "--onlyvisible", "--name", "Streamerz"],
+                                                env=env, capture_output=True, text=True).stdout.split()[:1]
+                        subprocess.run(["xdotool", "mousemove", *(["--window", *window] if window else []), x, y, "click", "1"], env=env)
                     elif step.startswith("key "):
                         subprocess.run(["xdotool", "key", step[4:]], env=env)
                     elif step.startswith(("click ", "dblclick ")):
