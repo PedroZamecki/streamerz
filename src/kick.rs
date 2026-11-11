@@ -1716,6 +1716,16 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
             stream_args(&mut args);
             args.insert("channel".into(), channel.into());
             engine.chat_stream("kick", true);
+            // The streamer's own stream started: YouTube and TikTok look at once instead of at their next check.
+            let own = engine
+                .config()
+                .kick
+                .broadcaster
+                .as_ref()
+                .is_some_and(|b| b.username.eq_ignore_ascii_case(channel));
+            if own {
+                engine.notify_stream_started();
+            }
             kick(engine, T_KICK_STREAM_ONLINE, "KickStreamOnline", "StreamOnline", &args);
         }
         "StopStreamBroadcast" | "LivestreamEnded" | "StreamOffline" => {

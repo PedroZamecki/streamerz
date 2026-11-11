@@ -2941,6 +2941,10 @@ pub(crate) fn handle_notification(
             args.insert("tagCount".into(), 0.into());
             args.insert("tags".into(), Value::Array(vec![]));
             engine.chat_stream("twitch", true);
+            // The streamer's own stream started: YouTube and TikTok look at once instead of at their next check.
+            if !other_channel(&cfg.borrow()) {
+                engine.notify_stream_started();
+            }
             engine.fire(
                 T_STREAM_ONLINE,
                 "Stream Online",
