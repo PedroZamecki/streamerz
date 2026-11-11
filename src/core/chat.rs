@@ -1500,7 +1500,7 @@ async fn card(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         "platform": platform, "platformName": name(&platform), "color": name_color(&line), "role": role,
         "picture": picture, "banner": banner, "created": created, "facts": shown, "messages": messages, "groups": groups,
         "badges": badges(engine, &line), "acts": actions(&line, false).into_iter().filter(|act| !matches!(*act, "copy" | "pin" | "unpin")).collect::<Vec<_>>(),
-        "createdText": if created.is_empty() { String::new() } else { trf("card.created_on", &[("date", &created)]) }, "groupsLabel": tr("card.groups"), "noGroups": tr("card.no_groups"),
+        "handle": handle(&line), "createdText": if created.is_empty() { String::new() } else { trf("card.created_on", &[("date", &created)]) }, "groupsLabel": tr("card.groups"), "noGroups": tr("card.no_groups"),
         "groupsTip": tr("card.groups_tip"), "recent": tr("card.recent"),
         "labels": {"timeout": tr("chat.timeout_10m"), "ban": tr("chat.act_ban"), "delete": tr("chat.act_delete_message"),
             "profile": tr("btn.open_profile"), "close": tr("dialogs.close")},
@@ -1509,9 +1509,21 @@ async fn card(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     }}))
 }
 
-/// The person's page on their platform.
+/// The person's page on their platform (TikTok's is at their @handle, not their display name).
 fn engine_profile(platform: &str, line: &Line) -> String {
-    super::pages::profile_url(platform, &line.user, &line.user_id)
+    let login = line
+        .handle
+        .as_deref()
+        .map_or(line.user.as_str(), |handle| handle.trim_start_matches('@'));
+    super::pages::profile_url(platform, login, &line.user_id)
+}
+
+/// The @handle under the name on a card, when the name doesn't already say it (TikTok's nickname).
+fn handle(line: &Line) -> String {
+    match line.handle.as_deref().map(|handle| handle.trim_start_matches('@')) {
+        Some(handle) if !handle.eq_ignore_ascii_case(&line.user) => format!("@{handle}"),
+        _ => String::new(),
+    }
 }
 
 // The Chat options dialog: a sections page like Notifications.
@@ -1717,6 +1729,25 @@ mod tests {
             name_color(&line("kick", "same", "y"))
         );
         assert!(name_color(&line("twitch", "", "x")).starts_with('#'));
+    }
+
+    #[test]
+    fn a_tiktok_card_shows_the_handle_and_links_to_it_not_to_the_nickname() {
+        let line = Line {
+            platform: "tiktok".into(),
+            user: "Knight".into(),
+            user_id: "7".into(),
+            handle: Some("knight.rider".into()),
+            ..Default::default()
+        };
+        assert_eq!(handle(&line), "@knight.rider");
+        assert_eq!(engine_profile("tiktok", &line), "https://tiktok.com/@knight.rider");
+        // The name already is the handle: nothing more to show.
+        let same = Line {
+            user: "knight.rider".into(),
+            ..line
+        };
+        assert_eq!(handle(&same), "");
     }
 
     #[test]

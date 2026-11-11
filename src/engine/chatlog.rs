@@ -1454,6 +1454,12 @@ impl Engine {
                 add("Picture", &picture.into());
                 add("Banner", &banner.into());
             }
+            // TikTok has nothing to ask: its chat messages carry the sender's picture.
+            "tiktok" => {
+                if let Some(seen) = self.chatter(platform, user_id) {
+                    add("Picture", seen.args.get("profilePictureUrl").unwrap_or(&Value::Null));
+                }
+            }
             _ => {}
         }
     }

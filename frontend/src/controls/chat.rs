@@ -1192,9 +1192,11 @@ pub(super) fn card_body(
     let on_banner: Hsla = rgb(0xe4e4e7).into();
     // The banner: their picture behind a dim layer, with the face, the name and when the account began.
     let face = card["picture"].as_str().and_then(|url| images.get(url));
+    let pictured = card["banner"].as_str().is_some_and(|url| images.contains_key(url));
+    // With no banner of their own the band is only as tall as the face needs (no empty stripe).
     let mut banner = div()
         .relative()
-        .h(px(130.))
+        .h(px(if pictured { 130. } else { 96. }))
         .w_full()
         .flex_shrink_0()
         .overflow_hidden()
@@ -1279,6 +1281,12 @@ pub(super) fn card_body(
                                         .truncate()
                                         .child(card["user"].as_str().unwrap_or_default().to_owned()),
                                 ),
+                        )
+                        .when_some(
+                            card["handle"].as_str().filter(|text| !text.is_empty()),
+                            |column, handle| {
+                                column.child(div().text_color(on_banner).truncate().child(handle.to_owned()))
+                            },
                         )
                         .when_some(
                             card["createdText"].as_str().filter(|text| !text.is_empty()),
