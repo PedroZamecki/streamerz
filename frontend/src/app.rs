@@ -481,6 +481,8 @@ impl Frontend {
         cx.notify();
     }
 }
+/// A development build (as `src/brand.rs` decides it: debug, or built without a release version).
+const IS_DEV: bool = cfg!(debug_assertions) || option_env!("STREAMERZ_VERSION").is_none();
 /// The inside of a bottom bar button: a 14px icon and its label (the label hides when the window is small).
 fn bar_content(icon: &'static str, label: &'static str, small: bool, cx: &App) -> impl IntoElement {
     crate::controls::body::button_body(Some(icon), (!small).then(|| label.to_owned()), cx)
@@ -528,21 +530,16 @@ impl Render for Frontend {
             );
         let mut title = self.selected.clone();
         let selected_bg: Hsla = rgb(if cx.theme().is_dark() { 0x2b2b2e } else { 0xdcdcdd }).into();
-        for (section_index, section) in self.navigation.as_array().into_iter().flatten().enumerate() {
+        for section in self.navigation.as_array().into_iter().flatten() {
             navigation = navigation.child(if narrow {
-                // Folded: a line between groups instead of a label (none above the first).
-                div()
-                    .h(px(if section_index == 0 { 1. } else { 18. }))
-                    .flex()
-                    .justify_center()
-                    .child(
-                        div()
-                            .w(px(24.))
-                            .h(px(1.))
-                            .mt(px(10.))
-                            .when(section_index == 0, |line| line.invisible())
-                            .bg(rgb(if cx.theme().is_dark() { 0x2b2b2e } else { 0xdcdcdd })),
-                    )
+                // Folded: a line above each group in place of its label (the first one too).
+                div().h(px(18.)).flex().justify_center().child(
+                    div().w(px(24.)).h(px(1.)).mt(px(10.)).bg(rgb(if cx.theme().is_dark() {
+                        0x2b2b2e
+                    } else {
+                        0xdcdcdd
+                    })),
+                )
             } else {
                 div()
                     .h(px(18.))
@@ -608,8 +605,11 @@ impl Render for Frontend {
             .border_t_1()
             .border_color(rgb(if cx.theme().is_dark() { 0x2b2b2e } else { 0xdcdcdd }))
             .child(
-                // The logo of the look: the dark one on the dark theme, as 1.6.0 draws it.
-                img(if cx.theme().is_dark() {
+                // The logo of the look: the dark one on the dark theme, as 1.6.0 draws it; a development
+                // build has its own (the tray's), so it is never taken for the installed app.
+                img(if IS_DEV {
+                    "brands/streamerz-dev.svg"
+                } else if cx.theme().is_dark() {
                     "brands/streamerz-dark.svg"
                 } else {
                     "brands/streamerz.svg"

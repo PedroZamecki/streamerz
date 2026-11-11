@@ -35,6 +35,7 @@ impl AssetSource for Assets {
             "badges/tiktok-friend.svg" => Some(include_bytes!("../../assets/badges/tiktok-friend.svg")),
             "brands/streamerz.svg" => Some(include_bytes!("../../assets/brand/streamerz.svg")),
             "brands/streamerz-dark.svg" => Some(include_bytes!("../../assets/brand/streamerz-dark.svg")),
+            "brands/streamerz-dev.svg" => Some(include_bytes!("../../assets/brand/streamerz-dev-proposal.svg")),
             "brands/amp.svg" => Some(include_bytes!("../../assets/icons/amp.svg")),
             "brands/antigravity.svg" => Some(include_bytes!("../../assets/icons/antigravity.svg")),
             "brands/auggie.svg" => Some(include_bytes!("../../assets/icons/auggie.svg")),
