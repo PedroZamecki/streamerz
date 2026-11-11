@@ -128,7 +128,13 @@ impl Finder {
         if value["status"] == "error" {
             self.rows.clear();
             self.selected = None;
-            self.status = value["error"].as_str().unwrap_or_default().to_owned();
+            // Shown as a sentence (the core's errors start in lower case).
+            let error = value["error"].as_str().unwrap_or_default();
+            let mut chars = error.chars();
+            self.status = chars
+                .next()
+                .map(|first| first.to_uppercase().chain(chars).collect())
+                .unwrap_or_default();
         } else {
             self.rows = value["channels"].as_array().cloned().unwrap_or_default();
             self.selected = (!self.rows.is_empty()).then_some(0);
@@ -265,8 +271,10 @@ impl Render for Finder {
                     .flex()
                     .items_center()
                     .justify_center()
+                    .px_6()
                     .text_color(muted)
-                    .child(self.status.clone()),
+                    // A long message (an error) wraps inside the list, centred.
+                    .child(div().w_full().text_center().child(self.status.clone())),
             );
         }
         for (at, row) in self.rows.iter().enumerate() {
