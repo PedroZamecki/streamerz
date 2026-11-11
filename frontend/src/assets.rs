@@ -90,6 +90,13 @@ impl AssetSource for Assets {
             "brands/windsurf.svg" => Some(include_bytes!("../../assets/icons/windsurf.svg")),
             "brands/youtube.svg" => Some(include_bytes!("../../assets/icons/youtube.svg")),
             "brands/zed.svg" => Some(include_bytes!("../../assets/icons/zed.svg")),
+            "brands/zen.svg" => Some(include_bytes!("../../assets/icons/zen.svg")),
+            "brands/helium.svg" => Some(include_bytes!("../../assets/icons/helium.svg")),
+            "brands/arc.svg" => Some(include_bytes!("../../assets/icons/arc.svg")),
+            "brands/tor.svg" => Some(include_bytes!("../../assets/icons/tor.svg")),
+            "brands/librewolf.svg" => Some(include_bytes!("../../assets/icons/librewolf.svg")),
+            "brands/waterfox.svg" => Some(include_bytes!("../../assets/icons/waterfox.svg")),
+            "brands/browser.svg" => Some(include_bytes!("../../assets/icons/browser.svg")),
             _ => None,
         };
         if let Some(bytes) = brand {
@@ -158,6 +165,13 @@ impl AssetSource for Assets {
                 "brands/windsurf.svg",
                 "brands/youtube.svg",
                 "brands/zed.svg",
+                "brands/zen.svg",
+                "brands/helium.svg",
+                "brands/arc.svg",
+                "brands/tor.svg",
+                "brands/librewolf.svg",
+                "brands/waterfox.svg",
+                "brands/browser.svg",
             ]
             .into_iter()
             .filter(|asset| asset.starts_with(path))
