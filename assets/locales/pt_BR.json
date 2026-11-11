@@ -958,6 +958,7 @@
   "accounts.tiktok_sending.step_load": "2. No {browser}, ative o modo do desenvolvedor, clique em Carregar sem compactação e cole a pasta (Ctrl+L, Ctrl+V).",
   "accounts.tiktok_sending.step_login": "4. Entre apenas se o TikTok pedir. Seu login atual é reutilizado.",
   "accounts.tiktok_sending.step_login_done": "4. Conectado na TikTok como @{user}. Pode fechar isto.",
+  "accounts.tiktok_sending.store_too_old": "A cópia da extensão da loja do {browser} ({version}) não encontra o Streamerz. Clique no botão ao lado do {browser} e siga a página de configuração para carregar a cópia que o Streamerz mantém, ou atualize a cópia da loja para a {latest} quando a loja a tiver.",
   "accounts.tiktok_sending.step_open": "1. Clique em Configurar ao lado do navegador em que você usa a TikTok.",
   "accounts.tiktok_sending.step_open_done": "1. O {browser} abriu a aba de configuração e a pasta foi copiada.",
   "accounts.tiktok_sending.page_title": "Configurar o Streamerz no {browser}",

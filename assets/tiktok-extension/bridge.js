@@ -149,17 +149,51 @@ async function closeSetupTabs() {
   }
 }
 
+// Where Streamerz is and its pairing token. A copy Streamerz wrote to disk has them in config.json; a
+// copy from a store learns them from the setup page Streamerz opens (#pair=... in its address).
+function pairingFrom(address) {
+  if (!SETUP_RE.test(address || "")) return null;
+  const hash = (address.split("#")[1] || "");
+  const params = new URLSearchParams(hash);
+  const url = params.get("url") || "", token = params.get("token") || "";
+  if (!/^ws:\/\/(127\.0\.0\.1|localhost|\[::1\]):\d+\/streamerz\/tiktok$/.test(url) || !/^[0-9a-f]{64}$/.test(token)) return null;
+  return { url, token };
+}
+
+async function remember(pairing) {
+  const known = await chrome.storage.local.get(["url", "token"]);
+  if (known.url === pairing.url && known.token === pairing.token) return false;
+  await chrome.storage.local.set(pairing);
+  return true;
+}
+
+// A setup page already open (the extension was installed from it, or the browser restarted).
+async function pairFromOpenTabs() {
+  for (const tab of await chrome.tabs.query({})) {
+    const pairing = pairingFrom(tab.url);
+    if (pairing && await remember(pairing)) { ws?.close(); ws = null; }
+  }
+}
+
+async function settings() {
+  try {
+    const response = await fetch(chrome.runtime.getURL("config.json"), { cache: "no-store" });
+    if (response.ok) {
+      const s = await response.json();
+      if (s.url && s.token) return s;
+    }
+  } catch {}
+  const stored = await chrome.storage.local.get(["url", "token"]);
+  return stored.url && stored.token ? stored : null;
+}
+
 async function connect() {
   if (ws || connecting) return;
   connecting = true;
   let s;
-  try {
-    const response = await fetch(chrome.runtime.getURL("config.json"), { cache: "no-store" });
-    if (!response.ok) return;
-    s = await response.json();
-  } catch { return; }
+  try { s = await settings(); }
   finally { connecting = false; }
-  if (!s.url || !s.token) return;
+  if (!s) return;
   const socket = new WebSocket(s.url);
   ws = socket;
   let paired = false;
@@ -191,7 +225,10 @@ chrome.alarms.create("streamerz", { periodInMinutes: 1 });
 chrome.alarms.onAlarm.addListener(connect);
 chrome.runtime.onStartup.addListener(connect);
 // Set up opens its tab in the user's existing profile. Retry there immediately, not a minute later.
-chrome.tabs.onUpdated.addListener((_id, change) => {
+chrome.tabs.onUpdated.addListener(async (_id, change) => {
+  const pairing = pairingFrom(change.url);
+  // A new pairing (Streamerz was set up again, or moved to another port) replaces the old connection.
+  if (pairing && await remember(pairing)) { ws?.close(); ws = null; }
   if (/^(chrome|edge|brave|vivaldi|opera):\/\/extensions\/?/.test(change.url || "") || SETUP_RE.test(change.url || "")) connect();
 });
 chrome.runtime.onInstalled.addListener(async () => {
@@ -202,6 +239,7 @@ chrome.runtime.onInstalled.addListener(async () => {
     if (tab?.pinned && tab.url === PAGE) await chrome.tabs.remove(tabId).catch(() => {});
     await chrome.storage.session.remove("tabId");
   }
+  await pairFromOpenTabs().catch(() => {});
   connect();
 });
-connect();
+pairFromOpenTabs().catch(() => {}).finally(connect);

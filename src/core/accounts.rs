@@ -809,6 +809,12 @@ fn channel_row(engine: &Rc<Engine>, p: P, config: &crate::Config) -> Value {
     row
 }
 
+/// Whether version `a` ("1.2.0") comes before `b`.
+fn older(a: &str, b: &str) -> bool {
+    let parts = |v: &str| v.split('.').map(|n| n.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
+    parts(a) < parts(b)
+}
+
 /// TikTok sending through the browser: its health and a line saying so.
 fn sending_state(config: &crate::Config, bridge: &crate::tiktok_bridge::Bridge) -> (&'static str, String) {
     let (connected, user, ready, error, outdated, version) = (
@@ -867,6 +873,11 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
         bridge.version(),
     );
     let set_up = crate::tiktok_bridge::set_up(&config);
+    // Not connected: the extension's files on disk follow this Streamerz again (its address and token),
+    // whatever changed them. Unchanged files are left alone.
+    if set_up && !connected {
+        crate::tiktok_bridge::refresh(&config);
+    }
     let is_advanced = ADVANCED_SETUP.load(std::sync::atomic::Ordering::Relaxed);
     let browsers = crate::browsers::installed();
     let chosen = picked().or_else(|| crate::browsers::running_browser().map(|b| b.name.to_owned()));
@@ -918,6 +929,14 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
         rows.push(row);
     }
     let installed = connected || known_any;
+    let old_store_copy = if connected {
+        None
+    } else {
+        browsers.iter().find_map(|b| {
+            let version = b.store_copy_version()?;
+            older(&version, "1.3.0").then(|| (b.name.to_owned(), version))
+        })
+    };
     let any_running = browsers.iter().any(|b| b.is_running());
     let logged = connected && ready && !user.is_empty();
     let enabled = |mut button: Value, yes: bool| {
@@ -952,6 +971,19 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
         ("down", error)
     } else if connected {
         ("busy", tr("accounts.tiktok_sending.loading").to_string())
+    } else if let Some((browser, version)) = old_store_copy.clone() {
+        // A store copy older than 1.3.0 has no way to learn where Streamerz is: it waits forever.
+        (
+            "down",
+            trf(
+                "accounts.tiktok_sending.store_too_old",
+                &[
+                    ("browser", &browser),
+                    ("version", &version),
+                    ("latest", crate::tiktok_bridge::EXTENSION_VERSION),
+                ],
+            ),
+        )
     } else if installed && !any_running {
         ("standby", tr("accounts.tiktok_sending.browser_closed").to_string())
     } else if is_advanced {
@@ -1557,12 +1589,13 @@ fn sending(engine: &Rc<Engine>, action: &str) -> Result<Value, String> {
             let b = browsers.get(index).ok_or("no such browser")?;
             let folder = crate::tiktok_bridge::install(engine)?;
             let page = crate::tiktok_bridge::write_setup_page(b.name, b.extensions_page, &folder, b.store_url())?;
-            b.open_setup(&page).map_err(|error| {
-                trf(
-                    "accounts.tiktok_sending.cant_open",
-                    &[("browser", b.name), ("error", &error.to_string())],
-                )
-            })?;
+            b.open_setup(&page, &crate::tiktok_bridge::pairing(&engine.config()))
+                .map_err(|error| {
+                    trf(
+                        "accounts.tiktok_sending.cant_open",
+                        &[("browser", b.name), ("error", &error.to_string())],
+                    )
+                })?;
             if let Ok(mut picked) = PICKED.lock() {
                 *picked = Some(b.name.to_owned());
             }
@@ -1580,24 +1613,24 @@ fn sending(engine: &Rc<Engine>, action: &str) -> Result<Value, String> {
                 tiktok_login(engine);
                 return accepted;
             }
-            let installed = b.has_extension_from(crate::tiktok_bridge::EXTENSION_ID, &crate::tiktok_bridge::folder());
-            if installed {
+            let cant_open = |error: std::io::Error| {
+                trf(
+                    "accounts.tiktok_sending.cant_open",
+                    &[("browser", b.name), ("error", &error.to_string())],
+                )
+            };
+            if bridge.is_connected() {
                 b.command("https://www.tiktok.com/live/history/center")
                     .spawn()
-                    .map_err(|error| {
-                        trf(
-                            "accounts.tiktok_sending.cant_open",
-                            &[("browser", b.name), ("error", &error.to_string())],
-                        )
-                    })?;
+                    .map_err(cant_open)?;
             } else {
-                let _ = crate::tiktok_bridge::install(engine)?;
-                b.command(b.store_url()).spawn().map_err(|error| {
-                    trf(
-                        "accounts.tiktok_sending.cant_open",
-                        &[("browser", b.name), ("error", &error.to_string())],
-                    )
-                })?;
+                // Not connected yet (not installed, or installed but never paired): the setup page, with
+                // the pairing in its address. It also offers the store and the steps to load the copy on
+                // disk; the extension closes it once it connects.
+                let folder = crate::tiktok_bridge::install(engine)?;
+                let page = crate::tiktok_bridge::write_setup_page(b.name, b.extensions_page, &folder, b.store_url())?;
+                b.open_setup(&page, &crate::tiktok_bridge::pairing(&engine.config()))
+                    .map_err(cant_open)?;
             }
             if let Ok(mut picked) = PICKED.lock() {
                 *picked = Some(b.name.to_owned());
@@ -1870,6 +1903,14 @@ mod tests {
                     || engine.config().tiktok.bridge_token.is_empty()
             );
         });
+    }
+
+    #[test]
+    fn a_store_copy_before_pairing_by_link_is_told_apart() {
+        assert!(older("1.2.0", "1.3.0"));
+        assert!(older("1.2", "1.3.0"));
+        assert!(!older("1.3.0", "1.3.0"));
+        assert!(!older("1.10.0", "1.3.0"));
     }
 
     #[test]

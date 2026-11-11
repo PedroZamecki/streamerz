@@ -596,6 +596,48 @@ impl Browser {
         found
     }
 
+    /// The version of the extension's store copy in this browser, from the Chrome, Edge or Firefox store,
+    /// when one is installed and on.
+    pub fn store_copy_version(&self) -> Option<String> {
+        if self.is_firefox_based() {
+            return self.profiles().iter().find_map(|profile| {
+                let text = std::fs::read_to_string(profile.join("extensions.json")).ok()?;
+                let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+                value["addons"].as_array()?.iter().find_map(|addon| {
+                    (addon["id"] == crate::tiktok_bridge::FIREFOX_GECKO_ID && addon["active"] == true)
+                        .then(|| addon["version"].as_str().map(str::to_owned))
+                        .flatten()
+                })
+            });
+        }
+        self.profiles().iter().find_map(|profile| {
+            ["Secure Preferences", "Preferences"].iter().find_map(|file| {
+                let bytes = std::fs::read(profile.join(file)).ok()?;
+                let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+                [
+                    crate::tiktok_bridge::CHROME_STORE_ID,
+                    crate::tiktok_bridge::EDGE_PRODUCT_ID,
+                ]
+                .iter()
+                .find_map(|id| {
+                    let setting = value.pointer(&format!("/extensions/settings/{id}"))?;
+                    let off = setting["state"].as_i64() == Some(0)
+                        || setting["disable_reasons"].as_array().is_some_and(|r| !r.is_empty())
+                        || setting["disable_reasons"].as_i64().is_some_and(|r| r != 0);
+                    if off {
+                        return None;
+                    }
+                    // "anckd.../1.2.0_0": the version is the folder's name.
+                    setting["manifest"]["version"].as_str().map(str::to_owned).or_else(|| {
+                        let path = setting["path"].as_str()?;
+                        let folder = path.rsplit(['/', '\\']).next()?;
+                        Some(folder.split('_').next()?.to_owned())
+                    })
+                })
+            })
+        })
+    }
+
     /// Whether this browser profile has the extension installed:
     /// - In Firefox / Gecko browsers: inspects `extensions.json` for `tiktok-bridge@streamerz.app`.
     /// - In Chromium / Edge browsers: inspects `Preferences` and `Secure Preferences` for published
@@ -713,8 +755,10 @@ impl Browser {
 
     /// Opens `page` as a tab in that profile. Chromium rejects `chrome://` URLs from outside and opens a
     /// second browser window instead; a `file://` setup page opens as a tab in the existing window.
-    pub fn open_setup(&self, page: &Path) -> std::io::Result<()> {
-        self.command(&file_url(page)).spawn().map(drop)
+    /// `pairing` follows the address (`#url=...&token=...`): a copy of the extension from a store, which
+    /// has no settings file of its own, reads it there.
+    pub fn open_setup(&self, page: &Path, pairing: &str) -> std::io::Result<()> {
+        self.command(&format!("{}{pairing}", file_url(page))).spawn().map(drop)
     }
 
     /// Whether this browser is currently running (has an active lock or running process).

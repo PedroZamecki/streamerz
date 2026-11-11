@@ -951,6 +951,7 @@
   "accounts.tiktok_sending.step_load": "2. In {browser}, enable Developer mode, click Load unpacked, then paste the folder (Ctrl+L, Ctrl+V).",
   "accounts.tiktok_sending.step_login": "4. Sign in only if TikTok asks. Your existing login is reused.",
   "accounts.tiktok_sending.step_login_done": "4. Logged in to TikTok as @{user}. You can close this.",
+  "accounts.tiktok_sending.store_too_old": "The {browser} store copy of the extension ({version}) can't find Streamerz. Press the button beside {browser} and follow the setup page to load the copy Streamerz keeps, or update the store copy to {latest} when the store has it.",
   "accounts.tiktok_sending.step_open": "1. Click Set up next to the browser you use TikTok in.",
   "accounts.tiktok_sending.step_open_done": "1. {browser} opened the setup tab, and the folder is copied.",
   "accounts.tiktok_sending.page_title": "Set up Streamerz in {browser}",

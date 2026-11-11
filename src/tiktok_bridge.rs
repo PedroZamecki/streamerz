@@ -20,7 +20,7 @@ pub const PATH: &str = "/streamerz/tiktok";
 /// Fixed by the public key in the extension's manifest.
 pub const EXTENSION_ID: &str = "lhijoeeghjcohapolkfkacipklhbnecc";
 /// The current extension version bundled with Streamerz.
-pub const EXTENSION_VERSION: &str = "1.2.0";
+pub const EXTENSION_VERSION: &str = "1.3.0";
 /// The published Google Chrome Web Store extension ID.
 pub const CHROME_STORE_ID: &str = "anckdakmhognoancpeefjlgicihplcjc";
 /// The Chrome Web Store installation URL.
@@ -160,6 +160,17 @@ pub fn install(e: &Rc<Engine>) -> Result<PathBuf, String> {
         });
     }
     write_files(&e.config())
+}
+
+/// What follows the setup page's address so the extension can pair with this Streamerz: where its
+/// WebSocket server is and the token. A copy from a store reads it there; a copy written to disk also
+/// has it in its config.json.
+pub fn pairing(c: &crate::Config) -> String {
+    format!(
+        "#url={}&token={}",
+        crate::commands::url_encode(&server_url(c)),
+        c.tiktok.bridge_token
+    )
 }
 
 /// The local setup guide opened as a tab in the chosen browser (and closed by the extension on pair).
@@ -975,6 +986,18 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_setup_page_link_carries_where_streamerz_is_and_its_token() {
+        let mut c = crate::Config::default();
+        c.websockets.address = "0.0.0.0".into();
+        c.websockets.port = 8080;
+        c.tiktok.bridge_token = "ab".repeat(32);
+        let link = super::pairing(&c);
+        assert!(link.starts_with("#url="), "{link}");
+        assert!(link.contains("127.0.0.1%3A8080%2Fstreamerz%2Ftiktok"), "{link}");
+        assert!(link.ends_with(&format!("&token={}", "ab".repeat(32))));
+    }
+
     use super::*;
 
     #[test]
