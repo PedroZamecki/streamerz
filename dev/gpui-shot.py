@@ -4,7 +4,7 @@
 Usage: dev/gpui-shot.py PAGE [PAGE...] [--bin target/fast/Streamerz] [--out target/gpui-shots]
                         [--size 1100x800] [--theme dark|light] [--config JSON-FILE]
 A page is a navigation id ("Queues", "Stream Apps"). A page may be followed by ":STEPS" (separated by ;) run after it loads: a frontend command
-or "click LABEL[#N]" (dblclick: twice) (the Nth match top to bottom), "wait SECONDS", for example "Queues:click Add". Each capture is PAGE-SIZE.png.
+or "click LABEL[#N]" (dblclick: twice) (the Nth match top to bottom), "wait SECONDS", "type TEXT" (into what has the focus), "key NAME" (Return, Escape), for example "Queues:click Add". Each capture is PAGE-SIZE.png.
 """
 import argparse
 import glob
@@ -100,6 +100,10 @@ def main():
                 for step in filter(None, (part.strip() for part in command.split(";"))):
                     if step.startswith("wait "):
                         time.sleep(float(step[5:]))
+                    elif step.startswith("type "):
+                        subprocess.run(["xdotool", "type", "--delay", "40", step[5:]], env=env)
+                    elif step.startswith("key "):
+                        subprocess.run(["xdotool", "key", step[4:]], env=env)
                     elif step.startswith(("click ", "dblclick ")):
                         double = step.startswith("dblclick ")
                         label, _, nth = step.split(" ", 1)[1].partition("#")

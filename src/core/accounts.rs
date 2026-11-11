@@ -750,11 +750,11 @@ fn accounts(engine: &Rc<Engine>) -> Vec<Value> {
                 }
                 rows.push(row);
                 if !bot {
-                    rows.push(channel_row(p, &config));
+                    rows.push(channel_row(engine, p, &config));
                 }
             }
         } else {
-            rows.push(channel_row(p, &config));
+            rows.push(channel_row(engine, p, &config));
             let (health, text) = sending_state(&config, bridge);
             let mut set_up = button("tiktok.sending", tr("btn.set_up"), "puzzle");
             set_up["dialog"] = "tiktok_sending".into();
@@ -768,8 +768,18 @@ fn accounts(engine: &Rc<Engine>) -> Vec<Value> {
 }
 
 /// Whose chat is read: the typed channel (or "your own"), and what the logged-in account is there.
-fn channel_row(p: P, config: &crate::Config) -> Value {
+fn channel_row(engine: &Rc<Engine>, p: P, config: &crate::Config) -> Value {
     let shown = p.typed_channel(config).to_owned();
+    // A channel that was picked shows as the platform writes it ("umaNanaAi"), with its picture.
+    let room = if shown.is_empty() {
+        Value::Null
+    } else {
+        room(engine, p.slug())
+    };
+    let shown = room["name"]
+        .as_str()
+        .filter(|name| !name.is_empty())
+        .map_or(shown, str::to_owned);
     let (role, _) = crate::roles::get(&p.name().to_lowercase());
     let whose = if p.channel(config).is_empty() || p.raw_account_name(config, false).is_none() {
         String::new()
@@ -789,6 +799,9 @@ fn channel_row(p: P, config: &crate::Config) -> Value {
         "control": buttons(vec![pick])});
     if shown.is_empty() {
         row["muted"] = true.into();
+    }
+    if let Some(picture) = room["picture"].as_str().filter(|file| !file.is_empty()) {
+        row["picture"] = picture.into();
     }
     if !whose.is_empty() {
         row["about"] = whose.into();
@@ -839,6 +852,8 @@ fn picked() -> Option<String> {
     PICKED.lock().ok().and_then(|picked| picked.clone())
 }
 
+static ADVANCED_SETUP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
     let config = engine.config();
     let bridge = &engine.tiktok_bridge;
@@ -852,6 +867,7 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
         bridge.version(),
     );
     let set_up = crate::tiktok_bridge::set_up(&config);
+    let is_advanced = ADVANCED_SETUP.load(std::sync::atomic::Ordering::Relaxed);
     let browsers = crate::browsers::installed();
     let chosen = picked().or_else(|| crate::browsers::running_browser().map(|b| b.name.to_owned()));
     let single = browsers.len() == 1;
@@ -874,53 +890,43 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
         };
         let (label, icon) = if connected && login_required && known {
             (tr("btn.login"), "log-in")
+        } else if known && !running {
+            (tr("btn.open_browser"), "external-link")
         } else if known {
             (tr("btn.open"), "external-link")
         } else {
-            (tr("btn.set_up"), "settings")
+            (tr("accounts.tiktok_sending.install"), "download")
         };
-        let mut row = json!({"key": format!("browser.{index}"), "label": b.name, "status": state(health, text),
-            "control": buttons(vec![button(&format!("setup:{index}"), label, icon)])});
-        row["about"] = b.data.display().to_string().into();
+        let mut row_btns = vec![button(&format!("setup:{index}"), label, icon)];
+        if is_advanced && !known {
+            row_btns.push(button(
+                &format!("manual_setup:{index}"),
+                tr("accounts.tiktok_sending.load_unpacked"),
+                "folder",
+            ));
+        }
+        let mut row = json!({
+            "key": format!("browser.{index}"),
+            "label": b.name,
+            "brand": b.icon(),
+            "status": state(health, text),
+            "control": buttons(row_btns),
+        });
+        if is_advanced {
+            row["about"] = b.data.display().to_string().into();
+        }
         rows.push(row);
     }
     let installed = connected || known_any;
     let any_running = browsers.iter().any(|b| b.is_running());
     let logged = connected && ready && !user.is_empty();
-    let step = |done: bool, now: bool| match (done, now) {
-        (true, _) => "up",
-        (false, true) => "busy",
-        _ => "off",
+    let enabled = |mut button: Value, yes: bool| {
+        button["enabled"] = yes.into();
+        button
     };
-    let browser = chosen.as_deref();
-    let steps = [
-        (
-            step(browser.is_some() || installed, browser.is_none() && !installed),
-            match browser {
-                Some(b) => trf("accounts.tiktok_sending.step_open_done", &[("browser", b)]),
-                None => tr("accounts.tiktok_sending.step_open").to_string(),
-            },
-        ),
-        (
-            step(installed, browser.is_some() && !installed),
-            trf(
-                "accounts.tiktok_sending.step_load",
-                &[("browser", browser.unwrap_or(tr("accounts.tiktok_sending.your_browser")))],
-            ),
-        ),
-        (
-            step(connected, installed && !connected),
-            tr("accounts.tiktok_sending.step_connect").to_string(),
-        ),
-        (
-            step(logged, connected && !logged),
-            if logged {
-                trf("accounts.tiktok_sending.step_login_done", &[("user", &user)])
-            } else {
-                tr("accounts.tiktok_sending.step_login").to_string()
-            },
-        ),
-    ];
+    let mut copy = button("copy_path", tr("btn.copy_path"), "copy");
+    copy["copy"] = folder.display().to_string().into();
+
     let (health, text) = if logged && outdated {
         (
             "standby",
@@ -948,41 +954,97 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
         ("busy", tr("accounts.tiktok_sending.loading").to_string())
     } else if installed && !any_running {
         ("standby", tr("accounts.tiktok_sending.browser_closed").to_string())
-    } else {
+    } else if is_advanced {
         ("standby", tr("accounts.tiktok_sending.waiting").to_string())
+    } else {
+        ("standby", tr("accounts.tiktok_sending.waiting_simple").to_string())
     };
-    let enabled = |mut button: Value, yes: bool| {
-        button["enabled"] = yes.into();
-        button
-    };
-    let mut copy = button("copy_path", tr("btn.copy_path"), "copy");
-    copy["copy"] = folder.display().to_string().into();
-    vec![
-        section(
-            tr("accounts.tiktok_sending.title"),
-            "tiktok",
-            vec![json!({"about": tr("accounts.tiktok_sending.why")})],
-        ),
-        section(tr("accounts.tiktok_sending.browsers"), "", rows),
-        section(
-            "",
-            "",
-            steps
-                .into_iter()
-                .map(|(health, text)| json!({"status": state(health, &text)}))
-                .chain([json!({"status": state(health, &text)})])
-                .collect(),
-        ),
-        section(
-            "",
-            "",
-            vec![json!({"control": buttons(vec![
-                enabled(button("remove", tr("btn.remove_streamerz"), "trash-2"), set_up),
-                copy,
-                enabled(button("retry", tr("btn.retry"), "refresh-cw"), connected && (!ready || login_required)),
-            ])})],
-        ),
-    ]
+
+    if is_advanced {
+        let step = |done: bool, now: bool| match (done, now) {
+            (true, _) => "up",
+            (false, true) => "busy",
+            _ => "off",
+        };
+        let browser = chosen.as_deref();
+        let steps = [
+            (
+                step(browser.is_some() || installed, browser.is_none() && !installed),
+                match browser {
+                    Some(b) => trf("accounts.tiktok_sending.step_open_done", &[("browser", b)]),
+                    None => tr("accounts.tiktok_sending.step_open").to_string(),
+                },
+            ),
+            (
+                step(installed, browser.is_some() && !installed),
+                trf(
+                    "accounts.tiktok_sending.step_load",
+                    &[("browser", browser.unwrap_or(tr("accounts.tiktok_sending.your_browser")))],
+                ),
+            ),
+            (
+                step(connected, installed && !connected),
+                tr("accounts.tiktok_sending.step_connect").to_string(),
+            ),
+            (
+                step(logged, connected && !logged),
+                if logged {
+                    trf("accounts.tiktok_sending.step_login_done", &[("user", &user)])
+                } else {
+                    tr("accounts.tiktok_sending.step_login").to_string()
+                },
+            ),
+        ];
+
+        vec![
+            section(
+                tr("accounts.tiktok_sending.title"),
+                "tiktok",
+                vec![json!({"about": tr("accounts.tiktok_sending.why")})],
+            ),
+            section(tr("accounts.tiktok_sending.browsers"), "", rows),
+            section(
+                "",
+                "",
+                steps
+                    .into_iter()
+                    .map(|(health, text)| json!({"status": state(health, &text)}))
+                    .chain([json!({"status": state(health, &text)})])
+                    .collect(),
+            ),
+            section(
+                "",
+                "",
+                vec![json!({"control": buttons(vec![
+                    enabled(button("remove", tr("btn.remove_streamerz"), "trash-2"), set_up),
+                    copy,
+                    enabled(button("retry", tr("btn.retry"), "refresh-cw"), connected && (!ready || login_required)),
+                    button("toggle_advanced", tr("accounts.tiktok_sending.simple_mode"), "arrow-left"),
+                ])})],
+            ),
+        ]
+    } else {
+        vec![
+            section(
+                tr("accounts.tiktok_sending.title"),
+                "tiktok",
+                vec![json!({"about": tr("accounts.tiktok_sending.why")})],
+            ),
+            section(tr("accounts.tiktok_sending.browsers"), "", rows),
+            section(
+                "",
+                "",
+                vec![
+                    json!({"control": buttons(vec![
+                        enabled(button("remove", tr("btn.remove_streamerz"), "trash-2"), set_up),
+                        enabled(button("retry", tr("btn.retry"), "refresh-cw"), connected && (!ready || login_required)),
+                        button("toggle_advanced", tr("accounts.tiktok_sending.advanced_mode"), "settings"),
+                    ])}),
+                    json!({"status": state(health, &text)}),
+                ],
+            ),
+        ]
+    }
 }
 
 // Advanced forms
@@ -1126,7 +1188,8 @@ pub fn act(engine: &Rc<Engine>, domain: &str, action: &str, id: &str) -> Result<
         "connect" | "disconnect" => p.connect(engine, what == "connect"),
         "login" | "bot_login" => login(engine, p, what == "bot_login"),
         "logout" | "bot_logout" => logout(engine, p, what == "bot_logout"),
-        "channel" => pick_channel(engine, p),
+        "channel" => return Ok(finder(engine, p)),
+        "set_channel" | "own_channel" => return choose_channel(engine, p, (what == "set_channel").then_some(id)),
         _ => return Err(format!("accounts has no action {action}")),
     }
     accepted
@@ -1155,6 +1218,7 @@ fn retry(engine: &Rc<Engine>, action: &str, key: &str) -> Result<Value, String> 
 fn logout(engine: &Rc<Engine>, p: P, bot: bool) {
     let mut revoke = None;
     engine.change(|config| revoke = p.logout(config, bot));
+    crate::emotes::load_local(&engine.config());
     if let Some(url) = revoke {
         // Best effort: the token is gone here either way.
         tokio::task::spawn_local(async move {
@@ -1217,6 +1281,7 @@ fn login(engine: &Rc<Engine>, p: P, bot: bool) {
                             &mut config.kick.broadcaster
                         } = Some(account)
                     });
+                    crate::emotes::load_local(&engine.config());
                 },
             );
         }
@@ -1312,6 +1377,7 @@ fn twitch_login(engine: &Rc<Engine>, bot: bool) {
                         config.twitch.broadcaster = Some(account);
                     }
                 });
+                crate::emotes::load_local(&engine.config());
                 if !bot {
                     let mut args = crate::model::Obj::new();
                     args.insert("user".into(), name.clone().into());
@@ -1347,90 +1413,46 @@ fn twitch_login(engine: &Rc<Engine>, bot: bool) {
 
 // The channel read
 
-/// The channels that match what was typed: (handle, line to show).
-async fn find(engine: &Rc<Engine>, p: P, query: &str) -> Vec<(String, String)> {
-    let found = if p == P::TikTok {
-        crate::tiktok_bridge::search(engine, query).await.unwrap_or_default()
-    } else if crate::search::can(p.slug()) {
-        crate::search::channels(p.slug(), query).await
+/// The channel finder a frontend opens for the Channel button: a search box (results come from
+/// `StreamerzSearchChannels`), the channels that match with their picture, followers and whether they are
+/// live, and "Use my own channel". The pick is applied with `<platform>.set_channel` (the handle, or what
+/// was typed: a link or an @name) or `<platform>.own_channel`.
+fn finder(engine: &Rc<Engine>, p: P) -> Value {
+    let searchable = p == P::TikTok || crate::search::can(p.slug());
+    let note = if searchable {
+        String::new()
     } else {
-        Vec::new()
+        trf("find.no_search", &[("platform", p.name())])
     };
-    found
-        .into_iter()
-        .map(|f| {
-            let mut line = f.name.replace(['\t', '\n'], " ");
-            if !f.detail.is_empty() {
-                line = format!("{line} ({})", f.detail.replace(['\t', '\n'], " "));
-            }
-            if f.live {
-                line = format!("{line}, {}", tr("find.live"));
-            }
-            (f.handle, line)
-        })
-        .collect()
+    json!({"finder": {
+        "platform": p.slug(), "title": trf("find.title", &[("platform", p.name())]),
+        "placeholder": tr("find.placeholder"), "searchable": searchable, "note": note,
+        "typed": p.typed_channel(&engine.config()),
+        "labels": {"channel": tr("find.channel"), "followers": tr("find.followers"), "live": tr("find.live"),
+            "empty": tr("find.empty"), "searching": tr("find.searching"), "none": tr("find.none"),
+            "own": tr("find.own"), "ok": tr("dialogs.ok"), "cancel": tr("dialogs.cancel")},
+    }})
 }
 
-/// Ask for a channel (a name, a link, or nothing for your own), offer what matches, and read it.
-fn pick_channel(engine: &Rc<Engine>, p: P) {
-    let engine = engine.clone();
-    tokio::task::spawn_local(async move {
-        let searchable = p == P::TikTok || crate::search::can(p.slug());
-        let typed = p.typed_channel(&engine.config()).to_owned();
-        let title = trf("find.title", &[("platform", p.name())]);
-        let prompt = if searchable {
-            tr("find.placeholder").to_owned()
-        } else {
-            trf("find.no_search", &[("platform", p.name())])
-        };
-        let Ok(Some(raw)) = crate::host::input(title.clone(), prompt, typed).await else {
-            return;
-        };
-        let raw = raw.trim().to_owned();
-        let channel = if raw.is_empty() {
-            Some(String::new())
-        } else {
-            let matches = if searchable {
-                find(&engine, p, &raw).await
-            } else {
-                Vec::new()
-            };
-            if matches.is_empty() {
-                Some(raw)
-            } else {
-                let mut options = vec![super::prompts::Choice {
-                    id: "own".into(),
-                    label: tr("find.own").into(),
-                }];
-                options.extend(matches.iter().map(|(handle, line)| super::prompts::Choice {
-                    id: format!("channel:{handle}"),
-                    label: line.clone(),
-                }));
-                options.push(super::prompts::Choice {
-                    id: "typed".into(),
-                    label: trf("accounts.channel_as_typed", &[("text", &raw)]),
-                });
-                match super::prompts::choice(title, options).await {
-                    Ok(Some(id)) if id == "own" => Some(String::new()),
-                    Ok(Some(id)) if id == "typed" => Some(raw),
-                    Ok(Some(id)) => id.strip_prefix("channel:").map(str::to_owned),
-                    _ => None,
-                }
-            }
-        };
-        let Some(channel) = channel else { return };
-        let channel = if channel.is_empty() && p == P::TikTok {
+/// Read the channel picked in the finder (`None`: the account's own; TikTok's is the browser account's).
+fn choose_channel(engine: &Rc<Engine>, p: P, picked: Option<&str>) -> Result<Value, String> {
+    let channel = match picked.map(str::trim) {
+        Some(picked) => picked.to_owned(),
+        None if p == P::TikTok => {
             let user = engine.tiktok_bridge.user();
             if user.is_empty() {
-                super::prompts::notice(p.name().into(), tr("find.tiktok_login").into());
-                return;
+                return Err(tr("find.tiktok_login").into());
             }
             user
-        } else {
-            channel
-        };
+        }
+        None => String::new(),
+    };
+    let engine = engine.clone();
+    tokio::task::spawn_local(async move {
         set_channel(&engine, p, &channel, None).await;
+        crate::host::changed();
     });
+    Ok(json!({"accepted": true}))
 }
 
 /// Read `raw` as the platform's channel. When there was another one with saved people, `leftover` (or
@@ -1444,6 +1466,7 @@ async fn set_channel(engine: &Rc<Engine>, p: P, raw: &str, leftover: Option<Left
     if p.channel(&engine.config()) == before {
         return;
     }
+    crate::emotes::load_local(&engine.config());
     let what = match leftover {
         Some(what) => what,
         None if saved == 0 => Leftover::Keep,
@@ -1519,6 +1542,33 @@ fn sending(engine: &Rc<Engine>, action: &str) -> Result<Value, String> {
             });
             accepted
         }
+        "toggle_advanced" => {
+            let curr = ADVANCED_SETUP.load(std::sync::atomic::Ordering::Relaxed);
+            ADVANCED_SETUP.store(!curr, std::sync::atomic::Ordering::Relaxed);
+            crate::host::changed();
+            accepted
+        }
+        action if action.starts_with("manual_setup:") => {
+            let index: usize = action
+                .strip_prefix("manual_setup:")
+                .and_then(|index| index.parse().ok())
+                .ok_or_else(|| format!("tiktok_sending has no action {action}"))?;
+            let browsers = crate::browsers::installed();
+            let b = browsers.get(index).ok_or("no such browser")?;
+            let folder = crate::tiktok_bridge::install(engine)?;
+            let page = crate::tiktok_bridge::write_setup_page(b.name, b.extensions_page, &folder, b.store_url())?;
+            b.open_setup(&page).map_err(|error| {
+                trf(
+                    "accounts.tiktok_sending.cant_open",
+                    &[("browser", b.name), ("error", &error.to_string())],
+                )
+            })?;
+            if let Ok(mut picked) = PICKED.lock() {
+                *picked = Some(b.name.to_owned());
+            }
+            crate::host::changed();
+            accepted
+        }
         _ => {
             let index: usize = action
                 .strip_prefix("setup:")
@@ -1531,8 +1581,7 @@ fn sending(engine: &Rc<Engine>, action: &str) -> Result<Value, String> {
                 return accepted;
             }
             let installed = b.has_extension_from(crate::tiktok_bridge::EXTENSION_ID, &crate::tiktok_bridge::folder());
-            if installed && !b.is_running() {
-                // The browser has the extension but is closed: open it so the extension reconnects.
+            if installed {
                 b.command("https://www.tiktok.com/live/history/center")
                     .spawn()
                     .map_err(|error| {
@@ -1542,9 +1591,8 @@ fn sending(engine: &Rc<Engine>, action: &str) -> Result<Value, String> {
                         )
                     })?;
             } else {
-                let folder = crate::tiktok_bridge::install(engine)?;
-                let page = crate::tiktok_bridge::write_setup_page(b.name, b.extensions_page, &folder)?;
-                b.open_setup(&page).map_err(|error| {
+                let _ = crate::tiktok_bridge::install(engine)?;
+                b.command(b.store_url()).spawn().map_err(|error| {
                     trf(
                         "accounts.tiktok_sending.cant_open",
                         &[("browser", b.name), ("error", &error.to_string())],
@@ -1811,6 +1859,12 @@ mod tests {
             assert_eq!(enabled("retry"), false, "nothing to retry while the extension is away");
             assert!(act(&engine, "tiktok_sending", "setup:999", "").is_err());
             assert!(act(&engine, "tiktok_sending", "nonsense", "").is_err());
+            assert!(act(&engine, "tiktok_sending", "toggle_advanced", "").is_ok());
+            let advanced_model = read(&engine, "tiktok_sending").unwrap();
+            assert_eq!(advanced_model["sections"].as_array().unwrap().len(), 4);
+            assert!(act(&engine, "tiktok_sending", "toggle_advanced", "").is_ok());
+            let simple_model = read(&engine, "tiktok_sending").unwrap();
+            assert_eq!(simple_model["sections"].as_array().unwrap().len(), 3);
             assert!(
                 !model.to_string().contains(&engine.config().tiktok.bridge_token)
                     || engine.config().tiktok.bridge_token.is_empty()
@@ -1819,19 +1873,33 @@ mod tests {
     }
 
     #[test]
-    fn a_pending_channel_search_prompt_can_be_cancelled() {
+    fn the_channel_button_opens_the_finder_and_a_pick_is_read() {
         let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         crate::engine::tests::run(async {
             let engine = engine();
             let before = super::super::prompts::list().len();
-            act(&engine, "accounts", "kick.channel", "").unwrap();
-            tokio::task::yield_now().await;
-            let prompts = super::super::prompts::list();
-            assert_eq!(prompts.len(), before + 1);
-            super::super::prompts::answer(prompts.last().unwrap().id, Value::Null).unwrap();
-            tokio::task::yield_now().await;
+            // The button answers with the finder (nothing asked through prompts).
+            let finder = act(&engine, "accounts", "kick.channel", "").unwrap();
+            assert_eq!(finder["finder"]["platform"], "kick");
+            assert_eq!(finder["finder"]["searchable"], true);
+            assert!(!finder["finder"]["labels"]["own"].as_str().unwrap().is_empty());
             assert_eq!(super::super::prompts::list().len(), before);
+            // YouTube can't be searched: the finder says to paste a link or an @name.
+            let youtube = act(&engine, "accounts", "youtube.channel", "").unwrap();
+            assert_eq!(youtube["finder"]["searchable"], crate::search::can("youtube"));
+            // A pick is read as the channel; "own" goes back to the account's own.
+            act(&engine, "accounts", "kick.set_channel", "someone").unwrap();
+            for _ in 0..5 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(engine.config().kick.channel, "someone");
+            act(&engine, "accounts", "kick.own_channel", "").unwrap();
+            for _ in 0..5 {
+                tokio::task::yield_now().await;
+            }
             assert_eq!(engine.config().kick.channel, "");
+            // TikTok's own channel needs the browser account.
+            assert!(act(&engine, "accounts", "tiktok.own_channel", "").is_err());
         });
     }
 

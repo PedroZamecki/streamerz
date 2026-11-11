@@ -26,6 +26,8 @@ pub struct Sections {
     inputs: HashMap<String, Entity<InputState>>,
     form: Option<Entity<Form>>,
     dialog: Option<Entity<Sections>>,
+    /// The channel finder, while it is open.
+    finder: Option<Entity<super::find::Finder>>,
     error: String,
     /// A narrow window: Settings stacks a row's control under its text.
     compact: bool,
@@ -42,6 +44,7 @@ impl Sections {
             inputs: HashMap::new(),
             form: None,
             dialog: None,
+            finder: None,
             error: String::new(),
             compact: false,
             subscriptions: Vec::new(),
@@ -157,6 +160,14 @@ impl Sections {
                 None => false,
             };
         }
+        // A search's answer (or its error) is the finder's.
+        if let Some(number) = operation.strip_prefix("find:") {
+            if let Some(finder) = &self.finder {
+                let number = number.parse().unwrap_or(0);
+                finder.update(cx, |finder, cx| finder.found(number, value, cx));
+            }
+            return false;
+        }
         if value["status"] == "error" {
             let error = value["error"].as_str().unwrap_or_default().to_owned();
             if matches!(operation, "save" | "json") {
@@ -186,14 +197,12 @@ impl Sections {
                 let nested = cx.new(|cx| Sections::new(value, format!("{}:dialog", self.route), window, cx));
                 self.dialog = Some(nested.clone());
                 let owner = cx.entity().downgrade();
-                window.open_dialog(cx, move |dialog, _, _| {
+                window.open_dialog(cx, move |dialog, _, cx| {
                     let owner = owner.clone();
-                    dialog
-                        .centered()
-                        .pt(px(12.))
-                        .title(crate::controls::dialog_title(title.clone()))
-                        .width(px(560.))
-                        .child(nested.clone())
+                    let close = crate::controls::dialog::close_footer(cx);
+                    crate::controls::dialog::shell(dialog, title.clone(), 560., cx)
+                        .child(crate::controls::dialog::body(nested.clone()))
+                        .footer(close)
                         .on_cancel(move |_, _, cx| {
                             let _ = owner.update(cx, |sections, _| sections.dialog = None);
                             true
@@ -229,6 +238,37 @@ impl Sections {
                 self.form = None;
                 window.close_dialog(cx);
                 true
+            }
+            "act" if value["finder"].is_object() => {
+                let model = value["finder"].clone();
+                let title = model["title"].as_str().unwrap_or_default().to_owned();
+                let finder = cx.new(|cx| super::find::Finder::new(model, self.route.clone(), window, cx));
+                self.finder = Some(finder.clone());
+                let owner = cx.entity().downgrade();
+                window.open_dialog(cx, move |dialog, _, cx| {
+                    let owner = owner.clone();
+                    crate::controls::dialog::shell(dialog, title.clone(), 560., cx)
+                        .child(crate::controls::dialog::body(finder.clone()))
+                        .footer(finder.read(cx).buttons_view())
+                        .on_cancel(move |_, _, cx| {
+                            let _ = owner.update(cx, |sections, _| sections.finder = None);
+                            true
+                        })
+                });
+                // The dialog takes the focus as it opens: the box gets it after.
+                let focus = self.finder.clone();
+                window.defer(cx, move |window, cx| {
+                    if let Some(finder) = focus {
+                        finder.update(cx, |finder, cx| finder.focus(window, cx));
+                    }
+                });
+                false
+            }
+            "find-images" => {
+                if let Some(finder) = &self.finder {
+                    finder.update(cx, |finder, cx| finder.images(&value, cx));
+                }
+                false
             }
             "act" | "set" | "commit" => true,
             _ => false,
@@ -505,6 +545,11 @@ impl Render for Sections {
                 let channel = plat && key.ends_with(".channel") && pick.is_object();
                 if let (true, Some(value)) = (channel, value.clone()) {
                     let spec = pick.clone();
+                    // The channel's picture when it is known, else the search icon.
+                    let face = row["picture"]
+                        .as_str()
+                        .filter(|file| !file.is_empty())
+                        .map(std::path::PathBuf::from);
                     text = text.child(
                         div()
                             .flex()
@@ -524,8 +569,21 @@ impl Render for Sections {
                                     .text_size(px(13.))
                                     .h(px(26.))
                                     .w(px(220.))
-                                    .icon(Icon::empty().path("icons/search.svg"))
-                                    .label(value.clone())
+                                    .when(face.is_none(), |button| {
+                                        button.icon(Icon::empty().path("icons/search.svg")).label(value.clone())
+                                    })
+                                    .when_some(face, |button, face| {
+                                        button.child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap_2()
+                                                .child(
+                                                    img(face).size(px(18.)).rounded_full().object_fit(ObjectFit::Cover),
+                                                )
+                                                .child(value.clone()),
+                                        )
+                                    })
                                     .accessibility_label(value)
                                     .on_click(cx.listener(move |sections, _, window, cx| {
                                         sections.press(spec.clone(), window, cx)
@@ -681,6 +739,10 @@ impl Render for Sections {
                     line = line
                         .min_h(px(64.))
                         .child(img("brands/streamerz.svg").id("app-logo").size(px(56.)).flex_shrink_0());
+                } else if let Some(brand) = row["brand"].as_str().filter(|b| !b.is_empty()) {
+                    line = line.child(img(format!("brands/{brand}.svg")).size(px(28.)).flex_shrink_0());
+                } else if let Some(icon) = row["icon"].as_str().filter(|i| !i.is_empty()) {
+                    line = line.child(img(format!("brands/{icon}.svg")).size(px(28.)).flex_shrink_0());
                 }
                 line = line.child(text);
                 if row["control"].is_object() && !channel {
