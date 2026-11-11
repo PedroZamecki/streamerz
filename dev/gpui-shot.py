@@ -119,7 +119,7 @@ def main():
                     else:
                         print("  ", step, "->", ui(step))
                     time.sleep(0.5)
-                name = page.lower().replace(" ", "_") + ("-" + command.replace(" ", "_").replace(";", "-") if command else "")
+                name = page.lower().replace(" ", "_") + ("-" + command.replace(" ", "_").replace(";", "-").replace("/", "-") if command else "")
                 target = args.out / f"{name}-{args.size}.png"
                 print("  ", ui("shot " + str(target)))
         finally:
