@@ -803,6 +803,20 @@ pub(crate) fn config_path() -> PathBuf {
     if let Some(dir) = DEV_DIR.get() {
         return dir.join("streamerz.json");
     }
+    // Tests never touch the person's settings folder: what they write beside the settings (the
+    // extension's pairing file, the cache, backups) goes to a folder of this test run.
+    #[cfg(test)]
+    {
+        static TEST_PATH: OnceLock<PathBuf> = OnceLock::new();
+        return TEST_PATH
+            .get_or_init(|| {
+                std::env::temp_dir()
+                    .join(format!("streamerz-test-{}", std::process::id()))
+                    .join("streamerz.json")
+            })
+            .clone();
+    }
+    #[allow(unreachable_code)]
     if !brand::IS_DEV && !std::env::args_os().any(|a| a == "--scenario") {
         return resolve_config_path(default_config_path());
     }
@@ -1447,6 +1461,17 @@ fn under_wine() -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tests_write_beside_their_own_settings_never_the_persons() {
+        let path = super::config_path();
+        assert!(path.starts_with(std::env::temp_dir()), "{}", path.display());
+        if let Some(home) = std::env::var_os("HOME") {
+            assert!(!path.starts_with(std::path::Path::new(&home).join(".config")));
+        }
+        // The extension's pairing file goes beside them too.
+        assert!(super::extension_folder().starts_with(std::env::temp_dir()));
+    }
+
     #[test]
     fn development_extensions_outlive_disposable_settings_and_keep_release_separate() {
         use std::path::Path;
