@@ -170,6 +170,9 @@ pub async fn run(e: Rc<Engine>) {
         if last.as_ref().map(|previous| &previous.1) != Some(&http) {
             if let Some(task) = running[1].take() {
                 task.abort();
+                if let Some(previous) = last.as_ref() {
+                    http_waiters(&previous.1.address, previous.1.port, false);
+                }
             }
             if http.auto_start {
                 running[1] = Some(tokio::task::spawn_local(http_server(e.clone(), http)).abort_handle());
@@ -615,6 +618,9 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
                 }
                 if let Some(saved) = crate::core::pages::save_external(e, kind, get("itemId"), item.clone()) {
                     return saved;
+                }
+                if kind == "timer" {
+                    return crate::core::timers::save(e, item);
                 }
                 authoring(e, &json!({"request": "StreamerzSave", "what": kind, "item": item}))
             };
@@ -1077,6 +1083,7 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
                 "" | "status" => Ok(()),
                 "install" => crate::tiktok_bridge::install(e).map(drop),
                 "retry" => crate::tiktok_bridge::retry(e),
+                "login" => crate::core::accounts::act(e, "tiktok_sending", "retry", "").map(drop),
 
                 "remove" => {
                     crate::tiktok_bridge::remove(e);
@@ -1933,11 +1940,95 @@ async fn connection(e: &Rc<Engine>, s: &WsSettings, tcp: TcpStream, conn: u64) -
     }
 }
 
+#[derive(Default)]
+struct HttpReadiness {
+    sequence: u64,
+    bound: Option<(u64, String, u16)>,
+    waiting: Vec<HttpWaiter>,
+}
+
+type HttpWaiter = (String, u16, tokio::sync::oneshot::Sender<Result<(), String>>);
+
+thread_local! {
+    static HTTP_READINESS: std::cell::RefCell<HttpReadiness> = std::cell::RefCell::new(HttpReadiness::default());
+}
+
+/// Register before enabling the existing listener. Completion comes from bind, without a poll,
+/// timer or another connection. Disabled settings cannot reuse a listener awaiting cancellation.
+pub fn wait_for_http(settings: &HttpSettings) -> tokio::sync::oneshot::Receiver<Result<(), String>> {
+    let (send, receive) = tokio::sync::oneshot::channel();
+    HTTP_READINESS.with_borrow_mut(|state| {
+        state.waiting.retain(|(_, _, send)| !send.is_closed());
+        if settings.auto_start
+            && state
+                .bound
+                .as_ref()
+                .is_some_and(|(_, address, port)| address == &settings.address && *port == settings.port)
+        {
+            let _ = send.send(Ok(()));
+        } else if settings.auto_start && crate::core::status::failure("http").is_some() {
+            let _ = send.send(Err(crate::i18n::tr("conns.failure.bind").into()));
+        } else if state.waiting.len() >= 16 {
+            let _ = send.send(Err(crate::i18n::tr("overlays.server_busy").into()));
+        } else {
+            state.waiting.push((settings.address.clone(), settings.port, send));
+        }
+    });
+    receive
+}
+
+fn http_waiters(address: &str, port: u16, ready: bool) {
+    HTTP_READINESS.with_borrow_mut(|state| {
+        let mut remaining = Vec::new();
+        for (host, number, send) in state.waiting.drain(..) {
+            if host == address && number == port {
+                let result = if ready {
+                    Ok(())
+                } else {
+                    Err(crate::i18n::tr("conns.failure.bind").into())
+                };
+                let _ = send.send(result);
+            } else if !send.is_closed() {
+                remaining.push((host, number, send));
+            }
+        }
+        state.waiting = remaining;
+    });
+}
+
+struct HttpBound(u64);
+impl HttpBound {
+    fn new(address: &str, port: u16) -> Self {
+        let sequence = HTTP_READINESS.with_borrow_mut(|state| {
+            state.sequence = state.sequence.wrapping_add(1);
+            state.bound = Some((state.sequence, address.to_owned(), port));
+            state.sequence
+        });
+        http_waiters(address, port, true);
+        Self(sequence)
+    }
+}
+impl Drop for HttpBound {
+    fn drop(&mut self) {
+        HTTP_READINESS.with_borrow_mut(|state| {
+            if state.bound.as_ref().is_some_and(|(sequence, _, _)| *sequence == self.0) {
+                state.bound = None;
+            }
+        });
+    }
+}
+
 async fn http_server(e: Rc<Engine>, s: HttpSettings) {
     let l = match TcpListener::bind((s.address.as_str(), s.port)).await {
         Ok(l) => l,
-        Err(err) => return crate::error(format!("HTTP server: can't listen on {}:{} ({err})", s.address, s.port)),
+        Err(err) => {
+            crate::core::status::record_failure("http", crate::core::status::Failure::Bind);
+            http_waiters(&s.address, s.port, false);
+            return crate::error(format!("HTTP server: can't listen on {}:{} ({err})", s.address, s.port));
+        }
     };
+    let _bound = HttpBound::new(&s.address, s.port);
+    crate::core::status::clear_failure("http");
     crate::say(format!("HTTP server on http://{}:{}/", s.address, s.port));
     // The open connections (an overlay's live feed stays open) end with the server.
     let mut open = tokio::task::JoinSet::new();
@@ -2158,6 +2249,27 @@ async fn udp_server(e: Rc<Engine>, s: UdpSettings) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn overlay_setup_waits_for_bind_and_reports_an_already_failed_listener() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            super::HTTP_READINESS.with_borrow_mut(|state| *state = Default::default());
+            crate::core::status::clear_failure("http");
+            let mut settings = crate::Config::default().http;
+            settings.auto_start = false;
+            let waiting = super::wait_for_http(&settings);
+            let bound = super::HttpBound::new(&settings.address, settings.port);
+            assert!(waiting.await.unwrap().is_ok());
+            settings.auto_start = true;
+            assert!(super::wait_for_http(&settings).await.unwrap().is_ok());
+            drop(bound);
+            crate::core::status::record_failure("http", crate::core::status::Failure::Bind);
+            assert!(super::wait_for_http(&settings).await.unwrap().is_err());
+            crate::core::status::clear_failure("http");
+            super::HTTP_READINESS.with_borrow_mut(|state| *state = Default::default());
+        });
+    }
+
     #[test]
     fn disabled_http_and_udp_edits_keep_the_existing_websocket_session() {
         let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
