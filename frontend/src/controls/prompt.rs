@@ -150,10 +150,13 @@ impl Prompt {
                         .label(yes.to_owned())
                         .disabled(self.pending || choice && self.selected.is_none())
                         .on_click(cx.listener(move |prompt, _, _, cx| {
+                            // A notice is only acknowledged: it has no box to read.
                             let value = if confirm {
                                 json!(true)
                             } else if choice {
                                 json!(prompt.selected)
+                            } else if notice {
+                                Value::Null
                             } else {
                                 json!(prompt.input.read(cx).value().to_string())
                             };

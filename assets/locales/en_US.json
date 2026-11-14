@@ -570,6 +570,7 @@
   "find.searching": "Searching...",
   "find.none": "No channel found",
   "find.live": "Live",
+  "find.login_first": "Log in to {platform} first to use your own channel.",
   "find.no_search": "{platform} can't be searched: type the @name or paste the link",
   "find.own": "Use my own channel",
   "find.placeholder": "Search a channel, or paste its link",

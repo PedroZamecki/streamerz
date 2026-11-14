@@ -122,6 +122,11 @@ impl P {
         }
     }
 
+    /// The account's login ran out (not a locked keyring): only a new login fixes it.
+    fn expired(self, c: &crate::Config, bot: bool) -> bool {
+        self.account_note(c, bot) == Some(tr("accounts.note.login_expired"))
+    }
+
     /// Forget an account; its revoke URL (Kick and Google need the token in the URL).
     fn logout(self, c: &mut crate::Config, bot: bool) -> Option<String> {
         let e = crate::commands::url_encode;
@@ -387,10 +392,18 @@ fn picture(engine: &Rc<Engine>, p: P, bot: bool, name: &str) -> Option<String> {
     let now = crate::fmt::unix_now().as_secs();
     let saved = avatars();
     let url = saved[&key][0].as_str().unwrap_or_default().to_owned();
-    if stale(&url, saved[&key][1].as_u64().unwrap_or(0), now) && may_look(&key, now) {
+    // A new login looks again at once: the wait after a failed lookup was for the old one.
+    let (login, token) = login_of(&engine.config(), p, bot);
+    let tail: String = token.chars().rev().take(8).collect();
+    if stale(&url, saved[&key][1].as_u64().unwrap_or(0), now) && may_look(&format!("{key}:{tail}"), now) {
         let engine = engine.clone();
         tokio::task::spawn_local(async move {
-            let Some(url) = avatar(&engine, p, bot).await else {
+            // The account's own lookup, else its public profile (no login needed).
+            let found = match avatar(&engine, p, bot).await {
+                Some(url) => Some(url),
+                None => channel_profile(&engine, p, &login).await.0,
+            };
+            let Some(url) = found else {
                 return;
             };
             let mut all = avatars();
@@ -403,6 +416,23 @@ fn picture(engine: &Rc<Engine>, p: P, bot: bool, name: &str) -> Option<String> {
         });
     }
     super::images::lookup(&url).map(|file| file.to_string_lossy().into_owned())
+}
+
+/// An account's public name (what its profile is found by) and its access token ("" when none).
+fn login_of(c: &crate::Config, p: P, bot: bool) -> (String, String) {
+    match p {
+        P::Twitch => if bot { &c.twitch.bot } else { &c.twitch.broadcaster }
+            .as_ref()
+            .map(|a| (a.login.clone(), a.token.access_token.clone())),
+        P::YouTube => if bot { &c.youtube.bot } else { &c.youtube.broadcaster }
+            .as_ref()
+            .map(|a| (a.channel_id.clone(), a.token.access_token.clone())),
+        P::Kick => if bot { &c.kick.bot } else { &c.kick.broadcaster }
+            .as_ref()
+            .map(|a| (a.username.clone(), a.token.access_token.clone())),
+        P::TikTok => None,
+    }
+    .unwrap_or_default()
 }
 
 thread_local! {
@@ -645,8 +675,9 @@ fn section(title: &str, brand: &str, rows: Vec<Value>) -> Value {
     let mut section = json!({"title": title, "icon": "", "rows": rows});
     if !brand.is_empty() {
         section["brand"] = brand.into();
-        // A platform's state and buttons sit on its heading's line.
+        // A platform's state and buttons sit on its heading's line, all of it in a card of its own.
         section["inline"] = true.into();
+        section["card"] = true.into();
     }
     section
 }
@@ -733,6 +764,9 @@ fn accounts(engine: &Rc<Engine>) -> Vec<Value> {
                 });
                 let prefix = if bot { "bot_" } else { "" };
                 let label_button = match name {
+                    Some(_) if p.expired(&config, bot) => {
+                        button(&format!("{slug}.{prefix}login"), tr("btn.login"), "log-in")
+                    }
                     Some(_) => button(&format!("{slug}.{prefix}logout"), tr("btn.logout"), "log-out"),
                     None => button(&format!("{slug}.{prefix}login"), tr("btn.login"), "log-in"),
                 };
@@ -1254,8 +1288,13 @@ pub fn act(engine: &Rc<Engine>, domain: &str, action: &str, id: &str) -> Result<
         .ok_or_else(|| format!("accounts has no action {action}"))?;
     let p = P::from_slug(slug).ok_or_else(|| format!("accounts has no platform {slug}"))?;
     match what {
+        // An expired login can't connect: Connect and Logout open the platform's login page instead.
+        "connect" if p.expired(&engine.config(), false) => login(engine, p, false),
         "connect" | "disconnect" => p.connect(engine, what == "connect"),
         "login" | "bot_login" => login(engine, p, what == "bot_login"),
+        "logout" | "bot_logout" if p.expired(&engine.config(), what == "bot_logout") => {
+            login(engine, p, what == "bot_logout")
+        }
         "logout" | "bot_logout" => logout(engine, p, what == "bot_logout"),
         "channel" => return Ok(finder(engine, p)),
         "set_channel" | "own_channel" => return choose_channel(engine, p, (what == "set_channel").then_some(id)),
@@ -1376,11 +1415,33 @@ pub fn ask_relogin(engine: &Rc<Engine>, platform: &'static str, bot: bool) {
     );
     let answer = crate::host::confirm(text, tr("relogin.later"), tr("relogin.now"));
     let engine = engine.clone();
-    tokio::task::spawn_local(async move {
+    let task = tokio::task::spawn_local(async move {
         if answer.await == Ok(true) {
             login(&engine, p, bot);
         }
     });
+    ASKS.with_borrow_mut(|asks| asks.push((p, bot, task.abort_handle())));
+}
+
+thread_local! {
+    /// The "log in again" questions on screen, so a login saved by another way takes its question away.
+    static ASKS: std::cell::RefCell<Vec<(P, bool, tokio::task::AbortHandle)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A new login was saved: the platform may ask about it again, and its open question is stale (aborting
+/// the task drops the prompt's receiver, which closes it).
+fn login_saved(p: P, bot: bool) {
+    crate::host::relogin_done(p.name(), bot);
+    ASKS.with_borrow_mut(|asks| {
+        asks.retain(|(q, b, handle)| {
+            let stale = *q == p && *b == bot;
+            if stale {
+                handle.abort();
+            }
+            !stale
+        })
+    });
+    crate::host::prompts_changed();
 }
 
 fn who(bot: bool) -> String {
@@ -1392,8 +1453,9 @@ fn who(bot: bool) -> String {
     .to_lowercase()
 }
 
+/// A login is under way: the old token stays empty until it ends, so the "log in again" question is
+/// not asked again meanwhile (it is released only when the new login is saved).
 fn login(engine: &Rc<Engine>, p: P, bot: bool) {
-    crate::host::relogin_done(p.name(), bot);
     match p {
         P::Twitch => twitch_login(engine, bot),
         P::TikTok => {
@@ -1412,6 +1474,7 @@ fn login(engine: &Rc<Engine>, p: P, bot: bool) {
                 &who(bot),
                 async move { crate::kick::login(&config, bot).await },
                 move |engine, account| {
+                    login_saved(P::Kick, bot);
                     engine.change(|config| {
                         *if bot {
                             &mut config.kick.bot
@@ -1431,6 +1494,7 @@ fn login(engine: &Rc<Engine>, p: P, bot: bool) {
                 &who(bot),
                 async move { crate::youtube::login(&config).await },
                 move |engine, account| {
+                    login_saved(P::YouTube, bot);
                     engine.change(|config| {
                         *if bot {
                             &mut config.youtube.bot
@@ -1508,6 +1572,7 @@ fn twitch_login(engine: &Rc<Engine>, bot: bool) {
         match outcome {
             Ok(Some(account)) => {
                 let (name, user_id) = (account.display_name.clone(), account.user_id.clone());
+                login_saved(P::Twitch, bot);
                 engine.change(|config| {
                     if bot {
                         config.twitch.bot = Some(account);
@@ -1572,18 +1637,33 @@ fn finder(engine: &Rc<Engine>, p: P) -> Value {
     }})
 }
 
-/// Read the channel picked in the finder (`None`: the account's own; TikTok's is the browser account's).
+/// Read the channel picked in the finder (`None`: the account's own). Only Twitch reads its account's
+/// channel from an empty one; Kick and YouTube need the channel written (the account's username or
+/// channel id), and TikTok's is the browser account's.
 fn choose_channel(engine: &Rc<Engine>, p: P, picked: Option<&str>) -> Result<Value, String> {
+    let own = |name: Option<String>| {
+        name.filter(|name| !name.trim().is_empty())
+            .ok_or_else(|| trf("find.login_first", &[("platform", p.name())]))
+    };
     let channel = match picked.map(str::trim) {
         Some(picked) => picked.to_owned(),
-        None if p == P::TikTok => {
-            let user = engine.tiktok_bridge.user();
-            if user.is_empty() {
-                return Err(tr("find.tiktok_login").into());
+        None => match p {
+            P::TikTok => {
+                let user = engine.tiktok_bridge.user();
+                if user.is_empty() {
+                    return Err(tr("find.tiktok_login").into());
+                }
+                user
             }
-            user
-        }
-        None => String::new(),
+            P::Kick => own(engine.config().kick.broadcaster.as_ref().map(|a| a.username.clone()))?,
+            P::YouTube => own(engine
+                .config()
+                .youtube
+                .broadcaster
+                .as_ref()
+                .map(|a| a.channel_id.clone()))?,
+            P::Twitch => String::new(),
+        },
     };
     let engine = engine.clone();
     tokio::task::spawn_local(async move {
@@ -2074,45 +2154,6 @@ mod tests {
     }
 
     #[test]
-    fn a_store_copy_before_pairing_by_link_is_told_apart() {
-        assert!(older("1.2.0", "1.3.0"));
-        assert!(older("1.2", "1.3.0"));
-        assert!(!older("1.3.0", "1.3.0"));
-        assert!(!older("1.10.0", "1.3.0"));
-    }
-
-    #[test]
-    fn the_channel_button_opens_the_finder_and_a_pick_is_read() {
-        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-        crate::engine::tests::run(async {
-            let engine = engine();
-            let before = super::super::prompts::list().len();
-            // The button answers with the finder (nothing asked through prompts).
-            let finder = act(&engine, "accounts", "kick.channel", "").unwrap();
-            assert_eq!(finder["finder"]["platform"], "kick");
-            assert_eq!(finder["finder"]["searchable"], true);
-            assert!(!finder["finder"]["labels"]["own"].as_str().unwrap().is_empty());
-            assert_eq!(super::super::prompts::list().len(), before);
-            // YouTube can't be searched: the finder says to paste a link or an @name.
-            let youtube = act(&engine, "accounts", "youtube.channel", "").unwrap();
-            assert_eq!(youtube["finder"]["searchable"], crate::search::can("youtube"));
-            // A pick is read as the channel; "own" goes back to the account's own.
-            act(&engine, "accounts", "kick.set_channel", "someone").unwrap();
-            for _ in 0..5 {
-                tokio::task::yield_now().await;
-            }
-            assert_eq!(engine.config().kick.channel, "someone");
-            act(&engine, "accounts", "kick.own_channel", "").unwrap();
-            for _ in 0..5 {
-                tokio::task::yield_now().await;
-            }
-            assert_eq!(engine.config().kick.channel, "");
-            // TikTok's own channel needs the browser account.
-            assert!(act(&engine, "accounts", "tiktok.own_channel", "").is_err());
-        });
-    }
-
-    #[test]
     fn saved_logins_are_checked_at_start_whether_or_not_they_connect() {
         let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         crate::engine::tests::run(async {
@@ -2179,6 +2220,78 @@ mod tests {
             assert_eq!(super::super::prompts::list().len(), before);
             forget();
             crate::notify::configure(crate::notify::Settings::default());
+        });
+    }
+
+    #[test]
+    fn a_store_copy_before_pairing_by_link_is_told_apart() {
+        assert!(older("1.2.0", "1.3.0"));
+        assert!(older("1.2", "1.3.0"));
+        assert!(!older("1.3.0", "1.3.0"));
+        assert!(!older("1.10.0", "1.3.0"));
+    }
+
+    #[test]
+    fn the_channel_button_opens_the_finder_and_a_pick_is_read() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = engine();
+            let before = super::super::prompts::list().len();
+            // The button answers with the finder (nothing asked through prompts).
+            let finder = act(&engine, "accounts", "kick.channel", "").unwrap();
+            assert_eq!(finder["finder"]["platform"], "kick");
+            assert_eq!(finder["finder"]["searchable"], true);
+            assert!(!finder["finder"]["labels"]["own"].as_str().unwrap().is_empty());
+            assert_eq!(super::super::prompts::list().len(), before);
+            // YouTube can't be searched: the finder says to paste a link or an @name.
+            let youtube = act(&engine, "accounts", "youtube.channel", "").unwrap();
+            assert_eq!(youtube["finder"]["searchable"], crate::search::can("youtube"));
+            // A pick is read as the channel; "own" goes back to the account's own.
+            act(&engine, "accounts", "kick.set_channel", "someone").unwrap();
+            for _ in 0..5 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(engine.config().kick.channel, "someone");
+            // Kick and YouTube need a channel to connect: "own" with no login says so and keeps it.
+            assert_eq!(
+                act(&engine, "accounts", "kick.own_channel", "").unwrap_err(),
+                trf("find.login_first", &[("platform", "Kick")])
+            );
+            assert!(act(&engine, "accounts", "youtube.own_channel", "").is_err());
+            assert_eq!(engine.config().kick.channel, "someone");
+            // Logged in: "own" writes the account's channel, which reads as its own.
+            engine.change(|c| {
+                c.kick.broadcaster = Some(crate::kick::KickAccount {
+                    user_id: 7,
+                    username: "Mine".into(),
+                    ..Default::default()
+                });
+                c.youtube.broadcaster = Some(crate::youtube::YouTubeAccount {
+                    channel_id: "UCmine".into(),
+                    name: "Me".into(),
+                    ..Default::default()
+                });
+            });
+            act(&engine, "accounts", "kick.own_channel", "").unwrap();
+            act(&engine, "accounts", "youtube.own_channel", "").unwrap();
+            for _ in 0..5 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(engine.config().kick.channel, "Mine");
+            assert_eq!(engine.config().youtube.channel_id, "UCmine");
+            assert_eq!(P::Kick.typed_channel(&engine.config()), "", "shown as your own channel");
+            // Twitch reads its account's channel from an empty one.
+            act(&engine, "accounts", "twitch.set_channel", "someone").unwrap();
+            for _ in 0..5 {
+                tokio::task::yield_now().await;
+            }
+            act(&engine, "accounts", "twitch.own_channel", "").unwrap();
+            for _ in 0..5 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(engine.config().twitch.channel, "");
+            // TikTok's own channel needs the browser account.
+            assert!(act(&engine, "accounts", "tiktok.own_channel", "").is_err());
         });
     }
 

@@ -98,7 +98,8 @@ impl Broker {
             Content::Input { .. } if value.is_null() || value.is_string() => {}
             Content::Confirm { .. } if value.is_boolean() => {}
             Content::Wait { .. } => {}
-            Content::Notice { .. } if value.is_null() => {}
+            // A notice is only acknowledged, whatever comes with the OK.
+            Content::Notice { .. } => {}
             Content::Choice { options, .. }
                 if value.is_null()
                     || value
@@ -223,6 +224,7 @@ pub fn answer(id: u64, value: Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     #[test]
     fn reads_keep_prompts_until_a_valid_single_answer_and_prune_cancelled_callers() {
         let mut broker = Broker::default();
@@ -254,6 +256,24 @@ mod tests {
         drop(receiver);
         assert!(broker.list().is_empty());
     }
+    #[test]
+    fn a_notice_closes_with_its_ok_whatever_comes_with_it() {
+        // A login's "Successfully logged in" once answered "invalid prompt answer" to its OK.
+        for answer in [Value::Null, json!(""), json!(true)] {
+            let mut broker = Broker::default();
+            broker.insert(
+                Content::Notice {
+                    title: "Twitch Login".into(),
+                    text: "Logged in".into(),
+                },
+                Reply::Notice,
+            );
+            let id = broker.list()[0].id;
+            assert_eq!(broker.answer(id, answer), Ok(()));
+            assert!(broker.list().is_empty());
+        }
+    }
+
     #[test]
     fn choices_preserve_ids_and_cancellation_differs_from_an_empty_answer() {
         let mut broker = Broker::default();

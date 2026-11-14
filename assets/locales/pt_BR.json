@@ -577,6 +577,7 @@
   "find.searching": "Buscando...",
   "find.none": "Nenhum canal encontrado",
   "find.live": "Ao vivo",
+  "find.login_first": "Entre na {platform} primeiro para usar o seu próprio canal.",
   "find.no_search": "{platform} não tem busca: digite o @nome ou cole o link",
   "find.own": "Usar meu próprio canal",
   "find.placeholder": "Busque um canal ou cole o link dele",

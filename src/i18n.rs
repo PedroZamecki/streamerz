@@ -94,6 +94,11 @@ pub fn all() -> impl Iterator<Item = (&'static str, &'static str)> {
     (0..LOCALES.len()).map(|i| (LOCALES[i].0, name(i)))
 }
 
+/// The code of the language in use (`en_US`, `pt_BR`).
+pub fn active() -> &'static str {
+    LOCALES[ACTIVE.load(Ordering::Relaxed)].0
+}
+
 /// The text of `key` in the language in use.
 pub fn tr(key: &'static str) -> &'static str {
     let i = ACTIVE.load(Ordering::Relaxed);
