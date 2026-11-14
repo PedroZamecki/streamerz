@@ -459,7 +459,7 @@ pub fn read(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         "empty": tr("actions.pick_to_edit"),
         "detail": {"title": tr("actions.details"), "text": tr("actions.details_empty")},
         "editor": open.map(|action| editor(&config, action)),
-        // Nothing open: the same panes, empty, as 1.6.0 shows them.
+        // Nothing open: the same panes, empty.
         "idle": open.is_none().then(|| {
             let mut idle = editor(&config, &Action::default());
             idle["title"] = tr("actions.pick_to_edit").into();

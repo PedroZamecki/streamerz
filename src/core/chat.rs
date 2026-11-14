@@ -621,7 +621,7 @@ fn my_names(config: &crate::Config) -> Vec<String> {
 }
 
 /// What the chat shows: "all" (every chat together), "side" (a column each) or one platform's id. The
-/// saved choice may be a word of 1.6.0 (its own language); a platform that is not there falls back to all.
+/// saved choice may be a word an older version saved (in its language); a platform that is not there falls back to all.
 fn view(config: &crate::Config, present: &[&str]) -> String {
     let saved = config.window.chat_view.as_str();
     let id = if saved.is_empty() || saved == tr("chat.view_all") {
@@ -2014,7 +2014,7 @@ mod tests {
         assert_eq!(view(&config, &present), "all");
         config.window.chat_view = "side".into();
         assert_eq!(view(&config, &present), "side");
-        // 1.6.0 kept the words it showed.
+        // Older versions saved the words they showed.
         config.window.chat_view = tr("chat.view_side_by_side").into();
         assert_eq!(view(&config, &present), "side");
         config.window.chat_view = "Kick".into();

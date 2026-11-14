@@ -12,7 +12,7 @@ pub fn apply(dark: bool, cx: &mut App) {
         colors.border = rgb(if dark { 0x3f3f46 } else { 0xd4d4d8 }).into();
         colors.muted = rgb(if dark { 0x27272a } else { 0xe4e4e7 }).into();
         colors.muted_foreground = rgb(if dark { 0x919196 } else { 0x71717a }).into();
-        // The window behind a dialog is dimmed, as 1.6.0 darkens and blurs what is behind its dialogs.
+        // The window behind a dialog is dimmed.
         colors.overlay = gpui_kit::hsla(0., 0., 0., if dark { 0.5 } else { 0.3 });
         colors.accent = colors.muted;
         colors.accent_foreground = colors.foreground;
@@ -37,7 +37,7 @@ pub fn apply(dark: bool, cx: &mut App) {
     });
 }
 
-/// The bright text of headings (1.6.0: near white on dark, near black on light).
+/// The bright text of headings: near white on dark, near black on light.
 pub fn strong(cx: &App) -> gpui_kit::Hsla {
     use gpui_kit::component::ActiveTheme;
     rgb(if cx.theme().is_dark() { 0xf4f4f5 } else { 0x09090b }).into()

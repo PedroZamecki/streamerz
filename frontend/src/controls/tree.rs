@@ -43,7 +43,7 @@ pub struct Options {
     pub closed: bool,
     /// Buttons show only their icons.
     pub compact: bool,
-    /// The pane's width when known: buttons fold to their icons when a label no longer fits (1.6.0: under 80).
+    /// The pane's width when known: buttons fold to their icons when a label no longer fits (under 80).
     pub width: f32,
     /// Nothing is open: every button is off.
     pub idle: bool,

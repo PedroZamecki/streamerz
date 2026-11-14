@@ -689,7 +689,7 @@ impl Render for Frontend {
             .border_t_1()
             .border_color(rgb(if cx.theme().is_dark() { 0x2b2b2e } else { 0xdcdcdd }))
             .child(
-                // The logo of the look: the dark one on the dark theme, as 1.6.0 draws it; a development
+                // The logo of the look: the dark one on the dark theme; a development
                 // build has its own (the tray's), so it is never taken for the installed app.
                 img(if IS_DEV {
                     "brands/streamerz-dev.svg"

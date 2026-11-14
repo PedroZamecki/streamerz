@@ -107,7 +107,7 @@ impl ActionsPage {
     /// The panes of the open action exist while the core sends its editor.
     fn sync_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut editor = self.model["actions"]["editor"].clone();
-        // Nothing open: the same panes, empty and off (1.6.0).
+        // Nothing open: the same panes, empty and off.
         if !editor.is_object() {
             editor = self.model["actions"]["idle"].clone();
         }

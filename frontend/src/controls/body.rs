@@ -1,4 +1,4 @@
-//! The inside of a button as 1.6.0 draws it: a 14px icon in a quiet tone, then the label at 13px.
+//! The inside of a button: a 14px icon in a quiet tone, then the label at 13px.
 use gpui_kit::component::{ActiveTheme, Icon};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;

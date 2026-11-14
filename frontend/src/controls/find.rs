@@ -1,4 +1,4 @@
-//! Finding a channel, as 1.6.0 did: a search box, the channels that match with their picture, followers
+//! Finding a channel: a search box, the channels that match with their picture, followers
 //! and whether they are live, as the platforms' own sites show them, and "Use my own channel". A link or an
 //! @name typed in the box works too (for what can't be searched). The core supplies the model (`finder`),
 //! searches (`StreamerzSearchChannels`) and reads the pick (`<platform>.set_channel`, `.own_channel`).

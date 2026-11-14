@@ -280,7 +280,7 @@ impl Sections {
         let owner = cx.entity().downgrade();
         let roomy = self.domain == "settings";
         let compact = roomy && self.compact;
-        // A narrow window folds the long buttons of an account's lines to their icon (1.6.0).
+        // A narrow window folds the long buttons of an account's lines to their icon.
         let fold = !roomy && self.compact;
         let buttons = |list: &[Value], cx: &mut Context<Self>| {
             let mut line = div().flex().gap_2().flex_shrink_0().when(compact, |line| line.w_full());
@@ -617,7 +617,7 @@ impl Sections {
 impl Render for Sections {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.compact = f32::from(window.viewport_size().width) < 700.;
-        // Settings is laid out roomier than the other pages, as in 1.6.0.
+        // Settings is laid out roomier than the other pages.
         let roomy = self.domain == "settings";
         let mut page = div()
             .id(SharedString::from(format!("sections-{}", self.domain)))
@@ -674,7 +674,7 @@ impl Render for Sections {
             let mut block = div().flex().flex_col().gap(px(if roomy { 2. } else { 4. })).w_full();
             let title = section["title"].as_str().unwrap_or_default().to_owned();
             let titled = !title.is_empty();
-            // A platform's section (brand and inline state): 1.6.0's account layout.
+            // A platform's section: its brand and state on the heading's line.
             let plat = section["inline"] == true && section["brand"].is_string();
             let mut heading = div()
                 .flex()
@@ -798,7 +798,7 @@ impl Render for Sections {
                 if !flowing.is_empty() {
                     block = block.child(div().flex().gap_3().w_full().min_h(px(30.)).children(flowing.drain(..)));
                 }
-                // An introduction alone in its row (1.6.0 gives it a two line box).
+                // An introduction alone in its row gets a two line box.
                 let about_only = !about.is_empty()
                     && (!titled || inline)
                     && label.is_empty()
@@ -810,7 +810,7 @@ impl Render for Sections {
                     text = text.font_weight(FontWeight::BOLD).text_size(px(15.));
                 }
                 let value = row["value"].as_str().map(str::to_owned);
-                // A platform's channel is one wide button (1.6.0): it shows the channel and opens the picker.
+                // A platform's channel is one wide button: it shows the channel and opens the picker.
                 let pick = row["control"]["buttons"][0].clone();
                 let channel = plat && key.ends_with(".channel") && pick.is_object();
                 if let (true, Some(value)) = (channel, value.clone()) {
@@ -859,7 +859,7 @@ impl Render for Sections {
                                         sections.press(spec.clone(), window, cx)
                                     })),
                             )
-                            // Whose channel it is, beside the button (1.6.0).
+                            // Whose channel it is, beside the button.
                             .child({
                                 let about_tip = about.clone();
                                 div()

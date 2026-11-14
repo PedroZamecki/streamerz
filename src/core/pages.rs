@@ -493,7 +493,7 @@ fn crashes() -> Value {
         ],
     );
     model["detail"] = tr("crashes.detail_empty").into();
-    // 1.6.0: a short table, and the report fills the rest of the page.
+    // A short table, and the report fills the rest of the page.
     model["tableHeight"] = 192.into();
     model["detailFill"] = true.into();
     model["strip"] = true.into();

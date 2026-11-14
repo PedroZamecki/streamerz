@@ -246,7 +246,7 @@ impl TableDelegate for Rows {
         built
     }
     fn render_header(&mut self, _: &mut Window, cx: &mut Context<TableState<Self>>) -> Stateful<Div> {
-        // 1.6.0: a quiet small header line above the box.
+        // A quiet small header line above the box.
         div()
             .id("header")
             .text_size(px(12.))
@@ -254,7 +254,7 @@ impl TableDelegate for Rows {
             .text_color(crate::theme::quiet(cx))
     }
     fn render_th(&mut self, index: usize, _: &mut Window, cx: &mut Context<TableState<Self>>) -> impl IntoElement {
-        // 1.6.0: a quiet small label above the box.
+        // A quiet small label above the box.
         // The sorted column is the bright one with an arrow; a sortable one sorts on a click.
         let column = &self.model["columns"][index];
         let key = column["key"].as_str().unwrap_or_default().to_owned();
@@ -312,7 +312,7 @@ impl TableDelegate for Rows {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
-        // Every cell is centred in its row (1.6.0).
+        // Every cell is centred in its row.
         let content = (|| -> AnyElement {
             let record = &self.model["rows"][row];
             let value = &record["cells"][column];

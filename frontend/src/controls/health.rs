@@ -1,4 +1,4 @@
-//! Connection and resource health uses the production palette and Lucide family in both themes.
+//! Connection and resource health: the zinc palette's state colours and Lucide icons, in both themes.
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::{rgb, App, Hsla};
 

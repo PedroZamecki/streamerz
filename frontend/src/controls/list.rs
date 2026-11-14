@@ -844,13 +844,13 @@ impl List {
                     ),
                 );
             }
-            // A short last row keeps the width of the others (1.6.0 lays buttons out on a grid).
+            // A short last row keeps the width of the others (buttons are laid out on a grid).
             for _ in chunk.len()..per_row.min(actions.len()) {
                 line = line.child(div().flex_1().min_w_0());
             }
             buttons = buttons.child(line);
         }
-        // A list whose rows open on a click and has only that button (Details) draws none (1.6.0).
+        // A list whose rows open on a click and has only that button (Details) draws none.
         let only_open = self.model["open"].is_string() && actions.len() == 1;
         (!actions.is_empty() && !only_open).then_some(buttons)
     }
@@ -1909,7 +1909,7 @@ impl Render for List {
         }
         if let Some(table) = &self.table {
             body = body.child(
-                // 1.6.0: the header is a quiet line above a rounded box (drawn over the rows, no fill).
+                // The header is a quiet line above a rounded box (drawn over the rows, no fill).
                 div()
                     .relative()
                     .when_some(self.model["tableHeight"].as_f64(), |wrap, height| {

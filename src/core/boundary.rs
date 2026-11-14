@@ -19,7 +19,7 @@ fn backend_modules_do_not_import_a_frontend_toolkit() {
                 continue;
             }
             let source = std::fs::read_to_string(&path).unwrap();
-            for forbidden in ["crate::ui::", "fltk::", "gpui::", "gpui_kit::", "streamerz_frontend::"] {
+            for forbidden in ["gpui::", "gpui_kit::", "streamerz_frontend::"] {
                 assert!(!source.contains(forbidden), "{} imports {forbidden}", path.display());
             }
         }

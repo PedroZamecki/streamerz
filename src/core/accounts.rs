@@ -773,7 +773,7 @@ fn accounts(engine: &Rc<Engine>) -> Vec<Value> {
                 let mut row = json!({"key": key, "label": label, "control": buttons(vec![label_button])});
                 match &name {
                     Some(name) => {
-                        // A warning goes with the name, as 1.6.0 shows it: "Streamer (log in again: ...)".
+                        // A warning goes with the name: "Streamer (log in again: ...)".
                         row["value"] = match p.account_note(&config, bot) {
                             Some(note) => format!("{name} ({note})"),
                             None => name.clone(),
@@ -1396,7 +1396,7 @@ pub fn check_logins(engine: &Rc<Engine>, remote: bool) {
     });
 }
 
-/// A login ran out: ask, in a dialog, whether to log in again now (1.6.0's popup). "Log in" runs the same
+/// A login ran out: ask, in a dialog, whether to log in again now. "Log in" runs the same
 /// login as the Accounts button.
 pub fn ask_relogin(engine: &Rc<Engine>, platform: &'static str, bot: bool) {
     let Some(p) = ALL.into_iter().find(|p| p.name() == platform) else {
@@ -1947,7 +1947,7 @@ mod tests {
             );
             let all = rows(&model);
             let account = all.iter().find(|row| row["key"] == "twitch.account").unwrap();
-            // The name, with what it needs said beside it, as 1.6.0 shows it (this login lacks scopes).
+            // The name, with what it needs said beside it (this login lacks scopes).
             assert_eq!(
                 account["value"],
                 format!("Ana ({})", tr("accounts.note.new_permissions"))

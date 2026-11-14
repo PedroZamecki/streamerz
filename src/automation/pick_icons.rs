@@ -1,8 +1,8 @@
 //! Which Lucide icon each node of the trigger and sub-action picker wears: a platform's or app's logo where there
 //! is one, else a Lucide icon chosen by the group's name (groups) or by the words of the title (items).
 
-/// The logo (a brand asset's path) of a platform or app, by its group's name: what 1.6.0's trees showed
-/// in place of a Lucide icon. None when it has no logo.
+/// The logo (a brand asset's path) of a platform or app, by its group's name: trees show it in place
+/// of a Lucide icon. None when it has no logo.
 pub fn logo(name: &str) -> Option<&'static str> {
     Some(match name.trim() {
         "Twitch" => "brands/twitch.svg",

@@ -980,7 +980,7 @@ impl Render for FormButtons {
     }
 }
 
-/// 1.6.0 draws a text field as a dark box with a quiet border.
+/// A text field is a dark box with a quiet border.
 fn boxed(field: impl IntoElement, height: f32, cx: &App) -> AnyElement {
     use gpui_kit::component::ActiveTheme;
     div()
