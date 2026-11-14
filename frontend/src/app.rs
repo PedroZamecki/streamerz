@@ -670,7 +670,9 @@ impl Render for Frontend {
                                         .path(format!("icons/{}.svg", page["icon"].as_str().unwrap_or_default()))
                                         .size_4(),
                                 )
-                                .when(!narrow, |row| row.child(label)),
+                                .when(!narrow, |row| {
+                                    row.min_w_0().child(div().min_w_0().truncate().child(label))
+                                }),
                         )
                         .selected(selected)
                         .on_click(cx.listener(move |this, _, window, cx| this.select(&id, window, cx))),
@@ -877,7 +879,8 @@ impl Render for Frontend {
             .flex_shrink_0()
             .child(
                 Button::new("save")
-                    .w(px(if small { 36. } else { 110. }))
+                    .when(small, |button| button.w(px(36.)))
+                    .when(!small, |button| button.min_w(px(110.)))
                     .child(bar_content("save", tr("btn.save"), small, cx))
                     .accessibility_label(tr("btn.save"))
                     .tooltip(tr("ui.save_tooltip"))
@@ -920,14 +923,16 @@ impl Render for Frontend {
             )
             .child(
                 Button::new("hide")
-                    .w(px(if small { 36. } else { 110. }))
+                    .when(small, |button| button.w(px(36.)))
+                    .when(!small, |button| button.min_w(px(110.)))
                     .child(bar_content("eye-off", tr("btn.hide"), small, cx))
                     .accessibility_label(tr("btn.hide"))
                     .on_click(|_, _, cx| cx.quit()),
             )
             .child(
                 Button::new("quit")
-                    .w(px(if small { 36. } else { 110. }))
+                    .when(small, |button| button.w(px(36.)))
+                    .when(!small, |button| button.min_w(px(110.)))
                     .child(bar_content("log-out", tr("btn.quit"), small, cx))
                     .accessibility_label(tr("btn.quit"))
                     .on_click(|_, _, _| send(json!({"request": "StreamerzCoreQuit", "id": "quit"}))),

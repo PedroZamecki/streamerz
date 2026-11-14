@@ -297,7 +297,15 @@ impl Sections {
         // A narrow window folds the long buttons of an account's lines to their icon.
         let fold = !roomy && self.compact;
         let buttons = |list: &[Value], cx: &mut Context<Self>| {
-            let mut line = div().flex().gap_2().flex_shrink_0().when(compact, |line| line.w_full());
+            // Never wider than its place: buttons that don't fit on one line go on the next, at the right.
+            let mut line = div()
+                .flex()
+                .flex_wrap()
+                .justify_end()
+                .gap_2()
+                .flex_shrink_0()
+                .max_w_full()
+                .when(compact, |line| line.w_full());
             for (index, button) in list.iter().enumerate() {
                 let spec = button.clone();
                 let label = button["label"].as_str().unwrap_or_default().to_owned();
@@ -323,8 +331,9 @@ impl Sections {
                     90.
                 }))
                 .when(icon_only, |button| button.w(px(36.)))
+                // A column of equal buttons, each as wide as its label needs past that.
                 .when(roomy && !compact, |button| {
-                    button.w(px(if list.len() == 1 { 150. } else { 114. }))
+                    button.min_w(px(if list.len() == 1 { 150. } else { 114. }))
                 })
                 .when(compact, |button| button.flex_1())
                 .child(super::body::button_body(
@@ -1092,9 +1101,20 @@ impl Render for Sections {
                 } else if let Some(icon) = row["icon"].as_str().filter(|i| !i.is_empty()) {
                     line = line.child(img(format!("brands/{icon}.svg")).size(px(28.)).flex_shrink_0());
                 }
+                // Text keeps a readable width beside its buttons: when both don't fit, the buttons go under
+                // it, at the right, instead of squeezing it to a word per line.
+                let beside = row["control"].is_object() && !channel;
+                let has_text = row["label"].as_str().is_some_and(|label| !label.is_empty())
+                    || !about.is_empty()
+                    || row["value"].is_string()
+                    || row["status"].is_object();
+                if beside && has_text && !roomy {
+                    line = line.flex_wrap();
+                    text = text.min_w(px(200.));
+                }
                 line = line.child(text);
-                if row["control"].is_object() && !channel {
-                    line = line.child(self.control(row, &key, cx));
+                if beside {
+                    line = line.child(div().ml_auto().max_w_full().child(self.control(row, &key, cx)));
                 }
                 block = block.child(line);
             }

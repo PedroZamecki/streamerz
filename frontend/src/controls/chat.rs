@@ -2324,7 +2324,7 @@ impl ChatView {
                         .small()
                         .mt_6()
                         .h(px(26.))
-                        .w(px(126.))
+                        .min_w(px(126.))
                         .icon(Icon::empty().path("icons/user.svg"))
                         .label(text("accounts"))
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(Go("Accounts".into())))),

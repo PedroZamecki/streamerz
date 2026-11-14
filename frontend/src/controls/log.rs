@@ -109,7 +109,7 @@ impl Render for LogView {
             Button::new("open-logs")
                 .small()
                 .h(px(26.))
-                .when(!narrow, |button| button.w(px(140.)))
+                .when(!narrow, |button| button.min_w(px(140.)))
                 .child(super::body::button_body(
                     Some("folder-open"),
                     (!narrow).then(|| log["folder"].as_str().unwrap_or_default().to_owned()),

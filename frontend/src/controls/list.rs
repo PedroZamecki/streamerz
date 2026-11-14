@@ -751,7 +751,7 @@ impl List {
                 f32::from(window.viewport_size().width) - 200.
             };
             let fold = room < 360.;
-            let mut line = div().flex().items_center().gap_2().w_full();
+            let mut line = div().flex().flex_wrap().items_center().gap_2().w_full();
             for action in actions.iter().copied() {
                 if matches!(action, Action::Delete) {
                     line = line.child(div().flex_1());
@@ -778,7 +778,8 @@ impl List {
                 .into_iter()
                 .filter(|action| !self.hide_disabled(*action) || action.enabled(&self.model, selected))
                 .collect();
-            let mut line = div().flex().items_center().gap(px(6.)).w_full();
+            // More buttons than fit on a narrow window go on a second line instead of past its edge.
+            let mut line = div().flex().flex_wrap().items_center().gap(px(6.)).w_full();
             let mut apart = false;
             for action in visible.iter().copied() {
                 let danger = matches!(action, Action::Delete)
@@ -1840,7 +1841,7 @@ impl Render for List {
                         Button::new("show-combo")
                             .small()
                             .h(px(26.))
-                            .w(px(108.))
+                            .min_w(px(108.))
                             .text_size(px(13.))
                             .child(
                                 div()
