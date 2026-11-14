@@ -212,13 +212,17 @@ fn new_token() -> String {
 }
 
 /// The address the extension connects to: the WebSocket server's, on this machine.
-fn server_url(c: &crate::Config) -> String {
+pub(crate) fn server_url(c: &crate::Config) -> String {
     let w = &c.websockets;
     let host = match w.address.trim() {
         "" | "0.0.0.0" | "::" | "[::]" | "*" | "+" => "127.0.0.1",
         a => a,
     };
-    format!("ws://{host}:{}{PATH}", w.port)
+    if host.contains(':') && !host.starts_with('[') {
+        format!("ws://[{host}]:{}{PATH}", w.port)
+    } else {
+        format!("ws://{host}:{}{PATH}", w.port)
+    }
 }
 
 /// Sets sending up (a token, if there's none yet, and the local WebSocket server it connects to) and
@@ -540,6 +544,8 @@ pub fn refresh(c: &crate::Config) {
 pub fn remove(e: &Rc<Engine>) {
     e.change(|c| c.tiktok.bridge_token.clear());
     e.tiktok_bridge.disconnect();
+    e.tiktok_bridge.refused.borrow_mut().clear();
+    e.tiktok_bridge.refusal_kind.borrow_mut().take();
     let _ = std::fs::remove_dir_all(folder());
     let _ = std::fs::remove_dir_all(firefox_folder());
     let _ = std::fs::remove_file(firefox_xpi_path());
@@ -552,6 +558,10 @@ pub fn status(e: &Engine) -> Value {
     json!({
         "setUp": set_up(&e.config()),
         "connected": b.is_connected(),
+        "socketConnected": b.is_connected(),
+        "loggedIn": if !b.is_connected() { None } else if b.login_required() { Some(false) } else if b.ready() { Some(!b.user().is_empty()) } else { None },
+        "wsUrl": server_url(&e.config()),
+        "protocol": {"minimum": MIN_PROTOCOL, "maximum": PROTOCOL},
         "user": b.user(),
         "avatar": b.avatar(),
         "ready": b.ready(),
@@ -561,8 +571,13 @@ pub fn status(e: &Engine) -> Value {
         "latestVersion": EXTENSION_VERSION,
         "outdated": b.is_outdated(),
         "refused": b.refused(),
+        "refusalKind": *b.refusal_kind.borrow(),
         "folder": folder().display().to_string(),
-        "extensionId": EXTENSION_ID
+        "extensionId": EXTENSION_ID,
+        "browsers": crate::browsers::installed().iter().map(|browser| json!({
+            "name": browser.name, "running": browser.is_running(),
+            "installs": browser.extension_installs(EXTENSION_ID, &folder())
+        })).collect::<Vec<_>>()
     })
 }
 
@@ -610,6 +625,7 @@ pub struct Bridge {
     error: RefCell<String>,
     /// Why the last extension that tried was turned away (another protocol), until one connects.
     refused: RefCell<String>,
+    refusal_kind: RefCell<Option<&'static str>>,
     warming: std::cell::Cell<bool>,
     refresh_pending: std::cell::Cell<bool>,
 }
@@ -640,6 +656,16 @@ impl Bridge {
 
     pub fn refused(&self) -> String {
         self.refused.borrow().clone()
+    }
+
+    /// Invalid clients cannot replace the status of an already authenticated extension.
+    fn note_refusal(&self, kind: &'static str, reason: String) {
+        if self.is_connected() || *self.refused.borrow() == reason {
+            return;
+        }
+        *self.refusal_kind.borrow_mut() = Some(kind);
+        *self.refused.borrow_mut() = reason;
+        crate::host::changed();
     }
 
     pub fn ready(&self) -> bool {
@@ -1139,6 +1165,10 @@ where
     };
     let token = e.config().tiktok.bridge_token.clone();
     if token.is_empty() || hello["op"] != "hello" || !same(hello["token"].as_str().unwrap_or(""), &token) {
+        e.tiktok_bridge.note_refusal(
+            "pairing",
+            crate::i18n::tr("accounts.tiktok_sending.pairing_refused").into(),
+        );
         crate::warn(
             "TikTok extension: refused a connection with a wrong token (set it up again in Accounts > TikTok)".into(),
         );
@@ -1147,13 +1177,13 @@ where
     }
     if let Some(why) = refusal(&hello) {
         crate::warn(format!("TikTok extension: {why}"));
-        *e.tiktok_bridge.refused.borrow_mut() = why;
-        crate::host::changed();
+        e.tiktok_bridge.note_refusal("protocol", why);
         let _ = sink.close().await;
         return;
     }
     let b = &e.tiktok_bridge;
     b.refused.borrow_mut().clear();
+    b.refusal_kind.borrow_mut().take();
     let serial = b.serial.get() + 1;
     b.serial.set(serial);
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
@@ -1199,6 +1229,29 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pairing_refusals_explain_the_repair_without_exposing_supplied_tokens() {
+        let bridge = super::Bridge::default();
+        bridge.note_refusal(
+            "pairing",
+            crate::i18n::tr("accounts.tiktok_sending.pairing_refused").into(),
+        );
+        assert_eq!(*bridge.refusal_kind.borrow(), Some("pairing"));
+        assert!(!bridge.refused().is_empty());
+        let (tx, _) = tokio::sync::mpsc::unbounded_channel();
+        *bridge.link.borrow_mut() = Some(super::Link {
+            tx,
+            pending: Default::default(),
+            next: 0,
+            serial: 1,
+        });
+        bridge.note_refusal("protocol", "an unrelated connection failed".into());
+        assert_eq!(*bridge.refusal_kind.borrow(), Some("pairing"));
+        assert_ne!(bridge.refused(), "an unrelated connection failed");
+        assert!(super::older("1.3.0", super::EXTENSION_VERSION));
+        assert!(!super::older(super::EXTENSION_VERSION, super::EXTENSION_VERSION));
+    }
+
     #[test]
     fn the_setup_page_link_carries_where_streamerz_is_and_its_token() {
         let mut c = crate::Config::default();
@@ -1350,6 +1403,8 @@ mod tests {
         c.websockets.address = "0.0.0.0".into();
         c.websockets.port = 8090;
         assert_eq!(server_url(&c), "ws://127.0.0.1:8090/streamerz/tiktok");
+        c.websockets.address = "::1".into();
+        assert_eq!(server_url(&c), "ws://[::1]:8090/streamerz/tiktok");
     }
 
     #[test]

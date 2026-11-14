@@ -181,6 +181,7 @@ async function pairFromOpenTabs() {
 // next connection attempt restarts the extension once, so the browser runs them.
 let loadedBuild;
 async function settings() {
+  let bundled;
   try {
     const response = await fetch(ext.runtime.getURL("config.json"), { cache: "no-store" });
     if (response.ok) {
@@ -188,11 +189,16 @@ async function settings() {
       const build = s.build || "";
       if (loadedBuild === undefined) loadedBuild = build;
       else if (build !== loadedBuild) { ext.runtime.reload(); return null; }
-      if (s.url && s.token) return s;
+      if (s.url && s.token) bundled = s;
     }
   } catch {}
-  const stored = await ext.storage.local.get(["url", "token"]);
-  return stored.url && stored.token ? stored : null;
+  // An explicit pairing is newer than the defaults shipped with an unpacked copy. Keep reading the
+  // build above so changed local files still reload, but never undo a user's re-pair to another port.
+  try {
+    const stored = await ext.storage.local.get(["url", "token"]);
+    if (stored.url && stored.token) return stored;
+  } catch {}
+  return bundled || null;
 }
 
 async function connect() {

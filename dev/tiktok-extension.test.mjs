@@ -22,14 +22,14 @@ function worker() {
     cookies: { getAll: async () => state.cookies,
       onChanged: { addListener(f) { state.cookieChanged = f; } } },
     alarms: { create() {}, onAlarm: { addListener() {} } },
-    storage: { local: { get: async () => ({ ...state.settings }) } },
+    storage: { local: { get: async () => ({ ...state.settings }), set: async value => Object.assign(state.settings, value) } },
   };
   state.settings = {};
   state.timers = new Map();
   let nextTimer = 0;
   state.sockets = [];
   class Socket { static OPEN = 1; constructor(url) { this.url = url; this.readyState = 1; state.sockets.push(this); } send() {} }
-  const context = vm.createContext({ chrome, URL, URLSearchParams, fetch: async () => ({ ok: true, json: async () => ({ ...state.settings }) }), self: { STREAMERZ: {} }, importScripts() {}, setInterval() {},
+  const context = vm.createContext({ chrome, URL, URLSearchParams, fetch: async () => ({ ok: true, json: async () => ({ ...(state.fileSettings || state.settings) }) }), self: { STREAMERZ: {} }, importScripts() {}, setInterval() {},
     setTimeout(callback, ms) { const id = ++nextTimer; state.timers.set(id, { callback, ms }); return id; },
     clearTimeout(id) { state.timers.delete(id); }, WebSocket: Socket, console });
   vm.runInContext(readFileSync(new URL("../assets/tiktok-extension/bridge.js", import.meta.url), "utf8"), context);
@@ -185,6 +185,20 @@ test("reconnecting rereads pairing settings, wakes on setup tab, and cleans up s
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(state.tabs.some(t => (t.url || "").includes("tiktok-setup.html")), false);
   assert.equal(state.tabs.length, 1);
+});
+
+test("explicit pairing overrides stale unpacked settings without losing bundled fallback", async () => {
+  const { state, context } = worker();
+  await new Promise(resolve => setImmediate(resolve));
+  state.fileSettings = { url: "ws://127.0.0.1:8080/streamerz/tiktok", token: "old", build: "" };
+  state.settings = { url: "ws://127.0.0.1:8090/streamerz/tiktok", token: "new" };
+  await vm.runInContext("connect()", context);
+  assert.equal(state.sockets.at(-1).url, state.settings.url);
+  assert.equal((await vm.runInContext("settings()", context)).token, "new");
+  state.settings = {};
+  assert.equal((await vm.runInContext("settings()", context)).url, state.fileSettings.url);
+  context.chrome.storage.local.get = async () => { throw new Error("storage unavailable"); };
+  assert.equal((await vm.runInContext("settings()", context)).token, "old");
 });
 
 

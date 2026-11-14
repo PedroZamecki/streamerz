@@ -84,3 +84,27 @@ Chromium profile on DISPLAY=:99 and checks browser reuse, cold start with a stal
 persistence, pairing, automatic login and narrow/wide screenshots. No chat messages are sent.
 The 2026-11-05 check reached the login prompt with an empty profile; it did not enter credentials or
 verify Windows browser behavior. Live Twitch + OBS resource profiling remains required before release.
+
+## Extension installation and connection
+
+Accounts distinguishes an installed extension from one connected to this Streamerz. Set up lists the
+copies found in readable browser profiles, including disabled copies, versions and local copies loaded
+from another folder. If profile files cannot be read, installation is shown as unverifiable. Detection
+does not change the browser's settings.
+
+An installed copy can still need pairing, a browser restart/reload, an update, or TikTok login. The
+connection summary shows the current blocker. A refused pairing means the extension reached Streamerz
+with an old token; use Set up in that browser again. Explicit pairing takes precedence over an unpacked
+copy's original settings. Compatible protocol versions may work across extension releases, while an
+older detected copy still gets update guidance. A protocol outside the supported range is refused with
+which side needs updating.
+
+Use the store update when available, or the current local copy through Advanced setup. Chromium loads
+the unpacked folder; Firefox uses the signed pinned add-on, or its manifest as a temporary add-on in
+development. Installing, opening the browser and signing in remain explicit actions. Reading an exact
+TikTok handle does not require browser sending to be set up.
+
+The `tiktok_bridge` status tool exposes browser installation evidence, `socketConnected`, `loggedIn`,
+`refusalKind`, actual and bundled versions, the supported protocol range and `wsUrl`. It does not expose
+the pairing token. Browser metadata may lag an active service worker; the socket's reported version
+describes the running extension.

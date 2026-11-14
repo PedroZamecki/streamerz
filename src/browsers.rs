@@ -25,6 +25,25 @@ pub struct Browser {
     pub extensions_page: &'static str,
 }
 
+/// Installation evidence from browser metadata, independent of an authenticated socket.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionInstall {
+    pub state: &'static str,
+    pub source: &'static str,
+    pub version: Option<String>,
+    pub profile: String,
+    pub expected_folder: Option<bool>,
+}
+
+fn disabled_extension(setting: &serde_json::Value) -> bool {
+    setting["state"].as_i64() == Some(0)
+        || setting["disable_reasons"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+        || setting["disable_reasons"].as_i64().is_some_and(|reason| reason != 0)
+}
+
 impl Browser {
     #[allow(dead_code)]
     pub fn is_firefox_based(&self) -> bool {
@@ -284,10 +303,15 @@ fn find(k: &Known) -> Option<Browser> {
     let data = if engine == BrowserEngine::Firefox {
         let home = std::env::var_os("HOME").map(PathBuf::from)?;
         let primary = home.join(data);
-        if primary.is_dir() {
+        let usual = home.join(".config").join(data.trim_start_matches('.'));
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|value| !value.is_empty())
+            .map(|root| PathBuf::from(root).join(data.trim_start_matches('.')))
+            .filter(|candidate| candidate.join("profiles.ini").is_file())
+            .unwrap_or(usual);
+        if primary.join("profiles.ini").is_file() || (primary.is_dir() && !config.join("profiles.ini").is_file()) {
             primary
         } else {
-            let config = home.join(".config").join(data.trim_start_matches('.'));
             if config.is_dir() {
                 config
             } else {
@@ -674,7 +698,10 @@ impl Browser {
                 let text = std::fs::read_to_string(profile.join("extensions.json")).ok()?;
                 let value: serde_json::Value = serde_json::from_str(&text).ok()?;
                 value["addons"].as_array()?.iter().find_map(|addon| {
-                    (addon["id"] == crate::tiktok_bridge::FIREFOX_GECKO_ID && addon["active"] == true)
+                    (addon["id"] == crate::tiktok_bridge::FIREFOX_GECKO_ID
+                        && addon["active"] == true
+                        && addon["appDisabled"] != true
+                        && addon["userDisabled"] != true)
                         .then(|| addon["version"].as_str().map(str::to_owned))
                         .flatten()
                 })
@@ -708,66 +735,114 @@ impl Browser {
         })
     }
 
+    /// Read evidence for every matching copy, including disabled and other-profile copies.
+    /// An absent metadata file is unverifiable, not proof that an extension is missing.
+    pub fn extension_installs(&self, id: &str, expected: &Path) -> Vec<ExtensionInstall> {
+        let mut installs = Vec::new();
+        let mut readable = false;
+        for profile in self.profiles() {
+            let name = profile.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let files: &[&str] = if self.is_firefox_based() {
+                &["extensions.json"]
+            } else {
+                &["Secure Preferences", "Preferences"]
+            };
+            let mut seen = std::collections::HashSet::new();
+            for file in files {
+                let Some(value) = std::fs::read(profile.join(file))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                else {
+                    continue;
+                };
+                readable = true;
+                if self.is_firefox_based() {
+                    for addon in value["addons"].as_array().into_iter().flatten() {
+                        if addon["id"] != id && addon["id"] != crate::tiktok_bridge::FIREFOX_GECKO_ID {
+                            continue;
+                        }
+                        let active =
+                            addon["active"] == true && addon["appDisabled"] != true && addon["userDisabled"] != true;
+                        installs.push(ExtensionInstall {
+                            state: if active { "enabled" } else { "disabled" },
+                            source: "firefox",
+                            version: addon["version"].as_str().map(str::to_owned),
+                            profile: name.clone(),
+                            expected_folder: None,
+                        });
+                    }
+                    continue;
+                }
+                for ext_id in [
+                    id,
+                    crate::tiktok_bridge::CHROME_STORE_ID,
+                    crate::tiktok_bridge::EDGE_PRODUCT_ID,
+                    crate::tiktok_bridge::EXTENSION_ID,
+                ] {
+                    let Some(setting) = value.pointer(&format!("/extensions/settings/{ext_id}")) else {
+                        continue;
+                    };
+                    if !seen.insert(ext_id.to_owned()) {
+                        continue;
+                    }
+                    let store = ext_id == crate::tiktok_bridge::CHROME_STORE_ID
+                        || ext_id == crate::tiktok_bridge::EDGE_PRODUCT_ID;
+                    let path = setting["path"].as_str().map(Path::new);
+                    let matches = (!store).then(|| {
+                        path.is_some_and(|path| {
+                            path.canonicalize()
+                                .ok()
+                                .zip(expected.canonicalize().ok())
+                                .is_some_and(|(a, b)| a == b)
+                        })
+                    });
+                    let manifest = path
+                        .filter(|_| !store)
+                        .and_then(|path| std::fs::read(path.join("manifest.json")).ok())
+                        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+                    let version = setting["manifest"]["version"]
+                        .as_str()
+                        .or_else(|| manifest.as_ref().and_then(|value| value["version"].as_str()))
+                        .or_else(|| setting["service_worker_registration_info"]["version"].as_str())
+                        .map(str::to_owned);
+                    let state = if disabled_extension(setting) {
+                        "disabled"
+                    } else if !store && !path.is_some_and(Path::is_dir) {
+                        "missing_folder"
+                    } else {
+                        "enabled"
+                    };
+                    installs.push(ExtensionInstall {
+                        state,
+                        source: if store { "store" } else { "unpacked" },
+                        version,
+                        profile: name.clone(),
+                        expected_folder: matches,
+                    });
+                }
+            }
+        }
+        if installs.is_empty() {
+            installs.push(ExtensionInstall {
+                state: if readable { "not_detected" } else { "unverifiable" },
+                source: "unknown",
+                version: None,
+                profile: String::new(),
+                expected_folder: None,
+            });
+        }
+        installs
+    }
+
     /// Whether this browser profile has the extension installed:
     /// - In Firefox / Gecko browsers: inspects `extensions.json` for `tiktok-bridge@streamerz.app`.
     /// - In Chromium / Edge browsers: inspects `Preferences` and `Secure Preferences` for published
     ///   store IDs (`CHROME_STORE_ID`, `EDGE_PRODUCT_ID`) and the local unpacked development ID.
+    #[cfg(test)]
     pub fn has_extension_from(&self, id: &str, expected: &Path) -> bool {
-        if self.is_firefox_based() {
-            return self.profiles().iter().any(|profile| {
-                std::fs::read_to_string(profile.join("extensions.json"))
-                    .ok()
-                    .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-                    .and_then(|v| v.get("addons")?.as_array().cloned())
-                    .is_some_and(|addons| {
-                        addons.iter().any(|addon| {
-                            let addon_id = addon["id"].as_str().unwrap_or("");
-                            let active = addon["active"].as_bool().unwrap_or(false)
-                                || !addon["userDisabled"].as_bool().unwrap_or(true);
-                            (addon_id == id || addon_id == crate::tiktok_bridge::FIREFOX_GECKO_ID) && active
-                        })
-                    })
-            });
-        }
-
-        self.profiles().iter().any(|profile| {
-            ["Secure Preferences", "Preferences"].iter().any(|file| {
-                std::fs::read(profile.join(file))
-                    .ok()
-                    .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-                    .is_some_and(|v| {
-                        let ids = [
-                            id,
-                            crate::tiktok_bridge::CHROME_STORE_ID,
-                            crate::tiktok_bridge::EDGE_PRODUCT_ID,
-                            crate::tiktok_bridge::EXTENSION_ID,
-                        ];
-                        ids.iter().any(|ext_id| {
-                            v.pointer(&format!("/extensions/settings/{ext_id}"))
-                                .is_some_and(|setting| {
-                                    let disabled = setting["state"].as_i64() == Some(0)
-                                        || setting["disable_reasons"].as_i64().is_some_and(|r| r != 0)
-                                        || setting["disable_reasons"].as_array().is_some_and(|r| !r.is_empty());
-                                    if disabled {
-                                        return false;
-                                    }
-                                    if *ext_id == crate::tiktok_bridge::CHROME_STORE_ID
-                                        || *ext_id == crate::tiktok_bridge::EDGE_PRODUCT_ID
-                                    {
-                                        return true;
-                                    }
-                                    setting["path"].as_str().is_some_and(|path| {
-                                        let path = Path::new(path);
-                                        path.is_dir()
-                                            && expected.canonicalize().is_ok_and(|expected| {
-                                                path.canonicalize().is_ok_and(|actual| actual == expected)
-                                            })
-                                    }) || setting["state"].as_i64() == Some(1)
-                                })
-                        })
-                    })
-            })
-        })
+        self.extension_installs(id, expected)
+            .iter()
+            .any(|copy| copy.state == "enabled")
     }
 
     /// Reuse the selected browser's data and last-used profile, including a running instance.
@@ -807,6 +882,21 @@ impl Browser {
             .into_iter()
             .filter(|p| p.parent() == Some(self.data.as_path()))
             .collect();
+        let mut enabled: Vec<String> = self
+            .extension_installs(crate::tiktok_bridge::EXTENSION_ID, &crate::tiktok_bridge::folder())
+            .iter()
+            .filter(|copy| copy.state == "enabled")
+            .map(|copy| copy.profile.clone())
+            .collect();
+        enabled.sort();
+        enabled.dedup();
+        if enabled.len() == 1
+            && profiles
+                .iter()
+                .any(|profile| profile.file_name().is_some_and(|name| name == enabled[0].as_str()))
+        {
+            return enabled.pop();
+        }
         let state = std::fs::read(self.data.join("Local State"))
             .ok()
             .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
@@ -1218,6 +1308,62 @@ mod tests {
         assert_eq!(args, ["https://example.com"]);
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mv3_installation_evidence_keeps_disabled_copies_and_other_folders_distinct() {
+        let dir = std::env::temp_dir().join(format!("streamerz-install-evidence-{}", std::process::id()));
+        let profile = dir.join("Default");
+        let unpacked = dir.join("older-local-copy");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::create_dir_all(&unpacked).unwrap();
+        std::fs::write(unpacked.join("manifest.json"), r#"{"version":"1.3.0"}"#).unwrap();
+        std::fs::write(profile.join("Preferences"), serde_json::json!({"extensions":{"settings":{
+            crate::tiktok_bridge::CHROME_STORE_ID: {"disable_reasons":[1],"active_bit":false,"manifest":{"version":"1.2.0"}},
+            crate::tiktok_bridge::EXTENSION_ID: {"path":unpacked,"location":4,"has_started_service_worker":true}
+        }}}).to_string()).unwrap();
+        let browser = Browser {
+            name: "Test",
+            engine: BrowserEngine::Chromium,
+            exe: PathBuf::new(),
+            data: dir.clone(),
+            extensions_page: "chrome://extensions",
+        };
+        let copies = browser.extension_installs(crate::tiktok_bridge::EXTENSION_ID, &dir.join("not-created"));
+        let local = copies.iter().find(|copy| copy.source == "unpacked").unwrap();
+        assert_eq!(local.state, "enabled");
+        assert_eq!(local.version.as_deref(), Some("1.3.0"));
+        assert_eq!(local.expected_folder, Some(false));
+        assert_eq!(
+            copies.iter().find(|copy| copy.source == "store").unwrap().state,
+            "disabled"
+        );
+        assert!(browser.store_copy_version().is_none());
+        assert!(browser.has_extension_from(crate::tiktok_bridge::EXTENSION_ID, &dir.join("not-created")));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn firefox_app_disabled_and_unreadable_profiles_are_not_enabled() {
+        let dir = std::env::temp_dir().join(format!("streamerz-firefox-evidence-{}", std::process::id()));
+        let profile = dir.join("Default");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::write(profile.join("prefs.js"), "").unwrap();
+        let browser = Browser {
+            name: "Test",
+            engine: BrowserEngine::Firefox,
+            exe: PathBuf::new(),
+            data: dir.clone(),
+            extensions_page: "about:addons",
+        };
+        assert_eq!(browser.extension_installs("ignored", &dir)[0].state, "unverifiable");
+        std::fs::write(profile.join("extensions.json"), serde_json::json!({"addons":[{
+            "id":crate::tiktok_bridge::FIREFOX_GECKO_ID,"active":false,"appDisabled":true,"userDisabled":false,"version":"1.4.0"
+        }]}).to_string()).unwrap();
+        assert_eq!(browser.extension_installs("ignored", &dir)[0].state, "disabled");
+        assert!(!browser.has_extension_from("ignored", &dir));
+        assert!(browser.store_copy_version().is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
