@@ -291,7 +291,9 @@ impl Sections {
                     .as_str()
                     .is_some_and(|id| id.ends_with("login") || id.ends_with("logout"));
                 // A gear and the like are always just their icon (the label is its tooltip).
-                let icon_only = (fold && !login && spec["icon"].is_string()) || spec["icon_only"] == true;
+                let icon_only = (fold && !login && spec["icon"].is_string())
+                    || spec["icon_only"] == true
+                    || spec["iconOnly"] == true;
                 let mut widget = Button::new((
                     SharedString::from(format!("{key}-{}", spec["id"].as_str().unwrap_or_default())),
                     index,
@@ -397,6 +399,221 @@ impl Sections {
     }
 }
 
+/// A card's frame: rounded, bordered, a shade apart from the page.
+fn card_frame(index: usize, content: Div, cx: &App) -> Stateful<Div> {
+    div()
+        .id(("card", index))
+        .flex()
+        .flex_col()
+        .p_4()
+        .flex_1()
+        .min_w_0()
+        .rounded(px(8.))
+        .border_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().sidebar)
+        .child(content)
+}
+
+/// A small rounded tag: a category, a stream tag.
+fn chip(icon: Option<&str>, text: String, cx: &App) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap_1()
+        .h(px(22.))
+        .px_2()
+        .rounded(px(11.))
+        .bg(cx.theme().muted)
+        .text_size(px(12.))
+        .text_color(cx.theme().foreground)
+        .max_w(px(260.))
+        .when_some(icon, |chip, icon| {
+            chip.child(
+                Icon::empty()
+                    .path(format!("icons/{icon}.svg"))
+                    .size(px(12.))
+                    .text_color(super::body::icon_tone(cx))
+                    .flex_shrink_0(),
+            )
+        })
+        .child({
+            let tip = text.clone();
+            div()
+                .id(SharedString::from(format!("chip-{text}")))
+                .min_w_0()
+                .truncate()
+                .child(text)
+                .when(!tip.is_empty(), |el| {
+                    el.tooltip(move |window, cx| {
+                        gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                    })
+                })
+        })
+}
+
+impl Sections {
+    /// A section drawn as a card (`"card": true`): its logo, title and short state (the reason on hover)
+    /// on top, then a headline, chips and quiet lines, and its buttons at the bottom under a line.
+    fn card(&self, section: &Value, index: usize, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let state = &section["state"];
+        let (icon, color) = super::health::appearance(state["health"].as_str().unwrap_or_default(), cx);
+        let tip = state["tip"]
+            .as_str()
+            .filter(|tip| !tip.is_empty())
+            .map(|tip| SharedString::from(tip.to_owned()));
+        let mut header = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .h(px(24.))
+            .when_some(section["brand"].as_str(), |header, brand| {
+                header.child(
+                    img(format!("brands/{brand}.svg"))
+                        .id(SharedString::from(format!("card-brand-{index}")))
+                        .size(px(20.))
+                        .flex_shrink_0(),
+                )
+            })
+            .child(
+                div()
+                    .font_weight(FontWeight::BOLD)
+                    .text_size(px(15.))
+                    .text_color(crate::theme::strong(cx))
+                    .child(section["title"].as_str().unwrap_or_default().to_owned()),
+            )
+            .child(div().flex_1());
+        if state.is_object() {
+            header = header.child(
+                div()
+                    .id(("card-state", index))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .flex_shrink_0()
+                    .text_size(px(12.5))
+                    .text_color(color)
+                    .child(Icon::empty().path(format!("icons/{icon}.svg")).size(px(14.)))
+                    .child(state["text"].as_str().unwrap_or_default().to_owned())
+                    .when_some(tip, |state, tip| {
+                        state.tooltip(move |window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                        })
+                    }),
+            );
+        }
+        let mut body = div().flex().flex_col().gap_2().flex_1();
+        if let Some(headline) = section["headline"].as_str() {
+            let muted = section["headlineMuted"] == true;
+            body = body.child(
+                div()
+                    .text_size(px(15.))
+                    .line_height(px(20.))
+                    .line_clamp(2)
+                    .text_color(if muted {
+                        crate::theme::quiet(cx)
+                    } else {
+                        crate::theme::strong(cx)
+                    })
+                    .child(headline.to_owned()),
+            );
+        }
+        let chips = section["chips"].as_array().cloned().unwrap_or_default();
+        if !chips.is_empty() {
+            body = body.child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(6.))
+                    .children(chips.iter().map(|chip_spec| {
+                        chip(
+                            chip_spec["icon"].as_str(),
+                            chip_spec["text"].as_str().unwrap_or_default().to_owned(),
+                            cx,
+                        )
+                    })),
+            );
+        }
+        for line in section["lines"].as_array().into_iter().flatten() {
+            let muted = line["muted"] == true;
+            body = body.child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap_2()
+                    .text_size(px(12.5))
+                    .line_height(px(17.))
+                    .text_color(if muted {
+                        crate::theme::quiet(cx)
+                    } else {
+                        theme.foreground
+                    })
+                    .when_some(line["icon"].as_str(), |line, icon| {
+                        line.child(
+                            Icon::empty()
+                                .path(format!("icons/{icon}.svg"))
+                                .size(px(14.))
+                                .text_color(super::body::icon_tone(cx))
+                                .mt(px(1.5))
+                                .flex_shrink_0(),
+                        )
+                    })
+                    .child(
+                        div()
+                            .min_w_0()
+                            .child(line["text"].as_str().unwrap_or_default().to_owned()),
+                    ),
+            );
+        }
+        let mut footer = div()
+            .flex()
+            .flex_wrap()
+            .gap_2()
+            .pt_3()
+            .border_t_1()
+            .border_color(theme.border);
+        for (button_index, spec) in section["buttons"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .enumerate()
+        {
+            let label = spec["label"].as_str().unwrap_or_default().to_owned();
+            let id = spec["id"].as_str().unwrap_or_default().to_owned();
+            let mut widget = Button::new((SharedString::from(format!("card-{index}-{id}")), button_index))
+                .small()
+                .h(px(26.))
+                .font_weight(FontWeight::NORMAL)
+                .child(super::body::button_body(spec["icon"].as_str(), Some(label.clone()), cx))
+                .disabled(spec["enabled"] == false)
+                .accessibility_label(label);
+            if let Some(tooltip) = spec["tooltip"].as_str() {
+                widget = widget.tooltip(tooltip.to_owned());
+            }
+            footer =
+                footer
+                    .child(widget.on_click(
+                        cx.listener(move |sections, _, window, cx| sections.press(spec.clone(), window, cx)),
+                    ));
+        }
+        card_frame(
+            index,
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .gap_3()
+                .child(header)
+                .child(body)
+                .child(footer),
+            cx,
+        )
+        .into_any_element()
+    }
+}
+
 impl Render for Sections {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.compact = f32::from(window.viewport_size().width) < 700.;
@@ -412,7 +629,49 @@ impl Render for Sections {
             page = page.child(super::notice::error(&self.error, cx));
         }
         let sections = self.model["sections"].as_array().cloned().unwrap_or_default();
+        // Cards sit side by side, two to a row when there is room.
+        let width = f32::from(window.viewport_size().width);
+        let columns = if width >= 1000. { 2 } else { 1 };
+        // Cards of rows go two to a row only on a very wide window: their lines need the room.
+        let wide_columns = if width >= 1600. { 2 } else { 1 };
+        let mut cards: Vec<AnyElement> = Vec::new();
+        // Cards holding rows (an account's) are wider than the others.
+        let mut wide = false;
+        let grid = |cards: &mut Vec<AnyElement>, wide: &mut bool| {
+            let columns = if std::mem::take(wide) { wide_columns } else { columns };
+            let mut grid = div().flex().flex_col().gap_3().w_full().pt_2();
+            let mut drained: Vec<AnyElement> = std::mem::take(cards);
+            while !drained.is_empty() {
+                let rest = drained.split_off(drained.len().min(columns));
+                let row_cards = std::mem::replace(&mut drained, rest);
+                // A row short of cards keeps their width: empty places beside them.
+                let short = columns - row_cards.len();
+                let row = div()
+                    .flex()
+                    .gap_3()
+                    .w_full()
+                    .children(
+                        row_cards
+                            .into_iter()
+                            .map(|card| div().flex().flex_1().min_w_0().child(card)),
+                    )
+                    .children((0..short).map(|_| div().flex_1()));
+                grid = grid.child(row);
+            }
+            grid
+        };
         for (section_index, section) in sections.iter().enumerate() {
+            // A card of rows draws its section as usual, inside the card's frame.
+            let boxed = section["card"] == true && section["rows"].is_array();
+            let after_cards = section_index > 0 && sections[section_index - 1]["card"] == true;
+            if section["card"] == true && !boxed {
+                cards.push(self.card(section, section_index, cx));
+                continue;
+            }
+            if !cards.is_empty() && !boxed {
+                page = page.child(grid(&mut cards, &mut wide));
+            }
+            let mut block = div().flex().flex_col().gap(px(if roomy { 2. } else { 4. })).w_full();
             let title = section["title"].as_str().unwrap_or_default().to_owned();
             let titled = !title.is_empty();
             // A platform's section (brand and inline state): 1.6.0's account layout.
@@ -425,7 +684,7 @@ impl Render for Sections {
                 .font_weight(FontWeight::BOLD)
                 .text_size(px(15.))
                 .text_color(crate::theme::strong(cx))
-                .when(plat, |heading| {
+                .when(plat && !boxed, |heading| {
                     heading.when(section_index > 0, |heading| heading.mt(px(18.)))
                 });
             if let Some(brand) = section["brand"].as_str() {
@@ -456,7 +715,8 @@ impl Render for Sections {
                         .text_size(cx.theme().font_size)
                         .child(
                             div()
-                                .w(px(if plat { 83. } else { 110. }))
+                                .min_w(px(if plat { 83. } else { 110. }))
+                                .flex_shrink_0()
                                 .when(plat, |name| name.text_size(px(14.)))
                                 .child(title),
                         )
@@ -472,12 +732,21 @@ impl Render for Sections {
                                 .min_w_0()
                                 .overflow_hidden()
                                 .child(Icon::empty().path(format!("icons/{icon}.svg")).small().flex_shrink_0())
-                                .child(
+                                .child({
+                                    let st = first["status"]["text"].as_str().unwrap_or_default().to_owned();
+                                    let st_tip = st.clone();
                                     div()
+                                        .id(SharedString::from(format!("card-st-{section_index}")))
                                         .min_w_0()
                                         .truncate()
-                                        .child(first["status"]["text"].as_str().unwrap_or_default().to_owned()),
-                                ),
+                                        .child(st)
+                                        .when(!st_tip.is_empty(), |el| {
+                                            el.tooltip(move |window, cx| {
+                                                gpui_kit::component::tooltip::Tooltip::new(st_tip.clone())
+                                                    .build(window, cx)
+                                            })
+                                        })
+                                }),
                         );
                     if first["control"].is_object() {
                         let key = format!("~{section_index}.0");
@@ -492,7 +761,7 @@ impl Render for Sections {
                 } else {
                     heading = heading.child(title);
                 }
-                page = page.child(heading);
+                block = block.child(heading);
             }
             // A flow section lays its inputs side by side on one line, each with its label.
             let flow = section["flow"] == true;
@@ -527,7 +796,7 @@ impl Render for Sections {
                     continue;
                 }
                 if !flowing.is_empty() {
-                    page = page.child(div().flex().gap_3().w_full().min_h(px(30.)).children(flowing.drain(..)));
+                    block = block.child(div().flex().gap_3().w_full().min_h(px(30.)).children(flowing.drain(..)));
                 }
                 // An introduction alone in its row (1.6.0 gives it a two line box).
                 let about_only = !about.is_empty()
@@ -591,13 +860,21 @@ impl Render for Sections {
                                     })),
                             )
                             // Whose channel it is, beside the button (1.6.0).
-                            .child(
+                            .child({
+                                let about_tip = about.clone();
                                 div()
+                                    .id(SharedString::from(format!("about-{key}")))
                                     .min_w_0()
                                     .truncate()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(about.clone()),
-                            ),
+                                    .child(about.clone())
+                                    .when(!about_tip.is_empty(), |el| {
+                                        el.tooltip(move |window, cx| {
+                                            gpui_kit::component::tooltip::Tooltip::new(about_tip.clone())
+                                                .build(window, cx)
+                                        })
+                                    })
+                            }),
                     );
                 } else if let Some(value) = value {
                     // A labelled value (an account, a channel): the label stays in a quiet column.
@@ -625,7 +902,25 @@ impl Render for Sections {
                                     .when(
                                         plat && (key.ends_with(".account") || key.ends_with(".bot"))
                                             && row["picture"].is_null(),
-                                        |line| line.child(div().size(px(24.)).flex_shrink_0()),
+                                        // No picture (yet): a person in its place; none when nobody's logged in.
+                                        |line| {
+                                            line.child(
+                                                div()
+                                                    .size(px(24.))
+                                                    .flex_shrink_0()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .when(!muted, |place| {
+                                                        place.rounded_full().bg(cx.theme().muted).child(
+                                                            Icon::empty()
+                                                                .path("icons/user-round.svg")
+                                                                .size(px(14.))
+                                                                .text_color(super::body::icon_tone(cx)),
+                                                        )
+                                                    }),
+                                            )
+                                        },
                                     )
                                     .when_some(row["picture"].as_str(), |line, file| {
                                         line.child(
@@ -637,13 +932,21 @@ impl Render for Sections {
                                                 .object_fit(ObjectFit::Cover),
                                         )
                                     })
-                                    .child(
+                                    .child({
+                                        let val_tip = value.clone();
                                         div()
+                                            .id(SharedString::from(format!("val-{key}")))
                                             .min_w_0()
                                             .truncate()
                                             .when(muted, |v| v.text_color(cx.theme().muted_foreground))
-                                            .child(value),
-                                    ),
+                                            .child(value)
+                                            .when(!val_tip.is_empty(), |el| {
+                                                el.tooltip(move |window, cx| {
+                                                    gpui_kit::component::tooltip::Tooltip::new(val_tip.clone())
+                                                        .build(window, cx)
+                                                })
+                                            })
+                                    }),
                             ),
                     );
                 } else if let (true, Some(status)) = (plat && !label.is_empty(), row["status"].as_object()) {
@@ -683,12 +986,21 @@ impl Render for Sections {
                                     })
                                     .text_color(color)
                                     .child(Icon::empty().path(format!("icons/{icon}.svg")).small().flex_shrink_0())
-                                    .child(
+                                    .child({
+                                        let st = status["text"].as_str().unwrap_or_default().to_owned();
+                                        let st_tip = st.clone();
                                         div()
+                                            .id(SharedString::from(format!("st-{key}")))
                                             .min_w_0()
                                             .truncate()
-                                            .child(status["text"].as_str().unwrap_or_default().to_owned()),
-                                    ),
+                                            .child(st)
+                                            .when(!st_tip.is_empty(), |el| {
+                                                el.tooltip(move |window, cx| {
+                                                    gpui_kit::component::tooltip::Tooltip::new(st_tip.clone())
+                                                        .build(window, cx)
+                                                })
+                                            })
+                                    }),
                             ),
                     );
                 } else if let Some(status) = row["status"].as_object() {
@@ -725,9 +1037,11 @@ impl Render for Sections {
                             .when(about_only && !roomy, |about| {
                                 about.min_h(px(36.)).flex().flex_col().justify_center()
                             })
-                            .when(about_only && !roomy && section_index > 0, |about| {
+                            .when(about_only && !roomy && section_index > 0 && !after_cards, |about| {
                                 about.mt(px(4.)).min_h(px(141.)).line_height(px(17.))
                             })
+                            // Under cards: a quiet note, close to them.
+                            .when(about_only && after_cards, |about| about.mt(px(6.)).line_height(px(17.)))
                             .when(roomy, |about| {
                                 about.relative().top(px(-1.)).text_size(px(12.)).line_height(px(14.))
                             })
@@ -768,11 +1082,20 @@ impl Render for Sections {
                 if row["control"].is_object() && !channel {
                     line = line.child(self.control(row, &key, cx));
                 }
-                page = page.child(line);
+                block = block.child(line);
             }
             if !flowing.is_empty() {
-                page = page.child(div().flex().gap_3().w_full().min_h(px(30.)).children(flowing.drain(..)));
+                block = block.child(div().flex().gap_3().w_full().min_h(px(30.)).children(flowing.drain(..)));
             }
+            if boxed {
+                wide = true;
+                cards.push(card_frame(section_index, block, cx).into_any_element());
+            } else {
+                page = page.child(block);
+            }
+        }
+        if !cards.is_empty() {
+            page = page.child(grid(&mut cards, &mut wide));
         }
         page.pb_4()
     }
