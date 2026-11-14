@@ -9,6 +9,10 @@ on:
       - "dev/publish-extensions.py"
   workflow_dispatch:
 
+# The signed Firefox add-on goes on a release of its own (dev/publish-extensions.py).
+permissions:
+  contents: write
+
 jobs:
   package-and-publish:
     runs-on: ubuntu-latest
@@ -40,6 +44,7 @@ jobs:
           EDGE_API_KEY: ${{ secrets.EDGE_API_KEY }}
           AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
           AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           python3 dev/publish-extensions.py
 
@@ -48,4 +53,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: streamerz-tiktok-extensions
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*.xpi

@@ -70,7 +70,7 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           BASE_REF: ${{ github.base_ref }}
         run: |
-          last=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          last=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)
           last=${last:-v0.0.0}
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             log=$(git log "origin/$BASE_REF..HEAD" --format=%s 2>/dev/null || true)
@@ -339,7 +339,7 @@ jobs:
       - name: Write release notes
         shell: bash
         run: |
-          last=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          last=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)
           : > notes.md
           section() {
             lines=$(git log ${last:+"$last..HEAD"} --no-merges --format='- %s (%h)' -E --grep="$2" || true)
