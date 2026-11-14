@@ -126,13 +126,14 @@ def main():
                         value = response.get("result", "")
                         return [int(value)] if response.get("status") == "ok" and value.isdigit() else []
                     result = []
-                    for child in Path(f"/proc/{app.pid}/task/{app.pid}/children").read_text().split():
+                    for task in Path(f"/proc/{app.pid}/task").iterdir():
                         try:
-                            if b"--frontend" in Path(f"/proc/{child}/cmdline").read_bytes():
-                                result.append(int(child))
-                        except FileNotFoundError:
+                            for child in (task / "children").read_text().split():
+                                if b"--frontend" in Path(f"/proc/{child}/cmdline").read_bytes():
+                                    result.append(int(child))
+                        except (FileNotFoundError, OSError):
                             pass
-                    return result
+                    return list(dict.fromkeys(result))
                 def native_window(renderer):
                     if not args.wine:
                         return subprocess.check_output(["xdotool", "search", "--onlyvisible", "--pid", str(renderer)], env=env, text=True).splitlines()[0]
@@ -180,7 +181,7 @@ def main():
                             red, green, blue = captured.convert("RGB").getpixel((width - 3, height // 2))
                             assert (min(red, green, blue) > 200) if args.theme == "light" else (max(red, green, blue) < 80), (args.theme, red, green, blue)
                 # Pages built on the core's table and section models: each loads, draws and keeps its window size.
-                for page in ("Queues", "Globals", "History", "Backups", "Crashes", "Plugins", "Log", "Settings", "Donations", "MCP", "Groups", "Integrations", "Community", "Polls", "Chat", "Actions"):
+                for page in ("Queues", "Globals", "History", "Backups", "Crashes", "Plugins", "Overlays", "Log", "Settings", "Donations", "MCP", "Groups", "Integrations", "Community", "Polls", "Stream", "Chat", "Actions"):
                     for width, height in ((1100, 800), (540, 700)):
                         resize(width, height)
                         load_page(page)
@@ -216,6 +217,28 @@ def main():
                 for kind in ("trigger", "sub", "template"):
                     picker = ws.ask({"request": "StreamerzCoreView", "domain": "actions_picker", "kind": kind, "id": "picker"})
                     assert picker["status"] == "ok" and picker["nodes"], picker
+                # The trigger picker: the tree starts right under its search box (the box once took half the
+                # dialog), and Cancel and OK sit in the dialog's footer, with no Close beside them.
+                load_page("Actions")
+                click("Smoke action")
+                click("Triggers: Add")
+                deadline = time.monotonic() + 10
+                while not [e for e in json.loads(ui("bounds Core")) if e["label"] == "Core"] and time.monotonic() < deadline:
+                    time.sleep(.05)
+                # Measured once the dialog has finished opening: while it opens, its parts are still moving.
+                gap, deadline = -1, time.monotonic() + 3
+                while True:
+                    search = [e for e in json.loads(ui("bounds Search triggers")) if e["label"] == "Search triggers"][0]
+                    first = [e for e in json.loads(ui("bounds Core")) if e["label"] == "Core"][0]
+                    gap = first["y"] - (search["y"] + search["h"])
+                    if 0 <= gap < 48 or time.monotonic() > deadline:
+                        break
+                    time.sleep(.1)
+                shot("trigger-picker")
+                assert 0 <= gap < 48, f"the picker's tree is {gap}px under its search box"
+                # The header's X is named Close too; a footer's Close button is wider.
+                assert not [e for e in json.loads(ui("bounds Close")) if e["label"] == "Close" and e["w"] > 30], "a Close button under the picker's own"
+                click("Cancel")
                 for operation, item in (("sub_toggle", sub["saved"]), ("trigger_toggle", trigger["saved"])):
                     done = ws.ask({"request": "StreamerzCoreAction", "domain": "actions", "action": operation, "itemId": item, "actionId": opened, "id": operation})
                     assert done["status"] == "ok", done
@@ -434,6 +457,17 @@ def main():
                 status = Path(f"/proc/{app.pid}/status").read_text().splitlines()
                 rss = int(next(line.split()[1] for line in status if line.startswith("VmRSS:")))
                 (out / "smaps-rollup.txt").write_text(Path(f"/proc/{app.pid}/smaps_rollup").read_text())
+                # Where the memory is, by what is mapped (the program, each library, the heap), largest first.
+                # The program's own pages are dropped when hidden only if no other running copy of the same
+                # file shares them (an MCP server started from this build does): measure with none running.
+                by_file, name = {}, ""
+                for line in Path(f"/proc/{app.pid}/smaps").read_text().splitlines():
+                    head = line.split()
+                    if head and "-" in head[0] and not head[0].endswith(":"):
+                        name = head[5] if len(head) > 5 else "(anonymous)"
+                    elif line.startswith("Rss:"):
+                        by_file[name] = by_file.get(name, 0) + int(head[1])
+                (out / "smaps-by-file.txt").write_text("".join(f"{kib:8} KiB  {name}\n" for name, kib in sorted(by_file.items(), key=lambda item: -item[1]) if kib))
                 (out / "measurements.json").write_text(json.dumps({"theme":args.theme, "hidden_rss_kib": rss, "idle_cpu_percent_one_core":cpu, "sample_seconds":elapsed, "setup": "isolated development backend after renderer exit, no live connections", "wine":args.wine}, indent=2) + "\n")
                 print(f"ok: shared forms, cancellation, toggle, native window captures, renderer exit, live backend; RSS {rss} KiB, idle CPU {cpu:.2f}%", flush=True)
             finally:

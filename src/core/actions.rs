@@ -26,10 +26,10 @@ pub fn handles(kind: &str) -> bool {
 fn text<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or_default()
 }
-fn enc(text: &str) -> String {
+pub(super) fn enc(text: &str) -> String {
     text.replace('%', "%25").replace(':', "%3A")
 }
-fn dec(text: &str) -> String {
+pub(super) fn dec(text: &str) -> String {
     text.replace("%3A", ":").replace("%25", "%")
 }
 fn plain_id(node: &str) -> &str {
@@ -107,19 +107,63 @@ fn group_names(config: &crate::Config) -> Vec<String> {
     crate::groups::names(config)
 }
 
+/// An action's row: what starts it (its first trigger's logo or icon; a dashed circle when nothing
+/// does), its name, how many sub-actions it runs, and on hover what fires it.
+fn action_row(action: &Action, names: &labels::Names) -> Value {
+    let code = |trigger: &Obj| trigger.get("type").and_then(Value::as_u64).unwrap_or(0) as u32;
+    let first = action
+        .triggers
+        .iter()
+        .find(|trigger| labels::trigger_on(trigger))
+        .or(action.triggers.first());
+    let mut row = node(
+        format!("a:{}", action.id),
+        "action",
+        action.name.clone(),
+        first.map_or("circle-dashed", |trigger| labels::trigger_icon(code(trigger))),
+        !action.enabled,
+        Vec::new(),
+    );
+    if let Some(logo) = first.and_then(|trigger| labels::trigger_logo(code(trigger))) {
+        row["logo"] = logo.into();
+    }
+    row["off"] = (!action.enabled).into();
+    if !action.sub_actions.is_empty() {
+        row["note"] = json!({"icon": "list-ordered", "text": action.sub_actions.len().to_string()});
+    }
+    let mut tip = vec![if action.triggers.is_empty() {
+        tr("actions.tip_no_triggers").to_owned()
+    } else {
+        let list: Vec<String> = action
+            .triggers
+            .iter()
+            .take(4)
+            .map(|t| labels::trigger_label(t, names))
+            .collect();
+        let more = action.triggers.len().saturating_sub(list.len());
+        let mut text = trf("actions.tip_triggers", &[("list", &list.join(", "))]);
+        if more > 0 {
+            text = trf("actions.tip_more", &[("text", &text), ("count", &more.to_string())]);
+        }
+        text
+    }];
+    tip.push(match action.sub_actions.len() {
+        0 => tr("actions.tip_no_subs").to_owned(),
+        1 => tr("actions.tip_one_sub").to_owned(),
+        n => trf("actions.tip_subs", &[("count", &n.to_string())]),
+    });
+    if !action.enabled {
+        tip.push(tr("actions.tip_disabled").to_owned());
+    }
+    row["tip"] = tip.join("\n").into();
+    row
+}
+
 fn action_tree(config: &crate::Config) -> Value {
     let mut sorted: Vec<&Action> = config.actions.actions.iter().collect();
     sorted.sort_by_key(|action| action.name.to_lowercase());
-    let row = |action: &&Action| {
-        node(
-            format!("a:{}", action.id),
-            "action",
-            action.name.clone(),
-            "zap",
-            !action.enabled,
-            Vec::new(),
-        )
-    };
+    let names = labels::names(config);
+    let row = |action: &&Action| action_row(action, &names);
     let mut nodes = Vec::new();
     for group in group_names(config) {
         let children = sorted.iter().filter(|action| action.group == group).map(row).collect();
@@ -129,6 +173,15 @@ fn action_tree(config: &crate::Config) -> Value {
             if let Some(file) = group_icon_file(icon) {
                 group_node["iconFile"] = file.into();
             }
+        }
+        // An overlay of the group's name is connected to it: a chain at the right, and deleting the
+        // group says what becomes of the overlay.
+        if crate::groups::has_overlay(config, &group) {
+            group_node["note"] = json!({"icon": "link", "text": ""});
+            group_node["linked"] = true.into();
+            group_node["tip"] = trf("actions.group_linked_tip", &[("name", &group)]).into();
+            group_node["confirm"] =
+                json!({"group_delete": trf("actions.delete_linked_group_confirm", &[("name", &group)])});
         }
         nodes.push(group_node);
     }
@@ -282,6 +335,9 @@ fn sub_nodes(list: &[Obj], path: &mut Path, names: &labels::Names) -> Vec<Value>
         );
         row["italic"] = (99901..=99904).contains(&code).into();
         row["code"] = code.into();
+        if let Some(logo) = labels::sub_logo(code as u32).filter(|_| !off) {
+            row["logo"] = logo.into();
+        }
         row["detail"] = json!({"title": trf("actions.subaction_details", &[("name", title), ("category", &category.replace('/', " > "))]),
             "text": picker::sub_action_description(code as u32, title, category)});
         out.push(row);
@@ -325,6 +381,9 @@ fn editor(config: &crate::Config, action: &Action) -> Value {
                 Vec::new(),
             );
             row["code"] = code.into();
+            if let Some(logo) = labels::trigger_logo(code) {
+                row["logo"] = logo.into();
+            }
             row["detail"] = json!({"title": trf("actions.trigger_details", &[("title", &title), ("category", &category.replace('/', " > "))]),
                 "text": picker::trigger_description(code, raw, &title, &category)});
             row
@@ -350,6 +409,8 @@ fn editor(config: &crate::Config, action: &Action) -> Value {
         form(button("edit", "btn.edit", "pencil", &["sub"]), "act:sub_edit"),
         op(button("toggle", "btn.on_off", "power", &["sub"]), "sub_toggle"),
         op(button("delete", "btn.delete", "trash-2", &["sub"]), "sub_delete"),
+        op(button("undo", "btn.undo", "rotate-ccw", &[]), "undo"),
+        op(button("redo", "btn.redo", "rotate-cw", &[]), "redo"),
         op(button("help", "btn.help", "circle-help", &["sub"]), "sub_help"),
         menu_only(op(button("up", "actions.move_up", "arrow-up", &["sub"]), "sub_up")),
         menu_only(op(
@@ -416,6 +477,8 @@ struct Entry {
     category: String,
     description: String,
     icon: &'static str,
+    /// What it gives the action (a trigger's arguments), for the description.
+    values: Option<String>,
 }
 
 fn tree_of(entries: Vec<Entry>) -> Vec<Value> {
@@ -432,7 +495,12 @@ fn tree_of(entries: Vec<Entry>) -> Vec<Value> {
             .map(|(name, inner)| {
                 let id = format!("{path}/{name}");
                 let icon = crate::automation::pick_icons::group(&name);
-                node(format!("c:{id}"), "category", name, icon, false, fold(inner, &id))
+                let logo = crate::automation::pick_icons::logo(&name);
+                let mut folder = node(format!("c:{id}"), "category", name, icon, false, fold(inner, &id));
+                if let Some(logo) = logo {
+                    folder["logo"] = logo.into();
+                }
+                folder
             })
             .collect();
         let mut items = level.items;
@@ -446,8 +514,16 @@ fn tree_of(entries: Vec<Entry>) -> Vec<Value> {
         for part in entry.category.split('/').filter(|part| !part.is_empty()) {
             level = level.folders.entry(part.trim().to_owned()).or_default();
         }
+        let path = entry
+            .category
+            .split('/')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>();
         let mut row = node(entry.id, "item", entry.title.clone(), entry.icon, false, Vec::new());
-        row["detail"] = json!({"title": entry.title, "text": entry.description});
+        row["detail"] = json!({"title": entry.title, "text": entry.description, "path": path.join(" > "),
+            "icon": entry.icon, "logo": crate::automation::pick_icons::logo_of_category(&entry.category),
+            "values": entry.values});
         level.items.push(row);
     }
     fold(root, "")
@@ -476,6 +552,7 @@ fn plugin_entries(engine: &Rc<Engine>, trigger: bool) -> Vec<Entry> {
                 category: format!("Plugins/{}", manifest.name),
                 description: about,
                 icon: "puzzle",
+                values: None,
             });
         }
     }
@@ -489,6 +566,7 @@ fn picker_model(engine: &Rc<Engine>, which: &str) -> Result<Value, String> {
                 .into_iter()
                 .map(|item| Entry {
                     icon: labels::trigger_icon(item.id as u32),
+                    values: trigger_values(item.id as u32),
                     id: item.id.to_string(),
                     title: item.title,
                     category: item.category,
@@ -503,6 +581,7 @@ fn picker_model(engine: &Rc<Engine>, which: &str) -> Result<Value, String> {
                 .into_iter()
                 .map(|item| Entry {
                     icon: labels::sub_icon(item.id as u32),
+                    values: None,
                     id: item.id.to_string(),
                     title: item.title,
                     category: item.category,
@@ -530,14 +609,20 @@ fn picker_model(engine: &Rc<Engine>, which: &str) -> Result<Value, String> {
                         template.description().into()
                     },
                     icon: "layout-template",
+                    values: None,
                 })
                 .collect(),
         ),
         other => return Err(format!("no picker {other}")),
     };
+    let (search, hint) = match which {
+        "trigger" => ("actions.picker_search_triggers", "actions.picker_hint_trigger"),
+        "sub" => ("actions.picker_search_subs", "actions.picker_hint_sub"),
+        _ => ("actions.picker_search_templates", "actions.picker_hint_template"),
+    };
     Ok(
-        json!({"domain": "actions_picker", "kind": which, "title": title, "searchHint": tr("lists.search"),
-        "nodes": tree_of(entries)}),
+        json!({"domain": "actions_picker", "kind": which, "title": title, "searchHint": tr(search),
+        "hint": tr(hint), "empty": tr("lists.no_matches"), "nodes": tree_of(entries)}),
     )
 }
 
@@ -646,12 +731,43 @@ fn choices(config: &crate::Config, widget: &W) -> Option<(Vec<(String, String)>,
     }
 }
 
+/// A label that says what an empty value means (`Gift (blank: any gift)`, `Max coins (0: no limit)`)
+/// is shown as its name, with the meaning in the empty box (`Any gift`).
+fn label_hint(label: &str) -> (String, Option<String>) {
+    let split = label
+        .strip_suffix(')')
+        .and_then(|rest| rest.rsplit_once(" ("))
+        .and_then(|(name, inner)| {
+            let (when, means) = inner.split_once(':')?;
+            let when = when.trim().to_lowercase();
+            let means = means.trim();
+            (["blank", "empty", "none", "0", "vazio", "nenhum", "nenhuma"].contains(&when.as_str())
+                && !means.is_empty())
+            .then(|| {
+                let mut chars = means.chars();
+                let first = chars
+                    .next()
+                    .map(|c| c.to_uppercase().collect::<String>())
+                    .unwrap_or_default();
+                (name.trim().to_owned(), first + chars.as_str())
+            })
+        });
+    match split {
+        Some((name, hint)) => (name, Some(hint)),
+        None => (label.to_owned(), None),
+    }
+}
+
 fn form_fields(config: &crate::Config, fields: &[F], item: &Obj) -> Vec<Value> {
     fields
         .iter()
         .map(|(key, label, widget)| {
-            let mut value = json!({"key": key, "label": shown(label), "widget": widget, "holds": widget.about(),
+            let (label, placeholder) = label_hint(shown(label));
+            let mut value = json!({"key": key, "label": label, "widget": widget, "holds": widget.about(),
                 "value": edits::shown(widget, item.get(*key))});
+            if let Some(placeholder) = placeholder {
+                value["placeholder"] = placeholder.into();
+            }
             if let W::Pick(options) = widget {
                 value["widget"]["options"] = json!(options.iter().map(|option| shown(option)).collect::<Vec<_>>());
             }
@@ -744,6 +860,15 @@ fn plugin_pick(code: &str) -> Option<(String, String)> {
     Some((dec(plugin), dec(name)))
 }
 
+/// `Values: %user%, %coins%`: the arguments a trigger gives its action, from the reference.
+fn trigger_values(code: u32) -> Option<String> {
+    let values = crate::docs::arguments("trigger", code);
+    (!values.is_empty()).then(|| {
+        let list: Vec<String> = values.iter().map(|value| format!("%{value}%")).collect();
+        trf("actions.trigger_values", &[("list", &list.join(", "))])
+    })
+}
+
 /// The fields a trigger or sub-action of this kind is edited with (None: JSON only).
 fn automation_fields(engine: &Rc<Engine>, trigger: bool, item: &Obj) -> Option<&'static [F]> {
     let code = edit::kind(item);
@@ -789,6 +914,38 @@ fn automation_form(
         fields.unwrap_or(&[]),
         item.clone(),
     );
+    let mut notes = Vec::new();
+    // A gift is picked by its picture, name and price; the list loads as the form opens when it isn't here.
+    if trigger && edit::kind(&item) as u32 == crate::tiktok::T_TIKTOK_GIFT {
+        if let Some(field) = out["fields"]
+            .as_array_mut()
+            .and_then(|fields| fields.iter_mut().find(|field| field["key"] == "giftId"))
+        {
+            let id = field["value"].as_str().unwrap_or_default().trim().to_owned();
+            let saved = item
+                .get("giftName")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty());
+            field["choices"] = crate::tiktok::gifts::gallery().into();
+            field["gallery"] = json!({"any": tr("automation.any_gift"), "anyTip": tr("automation.any_gift_tip"),
+                "search": tr("automation.search_gifts"), "empty": tr("automation.no_gifts_match"),
+                "icon": "gift", "status": crate::tiktok::gifts::gallery_status(),
+                // A saved gift the list doesn't have (yet) shows by the name saved with it.
+                "current": (!id.is_empty()).then(|| saved.map_or_else(
+                    || trf("automation.gift_unnamed", &[("id", &id)]),
+                    str::to_owned))});
+            field["refresh"] = json!({"request": {"request": "StreamerzTikTokGifts", "refresh": true},
+                "label": tr("btn.refresh_gifts"), "tip": tr("automation.refresh_gifts_tip"),
+                "auto": crate::tiktok::gifts::wants_loading()});
+        }
+    }
+    // What the trigger gives the action, so an event with no settings still says something useful.
+    if let Some(values) = trigger.then(|| trigger_values(edit::kind(&item) as u32)).flatten() {
+        notes.push(values);
+    }
+    if !notes.is_empty() {
+        out["notes"] = json!(notes);
+    }
     if fields.is_none() {
         out["jsonOnly"] = true.into();
         out["jsonText"] = serde_json::to_string_pretty(&Value::Object(item))
@@ -1072,12 +1229,34 @@ fn edit_action<T>(
     change: impl FnOnce(&mut Action) -> Result<T, String>,
 ) -> Result<T, String> {
     let mut result = Err(item_gone());
+    let mut before_after: Option<(Action, Action)> = None;
     engine.change(|config| {
         if let Some(action) = config.actions.actions.iter_mut().find(|action| action.id == id) {
+            let before = action.clone();
             result = change(action);
+            if result.is_ok() && *action != before {
+                before_after = Some((before, action.clone()));
+            }
         }
     });
+    if let Some((before, after)) = before_after {
+        crate::core::undo::record_action_modified(before, after);
+    }
     result
+}
+
+/// A gift trigger keeps the name of its gift beside the id (its row reads "Gift (Rose)" before any list
+/// loads); with no gift picked, there is no name.
+fn name_gift(trigger: &mut Obj) {
+    if edit::kind(trigger) as u32 != crate::tiktok::T_TIKTOK_GIFT {
+        return;
+    }
+    let id = trigger.get("giftId").map(crate::vars::text).unwrap_or_default();
+    if id.trim().is_empty() {
+        trigger.shift_remove("giftName");
+    } else if let Some(name) = crate::tiktok::gifts::name_of(id.trim()) {
+        trigger.insert("giftName".into(), name.into());
+    }
 }
 
 fn save_form(engine: &Rc<Engine>, parts: &[String], item: Obj) -> Result<Value, String> {
@@ -1095,6 +1274,7 @@ fn save_form(engine: &Rc<Engine>, parts: &[String], item: Obj) -> Result<Value, 
         "action_add" => {
             let action = edit::new_action(&name_of()?, part(2));
             let id = action.id.clone();
+            crate::core::undo::record_action_created(action.clone());
             engine.change(|config| config.actions.actions.push(action));
             Ok(picked(&format!("a:{id}")))
         }
@@ -1126,6 +1306,7 @@ fn save_form(engine: &Rc<Engine>, parts: &[String], item: Obj) -> Result<Value, 
                 .ok_or_else(item_gone)?;
             let copy = edit::duplicate_action(&source, &name);
             let id = copy.id.clone();
+            crate::core::undo::record_action_created(copy.clone());
             engine.change(|config| config.actions.actions.push(copy));
             Ok(picked(&format!("a:{id}")))
         }
@@ -1170,6 +1351,7 @@ fn save_form(engine: &Rc<Engine>, parts: &[String], item: Obj) -> Result<Value, 
         "export" => export_text(engine, part(2), &value),
         "trigger_add" => {
             let mut trigger = item;
+            name_gift(&mut trigger);
             let id = trigger_id(&trigger, 0);
             if trigger.get("id").is_none() {
                 trigger.insert("id".into(), crate::engine::uuid().into());
@@ -1185,6 +1367,7 @@ fn save_form(engine: &Rc<Engine>, parts: &[String], item: Obj) -> Result<Value, 
             edit_action(engine, part(2), |action| {
                 let at = trigger_index(action, &id).ok_or_else(item_gone)?;
                 let mut trigger = item;
+                name_gift(&mut trigger);
                 if let Some(keep) = action.triggers[at].get("id") {
                     trigger.insert("id".into(), keep.clone());
                 }
@@ -1270,7 +1453,7 @@ fn save_form(engine: &Rc<Engine>, parts: &[String], item: Obj) -> Result<Value, 
 
 // Group settings: the description and the values by form, the definitions, files and members as JSON.
 
-fn group_settings_form(config: &crate::Config, group: &str) -> Value {
+pub(super) fn group_settings_form(config: &crate::Config, group: &str) -> Value {
     let meta = crate::groups::meta(config, group);
     let values = crate::groups::values(config, group);
     let mut fields = vec![json!({"key": "description", "label": tr("dialogs.export.description"),
@@ -1282,16 +1465,103 @@ fn group_settings_form(config: &crate::Config, group: &str) -> Value {
             def.label.clone()
         };
         let value = values.get(&def.name).cloned().unwrap_or(Value::Null);
-        let field = match def.kind {
+        let mut field = match def.kind {
             crate::groups::Kind::Boolean => json!({"key": def.name, "label": label, "widget": {"kind": "bool"},
                 "holds": "true/false", "value": value.as_bool().unwrap_or(false)}),
             crate::groups::Kind::Choice => json!({"key": def.name, "label": label,
                 "widget": {"kind": "pick", "options": def.options},
                 "holds": "one of the options",
                 "value": def.options.iter().position(|option| value.as_str() == Some(option)).unwrap_or(0)}),
+            crate::groups::Kind::Color => json!({"key": def.name, "label": label, "widget": {"kind": "color"},
+                "holds": "a colour as #rrggbb or #rrggbbaa",
+                "value": value.as_str().or(def.default.as_str()).unwrap_or("#ffffff")}),
+            crate::groups::Kind::Slider => {
+                let (min, max, step) = def.range();
+                json!({"key": def.name, "label": label,
+                    "widget": {"kind": "slider", "min": min, "max": max, "step": step},
+                    "holds": format!("a number from {min} to {max}"),
+                    "value": value.as_f64().or(def.default.as_f64()).unwrap_or(min)})
+            }
+            crate::groups::Kind::Lines => json!({"key": def.name, "label": label, "widget": {"kind": "multi"},
+                "holds": "text, one item per line", "value": value.as_str().unwrap_or_default()}),
+            crate::groups::Kind::Font => json!({"key": def.name, "label": label, "widget": {"kind": "font"},
+                "holds": "the name of an installed font, or empty for the system's",
+                "value": value.as_str().unwrap_or_default()}),
+            // One of the overlay's files, or one typed (a file of this computer to bring in, or a web
+            // address): the list, with Other and Browse.
+            crate::groups::Kind::File => {
+                let choices: Vec<Value> = meta
+                    .files
+                    .iter()
+                    .filter(|f| !crate::groups::is_page(&f.name) && crate::groups::accepts_file(&def.accept, &f.name))
+                    .map(|f| json!({"id": f.name, "label": f.name}))
+                    .collect();
+                json!({"key": def.name, "label": label, "widget": {"kind": "text"}, "choices": choices, "other": true,
+                    "browse": if def.accept == "image" { "image" } else { "file" },
+                    "placeholder": tr("forms.file.placeholder"),
+                    "holds": "the name of one of its files, the path of a file to bring in, or a web address",
+                    "value": value.as_str().unwrap_or_default()})
+            }
+            crate::groups::Kind::Platforms => {
+                let options: Vec<Value> = crate::groups::PLATFORMS
+                    .iter()
+                    .map(|p| json!({"id": p, "label": platform_name(p), "brand": p}))
+                    .collect();
+                json!({"key": def.name, "label": label, "widget": {"kind": "checks", "options": options},
+                    "holds": "a list of twitch, youtube, kick, tiktok",
+                    "value": if value.is_array() { value.clone() } else { json!([]) }})
+            }
+            // One of the actions connected to the overlay, by its id.
+            crate::groups::Kind::Action => {
+                let choices: Vec<Value> = config
+                    .actions
+                    .actions
+                    .iter()
+                    .filter(|a| a.group == group)
+                    .map(|a| json!({"id": a.id, "label": a.name}))
+                    .collect();
+                json!({"key": def.name, "label": label, "widget": {"kind": "text"}, "choices": choices, "strict": true,
+                    "holds": "the id of one of its actions, or empty",
+                    "value": value.as_str().unwrap_or_default()})
+            }
+            // Rows typed a line each, the cells between bars: the columns are said in the empty box.
+            crate::groups::Kind::List => {
+                let columns: Vec<&str> = def.columns.iter().map(|c| c.label.as_str()).collect();
+                let cells = columns.join(&format!(" {} ", crate::groups::CELLS));
+                json!({"key": def.name, "label": label, "widget": {"kind": "multi"},
+                    "placeholder": cells,
+                    "holds": format!("rows, one per line: {cells}"),
+                    "tip": trf("forms.list.tip", &[("columns", &cells)]),
+                    "value": def.show(&value)})
+            }
             kind => json!({"key": def.name, "label": label, "widget": {"kind": "text"}, "holds": kind.name(),
                 "value": kind.show(&value)}),
         };
+        // The heading it starts and what its creator says about it (shown over the label).
+        if !def.section.is_empty() {
+            field["section"] = def.section.clone().into();
+        }
+        if !def.description.is_empty() {
+            // A list also says how its rows are typed.
+            field["tip"] = match field["tip"].as_str() {
+                Some(how) => format!("{}\n{how}", def.description).into(),
+                None => def.description.clone().into(),
+            };
+        }
+        // Shown only while another field has a value: that field's place in the form, and the value
+        // as its control holds it (a choice by its place in the list).
+        if let Some(when) = &def.show_if {
+            if let Some(at) = meta.variables.iter().position(|other| other.name == when.setting) {
+                let other = &meta.variables[at];
+                let equals = match other.kind {
+                    crate::groups::Kind::Choice => {
+                        json!(other.options.iter().position(|o| when.is.as_str() == Some(o)))
+                    }
+                    _ => when.is.clone(),
+                };
+                field["showIf"] = json!({"field": at + 1, "equals": equals});
+            }
+        }
         fields.push(field);
     }
     let item = json!({"id": "", "description": meta.description});
@@ -1300,7 +1570,80 @@ fn group_settings_form(config: &crate::Config, group: &str) -> Value {
         "new": item, "item": item, "fields": fields})
 }
 
-fn group_settings_edit(engine: &Rc<Engine>, group: &str, request: &Value, preview: bool) -> Result<Value, String> {
+fn platform_name(platform: &str) -> &'static str {
+    match platform {
+        "twitch" => "Twitch",
+        "youtube" => "YouTube",
+        "kick" => "Kick",
+        _ => "TikTok",
+    }
+}
+
+/// A file of this computer picked for a `file` setting, as a file of the group: its name made
+/// portable, with a number when one of that name is there already.
+fn bring_in(
+    meta: &crate::groups::Meta,
+    def: &crate::groups::Def,
+    path: &str,
+) -> Result<(crate::groups::File, String), String> {
+    use base64::Engine as _;
+    let path = std::path::Path::new(path);
+    let cant = |error: String| {
+        trf(
+            "dialogs.import.cant_read",
+            &[("file", &path.display().to_string()), ("error", &error)],
+        )
+    };
+    let bytes = std::fs::read(path).map_err(|error| cant(error.to_string()))?;
+    let original = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    if !crate::groups::accepts_file(&def.accept, original) {
+        return Err(trf(
+            "forms.file.wrong_kind",
+            &[
+                ("label", &def.label),
+                ("kinds", &crate::groups::accepted(&def.accept).join(", ")),
+            ],
+        ));
+    }
+    let clean: String = original
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let (stem, extension) = clean.rsplit_once('.').unwrap_or((&clean, "bin"));
+    let stem = stem.trim_matches(|c| c == '.' || c == '-');
+    let stem = if stem.is_empty() { "file" } else { stem };
+    let name = (1..1000)
+        .map(|n| {
+            if n == 1 {
+                format!("{stem}.{extension}")
+            } else {
+                format!("{stem}-{n}.{extension}")
+            }
+        })
+        .find(|name| {
+            crate::groups::valid_file_name(name) && !meta.files.iter().any(|f| f.name.eq_ignore_ascii_case(name))
+        })
+        .ok_or_else(|| cant("no name left for it".into()))?;
+    let file = crate::groups::File {
+        name: name.clone(),
+        content: base64::engine::general_purpose::STANDARD.encode(bytes),
+        size: 0,
+    };
+    Ok((file, name))
+}
+
+pub(super) fn group_settings_edit(
+    engine: &Rc<Engine>,
+    group: &str,
+    request: &Value,
+    preview: bool,
+) -> Result<Value, String> {
     let config = engine.config();
     if !crate::groups::exists(&config, group) {
         return Err(item_gone());
@@ -1333,11 +1676,43 @@ fn group_settings_edit(engine: &Rc<Engine>, group: &str, request: &Value, previe
                     .as_u64()
                     .and_then(|at| def.options.get(at as usize))
                     .map(|option| Value::from(option.clone())),
+                // Dragged, so a step off the ends or between two steps is put back in place.
+                crate::groups::Kind::Slider => value.as_f64().map(|n| {
+                    let (min, max, step) = def.range();
+                    let n = (((n - min) / step).round() * step + min).clamp(min, max);
+                    crate::groups::Kind::Number
+                        .parse(&format!("{n:.6}"))
+                        .unwrap_or(json!(n))
+                }),
+                crate::groups::Kind::Platforms => Some(value.clone()).filter(|v| def.accepts(v)),
+                // A file of this computer is brought into the overlay; one of its own, or a web
+                // address, is taken as it is.
+                crate::groups::Kind::File => {
+                    let typed = value
+                        .as_str()
+                        .ok_or_else(|| tr("forms.invalid_field").to_owned())?
+                        .trim()
+                        .trim_matches('"');
+                    let own = meta.files.iter().any(|f| f.name == typed);
+                    if typed.is_empty() || own || typed.starts_with("https://") || typed.starts_with("http://") {
+                        Some(json!(typed))
+                    } else {
+                        let (file, name) = bring_in(&meta, def, typed)?;
+                        meta.files.push(file);
+                        Some(json!(name))
+                    }
+                }
+                // What is wrong in a row is said with its line.
+                crate::groups::Kind::List => Some(
+                    def.parse(value.as_str().ok_or_else(|| tr("forms.invalid_field").to_owned())?)
+                        .map_err(|error| format!("{}: {error}", def.label))?,
+                ),
                 _ => value.as_str().and_then(|text| def.parse(text).ok()),
             };
+            let (name, label) = (def.name.clone(), def.label.clone());
             values.insert(
-                def.name.clone(),
-                parsed.ok_or_else(|| trf("forms.invalid_value", &[("label", &def.label)]))?,
+                name,
+                parsed.ok_or_else(|| trf("forms.invalid_value", &[("label", &label)]))?,
             );
         }
     }
@@ -1570,11 +1945,18 @@ pub fn act(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         }
         "action_delete" => {
             let id = plain_id(item).to_owned();
-            if config_action(&engine.config(), &id).is_none() {
-                return Err(item_gone());
-            }
+            let action = config_action(&engine.config(), &id).cloned().ok_or_else(item_gone)?;
+            crate::core::undo::record_action_deleted(action);
             engine.change(|config| config.actions.actions.retain(|action| action.id != id));
             accepted()
+        }
+        "undo" => {
+            let res = crate::core::undo::undo(engine)?;
+            Ok(json!({"accepted": true, "undone": true, "actionId": res}))
+        }
+        "redo" => {
+            let res = crate::core::undo::redo(engine)?;
+            Ok(json!({"accepted": true, "redone": true, "actionId": res}))
         }
         "action_run" => {
             let config = engine.config();
@@ -1599,7 +1981,10 @@ pub fn act(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
             if !crate::groups::exists(&engine.config(), &group) {
                 return Err(item_gone());
             }
-            engine.change(|config| crate::groups::remove(config, &group));
+            // A connected overlay stays, on the Overlays page: only the group of actions goes.
+            engine.change(|config| {
+                crate::groups::ungroup(config, &group);
+            });
             accepted()
         }
         "group_icon_clear" => {
@@ -2104,7 +2489,11 @@ mod tests {
             let meta = json!({"description": "A tool", "variables": [
                 {"name": "limit", "label": "Limit", "kind": "integer", "default": 3},
                 {"name": "loud", "label": "Loud", "kind": "boolean", "default": false},
-                {"name": "mode", "label": "Mode", "kind": "choice", "default": "a", "options": ["a", "b"]}]});
+                {"name": "mode", "label": "Mode", "kind": "choice", "default": "a", "options": ["a", "b"]},
+                {"name": "tint", "label": "Tint", "kind": "color", "default": "#ff0000", "section": "Look",
+                    "description": "The bar's colour"},
+                {"name": "size", "label": "Size", "kind": "slider", "default": 20, "min": 10, "max": 40, "step": 5},
+                {"name": "face", "label": "Font", "kind": "font", "default": "", "showIf": {"setting": "mode", "is": "b"}}]});
             let set = ask(
                 &engine,
                 json!({"request": "StreamerzSetGroupMeta", "group": "Tools", "meta": meta}),
@@ -2115,10 +2504,35 @@ mod tests {
                 json!({"request": "StreamerzEntityForm", "kind": "act:group_settings", "itemId": "g:Tools"}),
             );
             assert_eq!(form["status"], "ok", "{form}");
-            assert_eq!(form["fields"].as_array().unwrap().len(), 4);
+            assert_eq!(form["fields"].as_array().unwrap().len(), 7);
+            // A font is picked from the installed ones, and shows only while Mode is its second option.
+            let face = &form["fields"][6];
+            assert_eq!(
+                (&face["widget"]["kind"], &face["value"], &face["showIf"]),
+                (&json!("font"), &json!(""), &json!({"field": 3, "equals": 1}))
+            );
             assert_eq!(form["fields"][1]["value"], "3");
             assert_eq!(form["fields"][3]["widget"]["kind"], "pick");
-            let changes = json!([{"field": 0, "value": "Better"}, {"field": 1, "value": "9"}, {"field": 2, "value": true}, {"field": 3, "value": 1}]);
+            // A colour is picked and a slider dragged: each has its own widget, heading and tip.
+            let tint = &form["fields"][4];
+            assert_eq!(
+                (&tint["widget"]["kind"], &tint["value"], &tint["section"], &tint["tip"]),
+                (
+                    &json!("color"),
+                    &json!("#ff0000"),
+                    &json!("Look"),
+                    &json!("The bar's colour")
+                )
+            );
+            let size = &form["fields"][5];
+            assert_eq!(
+                size["widget"],
+                json!({"kind": "slider", "min": 10.0, "max": 40.0, "step": 5.0})
+            );
+            assert_eq!(size["value"], json!(20.0));
+            let changes = json!([{"field": 0, "value": "Better"}, {"field": 1, "value": "9"}, {"field": 2, "value": true},
+                {"field": 3, "value": 1}, {"field": 4, "value": "#00FF0080"}, {"field": 5, "value": 33.3},
+                {"field": 6, "value": "Inter"}]);
             let saved = ask(
                 &engine,
                 json!({"request": "StreamerzEditEntity", "kind": form["kind"], "itemId": "", "changes": changes}),
@@ -2130,6 +2544,11 @@ mod tests {
             assert_eq!(
                 (values["limit"].clone(), values["loud"].clone(), values["mode"].clone()),
                 (json!(9), json!(true), json!("b"))
+            );
+            // The colour as it is kept, and the slider on its nearest step.
+            assert_eq!(
+                (values["tint"].clone(), values["size"].clone(), values["face"].clone()),
+                (json!("#00ff0080"), json!(35), json!("Inter"))
             );
             drop(config);
             // A value of the wrong kind is refused and changes nothing.
@@ -2160,6 +2579,126 @@ mod tests {
                 json!({"request": "StreamerzEditEntity", "kind": form["kind"], "itemId": "", "json": "{"}),
             );
             assert_eq!(broken["status"], "error");
+        });
+    }
+
+    #[test]
+    fn a_file_the_platforms_an_action_and_a_list_are_set_in_the_settings_form() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            let action = add_action(&engine, "Spin it", "Wheel");
+            let action_id = action.strip_prefix("a:").unwrap().to_owned();
+            add_action(&engine, "Elsewhere", "Other");
+            let meta = json!({"files": [{"name": "index.html", "content": ""}, {"name": "ding.ogg", "content": ""},
+                    {"name": "img/bg.png", "content": ""}],
+                "variables": [
+                {"name": "picture", "label": "Picture", "kind": "file", "default": "", "accept": "image"},
+                {"name": "where", "label": "Platforms", "kind": "platforms", "default": ["twitch", "youtube"]},
+                {"name": "run", "label": "When it stops", "kind": "action", "default": ""},
+                {"name": "slices", "label": "Slices", "kind": "list", "default": [{"label": "Yes", "weight": 1}],
+                    "description": "What the wheel can land on",
+                    "columns": [{"name": "label", "label": "Label", "kind": "text", "default": ""},
+                        {"name": "weight", "label": "Weight", "kind": "integer", "default": 1}]}]});
+            let set = ask(
+                &engine,
+                json!({"request": "StreamerzSetGroupMeta", "group": "Wheel", "meta": meta}),
+            );
+            assert_eq!(set["status"], "ok", "{set}");
+            let form = ask(
+                &engine,
+                json!({"request": "StreamerzEntityForm", "kind": "act:group_settings", "itemId": "g:Wheel"}),
+            );
+            assert_eq!(form["status"], "ok", "{form}");
+            // The file: the pictures of the group to pick from, or one typed or browsed for.
+            let picture = &form["fields"][1];
+            assert_eq!(picture["choices"], json!([{"id": "img/bg.png", "label": "img/bg.png"}]));
+            assert_eq!((&picture["other"], &picture["browse"]), (&json!(true), &json!("image")));
+            // The platforms: four boxes with their logos, the ticked ones as a list.
+            let places = &form["fields"][2];
+            assert_eq!(places["widget"]["kind"], "checks");
+            assert_eq!(
+                places["widget"]["options"][1],
+                json!({"id": "youtube", "label": "YouTube", "brand": "youtube"})
+            );
+            assert_eq!(places["value"], json!(["twitch", "youtube"]));
+            // The action: the ones of this group only, by id.
+            let run = &form["fields"][3];
+            assert_eq!(run["choices"], json!([{"id": action_id, "label": "Spin it"}]));
+            assert_eq!(run["strict"], true);
+            // The list: its rows as lines, and how they are typed.
+            let slices = &form["fields"][4];
+            assert_eq!(
+                (&slices["widget"]["kind"], &slices["value"]),
+                (&json!("multi"), &json!("Yes | 1"))
+            );
+            assert_eq!(slices["placeholder"], "Label | Weight");
+            assert!(slices["tip"]
+                .as_str()
+                .unwrap()
+                .starts_with("What the wheel can land on\n"));
+            // A picture of this computer is brought into the group under a portable name.
+            let outside = std::env::temp_dir().join(format!("streamerz form {}.png", std::process::id()));
+            std::fs::write(&outside, b"png!").unwrap();
+            let changes = json!([{"field": 1, "value": outside}, {"field": 2, "value": ["kick"]},
+                {"field": 3, "value": action_id}, {"field": 4, "value": "Pizza | 3\nNothing"}]);
+            let saved = ask(
+                &engine,
+                json!({"request": "StreamerzEditEntity", "kind": form["kind"], "itemId": "", "changes": changes}),
+            );
+            assert_eq!(saved["status"], "ok", "{saved}");
+            let values = crate::groups::values(&engine.config(), "Wheel");
+            let brought = values["picture"].as_str().unwrap().to_owned();
+            assert!(
+                brought.starts_with("streamerz-form-") && brought.ends_with(".png"),
+                "{brought}"
+            );
+            assert_eq!(
+                crate::groups::read_file(&engine.config(), "Wheel", &brought).unwrap(),
+                b"png!"
+            );
+            assert_eq!(values["where"], json!(["kick"]));
+            assert_eq!(values["run"], json!(action_id));
+            assert_eq!(
+                values["slices"],
+                json!([{"label": "Pizza", "weight": 3}, {"label": "Nothing", "weight": 1}])
+            );
+            // A page gets the file as an address it can load; a web address stays as typed.
+            let page = crate::overlays::settings(&engine.config(), "Wheel");
+            assert!(page["picture"]
+                .as_str()
+                .unwrap()
+                .ends_with(&format!("/overlays/Wheel/{brought}")));
+            let web = json!([{"field": 1, "value": "https://example.com/a.png"}]);
+            let saved = ask(
+                &engine,
+                json!({"request": "StreamerzEditEntity", "kind": form["kind"], "itemId": "", "changes": web}),
+            );
+            assert_eq!(saved["status"], "ok", "{saved}");
+            assert_eq!(
+                crate::overlays::settings(&engine.config(), "Wheel")["picture"],
+                "https://example.com/a.png"
+            );
+            // What is wrong is said: a sound where a picture goes, a row with a word for a number,
+            // a platform that is not one, a file that is not there.
+            let sound = std::env::temp_dir().join(format!("streamerz-form-{}.ogg", std::process::id()));
+            std::fs::write(&sound, b"ogg").unwrap();
+            for (bad, says) in [
+                (json!([{"field": 1, "value": sound}]), "png"),
+                (json!([{"field": 4, "value": "Pizza | many"}]), "line 1"),
+                (json!([{"field": 2, "value": ["mixer"]}]), "Platforms"),
+                (json!([{"field": 1, "value": "/nowhere/at-all.png"}]), "at-all.png"),
+            ] {
+                let refused = ask(
+                    &engine,
+                    json!({"request": "StreamerzEditEntity", "kind": form["kind"], "itemId": "", "changes": bad}),
+                );
+                assert_eq!(refused["status"], "error", "{bad}");
+                assert!(refused["error"].as_str().unwrap().contains(says), "{refused}");
+            }
+            let _ = std::fs::remove_file(outside);
+            let _ = std::fs::remove_file(sound);
+            engine.change(|config| crate::groups::remove(config, "Wheel"));
         });
     }
 
@@ -2224,6 +2763,203 @@ mod tests {
                     "error"
                 );
             }
+        });
+    }
+
+    #[test]
+    fn a_labels_hint_moves_into_its_empty_box() {
+        let split = |label: &str| label_hint(label);
+        assert_eq!(
+            split("Gift (blank: any gift)"),
+            ("Gift".into(), Some("Any gift".into()))
+        );
+        assert_eq!(
+            split("Max coins (0: no limit)"),
+            ("Max coins".into(), Some("No limit".into()))
+        );
+        assert_eq!(
+            split("Connection (empty: any)"),
+            ("Connection".into(), Some("Any".into()))
+        );
+        assert_eq!(
+            split("Presente (vazio: todos)"),
+            ("Presente".into(), Some("Todos".into()))
+        );
+        // Anything else stays as it is.
+        assert_eq!(split("Delay (ms)"), ("Delay (ms)".into(), None));
+        assert_eq!(split("Run when"), ("Run when".into(), None));
+        assert_eq!(split("Gift (blank:)"), ("Gift (blank:)".into(), None));
+    }
+
+    #[test]
+    fn action_rows_say_what_starts_them_and_what_they_run() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            let id = add_action(&engine, "Work", "");
+            add_action(&engine, "Idle", "");
+            let form = ask(
+                &engine,
+                json!({"request": "StreamerzEntityForm", "kind": "act:trigger_add", "actionId": id, "code": "41002"}),
+            );
+            assert_eq!(form["status"], "ok", "{form}");
+            // The gift is picked from pictures; the list loads as the form opens when it isn't here, and
+            // the form lists the values the trigger gives.
+            let notes = form["notes"].as_array().unwrap();
+            assert!(
+                notes.iter().any(|note| note.as_str().unwrap().contains("%giftName%")),
+                "{notes:?}"
+            );
+            let gift = &form["fields"][field(&form, "giftId")];
+            assert_eq!(gift["label"], "Gift");
+            assert_eq!(gift["gallery"]["any"], "Any gift");
+            assert!(gift["gallery"]["current"].is_null());
+            assert_eq!(gift["refresh"]["request"]["request"], "StreamerzTikTokGifts");
+            assert_eq!(gift["refresh"]["auto"], true);
+            let saved = ask(
+                &engine,
+                json!({"request": "StreamerzEditEntity", "kind": form["kind"], "itemId": "", "changes": []}),
+            );
+            assert_eq!(saved["status"], "ok", "{saved}");
+            let tree = view(&engine, "")["actions"]["tree"]["nodes"].clone();
+            let row = |name: &str| {
+                tree.as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|row| row["label"] == name)
+                    .unwrap()
+                    .clone()
+            };
+            let work = row("Work");
+            assert_eq!(work["logo"], "brands/tiktok.svg");
+            assert!(work["tip"].as_str().unwrap().contains("TikTok"), "{work}");
+            assert!(work["note"].is_null());
+            // An action nothing starts says so.
+            let idle = row("Idle");
+            assert_eq!(idle["icon"], "circle-dashed");
+            assert!(idle["logo"].is_null());
+            assert_eq!(
+                idle["tip"].as_str().unwrap().lines().next(),
+                Some(tr("actions.tip_no_triggers"))
+            );
+            // The trigger's row in the editor wears TikTok's logo.
+            let action_id = id.strip_prefix("a:").unwrap();
+            let editor = view(&engine, action_id)["actions"]["editor"].clone();
+            assert_eq!(editor["triggers"]["nodes"][0]["logo"], "brands/tiktok.svg");
+        });
+    }
+
+    #[test]
+    fn the_trigger_picker_carries_logos_paths_and_values() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            let model = ask(
+                &engine,
+                json!({"request": "StreamerzCoreView", "domain": "actions_picker", "kind": "trigger"}),
+            );
+            assert!(model["hint"].as_str().is_some_and(|hint| !hint.is_empty()));
+            let tiktok = model["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|node| node["label"] == "TikTok")
+                .unwrap()
+                .clone();
+            assert_eq!(tiktok["logo"], "brands/tiktok.svg");
+            fn find(nodes: &Value, id: &str) -> Option<Value> {
+                nodes.as_array()?.iter().find_map(|node| {
+                    (node["id"] == id)
+                        .then(|| node.clone())
+                        .or_else(|| find(&node["children"], id))
+                })
+            }
+            let gift = find(&tiktok["children"], "41002").unwrap();
+            assert_eq!(gift["detail"]["path"], "TikTok > Gifts & Coins");
+            assert_eq!(gift["detail"]["logo"], "brands/tiktok.svg");
+            assert!(gift["detail"]["values"].as_str().unwrap().contains("%coins%"));
+        });
+    }
+
+    #[test]
+    fn a_gift_trigger_keeps_its_gifts_name_and_drops_it_for_any_gift() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            crate::tiktok::gifts::invalidate();
+            crate::tiktok::gifts::observe(&json!({"giftId": 5655, "giftName": "Rose", "diamondCount": 1}));
+            let id = add_action(&engine, "Thanks", "");
+            let form = ask(
+                &engine,
+                json!({"request": "StreamerzEntityForm", "kind": "act:trigger_add", "actionId": id, "code": "41002"}),
+            );
+            assert_eq!(form["fields"][field(&form, "giftId")]["choices"][0]["label"], "Rose");
+            let gift = field(&form, "giftId");
+            let saved = ask(
+                &engine,
+                json!({"request": "StreamerzEditEntity", "kind": form["kind"], "itemId": "", "changes": [{"field": gift, "value": "5655"}]}),
+            );
+            assert_eq!(saved["status"], "ok", "{saved}");
+            let trigger = engine.config().actions.actions[0].triggers[0].clone();
+            assert_eq!(trigger["giftName"], "Rose");
+            // With the list gone, the row and the form still name it.
+            crate::tiktok::gifts::invalidate();
+            let action_id = id.strip_prefix("a:").unwrap();
+            let editor = view(&engine, action_id)["actions"]["editor"].clone();
+            assert!(editor["triggers"]["nodes"][0]["label"]
+                .as_str()
+                .unwrap()
+                .contains("Rose"));
+            let trigger_id = saved["saved"].as_str().unwrap();
+            let edit = ask(
+                &engine,
+                json!({"request": "StreamerzEntityForm", "kind": "act:trigger_edit", "actionId": action_id, "itemId": trigger_id}),
+            );
+            assert_eq!(edit["fields"][field(&edit, "giftId")]["gallery"]["current"], "Rose");
+            // Any gift: no name is kept.
+            let cleared = ask(
+                &engine,
+                json!({"request": "StreamerzEditEntity", "kind": edit["kind"], "itemId": trigger_id, "changes": [{"field": gift, "value": ""}]}),
+            );
+            assert_eq!(cleared["status"], "ok", "{cleared}");
+            assert!(engine.config().actions.actions[0].triggers[0].get("giftName").is_none());
+        });
+    }
+
+    #[test]
+    fn undo_and_redo_reverts_and_restores_action_changes() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            crate::core::undo::clear();
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            let id = add_action(&engine, "MyAction", "");
+            assert!(engine.config().actions.actions[0].enabled);
+
+            // Toggle the action
+            let toggle = ask(
+                &engine,
+                json!({"request": "StreamerzCoreAction", "domain": "actions", "action": "action_toggle", "itemId": id}),
+            );
+            assert_eq!(toggle["accepted"], true);
+            assert!(!engine.config().actions.actions[0].enabled);
+
+            // Undo the toggle
+            let undo = ask(
+                &engine,
+                json!({"request": "StreamerzCoreAction", "domain": "actions", "action": "undo"}),
+            );
+            assert_eq!(undo["undone"], true);
+            assert!(engine.config().actions.actions[0].enabled);
+
+            // Redo the toggle
+            let redo = ask(
+                &engine,
+                json!({"request": "StreamerzCoreAction", "domain": "actions", "action": "redo"}),
+            );
+            assert_eq!(redo["redone"], true);
+            assert!(!engine.config().actions.actions[0].enabled);
+
+            crate::core::undo::clear();
         });
     }
 }

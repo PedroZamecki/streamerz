@@ -21,6 +21,8 @@ pub struct Node {
     pub kind: String,
     pub label: String,
     pub detail: Value,
+    /// The questions this row asks instead of a button's own, by the button's id.
+    pub confirm: Value,
 }
 
 pub enum PaneEvent {
@@ -49,6 +51,8 @@ pub struct Options {
     pub icons_first: bool,
     /// The title sits left of the search box.
     pub header: bool,
+    /// Expand all and Collapse all beside the search box (a picker).
+    pub fold_buttons: bool,
 }
 
 pub struct TreePane {
@@ -101,6 +105,7 @@ fn node_of(value: &Value) -> Node {
         kind: value["kind"].as_str().unwrap_or_default().to_owned(),
         label: value["label"].as_str().unwrap_or_default().to_owned(),
         detail: value["detail"].clone(),
+        confirm: value["confirm"].clone(),
     }
 }
 
@@ -185,6 +190,25 @@ impl TreePane {
             self.external_filter = query.to_owned();
             self.rebuild(cx);
         }
+    }
+    /// Open (or close) every folder.
+    pub fn open_all(&mut self, open: bool, cx: &mut Context<Self>) {
+        fn folders(nodes: &Value, out: &mut HashSet<String>) {
+            for node in nodes.as_array().into_iter().flatten() {
+                if node["children"].as_array().is_some_and(|kids| !kids.is_empty()) {
+                    if let Some(id) = node["id"].as_str() {
+                        out.insert(id.to_owned());
+                    }
+                    folders(&node["children"], out);
+                }
+            }
+        }
+        self.toggled.clear();
+        // Folders start closed in a picker: opening all turns every one away from that.
+        if open == self.options.closed {
+            folders(&self.model["nodes"], &mut self.toggled);
+        }
+        self.rebuild(cx);
     }
     pub fn set_model(&mut self, model: Value, cx: &mut Context<Self>) {
         self.model = model;
@@ -389,10 +413,26 @@ impl Render for TreePane {
                     })
                     .child(
                         div()
+                            .id(SharedString::from(format!("{id}-line-{ix}")))
                             .flex()
                             .items_center()
                             .gap(px(8.))
                             .w_full()
+                            // What the row is, on hover (an action: what starts it and what it runs, or full label).
+                            .when_some(
+                                value["tip"]
+                                    .as_str()
+                                    .map(|tip| SharedString::from(tip.to_owned()))
+                                    .or_else(|| {
+                                        let s = item.label.to_string();
+                                        (!s.is_empty()).then(|| SharedString::from(s))
+                                    }),
+                                |line, tip| {
+                                    line.tooltip(move |window, cx| {
+                                        gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                                    })
+                                },
+                            )
                             .text_size(px(if value["kind"] == "action" { 12.5 } else { 13.5 }))
                             .pl(px(entry.depth() as f32 * 14.))
                             .text_color(color)
@@ -400,9 +440,7 @@ impl Render for TreePane {
                                 div()
                                     .w(px(14.))
                                     .flex_shrink_0()
-                                    .when(!has_folders, |slot| {
-                                        slot.w(px(if value["kind"] == "action" { 9. } else { 0. }))
-                                    })
+                                    .when(!has_folders, |slot| slot.w(px(0.)))
                                     .when(folder, |slot| {
                                         slot.child(
                                             Icon::empty()
@@ -416,7 +454,14 @@ impl Render for TreePane {
                                     }),
                             )
                             .child(match value["iconFile"].as_str() {
-                                None if value["kind"] == "action" => div().w(px(0.)).into_any_element(),
+                                // A platform's or app's logo, in its own colours.
+                                None if value["logo"].is_string() && !muted => {
+                                    img(value["logo"].as_str().unwrap_or_default().to_owned())
+                                        .id(SharedString::from(format!("{id}-logo-{ix}")))
+                                        .size_4()
+                                        .flex_shrink_0()
+                                        .into_any_element()
+                                }
                                 // A group's own picture replaces the folder.
                                 Some(file) => img(std::path::PathBuf::from(file))
                                     .id(SharedString::from(format!("{id}-icon-{ix}")))
@@ -431,7 +476,28 @@ impl Render for TreePane {
                                     .into_any_element(),
                             })
                             .child(label)
-                            .when(value["kind"] == "trigger" && muted, |row| {
+                            // A quiet count at the right (an action's sub-actions).
+                            .when_some(value["note"]["text"].as_str().map(str::to_owned), |row, text| {
+                                row.child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(3.))
+                                        .text_size(px(11.5))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(
+                                            Icon::empty()
+                                                .path(format!(
+                                                    "icons/{}.svg",
+                                                    value["note"]["icon"].as_str().unwrap_or("circle")
+                                                ))
+                                                .size_3(),
+                                        )
+                                        .child(text),
+                                )
+                            })
+                            .when((value["kind"] == "trigger" && muted) || value["off"] == true, |row| {
                                 row.pr(px(16.)).child(Icon::empty().path("icons/power-off.svg").small())
                             }),
                     )
@@ -502,14 +568,53 @@ impl Render for TreePane {
                 }
             }));
         if let Some(search) = &self.search {
-            let field = div().flex_1().min_w_0().h(px(26.)).child(
-                Input::new(search)
-                    .small()
-                    .min_h(px(26.))
-                    .bg(cx.theme().table)
-                    .text_size(px(13.))
-                    .aria_label(self.model["searchHint"].as_str().unwrap_or_default().to_owned()),
-            );
+            // In a column the box keeps its own height; beside a title it takes the rest of the row.
+            let field = div()
+                .when(self.options.header, |field| field.flex_1())
+                .when(!self.options.header, |field| field.w_full().flex_shrink_0())
+                .min_w_0()
+                .h(px(26.))
+                .child(
+                    Input::new(search)
+                        .small()
+                        .prefix(
+                            Icon::empty()
+                                .path("icons/search.svg")
+                                .small()
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                        .min_h(px(26.))
+                        .bg(cx.theme().table)
+                        .text_size(px(13.))
+                        .aria_label(self.model["searchHint"].as_str().unwrap_or_default().to_owned()),
+                );
+            let field = if self.options.fold_buttons {
+                let fold = |id: &'static str, icon: &str, tip: &'static str, open: bool| {
+                    Button::new(id)
+                        .small()
+                        .h(px(26.))
+                        .icon(Icon::empty().path(format!("icons/{icon}.svg")))
+                        .tooltip(tr(tip))
+                        .accessibility_label(tr(tip))
+                        .on_click(cx.listener(move |pane, _, _, cx| pane.open_all(open, cx)))
+                };
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .w_full()
+                    .flex_shrink_0()
+                    .child(field.flex_1().w_auto())
+                    .child(fold("tree-expand-all", "chevrons-up-down", "lists.expand_all", true))
+                    .child(fold(
+                        "tree-collapse-all",
+                        "chevrons-down-up",
+                        "lists.collapse_all",
+                        false,
+                    ))
+            } else {
+                field
+            };
             body = body.child(if self.options.header {
                 div()
                     .flex()

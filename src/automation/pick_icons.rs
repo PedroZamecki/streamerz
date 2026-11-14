@@ -1,6 +1,45 @@
 //! Which Lucide icon each node of the trigger and sub-action picker wears: a platform's or app's logo where there
 //! is one, else a Lucide icon chosen by the group's name (groups) or by the words of the title (items).
 
+/// The logo (a brand asset's path) of a platform or app, by its group's name: what 1.6.0's trees showed
+/// in place of a Lucide icon. None when it has no logo.
+pub fn logo(name: &str) -> Option<&'static str> {
+    Some(match name.trim() {
+        "Twitch" => "brands/twitch.svg",
+        "Kick" => "brands/kick.svg",
+        "YouTube" => "brands/youtube.svg",
+        "TikTok" => "brands/tiktok.svg",
+        "OBS Studio" | "OBS" => "brands/obsstudio.svg",
+        "Streamlabs Desktop" | "Streamlabs" => "brands/streamlabs.svg",
+        "Spotify" => "brands/spotify.svg",
+        "Discord" => "brands/discord.svg",
+        "StreamElements" => "brands/streamelements.svg",
+        "DonorDrive" => "brands/donordrive.svg",
+        "Streamer.bot" => "brands/streamerbot.svg",
+        "Crowd Control" => "brands/crowdcontrol.svg",
+        "Elgato" => "brands/elgato.svg",
+        "Patreon" => "brands/patreon.svg",
+        "Shopify" => "brands/shopify.svg",
+        "Pally.gg" => "brands/pallygg.svg",
+        "Ko-fi" => "brands/ko-fi.png",
+        "Fourthwall" => "brands/fourthwall.png",
+        "HypeRate" => "brands/hyperate.png",
+        "Pulsoid" => "brands/pulsoid.png",
+        "Meld Studio" => "brands/meld-studio.png",
+        "PolyPop" => "brands/polypop.png",
+        "Speaker.bot" => "brands/speakerbot.png",
+        "Voicemod" => "brands/voicemod.png",
+        "VTube Studio" => "brands/vtube-studio.png",
+        _ => return None,
+    })
+}
+
+/// The logo of what a category path (`Twitch/Chat`, `Integrations/Ko-fi`) belongs to: its deepest part
+/// that has one.
+pub fn logo_of_category(category: &str) -> Option<&'static str> {
+    category.split('/').rev().find_map(logo)
+}
+
 /// The Lucide icon of a group, by its name, when it has no logo.
 pub fn group(name: &str) -> &'static str {
     let n = name.to_lowercase();
@@ -517,4 +556,53 @@ pub fn item(title: &str, group: &'static str) -> &'static str {
         }
     }
     group
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn platforms_and_apps_wear_their_logos() {
+        assert_eq!(super::logo("TikTok"), Some("brands/tiktok.svg"));
+        assert_eq!(super::logo_of_category("Twitch/Chat"), Some("brands/twitch.svg"));
+        assert_eq!(
+            super::logo_of_category("Donations & Shops/Ko-fi"),
+            Some("brands/ko-fi.png")
+        );
+        assert_eq!(super::logo_of_category("Core/General"), None);
+        // Every logo named is an asset the window can draw.
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icons/");
+        for name in [
+            "Twitch",
+            "Kick",
+            "YouTube",
+            "TikTok",
+            "OBS Studio",
+            "Streamlabs",
+            "Spotify",
+            "Discord",
+            "StreamElements",
+            "DonorDrive",
+            "Streamer.bot",
+            "Crowd Control",
+            "Elgato",
+            "Patreon",
+            "Shopify",
+            "Pally.gg",
+            "Ko-fi",
+            "Fourthwall",
+            "HypeRate",
+            "Pulsoid",
+            "Meld Studio",
+            "PolyPop",
+            "Speaker.bot",
+            "Voicemod",
+            "VTube Studio",
+        ] {
+            let file = super::logo(name).unwrap().trim_start_matches("brands/");
+            assert!(
+                std::path::Path::new(&format!("{root}{file}")).is_file(),
+                "{name}: {file}"
+            );
+        }
+    }
 }

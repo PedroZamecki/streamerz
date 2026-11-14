@@ -204,7 +204,16 @@ pub fn trigger_label(t: &Obj, names: &Names) -> String {
         let mut parts = Vec::new();
         let id = t.get("giftId").map(crate::vars::text).unwrap_or_default();
         if !id.trim().is_empty() {
-            parts.push(crate::catalog::name_of("tiktok.gifts", &id).unwrap_or_else(|| format!("#{id}")));
+            // The list's name, else the one saved with the trigger, else the id.
+            let saved = t
+                .get("giftName")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty());
+            parts.push(
+                crate::catalog::name_of("tiktok.gifts", &id)
+                    .or_else(|| saved.map(str::to_owned))
+                    .unwrap_or_else(|| format!("#{id}")),
+            );
         }
         if t.get("giftDelivery").and_then(Value::as_i64) == Some(1) {
             parts.push(tr("automation.completed_combo").into());
@@ -262,6 +271,17 @@ pub fn trigger_icon(code: u32) -> &'static str {
         }
         None => "puzzle",
     }
+}
+
+/// The logo of the service a trigger belongs to (TikTok, OBS Studio), when it has one.
+pub fn trigger_logo(code: u32) -> Option<&'static str> {
+    super::pick_icons::logo_of_category(&picker::trigger_categorize(name(TRIGGERS, code)?))
+}
+
+/// The logo of the service a sub-action belongs to, when it has one.
+pub fn sub_logo(code: u32) -> Option<&'static str> {
+    let i = SUB_ACTION_INFO.binary_search_by_key(&code, |x| x.0).ok()?;
+    super::pick_icons::logo_of_category(SUB_ACTION_INFO[i].2)
 }
 
 /// The Lucide icon of a sub-action (a plugin's, or an unknown one, wears the puzzle).
