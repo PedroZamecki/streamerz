@@ -294,7 +294,14 @@ impl TableDelegate for Rows {
                 th.cursor_pointer()
                     .on_click(move |_, window, cx| sort(click_key.clone(), flip, window, cx))
             })
-            .child(self.column(index, cx).name.clone())
+            // A label longer than its column ends in an ellipsis (it was cut mid-word), whole on hover.
+            .min_w_0()
+            .overflow_hidden()
+            .tooltip({
+                let name = self.column(index, cx).name.clone();
+                move |window, cx| gpui_kit::component::tooltip::Tooltip::new(name.clone()).build(window, cx)
+            })
+            .child(div().min_w_0().truncate().child(self.column(index, cx).name.clone()))
             .when(sorted, |th| {
                 th.child(
                     gpui_kit::component::Icon::empty()
