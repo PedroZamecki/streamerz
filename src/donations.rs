@@ -780,7 +780,7 @@ pub fn handle_pallygg(engine: &Rc<Engine>, event: &str, data: &Value) {
         .cloned()
         .unwrap_or_default();
     if tip.is_object() {
-        let cap = |k: &str| format!("{}{}", k[..1].to_uppercase(), &k[1..]);
+        let cap = capitalize_tip_key;
         for (k, v) in tip.as_object().into_iter().flatten() {
             args.insert(format!("tip{}", cap(k)), v.clone());
         }
@@ -1376,11 +1376,25 @@ pub(crate) fn urlencoding_decode(s: &str) -> String {
     res
 }
 
+fn capitalize_tip_key(k: &str) -> String {
+    let mut chars = k.chars();
+    match chars.next() {
+        Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+        None => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::Config;
     use std::sync::Arc;
+
+    #[test]
+    fn pally_tip_keys_handle_empty_and_unicode() {
+        assert_eq!(super::capitalize_tip_key(""), "");
+        assert_eq!(super::capitalize_tip_key("élan"), "Élan");
+    }
 
     /// A webhook with no signature header (none of these services sends one but Patreon).
     fn handle_webhook(e: &Rc<Engine>, p: &str, body: &[u8]) -> Result<(), String> {
