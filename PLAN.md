@@ -10,8 +10,8 @@ Platforms: **Twitch, OBS Studio, Kick, YouTube, Streamlabs Desktop**, then the c
 Every documented trigger and sub-action for those is in scope. `COVERAGE.md` lists each one, and each
 phase ticks its own items there.
 
-Development starts only after this plan is agreed. Work one phase at a time, one branch and one PR per
-phase, following `CLAUDE.md`.
+Development starts only after this plan is agreed. Work in versions, with one branch and one PR per
+version. Implement its phases on that branch, following `AGENTS.md`.
 
 ## Decisions (agreed)
 
@@ -518,6 +518,18 @@ platform handles through channels, never through shared locks held across awaits
 - [ ] Verify migrated and development logins with the real keyring, and test the workflow on Windows.
 
 ## Feature audit
+
+- [x] Consolidate the UI, UX and newcomer reviews into
+  [the 1.7.1 UI and UX proposal](docs/UI-REVIEW-1.7.1.md), correcting conflicting findings and click counts.
+- [x] Agree the [1.7.1 UI scope](docs/UI-REVIEW-1.7.1.md), including related fixes found during
+  implementation. Keep the current version branch open.
+- [ ] Phase A (R-01 through R-05): shared controls, Chat, command creation, dialogs and empty states.
+- [ ] Phase B (R-06 through R-12): Accounts, overlays, action authoring/results, health, timers and templates.
+- [ ] Investigate extension installation, connection, pairing and version detection; expose reliable
+  evidence and actionable guidance without confusing an unavailable check with a missing extension.
+- [ ] Phase C (R-13 through R-15): settings, localization, responsive controls and recovery.
+- [ ] Verify all phases with regression tests, narrow/wide UI screenshots, platform checks and hidden
+  memory/CPU measurements. Record commands, results and unavailable checks in `docs/TESTING.md`.
 
 - [ ] Review [the feature audit and proposed sequence](docs/FEATURE-AUDIT.md), verify its findings against
   the implementation and real services, and agree priorities before adding implementation phases.
