@@ -32,7 +32,7 @@ impl Changes {
             Event::Theme => 16,
             Event::Input => 32,
             Event::Dev => 64,
-            Event::Toggle | Event::Restart | Event::Quit => return,
+            Event::Toggle | Event::Show | Event::Restart | Event::Quit => return,
         };
         self.topics.fetch_or(bit, Ordering::Release);
         self.ready.notify_one();

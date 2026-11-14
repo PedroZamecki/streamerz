@@ -34,6 +34,8 @@ pub enum Event {
     Theme,
     Input,
     Toggle,
+    /// Show the window if it's hidden (another copy was started).
+    Show,
     Restart,
     Quit,
 }
@@ -125,6 +127,10 @@ pub fn quit() {
 
 pub fn toggle() {
     emit(Event::Toggle);
+}
+/// Shows the window, leaving it as it is when it's up already.
+pub fn show() {
+    emit(Event::Show);
 }
 pub fn restart() {
     emit(Event::Restart);

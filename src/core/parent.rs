@@ -41,6 +41,8 @@ pub async fn run(
         let message = match event {
             Event::Input => Some(Message::Input),
             Event::Toggle => Some(Message::Toggle),
+            // Opened only when hidden, as without a tray icon.
+            Event::Show => Some(Message::NoTray),
             Event::Restart => Some(Message::Restart),
             Event::Quit => Some(Message::Quit),
             _ => None,

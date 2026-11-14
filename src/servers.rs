@@ -641,6 +641,12 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
             crate::host::quit();
             ok(&id, json!({"accepted": true}))
         }
+        // Another copy of Streamerz was started: this one shows its window instead. Harmless, so it
+        // needs no password (the second copy can't always give it).
+        "StreamerzShowWindow" => {
+            crate::host::show();
+            ok(&id, json!({"accepted": true}))
+        }
         "StreamerzSelectPage" => {
             if let Some(page) = req.get("page").and_then(Value::as_str) {
                 if !page.is_empty() && e.config().window.tab != page {

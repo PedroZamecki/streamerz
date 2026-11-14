@@ -1374,7 +1374,10 @@ fn main() {
         match lock {
             Ok(lock) => Some(lock),
             Err(e) => {
-                eprintln!("Streamerz could not acquire its instance lock: {e}");
+                // Already running (in the tray, most likely): bring its window up instead of nothing.
+                if !instance::show_running(&resolve_config_path(path.clone())) {
+                    eprintln!("Streamerz could not acquire its instance lock: {e}");
+                }
                 return;
             }
         }
