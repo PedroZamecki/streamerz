@@ -491,12 +491,12 @@ impl Sections {
             .gap_2()
             .h(px(24.))
             .when_some(section["brand"].as_str(), |header, brand| {
-                header.child(
-                    img(format!("brands/{brand}.svg"))
-                        .id(SharedString::from(format!("card-brand-{index}")))
-                        .size(px(20.))
-                        .flex_shrink_0(),
-                )
+                header.child(super::body::brand_logo(
+                    SharedString::from(format!("card-brand-{index}")),
+                    brand,
+                    px(20.),
+                    cx,
+                ))
             })
             .child(
                 div()
@@ -1093,9 +1093,19 @@ impl Render for Sections {
                         .min_h(px(64.))
                         .child(img("brands/streamerz.svg").id("app-logo").size(px(56.)).flex_shrink_0());
                 } else if let Some(brand) = row["brand"].as_str().filter(|b| !b.is_empty()) {
-                    line = line.child(img(format!("brands/{brand}.svg")).size(px(28.)).flex_shrink_0());
+                    line = line.child(super::body::brand_logo(
+                        SharedString::from(format!("logo-{key}")),
+                        brand,
+                        px(28.),
+                        cx,
+                    ));
                 } else if let Some(icon) = row["icon"].as_str().filter(|i| !i.is_empty()) {
-                    line = line.child(img(format!("brands/{icon}.svg")).size(px(28.)).flex_shrink_0());
+                    line = line.child(super::body::brand_logo(
+                        SharedString::from(format!("logo-{key}")),
+                        icon,
+                        px(28.),
+                        cx,
+                    ));
                 }
                 // Text keeps a readable width beside its buttons: when both don't fit, the buttons go under
                 // it, at the right, instead of squeezing it to a word per line.

@@ -928,7 +928,7 @@ impl Render for List {
                 .text_size(px(15.))
                 .text_color(crate::theme::strong(cx))
                 .when_some(self.model["brand"].as_str(), |title, brand| {
-                    title.child(img(format!("brands/{brand}.svg")).id("title-brand").size_4())
+                    title.child(super::body::brand_logo("title-brand", brand, px(16.), cx))
                 })
                 .when_some(self.model["icon"].as_str(), |title, icon| {
                     title.child(
@@ -1304,12 +1304,7 @@ impl Render for List {
                                         list.action(Action::Edit, Some(index), window, cx);
                                     }
                                 }))
-                                .child(
-                                    img(format!("brands/{brand}.svg"))
-                                        .id(("conn-brand", index))
-                                        .size(px(15.))
-                                        .flex_shrink_0(),
-                                )
+                                .child(super::body::brand_logo(("conn-brand", index), &brand, px(15.), cx))
                                 .child(
                                     div()
                                         .min_w_0()
@@ -1895,11 +1890,12 @@ impl Render for List {
                         .when(!shown, |button| button.ghost().opacity(0.4))
                         .tooltip(label.clone())
                         .accessibility_label(label.clone())
-                        .child(
-                            img(format!("brands/{}.svg", option["brand"].as_str().unwrap_or_default()))
-                                .id(("filter-logo", index))
-                                .size_4(),
-                        )
+                        .child(super::body::brand_logo(
+                            ("filter-logo", index),
+                            option["brand"].as_str().unwrap_or_default(),
+                            px(16.),
+                            cx,
+                        ))
                         .on_click(cx.listener(move |list, _, _, cx| list.toggle_filter(index, cx))),
                 );
             }

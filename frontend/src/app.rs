@@ -215,10 +215,12 @@ impl Frontend {
                         .gap_2()
                         .h(px(30.))
                         .child(
-                            img(format!("brands/{}.svg", item["brand"].as_str().unwrap_or_default()))
-                                .id(("conn-logo", index))
-                                .size_4()
-                                .flex_shrink_0(),
+                            crate::controls::body::brand_logo(
+                                ("conn-logo", index),
+                                item["brand"].as_str().unwrap_or_default(),
+                                px(16.),
+                                cx,
+                            ),
                         )
                         .child({
                             let name = item["name"].as_str().unwrap_or_default().to_owned();
