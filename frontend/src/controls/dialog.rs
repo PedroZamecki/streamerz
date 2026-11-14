@@ -1,7 +1,7 @@
 //! One shape for every dialog: a header (its title, and the close button the toolkit puts at its right),
 //! the body, and a footer that holds the buttons, each part set apart from the next by a line. Pages fill
 //! the parts; they never draw a dialog's frame themselves.
-use gpui_kit::component::{dialog::Dialog, ActiveTheme, WindowExt};
+use gpui_kit::component::{dialog::Dialog, ActiveTheme};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
@@ -69,6 +69,13 @@ pub fn footer(left: Option<AnyElement>, right: impl IntoElement, cx: &App) -> Di
         .child(div().flex().items_center().gap_2().child(right))
 }
 
+/// Closes the open dialog the way its X and Escape do: its `on_cancel` runs first (it forgets the
+/// dialog, or keeps it open while something is pending). A plain `close_dialog` skips it, and a page
+/// that still thinks its dialog is open never opens it again. Every Cancel and Close button uses this.
+pub fn dismiss(window: &mut Window, cx: &mut App) {
+    window.dispatch_action(Box::new(gpui_kit::base::actions::Cancel), cx);
+}
+
 /// The footer of a dialog that only shows something: its Close button.
 pub fn close_footer(cx: &App) -> Div {
     use gpui_kit::component::button::Button;
@@ -76,7 +83,7 @@ pub fn close_footer(cx: &App) -> Div {
         None,
         Button::new("dialog-close")
             .label(crate::i18n::tr("dialogs.close"))
-            .on_click(|_, window, cx| window.close_dialog(cx)),
+            .on_click(|_, window, cx| dismiss(window, cx)),
         cx,
     )
 }

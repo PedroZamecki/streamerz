@@ -229,7 +229,7 @@ impl Finder {
             .child(
                 Button::new("find-cancel")
                     .label(self.label("cancel"))
-                    .on_click(|_, window, cx| window.close_dialog(cx)),
+                    .on_click(|_, window, cx| crate::controls::dialog::dismiss(window, cx)),
             );
         super::dialog::footer(Some(own), right, cx)
     }

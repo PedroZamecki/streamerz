@@ -28,6 +28,8 @@ pub struct Sections {
     dialog: Option<Entity<Sections>>,
     /// The channel finder, while it is open.
     finder: Option<Entity<super::find::Finder>>,
+    /// A button asked for a dialog: the next dialog view opens it (a refresh never does).
+    opening: bool,
     error: String,
     /// A narrow window: Settings stacks a row's control under its text.
     compact: bool,
@@ -44,6 +46,7 @@ impl Sections {
             inputs: HashMap::new(),
             form: None,
             dialog: None,
+            opening: false,
             finder: None,
             error: String::new(),
             compact: false,
@@ -117,6 +120,9 @@ impl Sections {
         }
         self.model = model;
         // An open dialog follows the core too (a login finishing, an extension connecting).
+        if !window.has_active_dialog(cx) {
+            self.dialog = None;
+        }
         if let Some(dialog) = &self.dialog {
             let domain = dialog.read(cx).domain.clone();
             send(
@@ -136,6 +142,7 @@ impl Sections {
         if let Some(page) = button["go"].as_str() {
             cx.emit(Navigate(page.to_owned()));
         } else if let Some(domain) = button["dialog"].as_str() {
+            self.opening = true;
             send(
                 json!({"request": "StreamerzCoreView", "domain": domain, "id": format!("{}:dialog-view", self.route)}),
             );
@@ -188,10 +195,17 @@ impl Sections {
         match operation {
             "dialog-view" => {
                 if let Some(dialog) = &self.dialog {
-                    if dialog.read(cx).domain == value["domain"].as_str().unwrap_or_default() {
-                        dialog.update(cx, |dialog, cx| dialog.update_model(value, window, cx));
+                    if window.has_active_dialog(cx) {
+                        if dialog.read(cx).domain == value["domain"].as_str().unwrap_or_default() {
+                            dialog.update(cx, |dialog, cx| dialog.update_model(value, window, cx));
+                        }
                         return false;
                     }
+                }
+                // A refresh that arrives after the dialog closed opens nothing; only a press does.
+                self.dialog = None;
+                if !std::mem::take(&mut self.opening) {
+                    return false;
                 }
                 let title = value["sections"][0]["title"].as_str().unwrap_or_default().to_owned();
                 let nested = cx.new(|cx| Sections::new(value, format!("{}:dialog", self.route), window, cx));

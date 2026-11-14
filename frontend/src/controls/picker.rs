@@ -6,7 +6,7 @@ use super::tree::{Node, Options, PaneEvent, TreePane};
 use crate::i18n::tr;
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
-    ActiveTheme, Disableable, Icon, WindowExt,
+    ActiveTheme, Disableable, Icon,
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -199,7 +199,7 @@ impl Render for PickerButtons {
             .child(
                 Button::new("cancel-picker")
                     .label(tr("dialogs.cancel"))
-                    .on_click(|_, window, cx| window.close_dialog(cx)),
+                    .on_click(|_, window, cx| crate::controls::dialog::dismiss(window, cx)),
             )
             .child(
                 Button::new("pick")

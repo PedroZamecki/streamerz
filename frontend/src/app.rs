@@ -283,7 +283,7 @@ impl Frontend {
             }
             let close = Button::new("conns-close")
                 .label(tr("dialogs.close"))
-                .on_click(|_, window, cx| window.close_dialog(cx));
+                .on_click(|_, window, cx| crate::controls::dialog::dismiss(window, cx));
             let footer = crate::controls::dialog::footer(None, close, cx);
             crate::controls::dialog::shell(dialog, tr("conns.title"), 460., cx)
                 .child(crate::controls::dialog::body(list))

@@ -660,7 +660,7 @@ impl ChatView {
                 .child(
                     Button::new("message-all-cancel")
                         .label(crate::i18n::tr("dialogs.cancel").to_owned())
-                        .on_click(|_, window, cx| window.close_dialog(cx)),
+                        .on_click(|_, window, cx| crate::controls::dialog::dismiss(window, cx)),
                 )
                 .child(
                     Button::new("message-all-send")

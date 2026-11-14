@@ -427,7 +427,7 @@ impl List {
                                 .child(
                                     Button::new("cancel-action")
                                         .label(tr("dialogs.cancel"))
-                                        .on_click(|_, window, cx| window.close_dialog(cx)),
+                                        .on_click(|_, window, cx| crate::controls::dialog::dismiss(window, cx)),
                                 )
                                 .child(if danger { confirm.danger() } else { confirm });
                             let footer = crate::controls::dialog::footer(None, buttons, cx);
@@ -474,7 +474,7 @@ impl List {
                 window.open_dialog(cx, move |dialog, _, cx| {
                     let kind = kind.clone(); let id = id.clone(); let route = route.clone();
                     let buttons = div().id("delete-confirmation").test_support().role(Role::Group).aria_label(confirm_label.clone()).flex().justify_end().gap_2()
-                        .child(Button::new("cancel-delete").label(tr("dialogs.cancel")).on_click(|_, window, cx| window.close_dialog(cx)))
+                        .child(Button::new("cancel-delete").label(tr("dialogs.cancel")).on_click(|_, window, cx| crate::controls::dialog::dismiss(window, cx)))
                         .child(Button::new("confirm-delete").danger().label(tr("btn.delete")).accessibility_label(confirm_label.clone()).on_click(move |_, window, cx| { send(json!({"request": "StreamerzDelete", "what": kind, "itemId": id, "id": format!("{route}:delete")})); window.close_dialog(cx); }));
                     let footer = crate::controls::dialog::footer(None, buttons, cx);
                     crate::controls::dialog::shell(dialog, tr("btn.delete"), 448., cx)

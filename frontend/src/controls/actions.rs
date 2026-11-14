@@ -236,7 +236,7 @@ impl ActionsPage {
                 .child(
                     Button::new("cancel-action")
                         .label(tr("dialogs.cancel"))
-                        .on_click(|_, window, cx| window.close_dialog(cx)),
+                        .on_click(|_, window, cx| crate::controls::dialog::dismiss(window, cx)),
                 )
                 .child(if danger { confirm.danger() } else { confirm });
             let footer = crate::controls::dialog::footer(None, buttons, cx);
