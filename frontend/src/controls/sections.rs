@@ -363,10 +363,9 @@ impl Sections {
                     .gap_2()
                     .flex_shrink_0()
                     .when(roomy, |line| line.px(px(4.)))
-                    .when(
-                        roomy && (control["button"].is_object() || key == "memory_saver"),
-                        |line| line.w(px(180.)).justify_start(),
-                    );
+                    .when(roomy && control["button"].is_object(), |line| {
+                        line.w(px(180.)).justify_start()
+                    });
                 line = line.child(
                     Switch::new(SharedString::from(format!("switch-{key}")))
                         .accessibility_label(row["label"].as_str().unwrap_or_default().to_owned())
@@ -1079,10 +1078,7 @@ impl Render for Sections {
                     .min_h(px(26.))
                     .w_full();
                 // Narrow: a select or buttons go under the text, a switch stays beside it.
-                let stacked = roomy
-                    && self.compact
-                    && row["control"].is_object()
-                    && (row["control"]["type"] != "switch" || key == "memory_saver");
+                let stacked = roomy && self.compact && row["control"].is_object() && row["control"]["type"] != "switch";
                 if stacked {
                     line = line.flex_col().items_stretch().gap(px(0.)).pb(px(14.));
                 }
