@@ -62,7 +62,9 @@ pub fn supports(domain: &str) -> bool {
         || super::actions::supports(domain)
         || super::chat::supports(domain)
         || super::pages::supports(domain)
+        || super::overlays::supports(domain)
         || super::polls::supports(domain)
+        || super::stream::supports(domain)
         || super::sections::supports(domain)
 }
 
@@ -77,6 +79,13 @@ fn note_page(domain: &str) {
         return;
     }
     crate::host::set_viewers_visible(domain == "chat");
+    thread_local! {
+        static SHOWN: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    }
+    // Opening the Stream page reads the platforms again (re-reads while it stays open don't).
+    if SHOWN.with_borrow_mut(|shown| std::mem::replace(shown, domain.to_owned()) != domain) && domain == "stream" {
+        super::stream::opened();
+    }
     #[cfg(not(test))]
     {
         static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
@@ -93,6 +102,15 @@ fn note_page(domain: &str) {
 pub fn read_request(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     let domain = request["domain"].as_str().unwrap_or_default();
     note_page(domain);
+    if let Some((page_id, _, _)) = super::navigation::NAV
+        .iter()
+        .flat_map(|(_, _, pages)| pages.iter())
+        .find(|(id, _, _)| id.to_lowercase().replace(' ', "_") == domain)
+    {
+        if engine.config().window.tab != *page_id {
+            engine.change(|config| config.window.tab = page_id.to_string());
+        }
+    }
     if domain == "log" {
         return Ok(super::log::read(
             request["level"].as_u64().unwrap_or(1) as usize,
@@ -118,8 +136,14 @@ pub fn read_request(engine: &Rc<Engine>, request: &Value) -> Result<Value, Strin
 }
 
 pub fn read(engine: &Rc<Engine>, domain: &str) -> Result<Value, String> {
+    if super::overlays::supports(domain) {
+        return super::overlays::read(engine, domain);
+    }
     if super::polls::supports(domain) {
         return super::polls::read(engine);
+    }
+    if super::stream::supports(domain) {
+        return super::stream::read(engine);
     }
     if super::chat::supports(domain) {
         return super::chat::read(engine, &serde_json::json!({}));
@@ -222,7 +246,29 @@ fn table(engine: &Rc<Engine>, kind: &str) -> Result<Value, String> {
                 column("filter", "lists.watchers.filter", 100),
                 column("subfolders", "lists.watchers.subfolders", 140),
             ];
-            let rows = config.file_watchers.iter().map(|item| json!({"id": text(item, "id"), "name": text(item, "name"), "enabled": flag(item, "enabled"), "cells": [flag(item, "enabled"), text(item, "name"), found(text(item, "folderPath")), text(item, "folderPath"), text(item, "filter"), note("folder-tree", if flag(item, "includeSubdirectories") { tr("lists.watchers.with_subfolders") } else { "" })]})).collect();
+            let rows = config.file_watchers.iter().map(|item| {
+                let path = text(item, "folderPath");
+                let state = found(path);
+                let filter = text(item, "filter");
+                let subfolders = flag(item, "includeSubdirectories");
+                let mut badges = Vec::new();
+                if !filter.is_empty() {
+                    badges.push(json!({"icon": "filter", "text": filter}));
+                }
+                if subfolders {
+                    badges.push(json!({"icon": "folder-tree", "text": "", "tip": tr("lists.watchers.with_subfolders")}));
+                }
+                json!({
+                    "id": text(item, "id"),
+                    "name": text(item, "name"),
+                    "enabled": flag(item, "enabled"),
+                    "health": state["health"],
+                    "healthTip": state["text"],
+                    "detail": path,
+                    "badges": badges,
+                    "cells": [flag(item, "enabled"), text(item, "name"), state, path, filter, note("folder-tree", if subfolders { tr("lists.watchers.with_subfolders") } else { "" })]
+                })
+            }).collect();
             (
                 "lists.watchers.empty",
                 "lists.watchers.title",
@@ -238,7 +284,23 @@ fn table(engine: &Rc<Engine>, kind: &str) -> Result<Value, String> {
                 column("state", "lists.state", 120),
                 column("filePath", "lists.tails.file", 400),
             ];
-            let rows = config.file_tails.iter().map(|item| json!({"id": text(item, "id"), "name": text(item, "name"), "enabled": flag(item, "enabled"), "cells": [flag(item, "enabled"), text(item, "name"), found(text(item, "filePath")), text(item, "filePath")]})).collect();
+            let rows = config
+                .file_tails
+                .iter()
+                .map(|item| {
+                    let path = text(item, "filePath");
+                    let state = found(path);
+                    json!({
+                        "id": text(item, "id"),
+                        "name": text(item, "name"),
+                        "enabled": flag(item, "enabled"),
+                        "health": state["health"],
+                        "healthTip": state["text"],
+                        "detail": path,
+                        "cells": [flag(item, "enabled"), text(item, "name"), state, path]
+                    })
+                })
+                .collect();
             (
                 "lists.tails.empty",
                 "lists.tails.title",
@@ -255,8 +317,28 @@ fn table(engine: &Rc<Engine>, kind: &str) -> Result<Value, String> {
                 column("retry", "lists.reconnect", 140),
             ];
             let rows = config.websockets.connections.iter().map(|item| {
-                let retry = if flag(item,"reconnectOnDisconnect") { note("refresh-cw",trf("lists.retry_every", &[("seconds", &item.get("retryInterval").and_then(Value::as_u64).unwrap_or(5).to_string())])) } else { note("circle-off",tr("lists.no_retry")) };
-                json!({"id":text(item,"id"),"name":text(item,"name"),"enabled":true,"cells":[flag(item,"autoConnect"),text(item,"name"),text(item,"endpoint"),retry]})
+                let retry_on = flag(item, "reconnectOnDisconnect");
+                let retry_secs = item.get("retryInterval").and_then(Value::as_u64).unwrap_or(5);
+                let retry = if retry_on {
+                    note("refresh-cw", trf("lists.retry_every", &[("seconds", &retry_secs.to_string())]))
+                } else {
+                    note("circle-off", tr("lists.no_retry"))
+                };
+                let retry_badge = if retry_on {
+                    json!({"icon": "refresh-cw", "text": format!("{retry_secs}s"), "tip": trf("lists.retry_every", &[("seconds", &retry_secs.to_string())])})
+                } else {
+                    json!({"icon": "circle-off", "text": "", "tip": tr("lists.no_retry")})
+                };
+                json!({
+                    "id": text(item, "id"),
+                    "name": text(item, "name"),
+                    "enabled": flag(item, "autoConnect"),
+                    "switchOnly": true,
+                    "icon": "network",
+                    "detail": text(item, "endpoint"),
+                    "badges": [retry_badge],
+                    "cells": [flag(item, "autoConnect"), text(item, "name"), text(item, "endpoint"), retry]
+                })
             }).collect();
             (
                 "lists.clients.empty",
@@ -272,7 +354,27 @@ fn table(engine: &Rc<Engine>, kind: &str) -> Result<Value, String> {
                 column("name", "lists.custom_servers.name", 200),
                 column("address", "lists.custom_servers.address", 400),
             ];
-            let rows = config.websockets.servers.iter().map(|item| json!({"id":text(item,"id"),"name":text(item,"name"),"enabled":flag(item,"autoStart"),"cells":[flag(item,"autoStart"),text(item,"name"),format!("ws://{}:{}{}", text(item,"address"),number(item,"port"),text(item,"endpoint"))]})).collect();
+            let rows = config
+                .websockets
+                .servers
+                .iter()
+                .map(|item| {
+                    let address = format!(
+                        "ws://{}:{}{}",
+                        text(item, "address"),
+                        number(item, "port"),
+                        text(item, "endpoint")
+                    );
+                    json!({
+                        "id": text(item, "id"),
+                        "name": text(item, "name"),
+                        "enabled": flag(item, "autoStart"),
+                        "icon": "server",
+                        "detail": address,
+                        "cells": [flag(item, "autoStart"), text(item, "name"), address]
+                    })
+                })
+                .collect();
             (
                 "lists.custom_servers.empty",
                 "lists.servers.ws_servers_title",
@@ -288,11 +390,34 @@ fn table(engine: &Rc<Engine>, kind: &str) -> Result<Value, String> {
     let icon = match kind {
         "file_watcher" => "folder-open",
         "file_tail" => "scroll-text",
-        "websocket_client" => "plug",
+        "websocket_client" => "network",
         "websocket_server" => "server",
         _ => "",
     };
-    let mut model = json!({"kind": kind, "title": tr(title), "what": what, "guide": if guide.is_empty() { "" } else { tr(guide) }, "columns": columns, "rows": rows, "empty": tr(empty), "search": matches!(kind, "command" | "timer"), "showTitle": matches!(kind, "websocket_client" | "websocket_server"), "actions": if kind == "websocket_client" { vec!["add","edit","delete"] } else { vec!["add","edit","toggle","delete"] }});
+    let cards = matches!(
+        kind,
+        "file_watcher" | "file_tail" | "websocket_client" | "websocket_server"
+    );
+    let mut model = json!({
+        "kind": kind,
+        "title": tr(title),
+        "what": what,
+        "guide": if guide.is_empty() { "" } else { tr(guide) },
+        "columns": columns,
+        "rows": rows,
+        "empty": tr(empty),
+        "search": matches!(kind, "command" | "timer"),
+        "showTitle": cards,
+        "actions": if kind == "websocket_client" { vec!["add","edit","delete"] } else { vec!["add","edit","toggle","delete"] }
+    });
+    if cards {
+        model["presentation"] = "cards".into();
+        model["headerAdd"] = true.into();
+    }
+    if matches!(kind, "command" | "timer") {
+        model["addTop"] = true.into();
+        model["strip"] = true.into();
+    }
     if !icon.is_empty() {
         model["icon"] = icon.into();
     }
@@ -353,6 +478,34 @@ mod tests {
         assert_eq!(files["tables"][0]["icon"], "folder-open");
         assert_eq!(files["tables"][1]["icon"], "scroll-text");
         assert_eq!(read(&engine, "servers").unwrap()["tables"][0]["brand"], "streamerbot");
-        assert_eq!(read(&engine, "servers").unwrap()["tables"][1]["icon"], "plug");
+        assert_eq!(read(&engine, "servers").unwrap()["tables"][1]["icon"], "network");
+        assert_eq!(read(&engine, "servers").unwrap()["tables"][2]["icon"], "server");
+        assert!(!read(&engine, "servers").unwrap()["tables"][1]["actions"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("toggle")));
+        assert!(read(&engine, "servers").unwrap()["tables"][2]["actions"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("toggle")));
+    }
+
+    #[test]
+    fn reading_a_page_request_records_the_tab_in_window_state() {
+        let _guard = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            assert_eq!(engine.config().window.tab, "");
+
+            let _ = read_request(&engine, &json!({"domain": "settings"})).unwrap();
+            assert_eq!(engine.config().window.tab, "Settings");
+
+            let _ = read_request(&engine, &json!({"domain": "chat"})).unwrap();
+            assert_eq!(engine.config().window.tab, "Chat");
+
+            // Non-top-level views (dialogs, member popups) do not change the active tab
+            let _ = read_request(&engine, &json!({"domain": "group_members", "itemId": "test"}));
+            assert_eq!(engine.config().window.tab, "Chat");
+        });
     }
 }

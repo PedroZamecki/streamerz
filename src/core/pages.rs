@@ -140,20 +140,32 @@ fn queues(engine: &Rc<Engine>) -> Vec<Value> {
         vec![
             "add".into(),
             "edit".into(),
+            button("blocking", "btn.blocking", "lock", true),
+            button("pause", "btn.pause_resume", "pause", true),
+            button("clear", "btn.clear", "eraser", true),
             danger(confirm(
                 button("delete", "btn.delete", "trash-2", true),
                 tr("lists.queues.delete_confirm").into(),
                 "btn.delete",
             )),
-            button("blocking", "btn.blocking", "lock", true),
-            button("pause", "btn.pause_resume", "pause", true),
-            button("clear", "btn.clear", "eraser", true),
-            button_if(button("pause_all", "btn.pause_all", "circle-pause", false), any_running),
-            button_if(button("resume_all", "btn.resume_all", "play", false), any_paused),
+            {
+                let mut b = button_if(button("pause_all", "btn.pause_all", "circle-pause", false), any_running);
+                b["top"] = true.into();
+                b["hideDisabled"] = true.into();
+                b
+            },
+            {
+                let mut b = button_if(button("resume_all", "btn.resume_all", "play", false), any_paused);
+                b["top"] = true.into();
+                b["hideDisabled"] = true.into();
+                b
+            },
         ],
     );
     queue["what"] = tr("lists.queues.what").into();
     queue["empty"] = "".into();
+    queue["addTop"] = true.into();
+    queue["strip"] = true.into();
     let pending_rows = pending
         .iter()
         .enumerate()
@@ -240,11 +252,18 @@ fn globals(engine: &Rc<Engine>) -> Value {
             column("user", "lists.globals.user", 200),
         ],
         rows,
-        vec!["add".into(), "edit".into(), "delete".into(), "refresh".into()],
+        vec![
+            "add".into(),
+            "edit".into(),
+            "delete".into(),
+            json!({"id": "refresh", "label": tr("btn.refresh"), "icon": "refresh-cw", "top": true, "iconOnly": true}),
+        ],
     );
     model["what"] = tr("lists.globals.what").into();
     model["guide"] = tr("lists.globals.read_only_hint").into();
     model["titleless"] = true.into();
+    model["addTop"] = true.into();
+    model["strip"] = true.into();
     model
 }
 
@@ -344,12 +363,22 @@ fn history(engine: &Rc<Engine>) -> Value {
             button("values_before", "btn.variables_when_queued", "list-ordered", true),
             button("values_after", "btn.variables_after_run", "braces", true),
             button("run_again", "btn.run_again", "rotate-ccw", true),
-            button_if(button("clear", "btn.clear", "eraser", false), !runs.is_empty()),
-            "refresh".into(),
+            {
+                let mut b = danger(button_if(
+                    button("clear", "btn.clear", "eraser", false),
+                    !runs.is_empty(),
+                ));
+                b["top"] = true.into();
+                b["iconOnly"] = true.into();
+                b["hideDisabled"] = true.into();
+                b
+            },
+            json!({"id": "refresh", "label": tr("btn.refresh"), "icon": "refresh-cw", "top": true, "iconOnly": true}),
         ],
     );
     model["search"] = true.into();
     model["searchHint"] = tr("lists.history.search").into();
+    model["strip"] = true.into();
     model["perRow"] = 3.into();
     model
 }
@@ -364,7 +393,7 @@ fn backup_reason(backup: &crate::backup::Backup) -> String {
     }
 }
 
-fn size(bytes: u64) -> String {
+pub(crate) fn size(bytes: u64) -> String {
     match bytes {
         b if b < 1024 => format!("{b} B"),
         b if b < 1024 * 1024 => format!("{:.0} KB", b as f64 / 1024.0),
@@ -394,9 +423,19 @@ fn backups() -> Value {
         ],
         rows,
         vec![
-            button("backup_now", "btn.backup_now", "archive", false),
+            {
+                let mut b = button("backup_now", "btn.backup_now", "archive", false);
+                b["top"] = true.into();
+                b["primary"] = true.into();
+                b
+            },
             button("restore", "btn.restore", "history", true),
-            button("open_folder", "btn.open_folder", "folder-open", false),
+            {
+                let mut b = button("open_folder", "btn.open_folder", "folder-open", false);
+                b["top"] = true.into();
+                b["iconOnly"] = true.into();
+                b
+            },
             danger(confirm(
                 button("delete", "btn.delete", "trash-2", true),
                 tr("backups.delete_ask").into(),
@@ -407,6 +446,7 @@ fn backups() -> Value {
     model["guide"] = tr("backups.hint").into();
     model["guideBelow"] = true.into();
     model["titleless"] = true.into();
+    model["strip"] = true.into();
     model
 }
 
@@ -438,19 +478,25 @@ fn crashes() -> Value {
         rows,
         vec![
             button("report", "btn.report_github", "github", true),
-            button("open_folder", "btn.open_folder", "folder-open", false),
+            {
+                let mut b = button("open_folder", "btn.open_folder", "folder-open", false);
+                b["top"] = true.into();
+                b["iconOnly"] = true.into();
+                b
+            },
             danger(confirm(
                 button("delete", "btn.delete", "trash-2", true),
                 tr("crashes.delete_ask").into(),
                 "btn.delete",
             )),
-            "refresh".into(),
+            json!({"id": "refresh", "label": tr("btn.refresh"), "icon": "refresh-cw", "top": true, "iconOnly": true}),
         ],
     );
     model["detail"] = tr("crashes.detail_empty").into();
     // 1.6.0: a short table, and the report fills the rest of the page.
     model["tableHeight"] = 192.into();
     model["detailFill"] = true.into();
+    model["strip"] = true.into();
     model
 }
 
@@ -489,6 +535,8 @@ fn groups(engine: &Rc<Engine>) -> Value {
         ],
     );
     model["guide"] = tr("lists.groups.guide").into();
+    model["addTop"] = true.into();
+    model["strip"] = true.into();
     model["perRow"] = 3.into();
     model["what"] = tr("lists.groups.new_group").into();
     model
@@ -717,6 +765,8 @@ fn quotes_table(engine: &Rc<Engine>) -> Value {
         ],
     );
     quotes["what"] = tr("lists.community.quote").into();
+    quotes["addTop"] = true.into();
+    quotes["strip"] = true.into();
     quotes["perRow"] = 3.into();
     quotes
 }
@@ -756,12 +806,22 @@ fn credits_table(engine: &Rc<Engine>) -> Value {
         ],
         rows,
         vec![
-            danger(confirm(
-                button("credits_reset", "btn.reset", "rotate-ccw", false),
-                tr("lists.community.reset_confirm").into(),
-                "btn.reset",
-            )),
-            button("credits_test", "btn.fill_with_test_names", "flask-conical", false),
+            {
+                let mut b = button("credits_test", "btn.fill_with_test_names", "flask-conical", false);
+                b["top"] = true.into();
+                b["primary"] = true.into();
+                b
+            },
+            {
+                let mut b = danger(confirm(
+                    button("credits_reset", "btn.reset", "rotate-ccw", false),
+                    tr("lists.community.reset_confirm").into(),
+                    "btn.reset",
+                ));
+                b["top"] = true.into();
+                b["iconOnly"] = true.into();
+                b
+            },
         ],
     );
     credits["perRow"] = 2.into();
@@ -1053,20 +1113,32 @@ fn mcp(engine: &Rc<Engine>) -> Vec<Value> {
         ],
         rows,
         vec![
-            button("add_streamerz", "btn.add_streamerz", "plus", true),
-            button("remove_streamerz", "btn.remove_streamerz", "x", true),
+            {
+                let mut b = button("add_streamerz", "btn.add_streamerz", "plus", true);
+                b["hideDisabled"] = true.into();
+                b
+            },
+            {
+                let mut b = button("remove_streamerz", "btn.remove_streamerz", "x", true);
+                b["hideDisabled"] = true.into();
+                b
+            },
             button("open_chat", "btn.open_chat", "terminal", true),
             button("open_file", "btn.open_file", "external-link", true),
             button("open_folder", "btn.open_folder", "folder-open", false),
-            button("copy_config", "btn.copy_config", "copy", false),
-            "refresh".into(),
+            {
+                let mut b = button("copy_config", "btn.copy_config", "copy", false);
+                b["top"] = true.into();
+                b
+            },
+            json!({"id": "refresh", "label": tr("btn.refresh"), "icon": "refresh-cw", "top": true, "iconOnly": true}),
         ],
     );
     agents["guide"] = tr("agents.intro").into();
     agents["detail"] = tr("agents.selection_hint").into();
     agents["detailStatus"] = true.into();
     agents["selectFirst"] = true.into();
-    agents["buttonsLast"] = true.into();
+    agents["strip"] = true.into();
     // Open folder needs a selected agent: its row says whether the folder exists.
     agents["actions"][4]["needs"] = "row".into();
     let url = mcp_url(&engine.config());
@@ -1176,12 +1248,18 @@ fn plugins(engine: &Rc<Engine>) -> Value {
                 settings["form"] = "plugin_settings:".into();
                 settings
             },
-            button("open_folder", "btn.open_folder", "folder-open", false),
-            "refresh".into(),
+            {
+                let mut b = button("open_folder", "btn.open_folder", "folder-open", false);
+                b["top"] = true.into();
+                b["iconOnly"] = true.into();
+                b
+            },
+            json!({"id": "refresh", "label": tr("btn.refresh"), "icon": "refresh-cw", "top": true, "iconOnly": true}),
         ],
     );
     model["detail"] = "".into();
     model["detailHeight"] = 100.into();
+    model["strip"] = true.into();
     model["perRow"] = 4.into();
     model
 }
@@ -1253,6 +1331,9 @@ pub fn external_fields(engine: &Rc<Engine>, kind: &str) -> Option<&'static [crat
     if let Some(fields) = super::polls::external_fields(kind) {
         return Some(fields);
     }
+    if let Some(fields) = super::stream::external_fields(kind) {
+        return Some(fields);
+    }
     if let Some(fields) = super::accounts::external_fields(kind) {
         return Some(fields);
     }
@@ -1273,6 +1354,9 @@ pub fn external_fields(engine: &Rc<Engine>, kind: &str) -> Option<&'static [crat
 /// The form for such a kind, with its current values; None for any other kind.
 pub fn external_form(engine: &Rc<Engine>, kind: &str, item_id: &str) -> Option<Result<Value, String>> {
     if let Some(form) = super::polls::external_form(kind) {
+        return Some(form);
+    }
+    if let Some(form) = super::stream::external_form(kind) {
         return Some(form);
     }
     if let Some(form) = super::accounts::external_form(engine, kind) {
@@ -1330,6 +1414,9 @@ pub fn save_external(
     item: crate::model::Obj,
 ) -> Option<Result<Value, String>> {
     if let Some(saved) = super::polls::save_external(engine, kind, item.clone()) {
+        return Some(saved);
+    }
+    if let Some(saved) = super::stream::save_external(engine, kind, item.clone()) {
         return Some(saved);
     }
     if let Some(saved) = super::accounts::save_external(engine, kind, item.clone()) {

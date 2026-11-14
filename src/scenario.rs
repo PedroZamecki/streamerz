@@ -37,7 +37,7 @@
 //! debug lines in the log for `expect.log`; `{http}` is a local web server's address (its requests
 //! are `http` calls, answered from `fakes.http`); `"only": "linux"` or `"windows"` runs it there only.
 
-mod fakes;
+pub(crate) mod fakes;
 
 use crate::engine::Engine;
 use serde_json::{json, Value};

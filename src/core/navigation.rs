@@ -10,6 +10,7 @@ pub const NAV: &[Section] = &[
         "nav.section.live",
         &[
             ("Chat", "nav.page.chat", "message-square"),
+            ("Stream", "nav.page.stream", "radio"),
             ("Accounts", "nav.page.accounts", "user-round"),
             ("Community", "nav.page.community", "users"),
             ("Polls", "nav.page.polls", "vote"),
@@ -23,6 +24,7 @@ pub const NAV: &[Section] = &[
             ("Commands", "nav.page.commands", "terminal"),
             ("Timers", "nav.page.timers", "timer"),
             ("Files", "nav.page.files", "file-text"),
+            ("Overlays", "nav.page.overlays", "layers"),
             ("Queues", "nav.page.queues", "list-ordered"),
             ("Groups", "nav.page.groups", "folder"),
             ("Plugins", "nav.page.plugins", "puzzle"),

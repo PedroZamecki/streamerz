@@ -187,6 +187,8 @@ pub enum YouTubeCmd {
     Connect,
     /// The live video being read ("" when none).
     LiveVideo(oneshot::Sender<String>),
+    /// The channel's live broadcast, else its next one, as (video id, title).
+    NextBroadcast(oneshot::Sender<Result<Option<(String, String)>, String>>),
     Disconnect,
     SendMessage {
         broadcast: String,
@@ -209,6 +211,14 @@ pub enum YouTubeCmd {
         broadcast: String,
         title: String,
         description: String,
+        resp: oneshot::Sender<Result<(), String>>,
+    },
+    /// Title, description and tags in one videos.update (each one costs 50 units of quota).
+    UpdateVideo {
+        broadcast: String,
+        title: Option<String>,
+        description: Option<String>,
+        tags: Option<Vec<String>>,
         resp: oneshot::Sender<Result<(), String>>,
     },
     BanUser {
@@ -336,6 +346,27 @@ impl YouTubeHandle {
         resp_rx.await.map_err(|_| "Request cancelled".to_string())?
     }
 
+    /// Change what is given of the title, description and tags in one update.
+    pub async fn update_video(
+        &self,
+        broadcast: &str,
+        title: Option<String>,
+        description: Option<String>,
+        tags: Option<Vec<String>>,
+    ) -> Result<(), String> {
+        let (resp, resp_rx) = oneshot::channel();
+        self.tx
+            .send(YouTubeCmd::UpdateVideo {
+                broadcast: broadcast.to_string(),
+                title,
+                description,
+                tags,
+                resp,
+            })
+            .map_err(|_| "YouTube runner is down".to_string())?;
+        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
     pub async fn ban_user(&self, broadcast: &str, user_id: &str) -> Result<(), String> {
         let (resp_tx, resp_rx) = oneshot::channel();
         self.tx
@@ -422,6 +453,16 @@ impl YouTubeHandle {
         Ok(self.live_page().await?.0)
     }
 
+    /// The channel's live broadcast, else its next one (scheduled, or the ready one its next live
+    /// uses), as (video id, title); None when there is neither.
+    pub async fn next_broadcast(&self) -> Result<Option<(String, String)>, String> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(YouTubeCmd::NextBroadcast(tx))
+            .map_err(|_| "YouTube runner is down".to_string())?;
+        rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
     pub async fn live_title(&self) -> Result<String, String> {
         Ok(self.live_page().await?.1)
     }
@@ -494,6 +535,9 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
                 YouTubeCmd::LiveVideo(resp) => {
                     let _ = resp.send(runner.live.borrow().0.clone());
                 }
+                YouTubeCmd::NextBroadcast(resp) => {
+                    let _ = resp.send(find_next_broadcast(&runner.engine, &runner.cfg).await);
+                }
                 YouTubeCmd::Connect => {
                     if !active {
                         active = true;
@@ -556,6 +600,18 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
                     resp,
                 } => {
                     let r = runner.send_chat_api(&broadcast, &text, use_bot, fallback).await;
+                    let _ = resp.send(r);
+                }
+                YouTubeCmd::UpdateVideo {
+                    broadcast,
+                    title,
+                    description,
+                    tags,
+                    resp,
+                } => {
+                    let r = runner
+                        .update_snippet(&broadcast, title.as_deref(), description.as_deref(), tags.as_deref())
+                        .await;
                     let _ = resp.send(r);
                 }
                 YouTubeCmd::SetTitle { broadcast, title, resp } => {
@@ -865,6 +921,18 @@ impl YouTubeRunner {
         }
     }
 
+    /// The video a change goes to: `broadcast`, else the live one, else the channel's next broadcast
+    /// (scheduled, or the ready one its next live uses).
+    async fn target(&self, broadcast: &str) -> Result<String, String> {
+        if let Ok(video) = self.video(broadcast) {
+            return Ok(video);
+        }
+        match find_next_broadcast(&self.engine, &self.cfg).await? {
+            Some((id, _)) => Ok(id),
+            None => Err(NO_TARGET.into()),
+        }
+    }
+
     /// The video `broadcast` names, else the live one being read.
     fn video(&self, broadcast: &str) -> Result<String, String> {
         if !broadcast.is_empty() {
@@ -884,9 +952,10 @@ impl YouTubeRunner {
         broadcast: &str,
         title: Option<&str>,
         description: Option<&str>,
+        tags: Option<&[String]>,
     ) -> Result<(), String> {
         let token = token(&self.engine, &self.cfg, false, false).await?;
-        let video = self.video(broadcast)?;
+        let video = self.target(broadcast).await?;
         let auth = ("Authorization".to_string(), format!("Bearer {token}"));
         let r = crate::http::request(
             "GET",
@@ -908,6 +977,9 @@ impl YouTubeRunner {
         }
         if let Some(d) = description {
             snippet["description"] = json!(d);
+        }
+        if let Some(t) = tags {
+            snippet["tags"] = json!(t);
         }
         // Read-only or derived fields the update refuses or ignores.
         if let Some(o) = snippet.as_object_mut() {
@@ -939,11 +1011,11 @@ impl YouTubeRunner {
     }
 
     async fn set_title_api(&self, broadcast: &str, title: &str) -> Result<(), String> {
-        self.update_snippet(broadcast, Some(title), None).await
+        self.update_snippet(broadcast, Some(title), None, None).await
     }
 
     async fn set_description_api(&self, broadcast: &str, description: &str) -> Result<(), String> {
-        self.update_snippet(broadcast, None, Some(description)).await
+        self.update_snippet(broadcast, None, Some(description), None).await
     }
 
     async fn set_title_and_description_api(
@@ -952,7 +1024,8 @@ impl YouTubeRunner {
         title: &str,
         description: &str,
     ) -> Result<(), String> {
-        self.update_snippet(broadcast, Some(title), Some(description)).await
+        self.update_snippet(broadcast, Some(title), Some(description), None)
+            .await
     }
 
     async fn ban_user_api(&self, broadcast: &str, user_id: &str) -> Result<(), String> {
@@ -1068,7 +1141,7 @@ impl YouTubeRunner {
 
     async fn set_thumbnail_api(&self, broadcast: &str, file_path: &str) -> Result<(), String> {
         let token = token(&self.engine, &self.cfg, false, false).await?;
-        let video = self.video(broadcast)?;
+        let video = self.target(broadcast).await?;
         let bytes = tokio::fs::read(file_path)
             .await
             .map_err(|e| format!("Failed to read thumbnail file: {e}"))?;
@@ -1101,15 +1174,11 @@ impl YouTubeRunner {
         let video = self.video(broadcast)?;
         let duration = if duration_secs == 0 { 30 } else { duration_secs };
         let url = format!(
-            "{YOUTUBE_API_BASE}/liveBroadcasts/cuepoint?id={}&part=snippet",
+            "{YOUTUBE_API_BASE}/liveBroadcasts/cuepoint?id={}",
             crate::commands::url_encode(&video)
         );
-        let payload = json!({
-            "snippet": {
-                "cueType": "cueTypeAd",
-                "durationSecs": duration
-            }
-        });
+        // A cuepoint resource, sent as is (no part, no snippet); it plays as soon as it can.
+        let payload = json!({"cueType": "cueTypeAd", "durationSecs": duration});
         let headers = vec![
             ("Authorization".to_string(), format!("Bearer {token}")),
             ("Content-Type".to_string(), "application/json".to_string()),
@@ -1320,6 +1389,54 @@ pub fn extract_initial_actions(page: &str) -> Vec<Value> {
 
 /// Check OAuth `liveBroadcasts.list(mine=true)` (when logged in) for an active live video ID or an
 /// upcoming scheduled broadcast start timestamp (Unix seconds).
+/// What a change says when YouTube has nothing to change.
+pub const NO_TARGET: &str =
+    "YouTube: no live or scheduled stream to change (go live, or schedule one in YouTube Studio)";
+
+/// The logged-in channel's live broadcast, else its next one (scheduled, or the ready one its next live
+/// uses), as (video id, title); None when there is neither. One liveBroadcasts list: 1 unit of quota.
+async fn find_next_broadcast(
+    engine: &Rc<Engine>,
+    cfg: &Arc<watch::Sender<Config>>,
+) -> Result<Option<(String, String)>, String> {
+    let tok = token(engine, cfg, false, false).await?;
+    let headers = [("Authorization".to_string(), format!("Bearer {tok}"))];
+    let url = format!("{YOUTUBE_API_BASE}/liveBroadcasts?part=snippet,status&mine=true&maxResults=10");
+    let res = crate::http::request("GET", &url, &headers, b"").await?;
+    if res.status != 200 {
+        return Err(format!("YouTube broadcasts: HTTP {} {}", res.status, res.text()));
+    }
+    let v: Value = serde_json::from_slice(&res.body).unwrap_or_default();
+    Ok(pick_broadcast(v["items"].as_array().map_or(&[], Vec::as_slice)))
+}
+
+/// From a liveBroadcasts list: the live one, else the soonest of those still to come.
+fn pick_broadcast(items: &[Value]) -> Option<(String, String)> {
+    fn state(item: &Value) -> &str {
+        item.pointer("/status/lifeCycleStatus")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+    }
+    let found = items
+        .iter()
+        .find(|item| matches!(state(item), "live" | "liveStarting"))
+        .or_else(|| {
+            items
+                .iter()
+                .filter(|item| matches!(state(item), "ready" | "created" | "testing" | "testStarting"))
+                .min_by_key(|item| {
+                    item.pointer("/snippet/scheduledStartTime")
+                        .and_then(Value::as_str)
+                        .unwrap_or("~")
+                })
+        })?;
+    let id = found["id"].as_str().filter(|id| !id.is_empty())?;
+    Some((
+        id.to_owned(),
+        found["snippet"]["title"].as_str().unwrap_or_default().to_owned(),
+    ))
+}
+
 async fn oauth_broadcast_hint(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> (Option<String>, Option<i64>) {
     let has_oauth = cfg
         .borrow()
@@ -2426,6 +2543,24 @@ async fn while_live(engine: Rc<Engine>, cfg: Arc<watch::Sender<Config>>, video: 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_change_goes_to_the_live_broadcast_else_the_next_one() {
+        let item = |id: &str, state: &str, at: &str| {
+            json!({"id": id, "status": {"lifeCycleStatus": state},
+                "snippet": {"title": format!("t{id}"), "scheduledStartTime": at}})
+        };
+        let later = item("b", "ready", "2026-12-02T10:00:00Z");
+        let sooner = item("c", "created", "2026-12-01T10:00:00Z");
+        let over = item("d", "complete", "2026-11-01T10:00:00Z");
+        assert_eq!(
+            pick_broadcast(&[later.clone(), sooner.clone(), over.clone()]),
+            Some(("c".into(), "tc".into()))
+        );
+        let live = item("a", "live", "2026-11-11T10:00:00Z");
+        assert_eq!(pick_broadcast(&[later, live, sooner]).unwrap().0, "a");
+        assert_eq!(pick_broadcast(&[over]), None);
+    }
+
     #[test]
     fn a_banner_in_a_channel_page() {
         let page = br#"x"banner":{"imageBannerViewModel":{"image":{"sources":[{"url":"https://yt3.example/b=w1060\u0026k","width":1}]}}},"avatar":{"thumbnails":[{"url":"https://yt3.example/a=s900","w":1}]}"#;

@@ -547,6 +547,18 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
         {
             error(&id, "Authentication required to use this method")
         }
+        "StreamerzEntityForm" if crate::core::overlays::handles(get("kind")) => {
+            match crate::core::overlays::form_for(e, req) {
+                Ok(value) => ok(&id, value),
+                Err(message) => error(&id, &message),
+            }
+        }
+        "StreamerzEditEntity" | "StreamerzEntityDraft" if crate::core::overlays::handles(get("kind")) => {
+            match crate::core::overlays::edit_form(e, req, get("request") == "StreamerzEntityDraft") {
+                Ok(value) => ok(&id, value),
+                Err(message) => error(&id, &message),
+            }
+        }
         "StreamerzEntityForm" if crate::core::actions::handles(get("kind")) => {
             match crate::core::actions::form_for(e, req) {
                 Ok(value) => ok(&id, value),
@@ -611,7 +623,11 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
                 Err(message) => error(&id, &message),
             }
         }
-        "StreamerzCoreStatus" | "StreamerzCoreSave" | "StreamerzCoreQuit"
+        "StreamerzCoreStatus"
+        | "StreamerzCoreSave"
+        | "StreamerzCoreQuit"
+        | "StreamerzSelectPage"
+        | "StreamerzWindowState"
             if !authed && e.config().websockets.enable_auth =>
         {
             error(&id, "Authentication required to use this method")
@@ -625,6 +641,43 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
             crate::host::quit();
             ok(&id, json!({"accepted": true}))
         }
+        "StreamerzSelectPage" => {
+            if let Some(page) = req.get("page").and_then(Value::as_str) {
+                if !page.is_empty() && e.config().window.tab != page {
+                    e.change(|config| config.window.tab = page.to_string());
+                }
+            }
+            ok(&id, json!({"saved": true}))
+        }
+        "StreamerzWindowState" => {
+            let x = req.get("x").and_then(Value::as_i64).map(|v| v as i32);
+            let y = req.get("y").and_then(Value::as_i64).map(|v| v as i32);
+            let w = req.get("w").and_then(Value::as_i64).map(|v| v as i32);
+            let h = req.get("h").and_then(Value::as_i64).map(|v| v as i32);
+            let maximized = req.get("maximized").and_then(Value::as_bool);
+            e.change(|config| {
+                if let Some(x) = x {
+                    config.window.x = Some(x);
+                }
+                if let Some(y) = y {
+                    config.window.y = Some(y);
+                }
+                if let Some(w) = w {
+                    if w >= 400 {
+                        config.window.w = w;
+                    }
+                }
+                if let Some(h) = h {
+                    if h >= 300 {
+                        config.window.h = h;
+                    }
+                }
+                if let Some(maximized) = maximized {
+                    config.window.maximized = maximized;
+                }
+            });
+            ok(&id, json!({"saved": true}))
+        }
         "StreamerzCoreAction" | "StreamerzCoreSetting" if !authed && e.config().websockets.enable_auth => {
             error(&id, "Authentication required to use this method")
         }
@@ -633,8 +686,12 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
                 crate::core::sections::act(e, get("domain"), get("action"))
             } else if crate::core::actions::supports(get("domain")) {
                 crate::core::actions::act(e, req)
+            } else if crate::core::overlays::supports(get("domain")) {
+                crate::core::overlays::act(e, get("action"), get("itemId"))
             } else if crate::core::polls::supports(get("domain")) {
                 crate::core::polls::act(e, get("action"))
+            } else if crate::core::stream::supports(get("domain")) {
+                crate::core::stream::act(e, get("action"))
             } else if crate::core::accounts::supports(get("domain")) || get("domain") == "connections" {
                 crate::core::accounts::act(e, get("domain"), get("action"), get("itemId"))
             } else {
@@ -1242,6 +1299,7 @@ fn group_request(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
     match req["request"].as_str().unwrap_or("") {
         "StreamerzManageActionGroup" => {
             let mut result = Ok(());
+            let mut kept = false;
             let (op, name) = (text("operation"), text("name"));
             e.change(|c| {
                 result = match op {
@@ -1249,17 +1307,41 @@ fn group_request(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
                     "create" => Err("group is empty or already exists"),
                     "rename" if groups::rename(c, group, name) => Ok(()),
                     "rename" => Err("group not found, or the new name is empty or already exists"),
-                    "delete" if groups::exists(c, group) => {
-                        groups::remove(c, group);
+                    // A connected overlay is not the group's to delete: it stays, with no actions.
+                    "delete" if groups::listed(c, group) => {
+                        kept = groups::ungroup(c, group);
                         Ok(())
+                    }
+                    "delete" if groups::exists(c, group) => {
+                        Err("that is an overlay with no group of actions: delete it with StreamerzOverlay")
                     }
                     "delete" => Err("group not found"),
                     _ => Err("unknown operation"),
                 };
             });
-            result.map(|_| json!({})).map_err(str::to_string)
+            let c = e.config();
+            result
+                .map(|_| {
+                    if kept {
+                        json!({"overlayKept": true})
+                    } else if op == "create" && groups::connected(&c, group) {
+                        json!({"connectedOverlay": true})
+                    } else {
+                        json!({})
+                    }
+                })
+                .map_err(str::to_string)
         }
-        "StreamerzActionGroups" => Ok(json!({"groups": groups::names(&e.config())})),
+        "StreamerzActionGroups" => {
+            let c = e.config();
+            let names = groups::names(&c);
+            let connected: Vec<&String> = names.iter().filter(|g| groups::has_overlay(&c, g)).collect();
+            let overlays: Vec<String> = groups::all(&c)
+                .into_iter()
+                .filter(|g| groups::has_overlay(&c, g))
+                .collect();
+            Ok(json!({"groups": names, "connected": connected, "overlays": overlays}))
+        }
         "StreamerzGroupVariables" => {
             known(e)?;
             Ok(json!({"values": groups::values(&e.config(), group)}))
@@ -1275,7 +1357,13 @@ fn group_request(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
             known(e)?;
             let c = e.config();
             let (commands, timers) = groups::members(&c, group);
-            Ok(json!({"meta": groups::meta(&c, group), "commands": commands, "timers": timers}))
+            // The files' contents (base64) only when asked for: they can be large.
+            let meta = if req["files"].as_bool() == Some(true) {
+                groups::meta_with_files(&c, group)
+            } else {
+                groups::meta(&c, group)
+            };
+            Ok(json!({"meta": meta, "commands": commands, "timers": timers}))
         }
         "StreamerzSetGroupMeta" => {
             known(e)?;
@@ -1322,8 +1410,7 @@ fn group_request(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
         }
         "StreamerzSaveGroupFiles" => {
             known(e)?;
-            let files = groups::meta(&e.config(), group).files;
-            let saved = groups::save_files(&files, std::path::Path::new(text("folder")))?;
+            let saved = groups::save_files(&e.config(), group, std::path::Path::new(text("folder")))?;
             Ok(json!({"files": saved}))
         }
         _ => Err("unknown group request".into()),
@@ -1673,8 +1760,8 @@ pub(crate) async fn request(e: &Rc<Engine>, req: &Value, auth_required: bool, au
             if auth_required && !authed {
                 error(&id, "Authentication required to use this method")
             } else {
-                match crate::tiktok::gifts::refresh(e).await {
-                    Ok(value) => ok(&id, value),
+                match crate::tiktok::gifts::load(e).await {
+                    Ok(value) => ok(&id, crate::tiktok::gifts::with_choices(value)),
                     Err(err) => error(&id, &err),
                 }
             }
@@ -1706,6 +1793,39 @@ pub(crate) async fn request(e: &Rc<Engine>, req: &Value, auth_required: bool, au
                         }
                         error(&id, &message)
                     }
+                }
+            }
+        }
+        "StreamerzOverlay" => {
+            if auth_required && !authed {
+                error(&id, "Authentication required to use this method")
+            } else {
+                match crate::core::overlays::request(e, req).await {
+                    Ok(fields) => ok(&id, fields),
+                    Err(message) => error(&id, &message),
+                }
+            }
+        }
+        "StreamerzTemplateCheck"
+        | "StreamerzTemplateExport"
+        | "StreamerzTemplateInspect"
+        | "StreamerzTemplateImport" => {
+            if auth_required && !authed {
+                error(&id, "Authentication required to use this method")
+            } else {
+                match crate::package::request(e, req).await {
+                    Ok(fields) => ok(&id, fields),
+                    Err(message) => error(&id, &message),
+                }
+            }
+        }
+        "StreamerzOutputs" => {
+            if auth_required && !authed {
+                error(&id, "Authentication required to use this method")
+            } else {
+                match crate::core::outputs::request(e, req).await {
+                    Ok(fields) => ok(&id, fields),
+                    Err(message) => error(&id, &message),
                 }
             }
         }
@@ -1945,10 +2065,21 @@ async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
     }
     if method == "GET" && (path == "/overlays" || path.starts_with("/overlays/")) {
         if path == "/overlays/events" {
+            let upgrade = h("upgrade").is_some_and(|u| u.eq_ignore_ascii_case("websocket"));
+            if let Some(key) = h("sec-websocket-key").filter(|_| upgrade) {
+                return crate::overlays::events_ws(e, tcp, query, key).await;
+            }
             return crate::overlays::events(e, tcp, query).await;
         }
-        let (status, kind, body) = crate::overlays::file(&e.config(), path);
-        return crate::overlays::respond(&mut tcp, status, kind, &body).await;
+        let served = crate::overlays::file(&e.config(), path);
+        return match served {
+            crate::overlays::Served::Bytes(status, kind, body) => {
+                crate::overlays::respond(&mut tcp, status, kind, &body).await
+            }
+            crate::overlays::Served::Disk(kind, file) => {
+                crate::overlays::respond_disk(&mut tcp, kind, &file, h("range"), h("if-none-match")).await
+            }
+        };
     }
     let len = h("content-length")
         .and_then(|v| v.parse::<usize>().ok())
@@ -1963,6 +2094,13 @@ async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
             break;
         }
         body.extend_from_slice(&chunk[..n]);
+    }
+    if method == "POST" && path == "/overlays/call" {
+        let (status, answer) = match crate::overlays::avatar(e, &body).await {
+            Some(answer) => answer,
+            None => crate::overlays::call(e, &body),
+        };
+        return crate::overlays::respond(&mut tcp, status, "application/json", answer.to_string().as_bytes()).await;
     }
     let (status, json) = http_answer(e, method, path, &body, h("x-patreon-signature"));
     let reason = match status {
@@ -2718,14 +2856,14 @@ mod tests {
         let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::engine::tests::run(async {
             let e = crate::engine::tests::engine(json!({"actions": []}));
-            e.change(|c| crate::templates::overlays::viewers().add_to(c).unwrap());
+            crate::core::overlays::add_example(&e, "viewers").unwrap();
             let ask = |req: Value| answer(&e, &req, true).unwrap();
             let list = ask(json!({"request": "StreamerzOverlays", "id": "1"}));
-            assert_eq!(list["overlays"][0]["group"], "Viewer overlay");
+            assert_eq!(list["overlays"][0]["group"], "Viewer counter");
             assert_eq!(
                 list["overlays"][0]["url"],
                 format!(
-                    "{}/overlays/Viewer%20overlay/viewers.html",
+                    "{}/overlays/Viewer%20counter/index.html",
                     list["base"].as_str().unwrap()
                 )
             );
@@ -2758,7 +2896,7 @@ mod tests {
             let publish = json!([{"type": 99880, "topic": "custom", "value": "{\"n\": 5}"}]);
             let e =
                 crate::engine::tests::engine(json!({"actions": [crate::engine::tests::action("a1", "pub", publish)]}));
-            e.change(|c| crate::templates::overlays::ad().add_to(c).unwrap());
+            crate::core::overlays::add_example(&e, "ad").unwrap();
             // The real server, on a free port.
             let addr = TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap();
             let settings = HttpSettings {
@@ -2779,7 +2917,7 @@ mod tests {
                     .unwrap();
                 t
             };
-            let mut page = get("/overlays/Ad%20overlay/ad.html").await;
+            let mut page = get("/overlays/Ad%20break/index.html").await;
             let mut text = String::new();
             page.read_to_string(&mut text).await.unwrap();
             assert!(
@@ -2790,6 +2928,43 @@ mod tests {
             let mut text = String::new();
             none.read_to_string(&mut text).await.unwrap();
             assert!(text.starts_with("HTTP/1.1 404"));
+            // Other files come from disk as they are, also in a folder: whole, a part, or not at all
+            // when the browser has this version.
+            e.change(|c| {
+                let mut m = crate::groups::meta(c, "Ad overlay");
+                m.files.push(crate::groups::text_file("css/look.css", "0123456789"));
+                crate::groups::set_meta(c, "Ad overlay", m).unwrap();
+            });
+            let ask = |more: String| async move {
+                let mut t = TcpStream::connect(addr).await.unwrap();
+                let head = format!("GET /overlays/Ad%20overlay/css/look.css HTTP/1.1\r\nHost: x\r\n{more}\r\n");
+                t.write_all(head.as_bytes()).await.unwrap();
+                let mut text = String::new();
+                t.read_to_string(&mut text).await.unwrap();
+                text
+            };
+            let whole = ask(String::new()).await;
+            assert!(
+                whole.starts_with("HTTP/1.1 200")
+                    && whole.contains("text/css")
+                    && whole.ends_with("\r\n\r\n0123456789"),
+                "{whole}"
+            );
+            let part = ask("Range: bytes=2-4\r\n".into()).await;
+            assert!(
+                part.starts_with("HTTP/1.1 206")
+                    && part.contains("Content-Range: bytes 2-4/10")
+                    && part.ends_with("\r\n\r\n234"),
+                "{part}"
+            );
+            assert!(ask("Range: bytes=50-\r\n".into()).await.starts_with("HTTP/1.1 416"));
+            let tag = whole.split("ETag: ").nth(1).unwrap().split("\r\n").next().unwrap();
+            let same = ask(format!("If-None-Match: {tag}\r\n")).await;
+            assert!(same.starts_with("HTTP/1.1 304") && same.ends_with("\r\n\r\n"), "{same}");
+            let mut outside = get("/overlays/Ad%20overlay/..%2F..%2Fstreamerz.json").await;
+            let mut text = String::new();
+            outside.read_to_string(&mut text).await.unwrap();
+            assert!(text.starts_with("HTTP/1.1 404"), "{text}");
             // The feed starts with what a topic has, then follows changes.
             e.overlay_publish("ad", json!({"running": false}));
             let mut feed = get("/overlays/events?topics=ad,viewers,custom&events=Raw.ActionCompleted").await;
@@ -2902,12 +3077,18 @@ mod tests {
                 "error"
             );
             assert_eq!(
-                ask(json!({"request": "StreamerzTemplateAdd", "name": "Subathon timer"}))["status"],
+                request(
+                    &e,
+                    &json!({"request": "StreamerzOverlay", "op": "add_example", "slug": "subathon"}),
+                    false,
+                    true
+                )
+                .await["status"],
                 "ok"
             );
             let meta = ask(json!({"request": "StreamerzGroupMeta", "group": "Subathon"}));
-            assert_eq!(meta["meta"]["variables"].as_array().unwrap().len(), 5);
-            assert_eq!(meta["meta"]["files"][0]["name"], "subathon.html");
+            assert_eq!(meta["meta"]["variables"].as_array().unwrap().len(), 12);
+            assert_eq!(meta["meta"]["files"][0]["name"], "index.html");
             let mut changed = meta["meta"].clone();
             changed["variables"][1]["default"] = json!(7_200_000);
             changed["variables"]
@@ -2947,7 +3128,7 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
             let saved = ask(json!({"request": "StreamerzSaveGroupFiles", "group": "Subathon", "folder": dir}));
             assert_eq!(saved["status"], "ok");
-            assert!(dir.join("subathon.html").exists());
+            assert!(dir.join("index.html").exists());
             assert_eq!(
                 ask(json!({"request": "StreamerzSaveGroupFiles", "group": "Subathon", "folder": dir}))["status"],
                 "error"
@@ -2957,6 +3138,44 @@ mod tests {
                 ask(json!({"request": "StreamerzGroupMeta", "group": "missing"}))["status"],
                 "error"
             );
+        });
+    }
+
+    #[test]
+    fn select_page_and_window_state_requests_update_config() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(serde_json::json!({"actions": []}));
+            assert_eq!(engine.config().window.tab, "");
+
+            let page_res = super::answer(
+                &engine,
+                &serde_json::json!({"request": "StreamerzSelectPage", "page": "Settings"}),
+                true,
+            )
+            .unwrap();
+            assert_eq!(page_res["status"], "ok");
+            assert_eq!(engine.config().window.tab, "Settings");
+
+            let win_res = super::answer(
+                &engine,
+                &serde_json::json!({
+                    "request": "StreamerzWindowState",
+                    "x": 120,
+                    "y": 80,
+                    "w": 1280,
+                    "h": 900,
+                    "maximized": true,
+                }),
+                true,
+            )
+            .unwrap();
+            assert_eq!(win_res["status"], "ok");
+            assert_eq!(engine.config().window.x, Some(120));
+            assert_eq!(engine.config().window.y, Some(80));
+            assert_eq!(engine.config().window.w, 1280);
+            assert_eq!(engine.config().window.h, 900);
+            assert!(engine.config().window.maximized);
         });
     }
 }

@@ -10,6 +10,8 @@ pub mod images;
 pub mod log;
 pub mod login;
 pub mod navigation;
+pub mod outputs;
+pub mod overlays;
 pub mod pages;
 pub mod parent;
 pub mod polls;
@@ -22,6 +24,8 @@ pub mod requests;
 pub mod sections;
 pub mod settings;
 pub mod status;
+pub mod stream;
+pub mod undo;
 pub mod view;
 
 /// Submit an engine operation to its existing single-thread runtime.

@@ -262,6 +262,14 @@ async fn youtube(f: Rc<Fakes>, mut rx: UnboundedReceiver<crate::youtube::YouTube
                 let v = f.answers[P]["liveVideo"].as_str().unwrap_or("video1").to_string();
                 drop(resp.send(v));
             }
+            // {"id", "title"} of the next broadcast, or nothing scheduled.
+            C::NextBroadcast(resp) => {
+                let next = &f.answers[P]["nextBroadcast"];
+                let found = next["id"]
+                    .as_str()
+                    .map(|id| (id.to_owned(), next["title"].as_str().unwrap_or_default().to_owned()));
+                drop(resp.send(Ok(found)));
+            }
             C::SendMessage {
                 broadcast,
                 text,
@@ -290,6 +298,17 @@ async fn youtube(f: Rc<Fakes>, mut rx: UnboundedReceiver<crate::youtube::YouTube
                 P,
                 "titleAndDescription",
                 json!({"broadcast": broadcast, "title": title, "description": description}),
+            ))),
+            C::UpdateVideo {
+                broadcast,
+                title,
+                description,
+                tags,
+                resp,
+            } => drop(resp.send(f.unit(
+                P,
+                "updateVideo",
+                json!({"broadcast": broadcast, "title": title, "description": description, "tags": tags}),
             ))),
             C::BanUser {
                 broadcast,
