@@ -24,6 +24,7 @@ pub struct Sections {
     route: String,
     selects: HashMap<String, Entity<SelectState<Vec<String>>>>,
     inputs: HashMap<String, Entity<InputState>>,
+    search: Option<Entity<InputState>>,
     form: Option<Entity<Form>>,
     dialog: Option<Entity<Sections>>,
     /// The channel finder, while it is open.
@@ -40,12 +41,16 @@ pub struct Sections {
 
 impl Sections {
     pub fn new(model: Value, route: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let search = model["searchHint"]
+            .as_str()
+            .map(|hint| cx.new(|cx| InputState::new(window, cx).placeholder(hint.to_owned())));
         let mut this = Self {
             domain: model["domain"].as_str().unwrap_or_default().to_owned(),
             model: Value::Null,
             route,
             selects: HashMap::new(),
             inputs: HashMap::new(),
+            search,
             form: None,
             dialog: None,
             opening: false,
@@ -55,6 +60,14 @@ impl Sections {
             compact: false,
             subscriptions: Vec::new(),
         };
+        if let Some(search) = this.search.clone() {
+            this.subscriptions
+                .push(cx.subscribe(&search, |_, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        cx.notify();
+                    }
+                }));
+        }
         this.update_model(model, window, cx);
         this
     }
@@ -234,16 +247,25 @@ impl Sections {
             "form" => {
                 let title = value["title"].as_str().unwrap_or_default().to_owned();
                 let form = cx.new(|cx| Form::new(value, format!("{}:save", self.route), window, cx));
-                self.subscriptions
-                    .push(cx.subscribe(&form, |sections, _, _: &super::form::Cancelled, cx| {
-                        sections.form = None;
-                        cx.notify();
-                    }));
                 self.form = Some(form.clone());
+                let owner = cx.entity().downgrade();
                 window.open_dialog(cx, move |dialog, _, cx| {
                     crate::controls::dialog::shell(dialog, title.clone(), 560., cx)
                         .child(crate::controls::dialog::body(form.clone()))
                         .footer(form.read(cx).buttons_view())
+                        .on_cancel({
+                            let (form, owner) = (form.clone(), owner.clone());
+                            move |_, _, cx| {
+                                if form.read(cx).pending {
+                                    return false;
+                                }
+                                let _ = owner.update(cx, |sections, cx| {
+                                    sections.form = None;
+                                    cx.notify();
+                                });
+                                true
+                            }
+                        })
                 });
                 false
             }
@@ -320,7 +342,7 @@ impl Sections {
                     .as_str()
                     .is_some_and(|id| id.ends_with("login") || id.ends_with("logout"));
                 // A gear and the like are always just their icon (the label is its tooltip).
-                let icon_only = (fold && !login && spec["icon"].is_string())
+                let icon_only = (fold && !login && spec["icon"].is_string() && spec["keepLabel"] != true)
                     || spec["icon_only"] == true
                     || spec["iconOnly"] == true;
                 let mut widget = Button::new((
@@ -388,7 +410,7 @@ impl Sections {
                 line.into_any_element()
             }
             Some("select") => {
-                let mut line = div().flex().items_center().gap_2().flex_shrink_0();
+                let mut line = div().flex().flex_wrap().items_center().gap_2().min_w_0().max_w_full();
                 if let Some(select) = self.selects.get(key) {
                     line = line.child(
                         div()
@@ -657,7 +679,38 @@ impl Render for Sections {
         if !self.error.is_empty() {
             page = page.child(super::notice::error(&self.error, cx));
         }
-        let sections = self.model["sections"].as_array().cloned().unwrap_or_default();
+        let mut sections = self.model["sections"].as_array().cloned().unwrap_or_default();
+        if let Some(search) = &self.search {
+            page = page.child(
+                Input::new(search)
+                    .small()
+                    .prefix(Icon::empty().path("icons/search.svg").small())
+                    .aria_label(self.model["searchHint"].as_str().unwrap_or_default().to_owned()),
+            );
+            let query = search.read(cx).value().trim().to_lowercase();
+            if !query.is_empty() {
+                for section in &mut sections {
+                    let title_matches = section["title"]
+                        .as_str()
+                        .is_some_and(|title| title.to_lowercase().contains(&query));
+                    if !title_matches {
+                        if let Some(rows) = section["rows"].as_array_mut() {
+                            rows.retain(|row| {
+                                ["label", "about", "tip"].iter().any(|key| {
+                                    row[key]
+                                        .as_str()
+                                        .is_some_and(|text| text.to_lowercase().contains(&query))
+                                })
+                            });
+                        }
+                    }
+                }
+                sections.retain(|section| section["rows"].as_array().is_some_and(|rows| !rows.is_empty()));
+                if sections.is_empty() {
+                    page = page.child(super::notice::info(crate::i18n::tr("lists.no_matches"), cx));
+                }
+            }
+        }
         // Cards sit side by side, two to a row when there is room.
         let width = f32::from(window.viewport_size().width);
         let columns = if width >= 1000. { 2 } else { 1 };
@@ -1067,7 +1120,7 @@ impl Render for Sections {
                                 about.min_h(px(36.)).flex().flex_col().justify_center()
                             })
                             .when(about_only && !roomy && section_index > 0 && !after_cards, |about| {
-                                about.mt(px(4.)).min_h(px(141.)).line_height(px(17.))
+                                about.mt(px(4.)).line_height(px(17.))
                             })
                             // Under cards: a quiet note, close to them.
                             .when(about_only && after_cards, |about| about.mt(px(6.)).line_height(px(17.)))

@@ -9,7 +9,7 @@ use crate::{i18n::tr, send};
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
-    menu::{ContextMenuExt, DropdownMenu, PopupMenuItem},
+    menu::{ContextMenuExt, PopupMenuItem},
     switch::Switch,
     table::{DataTable, TableEvent, TableState},
     ActiveTheme, Disableable, Icon, Sizable, WindowExt,
@@ -34,6 +34,7 @@ pub enum ViewChange {
     Tab(String),
 }
 impl EventEmitter<ViewChange> for List {}
+impl EventEmitter<super::sections::Navigate> for List {}
 
 pub struct List {
     model: Value,
@@ -44,7 +45,6 @@ pub struct List {
     lead_outside: bool,
     selected_id: String,
     form: Option<Entity<Form>>,
-    form_subscription: Option<Subscription>,
     error: String,
     route: String,
     /// A list in a dialog (a group's members): its entity and the request that fills it.
@@ -81,19 +81,10 @@ impl List {
             && model["presentation"] != "cards")
             .then(|| {
                 cx.new(|cx| {
-                    TableState::new(
-                        Rows {
-                            model: model.clone(),
-                            action,
-                            sort: sorter,
-                            fit: 0.,
-                        },
-                        window,
-                        cx,
-                    )
-                    .row_selectable(true)
-                    .col_selectable(false)
-                    .sortable(false)
+                    TableState::new(Rows::new(model.clone(), action, sorter), window, cx)
+                        .row_selectable(true)
+                        .col_selectable(false)
+                        .sortable(false)
                 })
             });
         let search = (model["search"] == true).then(|| {
@@ -152,7 +143,6 @@ impl List {
             lead_outside: false,
             selected_id: String::new(),
             form: None,
-            form_subscription: None,
             error: String::new(),
             route,
             dialog_list: None,
@@ -285,6 +275,13 @@ impl List {
         self.model = model;
         self.refresh(cx);
     }
+    fn truly_empty(&self, cx: &App) -> bool {
+        self.model["rows"].as_array().is_some_and(Vec::is_empty)
+            && self
+                .search
+                .as_ref()
+                .is_none_or(|search| search.read(cx).value().trim().is_empty())
+    }
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let query = self
             .search
@@ -320,6 +317,7 @@ impl List {
         if let Some(table) = &self.table {
             table.update(cx, |table, cx| {
                 table.delegate_mut().model = model;
+                table.delegate_mut().layout();
                 table.refresh(cx);
                 if let Some(row) = selection {
                     if table.selected_row() != Some(row) {
@@ -375,6 +373,10 @@ impl List {
             ),
             Action::Custom(index) => {
                 let spec = self.model["actions"][index].clone();
+                if let Some(page) = spec["navigate"].as_str() {
+                    cx.emit(super::sections::Navigate(page.to_owned()));
+                    return;
+                }
                 if let Some(domain) = spec["dialog"].as_str() {
                     self.dialog_request = json!({"request": "StreamerzCoreView", "domain": domain, "itemId": id});
                     let mut request = self.dialog_request.clone();
@@ -564,6 +566,14 @@ impl List {
                 let model = value["tables"][0].clone();
                 let title = model["title"].as_str().unwrap_or_default().to_owned();
                 let nested = cx.new(|cx| List::new(model, format!("{}:dlist", self.route), window, cx));
+                self._subscriptions.push(cx.subscribe_in(
+                    &nested,
+                    window,
+                    |_, _, event: &super::sections::Navigate, window, cx| {
+                        super::dialog::dismiss(window, cx);
+                        cx.emit(super::sections::Navigate(event.0.clone()));
+                    },
+                ));
                 self.dialog_list = Some(nested.clone());
                 let owner = cx.entity().downgrade();
                 window.open_dialog(cx, move |dialog, _, cx| {
@@ -594,11 +604,6 @@ impl List {
                 let title = value["title"].as_str().unwrap_or_default().to_owned();
                 let route = format!("{}:save", self.route);
                 let form = cx.new(|cx| Form::new(value, route, window, cx));
-                self.form_subscription = Some(cx.subscribe(&form, |list, _, _: &super::form::Cancelled, cx| {
-                    list.form = None;
-                    list.form_subscription = None;
-                    cx.notify();
-                }));
                 self.form = Some(form.clone());
                 let owner = cx.entity().downgrade();
                 window.open_dialog(cx, move |dialog, _, cx| {
@@ -614,7 +619,6 @@ impl List {
                                 }
                                 let _ = owner.update(cx, |list, cx| {
                                     list.form = None;
-                                    list.form_subscription = None;
                                     cx.notify();
                                 });
                                 true
@@ -636,7 +640,6 @@ impl List {
                     self.selected_id = id.to_owned();
                 }
                 self.form = None;
-                self.form_subscription = None;
                 window.close_dialog(cx);
                 true
             }
@@ -727,7 +730,7 @@ impl List {
     }
     /// The grid of buttons under the table (a page may draw it later, after another section).
     pub fn button_rows(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<Div> {
-        if self.is_connections() || self.is_cards() {
+        if self.is_connections() || self.is_cards() || self.truly_empty(cx) {
             return None;
         }
         let selected = self.model["rows"].as_array().and_then(|rows| {
@@ -879,6 +882,7 @@ impl Render for List {
             if seen > 1. && (seen - table.read(cx).delegate().fit).abs() > 1. {
                 table.update(cx, |table, cx| {
                     table.delegate_mut().fit = seen;
+                    table.delegate_mut().layout();
                     table.refresh(cx);
                 });
             }
@@ -898,7 +902,12 @@ impl Render for List {
             }
         }
         let options = self.model["filter"]["options"].as_array().cloned().unwrap_or_default();
-        let mut top = self.top_buttons(window, cx);
+        let truly_empty = !self.is_connections() && !self.is_cards() && self.truly_empty(cx);
+        let mut top = if truly_empty {
+            Vec::new()
+        } else {
+            self.top_buttons(window, cx)
+        };
         let titled = !self.model["title"].as_str().unwrap_or_default().is_empty();
         let show_heading =
             titled && ((!guide.is_empty() && self.model["titleless"] != true) || self.model["showTitle"] == true);
@@ -949,9 +958,9 @@ impl Render for List {
                         .px(px(7.))
                         .py(px(2.))
                         .rounded(px(99.))
-                        .bg(rgb(if cx.theme().is_dark() { 0x18181b } else { 0xf4f4f5 }))
+                        .bg(cx.theme().sidebar)
                         .border_1()
-                        .border_color(rgb(if cx.theme().is_dark() { 0x27272a } else { 0xe4e4e7 }))
+                        .border_color(cx.theme().border)
                         .text_size(px(12.))
                         .font_weight(FontWeight::NORMAL)
                         .text_color(color)
@@ -1084,7 +1093,7 @@ impl Render for List {
                         .bg(rgb(if cx.theme().is_dark() { 0x18181b } else { 0xf4f4f5 }))
                         .border_1()
                         .border_color(rgb(if cx.theme().is_dark() { 0x27272a } else { 0xe4e4e7 }))
-                        .hover(|style| style.bg(rgb(if cx.theme().is_dark() { 0x222226 } else { 0xebebee })))
+                        .hover(|style| style.bg(cx.theme().muted))
                         .child(
                             div()
                                 .flex()
@@ -1822,51 +1831,15 @@ impl Render for List {
             let mut line = div().flex().items_center().gap_2().w_full();
             if let Some(tabs) = self.show.clone() {
                 let owner = cx.entity().downgrade();
-                let current = tabs["options"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .find(|option| option["id"] == tabs["selected"])
-                    .and_then(|option| option["label"].as_str())
-                    .unwrap_or_default()
-                    .to_owned();
-                line = line
-                    .child(div().child(tabs["label"].as_str().unwrap_or_default().to_owned()))
-                    .child(
-                        Button::new("show-combo")
-                            .small()
-                            .h(px(26.))
-                            .min_w(px(108.))
-                            .text_size(px(13.))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .w_full()
-                                    .child(current)
-                                    .child(Icon::empty().path("icons/chevrons-up-down.svg").size_3()),
-                            )
-                            .dropdown_menu(move |mut menu, _, _| {
-                                for option in tabs["options"].as_array().into_iter().flatten() {
-                                    let id = option["id"].as_str().unwrap_or_default().to_owned();
-                                    let owner = owner.clone();
-                                    menu = menu.item(
-                                        PopupMenuItem::new(option["label"].as_str().unwrap_or_default().to_owned())
-                                            .checked(option["id"] == tabs["selected"])
-                                            .on_click(move |_, _, cx| {
-                                                let _ = owner.update(cx, |_, cx| cx.emit(ViewChange::Tab(id.clone())));
-                                            }),
-                                    );
-                                }
-                                menu
-                            }),
-                    );
+                body = body.child(super::tabs::bar(&tabs, window, cx, move |id, _, cx| {
+                    let _ = owner.update(cx, |_, cx| cx.emit(ViewChange::Tab(id)));
+                }));
             }
             if let Some(search) = &self.search {
                 line = line.child(
                     div().flex_1().min_w_0().h(px(26.)).child(
                         Input::new(search)
+                            .prefix(Icon::empty().path("icons/search.svg").size_3p5())
                             .small()
                             .min_h(px(26.))
                             .bg(cx.theme().table)
@@ -1904,7 +1877,52 @@ impl Render for List {
             }
             body = body.child(line.children(top));
         }
-        if let Some(table) = &self.table {
+        if truly_empty {
+            let actions = Action::base_actions(&self.model);
+            let mut choices = div().flex().flex_wrap().items_center().gap_2();
+            for action in actions.into_iter().filter(|action| action.enabled(&self.model, None)) {
+                let label = action.label(&self.model);
+                choices = choices.child(
+                    Button::new(SharedString::from(format!("empty-{}", action.id(&self.model))))
+                        .small()
+                        .icon(action.icon(&self.model))
+                        .label(label)
+                        .when(matches!(action, Action::Add)
+                            || matches!(action, Action::Custom(index) if self.model["actions"][index]["primary"] == true),
+                            |button| button.primary())
+                        .on_click(cx.listener(move |list, _, window, cx| list.action(action, None, window, cx))),
+                );
+            }
+            let owner = cx.entity().downgrade();
+            let model = self.model.clone();
+            body = body.child(
+                div()
+                    .id("empty-list")
+                    .test_support()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .py_4()
+                    .child(super::notice::info(
+                        self.model["empty"].as_str().unwrap_or_default(),
+                        cx,
+                    ))
+                    .child(choices)
+                    .context_menu(move |menu, _, _| {
+                        Action::actions(&model).into_iter().fold(menu, |menu, action| {
+                            let owner = owner.clone();
+                            menu.item(
+                                PopupMenuItem::new(action.label(&model))
+                                    .icon(action.icon(&model))
+                                    .disabled(!action.enabled(&model, None))
+                                    .on_click(move |_, window, cx| {
+                                        let _ = owner.update(cx, |list, cx| list.action(action, None, window, cx));
+                                    }),
+                            )
+                        })
+                    }),
+            );
+        } else if let Some(table) = &self.table {
             body = body.child(
                 // The header is a quiet line above a rounded box (drawn over the rows, no fill).
                 div()
@@ -1956,6 +1974,45 @@ impl Render for List {
             rows.iter()
                 .position(|row| !self.selected_id.is_empty() && row["id"] == self.selected_id)
         });
+        if let (Some(table), Some(row)) = (&self.table, selected) {
+            let table = table.read(cx);
+            let rows = table.delegate();
+            let mut details = div()
+                .id("selection-details")
+                .max_h(px(112.))
+                .overflow_y_scroll()
+                .flex()
+                .flex_wrap()
+                .gap_2()
+                .px_2()
+                .py_1()
+                .text_size(px(12.));
+            let mut any = false;
+            // Use the selected id because a search can change its position in the displayed model.
+            let record = self.model["rows"].get(row).unwrap_or(&Value::Null);
+            for column in rows.hidden_columns() {
+                let cell = &record["cells"][column];
+                let value = cell
+                    .as_str()
+                    .or_else(|| cell["text"].as_str())
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        cell["platforms"]
+                            .as_array()
+                            .map(|items| items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
+                    })
+                    .unwrap_or_default();
+                if value.is_empty() {
+                    continue;
+                }
+                any = true;
+                let label = self.model["columns"][column]["label"].as_str().unwrap_or_default();
+                details = details.child(div().min_w_0().child(format!("{label}: {value}")));
+            }
+            if any {
+                body = body.child(details);
+            }
+        }
         if self.model["detail"].is_string() {
             let row = selected.and_then(|row| self.model["rows"].get(row));
             let (text, ok) = match row {
@@ -2077,7 +2134,7 @@ impl Render for List {
 }
 
 /// A read-only name and value table in a dialog.
-fn show_values(values: &Value, window: &mut Window, cx: &mut App) {
+pub(super) fn show_values(values: &Value, window: &mut Window, cx: &mut App) {
     let title = values["title"].as_str().unwrap_or_default().to_owned();
     let hint = values["hint"].as_str().unwrap_or_default().to_owned();
     let rows: Vec<(String, String)> = values["rows"]

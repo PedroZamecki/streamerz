@@ -129,25 +129,25 @@ impl Render for LogView {
             .p(px(5.))
             .rounded(px(6.))
             .border_1()
-            .border_color(rgb(if cx.theme().is_dark() { 0x040405 } else { 0xc0c0c1 }))
+            .border_color(cx.theme().input)
             .bg(cx.theme().table)
             .text_size(px(13.))
             .line_height(px(19.));
         for line in log["lines"].as_array().into_iter().flatten() {
-            let dark = cx.theme().is_dark();
             let color: Hsla = match line["level"].as_str().unwrap_or_default() {
                 "debug" => crate::theme::quiet(cx),
-                "warn" => rgb(if dark { 0xfbbf24 } else { 0xb45309 }).into(),
-                "error" | "fatal" => rgb(if dark { 0xf87171 } else { 0xdc2626 }).into(),
-                _ => rgb(if dark { 0x60a5fa } else { 0x2563eb }).into(),
+                "warn" => cx.theme().warning,
+                "error" | "fatal" => cx.theme().danger,
+                _ => cx.theme().info,
             };
             lines = lines.child(
                 div()
                     .flex()
+                    .gap_2()
                     .child(
                         div()
                             .flex_shrink_0()
-                            .min_w(px(49.))
+                            .min_w(px(72.))
                             .whitespace_nowrap()
                             .text_color(crate::theme::quiet(cx))
                             .child(line["time"].as_str().unwrap_or_default().to_owned()),

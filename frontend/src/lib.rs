@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use app::Frontend;
 
-gpui_kit::actions!(streamerz, [CoreUndo, CoreRedo]);
+gpui_kit::actions!(streamerz, [CoreUndo, CoreRedo, CoreSave]);
 
 /// A picture the app is built with, by the path the window loads it from: a platform's logo
 /// (`brands/twitch.svg`), a badge (`badges/kick-vip.svg`) or a Lucide icon (`icons/heart.svg`).
@@ -50,6 +50,7 @@ pub fn run() -> Result<(), String> {
         cx.set_app_identity("streamerz", "Streamerz");
         gpui_kit::init(cx);
         cx.bind_keys([
+            KeyBinding::new("ctrl-s", CoreSave, None),
             KeyBinding::new("ctrl-z", CoreUndo, None),
             KeyBinding::new("ctrl-y", CoreRedo, None),
             KeyBinding::new("ctrl-shift-z", CoreRedo, None),

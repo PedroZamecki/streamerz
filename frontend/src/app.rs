@@ -9,7 +9,7 @@ use crate::{
         sections::{Navigate, Sections},
     },
     i18n::tr,
-    send, CoreRedo, CoreUndo,
+    send, CoreRedo, CoreSave, CoreUndo,
 };
 use gpui_kit::base::Selectable;
 use gpui_kit::component::{
@@ -555,6 +555,13 @@ impl Frontend {
                 } else {
                     let route = format!("list:{}:{kind}", self.generation);
                     let list = cx.new(|cx| List::new(model.clone(), route, window, cx));
+                    self.list_subscriptions.push(cx.subscribe_in(
+                        &list,
+                        window,
+                        |this, _, event: &Navigate, window, cx| {
+                            this.select(&event.0, window, cx);
+                        },
+                    ));
                     self.list_subscriptions
                         .push(cx.subscribe(&list, |this, _, change: &ViewChange, cx| {
                             this.change_view(change);
@@ -783,7 +790,7 @@ impl Render for Frontend {
                 tabs["selected"] = kind.into();
             }
             let owner = cx.entity().downgrade();
-            content = content.child(crate::controls::tabs::bar(&tabs, cx, move |kind, _, cx| {
+            content = content.child(crate::controls::tabs::bar(&tabs, window, cx, move |kind, _, cx| {
                 let _ = owner.update(cx, |this, cx| {
                     this.view["tab"] = kind.into();
                     this.request_read();
@@ -886,9 +893,8 @@ impl Render for Frontend {
             .flex_shrink_0()
             .child(
                 Button::new("save")
-                    .when(small, |button| button.w(px(36.)))
-                    .when(!small, |button| button.min_w(px(110.)))
-                    .child(bar_content("save", tr("btn.save"), small, cx))
+                    .w(px(36.))
+                    .child(bar_content("save", tr("btn.save"), true, cx))
                     .accessibility_label(tr("btn.save"))
                     .tooltip(tr("ui.save_tooltip"))
                     .on_click(|_, _, _| send(json!({"request": "StreamerzCoreSave", "id": "save"}))),
@@ -970,6 +976,9 @@ impl Render for Frontend {
                     cx.stop_propagation();
                 }
             })
+            .on_action(cx.listener(|_this, _: &CoreSave, _window, _cx| {
+                send(json!({"request": "StreamerzCoreSave", "id": "save"}));
+            }))
             .on_action(cx.listener(|_this, _: &CoreUndo, _window, _cx| {
                 send(json!({"request": "StreamerzCoreAction", "domain": "actions", "action": "undo", "id": "undo"}));
             }))

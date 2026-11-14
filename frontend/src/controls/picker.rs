@@ -2,6 +2,7 @@
 //! The tree is on the left, with search, Expand all and Collapse all; the selection's icon, path and
 //! description are on the right (under the tree when the window is narrow). Cancel and OK go in the
 //! dialog's footer.
+use super::form::Form;
 use super::tree::{Node, Options, PaneEvent, TreePane};
 use crate::i18n::tr;
 use gpui_kit::component::{
@@ -15,6 +16,8 @@ use serde_json::Value;
 /// The id of the leaf chosen.
 pub struct Picked(pub String);
 impl EventEmitter<Picked> for Picker {}
+pub struct Chosen(pub String);
+impl EventEmitter<Chosen> for Picker {}
 
 /// Under this window width the description goes under the tree.
 const NARROW: f32 = 700.;
@@ -22,6 +25,8 @@ const NARROW: f32 = 700.;
 pub struct Picker {
     pane: Entity<TreePane>,
     chosen: Option<Node>,
+    form: Option<Entity<Form>>,
+    authoring: bool,
     /// What the panel says while nothing is picked.
     hint: String,
     buttons_view: Entity<PickerButtons>,
@@ -30,6 +35,12 @@ pub struct Picker {
 impl Picker {
     pub fn new(model: Value, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let hint = model["hint"].as_str().unwrap_or_default().to_owned();
+        let authoring = matches!(model["kind"].as_str(), Some("trigger" | "sub" | "template"));
+        let fold_buttons = model["nodes"].as_array().is_some_and(|nodes| {
+            nodes
+                .iter()
+                .any(|node| node["children"].as_array().is_some_and(|children| !children.is_empty()))
+        });
         let pane = cx.new(|cx| {
             TreePane::new(
                 "picker",
@@ -38,26 +49,39 @@ impl Picker {
                 Options {
                     closed: true,
                     compact: true,
-                    fold_buttons: true,
+                    fold_buttons,
                     ..Options::default()
                 },
                 window,
                 cx,
             )
         });
-        let subscription = cx.subscribe(&pane, |picker, _, event: &PaneEvent, cx| match event {
+        let subscription = cx.subscribe_in(&pane, window, |picker, _, event: &PaneEvent, _window, cx| match event {
             PaneEvent::Selected(node) => {
                 picker.chosen = node.clone().filter(|node| node.kind == "item");
+                picker.form = None;
+                if picker.authoring {
+                    cx.emit(Chosen(
+                        picker.chosen.as_ref().map(|node| node.id.clone()).unwrap_or_default(),
+                    ));
+                }
                 picker.buttons_view.update(cx, |_, cx| cx.notify());
                 cx.notify();
             }
-            PaneEvent::Activate(node) if node.kind == "item" => cx.emit(Picked(node.id.clone())),
+            PaneEvent::Activate(node) if node.kind == "item" && !picker.authoring => cx.emit(Picked(node.id.clone())),
+            PaneEvent::Activate(node) if node.kind == "item" => {
+                if let Some(form) = &picker.form {
+                    form.update(cx, |form, cx| form.submit(false, cx));
+                }
+            }
             _ => {}
         });
         let weak = cx.entity().downgrade();
         Self {
             pane,
             chosen: None,
+            form: None,
+            authoring,
             hint,
             buttons_view: cx.new(|_| PickerButtons(weak)),
             _subscription: subscription,
@@ -72,6 +96,12 @@ impl Picker {
     /// The buttons as their own view, for the dialog's footer.
     pub fn buttons_view(&self) -> Entity<PickerButtons> {
         self.buttons_view.clone()
+    }
+
+    pub fn set_form(&mut self, form: Entity<Form>, cx: &mut Context<Self>) {
+        self.form = Some(form);
+        self.buttons_view.update(cx, |_, cx| cx.notify());
+        cx.notify();
     }
 
     fn pick(&mut self, cx: &mut Context<Self>) {
@@ -152,13 +182,14 @@ impl Picker {
             .when_some(detail["values"].as_str(), |panel, values| {
                 panel.child(super::notice::info(values, cx))
             })
+            .when_some(self.form.clone(), |panel, form| panel.child(form))
             .into_any_element()
     }
 }
 impl Render for Picker {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let narrow = f32::from(window.viewport_size().width) < NARROW;
-        let height = (f32::from(window.viewport_size().height) - 240.).clamp(220., 480.);
+        let height = (f32::from(window.viewport_size().height) - 180.).clamp(220., 650.);
         let panel = div()
             .rounded(cx.theme().radius)
             .border_1()
@@ -170,16 +201,17 @@ impl Render for Picker {
                 .flex()
                 .flex_col()
                 .gap_2()
-                .child(div().h(px((height - 120.).max(180.))).child(self.pane.clone()))
-                .child(panel.h(px(120.)).flex_shrink_0())
+                .h(px(height))
+                .child(div().h(px(150.)).flex_shrink_0().child(self.pane.clone()))
+                .child(panel.flex_1().min_h_0())
         } else {
             div()
                 .flex()
                 .gap_3()
                 .h(px(height))
-                .child(div().flex_1().min_w_0().h_full().child(self.pane.clone()))
+                .child(div().w(px(280.)).flex_shrink_0().h_full().child(self.pane.clone()))
                 // Lined up with the tree, under the search row.
-                .child(div().w(px(280.)).flex_shrink_0().pt(px(30.)).child(panel.size_full()))
+                .child(div().flex_1().min_w_0().pt(px(30.)).child(panel.size_full()))
         };
         div().id("picker").test_support().role(Role::Group).pt_2().child(layout)
     }
@@ -192,6 +224,9 @@ impl Render for PickerButtons {
         let Some(picker) = self.0.upgrade() else {
             return div().into_any_element();
         };
+        if let Some(form) = &picker.read(cx).form {
+            return form.read(cx).buttons_view().into_any_element();
+        }
         let picked = picker.read(cx).chosen.is_some();
         let right = div()
             .flex()
@@ -204,8 +239,8 @@ impl Render for PickerButtons {
             .child(
                 Button::new("pick")
                     .primary()
-                    .label(tr("dialogs.ok"))
-                    .disabled(!picked)
+                    .label(tr("btn.add"))
+                    .disabled(!picked || picker.read(cx).authoring)
                     .on_click(move |_, _, cx| picker.update(cx, |picker, cx| picker.pick(cx))),
             );
         super::dialog::footer(None, right, cx).into_any_element()

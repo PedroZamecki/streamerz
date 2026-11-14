@@ -60,6 +60,7 @@ pub fn body(content: impl IntoElement) -> Div {
 pub fn footer(left: Option<AnyElement>, right: impl IntoElement, cx: &App) -> Div {
     div()
         .flex()
+        .flex_wrap()
         .items_center()
         .gap_2()
         .px_4()
@@ -68,7 +69,16 @@ pub fn footer(left: Option<AnyElement>, right: impl IntoElement, cx: &App) -> Di
         .border_color(cx.theme().border)
         .children(left)
         .child(div().flex_1())
-        .child(div().flex().items_center().gap_2().child(right))
+        .child(
+            div()
+                .min_w_0()
+                .flex()
+                .flex_wrap()
+                .justify_end()
+                .items_center()
+                .gap_2()
+                .child(right),
+        )
 }
 
 /// Closes the open dialog the way its X and Escape do: its `on_cancel` runs first (it forgets the

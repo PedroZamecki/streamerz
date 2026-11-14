@@ -869,6 +869,15 @@ impl ChatView {
                     );
                 }
             }
+            "history" => {
+                self.error = if failed {
+                    value["error"].as_str().unwrap_or_default().to_owned()
+                } else {
+                    String::new()
+                };
+                self.refresh();
+                cx.notify();
+            }
             "send" | "act" | "show" | "clear" | "sender" | "card-open" | "prefetch" | "reconnect" => {
                 self.error = if failed {
                     value["error"].as_str().unwrap_or_default().to_owned()
@@ -2296,40 +2305,47 @@ impl ChatView {
             None => chat["connected"] == false && self.lines.is_empty(),
             Some(platform) => platform["connected"] == false && self.panes[pane].seqs.is_empty(),
         };
-        let list = if chat["history"] == false {
-            framed(div())
-                .flex_1()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap_1()
-                .text_color(theme.muted_foreground)
-                .child(div().font_weight(FontWeight::BOLD).child(text("historyOff")))
-                .child(div().child(text("historyOffAbout")))
-                .into_any_element()
-        } else if empty {
-            framed(div())
-                .pt(px(22.))
+        let list = if chat["history"] == false || empty {
+            let mut state = framed(div())
                 .flex_1()
                 .flex()
                 .flex_col()
                 .items_center()
                 .justify_center()
                 .gap_2()
-                .text_color(theme.muted_foreground)
-                .child(div().child(text("empty")))
-                .child(
+                .px_4()
+                .text_color(theme.muted_foreground);
+            if empty {
+                state = state.child(super::notice::info(&text("empty"), cx)).child(
                     Button::new(SharedString::from(format!("chat-accounts-{pane}")))
                         .small()
-                        .mt_6()
                         .h(px(26.))
-                        .min_w(px(126.))
                         .icon(Icon::empty().path("icons/user.svg"))
                         .label(text("accounts"))
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(Go("Accounts".into())))),
-                )
-                .into_any_element()
+                );
+            }
+            if chat["history"] == false {
+                state = state.child(super::notice::info(
+                    &if chat["canEnableHistory"] == true {
+                        text("historyOffAbout")
+                    } else {
+                        text("historyUnavailable")
+                    },
+                    cx,
+                ));
+                if chat["canEnableHistory"] == true {
+                    state = state.child(
+                        Button::new(SharedString::from(format!("chat-history-{pane}")))
+                            .small()
+                            .label(text("enableHistory"))
+                            .on_click(|_, _, _| {
+                                send(json!({"request": "StreamerzCoreSetting", "domain": "chat_options", "key": "keep_history", "value": true, "id": "chat:history"}));
+                            }),
+                    );
+                }
+            }
+            state.into_any_element()
         } else {
             let rows = this.clone();
             let scroller = self.panes[pane].scroller.clone();
@@ -2714,7 +2730,7 @@ impl Render for ChatView {
         if !self.error.is_empty() {
             page = page.child(super::notice::error(&self.error, cx));
         }
-        if history_off {
+        if history_off && chat["connected"] == true {
             page = page.child(
                 div()
                     .flex()
