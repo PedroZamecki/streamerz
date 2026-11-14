@@ -177,8 +177,10 @@ impl Engine {
         // Lines there before don't fire: it starts at the end.
         let mut at = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         let mut partial: Vec<u8> = Vec::new();
+        #[cfg(target_os = "linux")]
+        let mut replacing = false;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let watch = fswatch::watch(dir.clone(), false, tx);
+        let watch = fswatch::watch_tail(dir.clone(), tx);
         tokio::pin!(watch);
         crate::say(format!("File tail {}: following {}", s(&t, "name"), path.display()));
         loop {
@@ -196,13 +198,33 @@ impl Engine {
                 Change::Deleted(p) if this(&p) => {
                     at = 0;
                     partial.clear();
+                    #[cfg(target_os = "linux")]
+                    {
+                        replacing = false;
+                    }
+                }
+                #[cfg(target_os = "linux")]
+                Change::WriteClosed(p) if this(&p) && replacing => {
+                    // O_TRUNC can notify while the writer has not written its replacement yet.
+                    // The replacement's end is known when that write closes, not at the transient zero.
+                    at = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+                    partial.clear();
+                    replacing = false;
                 }
                 Change::Created(p) | Change::Modified(p) | Change::Renamed(_, p) if this(&p) => {
+                    #[cfg(target_os = "linux")]
+                    if replacing {
+                        continue;
+                    }
                     let (p2, from) = (path.clone(), at);
                     let read = tokio::task::spawn_blocking(move || read_from(&p2, from)).await;
                     let Ok(Some((len, new))) = read else { continue };
                     // A file that got shorter starts again from its new end (as Streamer.bot).
                     if len < at {
+                        #[cfg(target_os = "linux")]
+                        {
+                            replacing = len == 0;
+                        }
                         at = len;
                         partial.clear();
                         continue;

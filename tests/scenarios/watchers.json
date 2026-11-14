@@ -35,7 +35,7 @@
       {"name": "seed", "subActions": [{"type": 3, "file": "{tmp}/app.log", "text": "old line\n", "append": false}]},
       {"name": "line", "triggers": [{"type": 511, "tailId": "t1"}], "subActions": [{"type": 1020, "logLevel": 2, "message": "tail: [%line%] %fileName%"}]},
       {"name": "add", "subActions": [{"type": 6, "command": "/bin/sh", "arguments": "-c \"printf '%text%' >> {tmp}/app.log\"", "waitForExit": 5}]},
-      {"name": "shrink", "subActions": [{"type": 3, "file": "{tmp}/app.log", "text": "x", "append": false}]},
+      {"name": "shrink", "subActions": [{"type": 6, "command": "/bin/sh", "arguments": "-c \"exec 3> {tmp}/app.log; sleep 0.05; printf x >&3\"", "waitForExit": 5}]},
       {"name": "off", "subActions": [{"type": 1030, "fileTailId": "t1", "state": 1}]},
       {"name": "on", "subActions": [{"type": 1030, "fileTailId": "t1", "state": 2}]}
     ],
