@@ -346,7 +346,13 @@ fn find(k: &Known) -> Option<Browser> {
         .map(|r| r.join(program))
         .find(|p| p.is_file())
         .or_else(|| registry_app_path(program))
-        .or_else(|| windows_apps_path(program))?;
+        // The Microsoft Store's Firefox: its firefox.exe there is Firefox's alone (Tor Browser's has the
+        // same name, so only the full install path above may match any other).
+        .or_else(|| {
+            (name == "Mozilla Firefox")
+                .then(|| windows_apps_path(program))
+                .flatten()
+        })?;
     // Opera, Opera GX, and Firefox family keep their profiles in the roaming folder.
     let data = if engine == BrowserEngine::Firefox || name.starts_with("Opera") {
         appdata.map(|a| a.join(data)).unwrap_or_else(|| local.join(data))
@@ -386,7 +392,7 @@ fn registry_app_path(program: &str) -> Option<PathBuf> {
             let len = (size as usize / 2).saturating_sub(1);
             let s = String::from_utf16_lossy(&buf[..len]);
             let path = PathBuf::from(s.trim_matches('"'));
-            if path.is_file() {
+            if path.is_file() && windows_path_suffix(&path.to_string_lossy(), program) {
                 return Some(path);
             }
         }
@@ -399,10 +405,29 @@ fn windows_apps_path(program: &str) -> Option<PathBuf> {
     let local = std::env::var_os("LOCALAPPDATA")?;
     let file = Path::new(program).file_name()?.to_str()?;
     let path = PathBuf::from(local).join("Microsoft").join("WindowsApps").join(file);
-    if path.is_file() {
-        Some(path)
-    } else {
-        None
+    path.is_file().then_some(path)
+}
+
+/// Whether `path` is `expected` under some install folder (Windows paths, any case).
+#[cfg(any(windows, test))]
+fn windows_path_suffix(path: &str, expected: &str) -> bool {
+    let path = path.replace('/', "\\").to_ascii_lowercase();
+    let expected = expected.replace('/', "\\").to_ascii_lowercase();
+    path == expected
+        || path
+            .strip_suffix(&expected)
+            .is_some_and(|prefix| prefix.ends_with('\\'))
+}
+
+/// Whether a running process is this browser: its full image path when Windows gives it, else its name.
+#[cfg(any(windows, test))]
+fn process_matches(exe: &str, name: &str, image: Option<&str>) -> bool {
+    match image {
+        Some(path) => path.replace('/', "\\").eq_ignore_ascii_case(&exe.replace('/', "\\")),
+        None => exe
+            .rsplit(['/', '\\'])
+            .next()
+            .is_some_and(|file| file.eq_ignore_ascii_case(name)),
     }
 }
 
@@ -573,10 +598,54 @@ fn scan_dynamic_chromium() -> Vec<Browser> {
     extra
 }
 
+/// The Firefox-family profiles that profiles.ini lists, relative to it or anywhere (IsRelative=0).
+fn firefox_profiles(base: &Path) -> Vec<PathBuf> {
+    let Ok(ini) = std::fs::read_to_string(base.join("profiles.ini")) else {
+        return Vec::new();
+    };
+    let mut result = Vec::new();
+    for section in ini.split('[').skip(1) {
+        let Some((header, body)) = section.split_once(']') else {
+            continue;
+        };
+        if !header.starts_with("Profile") {
+            continue;
+        }
+        let mut path = None;
+        let mut relative = true;
+        for line in body.lines() {
+            if let Some((key, value)) = line.trim().split_once('=') {
+                match key {
+                    "Path" => path = Some(value.trim()),
+                    "IsRelative" => relative = value.trim() != "0",
+                    _ => {}
+                }
+            }
+        }
+        if let Some(path) = path {
+            let path = if relative { base.join(path) } else { PathBuf::from(path) };
+            if path.join("prefs.js").is_file() {
+                result.push(path);
+            }
+        }
+    }
+    result
+}
+
 impl Browser {
     /// Its profiles' folders (Default, Profile 1...): those with settings.
     pub fn profiles(&self) -> Vec<PathBuf> {
-        let Ok(dir) = std::fs::read_dir(&self.data) else {
+        let dir = std::fs::read_dir(&self.data);
+        let mut found = Vec::new();
+        if self.is_firefox_based() {
+            for base in [Some(self.data.as_path()), self.data.parent()].into_iter().flatten() {
+                found.extend(firefox_profiles(base));
+            }
+        }
+        let Ok(dir) = dir else {
+            if !found.is_empty() {
+                return found;
+            }
             // Opera keeps one profile in the data folder itself.
             return if self.data.join("Preferences").is_file() {
                 vec![self.data.clone()]
@@ -584,15 +653,16 @@ impl Browser {
                 Vec::new()
             };
         };
-        let mut found: Vec<PathBuf> = dir
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.join("Preferences").is_file() || p.join("prefs.js").is_file())
-            .collect();
+        found.extend(
+            dir.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.join("Preferences").is_file() || p.join("prefs.js").is_file()),
+        );
         if self.data.join("Preferences").is_file() {
             found.push(self.data.clone());
         }
         found.sort();
+        found.dedup();
         found
     }
 
@@ -822,10 +892,13 @@ impl Browser {
                 }
             }
             if let Some(exe_name) = self.exe.file_name().and_then(|n| n.to_str()) {
-                let exe_lower = exe_name.to_ascii_lowercase();
+                let exe_path = self.exe.to_string_lossy();
                 use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
                 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
                     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+                };
+                use windows_sys::Win32::System::Threading::{
+                    OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
                 };
                 unsafe {
                     let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -839,8 +912,21 @@ impl Browser {
                                     .iter()
                                     .position(|&c| c == 0)
                                     .unwrap_or(entry.szExeFile.len());
-                                let name = String::from_utf16_lossy(&entry.szExeFile[..len]).to_ascii_lowercase();
-                                if name == exe_lower {
+                                let name = String::from_utf16_lossy(&entry.szExeFile[..len]);
+                                let mut image = None;
+                                if name.eq_ignore_ascii_case(exe_name) {
+                                    let process =
+                                        OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, entry.th32ProcessID);
+                                    if !process.is_null() {
+                                        let mut buf = [0u16; 32768];
+                                        let mut size = buf.len() as u32;
+                                        if QueryFullProcessImageNameW(process, 0, buf.as_mut_ptr(), &mut size) != 0 {
+                                            image = Some(String::from_utf16_lossy(&buf[..size as usize]));
+                                        }
+                                        CloseHandle(process);
+                                    }
+                                }
+                                if process_matches(&exe_path, &name, image.as_deref()) {
                                     CloseHandle(snap);
                                     return true;
                                 }
@@ -931,6 +1017,43 @@ fn profile_has(dir: &Path, id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_browser_paths_distinguish_shared_names() {
+        assert!(super::windows_path_suffix(
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"Google\Chrome\Application\chrome.exe"
+        ));
+        assert!(!super::windows_path_suffix(
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"Chromium\Application\chrome.exe"
+        ));
+        assert!(!super::process_matches(
+            r"C:\Helium\chrome.exe",
+            "chrome.exe",
+            Some(r"C:\Chrome\chrome.exe")
+        ));
+        assert!(super::process_matches(r"C:\Helium\chrome.exe", "chrome.exe", None));
+    }
+    #[test]
+    fn firefox_ini_profiles_include_external_paths() {
+        let root = std::env::temp_dir().join(format!("sz-profiles-{}", std::process::id()));
+        let external = root.join("external");
+        std::fs::create_dir_all(root.join("relative")).unwrap();
+        std::fs::create_dir_all(&external).unwrap();
+        std::fs::write(root.join("relative/prefs.js"), "").unwrap();
+        std::fs::write(external.join("prefs.js"), "").unwrap();
+        std::fs::write(
+            root.join("profiles.ini"),
+            format!(
+                "[Profile0]\nIsRelative=1\nPath=relative\n[Profile1]\nIsRelative=0\nPath={}\n",
+                external.display()
+            ),
+        )
+        .unwrap();
+        assert_eq!(super::firefox_profiles(&root), vec![root.join("relative"), external]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn browser_launch_reuses_the_last_profile_with_explicit_data_directory() {
