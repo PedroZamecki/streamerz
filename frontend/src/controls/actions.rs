@@ -204,7 +204,11 @@ impl ActionsPage {
     }
 
     fn press(&mut self, pane: Pane, spec: Value, node: Option<Node>, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(question) = spec["confirm"].as_str() else {
+        // A row may ask its own question (a group with an overlay connected to it).
+        let own = node
+            .as_ref()
+            .and_then(|node| node.confirm[spec["id"].as_str().unwrap_or_default()].as_str());
+        let Some(question) = own.or(spec["confirm"].as_str()) else {
             return self.run(pane, spec, node, None, cx);
         };
         let name = node.as_ref().map(|node| node.label.clone()).unwrap_or_default();
@@ -298,10 +302,10 @@ impl ActionsPage {
                 }
             }),
         );
-        window.open_dialog(cx, move |dialog, _, cx| {
-            crate::controls::dialog::shell(dialog, title.clone(), 640., cx)
+        window.open_dialog(cx, move |dialog, window, cx| {
+            crate::controls::dialog::shell(dialog, title.clone(), Picker::width(window), cx)
                 .child(crate::controls::dialog::body(picker.clone()))
-                .footer(crate::controls::dialog::close_footer(cx))
+                .footer(picker.read(cx).buttons_view())
         });
     }
 
@@ -337,8 +341,22 @@ impl ActionsPage {
         });
     }
 
+    /// The core downloaded pictures: an open form's picture pickers ask for theirs again.
+    pub fn images_arrived(&mut self, cx: &mut Context<Self>) {
+        if let Some(form) = &self.form {
+            form.update(cx, |form, cx| form.images_arrived(cx));
+        }
+    }
+
     /// A reply to one of this page's requests. Returns whether the page should be read again.
     pub fn apply(&mut self, operation: &str, value: Value, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        // A form's picture picker: its pictures or its reloaded list (`gallery:<field>:images|choices`).
+        if let Some((index, what)) = operation.strip_prefix("gallery:").and_then(|rest| rest.split_once(':')) {
+            if let (Some(form), Ok(index)) = (&self.form, index.parse()) {
+                form.update(cx, |form, cx| form.gallery_reply(index, what, &value, cx));
+            }
+            return false;
+        }
         if value["status"] == "error" {
             let error = value["error"].as_str().unwrap_or_default().to_owned();
             if matches!(operation, "save" | "json") {
@@ -460,8 +478,11 @@ impl Render for ActionsPage {
         let mut right = div().flex_1().min_w_0().min_h_0().flex().flex_col().gap(px(4.));
         if let (Some(triggers), Some(subs)) = (&self.triggers, &self.subs) {
             right = right
-                .child(
+                .child({
+                    let title = editor["title"].as_str().unwrap_or_default().to_owned();
+                    let title_tip = title.clone();
                     div()
+                        .id("action-editor-title")
                         .h(px(24.))
                         .flex_shrink_0()
                         .flex()
@@ -469,8 +490,13 @@ impl Render for ActionsPage {
                         .truncate()
                         .font_weight(FontWeight::BOLD)
                         .text_color(crate::theme::strong(cx))
-                        .child(editor["title"].as_str().unwrap_or_default().to_owned()),
-                )
+                        .child(title)
+                        .when(!title_tip.is_empty(), |el| {
+                            el.tooltip(move |window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(title_tip.clone()).build(window, cx)
+                            })
+                        })
+                })
                 .child(
                     div()
                         .h(px(22.))

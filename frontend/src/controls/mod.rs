@@ -7,6 +7,7 @@ pub mod dialog;
 pub mod emotes;
 pub mod find;
 pub mod form;
+pub mod gallery;
 pub mod health;
 pub mod list;
 pub mod log;

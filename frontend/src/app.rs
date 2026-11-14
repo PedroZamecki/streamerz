@@ -9,7 +9,7 @@ use crate::{
         sections::{Navigate, Sections},
     },
     i18n::tr,
-    send,
+    send, CoreRedo, CoreUndo,
 };
 use gpui_kit::base::Selectable;
 use gpui_kit::component::{
@@ -29,6 +29,8 @@ pub struct Frontend {
     folded: bool,
     status_error: String,
     pub selected: String,
+    history: Vec<String>,
+    history_index: usize,
     pub data: Value,
     lists: Vec<Entity<List>>,
     list_subscriptions: Vec<Subscription>,
@@ -49,6 +51,8 @@ pub struct Frontend {
     generation: u64,
     read_pending: bool,
     read_again: bool,
+    last_bounds: Option<(i32, i32, i32, i32, bool)>,
+    window_save_task: Option<Task<()>>,
 }
 impl Frontend {
     #[cfg(feature = "test-support")]
@@ -56,14 +60,17 @@ impl Frontend {
         !self.read_pending
             && self.data["domain"].as_str() == Some(self.selected.to_lowercase().replace(' ', "_").as_str())
     }
-    pub fn new(navigation: Value, version: String) -> Self {
+    pub fn new(navigation: Value, version: String, tab: String) -> Self {
+        let selected = if tab.is_empty() { "Chat".to_string() } else { tab };
         Self {
             navigation,
             version,
             status: Value::Null,
             folded: false,
             status_error: String::new(),
-            selected: "Chat".into(),
+            selected: selected.clone(),
+            history: vec![selected],
+            history_index: 0,
             data: Value::Null,
             lists: Vec::new(),
             list_subscriptions: Vec::new(),
@@ -83,6 +90,8 @@ impl Frontend {
             generation: 0,
             read_pending: false,
             read_again: false,
+            last_bounds: None,
+            window_save_task: None,
         }
     }
     pub fn request_read(&mut self) {
@@ -149,6 +158,14 @@ impl Frontend {
             .cloned()
             .collect()
     }
+    /// Pictures the core downloaded reach an open form's picture pickers (no page read).
+    pub fn images_for_forms(&mut self, topics: Option<&Vec<Value>>, cx: &mut Context<Self>) {
+        if topics.is_some_and(|topics| topics.iter().any(|topic| topic == "images")) {
+            if let Some(actions) = self.actions.clone() {
+                actions.update(cx, |actions, cx| actions.images_arrived(cx));
+            }
+        }
+    }
     /// The chat streams: its view asks the core for what is new, with no full page read. Returns
     /// whether the change was handled (settings changes still re-read the whole page).
     pub fn chat_changed(&mut self, topics: Option<&Vec<Value>>, cx: &mut Context<Self>) -> bool {
@@ -203,13 +220,21 @@ impl Frontend {
                                 .size_4()
                                 .flex_shrink_0(),
                         )
-                        .child(
+                        .child({
+                            let name = item["name"].as_str().unwrap_or_default().to_owned();
+                            let name_tip = name.clone();
                             div()
+                                .id(("conn-name", index))
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .child(item["name"].as_str().unwrap_or_default().to_owned()),
-                        )
+                                .child(name)
+                                .when(!name_tip.is_empty(), |el| {
+                                    el.tooltip(move |window, cx| {
+                                        gpui_kit::component::tooltip::Tooltip::new(name_tip.clone()).build(window, cx)
+                                    })
+                                })
+                        })
                         .child(
                             div()
                                 .id(("conn-state", index))
@@ -266,8 +291,20 @@ impl Frontend {
         });
     }
     pub fn select(&mut self, page: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_to(page, true, window, cx);
+    }
+    fn navigate_to(&mut self, page: &str, record_history: bool, window: &mut Window, cx: &mut Context<Self>) {
         if page != self.selected {
             self.selected = page.to_owned();
+            send(json!({
+                "request": "StreamerzSelectPage",
+                "page": self.selected,
+            }));
+            if record_history {
+                self.history.truncate(self.history_index + 1);
+                self.history.push(page.to_owned());
+                self.history_index = self.history.len() - 1;
+            }
             self.lists.clear();
             self.list_subscriptions.clear();
             self.view = json!({});
@@ -287,6 +324,54 @@ impl Frontend {
         }
         self.request_read();
         cx.notify();
+    }
+    pub fn window_bounds_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (bounds, maximized) = match window.window_bounds() {
+            WindowBounds::Maximized(b) => (b, true),
+            WindowBounds::Windowed(b) => (b, false),
+            WindowBounds::Fullscreen(b) => (b, false),
+        };
+        let (x, y, w, h) = (
+            f32::from(bounds.origin.x) as i32,
+            f32::from(bounds.origin.y) as i32,
+            f32::from(bounds.size.width) as i32,
+            f32::from(bounds.size.height) as i32,
+        );
+        if w < 400 || h < 300 {
+            return;
+        }
+        let current = (x, y, w, h, maximized);
+        if self.last_bounds == Some(current) {
+            return;
+        }
+        self.last_bounds = Some(current);
+        self.window_save_task = Some(cx.spawn(async move |_, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(250))
+                .await;
+            send(json!({
+                "request": "StreamerzWindowState",
+                "x": x,
+                "y": y,
+                "w": w,
+                "h": h,
+                "maximized": maximized,
+            }));
+        }));
+    }
+    pub fn go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.history_index > 0 {
+            self.history_index -= 1;
+            let target = self.history[self.history_index].clone();
+            self.navigate_to(&target, false, window, cx);
+        }
+    }
+    pub fn go_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.history_index + 1 < self.history.len() {
+            self.history_index += 1;
+            let target = self.history[self.history_index].clone();
+            self.navigate_to(&target, false, window, cx);
+        }
     }
     pub fn apply(&mut self, value: Value, window: &mut Window, cx: &mut Context<Self>) {
         let id = value["id"].as_str().unwrap_or_default().to_owned();
@@ -630,13 +715,21 @@ impl Render for Frontend {
                                 .text_size(px(13.))
                                 .child(name.to_owned()),
                         )
-                        .child(
+                        .child({
+                            let ver = version.to_owned();
+                            let ver_tip = ver.clone();
                             div()
+                                .id("app-version")
                                 .text_size(px(12.))
                                 .text_color(crate::theme::quiet(cx))
                                 .truncate()
-                                .child(version.to_owned()),
-                        ),
+                                .child(ver)
+                                .when(!ver_tip.is_empty(), |el| {
+                                    el.tooltip(move |window, cx| {
+                                        gpui_kit::component::tooltip::Tooltip::new(ver_tip.clone()).build(window, cx)
+                                    })
+                                })
+                        }),
                 )
             });
         let navigation = div()
@@ -734,21 +827,24 @@ impl Render for Frontend {
                 content = content.child(lead);
             }
             for (index, list) in visible.iter().enumerate() {
+                let last = index + 1 == visible.len();
                 let section = if list.read(cx).has_inline() {
                     div().flex_shrink_0()
                 } else if list.read(cx).is_settings() {
-                    div().h(px(184.)).flex_shrink_0()
+                    div().h(px(204.)).flex_shrink_0()
+                } else if list.read(cx).is_connections() || list.read(cx).is_cards() {
+                    div().flex_shrink_0().when(!last, |el| el.pb(px(12.)))
                 } else if list.read(cx).has_connection() {
-                    // 1.6.0: connection sections share the page evenly (page padding 20, footer 46, gaps 4).
+                    // Connection sections share the page evenly (page padding 20, footer 46, gaps 4).
                     let count = visible.len() as f32;
                     let each = (f32::from(window.viewport_size().height) - 66. - 4. * (count - 1.)) / count;
-                    div().h(px(each.max(330.))).flex_shrink_0()
+                    div().h(px(each.max(260.))).flex_shrink_0()
                 } else if index + 1 == visible.len() && !list.read(cx).has_actions() {
-                    // 1.6.0: the last table (pending items) has a fixed height, the ones above take the rest.
+                    // The last table (pending items) has a fixed height, the ones above take the rest.
                     div().h(px(247.)).flex_shrink_0()
                 } else {
                     div()
-                        .min_h(px(200.))
+                        .min_h(px(140.))
                         .flex_grow(1.)
                         .flex_shrink(1.)
                         .flex_basis(px(0.))
@@ -806,7 +902,18 @@ impl Render for Frontend {
                             .ml(px(3.))
                             .child(Icon::empty().path(format!("icons/{icon}.svg")).small()),
                     )
-                    .child(div().truncate().child(status_text))
+                    .child({
+                        let status_tip = status_text.clone();
+                        div()
+                            .id("status-text")
+                            .truncate()
+                            .child(status_text)
+                            .when(!status_tip.is_empty(), |el| {
+                                el.tooltip(move |window, cx| {
+                                    gpui_kit::component::tooltip::Tooltip::new(status_tip.clone()).build(window, cx)
+                                })
+                            })
+                    })
                     .on_click(
                         cx.listener(move |this, _, window, cx| this.show_connections(connections.clone(), window, cx)),
                     ),
@@ -833,7 +940,91 @@ impl Render for Frontend {
             .text_size(cx.theme().font_size)
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .capture_any_mouse_down(
+                cx.listener(|this, event: &MouseDownEvent, window, cx| match event.button {
+                    MouseButton::Navigate(NavigationDirection::Back) => {
+                        cx.stop_propagation();
+                        this.go_back(window, cx);
+                    }
+                    MouseButton::Navigate(NavigationDirection::Forward) => {
+                        cx.stop_propagation();
+                        this.go_forward(window, cx);
+                    }
+                    _ => {}
+                }),
+            )
+            .capture_any_mouse_up(|event, _, cx| {
+                if matches!(event.button, MouseButton::Navigate(_)) {
+                    cx.stop_propagation();
+                }
+            })
+            .on_action(cx.listener(|_this, _: &CoreUndo, _window, _cx| {
+                send(json!({"request": "StreamerzCoreAction", "domain": "actions", "action": "undo", "id": "undo"}));
+            }))
+            .on_action(cx.listener(|_this, _: &CoreRedo, _window, _cx| {
+                send(json!({"request": "StreamerzCoreAction", "domain": "actions", "action": "redo", "id": "redo"}));
+            }))
             .child(div().flex_1().min_h_0().flex().child(navigation).child(content))
             .child(bar)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Frontend;
+    use serde_json::json;
+
+    #[test]
+    fn history_navigation_tracks_pages_and_back_forward() {
+        let mut frontend = Frontend::new(json!([]), "Streamerz".into(), "Chat".into());
+        assert_eq!(frontend.selected, "Chat");
+        assert_eq!(frontend.history, vec!["Chat".to_string()]);
+        assert_eq!(frontend.history_index, 0);
+
+        let custom = Frontend::new(json!([]), "Streamerz".into(), "Settings".into());
+        assert_eq!(custom.selected, "Settings");
+        assert_eq!(custom.history, vec!["Settings".to_string()]);
+
+        // Select Actions
+        frontend.history.truncate(frontend.history_index + 1);
+        frontend.history.push("Actions".into());
+        frontend.history_index = frontend.history.len() - 1;
+        frontend.selected = "Actions".into();
+
+        // Select Servers
+        frontend.history.truncate(frontend.history_index + 1);
+        frontend.history.push("Servers".into());
+        frontend.history_index = frontend.history.len() - 1;
+        frontend.selected = "Servers".into();
+
+        assert_eq!(frontend.history, vec!["Chat", "Actions", "Servers"]);
+        assert_eq!(frontend.history_index, 2);
+
+        // Go back -> Actions
+        frontend.history_index -= 1;
+        frontend.selected = frontend.history[frontend.history_index].clone();
+        assert_eq!(frontend.selected, "Actions");
+        assert_eq!(frontend.history_index, 1);
+
+        // Go back -> Chat
+        frontend.history_index -= 1;
+        frontend.selected = frontend.history[frontend.history_index].clone();
+        assert_eq!(frontend.selected, "Chat");
+        assert_eq!(frontend.history_index, 0);
+
+        // Go forward -> Actions
+        frontend.history_index += 1;
+        frontend.selected = frontend.history[frontend.history_index].clone();
+        assert_eq!(frontend.selected, "Actions");
+        assert_eq!(frontend.history_index, 1);
+
+        // Select Settings while in middle of history -> truncates forward history
+        frontend.history.truncate(frontend.history_index + 1);
+        frontend.history.push("Settings".into());
+        frontend.history_index = frontend.history.len() - 1;
+        frontend.selected = "Settings".into();
+
+        assert_eq!(frontend.history, vec!["Chat", "Actions", "Settings"]);
+        assert_eq!(frontend.history_index, 2);
     }
 }

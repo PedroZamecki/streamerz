@@ -167,6 +167,7 @@
   "btn.backup_now": "Back up now",
   "btn.ban": "Ban",
   "btn.blocking": "Blocking",
+  "btn.browse": "Browse",
   "btn.cancel_prediction": "Cancel prediction",
   "btn.chat_settings": "Chat settings",
   "btn.clear": "Clear",
@@ -1115,5 +1116,6 @@
   "conns.standby_tip": "Ready and waiting for the stream to go live: the chat opens by itself. It checks every minute or so, and at once when OBS, Streamlabs, Twitch or Kick says the stream started.",
   "conns.off_tip": "Not connected.",
   "relogin.ask_permissions": "Streamerz now needs more {platform} permissions. Log in again to give them.",
-  "relogin.ask_permissions_bot": "Streamerz now needs more {platform} bot permissions. Log in again to give them."
+  "relogin.ask_permissions_bot": "Streamerz now needs more {platform} bot permissions. Log in again to give them.",
+  "forms.pick_from_list": "Pick from the list"
 }
