@@ -45,7 +45,8 @@ test("concurrent requests share a hidden context and never open helper tabs", as
   const headerRule = state.rules.flatMap(r => r.addRules || []).find(r => r.id === 4);
   assert.equal(headerRule.condition.resourceTypes.join(), "sub_frame");
   assert.equal(headerRule.condition.initiatorDomains.join(), "lhijoeeghjcohapolkfkacipklhbnecc");
-  assert.equal(headerRule.condition.urlFilter, "|https://www.tiktok.com/live/history/center|");
+  // "^": the address ends there, or (Firefox matches the fragment too) a "#" follows.
+  assert.equal(headerRule.condition.urlFilter, "|https://www.tiktok.com/live/history/center^");
 });
 
 test("a lost send response is never retried", async () => {
@@ -94,16 +95,38 @@ test("the reader can reuse TikTok's device cookie without unrelated browser cook
   assert.equal(state.tabs.length, 0);
 });
 
-test("login redirects report sign-in immediately, without an idle loading loop", () => {
-  const messages = [];
+function frame({ pathname, hash = "", search = "", storage = new Map(), referrer = "" }) {
+  const messages = [], replaced = [];
   const parent = { postMessage(m, origin) { messages.push({ m, origin }); } };
+  const sessionStorage = { getItem: k => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v) };
+  const history = { state: null, replaceState(_, __, url) { replaced.push(url); } };
   vm.runInNewContext(readFileSync(new URL("../assets/tiktok-extension/frame.js", import.meta.url), "utf8"), {
-    window: { parent }, parent, location: { pathname: "/login" },
+    window: { parent, addEventListener() {}, fetch() {} }, parent, location: { pathname, hash, search }, document: { referrer },
+    sessionStorage, history, URL, URLSearchParams, performance: { setResourceTimingBufferSize() {}, getEntriesByType: () => [] },
+    setTimeout() {}, Function,
   });
+  return { messages, replaced, storage };
+}
+
+test("login redirects report sign-in immediately, without an idle loading loop", () => {
+  const { messages } = frame({ pathname: "/login" });
   assert.equal(messages.length, 1);
   assert.equal(messages[0].origin, "chrome-extension://lhijoeeghjcohapolkfkacipklhbnecc");
   assert.equal(messages[0].m.ready, true);
   assert.match(messages[0].m.error, /Log in/);
+});
+
+test("Firefox's frame answers its own moz-extension page after TikTok's login redirect", () => {
+  // Firefox sends no referrer from an extension: the background page names itself in the address.
+  const parent = "moz-extension://9f64fc19-5a5d-4538-8b47-4acd59127c5a";
+  const first = frame({ pathname: "/live/history/center", hash: "#streamerz-parent=" + encodeURIComponent(parent) });
+  // The address loses it before TikTok's scripts run, so TikTok never sees it.
+  assert.deepEqual(first.replaced, ["/live/history/center"]);
+  const login = frame({ pathname: "/login", referrer: "https://www.tiktok.com/live/history/center", storage: first.storage });
+  assert.equal(login.messages[0].origin, parent);
+  // Only an extension's origin is ever taken.
+  const forged = frame({ pathname: "/login", hash: "#streamerz-parent=https%3A%2F%2Fevil.example" });
+  assert.equal(forged.messages[0].origin, "chrome-extension://lhijoeeghjcohapolkfkacipklhbnecc");
 });
 
 

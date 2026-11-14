@@ -20,7 +20,7 @@ pub const PATH: &str = "/streamerz/tiktok";
 /// Fixed by the public key in the extension's manifest.
 pub const EXTENSION_ID: &str = "lhijoeeghjcohapolkfkacipklhbnecc";
 /// The current extension version bundled with Streamerz.
-pub const EXTENSION_VERSION: &str = "1.3.0";
+pub const EXTENSION_VERSION: &str = "1.4.0";
 /// The published Google Chrome Web Store extension ID.
 pub const CHROME_STORE_ID: &str = "anckdakmhognoancpeefjlgicihplcjc";
 /// The Chrome Web Store installation URL.

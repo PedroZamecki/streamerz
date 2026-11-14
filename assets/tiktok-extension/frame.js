@@ -1,15 +1,24 @@
 // MAIN world: TikTok's own fetch wrapper signs the requests. Only our parent may ask for one.
 (() => {
   if (window.parent === window) return;
-  let parentOrigin = "chrome-extension://lhijoeeghjcohapolkfkacipklhbnecc";
+  const extension = o => /^(moz|chrome)-extension:\/\/[a-z0-9-]+$/.test(o || "") ? o : null;
+  // Chromium says who embeds the frame in its referrer. Firefox sends no referrer from an extension and
+  // gives each install its own moz-extension address, so its background page names itself in the
+  // frame's address (#streamerz-parent=..., never sent to TikTok).
+  let parentOrigin = extension(new URLSearchParams(location.hash.slice(1)).get("streamerz-parent"));
+  // Gone before TikTok's scripts run, so it never reaches TikTok (its login redirect copies the address).
+  if (location.hash) {
+    try { history.replaceState(history.state, "", location.pathname + location.search); } catch {}
+  }
   try {
-    if (document.referrer) {
-      const u = new URL(document.referrer);
-      if (u.protocol === "moz-extension:" || u.protocol === "chrome-extension:") {
-        parentOrigin = u.origin;
-      }
-    }
+    if (!parentOrigin && document.referrer) parentOrigin = extension(new URL(document.referrer).origin);
   } catch {}
+  // TikTok's own redirects (to /login) lose both: the frame keeps the one it was first loaded from.
+  try {
+    if (parentOrigin) sessionStorage.setItem("streamerz-parent", parentOrigin);
+    else parentOrigin = sessionStorage.getItem("streamerz-parent");
+  } catch {}
+  parentOrigin ||= "chrome-extension://lhijoeeghjcohapolkfkacipklhbnecc";
   const send = data => parent.postMessage({ streamerz: true, ...data }, parentOrigin);
   if (location.pathname.startsWith("/login")) {
     send({ ready: true, error: "Log in to TikTok from Accounts > TikTok > Set up.", code: "login_required" });
