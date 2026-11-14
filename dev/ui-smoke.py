@@ -27,6 +27,7 @@ def main():
     parser.add_argument("binary", nargs="?", type=Path, default=Path("target/fast/Streamerz"))
     parser.add_argument("--out", type=Path, default=Path("target/ui-smoke"))
     parser.add_argument("--theme", choices=("dark", "light"), default="dark")
+    parser.add_argument("--locale", default="en_US", help="Another language runs only the layout checks (nothing cut off, dialogs reopen)")
     parser.add_argument("--wine", action="store_true", help="Run a Windows executable in a dedicated Wine prefix")
     parser.add_argument("--wine-bin", default="wine", help="Wine executable to run a Windows build with")
     parser.add_argument("--wine-prefix", type=Path, default=Path("target/ui-wine"))
@@ -40,7 +41,7 @@ def main():
         config = Path(source) / "streamerz"
         config.mkdir()
         # The fixture deliberately has a non-default name, so the handshake also verifies --config.
-        (config / "fixture.json").write_text(json.dumps({"start_hidden": False, "locale": "en_US", "theme": args.theme, "updates": "ignore", "instance_name": name, "websockets": {"port": smoke.PORT}}))
+        (config / "fixture.json").write_text(json.dumps({"start_hidden": False, "locale": args.locale, "theme": args.theme, "updates": "ignore", "instance_name": name, "websockets": {"port": smoke.PORT}}))
         env = dict(os.environ, DISPLAY=os.environ.get("DISPLAY", ":99"), XDG_CONFIG_HOME=source, STREAMERZ_DEV="1", STREAMERZ_DEV_PORT=str(smoke.PORT))
         env.pop("WAYLAND_DISPLAY", None)
         if args.wine:
@@ -169,6 +170,49 @@ def main():
                 ui("windows")
                 (out / "renderer.txt").write_text(ui("renderer"))
                 window = native_window(renderer)
+                strings = json.loads((Path(__file__).resolve().parent.parent / "assets" / "locales" / f"{args.locale}.json").read_text())
+                def no_overflow(where):
+                    # Nothing on screen is pushed past its dialog, card or window (a button row too long for a
+                    # dialog in Portuguese once was).
+                    found = json.loads(ui("overflow"))
+                    if found:
+                        shot(f"overflow-{where}")
+                        raise AssertionError(f"cut off on {where}: {found}")
+                def layout_pass():
+                    for page in ("Accounts", "Commands", "Timers", "Files", "Stream Apps", "Servers", "Queues", "Globals", "History", "Backups", "Crashes", "Plugins", "Overlays", "Log", "Settings", "Donations", "MCP", "Groups", "Integrations", "Community", "Polls", "Stream", "Chat", "Actions"):
+                        for width, height in ((1100, 800), (540, 700)):
+                            resize(width, height)
+                            load_page(page)
+                            no_overflow(f"{page}-{width}")
+                    # TikTok's setup dialog: it fits in both of its modes, and it opens again after its footer's
+                    # Close (that Close once skipped the dialog's cancel, and the page never opened it again).
+                    resize(1100, 1000)
+                    load_page("Accounts")
+                    close = strings["dialogs.close"]
+                    def footer_close():
+                        return [e for e in json.loads(ui("bounds " + close)) if e["label"] == close and e["w"] > 30]
+                    for attempt in range(2):
+                        click(strings["btn.set_up"])
+                        deadline = time.monotonic() + 10
+                        while not footer_close() and time.monotonic() < deadline:
+                            time.sleep(.05)
+                        assert footer_close(), f"the TikTok dialog did not open (attempt {attempt + 1})"
+                        time.sleep(.4)
+                        no_overflow(f"tiktok-dialog-{attempt}")
+                        toggle = "accounts.tiktok_sending.simple_mode" if attempt else "accounts.tiktok_sending.advanced_mode"
+                        click(strings[toggle])
+                        time.sleep(.4)
+                        no_overflow(f"tiktok-dialog-{attempt}-toggled")
+                        entry = footer_close()[0]
+                        subprocess.run(["xdotool", "mousemove", str(round(entry["x"] + entry["w"] / 2)), str(round(entry["y"] + entry["h"] / 2)), "click", "1"], env=env, check=True)
+                        deadline = time.monotonic() + 10
+                        while footer_close() and time.monotonic() < deadline:
+                            time.sleep(.05)
+                        assert not footer_close(), "Close left the TikTok dialog open"
+                layout_pass()
+                if args.locale != "en_US":
+                    print(f"ok: layout in {args.locale}", flush=True)
+                    return
                 for page in ("Commands", "Timers", "Files", "Stream Apps", "Servers"):
                     for width, height in ((1100, 800), (540, 700)):
                         resize(width, height)

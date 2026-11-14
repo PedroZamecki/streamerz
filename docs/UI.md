@@ -91,6 +91,10 @@ from `controls/dialog.rs`:
   right, the main action last; one that stands apart (Edit JSON) sits at the left. A dialog that only shows
   something gets a Close button there (`dialog::close_footer`). Buttons never go in the body.
 
+Every Cancel or Close button closes through `dialog::dismiss`, as the X and Escape do: the dialog's
+`on_cancel` runs, so the page that opened it knows it closed and can open it again. Never call
+`window.close_dialog` from a Cancel or Close button.
+
 A form or a prompt hands its buttons to the footer (`Form::buttons_view`, `Prompt::buttons_view`). The user
 card is the one dialog with a header of its own: its banner (picture, name, account age, open and close).
 
@@ -268,7 +272,11 @@ connection states when they apply; an error should say what happened and, when p
 Keep disabled integrations inactive, as required by the project rules.
 
 Keep filter fields and toolbar actions inside narrow pages. Let search take the remaining width;
-stack navigation and actions when one row cannot fit. A chat with no configured channel offers
+stack navigation and actions when one row cannot fit. Nothing is ever cut off, in any language: a row of
+buttons wraps to a second line instead of running past its dialog or card, a row's buttons go under its
+text before squeezing the text, and a button with words is as wide as its label needs (`min_w`, never a
+fixed `w`; only icon buttons are fixed). A label that can't grow truncates with an ellipsis and has a
+tooltip. A chat with no configured channel offers
 Accounts in its empty state. When chat history is off, disable sending controls with an explanation.
 The Polls page shows what runs (a poll, a prediction) with what can be done to it, and a status line
 saying which accounts are ready; New poll and New prediction open their forms in dialogs. It keeps
@@ -319,6 +327,8 @@ A channel picker shows search failures plainly and still accepts a pasted handle
 - Run input-driven checks serially on the shared hidden display so one test cannot send input to
   another instance. `DISPLAY=:99 python3 -P dev/ui-shot.py PAGE...` captures pages and
   `DISPLAY=:99 python3 -P dev/ui-smoke.py` visits every page with isolated settings; its disconnected memory
-  sample is separate from the live integration budget.
+  sample is separate from the live integration budget. The smoke fails when anything on a page or in the
+  TikTok setup dialog is cut off sideways (the dev `overflow` command: a painted button, field or box only
+  partly inside its clip); run it in Portuguese too (`--locale pt_BR`), whose words are the longest.
 - Exercise the main task, cancellation and validation by hand. Add a regression test for each bug fixed,
   or a smoke step when a unit test is not suitable. Run `dev/ui-smoke.py` before closing the version.
