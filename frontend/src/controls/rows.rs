@@ -34,6 +34,9 @@ impl Action {
             "edit" => Self::Edit,
             "toggle" => Self::Toggle,
             "delete" => Self::Delete,
+            "connect" => Self::Connect,
+            "connect-all" => Self::ConnectAll,
+            "disconnect-all" => Self::DisconnectAll,
             "refresh" => Self::Refresh,
             _ => return None,
         })
@@ -54,8 +57,17 @@ impl Action {
     }
     pub fn actions(model: &Value) -> Vec<Self> {
         let mut actions = Self::base_actions(model);
+        if model["switchToggle"] == true && !actions.iter().any(|action| matches!(action, Self::Toggle)) {
+            actions.push(Self::Toggle);
+        }
         if model["connection"].is_object() {
-            actions.extend(Self::CONNECTIONS);
+            if !actions.iter().any(|action| matches!(action, Self::Connect)) {
+                actions.push(Self::Connect);
+            }
+            if model["rows"].as_array().is_some_and(|rows| rows.len() > 1) {
+                actions.push(Self::ConnectAll);
+                actions.push(Self::DisconnectAll);
+            }
         }
         actions
     }
@@ -110,6 +122,9 @@ impl Action {
         let row = row.filter(|row| *row < model["rows"].as_array().map_or(0, Vec::len));
         let allowed = |row: usize, id: &str| model["rows"][row]["can"][id] != false;
         match self {
+            Self::Connect if row.is_none() && model["connection"].is_object() => {
+                model["rows"].as_array().is_some_and(|rows| !rows.is_empty())
+            }
             Self::ConnectAll => model["connection"]["canConnect"] == true,
             Self::DisconnectAll => model["connection"]["canDisconnect"] == true,
             Self::Refresh | Self::Add => true,
@@ -130,11 +145,46 @@ impl Action {
         }
     }
     pub fn row_label(self, model: &Value, row: Option<usize>) -> String {
-        if matches!(self, Self::Connect) && row.is_some_and(|row| model["rows"][row]["connected"] == true) {
-            tr("btn.disconnect").to_owned()
-        } else {
-            self.label(model)
+        if matches!(self, Self::Connect) {
+            match row {
+                Some(row) if model["rows"][row]["connected"] == true => return tr("btn.disconnect").to_owned(),
+                Some(_) => return tr("btn.connect").to_owned(),
+                None if model["connection"].is_object() => {
+                    let count = model["rows"].as_array().map_or(0, Vec::len);
+                    if count == 0 {
+                        return tr("btn.connect").to_owned();
+                    }
+                    if model["connection"]["canConnect"] == true {
+                        return tr(if count > 1 { "btn.connect_all" } else { "btn.connect" }).to_owned();
+                    }
+                    return tr(if count > 1 {
+                        "btn.disconnect_all"
+                    } else {
+                        "btn.disconnect"
+                    })
+                    .to_owned();
+                }
+                _ => {}
+            }
         }
+        self.label(model)
+    }
+    pub fn row_icon(self, model: &Value, row: Option<usize>) -> Icon {
+        if matches!(self, Self::Connect) {
+            let disconnecting = match row {
+                Some(row) => model["rows"][row]["connected"] == true,
+                None => {
+                    model["rows"].as_array().is_some_and(|rows| !rows.is_empty())
+                        && model["connection"]["canConnect"] != true
+                }
+            };
+            return Icon::empty().path(if disconnecting {
+                "icons/unplug.svg"
+            } else {
+                "icons/plug.svg"
+            });
+        }
+        self.icon(model)
     }
 }
 pub type Handler = Rc<dyn Fn(Action, usize, &mut Window, &mut App)>;
@@ -273,9 +323,10 @@ impl TableDelegate for Rows {
                     .accessibility_label(record["name"].as_str().unwrap_or_default().to_owned())
                     .checked(checked)
                     .disabled(
-                        !Action::base_actions(&self.model)
-                            .iter()
-                            .any(|action| matches!(action, Action::Toggle)),
+                        self.model["switchToggle"] != true
+                            && !Action::base_actions(&self.model)
+                                .iter()
+                                .any(|action| matches!(action, Action::Toggle)),
                     )
                     .on_click(move |_, window, cx| action(Action::Toggle, row, window, cx))
                     .into_any_element();
@@ -300,12 +351,19 @@ impl TableDelegate for Rows {
                 .to_owned();
             // A cell that no longer fits ends in an ellipsis instead of running under its neighbour.
             let words = |text: String| {
+                let tip = text.clone();
                 div()
+                    .id(SharedString::from(format!("cell-txt-{row}-{column}")))
                     .min_w_0()
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
                     .child(text)
+                    .when(!tip.is_empty(), |el| {
+                        el.tooltip(move |window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                        })
+                    })
             };
             let mut cell = div().flex().items_center().gap_2().min_w_0().overflow_hidden();
             if let Some(health) = value["health"].as_str() {
@@ -349,7 +407,7 @@ impl TableDelegate for Rows {
             let handler = self.action.clone();
             menu = menu.item(
                 PopupMenuItem::new(action.row_label(&self.model, Some(row)))
-                    .icon(action.icon(&self.model))
+                    .icon(action.row_icon(&self.model, Some(row)))
                     .disabled(!action.enabled(&self.model, Some(row)))
                     .on_click(move |_, window, cx| handler(action, row, window, cx)),
             );
@@ -373,8 +431,8 @@ impl TableDelegate for Rows {
                 Action::actions(&model).into_iter().fold(menu, |menu, action| {
                     let handler = handler.clone();
                     menu.item(
-                        PopupMenuItem::new(action.label(&model))
-                            .icon(action.icon(&model))
+                        PopupMenuItem::new(action.row_label(&model, None))
+                            .icon(action.row_icon(&model, None))
                             .disabled(!action.enabled(&model, None))
                             .on_click(move |_, window, cx| handler(action, usize::MAX, window, cx)),
                     )

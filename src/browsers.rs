@@ -338,7 +338,7 @@ fn find(k: &Known) -> Option<Browser> {
         .filter_map(std::env::var_os)
         .map(PathBuf::from)
         .chain([local.clone()])
-        .chain(local.join("Programs").into_iter())
+        .chain([local.join("Programs")])
         .collect();
     let exe = roots
         .iter()

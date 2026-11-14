@@ -181,7 +181,10 @@ async fn device(path: PathBuf, mouse: bool, keyboard: bool, state: Rc<RefCell<St
     else {
         return;
     };
-    let Ok(fd) = AsyncFd::new(file) else { return };
+    // SAFETY: the owned File keeps this descriptor open and unchanged until AsyncFd drops it.
+    let Ok(fd) = (unsafe { AsyncFd::register(file) }) else {
+        return;
+    };
     let size = std::mem::size_of::<libc::input_event>();
     let mut buf = vec![0u8; size * 64];
     loop {
@@ -218,7 +221,9 @@ pub async fn run(mouse: bool, keyboard: bool, on: Rc<dyn Fn(Ev)>) -> std::io::Re
         return Err(std::io::Error::last_os_error());
     }
     // SAFETY: raw is a fresh fd we own.
-    let ino = AsyncFd::new(unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) })?;
+    let owned = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
+    // SAFETY: OwnedFd keeps the same descriptor open throughout AsyncFd's lifetime.
+    let ino = unsafe { AsyncFd::register(owned) }?;
     // New devices, and permission given to existing ones (the ACL comes as an attribute change).
     // SAFETY: a valid inotify fd and a NUL-terminated path.
     unsafe { libc::inotify_add_watch(raw, c"/dev/input".as_ptr(), libc::IN_CREATE | libc::IN_ATTRIB) };

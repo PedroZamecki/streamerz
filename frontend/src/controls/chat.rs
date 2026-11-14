@@ -687,8 +687,18 @@ impl ChatView {
                                     .gap_1()
                                     .text_xs()
                                     .text_color(theme.muted_foreground)
-                                    .child(Icon::empty().path("icons/corner-up-left.svg").size_3().flex_shrink_0())
-                                    .child(div().min_w_0().truncate().child(format!("@{who}: {said}"))),
+                                    .child({
+                                        let rep = format!("@{who}: {said}");
+                                        let rep_tip = rep.clone();
+                                        div().id("reply-preview").min_w_0().truncate().child(rep).when(
+                                            !rep_tip.is_empty(),
+                                            |el| {
+                                                el.tooltip(move |window, cx| {
+                                                    Tooltip::new(rep_tip.clone()).build(window, cx)
+                                                })
+                                            },
+                                        )
+                                    }),
                             )
                         })
                         .child(div().flex().flex_wrap().items_center().gap_3().children(plat_checks))
@@ -2393,8 +2403,19 @@ impl ChatView {
                     .px_2()
                     .text_xs()
                     .text_color(theme.muted_foreground)
-                    .child(Icon::empty().path("icons/corner-up-left.svg").size_3().flex_shrink_0())
-                    .child(div().flex_1().min_w_0().truncate().child(format!("@{who}: {said}")))
+                    .child({
+                        let rep = format!("@{who}: {said}");
+                        let rep_tip = rep.clone();
+                        div()
+                            .id(SharedString::from(format!("pane-reply-{pane}")))
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(rep)
+                            .when(!rep_tip.is_empty(), |el| {
+                                el.tooltip(move |window, cx| Tooltip::new(rep_tip.clone()).build(window, cx))
+                            })
+                    })
                     .child(
                         Button::new(SharedString::from(format!("reply-cancel-{pane}")))
                             .xsmall()

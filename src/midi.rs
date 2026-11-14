@@ -260,7 +260,8 @@ mod imp {
             .read(true)
             .custom_flags(libc::O_NONBLOCK)
             .open(&d.id)?;
-        let fd = AsyncFd::new(f)?;
+        // SAFETY: the owned File keeps this descriptor open and unchanged until AsyncFd drops it.
+        let fd = unsafe { AsyncFd::register(f) }?;
         let mut p = Parser::default();
         let mut buf = [0u8; 256];
         loop {

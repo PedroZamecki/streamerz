@@ -108,7 +108,20 @@ impl Frontend {
         changes: Arc<Changes>,
         requests_tx: tokio::sync::mpsc::Sender<super::requests::Call>,
     ) -> io::Result<()> {
-        protocol::write(&mut self.input, &json!({"event": "core.ready", "protocol": 1, "navigation": crate::core::navigation::snapshot(), "title": crate::version(), "dark": crate::host::dark_of(&engine.config()), "animations": engine.config().animations, "translations": crate::i18n::snapshot()})).await?;
+        protocol::write(
+            &mut self.input,
+            &json!({
+                "event": "core.ready",
+                "protocol": 1,
+                "navigation": crate::core::navigation::snapshot(),
+                "title": crate::version(),
+                "dark": crate::host::dark_of(&engine.config()),
+                "animations": engine.config().animations,
+                "translations": crate::i18n::snapshot(),
+                "window": &engine.config().window,
+            }),
+        )
+        .await?;
         let mut pending = std::collections::HashMap::<u64, tokio::sync::oneshot::Sender<String>>::new();
         let mut serial = 0u64;
         let mut requests = FuturesUnordered::new();

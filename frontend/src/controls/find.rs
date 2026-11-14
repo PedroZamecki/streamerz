@@ -305,21 +305,37 @@ impl Render for Finder {
                             .text_color(muted)
                             .into_any_element(),
                     })
-                    .child(
+                    .child({
+                        let name = row["name"].as_str().unwrap_or_default().to_owned();
+                        let name_tip = name.clone();
                         div()
+                            .id(SharedString::from(format!("find-name-{at}")))
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .child(row["name"].as_str().unwrap_or_default().to_owned()),
-                    )
-                    .child(
+                            .child(name)
+                            .when(!name_tip.is_empty(), |el| {
+                                el.tooltip(move |window, cx| {
+                                    gpui_kit::component::tooltip::Tooltip::new(name_tip.clone()).build(window, cx)
+                                })
+                            })
+                    })
+                    .child({
+                        let detail = row["detail"].as_str().unwrap_or_default().to_owned();
+                        let detail_tip = detail.clone();
                         div()
+                            .id(SharedString::from(format!("find-detail-{at}")))
                             .w(px(120.))
                             .flex_shrink_0()
                             .truncate()
                             .text_color(muted)
-                            .child(row["detail"].as_str().unwrap_or_default().to_owned()),
-                    )
+                            .child(detail)
+                            .when(!detail_tip.is_empty(), |el| {
+                                el.tooltip(move |window, cx| {
+                                    gpui_kit::component::tooltip::Tooltip::new(detail_tip.clone()).build(window, cx)
+                                })
+                            })
+                    })
                     .child(div().w(px(56.)).flex_shrink_0().when(row["live"] == true, |live| {
                         live.flex()
                             .items_center()

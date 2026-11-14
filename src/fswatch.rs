@@ -161,7 +161,8 @@ mod imp {
         // SAFETY: raw is a fresh fd we own.
         let fd = unsafe { OwnedFd::from_raw_fd(raw) };
         let mut ino = Inotify {
-            fd: AsyncFd::new(fd)?,
+            // SAFETY: OwnedFd keeps this descriptor open and unchanged until AsyncFd drops it.
+            fd: unsafe { AsyncFd::register(fd) }?,
             dirs: HashMap::new(),
         };
         ino.add(&dir, recursive);

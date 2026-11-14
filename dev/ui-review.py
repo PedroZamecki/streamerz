@@ -27,7 +27,7 @@ import uuid
 import harness as smoke
 
 
-PAGES = ("Chat", "Accounts", "Community", "Polls", "Actions", "Commands", "Timers", "Files",
+PAGES = ("Chat", "Stream", "Accounts", "Community", "Polls", "Actions", "Commands", "Timers", "Files",
          "Queues", "Groups", "Plugins", "Servers", "Stream Apps", "Integrations", "Donations",
          "Globals", "History", "Settings", "MCP", "Log", "Crashes", "Backups")
 SIZES = ((1100, 800), (540, 700))

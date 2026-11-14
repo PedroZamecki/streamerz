@@ -66,6 +66,11 @@ impl Engine {
         self.hub.borrow().iter().any(|l| wants(&l.subs, source, kind))
     }
 
+    /// Whether anyone listens to any event of this source.
+    pub fn listening_to(&self, source: &str) -> bool {
+        self.hub.borrow().iter().any(|l| l.subs.contains_key(source))
+    }
+
     /// A connection's current subscriptions changed (an empty set removes it).
     pub fn listen(&self, id: u64, subs: &Subs, tx: &UnboundedSender<Arc<str>>) {
         let mut hub = self.hub.borrow_mut();

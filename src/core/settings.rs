@@ -124,9 +124,27 @@ pub fn model(config: &Config) -> Value {
             _ => format!("ws://{address}:{port}{endpoint}"),
         };
         let password = if settings["enableAuth"] == true { tr("lists.servers.password_tag") } else { "" };
-        Some(json!({"id":kind, "kind":kind, "singleton":true, "name":title(kind), "health":if on { "standby" } else { "off" }, "text":format!("{}: {}, {location}{password}", title(kind), tr(if on { "lists.servers.enabled" } else { "lists.servers.disabled" }))}))
+        let icon = match *kind {
+            "server_websocket" => "radio",
+            "server_http" => "globe",
+            "server_udp" => "zap",
+            "server_stream_deck" => "layers",
+            _ => "server",
+        };
+        Some(json!({
+            "id": kind,
+            "kind": kind,
+            "singleton": true,
+            "name": title(kind),
+            "enabled": on,
+            "icon": icon,
+            "health": if on { "up" } else { "off" },
+            "location": location,
+            "auth": settings["enableAuth"] == true,
+            "text": format!("{}: {}, {location}{password}", title(kind), tr(if on { "lists.servers.enabled" } else { "lists.servers.disabled" }))
+        }))
     }).collect::<Vec<_>>();
-    json!({"kind":"server_settings", "presentation":"settings", "brand":"streamerbot", "title":tr("lists.servers.title"), "guide":tr("lists.servers.state_hint"), "rows":rows, "columns":[], "actions":["edit"]})
+    json!({"kind":"server_settings", "presentation":"settings", "brand":"streamerbot", "title":tr("lists.servers.title"), "guide":tr("lists.servers.state_hint"), "rows":rows, "columns":[], "actions":["toggle", "edit"]})
 }
 
 #[cfg(test)]
@@ -186,5 +204,44 @@ mod tests {
                 "error"
             );
         });
+    }
+
+    #[test]
+    fn server_model_states_use_online_health_and_clear_icons() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let mut config = Config::default();
+        config.websockets.auto_start = true;
+        config.http.auto_start = false;
+        config.udp.auto_start = false;
+        config.stream_deck.auto_start = true;
+
+        let m = model(&config);
+        assert_eq!(m["actions"], json!(["toggle", "edit"]));
+        let rows = m["rows"].as_array().expect("rows array");
+        assert_eq!(rows.len(), 4);
+
+        // WebSocket server: on -> up, radio icon
+        assert_eq!(rows[0]["id"], "server_websocket");
+        assert_eq!(rows[0]["health"], "up");
+        assert_eq!(rows[0]["enabled"], true);
+        assert_eq!(rows[0]["icon"], "radio");
+
+        // HTTP server: off -> off, globe icon
+        assert_eq!(rows[1]["id"], "server_http");
+        assert_eq!(rows[1]["health"], "off");
+        assert_eq!(rows[1]["enabled"], false);
+        assert_eq!(rows[1]["icon"], "globe");
+
+        // UDP server: off -> off, zap icon
+        assert_eq!(rows[2]["id"], "server_udp");
+        assert_eq!(rows[2]["health"], "off");
+        assert_eq!(rows[2]["enabled"], false);
+        assert_eq!(rows[2]["icon"], "zap");
+
+        // Stream Deck server: on -> up, layers icon
+        assert_eq!(rows[3]["id"], "server_stream_deck");
+        assert_eq!(rows[3]["health"], "up");
+        assert_eq!(rows[3]["enabled"], true);
+        assert_eq!(rows[3]["icon"], "layers");
     }
 }

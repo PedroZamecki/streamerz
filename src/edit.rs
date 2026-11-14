@@ -481,6 +481,14 @@ pub fn import(c: &mut Config, x: &Obj) -> Result<Vec<&'static str>, String> {
         }
     }
     merge(&mut c.actions.queues, list("queues"));
+    // A command or a timer in a group makes it a group of actions too (an overlay of that name is then
+    // connected to it).
+    for item in list("commands").iter().chain(list("timers").iter()) {
+        let group = s(item, "group");
+        if !group.is_empty() && !crate::groups::listed(c, group) {
+            c.actions.groups.push(group.into());
+        }
+    }
     merge(&mut c.commands, list("commands"));
     merge(&mut c.timers, list("timers"));
     merge(&mut c.websockets.connections, list("websocketClients"));

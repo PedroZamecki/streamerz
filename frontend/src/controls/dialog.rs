@@ -2,6 +2,7 @@
 //! the body, and a footer that holds the buttons, each part set apart from the next by a line. Pages fill
 //! the parts; they never draw a dialog's frame themselves.
 use gpui_kit::component::{dialog::Dialog, ActiveTheme, WindowExt};
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 /// The header's height: the close button sits in its middle.
@@ -11,6 +12,8 @@ const HEAD: f32 = 40.;
 /// goes in with `.child(body(...))` and its buttons with `.footer(footer(...))`.
 pub fn shell(dialog: Dialog, title: impl Into<SharedString>, width: f32, cx: &App) -> Dialog {
     let theme = cx.theme();
+    let title: SharedString = title.into();
+    let title_tip = title.clone();
     dialog
         .centered()
         .pt(px(0.))
@@ -30,8 +33,18 @@ pub fn shell(dialog: Dialog, title: impl Into<SharedString>, width: f32, cx: &Ap
                 .border_color(theme.border)
                 .text_size(px(13.))
                 .font_weight(FontWeight::BOLD)
-                .text_color(theme.foreground)
-                .child(div().min_w_0().truncate().child(title.into())),
+                .child(
+                    div()
+                        .id("dialog-title")
+                        .min_w_0()
+                        .truncate()
+                        .child(title)
+                        .when(!title_tip.is_empty(), |el| {
+                            el.tooltip(move |window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(title_tip.clone()).build(window, cx)
+                            })
+                        }),
+                ),
         )
 }
 

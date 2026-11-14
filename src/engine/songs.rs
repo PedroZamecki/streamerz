@@ -123,6 +123,7 @@ impl Engine {
         ctx.args.remove("spotifyVolumeSet");
         let result = self.song_run(ctx, o).await;
         self.song_events(ctx, s(o, "operation"), &result);
+        self.song_queue_changed();
         let reply = match &result {
             Ok(()) => {
                 // A vote that skipped the song, and a volume that was set, have replies of their own.
@@ -170,6 +171,7 @@ impl Engine {
     /// Clear Song Requests: forget what is kept (Spotify's own queue is not touched).
     pub(super) fn song_clear(&self, ctx: &mut Ctx) {
         self.songs.borrow_mut().clear();
+        self.song_queue_changed();
         ctx.args.insert("spotifyOk".into(), "true".into());
     }
 
@@ -283,6 +285,7 @@ impl Engine {
                     .clone()
                     .ok_or_else(|| reject(Reason::Other("msgEmpty"), "Nothing is playing."))?;
                 self.songs.borrow_mut().sync(&player);
+                *self.song_playing.borrow_mut() = player.current.as_ref().map(|t| t.uri.clone());
                 self.song_fill(ctx, &t);
                 ctx.args
                     .insert("spotifyPlaying".into(), player.playing.to_string().into());
@@ -291,6 +294,7 @@ impl Engine {
             "next" => {
                 let player = music.player(self).await.map_err(failed)?;
                 self.songs.borrow_mut().sync(&player);
+                *self.song_playing.borrow_mut() = player.current.as_ref().map(|t| t.uri.clone());
                 let t = player
                     .queue
                     .first()
@@ -303,6 +307,7 @@ impl Engine {
                 let text = {
                     let mut songs = self.songs.borrow_mut();
                     songs.sync(&player);
+                    *self.song_playing.borrow_mut() = player.current.as_ref().map(|t| t.uri.clone());
                     tracks_text(player.queue.iter().take(5).enumerate().map(|(i, t)| {
                         let by = songs
                             .requester(&t.uri)
@@ -322,6 +327,7 @@ impl Engine {
                 let text = {
                     let mut songs = self.songs.borrow_mut();
                     songs.sync(&player);
+                    *self.song_playing.borrow_mut() = player.current.as_ref().map(|t| t.uri.clone());
                     tracks_text(player.queue.iter().enumerate().filter_map(|(i, t)| {
                         let r = songs.requester(&t.uri).filter(|r| r.user_id == user_id && !r.skip)?;
                         Some((i + 1, r.track.full()))
@@ -528,6 +534,7 @@ impl Engine {
         let taken = {
             let mut songs = self.songs.borrow_mut();
             songs.sync(&player);
+            *self.song_playing.borrow_mut() = player.current.as_ref().map(|t| t.uri.clone());
             // Moderators can take back someone else's: by the number in the queue, or by name.
             if lvl >= 3 && !target.is_empty() {
                 match target.parse::<usize>() {
@@ -594,6 +601,7 @@ impl Engine {
         {
             let mut songs = self.songs.borrow_mut();
             songs.sync(&player);
+            *self.song_playing.borrow_mut() = player.current.as_ref().map(|t| t.uri.clone());
             songs.check(&rules, user_id, &track, &player)?;
         }
         music.add(self, &track.uri, &player.device_id).await.map_err(failed)?;
@@ -653,19 +661,21 @@ impl Engine {
                         crate::warn(format!("Spotify: {e}"));
                         if failures >= 5 || e.contains("disabled") || e.contains("login is required") {
                             self.songs.borrow_mut().clear();
+                            self.song_queue_changed();
                             return;
                         }
                         WATCH_MAX
                     }
                     Ok(player) => {
                         failures = 0;
-                        *self.song_playing.borrow_mut() = player.current.as_ref().map(|t| t.uri.clone());
                         let due = {
                             let mut songs = self.songs.borrow_mut();
                             let due = player.current.as_ref().is_some_and(|t| songs.take_skip(&t.uri));
                             songs.sync(&player);
+                            *self.song_playing.borrow_mut() = player.current.as_ref().map(|t| t.uri.clone());
                             due
                         };
+                        self.song_queue_changed();
                         if due {
                             if let Err(e) = self.music.playback(self, "next").await {
                                 crate::warn(format!("Spotify: {e}"));
@@ -685,6 +695,43 @@ impl Engine {
                 }
             };
             tokio::time::sleep(self.song_pace.get().unwrap_or(pause)).await;
+        }
+    }
+
+    /// Upcoming requests, without the song playing now or a request taken back. No cached copy.
+    pub fn song_queue_value(&self) -> Value {
+        let playing = self.song_playing.borrow();
+        Value::Array(
+            self.songs
+                .borrow()
+                .pending()
+                .filter(|r| !r.skip && playing.as_deref() != Some(r.track.uri.as_str()))
+                .map(|r| {
+                    serde_json::json!({"user": r.user, "title": r.track.name,
+                "artist": r.track.artist(), "uri": r.track.uri})
+                })
+                .collect(),
+        )
+    }
+
+    fn song_queue_changed(&self) {
+        self.emit("Overlay", "songrequests.queue", || self.song_queue_value());
+    }
+
+    /// The existing local media watcher calls this only on a track change. Spotify remains opt-in;
+    /// no listener, no requests or a disabled integration means no API request and no timer.
+    pub async fn song_queue_refresh(self: &Rc<Self>) {
+        if !self.listening("Overlay", "songrequests.queue")
+            || !self.config().spotify.enabled
+            || self.songs.borrow().pending().next().is_none()
+        {
+            return;
+        }
+        let _turn = self.song_turn.lock().await;
+        if let Ok(player) = self.music.player(self).await {
+            self.songs.borrow_mut().sync(&player);
+            *self.song_playing.borrow_mut() = player.current.as_ref().map(|t| t.uri.clone());
+            self.song_queue_changed();
         }
     }
 
@@ -758,6 +805,50 @@ mod tests {
 
     fn leak() -> &'static FakeMusic {
         Box::leak(Box::default())
+    }
+
+    #[test]
+    fn queue_topic_tracks_requests_removal_playback_and_clear() {
+        run(async {
+            let music = leak();
+            let e = engine(music);
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let mut subs = super::super::events::Subs::new();
+            subs.entry("Overlay".into())
+                .or_default()
+                .insert("songrequests.queue".into());
+            e.listen(44, &subs, &tx);
+            assert_eq!(e.overlay_value("songrequests.queue"), Some(json!([])));
+            let mut a = ctx("ana", json!({}));
+            assert_eq!(go(&e, &mut a, json!({"query": "one"})).await, "true");
+            assert_eq!(e.overlay_value("songrequests.queue").unwrap()[0]["user"], "ana");
+            let event: Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+            assert_eq!(event["event"]["type"], "songrequests.queue");
+            assert_eq!(event["data"][0]["title"], "one");
+            assert_eq!(go(&e, &mut a, json!({"query": "two"})).await, "true");
+            // Disabled Spotify does not touch the player, even with a page and pending requests.
+            *music.track.borrow_mut() = Some(FakeMusic::track("one"));
+            e.song_queue_refresh().await;
+            assert_eq!(e.song_queue_value().as_array().unwrap().len(), 2);
+            e.change(|c| c.spotify.enabled = true);
+            e.song_queue_refresh().await;
+            assert_eq!(e.song_queue_value().as_array().unwrap().len(), 1);
+            assert_eq!(e.song_queue_value()[0]["title"], "two");
+            // A page closing stops refreshes; reopening gets the current snapshot.
+            e.listen(44, &Default::default(), &tx);
+            *music.track.borrow_mut() = Some(FakeMusic::track("two"));
+            e.song_queue_refresh().await;
+            assert_eq!(e.song_queue_value()[0]["title"], "two");
+            e.listen(44, &subs, &tx);
+            e.song_queue_refresh().await;
+            assert_eq!(e.song_queue_value()[0]["title"], "one");
+            // Taking a pending request back excludes it immediately, before the skip watcher runs.
+            e.songs.borrow_mut().take_back_number(1);
+            e.song_queue_changed();
+            assert_eq!(e.song_queue_value(), json!([]));
+            e.song_clear(&mut a);
+            assert_eq!(e.overlay_value("songrequests.queue"), Some(json!([])));
+        });
     }
 
     #[test]

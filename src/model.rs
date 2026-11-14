@@ -27,7 +27,7 @@ pub struct ActionsFile {
     pub rest: Obj,
 }
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Action {
     pub id: String,

@@ -273,7 +273,8 @@ pub async fn run(
     if mouse {
         crate::say("Mouse Click: listening to X11's clicks".into());
     }
-    let fd = tokio::io::unix::AsyncFd::new(conn).map_err(|e| e.to_string())?;
+    // SAFETY: Conn owns this display and its fixed socket; only its Drop closes the connection.
+    let fd = unsafe { tokio::io::unix::AsyncFd::register(conn) }.map_err(|e| e.to_string())?;
     let mut last = (0i64, 0u64, 0i64);
     loop {
         // SAFETY: as above; an event is read only after XPending says one is there.

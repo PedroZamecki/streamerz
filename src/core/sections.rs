@@ -338,13 +338,14 @@ fn integrations(engine: &Rc<Engine>) -> Vec<Value> {
             status(
                 health,
                 text,
-                json!({"id": "configure", "label": tr("btn.configure"), "icon": "sliders-horizontal", "dialog": "spotify"}),
+                json!({"id": "configure", "label": tr("btn.configure"), "icon": "sliders-horizontal", "dialog": "spotify", "icon_only": true, "iconOnly": true}),
             ),
             json!({"about": tr("accounts.spotify.about")}),
         ],
     );
     block["brand"] = "spotify".into();
     block["inline"] = true.into();
+    block["card"] = true.into();
     vec![
         section("", "", vec![json!({"about": tr("accounts.integrations.intro")})]),
         block,
@@ -413,7 +414,7 @@ fn donations(engine: &Rc<Engine>) -> Vec<Value> {
             ("down", tr("lists.donations.not_connected"))
         }
     };
-    let edit = |kind: &str, name: &str| json!({"id": "edit", "label": tr("btn.edit"), "icon": "pencil", "form": kind, "name": name});
+    let edit = |kind: &str, name: &str| json!({"id": "edit", "label": tr("btn.edit"), "icon": "pencil", "form": kind, "name": name, "icon_only": true, "iconOnly": true});
     let (se_health, se_text) = token_status(&donations.streamelements_token, runtime.0);
     let (sl_health, sl_text) = token_status(&donations.streamlabs_token, runtime.1);
     let (drive_health, drive_text) = match (
@@ -427,8 +428,10 @@ fn donations(engine: &Rc<Engine>) -> Vec<Value> {
         ),
     };
     let block = |title: &str, brand: &str, guide: &str, status_row: Value| {
-        let mut block = section(title, "", vec![json!({"about": guide}), status_row]);
+        let mut block = section(title, "", vec![status_row, json!({"about": guide})]);
         block["brand"] = brand.into();
+        block["inline"] = true.into();
+        block["card"] = true.into();
         block
     };
     vec![

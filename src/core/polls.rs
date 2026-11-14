@@ -451,15 +451,20 @@ fn model(seen: &Seen) -> Vec<Value> {
         poll_rows,
         vec![
             tip(
-                json!({"entity": "poll", "id": "new", "label": tr("btn.new_poll"), "icon": "plus", "needs": "none", "enabled": poll[0]}),
+                json!({"entity": "poll", "id": "new", "label": tr("btn.new_poll"), "icon": "plus", "needs": "none", "enabled": poll[0], "top": true, "primary": true}),
                 if seen.ready.iter().any(|ready| *ready) {
                     String::new()
                 } else {
                     tr("polls.accounts_needed").to_string()
                 },
             ),
-            custom("end", "btn.end_poll", "square", poll[1]),
-            "refresh".into(),
+            {
+                let mut b = custom("end", "btn.end_poll", "square", poll[1]);
+                b["top"] = true.into();
+                b["hideDisabled"] = true.into();
+                b
+            },
+            json!({"id": "refresh", "label": tr("btn.refresh"), "icon": "refresh-cw", "top": true, "iconOnly": true}),
         ],
     );
     poll_table["intro"] = tr("polls.hint").into();
@@ -479,7 +484,7 @@ fn model(seen: &Seen) -> Vec<Value> {
         prediction_rows,
         vec![
             tip(
-                json!({"entity": "prediction", "id": "new_prediction", "label": tr("btn.new_prediction"), "icon": "plus", "needs": "none", "enabled": prediction[0]}),
+                json!({"entity": "prediction", "id": "new_prediction", "label": tr("btn.new_prediction"), "icon": "plus", "needs": "none", "enabled": prediction[0], "top": true, "primary": true}),
                 if !twitch_down.is_empty() {
                     twitch_down.clone()
                 } else if !prediction[0] {
@@ -488,14 +493,32 @@ fn model(seen: &Seen) -> Vec<Value> {
                     String::new()
                 },
             ),
-            tip(custom("lock", "btn.lock", "lock", prediction[1]), twitch_down.clone()),
             tip(
-                custom("resolve", "btn.resolve", "trophy", prediction[2]),
+                {
+                    let mut b = custom("lock", "btn.lock", "lock", prediction[1]);
+                    b["top"] = true.into();
+                    b["hideDisabled"] = true.into();
+                    b
+                },
+                twitch_down.clone(),
+            ),
+            tip(
+                {
+                    let mut b = custom("resolve", "btn.resolve", "trophy", prediction[2]);
+                    b["top"] = true.into();
+                    b["hideDisabled"] = true.into();
+                    b
+                },
                 twitch_down.clone(),
             ),
             danger(confirm(
                 tip(
-                    custom("cancel", "btn.cancel_prediction", "x", prediction[3]),
+                    {
+                        let mut b = custom("cancel", "btn.cancel_prediction", "x", prediction[3]);
+                        b["top"] = true.into();
+                        b["hideDisabled"] = true.into();
+                        b
+                    },
                     twitch_down.clone(),
                 ),
                 tr("polls.cancel_ask").into(),
