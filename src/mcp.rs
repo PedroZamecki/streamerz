@@ -37,8 +37,23 @@ fn server() -> crate::agents::Server {
 
 /// (name, description, input schema properties, required)
 const TOOLS: &[(&str, &str, &str, &[&str])] = &[
+    ("prompts", "Read pending core input, confirmation and choice prompts. Reading does not consume them; they survive closing the frontend.", "{}", &[]),
+    ("answer_prompt", "Answer a pending prompt exactly once: a string for input, a boolean for confirmation, an option ID for a choice. Null cancels input or a choice.", r#"{"promptId":{"type":"integer"},"value":{}}"#, &["promptId","value"]),
+    ("connection", "Connect, disconnect or refresh OBS Studio or Streamlabs Desktop. Omit itemId for all configured connections. Refresh only reads state.", r#"{"kind":{"type":"string","enum":["obs_connection","slobs_connection"]},"action":{"type":"string","enum":["connect","disconnect","refresh"]},"itemId":{"type":"string"}}"#, &["kind","action"]),
+    ("core_view", "Read a core list model, including semantic cells and current connection state, without a frontend.", r#"{"domain":{"type":"string","enum":["commands","timers","files","stream_apps","servers","queues","globals","history","backups","crashes","settings","notifications","donations","groups","plugins","mcp","community","integrations","polls","user_card","accounts","tiktok_sending","actions","actions_picker","overlays"]},"itemId":{"type":"string","description":"The row id for user_card (platform|user id)"},"actionId":{"type":"string","description":"actions: the action (id, or the a:<id> row id) whose triggers and sub-actions to include"},"kind":{"type":"string","description":"actions_picker: trigger, sub or template"},"view":{"type":"object","description":"A page's view state by table kind: {\"tab\":\"quote\",\"community_user\":{\"sort\":{\"column\":\"name\",\"desc\":false},\"hidden\":[\"tiktok\"]}}"}}"#, &["domain"]),
+    ("core_status", "How many of the connections that are set up are up, and each one's state.", r#"{}"#, &[]),
+    ("core_save", "Write the settings to disk now.", r#"{}"#, &[]),
+    ("core_action", "Run a page operation from a core_view model's actions (for example queues: pause, pause_all; history: run_again, clear; backups: backup_now, restore, delete; crashes: delete; community: card, card_group (itemId platform|user id|group id), open_profile, quote_delete, credits_reset, credits_test; polls: end, lock, resolve, cancel, refresh, started with entity_form/edit_entity kinds poll and prediction). accounts: <platform>.connect, .disconnect, .login, .logout, .bot_login, .bot_logout, .channel (twitch.login, kick.channel; logins and the channel search open prompts to answer with answer_prompt), unlock; tiktok_sending: setup:N, retry, remove, copy_path; connections: retry with itemId the connection key from core_status; Advanced settings are entity_form/edit_entity kinds account_twitch, account_youtube, account_kick, account_tiktok. itemId is the row id from the model. overlays (the Overlays page; rows are pages, id <group>:<file>): copy_url, add_to_obs (a dock page gets the OBS steps instead), open, test (made-up chat, alert and song to that overlay's open pages), open_folder, delete, guide; overlay_examples (the bundled examples, rows by slug): add_example; its forms are entity_form kinds overlay:settings:<row id>, overlay:page:<row id> (title, size, dock, what the pages may do), overlay:export:<row id> (writes the .streamerz file), overlay:import (a file path or https address; asks before it installs) and overlay:new. actions (the Actions page; core_view actions with actionId lists groups, actions and the open action's triggers and sub-actions; ids are a:<action id>, g:<group>, or the trigger or sub-action id): action_toggle, action_delete, action_run, action_move (to=group), group_delete, group_icon_clear, template_add (code=template name), and with actionId and itemId: trigger_toggle, trigger_delete, trigger_help, sub_toggle, sub_delete, sub_help, sub_up, sub_down, sub_in, sub_out, sub_move (to=target). Forms are entity_form kinds act:action_add, act:action_edit, act:action_duplicate, act:group_add, act:group_rename, act:group_icon, act:group_settings, act:import, act:export, act:trigger_add (actionId, code), act:trigger_edit, act:trigger_test, act:sub_add (actionId, code, anchor), act:sub_edit; use the kind in the reply with edit_entity.", r#"{"domain":{"type":"string","enum":["queues","history","backups","crashes","settings","groups","community","plugins","mcp","polls","accounts","tiktok_sending","connections","actions","overlays","overlay_examples"]},"action":{"type":"string"},"itemId":{"type":"string"},"actionId":{"type":"string","description":"actions: the open action, for trigger_* and sub_* operations"},"code":{"type":"string","description":"actions: the picked template name (template_add)"},"to":{"type":"string","description":"actions: the group (action_move) or the target sub-action id (sub_move)"}}"#, &["domain", "action"]),
+    ("core_setting", "Change one setting of a core_view sections page (settings, notifications) by its row key. Choices are their index, switches true/false, text a string. mcp: address, port and endpoint (the MCP page's connection).", r#"{"domain":{"type":"string","enum":["settings","notifications","mcp"]},"key":{"type":"string"},"value":{}}"#, &["domain", "key", "value"]),
+    ("entity_form", "Read a core entity form, including current values and field types. Omit itemId for a new item. Action editor forms (kinds act:...) also take actionId, code (the trigger or sub-action type, from core_view actions_picker) and anchor (the sub-action to add beside); use the kind in the reply when saving.", r#"{"kind":{"type":"string"},"itemId":{"type":"string"},"actionId":{"type":"string"},"code":{"type":"string"},"anchor":{"type":"string"}}"#, &["kind"]),
+    ("edit_entity", "Save changed fields or JSON through core validation. Changes use field indexes from entity_form. JSON must keep the item ID.", r#"{"kind":{"type":"string"},"itemId":{"type":"string"},"changes":{"type":"array","items":{"type":"object"}},"json":{"type":"string"}}"#, &["kind"]),
+    ("entity_draft", "Validate changed fields or JSON and return an unsaved draft. This does not write settings.", r#"{"kind":{"type":"string"},"itemId":{"type":"string"},"changes":{"type":"array","items":{"type":"object"}},"json":{"type":"string"}}"#, &["kind"]),
+
+    ("run_subaction", "Execute a sub-action directly on the core and return its resulting arguments. This performs real operations. Use describe first.", r#"{"item":{"type":"object"}}"#, &["item"]),
+    ("describe_entity", "Shared fields and a default item for a configurable core entity. Works without a frontend or a running instance.", r#"{"kind":{"type":"string","enum":["command","timer","file_watcher","file_tail","websocket_client","websocket_server","obs_connection","slobs_connection","server_websocket","server_http","server_udp","server_stream_deck"]}}"#, &["kind"]),
+    ("core_read", "Read a core domain without a frontend. Account credentials are omitted.", r#"{"domain":{"type":"string","enum":["actions","commands","timers","files","queues","groups","globals","community","history","chat","polls","accounts","servers","stream_apps","integrations","donations","plugins","settings","log","crashes","backups","mcp"]}}"#, &["domain"]),
     ("action_history", "Recent action runs, reported errors, failed step type and skipped steps. Completed means no error was reported, not a remote delivery receipt.", "{}", &[]),
-    ("tiktok_gifts", "Read the current live's dynamic gift catalog (IDs, names, coin values, combo support and pictures). Refresh uses the paired browser account.", r#"{"refresh":{"type":"boolean"}}"#, &[]),
+    ("tiktok_gifts", "Read TikTok's gift catalog (IDs, names, coin values, combo support and pictures). Refresh loads the live room's list through the paired browser account while live, else TikTok's public list.", r#"{"refresh":{"type":"boolean"}}"#, &[]),
     ("preview_gift_trigger", "Test a TikTok gift against an exact ID, combo phase and total coin bounds. Uses the live matcher. Offline and sends nothing.", r#"{"trigger":{"type":"object"},"gift":{"type":"object"}}"#, &["trigger","gift"]),
     ("status", "What's connected (Twitch, YouTube, Kick, TikTok, OBS, Streamlabs Desktop, StreamElements, Streamlabs), the version, and how many actions, commands and timers are set up.", "{}", &[]),
     ("log", "The last lines of Streamerz's log. Needs STREAMERZ_DEV=1.", r#"{"lines": {"type": "integer", "description": "How many (default 50)", "minimum": 0}}"#, &[]),
@@ -48,20 +63,25 @@ const TOOLS: &[(&str, &str, &str, &[&str])] = &[
     ("list_triggers", "Trigger type codes and names (e.g. 101 TwitchFollow), filtered by a word.", r#"{"filter": {"type": "string"}}"#, &[]),
     ("fire_trigger", "Fire a trigger (code or name) with arguments as its platform would: every action using it runs. Returns how many ran. Needs STREAMERZ_DEV=1.", r#"{"trigger": {"type": ["integer", "string"]}, "args": {"type": "object", "description": "e.g. {\"user\": \"ana\", \"viewers\": 10}"}}"#, &["trigger"]),
     ("inject_chat", "A fake chat message from a platform, run through the commands; returns how many ran and what streamerz would have sent back (nothing is sent). Needs STREAMERZ_DEV=1.", r#"{"platform": {"type": "string", "enum": ["twitch", "youtube", "kick", "tiktok"]}, "user": {"type": "string"}, "userId": {"type": "string", "description": "A real account's id, so its user card can be tried; the name otherwise"}, "role": {"type": "string", "enum": ["viewer", "subscriber", "vip", "moderator", "broadcaster"]}, "text": {"type": "string"}, "badges": {"type": "array", "description": "As Streamer.bot's badges: [{\"name\": \"broadcaster\", \"version\": 1, \"imageUrl\": \"https://...\"}]"}, "args": {"type": "object", "description": "More of what the message carries, as the trigger's arguments (messageType, messageRewardId, messageRewardTitle, messageRewardCost, messageRewardImage...)"}}"#, &["platform", "text"]),
+    ("chat", "The Chat page's model and operations, as the app's Chat page uses them. op read: the lines newer than seq (omit seq for all) with the platforms bar; send: text to platform (or all connected) with an optional replySeq; act: delete, timeout (secs), ban (confirmed true skips the prompt), pin (secs 30 to 1800, 0 until the stream ends) or unpin on the line seq; card: a chatter's card from the line seq (lookup true asks the platform and answers pending until done; prefetch true only starts the asking); clear: empty the view; show: hide or show a platform's chat; reconnect: connect platform's chat again; suggest: the commands (after /) or names (after @) for text typed in platform's box, with cursor; view: what the Chat page shows (all, side, or a platform id); sender: send as broadcaster or bot; emotes: the picker tabs and sections for platform (provider tab id, query searches every tab); favorite: toggle an emote (name, url) in the favorites; images: files for picture URLs. Sending in dev mode (STREAMERZ_DEV=1) keeps the message instead of sending.", r#"{"op":{"type":"string","enum":["read","send","act","card","clear","show","view","reconnect","suggest","sender","emotes","favorite","images"]},"seq":{"type":"integer"},"gen":{"type":"integer"},"have":{"type":"integer"},"platform":{"type":"string"},"text":{"type":"string"},"replySeq":{"type":"integer"},"act":{"type":"string","enum":["reply","copy","pin","unpin","delete","timeout","ban"]},"secs":{"type":"integer"},"confirmed":{"type":"boolean"},"shown":{"type":"boolean"},"view":{"type":"string"},"cursor":{"type":"integer"},"lookup":{"type":"boolean"},"prefetch":{"type":"boolean"},"broadcaster":{"type":"boolean"},"urls":{"type":"array","items":{"type":"string"}},"provider":{"type":"string","enum":["favorites","platform","7tv","bttv","ffz","emoji"]},"query":{"type":"string"},"name":{"type":"string"},"url":{"type":"string"}}"#, &["op"]),
     ("chat_out", "The chat messages streamerz would have sent since the last call (dev mode keeps them instead of sending). Needs STREAMERZ_DEV=1.", "{}", &[]),
     ("list_subactions", "Sub-action type codes and names (e.g. 10 TwitchSendMessage), filtered by a word.", r#"{"filter": {"type": "string"}}"#, &[]),
     ("describe", "What a sub-action or trigger type does and its fields (JSON key, label, what it holds), plus a new one ready to fill in. Use before writing one.", r#"{"kind": {"type": "string", "enum": ["subaction", "trigger"]}, "code": {"type": "integer"}}"#, &["kind", "code"]),
-    ("get", "What's set up: all actions, commands, timers, user groups or queues, or one by id or name, as stored (Streamer.bot's shapes).", r#"{"what": {"type": "string", "enum": ["action", "command", "timer", "group", "queue"]}, "id": {"type": "string"}, "name": {"type": "string"}}"#, &["what"]),
-    ("save", "Add or replace an action, command, timer, user group or queue (same id replaces; no id adds one). For an action: {name, group, enabled, triggers: [...], subActions: [...]}, items from describe. Applies at once.", r#"{"what": {"type": "string", "enum": ["action", "command", "timer", "group", "queue"]}, "item": {"type": "object"}}"#, &["what", "item"]),
-    ("delete", "Delete an action, command, timer, user group or queue by id.", r#"{"what": {"type": "string", "enum": ["action", "command", "timer", "group", "queue"]}, "id": {"type": "string"}}"#, &["what", "id"]),
+    ("get", "What's set up: all actions, commands, timers, user groups or queues, or one by id or name, as stored (Streamer.bot's shapes).", r#"{"what": {"type": "string", "enum": ["action", "command", "timer", "group", "queue", "file_watcher", "file_tail", "websocket_client", "websocket_server", "obs_connection", "slobs_connection"]}, "id": {"type": "string"}, "name": {"type": "string"}}"#, &["what"]),
+    ("save", "Add or replace an action, command, timer, user group or queue (same id replaces; no id adds one). For an action: {name, group, enabled, triggers: [...], subActions: [...]}, items from describe. Applies at once.", r#"{"what": {"type": "string", "enum": ["action", "command", "timer", "group", "queue", "file_watcher", "file_tail", "websocket_client", "websocket_server", "obs_connection", "slobs_connection"]}, "item": {"type": "object"}}"#, &["what", "item"]),
+    ("delete", "Delete an action, command, timer, user group or queue by id.", r#"{"what": {"type": "string", "enum": ["action", "command", "timer", "group", "queue", "file_watcher", "file_tail", "websocket_client", "websocket_server", "obs_connection", "slobs_connection"]}, "id": {"type": "string"}}"#, &["what", "id"]),
     ("new_action", "A new, empty action (name, group) ready to fill with triggers and sub-actions from describe, then save.", r#"{"name": {"type": "string"}, "group": {"type": "string"}}"#, &["name"]),
-    ("manage_action_group", "Create, rename, or delete an action group. Deleting ungroups its actions and removes its variables and icon.", r#"{"operation": {"type": "string", "enum": ["create", "rename", "delete"]}, "group": {"type": "string"}, "name": {"type": "string"}}"#, &["operation", "group"]),
-    ("list_action_groups", "List action groups.", "{}", &[]),
+    ("manage_action_group", "Create, rename, or delete a group of actions. Creating one with the name of an overlay connects them. Deleting ungroups its actions and removes its variables and icon; an overlay connected to it stays, with its pages and settings (overlayKept).", r#"{"operation": {"type": "string", "enum": ["create", "rename", "delete"]}, "group": {"type": "string"}, "name": {"type": "string"}}"#, &["operation", "group"]),
+    ("list_action_groups", "The groups of actions (groups), which of them have an overlay connected (connected), and every overlay (overlays). An overlay with no actions is not a group.", "{}", &[]),
     ("action_group_icon", "Read, set, or remove a group icon. Set icon to null to remove it; icons contain format, sha256 and base64 data.", r#"{"group": {"type": "string"}, "icon": {"type": ["object", "null"]}}"#, &["group"]),
     ("export_actions", "Export selected action IDs with group variables and icons.", r#"{"ids": {"type": "array", "items": {"type": "string"}}, "meta": {"type": "object"}}"#, &["ids"]),
     ("import_actions", "Import an export object; confirm programs before setting allowPrograms.", r#"{"export": {"type": "object"}, "allowPrograms": {"type": "boolean"}}"#, &["export"]),
-    ("group_meta", "A group's description, declared settings (name, label, kind text|integer|number|boolean|duration, default; a duration is milliseconds), files (name, base64 content) and the commands and timers it lists.", r#"{"group": {"type": "string"}}"#, &["group"]),
-    ("set_group_meta", "Replace a group's description, settings, files and listed command and timer ids. New settings get their default value. Actions read a setting as %group.name%.", r#"{"group": {"type": "string"}, "meta": {"type": "object"}}"#, &["group", "meta"]),
+    ("group_meta", "A group's description, declared settings (name, label, kind text|lines|integer|number|slider (with min, max, step)|boolean|choice (with options)|color (#rrggbb or #rrggbbaa)|font (an installed font's name)|duration, default, and optionally description, section (a heading above it) and showIf {setting, is} (shown only while that choice or boolean has that value); a duration is milliseconds), files (name and size; with files=true also their base64 content) and the commands and timers it lists.", r#"{"group": {"type": "string"}, "files": {"type": "boolean", "description": "Include the files' contents"}}"#, &["group"]),
+    ("set_group_meta", "Replace a group's description, settings, files and listed command and timer ids. A file is {name, content (base64)}; a name may have folders (img/wheel.png); one listed without content is kept as it is, one left out is deleted. New settings get their default value. Actions read a setting as %group.name%.", r#"{"group": {"type": "string"}, "meta": {"type": "object"}}"#, &["group", "meta"]),
+    ("template_check", "What to fix in a group before sharing it as a template: missing version, author or description, pages not listed, links to files that are not there, permissions its pages use but it does not ask for, text that looks like a login.", r#"{"group": {"type": "string"}}"#, &["group"]),
+    ("template_export", "Pack a group into one .streamerz file (a zip: template.json, actions.json, files/) for others to import: its actions, commands, timers, settings, pages and files. Written to path, or returned as base64 content. The values set here stay out unless values=true. Describe the template first with set_group_meta: meta.template {version, author, link, picture, pages: [{file, title, width, height, dock}], requires: [twitch|youtube|kick|tiktok|obs|spotify]} and meta.permissions.", r#"{"group": {"type": "string"}, "path": {"type": "string", "description": "Where to write the file; .streamerz is added"}, "values": {"type": "boolean"}}"#, &["group"]),
+    ("template_inspect", "Read a .streamerz file without changing anything: its name, author and version, what is inside, what its pages may do (new: true for what the group here does not have yet), what it needs, the programs it would run, and whether it is new, an update of a group here, or replaces a group of the same name.", r#"{"path": {"type": "string"}, "content": {"type": "string", "description": "The file as base64"}, "url": {"type": "string", "description": "An https address of the file"}}"#, &[]),
+    ("template_import", "Install a .streamerz file: into the group it updates (found by its id, under the name it has here) or a new group. Values already set stay; new settings start at their defaults. Run template_inspect first and confirm programs before setting allowPrograms.", r#"{"path": {"type": "string"}, "content": {"type": "string"}, "url": {"type": "string"}, "allowPrograms": {"type": "boolean"}}"#, &[]),
     ("export_group", "Export a whole group (actions, commands, timers, settings, files, icon) as an import string for others to import.", r#"{"group": {"type": "string"}, "meta": {"type": "object"}}"#, &["group"]),
     ("save_group_files", "Write a group's files into an existing folder, never replacing a file.", r#"{"group": {"type": "string"}, "folder": {"type": "string"}}"#, &["group", "folder"]),
     ("list_templates", "The ready-made templates (like the subathon timer) you can add.", "{}", &[]),
@@ -70,10 +90,21 @@ const TOOLS: &[(&str, &str, &str, &[&str])] = &[
     ("set_group_variables", "Replace persistent variables for an action group.", r#"{"group": {"type": "string"}, "values": {"type": "object"}}"#, &["group", "values"]),
     ("song_request_template", "The Spotify song request template as data: its actions, commands and group settings. add_template installs it.", "{}", &[]),
     ("connectors", "Each connector behind a port (OBS connections and whether they are connected, Spotify enabled and signed in), without secrets.", "{}", &[]),
+    ("obs_outputs", "Discover stream outputs on connected OBS: main stream, Aitum Stream Suite, Multistream, Vertical and Multi-RTMP websocket fork. Returns opaque IDs, known state, platform hints and API limitations. Does not connect OBS or read plugin files. Omit connectionId only with exactly one connected OBS.", r#"{"connectionId":{"type":"string"}}"#, &[]),
+    ("obs_outputs_control", "Start or stop selected stream output IDs returned by obs_outputs, on the same connection. Returns each result separately. requested means queued, not live: call obs_outputs to inspect actual state. Never starts unselected main output. Main-stream shared encoders must be live before dependent outputs start.", r#"{"connectionId":{"type":"string"},"op":{"type":"string","enum":["start","stop"]},"outputs":{"type":"array","items":{"type":"string"},"minItems":1}}"#, &["op", "outputs"]),
     ("obs_request", "A raw obs-websocket request through the OBS port, e.g. GetSceneList. Acts on the real OBS. Needs STREAMERZ_DEV=1.", r#"{"requestType": {"type": "string"}, "requestData": {"type": "object"}, "connectionId": {"type": "string", "description": "Default: the first connected"}}"#, &["requestType"]),
     ("spotify_current", "Read the current Spotify track, or null when unavailable. API playback needs Spotify enabled and signed in.", r#"{}"#, &[]),
     ("spotify_local", "Read Spotify's local Windows media session without an API login. Local information cannot control the Spotify API queue.", r#"{}"#, &[]),
-    ("overlays", "The overlays (HTML files in action groups) with their URLs for an OBS browser source, and the topics that have a value. An overlay page reads its group's settings from streamerz.settings, a topic with streamerz.on(topic, fn) (built in: viewers, ad) and any event with streamerz.event('Source.Type', fn).", "{}", &[]),
+    ("overlays", "Every overlay (web pages Streamerz serves for an OBS browser source or dock): its pages with their URLs and sizes, files, permissions, how many of its pages are open now, and whether a group of actions is connected to it (connected, holds). Also the topics that have a value. An overlay needs no group of actions; one is connected when its pages run actions or its actions read its settings. Read guide overlays for the page API (window.streamerz).", "{}", &[]),
+    ("overlay_read", "One overlay in full: its declared settings (name, label, kind, default, options, min, max, step, section, showIf), the values set, its pages (file, title, width, height, dock), files with sizes, permissions, folder on disk and what Test adds. With file, that file's text (or base64 content when it is not text).", r#"{"overlay": {"type": "string"}, "file": {"type": "string", "description": "A file to read too, e.g. index.html"}}"#, &["overlay"]),
+    ("overlay_save", "Create an overlay or change one in one call; only what is given changes. files maps a file name (folders allowed: img/a.png) to its text; filesBase64 does the same for pictures, sounds and fonts; remove deletes files. settings replaces the declared settings ([{name, label, kind, default, ...}], kinds as in group_meta); values sets some of them; permissions is a list of chat.read, alerts.read, chat.send, actions.run, values.write; pages replaces the page list ([{file, title, width, height, dock}]); test is {topics: {name: value}, events: [[name, data]]} that Test also sends; connect true gives it a group of actions of its name (or names an existing group to connect). A new overlay with no page gets the commented starter page. Returns its pages with URLs and checks (what to fix). An open page loads again by itself when a file changes.", r#"{"overlay": {"type": "string", "description": "Its name"}, "files": {"type": "object"}, "filesBase64": {"type": "object"}, "remove": {"type": "array", "items": {"type": "string"}}, "settings": {"type": "array", "items": {"type": "object"}}, "values": {"type": "object"}, "permissions": {"type": "array", "items": {"type": "string"}}, "pages": {"type": "array", "items": {"type": "object"}}, "description": {"type": "string"}, "requires": {"type": "array", "items": {"type": "string"}}, "test": {"type": "object"}, "dock": {"type": "boolean", "description": "New pages are for an OBS dock"}, "connect": {"type": ["boolean", "string"]}}"#, &["overlay"]),
+    ("overlay_delete", "Delete one file of an overlay, or with no file the whole overlay (pages, files, settings). Actions connected to it are never deleted: their group stays in Actions (groupKept).", r#"{"overlay": {"type": "string"}, "file": {"type": "string"}}"#, &["overlay"]),
+    ("overlay_test", "Send made-up data to an overlay's open pages only (nothing reaches the chat, the actions or other overlays): by default a chat message, an event, a TikTok gift and a song, the next ones at each round. Or exactly your own: events [[\"Twitch.Follow\", {...}], [\"Chat.Line\", {...}]] and topics {name: value}. Fails when none of its pages is open (open one in OBS or a browser, or use overlay_shot with test).", r#"{"overlay": {"type": "string"}, "rounds": {"type": "integer", "minimum": 1, "maximum": 20}, "events": {"type": "array"}, "topics": {"type": "object"}}"#, &["overlay"]),
+    ("overlay_inspect", "What an overlay is doing now: its open pages and the topics and events each listens to, the last messages sent to them, what the pages logged (streamerz.log) and the errors of their scripts with the line, the topics that hold a value and its settings' values. The way to debug a page that shows nothing.", r#"{"overlay": {"type": "string"}}"#, &["overlay"]),
+    ("overlay_shot", "A PNG of an overlay page as a browser draws it, with no window: a Chromium browser on this computer opens the page headless. test sends that many rounds of made-up chat, events, gift and song first; waitMs is how long the page is left to draw (default 1500); background is #rrggbb or transparent (default dark grey). Returns the PNG's path, what the page's console said and its script errors. Needs the HTTP server on.", r#"{"overlay": {"type": "string"}, "file": {"type": "string"}, "path": {"type": "string", "description": "Where to write the PNG (default: the temporary folder)"}, "width": {"type": "integer"}, "height": {"type": "integer"}, "waitMs": {"type": "integer"}, "test": {"type": "integer", "minimum": 0, "maximum": 20}, "background": {"type": "string"}}"#, &["overlay"]),
+    ("overlay_add_to_obs", "Add an overlay page to OBS as a browser source of the page's size in the scene on air (a source of that name is pointed at the page again, never doubled). A dock page gives the steps instead, since OBS has no request for docks. Acts on the real OBS.", r#"{"overlay": {"type": "string"}, "file": {"type": "string"}}"#, &["overlay"]),
+    ("overlay_connect", "Connect an overlay to a group of actions, or disconnect it. Connected, its pages can run the group's actions (permission actions.run) and those actions read its settings as %group.name%. With no group it gets a new empty group of its own name; with one, that group's actions, commands, timers and settings move under the overlay's name. disconnect true takes the group out of Actions (its actions stay, ungrouped) and keeps the overlay.", r#"{"overlay": {"type": "string"}, "group": {"type": "string"}, "disconnect": {"type": "boolean"}}"#, &["overlay"]),
+    ("overlay_examples", "The overlays that come with Streamerz (clock, now playing, chat, alerts, TikTok gifts, poll, prize wheel...), each readable as a starting point: slug, name, what it shows and whether it is here. With add, installs or updates that one; then overlay_read gives its files.", r#"{"add": {"type": "string", "description": "The slug of the example to add"}}"#, &[]),
     ("overlay_publish", "Set an overlay topic: the pages listening show it at once. The value is any JSON. The Overlay sub-action (type 99880, fields topic and value) does the same from an action.", r#"{"topic": {"type": "string"}, "value": {}}"#, &["topic"]),
     ("tiktok_bridge", "Sending to TikTok LIVE chat through the user's browser (the Streamerz for TikTok extension): status (set up, connected, the browser's TikTok account, the extension folder to load unpacked), install (sets it up and writes the extension) or remove. Messages then go out with the chat tools and the TikTok Send Message sub-action (43001).", r#"{"action": {"type": "string", "enum": ["status", "install", "login", "remove"]}}"#, &[]),
     ("countdown", "Read a template countdown by its clock ID.", r#"{"clockId": {"type": "string"}}"#, &["clockId"]),
@@ -240,6 +271,20 @@ impl Client {
             "tiktok_gifts" => self.ask(json!({"request":"StreamerzTikTokGifts", "refresh":a["refresh"]})).await,
             "preview_gift_trigger" => crate::tiktok::gifts::preview(
                 a["trigger"].as_object().ok_or("trigger must be an object")?, &a["gift"]),
+            "entity_form" => self.ask(json!({"request": "StreamerzEntityForm", "kind": s("kind"), "itemId": s("itemId"), "actionId": s("actionId"), "code": s("code"), "anchor": s("anchor")})).await,
+            "prompts" => self.ask(json!({"request": "StreamerzPrompts"})).await,
+            "answer_prompt" => self.ask(json!({"request": "StreamerzAnswerPrompt", "promptId": a["promptId"], "value": a["value"]})).await,
+            "connection" => self.ask(json!({"request": "StreamerzConnection", "kind": s("kind"), "itemId": s("itemId"), "action": s("action")})).await,
+            "core_view" => self.ask(json!({"request": "StreamerzCoreView", "domain": s("domain"), "itemId": s("itemId"), "actionId": s("actionId"), "kind": s("kind"), "view": a["view"]})).await,
+            "core_status" => self.ask(json!({"request": "StreamerzCoreStatus"})).await,
+            "core_save" => self.ask(json!({"request": "StreamerzCoreSave"})).await,
+            "core_setting" => self.ask(json!({"request": "StreamerzCoreSetting", "domain": s("domain"), "key": s("key"), "value": a["value"]})).await,
+            "core_action" => self.ask(json!({"request": "StreamerzCoreAction", "domain": s("domain"), "action": s("action"), "itemId": s("itemId"), "actionId": s("actionId"), "code": s("code"), "to": s("to")})).await,
+            "edit_entity" => self.ask(json!({"request": "StreamerzEditEntity", "kind": s("kind"), "itemId": s("itemId"), "changes": a["changes"], "json": a["json"]})).await,
+            "entity_draft" => self.ask(json!({"request": "StreamerzEntityDraft", "kind": s("kind"), "itemId": s("itemId"), "changes": a["changes"], "json": a["json"]})).await,
+            "describe_entity" => crate::automation::entities::describe(&s("kind")),
+            "run_subaction" => self.ask(json!({"request": "StreamerzRunSubaction", "item": a["item"]})).await,
+            "core_read" => self.ask(json!({"request": "StreamerzCoreRead", "domain": s("domain")})).await,
             "status" => self.ask(json!({"request": "GetStatus"})).await,
             "log" => {
                 self.ask(json!({"request": "GetLog", "lines": a["lines"].as_u64().unwrap_or(50)}))
@@ -289,6 +334,20 @@ impl Client {
                 let out = self.ask(json!({"request": "GetChatOut"})).await?;
                 Ok(json!({"ran": r["ran"], "chatOut": out["messages"]}))
             }
+            "chat" if s("op") == "read" => {
+                let mut request = json!({"request": "StreamerzCoreView", "domain": "chat"});
+                for key in ["seq", "gen", "have"] {
+                    request[key] = a[key].clone();
+                }
+                self.ask(request).await
+            }
+            "chat" => {
+                let mut request = json!({"request": "StreamerzChat", "op": s("op")});
+                for key in ["seq", "platform", "text", "replySeq", "act", "secs", "confirmed", "shown", "view", "cursor", "lookup", "prefetch", "broadcaster", "urls", "provider", "query", "name", "url"] {
+                    request[key] = a[key].clone();
+                }
+                self.ask(request).await
+            }
             "chat_out" => self.ask(json!({"request": "GetChatOut"})).await,
             "list_subactions" => {
                 let f = s("filter").to_lowercase();
@@ -300,53 +359,8 @@ impl Client {
                 Ok(json!({ "subActions": list }))
             }
             "describe" => {
-                let code = a["code"].as_u64().ok_or("code: a number")?;
-                let sub = s("kind") == "subaction";
-                let table = if sub {
-                    crate::types::SUB_ACTIONS
-                } else {
-                    crate::types::TRIGGERS
-                };
-                let name = crate::types::name(table, code as u32).ok_or(format!("no {} {code}", s("kind")))?;
-                use crate::ui::{forms, picker};
-                let cat = if sub {
-                    String::new()
-                } else {
-                    picker::trigger_categorize(name)
-                };
-                let (about, fields, new) = if sub {
-                    (
-                        picker::sub_action_description(code as u32, name, &cat),
-                        forms::sub_fields(code),
-                        Value::Object(crate::edit::new_sub(code)),
-                    )
-                } else {
-                    let title = picker::trigger_clean_title(name);
-                    (
-                        picker::trigger_description(code as u32, name, &title, &cat),
-                        forms::trigger_fields(code),
-                        Value::Object(crate::edit::new_trigger(code as u32)),
-                    )
-                };
-                let form_state = match fields {
-                    Some([]) => "no_settings",
-                    Some(_) => "form",
-                    None => "json",
-                };
-                let fields: Vec<Value> = fields
-                    .unwrap_or(&[])
-                    .iter()
-                    .filter(|f| !f.0.is_empty())
-                    .map(|(k, l, w)| json!({"key": k, "label": forms::field_label(l), "holds": w.about()}))
-                    .collect();
-                let kind = if sub { "subaction" } else { "trigger" };
-                let docs = crate::docs::entry(kind, code as u32).map(|e| e.text).unwrap_or_default();
-                Ok(
-                    json!({"code": code, "name": name, "about": about, "fields": fields, "new": new, "docs": docs,
-                    "formState": form_state, "available": crate::docs::available(kind, code as u32),
-                    "preservedFields": if sub { forms::preserved_fields(code) } else { &[][..] },
-                    "note": if form_state == "json" { "Advanced JSON editing; see the built-in reference for limitations." } else { "" }}),
-                )
+                let code = a["code"].as_u64().and_then(|c| u32::try_from(c).ok()).ok_or("code: a 32-bit number")?;
+                crate::automation::describe(&s("kind"), code)
             }
             "run_scenario" => {
                 let sc = a["scenario"].clone();
@@ -439,6 +453,7 @@ impl Client {
                     "groups": made.groups.iter().map(|(name, meta)| json!({"name": name, "meta": meta})).collect::<Vec<_>>()}))
             }
             "connectors" => self.ask(json!({"request": "StreamerzConnectors"})).await,
+            "obs_outputs" | "obs_outputs_control" => self.ask(json!({"request": "StreamerzOutputs", "op": if name == "obs_outputs" { "list".to_string() } else { s("op") }, "outputs": a["outputs"], "connectionId": s("connectionId")})).await,
             "obs_request" => self.ask(json!({"request": "StreamerzObsRequest", "requestType": s("requestType"), "requestData": a["requestData"], "connectionId": s("connectionId")})).await,
             "spotify_current" => self.ask(json!({"request": "StreamerzSpotifyCurrent"})).await,
             "spotify_local" => self.ask(json!({"request": "StreamerzSpotifyLocal"})).await,
@@ -446,15 +461,42 @@ impl Client {
             "spotify_player" => self.ask(json!({"request": "StreamerzSpotifyPlayer"})).await,
             "spotify_queue" => self.ask(json!({"request": "StreamerzSpotifyQueue", "query": s("query")})).await,
             "spotify_playback" => self.ask(json!({"request": "StreamerzSpotifyPlayback", "command": s("command")})).await,
-            "overlays" => self.ask(json!({"request": "StreamerzOverlays"})).await,
+            "overlays" => self.ask(json!({"request": "StreamerzOverlay", "op": "list"})).await,
+            "overlay_read" | "overlay_save" | "overlay_delete" | "overlay_test" | "overlay_inspect" | "overlay_shot" => {
+                let mut request = a.clone();
+                request["request"] = "StreamerzOverlay".into();
+                request["op"] = name.trim_start_matches("overlay_").into();
+                self.ask(request).await
+            }
+            "overlay_add_to_obs" => {
+                self.ask(json!({"request": "StreamerzOverlay", "op": "obs", "overlay": s("overlay"), "file": s("file")}))
+                    .await
+            }
+            "overlay_connect" => {
+                let op = if a["disconnect"] == true { "disconnect" } else { "connect" };
+                self.ask(json!({"request": "StreamerzOverlay", "op": op, "overlay": s("overlay"), "group": s("group")}))
+                    .await
+            }
+            "overlay_examples" if s("add").is_empty() => self.ask(json!({"request": "StreamerzOverlay", "op": "examples"})).await,
+            "overlay_examples" => self.ask(json!({"request": "StreamerzOverlay", "op": "add_example", "slug": s("add")})).await,
             "overlay_publish" => {
                 self.ask(json!({"request": "StreamerzOverlayPublish", "topic": s("topic"), "value": a["value"]}))
                     .await
             }
             "countdown" => self.ask(json!({"request": "StreamerzCountdown", "clockId": s("clockId")})).await,
             "tiktok_bridge" => self.ask(json!({"request": "StreamerzTikTokBridge", "action": s("action")})).await,
-            "group_meta" => self.ask(json!({"request": "StreamerzGroupMeta", "group": s("group")})).await,
+            "group_meta" => self.ask(json!({"request": "StreamerzGroupMeta", "group": s("group"), "files": a["files"]})).await,
             "set_group_meta" => self.ask(json!({"request": "StreamerzSetGroupMeta", "group": s("group"), "meta": a["meta"]})).await,
+            "template_check" => self.ask(json!({"request": "StreamerzTemplateCheck", "group": s("group")})).await,
+            "template_export" => {
+                self.ask(json!({"request": "StreamerzTemplateExport", "group": s("group"), "path": s("path"), "values": a["values"]}))
+                    .await
+            }
+            "template_inspect" | "template_import" => {
+                let request = if name == "template_import" { "StreamerzTemplateImport" } else { "StreamerzTemplateInspect" };
+                self.ask(json!({"request": request, "path": s("path"), "content": s("content"), "url": s("url"), "allowPrograms": a["allowPrograms"]}))
+                    .await
+            }
             "export_group" => self.ask(json!({"request": "StreamerzGroupExport", "group": s("group"), "meta": a["meta"]})).await,
             "save_group_files" => self.ask(json!({"request": "StreamerzSaveGroupFiles", "group": s("group"), "folder": s("folder")})).await,
             "list_templates" => Ok(json!({"templates": crate::templates::TEMPLATES.iter().map(|t| json!({"name": t.name, "title":t.title(), "about": t.description()})).collect::<Vec<_>>()})),
@@ -782,6 +824,29 @@ mod tests {
         assert_eq!(t["tools"].as_array().unwrap().len(), TOOLS.len());
         for tool in t["tools"].as_array().unwrap() {
             assert!(tool["inputSchema"]["properties"].is_object(), "{}", tool["name"]);
+        }
+    }
+
+    #[test]
+    fn the_action_editor_is_reachable_through_the_core_tools() {
+        let tool = |name: &str| TOOLS.iter().find(|tool| tool.0 == name).expect("tool");
+        for (name, keys) in [
+            ("core_view", &["actionId", "kind"][..]),
+            ("core_action", &["actionId", "code", "to"][..]),
+            ("entity_form", &["actionId", "code", "anchor"][..]),
+        ] {
+            let props: Value = serde_json::from_str(tool(name).2).unwrap();
+            for key in keys {
+                assert!(props.get(*key).is_some(), "{name} lacks {key}");
+            }
+        }
+        for (name, word) in [
+            ("core_view", "actions_picker"),
+            ("core_action", "\"actions\""),
+            ("core_action", "act:sub_add"),
+        ] {
+            let tool = tool(name);
+            assert!(tool.1.contains(word) || tool.2.contains(word), "{name} omits {word}");
         }
     }
 }

@@ -187,6 +187,8 @@ pub enum YouTubeCmd {
     Connect,
     /// The live video being read ("" when none).
     LiveVideo(oneshot::Sender<String>),
+    /// The channel's live broadcast, else its next one, as (video id, title).
+    NextBroadcast(oneshot::Sender<Result<Option<(String, String)>, String>>),
     Disconnect,
     SendMessage {
         broadcast: String,
@@ -211,6 +213,14 @@ pub enum YouTubeCmd {
         description: String,
         resp: oneshot::Sender<Result<(), String>>,
     },
+    /// Title, description and tags in one videos.update (each one costs 50 units of quota).
+    UpdateVideo {
+        broadcast: String,
+        title: Option<String>,
+        description: Option<String>,
+        tags: Option<Vec<String>>,
+        resp: oneshot::Sender<Result<(), String>>,
+    },
     BanUser {
         broadcast: String,
         user_id: String,
@@ -230,6 +240,16 @@ pub enum YouTubeCmd {
     },
     EndPoll {
         broadcast: String,
+        resp: oneshot::Sender<Result<(), String>>,
+    },
+    SetThumbnail {
+        broadcast: String,
+        file_path: String,
+        resp: oneshot::Sender<Result<(), String>>,
+    },
+    RunCommercial {
+        broadcast: String,
+        duration_secs: u64,
         resp: oneshot::Sender<Result<(), String>>,
     },
 }
@@ -326,6 +346,27 @@ impl YouTubeHandle {
         resp_rx.await.map_err(|_| "Request cancelled".to_string())?
     }
 
+    /// Change what is given of the title, description and tags in one update.
+    pub async fn update_video(
+        &self,
+        broadcast: &str,
+        title: Option<String>,
+        description: Option<String>,
+        tags: Option<Vec<String>>,
+    ) -> Result<(), String> {
+        let (resp, resp_rx) = oneshot::channel();
+        self.tx
+            .send(YouTubeCmd::UpdateVideo {
+                broadcast: broadcast.to_string(),
+                title,
+                description,
+                tags,
+                resp,
+            })
+            .map_err(|_| "YouTube runner is down".to_string())?;
+        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
     pub async fn ban_user(&self, broadcast: &str, user_id: &str) -> Result<(), String> {
         let (resp_tx, resp_rx) = oneshot::channel();
         self.tx
@@ -345,6 +386,30 @@ impl YouTubeHandle {
                 broadcast: broadcast.to_string(),
                 user_id: user_id.to_string(),
                 duration,
+                resp: resp_tx,
+            })
+            .map_err(|_| "YouTube runner is down".to_string())?;
+        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    pub async fn set_thumbnail(&self, broadcast: &str, file_path: &str) -> Result<(), String> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.tx
+            .send(YouTubeCmd::SetThumbnail {
+                broadcast: broadcast.to_string(),
+                file_path: file_path.to_string(),
+                resp: resp_tx,
+            })
+            .map_err(|_| "YouTube runner is down".to_string())?;
+        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    pub async fn run_commercial(&self, broadcast: &str, duration_secs: u64) -> Result<(), String> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.tx
+            .send(YouTubeCmd::RunCommercial {
+                broadcast: broadcast.to_string(),
+                duration_secs,
                 resp: resp_tx,
             })
             .map_err(|_| "YouTube runner is down".to_string())?;
@@ -386,6 +451,16 @@ impl YouTubeHandle {
 
     pub async fn live_started(&self) -> Result<Option<i64>, String> {
         Ok(self.live_page().await?.0)
+    }
+
+    /// The channel's live broadcast, else its next one (scheduled, or the ready one its next live
+    /// uses), as (video id, title); None when there is neither.
+    pub async fn next_broadcast(&self) -> Result<Option<(String, String)>, String> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(YouTubeCmd::NextBroadcast(tx))
+            .map_err(|_| "YouTube runner is down".to_string())?;
+        rx.await.map_err(|_| "Request cancelled".to_string())?
     }
 
     pub async fn live_title(&self) -> Result<String, String> {
@@ -460,6 +535,9 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
                 YouTubeCmd::LiveVideo(resp) => {
                     let _ = resp.send(runner.live.borrow().0.clone());
                 }
+                YouTubeCmd::NextBroadcast(resp) => {
+                    let _ = resp.send(find_next_broadcast(&runner.engine, &runner.cfg).await);
+                }
                 YouTubeCmd::Connect => {
                     if !active {
                         active = true;
@@ -490,12 +568,12 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
                     runner.live.borrow_mut().1.clear();
                     runner.engine.chat_polls_clear("youtube");
                     runner.engine.chat_unpinned("youtube", "");
-                    crate::ui::polls_changed();
+                    crate::host::polls_changed();
                     if active {
                         active = false;
                         connected.store(false, Ordering::Relaxed);
                         standby.store(false, Ordering::Relaxed);
-                        crate::ui::changed();
+                        crate::host::changed();
                         if let Some(task) = poll_task.take() {
                             task.abort();
                         }
@@ -522,6 +600,18 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
                     resp,
                 } => {
                     let r = runner.send_chat_api(&broadcast, &text, use_bot, fallback).await;
+                    let _ = resp.send(r);
+                }
+                YouTubeCmd::UpdateVideo {
+                    broadcast,
+                    title,
+                    description,
+                    tags,
+                    resp,
+                } => {
+                    let r = runner
+                        .update_snippet(&broadcast, title.as_deref(), description.as_deref(), tags.as_deref())
+                        .await;
                     let _ = resp.send(r);
                 }
                 YouTubeCmd::SetTitle { broadcast, title, resp } => {
@@ -575,6 +665,22 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
                 }
                 YouTubeCmd::EndPoll { broadcast, resp } => {
                     let r = runner.end_poll_api(&broadcast).await;
+                    let _ = resp.send(r);
+                }
+                YouTubeCmd::SetThumbnail {
+                    broadcast,
+                    file_path,
+                    resp,
+                } => {
+                    let r = runner.set_thumbnail_api(&broadcast, &file_path).await;
+                    let _ = resp.send(r);
+                }
+                YouTubeCmd::RunCommercial {
+                    broadcast,
+                    duration_secs,
+                    resp,
+                } => {
+                    let r = runner.run_commercial_api(&broadcast, duration_secs).await;
                     let _ = resp.send(r);
                 }
             }
@@ -815,6 +921,18 @@ impl YouTubeRunner {
         }
     }
 
+    /// The video a change goes to: `broadcast`, else the live one, else the channel's next broadcast
+    /// (scheduled, or the ready one its next live uses).
+    async fn target(&self, broadcast: &str) -> Result<String, String> {
+        if let Ok(video) = self.video(broadcast) {
+            return Ok(video);
+        }
+        match find_next_broadcast(&self.engine, &self.cfg).await? {
+            Some((id, _)) => Ok(id),
+            None => Err(NO_TARGET.into()),
+        }
+    }
+
     /// The video `broadcast` names, else the live one being read.
     fn video(&self, broadcast: &str) -> Result<String, String> {
         if !broadcast.is_empty() {
@@ -834,9 +952,10 @@ impl YouTubeRunner {
         broadcast: &str,
         title: Option<&str>,
         description: Option<&str>,
+        tags: Option<&[String]>,
     ) -> Result<(), String> {
         let token = token(&self.engine, &self.cfg, false, false).await?;
-        let video = self.video(broadcast)?;
+        let video = self.target(broadcast).await?;
         let auth = ("Authorization".to_string(), format!("Bearer {token}"));
         let r = crate::http::request(
             "GET",
@@ -858,6 +977,9 @@ impl YouTubeRunner {
         }
         if let Some(d) = description {
             snippet["description"] = json!(d);
+        }
+        if let Some(t) = tags {
+            snippet["tags"] = json!(t);
         }
         // Read-only or derived fields the update refuses or ignores.
         if let Some(o) = snippet.as_object_mut() {
@@ -889,11 +1011,11 @@ impl YouTubeRunner {
     }
 
     async fn set_title_api(&self, broadcast: &str, title: &str) -> Result<(), String> {
-        self.update_snippet(broadcast, Some(title), None).await
+        self.update_snippet(broadcast, Some(title), None, None).await
     }
 
     async fn set_description_api(&self, broadcast: &str, description: &str) -> Result<(), String> {
-        self.update_snippet(broadcast, None, Some(description)).await
+        self.update_snippet(broadcast, None, Some(description), None).await
     }
 
     async fn set_title_and_description_api(
@@ -902,7 +1024,8 @@ impl YouTubeRunner {
         title: &str,
         description: &str,
     ) -> Result<(), String> {
-        self.update_snippet(broadcast, Some(title), Some(description)).await
+        self.update_snippet(broadcast, Some(title), Some(description), None)
+            .await
     }
 
     async fn ban_user_api(&self, broadcast: &str, user_id: &str) -> Result<(), String> {
@@ -1013,6 +1136,59 @@ impl YouTubeRunner {
             Ok(())
         } else {
             Err(format!("YouTube end poll: HTTP {} {}", r.status, r.text()))
+        }
+    }
+
+    async fn set_thumbnail_api(&self, broadcast: &str, file_path: &str) -> Result<(), String> {
+        let token = token(&self.engine, &self.cfg, false, false).await?;
+        let video = self.target(broadcast).await?;
+        let bytes = tokio::fs::read(file_path)
+            .await
+            .map_err(|e| format!("Failed to read thumbnail file: {e}"))?;
+        if bytes.len() > 2 * 1024 * 1024 {
+            return Err("Thumbnail file exceeds 2MB limit".into());
+        }
+        let mime = if file_path.ends_with(".png") {
+            "image/png"
+        } else {
+            "image/jpeg"
+        };
+        let url = format!(
+            "https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId={}&uploadType=media",
+            crate::commands::url_encode(&video)
+        );
+        let headers = vec![
+            ("Authorization".to_string(), format!("Bearer {token}")),
+            ("Content-Type".to_string(), mime.to_string()),
+        ];
+        let resp = crate::http::request("POST", &url, &headers, &bytes).await?;
+        if (200..300).contains(&resp.status) {
+            Ok(())
+        } else {
+            Err(format!("YouTube set thumbnail error {}: {}", resp.status, resp.text()))
+        }
+    }
+
+    async fn run_commercial_api(&self, broadcast: &str, duration_secs: u64) -> Result<(), String> {
+        let token = token(&self.engine, &self.cfg, false, false).await?;
+        let video = self.video(broadcast)?;
+        let duration = if duration_secs == 0 { 30 } else { duration_secs };
+        let url = format!(
+            "{YOUTUBE_API_BASE}/liveBroadcasts/cuepoint?id={}",
+            crate::commands::url_encode(&video)
+        );
+        // A cuepoint resource, sent as is (no part, no snippet); it plays as soon as it can.
+        let payload = json!({"cueType": "cueTypeAd", "durationSecs": duration});
+        let headers = vec![
+            ("Authorization".to_string(), format!("Bearer {token}")),
+            ("Content-Type".to_string(), "application/json".to_string()),
+        ];
+        let body = serde_json::to_vec(&payload).unwrap_or_default();
+        let resp = crate::http::request("POST", &url, &headers, &body).await?;
+        if (200..300).contains(&resp.status) {
+            Ok(())
+        } else {
+            Err(format!("YouTube cuepoint error {}: {}", resp.status, resp.text()))
         }
     }
 }
@@ -1213,6 +1389,54 @@ pub fn extract_initial_actions(page: &str) -> Vec<Value> {
 
 /// Check OAuth `liveBroadcasts.list(mine=true)` (when logged in) for an active live video ID or an
 /// upcoming scheduled broadcast start timestamp (Unix seconds).
+/// What a change says when YouTube has nothing to change.
+pub const NO_TARGET: &str =
+    "YouTube: no live or scheduled stream to change (go live, or schedule one in YouTube Studio)";
+
+/// The logged-in channel's live broadcast, else its next one (scheduled, or the ready one its next live
+/// uses), as (video id, title); None when there is neither. One liveBroadcasts list: 1 unit of quota.
+async fn find_next_broadcast(
+    engine: &Rc<Engine>,
+    cfg: &Arc<watch::Sender<Config>>,
+) -> Result<Option<(String, String)>, String> {
+    let tok = token(engine, cfg, false, false).await?;
+    let headers = [("Authorization".to_string(), format!("Bearer {tok}"))];
+    let url = format!("{YOUTUBE_API_BASE}/liveBroadcasts?part=snippet,status&mine=true&maxResults=10");
+    let res = crate::http::request("GET", &url, &headers, b"").await?;
+    if res.status != 200 {
+        return Err(format!("YouTube broadcasts: HTTP {} {}", res.status, res.text()));
+    }
+    let v: Value = serde_json::from_slice(&res.body).unwrap_or_default();
+    Ok(pick_broadcast(v["items"].as_array().map_or(&[], Vec::as_slice)))
+}
+
+/// From a liveBroadcasts list: the live one, else the soonest of those still to come.
+fn pick_broadcast(items: &[Value]) -> Option<(String, String)> {
+    fn state(item: &Value) -> &str {
+        item.pointer("/status/lifeCycleStatus")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+    }
+    let found = items
+        .iter()
+        .find(|item| matches!(state(item), "live" | "liveStarting"))
+        .or_else(|| {
+            items
+                .iter()
+                .filter(|item| matches!(state(item), "ready" | "created" | "testing" | "testStarting"))
+                .min_by_key(|item| {
+                    item.pointer("/snippet/scheduledStartTime")
+                        .and_then(Value::as_str)
+                        .unwrap_or("~")
+                })
+        })?;
+    let id = found["id"].as_str().filter(|id| !id.is_empty())?;
+    Some((
+        id.to_owned(),
+        found["snippet"]["title"].as_str().unwrap_or_default().to_owned(),
+    ))
+}
+
 async fn oauth_broadcast_hint(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> (Option<String>, Option<i64>) {
     let has_oauth = cfg
         .borrow()
@@ -1295,7 +1519,7 @@ pub async fn read_chat_with_standby(
             ch |= s.swap(sb, Ordering::Relaxed) != sb;
         }
         if ch {
-            crate::ui::changed();
+            crate::host::changed();
         }
     };
     let headers = [
@@ -1320,7 +1544,7 @@ pub async fn read_chat_with_standby(
         } else if !channel.is_empty() {
             let lives = discover_channel_lives(engine, cfg, web, &channel, run_once).await;
             if lives.len() > 1 {
-                let rx = crate::ui::ask_youtube_stream(lives.clone());
+                let rx = crate::host::ask_youtube_stream(lives.clone());
                 match rx.await {
                     Ok(Some(chosen)) => Ok(chosen),
                     _ => Ok(lives[0].0.clone()),
@@ -1360,7 +1584,7 @@ pub async fn read_chat_with_standby(
                     }
                     engine.chat_polls_clear("youtube");
                     engine.chat_unpinned("youtube", "");
-                    crate::ui::polls_changed();
+                    crate::host::polls_changed();
                 }
                 if run_once {
                     return;
@@ -1418,7 +1642,7 @@ pub async fn read_chat_with_standby(
         clear_poll();
         engine.chat_polls_clear("youtube");
         engine.chat_unpinned("youtube", "");
-        crate::ui::polls_changed();
+        crate::host::polls_changed();
         crate::say(format!("YouTube: connected to live chat ({label}, video {video})"));
         engine.settle_role("youtube");
         let joined_usec = (crate::fmt::unix_now().as_millis() as i64) * 1000;
@@ -1536,7 +1760,7 @@ pub async fn read_chat_with_standby(
         clear_poll();
         engine.chat_polls_clear("youtube");
         engine.chat_unpinned("youtube", "");
-        crate::ui::polls_changed();
+        crate::host::polls_changed();
         if let Some(t) = extras {
             t.abort();
         }
@@ -2104,7 +2328,7 @@ pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value]) {
                 ends: None,
                 over: None,
             });
-            crate::ui::polls_changed();
+            crate::host::polls_changed();
             if shown.is_some() {
                 yt(engine, T_YT_POLL_STARTED, "YouTubePollStarted", "PollStarted", &args);
             } else {
@@ -2116,7 +2340,7 @@ pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value]) {
             if args.is_empty() {
                 continue;
             }
-            crate::ui::polls_changed();
+            crate::host::polls_changed();
             engine.chat_polls_clear("youtube");
             args.insert("panelId".into(), close["targetPanelId"].clone());
             yt(engine, T_YT_POLL_CLOSED, "YouTubePollClosed", "PollClosed", &args);
@@ -2180,7 +2404,7 @@ fn broadcast_ended(engine: &Rc<Engine>) {
     clear_poll();
     engine.chat_polls_clear("youtube");
     engine.chat_unpinned("youtube", "");
-    crate::ui::polls_changed();
+    crate::host::polls_changed();
     let b = BROADCAST.with_borrow_mut(std::mem::take);
     if !b.is_empty() {
         yt(
@@ -2319,6 +2543,24 @@ async fn while_live(engine: Rc<Engine>, cfg: Arc<watch::Sender<Config>>, video: 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_change_goes_to_the_live_broadcast_else_the_next_one() {
+        let item = |id: &str, state: &str, at: &str| {
+            json!({"id": id, "status": {"lifeCycleStatus": state},
+                "snippet": {"title": format!("t{id}"), "scheduledStartTime": at}})
+        };
+        let later = item("b", "ready", "2026-12-02T10:00:00Z");
+        let sooner = item("c", "created", "2026-12-01T10:00:00Z");
+        let over = item("d", "complete", "2026-11-01T10:00:00Z");
+        assert_eq!(
+            pick_broadcast(&[later.clone(), sooner.clone(), over.clone()]),
+            Some(("c".into(), "tc".into()))
+        );
+        let live = item("a", "live", "2026-11-11T10:00:00Z");
+        assert_eq!(pick_broadcast(&[later, live, sooner]).unwrap().0, "a");
+        assert_eq!(pick_broadcast(&[over]), None);
+    }
+
     #[test]
     fn a_banner_in_a_channel_page() {
         let page = br#"x"banner":{"imageBannerViewModel":{"image":{"sources":[{"url":"https://yt3.example/b=w1060\u0026k","width":1}]}}},"avatar":{"thumbnails":[{"url":"https://yt3.example/a=s900","w":1}]}"#;
@@ -2800,5 +3042,37 @@ mod tests {
             json!({"contents": {"liveChatRenderer": {"actions": [act]}}})
         );
         assert_eq!(extract_initial_actions(&html).len(), 1);
+    }
+
+    #[test]
+    fn youtube_thumbnail_and_commercial_metadata() {
+        assert_eq!(
+            crate::types::name(crate::types::SUB_ACTIONS, 4013),
+            Some("YouTubeSetThumbnail")
+        );
+        assert_eq!(
+            crate::types::name(crate::types::SUB_ACTIONS, 4014),
+            Some("YouTubeRunCommercial")
+        );
+
+        let title_of = |code| {
+            crate::types::SUB_ACTION_INFO
+                .binary_search_by_key(&code, |x| x.0)
+                .ok()
+                .map(|i| crate::types::SUB_ACTION_INFO[i].1)
+        };
+        assert_eq!(title_of(4013), Some("Set Thumbnail"));
+        assert_eq!(title_of(4014), Some("Run Commercial"));
+
+        // Verify commercial payload format
+        let duration = 30u64;
+        let payload = json!({
+            "snippet": {
+                "cueType": "cueTypeAd",
+                "durationSecs": duration
+            }
+        });
+        assert_eq!(payload["snippet"]["cueType"], "cueTypeAd");
+        assert_eq!(payload["snippet"]["durationSecs"], 30);
     }
 }

@@ -31,7 +31,9 @@ Action groups have
 separate tools for membership, metadata, variables, icons, files and export.
 `export_actions` and `export_group` return both an export object and an import
 string. Pass the object to `import_actions`. Imports containing programs require
-review before setting `allowPrograms`.
+review before setting `allowPrograms`. A whole group with its pages and files is shared as one
+`.streamerz` file: `template_check`, `template_export`, `template_inspect` and `template_import`
+(see `docs/OVERLAYS.md`).
 
 `connectors` reports OBS and Spotify availability without secrets. Spotify tools
 require an enabled, signed-in integration, except `spotify_local`, which reads a
@@ -65,3 +67,50 @@ tool through stdio on a separate dev instance at `DISPLAY=:99`. It uses scratch
 settings and no account credentials. Live OBS, Spotify and platform success paths
 still need a configured service. Run `cargo test mcp::tests` for schema, dispatch
 and protocol regressions.
+
+## OBS stream outputs
+
+`obs_outputs({connectionId?})` discovers stream destinations on an already connected OBS instance.
+With several connections, pass `connectionId`. The reply has `outputs`, `canvases` and `capabilities`.
+An output has an opaque `id`, `source`, `name`, nullable `active` and `reconnecting`, `controllable`,
+optional `platform` and `platformSource`, and any `limitation`. A `name_hint` platform is a guess from
+its name, not a verified destination. Recordings and virtual cameras are excluded.
+
+`obs_outputs_control({connectionId?, op: "start" | "stop", outputs: [id, ...]})` acts on exactly those
+IDs. It rediscovers first, rejects missing or ambiguous selections before changing anything and returns
+one result per destination. `requested` means the plugin queued the command, not that the destination
+is live. Read `obs_outputs` again to inspect actual state. `unchanged` means it already had the requested
+state. A selected main stream is started and confirmed first, and stopped last. If it is reconnecting,
+Streamerz waits for its existing reconnection instead of sending another start request. If starting it fails,
+additional starts are skipped. A main stream that was not selected is never started implicitly.
+
+The wire request is `StreamerzOutputs`, with `op: "list" | "start" | "stop"`, `connectionId` and
+`outputs`. It uses the normal connection authentication and works outside dev mode. Discovery does
+not enable an integration, open another socket, read plugin configuration files or keep a polling task.
+Timeouts exist only for in-flight requests and waiting for a selected main stream's start event.
+
+Supported adapters:
+
+- Stock OBS: main stream and its service; canvas enumeration when supported by obs-websocket.
+- Aitum Stream Suite: configured stream outputs, actual state and its canvases.
+- Aitum Multistream: configured horizontal and vertical outputs; state is read from matching runtime
+  outputs and confirmed start/stop events. A confirmed stopped state survives removal of its runtime
+  object. Event state is discarded on disconnect and profile/scene collection changes. Names must be
+  unique, including across canvases.
+- Aitum Vertical: the first matching canvas's stream group. Starting it starts all enabled destinations
+  on that canvas. Its API does not enumerate individual dormant destinations.
+  This aggregate control is omitted when Multistream already lists its vertical destinations.
+- Multi-RTMP websocket fork (`sorayuki.multi_rtmp`): targets by ID. The upstream plugin without that
+  vendor API cannot enumerate dormant configured targets through obs-websocket.
+- Other plugins: instantiated service outputs exposed by OBS. Potential duplicate runtime outputs
+  alongside a supported plugin are read-only; use the plugin destination's control.
+
+Plugin APIs do not consistently expose platform/server or encoder dependency metadata. Streamerz
+reports this gap instead of inferring a confirmed platform or starting an unselected main stream.
+Streamlabs Desktop output adapters are not included in these OBS tools.
+
+Protocol references: [obs-websocket](https://github.com/obsproject/obs-websocket/blob/master/docs/generated/protocol.md),
+[Aitum Stream Suite](https://github.com/Aitum/obs-aitum-stream-suite/blob/main/src/utils/obs-websocket.cpp),
+[Aitum Multistream](https://github.com/Aitum/obs-aitum-multistream/blob/main/multistream.cpp),
+[Aitum Vertical](https://github.com/Aitum/obs-vertical-canvas/blob/master/vertical-canvas.cpp),
+[Multi-RTMP websocket fork](https://github.com/davidcool/obs-multi-rtmp-websocket-support/tree/pr-obs-websocket).

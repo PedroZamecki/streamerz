@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Now playing</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  body { font-family: var(--font, system-ui), system-ui, sans-serif; color: var(--text, #fff); }
+  /* Everything is sized in em, so the Size setting scales the whole widget. */
+  #stage { position: absolute; inset: 0; display: flex; align-items: center; padding: 1em; box-sizing: border-box; }
+  #stage.right { justify-content: flex-end; }
+
+  #card { position: relative; display: flex; align-items: center; gap: 1.1em; box-sizing: border-box;
+    width: 100%; max-width: 30em; padding: .9em 1.3em .9em .9em; border-radius: var(--radius, 18px);
+    overflow: hidden; box-shadow: 0 .5em 1.6em rgba(0, 0, 0, .45);
+    transition: opacity .5s ease, transform .6s cubic-bezier(.2, .8, .2, 1); }
+  .right #card { flex-direction: row-reverse; padding: .9em .9em .9em 1.3em; text-align: right; }
+  /* Away: where it waits while nothing plays. Each animation hides it its own way. */
+  #card.away { opacity: 0; }
+  .slide #card.away { transform: translateX(-110%); }
+  .slide.right #card.away { transform: translateX(110%); }
+  .pop #card.away { transform: scale(.7); }
+  .none #card { transition: none; }
+
+  /* The background: the cover, blurred and darkened, or one colour, or nothing. */
+  #back { position: absolute; inset: 0; z-index: 0; background: var(--back, #18181be6); }
+  #back i { position: absolute; inset: -30%; background: center / cover no-repeat; opacity: 0;
+    filter: blur(1.6em) saturate(1.5) brightness(.5); transition: opacity .8s ease; }
+  .blurred #back i.on { opacity: 1; }
+  .bare #back { display: none; }
+  .bare #card { box-shadow: none; text-shadow: 0 1px 4px rgba(0, 0, 0, .9); }
+
+  #cover { position: relative; z-index: 1; flex: none; width: 5.6em; height: 5.6em;
+    border-radius: calc(var(--radius, 18px) * .6); background: rgba(255, 255, 255, .08) center / cover no-repeat;
+    box-shadow: 0 .2em .8em rgba(0, 0, 0, .5); transition: background-image .4s ease; }
+  /* Vinyl: a round cover that turns while the song plays. */
+  .vinyl #cover { border-radius: 50%; animation: turn 6s linear infinite; animation-play-state: paused; }
+  .vinyl .playing #cover { animation-play-state: running; }
+  .vinyl #cover::after { content: ""; position: absolute; inset: 42%; border-radius: 50%; background: rgba(0, 0, 0, .75); }
+  @keyframes turn { to { transform: rotate(360deg); } }
+  .compact #cover { width: 3.2em; height: 3.2em; }
+  .compact #card { padding-top: .55em; padding-bottom: .55em; max-width: 26em; }
+
+  #words { position: relative; z-index: 1; flex: 1; min-width: 0; }
+  #label { font-size: .62em; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--accent, #1db954); margin-bottom: .25em; }
+  .line { overflow: hidden; white-space: nowrap; }
+  .line span { display: inline-block; }
+  /* A name too long for the card slides to its end and back. */
+  .line.long span { animation: slide var(--time, 8s) ease-in-out infinite alternate; }
+  @keyframes slide { 0%, 15% { transform: translateX(0); } 85%, 100% { transform: translateX(var(--over, 0)); } }
+  #title { font-size: 1.25em; font-weight: 800; line-height: 1.25; }
+  #artist { font-size: .95em; opacity: .8; line-height: 1.35; }
+  #album { font-size: .78em; opacity: .6; line-height: 1.35; }
+  .compact #title { font-size: 1.05em; }
+  .compact #artist { font-size: .85em; }
+
+  #progress { display: flex; align-items: center; gap: .6em; margin-top: .5em; font-size: .8em;
+    font-variant-numeric: tabular-nums; }
+  #track { flex: 1; height: .5em; border-radius: 1em; background: rgba(255, 255, 255, .22); overflow: hidden; }
+  #bar { height: 100%; width: 0; border-radius: 1em; background: var(--accent, #1db954); transition: width .5s linear; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="card" class="away">
+    <div id="back"><i></i><i></i></div>
+    <div id="cover"></div>
+    <div id="words">
+      <div id="label"></div>
+      <div id="title" class="line"><span></span></div>
+      <div id="artist" class="line"><span></span></div>
+      <div id="album" class="line"><span></span></div>
+      <div id="progress"><span id="now">0:00</span><div id="track"><div id="bar"></div></div><span id="end"></span></div>
+    </div>
+  </div>
+</div>
+<script>
+// The song comes from the Spotify app on this computer: streamerz.song(fn) calls fn at every change
+// (a new song, a pause, a seek) with {title, artist, album, cover, playing, durationMs, positionMs, at}.
+// Nothing is sent while a song just plays, so the bar counts on by itself with streamerz.position(song).
+const $ = id => document.getElementById(id);
+const root = document.documentElement;
+let settings = streamerz.settings;
+let song = null;
+let shownFor = 0;    // The timer of "Show for".
+let layers = 0;      // Which of the two background layers shows (they cross-fade).
+let coverColor = ""; // The liveliest colour of the cover, once it is read.
+let lastCover = null;
+
+const clock = ms => {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+};
+
+// The settings, now and whenever one changes in Streamerz (no reload needed).
+streamerz.onSettings(s => {
+  settings = s;
+  const stage = $("stage");
+  stage.className = [
+    (s.layout || "Card").toLowerCase(),
+    (s.animation || "Slide").toLowerCase(),
+    s.side === "Right" ? "right" : "",
+    s.background === "None" ? "bare" : s.background === "Solid color" ? "" : "blurred",
+  ].join(" ");
+  root.style.fontSize = 22 * ((Number(s.scale) || 100) / 100) + "px";
+  root.style.setProperty("--radius", (Number(s.radius) || 0) + "px");
+  root.style.setProperty("--back", s.backgroundColor || "#18181be6");
+  root.style.setProperty("--text", s.textColor || "#fff");
+  root.style.setProperty("--font", s.font ? '"' + s.font + '"' : "system-ui");
+  $("label").textContent = s.label || "";
+  $("label").hidden = !s.label;
+  $("cover").hidden = s.showCover === false;
+  $("artist").hidden = s.showArtist === false;
+  $("album").hidden = s.showAlbum !== true;
+  $("progress").hidden = s.showProgress === false;
+  $("now").hidden = $("end").hidden = s.showTime === false;
+  paint();
+  show();
+});
+
+streamerz.song(s => {
+  const changed = !song || s.title !== song.title || s.artist !== song.artist;
+  song = s;
+  if (changed) {
+    clearTimeout(shownFor);
+    shownFor = 0;
+  }
+  show();
+});
+
+// The accent: the colour of the setting, or the liveliest colour of the cover.
+function paint() {
+  root.style.setProperty("--accent", (settings.accentFromCover !== false && coverColor) || settings.accent || "#1db954");
+}
+function readCover(url) {
+  coverColor = "";
+  paint();
+  if (!url) return;
+  const img = new Image();
+  img.crossOrigin = "anonymous"; // Without it a canvas may not read a picture from another site.
+  img.onload = () => {
+    try {
+      const c = document.createElement("canvas");
+      c.width = c.height = 24;
+      const g = c.getContext("2d");
+      g.drawImage(img, 0, 0, 24, 24);
+      const px = g.getImageData(0, 0, 24, 24).data;
+      let best = null, most = -1;
+      for (let i = 0; i < px.length; i += 4) {
+        const [r, gr, b] = [px[i], px[i + 1], px[i + 2]];
+        const max = Math.max(r, gr, b), min = Math.min(r, gr, b);
+        // Lively and bright wins: a grey or a dark pixel makes a poor accent.
+        const score = (max - min) * (max / 255);
+        if (score > most) (most = score), (best = [r, gr, b]);
+      }
+      if (best && most > 30) {
+        // Lightened a little, so it reads over the dark background.
+        coverColor = "rgb(" + best.map(v => Math.round(v + (255 - v) * .25)).join(",") + ")";
+        paint();
+      }
+    } catch (e) { /* The picture can't be read: the setting's colour stays. */ }
+  };
+  img.src = url;
+}
+
+function show() {
+  const card = $("card");
+  const on = !!(song && song.title) && (song.playing || settings.hideWhenPaused === false);
+  card.classList.toggle("playing", !!(song && song.playing));
+  if (!on) return card.classList.add("away");
+
+  set("title", song.title);
+  set("artist", song.artist || "");
+  set("album", song.album || "");
+  if (song.cover !== lastCover) {
+    lastCover = song.cover;
+    $("cover").style.backgroundImage = song.cover ? 'url("' + song.cover + '")' : "";
+    // The new cover fades in over the old one.
+    const [a, b] = $("back").children;
+    const next = layers++ % 2 ? a : b, old = next === a ? b : a;
+    next.style.backgroundImage = song.cover ? 'url("' + song.cover + '")' : "";
+    next.classList.toggle("on", !!song.cover);
+    old.classList.remove("on");
+    readCover(song.cover);
+  }
+  $("end").textContent = song.durationMs ? clock(song.durationMs) : "";
+  tick();
+
+  // "Show for": it comes in when a song starts and leaves after that many seconds.
+  const seconds = Number(settings.showFor) || 0;
+  if (!seconds) return card.classList.remove("away");
+  if (!shownFor) {
+    card.classList.remove("away");
+    shownFor = setTimeout(() => card.classList.add("away"), seconds * 1000);
+  }
+}
+
+// Text into a line, and whether it is too long to fit (then it slides).
+function set(id, text) {
+  const line = $(id), span = line.firstElementChild;
+  if (span.textContent === text) return;
+  span.textContent = text;
+  const over = span.offsetWidth - line.clientWidth;
+  line.classList.toggle("long", over > 4);
+  line.style.setProperty("--over", -over + "px");
+  line.style.setProperty("--time", Math.max(5, over / 25) + "s");
+}
+
+// The bar and the time, twice a second (the bar's own transition makes it smooth).
+function tick() {
+  if (!song) return;
+  const at = streamerz.position(song);
+  $("now").textContent = clock(at);
+  $("bar").style.width = (song.durationMs ? Math.min(100, (at / song.durationMs) * 100) : 0) + "%";
+}
+setInterval(tick, 500);
+</script>
+</body>
+</html>

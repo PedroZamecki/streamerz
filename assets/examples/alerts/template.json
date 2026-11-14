@@ -1,0 +1,217 @@
+{
+  "format": 1,
+  "name": "Alerts",
+  "meta": {
+    "description": "A card for each follow, sub, gift, cheer, Super Chat, raid and reward, from every platform at once, each in its platform's color.",
+    "variables": [
+      {
+        "name": "look",
+        "label": "Look",
+        "kind": "choice",
+        "default": "Platform colors",
+        "options": [
+          "Platform colors",
+          "Dark",
+          "Light",
+          "Custom color"
+        ],
+        "section": "Look"
+      },
+      {
+        "name": "cardColor",
+        "label": "Card color",
+        "kind": "color",
+        "default": "#27272a",
+        "showIf": {
+          "setting": "look",
+          "is": "Custom color"
+        }
+      },
+      {
+        "name": "textColor",
+        "label": "Text color",
+        "kind": "color",
+        "default": "#ffffff"
+      },
+      {
+        "name": "radius",
+        "label": "Rounded corners",
+        "kind": "slider",
+        "default": 18,
+        "min": 0,
+        "max": 40,
+        "step": 1
+      },
+      {
+        "name": "scale",
+        "label": "Size (%)",
+        "kind": "slider",
+        "default": 100,
+        "min": 50,
+        "max": 250,
+        "step": 5
+      },
+      {
+        "name": "width",
+        "label": "Width",
+        "kind": "slider",
+        "default": 22,
+        "description": "Of a card, in letters",
+        "min": 12,
+        "max": 40,
+        "step": 1
+      },
+      {
+        "name": "font",
+        "label": "Font",
+        "kind": "font",
+        "default": "",
+        "description": "A font installed on this computer"
+      },
+      {
+        "name": "side",
+        "label": "Side",
+        "kind": "choice",
+        "default": "Left",
+        "options": [
+          "Left",
+          "Center",
+          "Right"
+        ]
+      },
+      {
+        "name": "newest",
+        "label": "Newest card",
+        "kind": "choice",
+        "default": "At the top",
+        "options": [
+          "At the top",
+          "At the bottom"
+        ]
+      },
+      {
+        "name": "animation",
+        "label": "Comes in with",
+        "kind": "choice",
+        "default": "Slide",
+        "options": [
+          "Slide",
+          "Pop",
+          "Fade"
+        ]
+      },
+      {
+        "name": "showAvatar",
+        "label": "Picture",
+        "kind": "boolean",
+        "default": true,
+        "description": "The picture of who did it. Twitch and Kick are asked once per person",
+        "section": "What it shows"
+      },
+      {
+        "name": "showPlatform",
+        "label": "Platform logo",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "showMessage",
+        "label": "What they wrote",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "showPicture",
+        "label": "The gift or the reward",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "platforms",
+        "label": "From",
+        "kind": "platforms",
+        "default": [
+          "twitch",
+          "youtube",
+          "kick",
+          "tiktok"
+        ],
+        "description": "The platforms whose events it shows",
+        "section": "Which"
+      },
+      {
+        "name": "follows",
+        "label": "Follows",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "subs",
+        "label": "Subs and members",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "gifts",
+        "label": "Gifts",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "cheers",
+        "label": "Cheers and Super Chats",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "raids",
+        "label": "Raids",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "rewards",
+        "label": "Rewards and the rest",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "seconds",
+        "label": "Seconds on screen",
+        "kind": "slider",
+        "default": 7,
+        "min": 2,
+        "max": 30,
+        "step": 1,
+        "section": "When"
+      },
+      {
+        "name": "most",
+        "label": "Most at once",
+        "kind": "integer",
+        "default": 5
+      }
+    ],
+    "files": [
+      {
+        "name": "index.html"
+      }
+    ],
+    "permissions": [
+      "alerts.read"
+    ],
+    "template": {
+      "id": "streamerz.example.alerts",
+      "version": "2.1.0",
+      "author": "Streamerz",
+      "pages": [
+        {
+          "file": "index.html",
+          "title": "Alerts",
+          "width": 700,
+          "height": 620
+        }
+      ]
+    }
+  }
+}

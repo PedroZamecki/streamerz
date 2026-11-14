@@ -33,8 +33,6 @@ struct Trail {
 
 static TRAIL: Mutex<Option<Trail>> = Mutex::new(None);
 static STARTED: Mutex<Option<std::time::Instant>> = Mutex::new(None);
-/// Describes the window's event in progress, for a panic inside a handler (set by the window).
-static PROBE: Mutex<Option<fn() -> String>> = Mutex::new(None);
 
 /// Notes something the user did ("opened page Chat"), newest last.
 pub fn step(text: &str) {
@@ -60,13 +58,6 @@ pub fn fact(key: &'static str, value: &str) {
         t.get_or_insert_with(Trail::default)
             .facts
             .insert(key, value.to_string());
-    }
-}
-
-/// How to describe the event being handled, when a panic comes from inside one.
-pub fn probe(f: fn() -> String) {
-    if let Ok(mut p) = PROBE.lock() {
-        *p = Some(f);
     }
 }
 
@@ -385,15 +376,8 @@ fn text(info: &std::panic::PanicHookInfo<'_>, log: &[String]) -> String {
     let (what, at) = what_at(info);
     let thread = std::thread::current().name().unwrap_or("?").to_string();
     let trace = std::backtrace::Backtrace::force_capture();
-    // What the window was handling (a panic inside a click or a key): only the window's own thread knows.
-    let event = if thread == "main" {
-        PROBE.try_lock().ok().and_then(|p| *p).map(|f| f())
-    } else {
-        None
-    };
-    let event = event.map_or(String::new(), |e| format!("Event being handled: {e}\n"));
     let report = format!(
-        "Streamerz {} on {} {}\nPanic in thread '{thread}' at {at}:\n{what}\n\n{event}{}\nBacktrace:\n{trace}\n\nLast log lines:\n{}\n",
+        "Streamerz {} on {} {}\nPanic in thread '{thread}' at {at}:\n{what}\n\n{}\nBacktrace:\n{trace}\n\nLast log lines:\n{}\n",
         crate::brand::VERSION,
         std::env::consts::OS,
         std::env::consts::ARCH,
@@ -611,7 +595,7 @@ pub fn folder() -> PathBuf {
 pub async fn offer() {
     use crate::i18n::tr;
     let Some((path, body)) = pending() else { return };
-    let yes = crate::ui::confirm(tr("crash.ask").to_string(), tr("crash.dismiss"), tr("crash.report"))
+    let yes = crate::host::confirm(tr("crash.ask").to_string(), tr("crash.dismiss"), tr("crash.report"))
         .await
         .unwrap_or(false);
     let _ = std::fs::rename(&path, path.with_extension("reported"));
@@ -627,7 +611,7 @@ mod tests {
     #[test]
     fn a_report_says_its_version_and_message() {
         let panic =
-            "Streamerz 1.0.0 on linux x86_64\nPanic in thread 'main' at src/ui.rs:9:\nInvalid box\n\nBacktrace:";
+            "Streamerz 1.0.0 on linux x86_64\nPanic in thread 'main' at src/main.rs:9:\nInvalid box\n\nBacktrace:";
         assert_eq!(summary(panic), ("1.0.0".into(), "Invalid box".into()));
         let quiet = unclean_report("", "", "");
         let (v, what) = summary(&quiet);

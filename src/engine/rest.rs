@@ -471,12 +471,21 @@ impl Engine {
             subscriber: role == "subscriber",
             msg_id: super::uuid(),
             text: text.into(),
-            emotes: if platform == "kick" {
-                crate::kick::kick_emotes(text)
-            } else if platform == "tiktok" {
-                crate::tiktok::tiktok_emotes(with.unwrap_or(extra))
-            } else {
-                Vec::new()
+            emotes: {
+                let mut emotes = if platform == "kick" {
+                    crate::kick::kick_emotes(text)
+                } else if platform == "tiktok" {
+                    crate::tiktok::tiktok_emotes(with.unwrap_or(extra))
+                } else {
+                    Vec::new()
+                };
+                // A test can say which words are emotes and where their pictures are: "emotes": [[name, url]].
+                for pair in extra.get("emotes").and_then(Value::as_array).into_iter().flatten() {
+                    if let (Some(name), Some(url)) = (pair[0].as_str(), pair[1].as_str()) {
+                        emotes.push((name.to_owned(), url.to_owned()));
+                    }
+                }
+                emotes
             },
             args,
             ..Default::default()
@@ -3606,6 +3615,28 @@ impl Engine {
                     crate::error(e);
                 }
             }
+            // 4013: Set Thumbnail
+            4013 => {
+                ctx.args.insert("thumbnailSuccess".into(), false.into());
+                let broadcast = self.expand(ctx, s(o, "broadcast"));
+                let file = self.expand(ctx, s(o, "file"));
+                let yt = self.youtube_start();
+                match yt.set_thumbnail(&broadcast, &file).await {
+                    Ok(_) => drop(ctx.args.insert("thumbnailSuccess".into(), true.into())),
+                    Err(e) => crate::error(e),
+                }
+            }
+            // 4014: Run Commercial
+            4014 => {
+                ctx.args.insert("commercialSuccess".into(), false.into());
+                let broadcast = self.expand(ctx, s(o, "broadcast"));
+                let duration = self.duration_number(ctx, o, "duration") as u64;
+                let yt = self.youtube_start();
+                match yt.run_commercial(&broadcast, duration).await {
+                    Ok(_) => drop(ctx.args.insert("commercialSuccess".into(), true.into())),
+                    Err(e) => crate::error(e),
+                }
+            }
             // Kick Sub-actions
             // 35001: Send Message to Channel
             35001 => {
@@ -3769,6 +3800,56 @@ impl Engine {
                 }
             }
 
+            // 35032: Set Channel Tags
+            35032 => {
+                ctx.args.insert("tagsSuccess".into(), false.into());
+                let tag_list: Vec<String> = tags_of(o.get("tags"))
+                    .into_iter()
+                    .map(|t| self.expand(ctx, &t))
+                    .filter(|t| !t.is_empty())
+                    .collect();
+                let kick = self.kick_start();
+                match kick.set_channel_tags(tag_list).await {
+                    Ok(_) => drop(ctx.args.insert("tagsSuccess".into(), true.into())),
+                    Err(e) => crate::error(format!("Kick: {e}")),
+                }
+            }
+            // 35033: Add Channel Tag
+            35033 => {
+                ctx.args.insert("tagSuccess".into(), false.into());
+                let tag = self.expand(ctx, s(o, "tag"));
+                let kick = self.kick_start();
+                let r: Result<(), String> = async {
+                    let cur = kick.api("GET", "/channels", None).await?;
+                    let mut tags: Vec<String> = cur
+                        .pointer("/data/0/custom_tags")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|t| t.as_str().map(String::from))
+                        .filter(|t| !t.eq_ignore_ascii_case(&tag))
+                        .collect();
+                    if !tag.is_empty() {
+                        tags.push(tag);
+                    }
+                    kick.set_channel_tags(tags).await
+                }
+                .await;
+                match r {
+                    Ok(()) => drop(ctx.args.insert("tagSuccess".into(), true.into())),
+                    Err(e) => crate::error(format!("Kick: {e}")),
+                }
+            }
+            // 35034: Clear Channel Tags
+            35034 => {
+                ctx.args.insert("tagsSuccess".into(), false.into());
+                let kick = self.kick_start();
+                match kick.set_channel_tags(vec![]).await {
+                    Ok(_) => drop(ctx.args.insert("tagsSuccess".into(), true.into())),
+                    Err(e) => crate::error(format!("Kick: {e}")),
+                }
+            }
+
             // 35040: Ban User
             35040 => {
                 ctx.args.insert("banResult".into(), false.into());
@@ -3837,6 +3918,49 @@ impl Engine {
                     }
                     Err(e) => {
                         crate::error(e);
+                    }
+                }
+            }
+            // 35050: Run Commercial
+            35050 => {
+                ctx.args.insert("commercialSuccess".into(), false.into());
+                let duration = self.duration_number(ctx, o, "duration") as u64;
+                let len = if duration == 0 { 30 } else { duration };
+                let kick = self.kick_start();
+                match kick.start_ad_break(len).await {
+                    Ok(val) => {
+                        ctx.args.insert("commercialSuccess".into(), true.into());
+                        if let Some(d) = val.get("data") {
+                            if let Some(id) = d["id"].as_str() {
+                                ctx.args.insert("adBreakId".into(), id.into());
+                            }
+                            if let Some(secs) = d["break_duration_seconds"].as_u64() {
+                                ctx.args.insert("adDuration".into(), secs.into());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        crate::error(format!("Kick ads: {e}"));
+                    }
+                }
+            }
+            // 35051: Get Ad Status
+            35051 => {
+                ctx.args.insert("adStatusSuccess".into(), false.into());
+                let kick = self.kick_start();
+                match kick.get_ad_status().await {
+                    Ok(val) => {
+                        ctx.args.insert("adStatusSuccess".into(), true.into());
+                        if let Some(d) = val.get("data") {
+                            ctx.args.insert("optedIn".into(), d["opted_in"].clone());
+                            ctx.args.insert("adsBlocked".into(), d["ads_blocked"].clone());
+                            ctx.args.insert("autoAdsActive".into(), d["auto_ads_active"].clone());
+                            ctx.args
+                                .insert("remainingAdBreaks".into(), d["remaining_ad_breaks"].clone());
+                        }
+                    }
+                    Err(e) => {
+                        crate::error(format!("Kick ads: {e}"));
                     }
                 }
             }
@@ -3946,6 +4070,32 @@ impl Engine {
             43003 => {
                 let live = self.tiktok().is_some_and(|t| t.is_connected());
                 ctx.args.extend(crate::tiktok::stream_info(live));
+            }
+            // 43010: Set Stream Title
+            43010 => {
+                ctx.args.insert("titleSuccess".into(), false.into());
+                let title = self.expand(ctx, s(o, "title"));
+                match crate::tiktok_bridge::set_stream_title(self, &title).await {
+                    Ok(()) => drop(ctx.args.insert("titleSuccess".into(), true.into())),
+                    Err(err) => crate::error(format!("TikTok: {err}")),
+                }
+            }
+            // 43011: Pin Comment
+            43011 => {
+                ctx.args.insert("pinSuccess".into(), false.into());
+                let comment_id = self.expand(ctx, s(o, "commentId"));
+                match crate::tiktok_bridge::pin_comment(self, &comment_id).await {
+                    Ok(()) => drop(ctx.args.insert("pinSuccess".into(), true.into())),
+                    Err(err) => crate::error(format!("TikTok: {err}")),
+                }
+            }
+            // 43012: Unpin Comment
+            43012 => {
+                ctx.args.insert("unpinSuccess".into(), false.into());
+                match crate::tiktok_bridge::unpin_comment(self).await {
+                    Ok(()) => drop(ctx.args.insert("unpinSuccess".into(), true.into())),
+                    Err(err) => crate::error(format!("TikTok: {err}")),
+                }
             }
 
             // Discord Basic Webhook (7001)
@@ -4353,9 +4503,10 @@ impl Engine {
         let args = self.expand(ctx, s(o, "arguments"));
         let dir = self.expand(ctx, s(o, "workingDir"));
         let wait = self.duration_number(ctx, o, "waitForExit");
-        let mut cmd = tokio::process::Command::new(&prog);
+        let mut cmd = std::process::Command::new(&prog);
         #[cfg(windows)]
         {
+            use std::os::windows::process::CommandExt;
             cmd.raw_arg(&args);
             cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         }
@@ -4371,6 +4522,8 @@ impl Engine {
                 cmd.env(k, self.expand(ctx, &text(v)));
             }
         }
+        // In Flatpak, the program is the host's.
+        let mut cmd = tokio::process::Command::from(crate::sandbox::on_host(cmd));
         cmd.stdin(std::process::Stdio::piped()).kill_on_drop(false);
         if wait > 0.0 {
             cmd.stdout(std::process::Stdio::piped());
@@ -4485,7 +4638,7 @@ mod tests {
 
     #[test]
     fn obs_state_lists_match_what_the_engine_reads() {
-        use crate::ui::forms::*;
+        use crate::automation::schema::*;
         // 0 shows, starts, enables, mutes, plays: new_state and the OBS arms read it so.
         assert_eq!(STATE_HIDE_SHOW_TOGGLE[0], "Show");
         assert_eq!(STREAM_STATE[..2], ["Start", "Stop"]);
@@ -4817,5 +4970,15 @@ mod tests {
             assert!(!out.iter().any(|o| o["platform"] == "tiktok"), "{out:?}");
             assert!(said("kick", "cy is now lurking. Enjoy the stream! 👀"), "{out:?}");
         });
+    }
+
+    #[test]
+    fn new_subactions_supported_and_handled() {
+        for code in [4013, 4014, 35032, 35033, 35034, 35050, 35051, 43010, 43011, 43012] {
+            assert!(
+                crate::engine::supported(code),
+                "Sub-action {code} must be marked supported"
+            );
+        }
     }
 }

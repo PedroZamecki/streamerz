@@ -70,14 +70,54 @@ pub struct Release {
     sha256: Option<String>,
 }
 
-/// What updates: the Windows exe, or the AppImage. Any other way of running (a dev build, a copied
-/// binary) has no update, as it isn't what a release ships.
-fn installed() -> Option<(PathBuf, &'static str)> {
+/// How this copy was installed, which says who updates it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Install {
+    /// The Windows exe: Streamerz replaces it.
+    Exe,
+    /// The AppImage: Streamerz replaces it.
+    AppImage,
+    /// The plain Linux program (`Streamerz-linux-x86_64`): Streamerz replaces it.
+    Binary,
+    /// Flatpak updates it (`flatpak update`, the software centers).
+    Flatpak,
+    /// A .deb, .rpm or Arch package under /usr: the system's updater does, from the Streamerz repository.
+    Package,
+}
+
+/// How this copy was installed.
+pub fn install() -> Install {
     if cfg!(windows) {
-        Some((exe()?, "Streamerz-windows-x86_64.exe"))
+        Install::Exe
+    } else if crate::sandbox::flatpak() {
+        Install::Flatpak
+    } else if appimage().is_some() {
+        Install::AppImage
+    } else if exe().is_some_and(|e| e.starts_with("/usr") && !e.starts_with("/usr/local")) {
+        Install::Package
     } else {
-        Some((appimage()?, "Streamerz-linux-x86_64.AppImage"))
+        Install::Binary
     }
+}
+
+/// What Streamerz replaces itself: the Windows exe, the AppImage or the plain Linux program, and the
+/// release file it's made from. Flatpak and the packages are updated by the system.
+fn installed() -> Option<(PathBuf, &'static str)> {
+    match install() {
+        Install::Exe => Some((exe()?, "Streamerz-windows-x86_64.exe")),
+        Install::AppImage => Some((appimage()?, "Streamerz-linux-x86_64.AppImage")),
+        Install::Binary => Some((exe()?, "Streamerz-linux-x86_64")),
+        Install::Flatpak | Install::Package => None,
+    }
+}
+
+/// The line a desktop file runs to start this copy (autostart, the hotkeys portal's entry).
+#[cfg(not(windows))]
+pub fn launch_line() -> Option<String> {
+    if let Some(id) = crate::sandbox::app_id() {
+        return Some(format!("flatpak run {id}"));
+    }
+    Some(format!("\"{}\"", exe()?.display()))
 }
 
 /// The newest release found, for Settings to show.
@@ -87,8 +127,8 @@ pub fn found() -> Option<String> {
     FOUND.lock().ok()?.clone()
 }
 
-/// The release newer than this build, if there is one.
-pub async fn newer() -> Option<Release> {
+/// The newest release, if it's newer than this build: its tag and what GitHub says of it.
+async fn newer_release() -> Option<(String, Value)> {
     let now = semver(running()?)?;
     let headers = [
         ("User-Agent".to_string(), "Streamerz".to_string()),
@@ -97,10 +137,13 @@ pub async fn newer() -> Option<Release> {
     let r = crate::http::request("GET", &latest(), &headers, b"").await.ok()?;
     let v: Value = serde_json::from_slice(&r.body).ok()?;
     let tag = v["tag_name"].as_str()?.to_string();
-    if semver(&tag)? <= now {
-        return None;
-    }
+    (semver(&tag)? > now).then_some((tag, v))
+}
+
+/// The release newer than this build, if there is one and Streamerz replaces itself.
+pub async fn newer() -> Option<Release> {
     let (path, name) = installed()?;
+    let (tag, v) = newer_release().await?;
     let a = v["assets"].as_array()?.iter().find(|a| a["name"] == name)?;
     Some(Release {
         url: a["browser_download_url"].as_str()?.to_string(),
@@ -515,13 +558,30 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
     if mode == Updates::Ignore && !asked {
         return;
     }
+    // Flatpak and the packages are updated by the system: Check now only says what's out.
+    let managed = match install() {
+        Install::Flatpak => Some("update.by_flatpak"),
+        Install::Package => Some("update.by_package"),
+        _ => None,
+    };
+    if let Some(how) = managed {
+        if asked {
+            let what = match (newer_release().await, running()) {
+                (Some((tag, _)), _) => trf(how, &[("version", &tag)]),
+                (None, Some(v)) => trf("update.newest", &[("version", v)]),
+                (None, None) => tr("update.dev").to_string(),
+            };
+            let _ = crate::host::confirm(what, tr("dialogs.ok"), "").await;
+        }
+        return;
+    }
     let Some(release) = newer().await else {
         if asked {
             let what = match running() {
                 Some(v) => trf("update.newest", &[("version", v)]),
                 None => tr("update.dev").to_string(),
             };
-            let _ = crate::ui::confirm(what, tr("dialogs.ok"), "").await;
+            let _ = crate::host::confirm(what, tr("dialogs.ok"), "").await;
         }
         return;
     };
@@ -562,7 +622,7 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
     } else {
         trf("update.ask", &[("version", &tag), ("now", now)])
     };
-    if !crate::ui::confirm(question, tr("update.later"), tr("update.now"))
+    if !crate::host::confirm(question, tr("update.later"), tr("update.now"))
         .await
         .unwrap_or(false)
     {
@@ -575,15 +635,15 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
             return;
         }
         crate::error(format!("Update to {tag} failed: {e}"));
-        let _ = crate::ui::confirm(trf("update.failed", &[("error", &e)]), tr("dialogs.ok"), "").await;
+        let _ = crate::host::confirm(trf("update.failed", &[("error", &e)]), tr("dialogs.ok"), "").await;
         return;
     }
     let done = trf("update.done", &[("version", &tag)]);
-    if crate::ui::confirm(done, tr("update.later"), tr("update.restart"))
+    if crate::host::confirm(done, tr("update.later"), tr("update.restart"))
         .await
         .unwrap_or(false)
     {
-        crate::ui::restart();
+        crate::host::restart();
     } else {
         crate::say(format!("Updated to {tag}: it runs from the next start."));
     }
@@ -591,6 +651,10 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
 
 /// Checks now and then once an hour while Streamerz is open.
 pub async fn watch(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>>) {
+    // Flatpak and the packages are updated by the system: no timer.
+    if installed().is_none() {
+        return;
+    }
     loop {
         check(cfg.clone(), false).await;
         tokio::time::sleep(std::time::Duration::from_secs(3600)).await;

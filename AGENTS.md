@@ -1,5 +1,8 @@
 # Streamerz project rules
 
+- The window is GPUI. Keep application rules in the toolkit-independent core and expose every core
+  operation through MCP.
+
 - Commits: conventional commits, one line, max 72 chars: `type(scope)?: subject`.
   Scope is optional. No body, no footer, no `Co-Authored-By` or other trailers. Enforced by
   commitlint (`.githooks/commit-msg`, `commitlint.config.mjs`) and in CI.
@@ -26,7 +29,10 @@
   (`.github/workflows/build.yml`). Keep that working: don't add steps that change the tree after the PR
   is built.
 - Releases are automatic: each merge to `main` bumps the version from the commit types
-  (`type!:` major, `feat` minor, `fix`/`perf` patch) and publishes the Windows exe and the Linux AppImage (the only Linux file: the TikTok helper lives inside it).
+  (`type!:` major, `feat` minor, `fix`/`perf` patch) and publishes the Windows exe and, on Linux, the AppImage,
+  the program alone, the .deb, .rpm and Arch packages and the .flatpak (`dev/packages.sh`, all from one build).
+  It also signs and puts the APT, DNF/zypper, pacman and Flatpak repositories on GitHub Pages
+  (`dev/publish-repos.sh`, key in the `PACKAGES_GPG_KEY` secret, public half `packaging/streamerz.asc`).
   Don't tag by hand, and don't bump the version in `Cargo.toml` (it's unused).
 - The name is **Streamerz**, capitalized, everywhere a person or the system sees it: UI, docs, window and
   notification titles, desktop entries, the executable (`Streamerz`, `Streamerz.exe`) and the release files.
@@ -42,8 +48,9 @@
   and idle CPU before and after every version and put the numbers in the PR description.
 - Integrations are opt-in: off by default, and a disabled one opens no socket, timer or task.
 - Windows-only code can be type-checked locally before pushing (official rustc with the Windows std,
-  e.g. installed to /tmp/rt): `RUSTC=/tmp/rt/bin/rustc cargo check --target x86_64-pc-windows-msvc
-  --features fltk/fltk-bundled --target-dir /tmp/wincheck`.
+  e.g. installed to /tmp/rt): `RUSTC=/tmp/rt/bin/rustc cargo check --features dev-ui
+  --target x86_64-pc-windows-msvc --target-dir /tmp/wincheck`, or `cargo xwin check --features dev-ui
+  --target x86_64-pc-windows-msvc --target-dir target/xwin`.
 - `PLAN.md` is the spec: follow it, tick its phases off, and update it when a decision changes.
   Ask before guessing on anything it doesn't cover. Streamer.bot (https://docs.streamer.bot, source of the
   docs at https://github.com/Streamerbot/docs) is the reference for behaviour, names, protocols and
@@ -64,17 +71,16 @@
   Unicode symbols (●, ◐, ✓, ★, →, 🔒...) in UI text: show an icon instead.
 - UI text goes through `i18n::tr("key")`, with the English text in `assets/locales/en_US.json` (see
   DEVELOPING.md, Languages): don't add a new literal text to the UI, and move the ones you touch.
-- Icons are Lucide (`src/ui/icons.rs`, ISC), drawn in the text's colour; brand logos (platforms, apps) are
+- Icons are Lucide (`assets/lucide.rs`, ISC), drawn in the text's colour; brand logos (platforms, apps) are
   SVGs in `assets/icons`. A new icon: add its Lucide body to `ICONS`; never draw symbols with text.
-- One look everywhere: zinc colours from `theme()`, `muted()` for quiet text, `Health` for a connection's
-  state, `grid()` for rows of buttons (they fill the space and fold to icons when narrow), `Rows` for
-  lists, `context_menu()` (or `menu::Menu`) for right clicks, `scroll::page` for a page that scrolls. Reuse these; don't style a widget by hand.
+- One look everywhere: the zinc colours and quiet text from `frontend/src/theme.rs`, `Health` (`controls/health.rs`)
+  for a connection's state, `Rows` for lists, the shared form, prompt and notice controls in
+  `frontend/src/controls/`. Reuse these; don't style a widget by hand.
 - Every list and tree with actions gets a right-click menu with the same actions as its buttons.
-- The UI is modular: one look, one module. Scrolling is `ui/scroll.rs`, menus and dropdowns `ui/menu.rs`,
-  floating panels `ui/popover.rs`, dialogs and messages `ui/dialogs.rs` (inside the app's window, never a
-  window of their own), short forms and secret fields `ui/fields.rs`, tables `ui/rows.rs`, motion `ui/anim.rs` (see "Building blocks" in `docs/UI.md`). Never style FLTK's raw widget
-  for one screen: change or extend the shared block so every screen gets it, and `ui/rules.rs` fails the
-  tests when a screen bypasses one.
+- The UI is GPUI and modular: the application rules live in the toolkit-independent `src/core/` (a test,
+  `core/boundary.rs`, fails when it imports a toolkit) and the renderer is the `frontend/` crate, run as
+  `Streamerz --frontend`. Shared looks live in `frontend/src/controls/` (see "Building blocks" in
+  `docs/UI.md`): change or extend the shared block so every screen gets it, never style one screen apart.
 - Set it up for the user: configure everything possible by itself (find what's installed, read what's
   already set, fill in what's known, move on when a step is done). What lives in another program (a
   browser's extensions) is changed only after the user agrees, with everything it will do explained, and
@@ -85,14 +91,14 @@
 - Check every UI change on the hidden display (`DISPLAY=:99`) with a screenshot, narrow and wide. Use the
   MCP `ui` tool (dev mode): `shot` saves the app's own window as a PNG (no desktop screenshot, no blind
   coordinates), `find TEXT` says where to click. Run the dev instance only with `env -u WAYLAND_DISPLAY
-  DISPLAY=:99`, and kill it by pid (`pkill -x Streamerz`). `dev/smoke.py` starts it, visits every page,
-  right-clicks, opens the user card and fails on a crash report or a missing screenshot: run it before
-  closing a version. Every bug fixed gets a test (a unit test where it can be, else a step in the smoke).
+  DISPLAY=:99`, and kill it by pid (`pkill -x Streamerz`). `DISPLAY=:99 python3 -P dev/ui-smoke.py` (after
+  `cargo build --profile fast --features dev-ui`) starts it, visits every page, right-clicks, opens the user
+  card and fails on a crash report or a missing screenshot: run it before closing a version. Every bug fixed gets a test (a unit test where it can be, else a step in the smoke).
 
 ## Code
 
-- Before adding a helper, look for one: `ui.rs` (button, grid, header, hint, placeholder, Health,
-  context_menu), `ui/dialogs.rs` (row, window, ok_cancel, values, json_editor), `fmt.rs`, `edit.rs`.
+- Before adding a helper, look for one: `frontend/src/controls/` (rows, form, prompt, notice, health), `fmt.rs`,
+  `edit.rs`.
 - Descriptions and names of trigger and sub-action types come from `types.rs`; check a code against it
   before writing anything keyed by it.
 - New features that can be driven should be reachable from the MCP server (`mcp.rs`), so an assistant can

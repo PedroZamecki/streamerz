@@ -1,0 +1,161 @@
+{
+  "format": 1,
+  "name": "Prize wheel",
+  "meta": {
+    "description": "A wheel with your own slices. !spin turns it and the result is written in the chat.",
+    "variables": [
+      {
+        "name": "slices",
+        "label": "Slices",
+        "kind": "list",
+        "default": [
+          {
+            "label": "100 points",
+            "weight": 2
+          },
+          {
+            "label": "500 points",
+            "weight": 1
+          },
+          {
+            "label": "Nothing",
+            "weight": 2
+          },
+          {
+            "label": "Hydrate",
+            "weight": 1
+          },
+          {
+            "label": "1000 points",
+            "weight": 1
+          },
+          {
+            "label": "Pick the next game",
+            "weight": 1
+          },
+          {
+            "label": "Timeout (1 minute)",
+            "weight": 1
+          }
+        ],
+        "description": "A slice with 2 chances is twice as wide, and twice as likely",
+        "columns": [
+          {
+            "name": "label",
+            "label": "Slice",
+            "kind": "text",
+            "default": ""
+          },
+          {
+            "name": "weight",
+            "label": "Chances",
+            "kind": "integer",
+            "default": 1
+          }
+        ],
+        "section": "The wheel"
+      },
+      {
+        "name": "title",
+        "label": "Title",
+        "kind": "text",
+        "default": "Spin the wheel",
+        "description": "Above the wheel. Empty for none"
+      },
+      {
+        "name": "announce",
+        "label": "Write the result in the chat",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "message",
+        "label": "Message",
+        "kind": "text",
+        "default": "{user} spun the wheel: {result}",
+        "description": "{user} is who spun, {result} the slice",
+        "showIf": {
+          "setting": "announce",
+          "is": true
+        }
+      },
+      {
+        "name": "spinSeconds",
+        "label": "Seconds of spin",
+        "kind": "slider",
+        "default": 6,
+        "min": 2,
+        "max": 15,
+        "step": 1
+      },
+      {
+        "name": "hideAfter",
+        "label": "Hide after (seconds)",
+        "kind": "integer",
+        "default": 8,
+        "description": "After a result. 0: the wheel is always there"
+      },
+      {
+        "name": "colors",
+        "label": "Colors",
+        "kind": "choice",
+        "default": "Rainbow",
+        "options": [
+          "Rainbow",
+          "Purple",
+          "Sunset",
+          "Ocean"
+        ],
+        "section": "Look"
+      },
+      {
+        "name": "textColor",
+        "label": "Text color",
+        "kind": "color",
+        "default": "#ffffff"
+      },
+      {
+        "name": "scale",
+        "label": "Size (%)",
+        "kind": "slider",
+        "default": 100,
+        "min": 50,
+        "max": 250,
+        "step": 5
+      },
+      {
+        "name": "font",
+        "label": "Font",
+        "kind": "font",
+        "default": "",
+        "description": "A font installed on this computer"
+      }
+    ],
+    "files": [
+      {
+        "name": "index.html"
+      }
+    ],
+    "permissions": [
+      "chat.send"
+    ],
+    "template": {
+      "id": "streamerz.example.wheel",
+      "version": "2.0.0",
+      "author": "Streamerz",
+      "pages": [
+        {
+          "file": "index.html",
+          "title": "Prize wheel",
+          "width": 800,
+          "height": 900
+        }
+      ],
+      "test": {
+        "topics": {
+          "wheel.spin": "Streamerz"
+        }
+      }
+    }
+  }
+}

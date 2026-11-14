@@ -1,0 +1,161 @@
+{
+  "format": 1,
+  "name": "Flying chat",
+  "meta": {
+    "description": "Chat messages fly across the screen from right to left, as on Niconico (danmaku).",
+    "variables": [
+      {
+        "name": "look",
+        "label": "Look",
+        "kind": "choice",
+        "default": "Outlined",
+        "options": [
+          "Outlined",
+          "Boxed"
+        ],
+        "section": "Look"
+      },
+      {
+        "name": "size",
+        "label": "Text size",
+        "kind": "slider",
+        "default": 32,
+        "description": "In pixels",
+        "min": 14,
+        "max": 96,
+        "step": 1
+      },
+      {
+        "name": "font",
+        "label": "Font",
+        "kind": "font",
+        "default": "",
+        "description": "A font installed on this computer"
+      },
+      {
+        "name": "textColor",
+        "label": "Text color",
+        "kind": "color",
+        "default": "#ffffff",
+        "description": "A name keeps its own color"
+      },
+      {
+        "name": "opacity",
+        "label": "Opacity (%)",
+        "kind": "slider",
+        "default": 100,
+        "min": 20,
+        "max": 100,
+        "step": 5
+      },
+      {
+        "name": "area",
+        "label": "Where",
+        "kind": "choice",
+        "default": "Whole screen",
+        "options": [
+          "Whole screen",
+          "Top half",
+          "Bottom half"
+        ]
+      },
+      {
+        "name": "showName",
+        "label": "Name",
+        "kind": "boolean",
+        "default": true,
+        "section": "What it shows"
+      },
+      {
+        "name": "showPlatform",
+        "label": "Platform logo",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "showBadges",
+        "label": "Badges",
+        "kind": "boolean",
+        "default": false
+      },
+      {
+        "name": "showAvatars",
+        "label": "Pictures",
+        "kind": "boolean",
+        "default": false
+      },
+      {
+        "name": "showEvents",
+        "label": "Subs, gifts and raids",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "speed",
+        "label": "Seconds to cross",
+        "kind": "slider",
+        "default": 10,
+        "min": 3,
+        "max": 30,
+        "step": 1,
+        "section": "When"
+      },
+      {
+        "name": "most",
+        "label": "Most at once",
+        "kind": "integer",
+        "default": 40,
+        "description": "More than this are left out, so a busy chat doesn't cover the game"
+      },
+      {
+        "name": "platforms",
+        "label": "From",
+        "kind": "platforms",
+        "default": [
+          "twitch",
+          "youtube",
+          "kick",
+          "tiktok"
+        ],
+        "description": "The platforms whose chat it shows",
+        "section": "Which"
+      },
+      {
+        "name": "hideCommands",
+        "label": "Hide commands",
+        "kind": "boolean",
+        "default": true,
+        "description": "Messages that start with !"
+      },
+      {
+        "name": "ignore",
+        "label": "Ignore these names",
+        "kind": "lines",
+        "default": "",
+        "description": "One per line: your bots, for example"
+      }
+    ],
+    "files": [
+      {
+        "name": "index.html"
+      }
+    ],
+    "permissions": [
+      "chat.read",
+      "alerts.read"
+    ],
+    "template": {
+      "id": "streamerz.example.danmaku",
+      "version": "1.1.0",
+      "author": "Streamerz",
+      "pages": [
+        {
+          "file": "index.html",
+          "title": "Flying chat",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    }
+  }
+}

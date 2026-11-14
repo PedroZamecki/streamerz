@@ -1,0 +1,186 @@
+{
+  "format": 1,
+  "name": "Now playing",
+  "meta": {
+    "description": "The song playing on the Spotify app of this computer: cover, title, artist and a bar that follows it. No Spotify login needed.",
+    "variables": [
+      {
+        "name": "layout",
+        "label": "Layout",
+        "kind": "choice",
+        "default": "Card",
+        "description": "Vinyl: a round cover that turns while the song plays",
+        "options": [
+          "Card",
+          "Compact",
+          "Vinyl"
+        ],
+        "section": "Look"
+      },
+      {
+        "name": "background",
+        "label": "Background",
+        "kind": "choice",
+        "default": "Blurred cover",
+        "options": [
+          "Blurred cover",
+          "Solid color",
+          "None"
+        ]
+      },
+      {
+        "name": "backgroundColor",
+        "label": "Background color",
+        "kind": "color",
+        "default": "#18181be6",
+        "showIf": {
+          "setting": "background",
+          "is": "Solid color"
+        }
+      },
+      {
+        "name": "accentFromCover",
+        "label": "Accent from the cover",
+        "kind": "boolean",
+        "default": true,
+        "description": "The bar and the label take the liveliest color of the cover"
+      },
+      {
+        "name": "accent",
+        "label": "Accent color",
+        "kind": "color",
+        "default": "#1db954",
+        "showIf": {
+          "setting": "accentFromCover",
+          "is": false
+        }
+      },
+      {
+        "name": "textColor",
+        "label": "Text color",
+        "kind": "color",
+        "default": "#ffffff"
+      },
+      {
+        "name": "radius",
+        "label": "Rounded corners",
+        "kind": "slider",
+        "default": 18,
+        "min": 0,
+        "max": 48,
+        "step": 1
+      },
+      {
+        "name": "scale",
+        "label": "Size (%)",
+        "kind": "slider",
+        "default": 100,
+        "min": 50,
+        "max": 250,
+        "step": 5
+      },
+      {
+        "name": "font",
+        "label": "Font",
+        "kind": "font",
+        "default": "",
+        "description": "A font installed on this computer"
+      },
+      {
+        "name": "side",
+        "label": "Side",
+        "kind": "choice",
+        "default": "Left",
+        "options": [
+          "Left",
+          "Right"
+        ]
+      },
+      {
+        "name": "label",
+        "label": "Label",
+        "kind": "text",
+        "default": "",
+        "description": "A small text above the song, such as Now playing. Empty for none",
+        "section": "What it shows"
+      },
+      {
+        "name": "showCover",
+        "label": "Cover",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "showArtist",
+        "label": "Artist",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "showAlbum",
+        "label": "Album",
+        "kind": "boolean",
+        "default": false
+      },
+      {
+        "name": "showProgress",
+        "label": "Progress bar",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "showTime",
+        "label": "Time and length",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "animation",
+        "label": "Comes in with",
+        "kind": "choice",
+        "default": "Slide",
+        "options": [
+          "Slide",
+          "Fade",
+          "Pop",
+          "None"
+        ],
+        "section": "When"
+      },
+      {
+        "name": "hideWhenPaused",
+        "label": "Hide when paused",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "showFor",
+        "label": "Show for (seconds)",
+        "kind": "integer",
+        "default": 0,
+        "description": "Leaves that long after a song starts. 0: stays while it plays"
+      }
+    ],
+    "files": [
+      {
+        "name": "index.html"
+      }
+    ],
+    "template": {
+      "id": "streamerz.example.now-playing",
+      "version": "2.0.0",
+      "author": "Streamerz",
+      "pages": [
+        {
+          "file": "index.html",
+          "title": "Now playing",
+          "width": 760,
+          "height": 220
+        }
+      ],
+      "requires": [
+        "spotify"
+      ]
+    }
+  }
+}

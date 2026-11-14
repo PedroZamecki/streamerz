@@ -273,3 +273,48 @@ None.
 ### When
 
 When Kick reports a Kicks gift.
+
+## Ad Break Begin
+
+- Kind: trigger
+- Code: 35026
+- Type: KickAdBreakBegin
+- Category: Kick/Channel & Stream
+- Needs: a Kick channel and Kick connected
+
+Fires when an ad break starts on the Kick channel.
+
+### Fields
+
+None.
+
+### Arguments
+
+- `duration`: the duration of the ad break in seconds.
+- `broadcastUser`, `broadcastUsername`, `broadcastUserId`: the broadcaster.
+
+### When
+
+When Kick reports an ad break has started.
+
+## Ad Break End
+
+- Kind: trigger
+- Code: 35027
+- Type: KickAdBreakEnd
+- Category: Kick/Channel & Stream
+- Needs: a Kick channel and Kick connected
+
+Fires when an ad break ends on the Kick channel.
+
+### Fields
+
+None.
+
+### Arguments
+
+- `broadcastUser`, `broadcastUsername`, `broadcastUserId`: the broadcaster.
+
+### When
+
+When Kick reports an ad break has completed.

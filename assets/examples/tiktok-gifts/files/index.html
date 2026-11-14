@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TikTok gifts</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  body { font-family: var(--font, system-ui), system-ui, sans-serif; }
+  #list { position: absolute; inset: 0; display: flex; flex-direction: column; gap: .8em; padding: 1.2em 1.4em;
+    box-sizing: border-box; align-items: flex-start; }
+  .center #list { align-items: center; }
+  .right #list { align-items: flex-end; }
+  .bottom #list { flex-direction: column-reverse; }
+
+  /* A pill: the picture of who sent it, their name and what they sent, the gift, and how many. */
+  .gift { position: relative; display: flex; align-items: center; gap: .7em; padding: .35em 1.1em .35em .35em;
+    border-radius: var(--radius, 40px); color: var(--text, #fff); min-width: 15em; max-width: 100%;
+    box-sizing: border-box;
+    background: linear-gradient(90deg, var(--accent, #fe2c55), color-mix(in srgb, var(--accent, #fe2c55) 55%, transparent) 70%,
+      transparent);
+    transition: opacity .4s ease, transform .45s cubic-bezier(.2, .8, .2, 1); }
+  .dark .gift { background: rgba(20, 20, 24, .88); box-shadow: 0 .3em 1em rgba(0, 0, 0, .4); }
+  .light .gift { background: rgba(255, 255, 255, .94); color: #18181b; box-shadow: 0 .3em 1em rgba(0, 0, 0, .3); }
+  .custom .gift { background: var(--card, #27272a); box-shadow: 0 .3em 1em rgba(0, 0, 0, .4); }
+  .gift.new, .gift.old { opacity: 0; transform: translateX(-3em); }
+  .right .gift.new, .right .gift.old { transform: translateX(3em); }
+  .center .gift.new, .center .gift.old { transform: scale(.7); }
+
+  .face { flex: none; width: 3em; height: 3em; border-radius: 50%; overflow: hidden; background: rgba(0, 0, 0, .35);
+    display: grid; place-items: center; font-weight: 800; border: .12em solid rgba(255, 255, 255, .8); box-sizing: border-box; }
+  .face img { width: 100%; height: 100%; object-fit: cover; }
+  .words { flex: 1; min-width: 0; text-shadow: 0 1px 3px rgba(0, 0, 0, .5); }
+  .light .words { text-shadow: none; }
+  .name { font-size: 1.05em; font-weight: 800; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .what { font-size: .82em; line-height: 1.25; opacity: .92; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .coins { font-size: .72em; opacity: .85; }
+  .coins img { height: 1em; vertical-align: -.15em; margin-right: .2em; }
+  .picture { flex: none; height: 3.6em; width: 3.6em; object-fit: contain; margin: -.5em 0;
+    filter: drop-shadow(0 .15em .4em rgba(0, 0, 0, .45)); }
+  /* The count, with a bump each time the combo grows. */
+  .count { flex: none; font-size: 1.9em; font-weight: 900; font-style: italic; min-width: 1.6em;
+    color: #fff; -webkit-text-stroke: .04em rgba(0, 0, 0, .35); text-shadow: 0 .08em 0 var(--accent, #fe2c55), 0 .1em .3em rgba(0, 0, 0, .6); }
+  .count small { font-size: .6em; margin-right: .05em; }
+  .count.bump { animation: bump .32s cubic-bezier(.3, 1.6, .5, 1); }
+  @keyframes bump { 0% { transform: scale(1.7); } 100% { transform: scale(1); } }
+  /* A big gift: larger, with a golden glow. */
+  .gift.big { font-size: 1.3em; box-shadow: 0 0 0 .12em #ffd54a, 0 0 1.6em rgba(255, 213, 74, .7); }
+  .gift.big .count { text-shadow: 0 .08em 0 #f59e0b, 0 0 .5em rgba(255, 213, 74, .9); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="list"></div>
+<script>
+// Every gift sent on your TikTok Live, as it happens. Streamerz hands a page any of its events with
+// streamerz.event("Source.Type", fn); a TikTok gift is "TikTok.Gift", with what the Gift trigger carries:
+// {user, userId, profilePictureUrl, giftId, giftName, giftPictureUrl, diamondCount (what one costs),
+//  repeatCount (how many so far), repeatEnd (the combo is over), coins}.
+// A combo gift (a Rose sent ten times in a row) comes as one event per repeat, with repeatCount growing:
+// the page keeps one pill per combo and bumps its count.
+let settings = streamerz.settings;
+const open = new Map(); // The combos on screen: "who:which gift" and its pill.
+
+streamerz.onSettings(s => {
+  settings = s;
+  document.body.className = [
+    { TikTok: "tiktok", Dark: "dark", Light: "light", "Custom color": "custom" }[s.look] || "tiktok",
+    (s.side || "Left").toLowerCase(),
+    s.newest === "At the bottom" ? "bottom" : "",
+  ].join(" ");
+  const root = document.documentElement.style;
+  root.fontSize = 22 * ((Number(s.scale) || 100) / 100) + "px";
+  root.setProperty("--radius", (Number(s.radius) || 0) + "px");
+  root.setProperty("--accent", s.accent || "#fe2c55");
+  root.setProperty("--card", s.cardColor || "#27272a");
+  root.setProperty("--text", s.look === "Light" ? "#18181b" : s.textColor || "#fff");
+  root.setProperty("--font", s.font ? '"' + s.font + '"' : "system-ui");
+});
+
+const el = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+};
+
+streamerz.event("TikTok.Gift", g => {
+  const count = Math.max(1, Number(g.repeatCount) || 1);
+  const each = Number(g.diamondCount) || 0;
+  if (each * count < (Number(settings.minCoins) || 0) && g.repeatEnd !== false) return;
+
+  const key = g.userId + ":" + g.giftId;
+  let pill = open.get(key);
+  if (!pill) {
+    pill = el("div", "gift new");
+    const face = el("div", "face", String(g.user || "?").slice(0, 1).toUpperCase());
+    face.hidden = settings.showAvatar === false;
+    if (g.profilePictureUrl) {
+      const img = new Image();
+      img.onload = () => face.replaceChildren(img);
+      img.src = g.profilePictureUrl;
+    }
+    const words = el("div", "words");
+    // The line under the name: the setting's words, with {gift} and {user} filled in.
+    const what = String(settings.text || "sent {gift}").replace("{gift}", g.giftName || "a gift").replace("{user}", g.user || "");
+    words.append(el("div", "name", g.user), el("div", "what", what));
+    const coins = el("div", "coins");
+    coins.hidden = settings.showCoins === false;
+    words.append(coins);
+    const picture = new Image();
+    picture.className = "picture";
+    picture.src = g.giftPictureUrl || streamerz.icon("gift", settings.accent);
+    pill.append(face, words, picture, el("div", "count"));
+    pill.coins = coins;
+    list.prepend(pill);
+    open.set(key, pill);
+    requestAnimationFrame(() => requestAnimationFrame(() => pill.classList.remove("new")));
+    // No more than the setting says at once: the oldest leaves.
+    [...open.entries()].slice(0, -Math.max(1, Number(settings.most) || 4)).forEach(([k]) => leave(k));
+  }
+
+  // The count grows with the combo, with a bump.
+  const counter = pill.lastElementChild;
+  if (pill.count !== count) {
+    pill.count = count;
+    counter.replaceChildren(el("small", "", "x"), String(count));
+    counter.classList.remove("bump");
+    void counter.offsetWidth; // Read once so the animation starts again.
+    counter.classList.add("bump");
+  }
+  const total = each * count;
+  pill.coins.replaceChildren();
+  const coin = new Image();
+  coin.src = streamerz.icon("coins", "#ffd54a");
+  pill.coins.append(coin, total.toLocaleString());
+  pill.classList.toggle("big", total >= (Number(settings.bigFrom) || 100));
+
+  // It stays for the setting's seconds after its last repeat.
+  clearTimeout(pill.timer);
+  pill.timer = setTimeout(() => leave(key), (Number(settings.seconds) || 6) * 1000);
+});
+
+function leave(key) {
+  const pill = open.get(key);
+  if (!pill) return;
+  open.delete(key);
+  clearTimeout(pill.timer);
+  pill.classList.add("old");
+  setTimeout(() => pill.remove(), 450);
+}
+</script>
+</body>
+</html>

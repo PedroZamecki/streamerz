@@ -1,0 +1,313 @@
+{
+  "meta": {
+    "name": "Top gifters",
+    "author": "Streamerz",
+    "version": "1.0.0",
+    "description": "Top gifters",
+    "autoRunAction": null,
+    "minimumVersion": null
+  },
+  "data": {
+    "actions": [
+      {
+        "id": "18145cd3-5d6c-4595-ac01-a0fb37d2b2d3",
+        "queue": null,
+        "enabled": true,
+        "excludeFromHistory": false,
+        "excludeFromPending": false,
+        "name": "Gifters: single gift",
+        "group": "Top gifters",
+        "alwaysRun": false,
+        "randomAction": false,
+        "concurrent": false,
+        "triggers": [
+          {
+            "id": "c6592669-3582-4be1-926d-0f19a80d92da",
+            "type": 105,
+            "enabled": true,
+            "exclusions": []
+          }
+        ],
+        "subActions": [
+          {
+            "id": "072abf84-dfa9-4876-ad12-cedfb9b15fb1",
+            "type": 123,
+            "enabled": true,
+            "parentId": null,
+            "weight": 0,
+            "variableName": "units",
+            "value": "1",
+            "autoType": true,
+            "index": 0
+          },
+          {
+            "id": "91b6278d-ffc4-4987-b038-69de286ccfe0",
+            "type": 120,
+            "enabled": true,
+            "parentId": null,
+            "weight": 0,
+            "input": "%fromGiftBomb%",
+            "operation": 7,
+            "value": "true",
+            "subActions": [
+              {
+                "id": "65854803-f4f1-4fdc-89d6-d4a6854d3dc9",
+                "type": 99901,
+                "enabled": true,
+                "parentId": null,
+                "weight": 0,
+                "subActions": [
+                  {
+                    "id": "c8102903-be1a-4368-9881-ef9fab73dd3f",
+                    "type": 124,
+                    "enabled": true,
+                    "parentId": null,
+                    "weight": 0
+                  }
+                ]
+              },
+              {
+                "id": "c09dc550-9054-46b1-bc47-874a3fcda937",
+                "type": 99902,
+                "enabled": true,
+                "parentId": null,
+                "weight": 0,
+                "subActions": []
+              }
+            ],
+            "index": 1
+          },
+          {
+            "id": "be2328b8-934b-453b-89df-51251790f4c9",
+            "type": 123,
+            "enabled": true,
+            "parentId": null,
+            "weight": 0,
+            "variableName": "previous",
+            "value": "$parse(group.score_%group.period%_twitch_%userId%)$",
+            "autoType": true,
+            "index": 2
+          },
+          {
+            "id": "7971ebfb-fbb8-4fbc-9c48-5187408fbe3b",
+            "type": 120,
+            "enabled": true,
+            "parentId": null,
+            "weight": 0,
+            "input": "%previous%",
+            "operation": 9,
+            "value": "",
+            "subActions": [
+              {
+                "id": "1122db50-2359-4452-97e5-59c6c4a61906",
+                "type": 99901,
+                "enabled": true,
+                "parentId": null,
+                "weight": 0,
+                "subActions": [
+                  {
+                    "id": "b27e2c16-b673-4f5b-9030-73d78ca11baf",
+                    "type": 123,
+                    "enabled": true,
+                    "parentId": null,
+                    "weight": 0,
+                    "variableName": "previous",
+                    "value": "0",
+                    "autoType": true
+                  }
+                ]
+              },
+              {
+                "id": "6f4e5ffd-c663-4ced-bdaf-1e2933090e34",
+                "type": 99902,
+                "enabled": true,
+                "parentId": null,
+                "weight": 0,
+                "subActions": []
+              }
+            ],
+            "index": 3
+          },
+          {
+            "id": "bad3c694-dc9d-4766-9fab-c027a42982cd",
+            "type": 123,
+            "enabled": true,
+            "parentId": null,
+            "weight": 0,
+            "variableName": "group.score_%group.period%_twitch_%userId%",
+            "value": "$math(%previous% + %units%)$",
+            "autoType": true,
+            "index": 4
+          },
+          {
+            "id": "ac8819b3-6670-49cc-b61e-51b8b4a1a255",
+            "type": 123,
+            "enabled": true,
+            "parentId": null,
+            "weight": 0,
+            "variableName": "group.name_%group.period%_twitch_%userId%",
+            "value": "%user%",
+            "autoType": false,
+            "index": 5
+          }
+        ],
+        "collapsedGroups": []
+      },
+      {
+        "id": "4554f468-c492-4348-8424-34a97f0bceb4",
+        "queue": null,
+        "enabled": true,
+        "excludeFromHistory": false,
+        "excludeFromPending": false,
+        "name": "Gifters: community gifts",
+        "group": "Top gifters",
+        "alwaysRun": false,
+        "randomAction": false,
+        "concurrent": false,
+        "triggers": [
+          {
+            "id": "2860b42c-49e3-4956-98c5-7ac3c9be9c27",
+            "type": 106,
+            "enabled": true,
+            "exclusions": []
+          }
+        ],
+        "subActions": [
+          {
+            "id": "2e6d6b2a-dd87-4f29-9857-60c87295eab7",
+            "type": 123,
+            "enabled": true,
+            "parentId": null,
+            "weight": 0,
+            "variableName": "units",
+            "value": "%gifts%",
+            "autoType": true,
+            "index": 0
+          },
+          {
+            "id": "d8b57d7e-b3e3-4989-a70d-ca883ba25579",
+            "type": 120,
+            "enabled": true,
+            "parentId": null,
+            "weight": 0,
+            "input": "%fromGiftBomb%",
+            "operation": 7,
+            "value": "true",
+            "subActions": [
+              {
+                "id": "dabf131f-8966-4520-b7f0-cfb76284a600",
+                "type": 99901,
+                "enabled": true,
+                "parentId": null,
+                "weight": 0,
+                "subActions": [
+                  {
+                    "id": "cfb11839-72a9-46d8-a125-0ec960f32fc2",
+                    "type": 124,
+                    "enabled": true,
+                    "parentId": null,
+                    "weight": 0
+                  }
+                ]
+              },
+              {
+                "id": "047e6fb3-28cf-444d-a6c2-3d56e200284b",
+                "type": 99902,
+                "enabled": true,
+                "parentId": null,
+                "weight": 0,
+                "subActions": []
+              }
+            ],
+            "index": 1
+          },
+          {
+            "id": "c16f8699-f182-4775-958c-e95c597d7af4",
+            "type": 123,
+            "enabled": true,
+            "parentId": null,
+            "weight": 0,
+            "variableName": "previous",
+            "value": "$parse(group.score_%group.period%_twitch_%userId%)$",
+            "autoType": true,
+            "index": 2
+          },
+          {
+            "id": "a853c554-8db6-44cd-9a1c-c0a7a9e41fcc",
+            "type": 120,
+            "enabled": true,
+            "parentId": null,
+            "weight": 0,
+            "input": "%previous%",
+            "operation": 9,
+            "value": "",
+            "subActions": [
+              {
+                "id": "97413148-bc9e-42f5-9735-1e4f7f12e413",
+                "type": 99901,
+                "enabled": true,
+                "parentId": null,
+                "weight": 0,
+                "subActions": [
+                  {
+                    "id": "9525dd11-8169-4bcf-b441-2a617eeec10b",
+                    "type": 123,
+                    "enabled": true,
+                    "parentId": null,
+                    "weight": 0,
+                    "variableName": "previous",
+                    "value": "0",
+                    "autoType": true
+                  }
+                ]
+              },
+              {
+                "id": "06e74e64-f250-4034-8053-9b0d99cd8b4d",
+                "type": 99902,
+                "enabled": true,
+                "parentId": null,
+                "weight": 0,
+                "subActions": []
+              }
+            ],
+            "index": 3
+          },
+          {
+            "id": "1c2cab51-2ca3-40db-ba3e-abcd8c84deb6",
+            "type": 123,
+            "enabled": true,
+            "parentId": null,
+            "weight": 0,
+            "variableName": "group.score_%group.period%_twitch_%userId%",
+            "value": "$math(%previous% + %units%)$",
+            "autoType": true,
+            "index": 4
+          },
+          {
+            "id": "221d3940-26d5-4892-9dbc-56d477e0d5fd",
+            "type": 123,
+            "enabled": true,
+            "parentId": null,
+            "weight": 0,
+            "variableName": "group.name_%group.period%_twitch_%userId%",
+            "value": "%user%",
+            "autoType": false,
+            "index": 5
+          }
+        ],
+        "collapsedGroups": []
+      }
+    ],
+    "queues": [],
+    "commands": [],
+    "websocketServers": [],
+    "websocketClients": [],
+    "timers": []
+  },
+  "streamerz": {
+    "groupIcons": {}
+  },
+  "version": 23,
+  "exportedFrom": "1.0.7",
+  "minimumVersion": "1.0.0-alpha.1"
+}

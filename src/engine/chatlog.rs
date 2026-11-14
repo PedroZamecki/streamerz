@@ -526,7 +526,7 @@ pub fn for_platform(text: &str, platform: &str, kick_known: &[String]) -> String
                     .iter()
                     .find(|k| shown(k) == w && *k != w)
                     .cloned()
-                    .or_else(|| crate::ui::emotes::kick_tag(w))
+                    .or_else(|| crate::emotes::kick_tag(w))
                     .unwrap_or_else(|| w.to_string())
             } else {
                 shown(w).to_string()
@@ -691,7 +691,7 @@ impl Engine {
             let due = oldest.map(|t| (t + life).saturating_sub(now).max((life / 10).max(1000)));
             (life, due.filter(|_| life > 0 && !log.sweeping))
         };
-        crate::ui::chat();
+        crate::host::chat();
         if let (true, Some(wait)) = (life > 0, due) {
             self.chat_log_mut().sweeping = true;
             let me = self.clone();
@@ -706,7 +706,7 @@ impl Engine {
     /// Chat history is never kept on disk: the platforms give it back when we join. This removes the file
     /// older versions wrote.
     pub fn forget_saved_chat_history() {
-        crate::ui::img::forget_saved("chat-history");
+        crate::cache::forget_saved("chat-history");
     }
 
     /// Merge `fetched` recent messages for `platform` (oldest-to-newest) with any cached historical
@@ -734,8 +734,8 @@ impl Engine {
         if platform == "youtube" {
             crate::youtube::clear_poll();
         }
-        crate::ui::polls_changed();
-        crate::ui::chat();
+        crate::host::polls_changed();
+        crate::host::chat();
     }
 
     pub fn chat_welcome(self: &Rc<Self>, platform: &str, fetched: Vec<Line>) {
@@ -771,7 +771,17 @@ impl Engine {
                 f.welcome = false;
                 for (name, url) in &f.emotes {
                     let tok = if platform == "kick" {
-                        crate::ui::emotes::kick_tag(name).unwrap_or_else(|| name.clone())
+                        if let Some(tag) = crate::emotes::kick_tag(name) {
+                            tag
+                        } else if let Some(id) = url
+                            .strip_prefix("https://files.kick.com/emotes/")
+                            .and_then(|s| s.strip_suffix("/fullsize"))
+                        {
+                            crate::emotes::remember_kick_tag(name, id);
+                            format!("[emote:{id}:{name}]")
+                        } else {
+                            name.clone()
+                        }
                     } else {
                         name.clone()
                     };
@@ -822,7 +832,7 @@ impl Engine {
             }
         }
         self.chat_sweep_soon();
-        crate::ui::chat();
+        crate::host::chat();
     }
 
     /// Keep a chat message for the window (called by `chat`).
@@ -842,14 +852,32 @@ impl Engine {
         let shown = crate::roles::Role::from_flags(c.broadcaster, lead, c.moderator, c.vip);
         if crate::roles::seen_self(&c.platform, &c.user_id, shown) {
             crate::say(format!("{}: this account is now a {} here", c.platform, shown.name()));
-            crate::ui::changed();
+            crate::host::changed();
         }
+        // What the overlay pages are told, once the log is let go of (their copy is built from it).
+        let mut told: Option<Line> = None;
         {
             let mut guard = self.chat_log_mut();
             let log = &mut *guard;
             let Some(i) = index(&c.platform) else { return };
             for e in &c.emotes {
-                log.remember_emote(i, e.0.clone(), e.1.clone());
+                let tok = if c.platform == "kick" {
+                    if let Some(tag) = crate::emotes::kick_tag(&e.0) {
+                        tag
+                    } else if let Some(id) =
+                        e.1.strip_prefix("https://files.kick.com/emotes/")
+                            .and_then(|s| s.strip_suffix("/fullsize"))
+                    {
+                        let name = self::shown(&e.0);
+                        crate::emotes::remember_kick_tag(name, id);
+                        format!("[emote:{id}:{name}]")
+                    } else {
+                        e.0.clone()
+                    }
+                } else {
+                    e.0.clone()
+                };
+                log.remember_emote(i, tok, e.1.clone());
             }
             let was_action = c.args.get("isAction").and_then(Value::as_bool).unwrap_or(false);
             let (plain, action) = match action_of(&c.text) {
@@ -983,9 +1011,14 @@ impl Engine {
                 }
                 (mine.broadcaster, mine.moderator, mine.vip, mine.subscriber) =
                     (line.broadcaster, line.moderator, line.vip, line.subscriber);
+                // Ours, now as the platform has it: this is when the overlays get it.
+                let told = self.listening("Chat", "Line").then(|| mine.clone());
                 log.reset_gen += 1;
                 drop(guard);
-                crate::ui::chat();
+                if let Some(line) = told {
+                    self.chat_to_overlays(&line, &avatar_of(&c.args));
+                }
+                crate::host::chat();
                 return;
             }
             // Deduplicate if a message arrived both in pre-join history and right as the live socket opened.
@@ -999,10 +1032,16 @@ impl Engine {
                 return;
             }
             line.historical = false;
+            if self.listening("Chat", "Line") {
+                told = Some(line.clone());
+            }
             log.push(line);
         }
+        if let Some(line) = told {
+            self.chat_to_overlays(&line, &avatar_of(&c.args));
+        }
         self.chat_sweep_soon();
-        crate::ui::chat();
+        crate::host::chat();
     }
 
     /// What a trigger shows in the chat, if anything (see `event_of`).
@@ -1010,42 +1049,20 @@ impl Engine {
         if self.memory_saver {
             return;
         }
-        let Some(ev) = event_of(kind, a) else { return };
-        let get = |k: &str| a.get(k).map(crate::vars::text).unwrap_or_default();
-        let says = crate::vars::simple(crate::i18n::tr(ev.says), a, &Obj::new());
-        let said = ev.with.map(get).unwrap_or_default();
-        let (text, emotes) = normalize_line_emotes(ev.platform, said, &[]);
-        let user = Some(get("user"))
-            .filter(|u| !u.is_empty())
-            .unwrap_or_else(|| get("userName"));
-        let cost_icon = if !ev.cost_icon.is_empty() {
-            ev.cost_icon.to_string()
-        } else {
-            get("rewardPoints")
-        };
-        self.chat_log_mut().push(Line {
-            platform: ev.platform.into(),
-            time: crate::fmt::shown_time(&crate::fmt::now()),
-            ts: crate::fmt::unix_now().as_millis() as i64,
-            user,
-            user_id: get("userId"),
-            text,
-            emotes,
-            event: says,
-            cost: ev.cost.and_then(|k| a.get(k)).and_then(Value::as_u64).unwrap_or(0),
-            cost_icon,
-            picture: ev.picture.map(get).unwrap_or_default(),
-            huge: ev.huge,
-            icon: ev.icon.into(),
-            accent: ev
-                .color
-                .map(get)
-                .filter(|c| c.len() == 7 && c.starts_with('#'))
-                .unwrap_or_else(|| ev.accent.into()),
-            ..Default::default()
-        });
+        // A follow is told to the overlays only (the chat doesn't show it): nothing is built for it
+        // when no page listens.
+        let shown = event_of(kind, a).is_some();
+        if !shown && !self.listening("Chat", "Alert") {
+            return;
+        }
+        let Some(line) = event_line(kind, a) else { return };
+        self.emit("Chat", "Alert", || alert_value(self, kind, a, &line, &avatar_of(a)));
+        if !shown {
+            return;
+        }
+        self.chat_log_mut().push(line);
         self.chat_sweep_soon();
-        crate::ui::chat();
+        crate::host::chat();
     }
 
     /// A line from Streamerz itself (a failed send, a dev-mode send).
@@ -1058,7 +1075,7 @@ impl Engine {
             note: true,
             ..Default::default()
         });
-        crate::ui::chat();
+        crate::host::chat();
     }
 
     /// Whether `platform`'s chat is in the log.
@@ -1086,6 +1103,60 @@ impl Engine {
         }
     }
 
+    /// How many lines up to `seq` are in the log, leaving out those of the `hidden` platforms: what a
+    /// view that holds them all must have, to know it is still in step.
+    pub fn chat_count(&self, seq: u64, hidden: &[&str]) -> usize {
+        self.st
+            .borrow()
+            .chat_log
+            .lines
+            .iter()
+            .filter(|l| l.seq <= seq && !hidden.contains(&l.platform.as_str()))
+            .count()
+    }
+
+    /// The line with this `seq`, if it is still in the log.
+    pub fn chat_line(&self, seq: u64) -> Option<Line> {
+        self.st.borrow().chat_log.lines.iter().find(|l| l.seq == seq).cloned()
+    }
+
+    /// A new line, for the overlay pages that listen: `Chat.Line` for a message and `Chat.Alert` for
+    /// an event shown in the chat (a sub, a gift, a raid), as the Chat page draws it (see
+    /// `core::chat::overlay_line`). Nothing is built when none listens. Never called while the chat
+    /// log is borrowed.
+    fn chat_to_overlays(self: &Rc<Self>, line: &Line, avatar: &str) {
+        if line.note {
+            return;
+        }
+        let kind = if line.event.is_empty() { "Line" } else { "Alert" };
+        self.emit("Chat", kind, || crate::core::chat::overlay_line(self, line, avatar));
+    }
+
+    /// The newest `count` lines for an overlay that just opened: messages, events (`alerts`), or both.
+    pub fn chat_recent(self: &Rc<Self>, count: usize, lines: bool, alerts: bool) -> Vec<Value> {
+        let mut newest: Vec<Line> = self
+            .st
+            .borrow()
+            .chat_log
+            .lines
+            .iter()
+            .rev()
+            .filter(|l| !l.note && !l.welcome && !l.local && if l.event.is_empty() { lines } else { alerts })
+            .take(count.min(200))
+            .cloned()
+            .collect();
+        newest.reverse();
+        newest
+            .iter()
+            .map(|line| crate::core::chat::overlay_line(self, line, ""))
+            .collect()
+    }
+
+    /// The `seq` of the newest line (0: none yet).
+    pub fn chat_last_seq(&self) -> u64 {
+        self.st.borrow().chat_log.seq
+    }
+
     /// Re-resolve badge URLs on existing lines of `platform` (e.g. once Twitch Helix badge sets finish seeding).
     pub fn refresh_chat_badges(&self, platform: &str, mut resolve: impl FnMut(&str) -> Option<String>) {
         let mut changed = false;
@@ -1111,7 +1182,7 @@ impl Engine {
             }
         }
         if changed {
-            crate::ui::chat();
+            crate::host::chat();
         }
     }
 
@@ -1240,6 +1311,17 @@ impl Engine {
             cards.insert(key, (std::time::Instant::now(), found.clone()));
         }
         found
+    }
+
+    /// What the platform said about a chatter lately, if it is kept (the card opens with it at once).
+    pub fn chatter_cached(&self, platform: &str, user_id: &str) -> Option<Vec<(String, String)>> {
+        let key = (platform.to_string(), user_id.to_string());
+        let st = self.st.borrow();
+        st.chat_log
+            .cards
+            .get(&key)
+            .filter(|(at, _)| at.elapsed() < CARD_FOR)
+            .map(|(_, found)| found.clone())
     }
 
     async fn chatter_ask(
@@ -1395,6 +1477,12 @@ impl Engine {
                 add("Picture", &picture.into());
                 add("Banner", &banner.into());
             }
+            // TikTok has nothing to ask: its chat messages carry the sender's picture.
+            "tiktok" => {
+                if let Some(seen) = self.chatter(platform, user_id) {
+                    add("Picture", seen.args.get("profilePictureUrl").unwrap_or(&Value::Null));
+                }
+            }
             _ => {}
         }
     }
@@ -1453,7 +1541,7 @@ impl Engine {
         if self.dev() {
             if let Some(i) = PLATFORMS.iter().position(|p| *p == platform) {
                 self.st.borrow_mut().chat_log.simulated_connections[i] = connected;
-                crate::ui::changed();
+                crate::host::changed();
             }
         }
     }
@@ -1476,6 +1564,11 @@ impl Engine {
 
     /// Drops `platform`'s line `msg_id`, or all of `user_id`'s lines: deleted, banned or timed out.
     pub fn chat_remove(&self, platform: &str, msg_id: &str, user_id: &str) {
+        self.emit(
+            "Chat",
+            "Removed",
+            || serde_json::json!({"platform": platform, "msgId": msg_id, "userId": user_id}),
+        );
         // Struck through (the words kept, to read on hover) where we moderate: our own channel, or
         // one we are a moderator in; elsewhere, like the platforms show it to viewers, the text goes.
         let own = self.own_channel(platform) || crate::roles::get(platform).0.moderates();
@@ -1509,7 +1602,7 @@ impl Engine {
         if changed {
             log.reset_gen += 1;
             drop(st);
-            crate::ui::chat();
+            crate::host::chat();
         }
     }
 
@@ -1555,7 +1648,7 @@ impl Engine {
         pins.push(pin);
         st.chat_log.reset_gen += 1;
         drop(st);
-        crate::ui::chat();
+        crate::host::chat();
     }
 
     /// `platform`'s pin was taken down (`msg_id`: only if it's that one; "" any).
@@ -1573,7 +1666,7 @@ impl Engine {
         }
         st.chat_log.reset_gen += 1;
         drop(st);
-        crate::ui::chat();
+        crate::host::chat();
     }
 
     /// The messages pinned now, one per platform at most.
@@ -1593,7 +1686,7 @@ impl Engine {
                 None => polls.push(p),
             }
         }
-        crate::ui::chat();
+        crate::host::chat();
     }
 
     /// The latest live viewer count, or none when it is unavailable.
@@ -1620,7 +1713,7 @@ impl Engine {
                 }
             };
             if changed {
-                crate::ui::chat();
+                crate::host::chat();
                 self.emit("Overlay", "viewers", || self.viewers_value());
             }
         }
@@ -1651,7 +1744,7 @@ impl Engine {
         self.chat_polls_clear(platform);
         self.chat_unpinned(platform, "");
         if changed {
-            crate::ui::changed();
+            crate::host::changed();
         }
     }
 
@@ -1709,8 +1802,8 @@ impl Engine {
             }
         };
         if before || platform == "youtube" {
-            crate::ui::polls_changed();
-            crate::ui::chat();
+            crate::host::polls_changed();
+            crate::host::chat();
         }
     }
 
@@ -1790,7 +1883,7 @@ impl Engine {
             return;
         }
         if crate::roles::set(platform, role, &me) {
-            crate::ui::changed();
+            crate::host::changed();
         }
         // Not the owner: Kick says what we are in a channel; elsewhere our earlier messages in the history
         // do (see `chat_welcome`), and our next message.
@@ -1851,7 +1944,7 @@ impl Engine {
             if role.moderates() {
                 crate::say(format!("kick: this account is a {} here", role.name()));
             }
-            crate::ui::changed();
+            crate::host::changed();
         }
     }
 
@@ -1870,7 +1963,7 @@ impl Engine {
         let role = crate::roles::Role::from_flags(l.broadcaster, lead, l.moderator, l.vip);
         if crate::roles::seen_self(platform, &me, role) {
             crate::say(format!("{platform}: this account is a {} here", role.name()));
-            crate::ui::changed();
+            crate::host::changed();
         }
     }
 
@@ -1926,8 +2019,12 @@ impl Engine {
             user: r.user.clone(),
             text: r.text.clone(),
         });
-        let plain = reply_info.as_ref().map_or(plain.clone(), |r| r.strip(&plain));
-        let (plain, emotes) = normalize_line_emotes(platform, plain, &[]);
+        let kick_raw_emotes = if platform == "kick" {
+            crate::kick::kick_emotes(&plain)
+        } else {
+            Vec::new()
+        };
+        let (plain, emotes) = normalize_line_emotes(platform, plain, &kick_raw_emotes);
         let mut guard = self.chat_log_mut();
         let log = &mut *guard;
         // Our name's colour and badges as the chat showed them last, until the platform's own copy says.
@@ -1965,7 +2062,7 @@ impl Engine {
         });
         let seq = log.seq;
         drop(guard);
-        crate::ui::chat();
+        crate::host::chat();
         Some(seq)
     }
 
@@ -1978,7 +2075,7 @@ impl Engine {
         if log.lines.len() != before {
             log.reset_gen += 1;
             drop(st);
-            crate::ui::chat();
+            crate::host::chat();
         }
     }
 
@@ -1992,7 +2089,7 @@ impl Engine {
             mine.local = false;
             log.reset_gen += 1;
             drop(st);
-            crate::ui::chat();
+            crate::host::chat();
         }
     }
 
@@ -2251,9 +2348,217 @@ pub fn can_send(c: &crate::Config, platform: &str) -> bool {
     }
 }
 
+/// What happens in a channel that the chat doesn't show but an alert overlay does: a follow.
+fn overlay_event(kind: u32) -> Option<Ev> {
+    let ev = |platform, accent, says| Ev {
+        platform,
+        icon: "user-plus",
+        accent,
+        says,
+        with: None,
+        cost: None,
+        cost_icon: "",
+        picture: None,
+        huge: false,
+        color: None,
+    };
+    Some(match kind {
+        101 => ev("twitch", TWITCH, "chat.ev.follow"),
+        35011 => ev("kick", KICK, "chat.ev.follow"),
+        4018 => ev("youtube", YOUTUBE, "chat.ev.sub"),
+        _ => return None,
+    })
+}
+
+/// A trigger as the line the chat (or an alert overlay) shows for it: who, what happened in words,
+/// what they wrote with it, its icon, colour, cost and picture. None: it is not an event to show.
+pub fn event_line(kind: u32, a: &Obj) -> Option<Line> {
+    let ev = event_of(kind, a).or_else(|| overlay_event(kind))?;
+    let get = |k: &str| a.get(k).map(crate::vars::text).unwrap_or_default();
+    let says = crate::vars::simple(crate::i18n::tr(ev.says), a, &Obj::new());
+    let said = ev.with.map(get).unwrap_or_default();
+    let (text, emotes) = normalize_line_emotes(ev.platform, said, &[]);
+    let user = Some(get("user"))
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| get("userName"));
+    let cost_icon = if !ev.cost_icon.is_empty() {
+        ev.cost_icon.to_string()
+    } else {
+        get("rewardPoints")
+    };
+    let line = Line {
+        platform: ev.platform.into(),
+        time: crate::fmt::shown_time(&crate::fmt::now()),
+        ts: crate::fmt::unix_now().as_millis() as i64,
+        user,
+        user_id: get("userId"),
+        text,
+        emotes,
+        event: says,
+        cost: ev.cost.and_then(|k| a.get(k)).and_then(Value::as_u64).unwrap_or(0),
+        cost_icon,
+        picture: ev.picture.map(get).unwrap_or_default(),
+        huge: ev.huge,
+        icon: ev.icon.into(),
+        accent: ev
+            .color
+            .map(get)
+            .filter(|c| c.len() == 7 && c.starts_with('#'))
+            .unwrap_or_else(|| ev.accent.into()),
+        ..Default::default()
+    };
+    Some(line)
+}
+
+/// What kind of thing an event is, in one word a page can count by, whatever the platform:
+/// `follow`, `sub`, `resub`, `giftsub`, `giftbomb`, `cheer`, `raid`, `superchat`, `supersticker`,
+/// `member`, `gift`, `share`, `reward`, `powerup`, `streak`, `announcement`, `timeout`, `ban`.
+pub fn alert_kind(kind: u32) -> &'static str {
+    match kind {
+        101 | 35011 | 41004 => "follow",
+        103 | 35014 | 41006 | 4018 => "sub",
+        104 | 35015 | 4009 => "resub",
+        105 | 35016 => "giftsub",
+        106 | 35017 | 4014 => "giftbomb",
+        102 | 35025 => "cheer",
+        107 => "raid",
+        4006 => "superchat",
+        4007 => "supersticker",
+        4008 => "member",
+        41002 => "gift",
+        41005 => "share",
+        112 | 194 | 35024 => "reward",
+        196 | 496 => "powerup",
+        472 => "streak",
+        138 | 481 => "announcement",
+        136 | 35018 => "timeout",
+        137 | 35019 => "ban",
+        _ => "other",
+    }
+}
+
+/// An event as an overlay page gets it (`Chat.Alert`): the line the chat draws, plus what a page
+/// counts with: `kind` (see `alert_kind`), `trigger` (the trigger's name, as in the reference) and
+/// `args`, the trigger's own arguments (`bits`, `viewers`, `coins`, `repeatCount`...), the simple ones.
+pub fn alert_value(engine: &Rc<Engine>, kind: u32, args: &Obj, line: &Line, avatar: &str) -> Value {
+    let mut value = crate::core::chat::overlay_line(engine, line, avatar);
+    value["kind"] = alert_kind(kind).into();
+    value["trigger"] = crate::types::name(crate::types::TRIGGERS, kind)
+        .unwrap_or_default()
+        .into();
+    let simple: serde_json::Map<String, Value> = args
+        .iter()
+        .filter(|(_, v)| match v {
+            Value::String(s) => s.len() <= 500,
+            Value::Number(_) | Value::Bool(_) => true,
+            _ => false,
+        })
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    value["args"] = Value::Object(simple);
+    value
+}
+
+/// The picture of who wrote a message or caused an event, when the platform sent it along
+/// (YouTube and TikTok do; Twitch and Kick are asked only when a page wants one).
+fn avatar_of(args: &Obj) -> String {
+    [
+        "userProfileUrl",
+        "profilePictureUrl",
+        "userProfileImageUrl",
+        "profileImageUrl",
+    ]
+    .iter()
+    .find_map(|key| {
+        args.get(*key)
+            .and_then(Value::as_str)
+            .filter(|url| url.starts_with("http"))
+    })
+    .unwrap_or_default()
+    .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What an overlay page hears: every event sent to a listener of the chat, as (type, data).
+    fn heard(rx: &mut tokio::sync::mpsc::UnboundedReceiver<std::sync::Arc<str>>) -> Vec<(String, Value)> {
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|m| {
+                let m: Value = serde_json::from_str(&m).unwrap();
+                (m["event"]["type"].as_str().unwrap().to_string(), m["data"].clone())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn overlays_get_what_we_send_from_here_and_follows_too() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::tests::run(async {
+            let mut c = crate::Config::default();
+            c.kick.broadcaster = Some(crate::kick::KickAccount {
+                user_id: 7,
+                username: "Umanana".into(),
+                ..Default::default()
+            });
+            let e = crate::engine::Engine::new(std::sync::Arc::new(tokio::sync::watch::channel(c).0), |_| {});
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let mut subs = crate::engine::events::Subs::new();
+            subs.entry("Chat".into())
+                .or_default()
+                .extend(["Line".to_string(), "Alert".to_string()]);
+            e.listen(1, &subs, &tx);
+            // A message typed in the app: nothing yet (it may still fail), then the platform's copy
+            // of it reaches the overlays like anyone's message.
+            e.chat_local("kick", "hello there", false, None).unwrap();
+            assert!(heard(&mut rx).is_empty());
+            e.log_chat(&crate::commands::Chat {
+                platform: "kick".into(),
+                user_id: "7".into(),
+                user: "umanana".into(),
+                msg_id: "k-1".into(),
+                text: "hello there".into(),
+                args: [(
+                    "profilePictureUrl".to_string(),
+                    serde_json::json!("https://example.com/me.png"),
+                )]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            });
+            let got = heard(&mut rx);
+            assert_eq!(got.len(), 1, "{got:?}");
+            let (kind, line) = &got[0];
+            assert_eq!(
+                (kind.as_str(), line["text"].as_str(), line["msgId"].as_str()),
+                ("Line", Some("hello there"), Some("k-1"))
+            );
+            // As the Chat page draws it: the words in pieces, a colour for the name, who wrote it.
+            assert_eq!(line["parts"][0]["t"], "hello there");
+            assert!(line["color"].as_str().is_some_and(|c| c.starts_with('#')), "{line}");
+            assert_eq!(line["avatar"], "https://example.com/me.png");
+            assert!(line.get("pending").is_none() && line.get("seq").is_none(), "{line}");
+            // A follow: the chat doesn't show it, an alert overlay gets it.
+            let args: Obj = [("user".to_string(), serde_json::json!("ana"))].into_iter().collect();
+            e.chat_event(101, &args);
+            let got = heard(&mut rx);
+            assert_eq!(got.len(), 1, "{got:?}");
+            assert_eq!(
+                (got[0].0.as_str(), got[0].1["user"].as_str(), got[0].1["icon"].as_str()),
+                ("Alert", Some("ana"), Some("user-plus"))
+            );
+            assert_eq!(e.chat_sync(999, 0).2.len(), 1, "the follow is not a line of the chat");
+            // A sub is both.
+            e.chat_event(103, &args);
+            assert_eq!(heard(&mut rx).len(), 1);
+            assert_eq!(e.chat_sync(999, 0).2.len(), 2);
+            // What a page asks for when it opens leaves out a line still waiting for its copy.
+            e.chat_local("kick", "not confirmed", false, None).unwrap();
+            let recent = e.chat_recent(10, true, true);
+            assert_eq!(recent.len(), 2, "{recent:?}");
+        });
+    }
 
     #[test]
     fn what_we_send_shows_at_once_and_its_copy_takes_its_place() {
@@ -3346,6 +3651,28 @@ mod tests {
             e.chat_stream("twitch", false);
             assert!(e.chat_polls().is_empty());
             assert!(e.chat_pins().is_empty());
+        });
+    }
+
+    #[test]
+    fn chat_local_normalizes_kick_native_emotes() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(serde_json::json!({"actions": []}));
+            e.change(|config| {
+                config.window.chat.save_history = true;
+                config.kick.broadcaster = Some(crate::kick::KickAccount {
+                    user_id: 9999,
+                    username: "streamer".into(),
+                    token: Default::default(),
+                });
+            });
+            let seq = e.chat_local("kick", "[emote:4055795:GnomeDisco]", false, None).unwrap();
+            let line = e.chat_line(seq).unwrap();
+            assert_eq!(line.text, "GnomeDisco");
+            assert_eq!(line.emotes.len(), 1);
+            assert_eq!(line.emotes[0].0, "GnomeDisco");
+            assert_eq!(line.emotes[0].1, "https://files.kick.com/emotes/4055795/fullsize");
         });
     }
 }

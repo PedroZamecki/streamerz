@@ -48,7 +48,7 @@ impl Engine {
     pub fn emit(&self, source: &str, kind: &str, data: impl FnOnce() -> Value) {
         // A connection came or went: the window's status and chat follow.
         if kind.ends_with("Connected") || kind == "BroadcastMonitoringStarted" {
-            crate::ui::changed();
+            crate::host::changed();
         }
         let mut hub = self.hub.borrow_mut();
         if !hub.iter().any(|l| wants(&l.subs, source, kind)) {
@@ -64,6 +64,11 @@ impl Engine {
     /// Whether anyone listens to this event (to skip work for Raw events).
     pub fn listening(&self, source: &str, kind: &str) -> bool {
         self.hub.borrow().iter().any(|l| wants(&l.subs, source, kind))
+    }
+
+    /// Whether anyone listens to any event of this source.
+    pub fn listening_to(&self, source: &str) -> bool {
+        self.hub.borrow().iter().any(|l| l.subs.contains_key(source))
     }
 
     /// A connection's current subscriptions changed (an empty set removes it).

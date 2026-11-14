@@ -1,4 +1,5 @@
-// Browser check of Streamerz overlays: a dev instance (WS on 8095, HTTP on 7495) and headless Chromium.
+// Browser check of Streamerz overlays: an isolated dev instance (WS on 8095, HTTP on 7495) and headless Chromium.
+// Enable window.chat.saveHistory in the fixture for the history check; no real login is needed.
 import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 
@@ -48,12 +49,12 @@ async function tab() {
 }
 
 try {
-  for (const name of ["Ad break overlay", "Viewer counter overlay"])
-    check((await ask({ request: "StreamerzTemplateAdd", name })).status === "ok", `template ${name} added`);
+  for (const slug of ["ad", "viewers"])
+    check((await ask({ request: "StreamerzOverlay", op: "add_example", slug })).status === "ok", `example ${slug} added`);
   // A custom overlay: a topic, an event and the group's settings, as a user would write one.
   const custom = `<!doctype html><html><head><title>t</title></head><body><div id=o></div><script>
-    window.got = { song: [], chat: [] };
-    streamerz.on("song", v => got.song.push(v));
+    window.got = { score: [], chat: [] };
+    streamerz.on("score", v => got.score.push(v));
     streamerz.event("Raw.ActionCompleted", (d, name) => got.chat.push([name, d.message ?? d.rawInput ?? ""]));
     document.getElementById("o").textContent = streamerz.settings.greeting;
   </script></body></html>`;
@@ -62,7 +63,7 @@ try {
     files: [{ name: "test.html", content: Buffer.from(custom).toString("base64") }] };
   const set = await ask({ request: "StreamerzSetGroupMeta", group: "Test overlay", meta });
   check(set.status === "ok", "custom overlay group saved " + (set.error || ""));
-  const savedMeta = (await ask({request: "StreamerzGroupMeta", group: "Test overlay"})).meta;
+  const savedMeta = (await ask({request: "StreamerzGroupMeta", group: "Test overlay", files: true})).meta;
   const list = await ask({ request: "StreamerzOverlays" });
   check(list.overlays?.length >= 3, "three overlays listed: " + JSON.stringify(list.overlays?.map(o => o.url)));
   for (const p of ["twitch", "kick", "youtube"]) await ask({ request: "SimulateChatConnection", platform: p, connected: true });
@@ -71,13 +72,13 @@ try {
 
   // The index page.
   const idx = await (await fetch(HTTP + "/overlays")).text();
-  check(idx.includes("Ad%20overlay/ad.html") && idx.includes("Test%20overlay/test.html"), "index lists the pages");
+  check(idx.includes("Ad%20break/index.html") && idx.includes("Test%20overlay/test.html"), "index lists the pages");
 
   // Viewer counter: counts per platform, the total, live updates.
   const v = await tab();
   await ask({ request: "SimulateChatViewers", platform: "twitch", count: 120 });
   await ask({ request: "SimulateChatViewers", platform: "kick", count: 30 });
-  await v.cmd("Page.navigate", { url: HTTP + "/overlays/Viewer%20overlay/viewers.html" });
+  await v.cmd("Page.navigate", { url: HTTP + "/overlays/Viewer%20counter/index.html" });
   check(await v.until("document.body && document.body.innerText.includes('150')"), "viewer page shows the total of 150");
   await ask({ request: "SimulateChatViewers", platform: "youtube", count: 50 });
   check(await v.until("document.body.innerText.includes('200')"), "viewer page follows a change to 200");
@@ -88,7 +89,7 @@ try {
 
   // Ad badge: hidden, shown during a break, hidden when it ends.
   const a = await tab();
-  await a.cmd("Page.navigate", { url: HTTP + "/overlays/Ad%20overlay/ad.html" });
+  await a.cmd("Page.navigate", { url: HTTP + "/overlays/Ad%20break/index.html" });
   await sleep(1000);
   await a.shot("/tmp/szoverlay/ad-before.png");
   await ask({ request: "SimulateAdBreak", seconds: 3, automatic: true });
@@ -103,13 +104,13 @@ try {
   check(a.errors.length === 0, "ad page has no errors " + a.errors.join("; "));
 
   // Custom page: settings (escaped by the page, not by us), a topic set before and after it opens, an event.
-  await ask({ request: "StreamerzOverlayPublish", topic: "song", value: { title: "Before" } });
+  await ask({ request: "StreamerzOverlayPublish", topic: "score", value: { title: "Before" } });
   const c = await tab();
   await c.cmd("Page.navigate", { url: HTTP + "/overlays/Test%20overlay/test.html" });
   check(await c.until("document.getElementById('o')?.textContent === 'Hello <b>&'"), "settings reach the page");
-  check(await c.until("got.song.length === 1 && got.song[0].title === 'Before'"), "a topic set earlier arrives first");
-  await ask({ request: "StreamerzOverlayPublish", topic: "song", value: "plain text" });
-  check(await c.until("got.song[1] === 'plain text'"), "a new value arrives");
+  check(await c.until("got.score.length === 1 && got.score[0].title === 'Before'"), "a topic set earlier arrives first");
+  await ask({ request: "StreamerzOverlayPublish", topic: "score", value: "plain text" });
+  check(await c.until("got.score[1] === 'plain text'"), "a new value arrives");
   check((await ask({request: "StreamerzSave", what: "action", item: {id: "overlay-test", name: "Overlay test", enabled: true, subActions: []}})).status === "ok", "test action saved");
   await ask({ request: "DoAction", action: {id: "overlay-test"} });
   check(await c.until("got.chat.length > 0"), "a Streamerz event arrives: " + await c.js("JSON.stringify(got.chat)"));
@@ -125,20 +126,24 @@ try {
   check(await conns() === "ok", "still answering");
 
   // A copy saved to disk ("Save as page") talks to the server from file://.
-  const files = (await ask({ request: "StreamerzGroupMeta", group: "Viewer overlay" }));
+  const files = (await ask({ request: "StreamerzGroupMeta", group: "Viewer counter" }));
   console.log("     group meta keys:", Object.keys(files));
   const exported = await ask({request: "StreamerzGroupExport", group: "Test overlay"});
   check(exported.status === "ok" && exported.text, "overlay-only group exported");
+  // Deleting the group of actions leaves its overlay; deleting the overlay takes its files too.
   await ask({request: "StreamerzManageActionGroup", group: "Test overlay", operation: "delete"});
+  check((await ask({request: "StreamerzOverlay", op: "read", overlay: "Test overlay"})).status === "ok", "the overlay outlives its group of actions");
+  await ask({request: "StreamerzOverlay", op: "delete", overlay: "Test overlay"});
+  check((await ask({request: "StreamerzOverlay", op: "read", overlay: "Test overlay"})).status === "error", "and goes when deleted itself");
   check((await ask({request: "StreamerzActionImport", export: exported.export})).status === "ok", "overlay-only group imported");
-  const restored = await ask({request: "StreamerzGroupMeta", group: "Test overlay"});
+  const restored = await ask({request: "StreamerzGroupMeta", group: "Test overlay", files: true});
   check(JSON.stringify(restored.meta) === JSON.stringify(savedMeta), "files and settings survive export/import");
   const html = await (await fetch(HTTP + "/overlays/Test%20overlay/test.html")).text();
   const local = "/tmp/szoverlay/local.html";
   writeFileSync(local, html.replace('"server":""', '"server":"' + HTTP + '"'));
   const f = await tab();
   await f.cmd("Page.navigate", {url: "file://" + local});
-  check(await f.until("got.song[0] === 'plain text'"), "local HTML receives live data");
+  check(await f.until("got.score[0] === 'plain text'"), "local HTML receives live data");
   check(f.errors.length === 0, "local page has no errors " + f.errors.join("; "));
   f.close();
   // A page from another website is refused.
@@ -146,6 +151,59 @@ try {
   check(foreign.status === 403, "another website is refused: " + foreign.status);
   const missing = await fetch(HTTP + "/overlays/Nope/x.html");
   check(missing.status === 404, "a missing page is 404");
+  // A page that talks back: runs its group's action, sends chat, keeps a value, and reads the chat, a
+  // countdown and its settings as they change. A second group has no permissions and is refused.
+  const twoWay = `<!doctype html><html><head><title>w</title><link rel=stylesheet href="css/look.css"></head><body><script>
+    window.w = { chat: [], removed: [], settings: [], spin: null, errors: {} };
+    streamerz.onSettings(s => w.settings.push(s.color));
+    streamerz.chat(l => w.chat.push(l.user + ": " + l.text), { history: 5, removed: r => w.removed.push(r.msgId) });
+    streamerz.on("wheel.result", v => w.spin = v);
+    const tryCall = (name, p) => p.then(r => w[name] = r === undefined ? true : r, e => w.errors[name] = e.message);
+    window.go = () => {
+      tryCall("run", streamerz.run("Wheel spin", { slice: "red" }));
+      tryCall("other", streamerz.run("Overlay test"));
+      tryCall("say", streamerz.say("from the dock", { platform: "twitch" }));
+      tryCall("set", streamerz.set("wins", 3).then(() => streamerz.get("wins")));
+      tryCall("log", streamerz.log("page line"));
+    };
+  </script></body></html>`;
+  const b64 = t => Buffer.from(t).toString("base64");
+  for (const [group, permissions] of [["Wheel", ["chat.read", "chat.send", "actions.run", "values.write"]], ["Closed", []]]) {
+    await ask({ request: "StreamerzManageActionGroup", group, operation: "create" });
+    const made = await ask({ request: "StreamerzSetGroupMeta", group, meta: { description: "two way", permissions,
+      variables: [{ name: "color", label: "Color", kind: "text", default: "red" }],
+      files: [{ name: "wheel.html", content: b64(twoWay) }, { name: "css/look.css", content: b64("body{color:rgb(1,2,3)}") }] } });
+    check(made.status === "ok", `${group} group saved ` + (made.error || ""));
+  }
+  check((await ask({ request: "StreamerzSave", what: "action", item: { id: "wheel-spin", name: "Wheel spin", group: "Wheel", enabled: true,
+    subActions: [{ type: 99880, topic: "wheel.result", value: "%slice%" }] } })).status === "ok", "wheel action saved");
+  await ask({ request: "InjectChat", platform: "twitch", user: "early", role: "viewer", text: "before the page" });
+  const w = await tab();
+  await w.cmd("Page.navigate", { url: HTTP + "/overlays/Wheel/wheel.html" });
+  check(await w.until("w.chat.includes('early: before the page')"), "chat history reaches a page that opens later");
+  check(await w.js("getComputedStyle(document.body).color") === "rgb(1, 2, 3)", "a file in a folder is linked with a relative address");
+  await ask({ request: "InjectChat", platform: "twitch", user: "ana", role: "viewer", text: "hello page" });
+  check(await w.until("w.chat.includes('ana: hello page')"), "a new chat line arrives");
+  await w.js("go()");
+  check(await w.until("w.spin === 'red'"), "the page ran its group's action with arguments");
+  check(await w.until("w.set === 3 && w.say && w.log"), "the page stored a value, sent chat and logged: " + await w.js("JSON.stringify(w.errors)"));
+  check(await w.until("/no action/.test(w.errors.other || '')"), "an action of another group is refused");
+  await ask({ request: "StreamerzSetGroupVariables", group: "Wheel", values: { color: "blue", wins: 3 } });
+  check(await w.until("w.settings.at(-1) === 'blue' && streamerz.settings.color === 'blue'"), "a changed setting reaches the open page");
+  check(w.errors.length === 0, "two-way page has no errors " + w.errors.join("; "));
+  const closed = await tab();
+  await closed.cmd("Page.navigate", { url: HTTP + "/overlays/Closed/wheel.html" });
+  await closed.until("window.go");
+  await closed.js("go()");
+  check(await closed.until("['run', 'say', 'set'].every(k => /needs/.test(w.errors[k] || ''))"), "a group with no permissions is refused: " + await closed.js("JSON.stringify(w.errors)"));
+  await ask({ request: "InjectChat", platform: "twitch", user: "bob", role: "viewer", text: "not for you" });
+  await sleep(300);
+  check(await closed.js("w.chat.length") === 0, "and reads no chat");
+  const part = await fetch(HTTP + "/overlays/Wheel/css/look.css", { headers: { Range: "bytes=0-3" } });
+  check(part.status === 206 && await part.text() === "body", "a part of a file is served: " + part.status);
+  const stolen = await fetch(HTTP + "/overlays/call", { method: "POST", body: JSON.stringify({ op: "say", group: "Wheel", token: "", text: "x" }) });
+  check(stolen.status === 403, "a call without the page's token is refused: " + stolen.status);
+  [w, closed].forEach(t => t.close());
   [v, a, c].forEach(t => t.close());
 } finally {
   chrome.kill();

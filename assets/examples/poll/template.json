@@ -1,0 +1,241 @@
+{
+  "format": 1,
+  "name": "Poll",
+  "meta": {
+    "description": "One poll for every platform: start it with !poll Question | One | Two or from its dock, and viewers vote by typing a number.",
+    "variables": [
+      {
+        "name": "seconds",
+        "label": "Lasts (seconds)",
+        "kind": "integer",
+        "default": 60,
+        "description": "When the command gives no time. The dock has its own box",
+        "section": "The poll"
+      },
+      {
+        "name": "changeVote",
+        "label": "A vote can be changed",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "announce",
+        "label": "Write the start and the result in the chat",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "howTo",
+        "label": "How to vote",
+        "kind": "text",
+        "default": "Type the number to vote",
+        "description": "Shown under the poll and written in the chat"
+      },
+      {
+        "name": "resultText",
+        "label": "Result",
+        "kind": "text",
+        "default": "The poll is over: {winner} won with {votes} of {all} votes",
+        "description": "{winner}, {votes} and {all} are filled in"
+      },
+      {
+        "name": "stayFor",
+        "label": "Stays after it ends (seconds)",
+        "kind": "integer",
+        "default": 12
+      },
+      {
+        "name": "showTimer",
+        "label": "Timer",
+        "kind": "boolean",
+        "default": true,
+        "section": "Look"
+      },
+      {
+        "name": "showVotes",
+        "label": "Percent and votes",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "background",
+        "label": "Background",
+        "kind": "color",
+        "default": "#1f1f23e6"
+      },
+      {
+        "name": "textColor",
+        "label": "Text color",
+        "kind": "color",
+        "default": "#ffffff"
+      },
+      {
+        "name": "accent",
+        "label": "Winner's color",
+        "kind": "color",
+        "default": "#a78bfa"
+      },
+      {
+        "name": "radius",
+        "label": "Rounded corners",
+        "kind": "slider",
+        "default": 14,
+        "min": 0,
+        "max": 40,
+        "step": 1
+      },
+      {
+        "name": "scale",
+        "label": "Size (%)",
+        "kind": "slider",
+        "default": 100,
+        "min": 50,
+        "max": 250,
+        "step": 5
+      },
+      {
+        "name": "font",
+        "label": "Font",
+        "kind": "font",
+        "default": "",
+        "description": "A font installed on this computer"
+      }
+    ],
+    "files": [
+      {
+        "name": "index.html"
+      },
+      {
+        "name": "dock.html"
+      }
+    ],
+    "permissions": [
+      "chat.read",
+      "chat.send"
+    ],
+    "template": {
+      "id": "streamerz.example.poll",
+      "version": "1.0.0",
+      "author": "Streamerz",
+      "pages": [
+        {
+          "file": "index.html",
+          "title": "Poll",
+          "width": 700,
+          "height": 520
+        },
+        {
+          "file": "dock.html",
+          "title": "Poll control",
+          "dock": true
+        }
+      ],
+      "test": {
+        "topics": {
+          "poll.start": {
+            "question": "What should I have for dinner?",
+            "options": [
+              "Pizza",
+              "Sushi",
+              "Tacos",
+              "Whatever is in the fridge"
+            ],
+            "seconds": 45
+          }
+        },
+        "events": [
+          [
+            "Chat.Line",
+            {
+              "platform": "twitch",
+              "userId": "vote-0",
+              "user": "voter0",
+              "text": "1"
+            }
+          ],
+          [
+            "Chat.Line",
+            {
+              "platform": "twitch",
+              "userId": "vote-1",
+              "user": "voter1",
+              "text": "3"
+            }
+          ],
+          [
+            "Chat.Line",
+            {
+              "platform": "youtube",
+              "userId": "vote-2",
+              "user": "voter2",
+              "text": "3"
+            }
+          ],
+          [
+            "Chat.Line",
+            {
+              "platform": "kick",
+              "userId": "vote-3",
+              "user": "voter3",
+              "text": "3"
+            }
+          ],
+          [
+            "Chat.Line",
+            {
+              "platform": "twitch",
+              "userId": "vote-4",
+              "user": "voter4",
+              "text": "2"
+            }
+          ],
+          [
+            "Chat.Line",
+            {
+              "platform": "youtube",
+              "userId": "vote-5",
+              "user": "voter5",
+              "text": "1"
+            }
+          ],
+          [
+            "Chat.Line",
+            {
+              "platform": "tiktok",
+              "userId": "vote-6",
+              "user": "voter6",
+              "text": "4"
+            }
+          ],
+          [
+            "Chat.Line",
+            {
+              "platform": "kick",
+              "userId": "vote-7",
+              "user": "voter7",
+              "text": "1"
+            }
+          ],
+          [
+            "Chat.Line",
+            {
+              "platform": "twitch",
+              "userId": "vote-8",
+              "user": "voter8",
+              "text": "3"
+            }
+          ],
+          [
+            "Chat.Line",
+            {
+              "platform": "youtube",
+              "userId": "vote-9",
+              "user": "voter9",
+              "text": "2"
+            }
+          ]
+        ]
+      }
+    }
+  }
+}

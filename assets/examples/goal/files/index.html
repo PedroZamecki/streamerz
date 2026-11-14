@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Goal bar</title>
+<style>
+  html, body { margin: 0; background: transparent; overflow: hidden; }
+  body { font-family: var(--font, system-ui), system-ui, sans-serif; color: var(--text, #fff); }
+  #goal { margin: 14px; padding: 12px 16px 14px; border-radius: calc(var(--radius) + 6px); background: var(--back); }
+  #title { font-weight: 800; font-size: 22px; margin-bottom: 8px; text-shadow: 0 1px 3px rgba(0, 0, 0, .6); }
+  #track { position: relative; height: var(--height, 38px); border-radius: var(--radius, 19px); overflow: hidden;
+    background: rgba(255, 255, 255, .14); }
+  #fill { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: inherit;
+    background: linear-gradient(90deg, var(--bar), var(--end)); transition: width .9s cubic-bezier(.2, .8, .2, 1); }
+  /* A light that runs along the bar when it grows. */
+  #fill::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .45), transparent);
+    transform: translateX(-100%); }
+  .grew #fill::after { animation: shine 1s ease; }
+  @keyframes shine { to { transform: translateX(100%); } }
+  #numbers { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-weight: 800;
+    font-size: calc(var(--height, 38px) * .5); font-variant-numeric: tabular-nums; text-shadow: 0 1px 3px rgba(0, 0, 0, .7); }
+  #reached { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-weight: 900;
+    font-size: calc(var(--height, 38px) * .55); opacity: 0; transform: scale(.6); transition: .4s cubic-bezier(.3, 1.6, .5, 1); }
+  .done #reached { opacity: 1; transform: none; }
+  .done #numbers { opacity: 0; }
+  .done #track { box-shadow: 0 0 18px var(--end); animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { box-shadow: 0 0 4px var(--end); } }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="goal"><div id="title"></div><div id="track"><div id="fill"></div><div id="numbers"></div><div id="reached"></div></div></div>
+<script>
+// Counts what it is set to count from the alerts of every platform, and keeps the count in its own
+// setting "Count now" with streamerz.set, so it survives a restart of Streamerz or OBS (permission
+// "Store values"). Change "Count now" in its settings to start again from another number.
+let settings = streamerz.settings;
+let current = Number(settings.current) || 0;
+
+streamerz.onSettings(s => {
+  settings = s;
+  current = Number(s.current) || 0;
+  const root = document.documentElement.style;
+  root.setProperty("--bar", s.barColor || "#a78bfa");
+  root.setProperty("--end", s.barEnd || s.barColor || "#f472b6");
+  root.setProperty("--back", s.background || "transparent");
+  root.setProperty("--text", s.textColor || "#fff");
+  root.setProperty("--height", (Number(s.height) || 38) + "px");
+  root.setProperty("--radius", (Number(s.radius) || 0) + "px");
+  root.setProperty("--font", s.font ? '"' + s.font + '"' : "system-ui");
+  numbers.hidden = s.showNumbers === false;
+  reached.textContent = s.reached || "";
+  draw(false);
+});
+
+function draw(grew) {
+  const target = Math.max(1, Number(settings.target) || 1);
+  const fill = (s, n) => String(s || "").replace("{current}", n).replace("{target}", target);
+  title.textContent = fill(settings.title, current.toLocaleString());
+  numbers.textContent = current.toLocaleString() + " / " + target.toLocaleString();
+  document.getElementById("fill").style.width = Math.min(100, (current / target) * 100) + "%";
+  goal.classList.toggle("done", current >= target && !!settings.reached);
+  if (grew) {
+    goal.classList.remove("grew");
+    void goal.offsetWidth; // Starts the shine again.
+    goal.classList.add("grew");
+  }
+}
+
+// How much an alert adds: its `kind` says what it is whatever the platform, and `args` holds the
+// numbers of its trigger (bits, gifts, coins).
+function worth(alert) {
+  const args = alert.args || {};
+  switch (settings.counts) {
+    case "Subs and members":
+      if (["sub", "resub", "member"].includes(alert.kind)) return 1;
+      // Each sub of a gift bomb comes alone too: counted once, with the bomb.
+      if (alert.kind === "giftsub") return args.fromGiftBomb ? 0 : 1;
+      if (alert.kind === "giftbomb") return Number(args.gifts) || 1;
+      return 0;
+    case "Bits and Kicks":
+      return alert.kind === "cheer" ? Number(args.bits || args.amount) || 0 : 0;
+    case "TikTok coins":
+      return alert.kind === "gift" && alert.platform === "tiktok" ? Number(args.coins) || 0 : 0;
+    default:
+      return alert.kind === "follow" ? 1 : 0;
+  }
+}
+
+streamerz.alerts(alert => {
+  const from = Array.isArray(settings.platforms) ? settings.platforms : [alert.platform];
+  const n = from.includes(alert.platform) ? worth(alert) : 0;
+  if (!n) return;
+  current += n;
+  draw(true);
+  // What Test sends is made up: shown, never kept.
+  if (!streamerz.testing) streamerz.set("current", current).catch(e => streamerz.log("The goal could not keep its count: " + e.message));
+});
+</script>
+</body>
+</html>

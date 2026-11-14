@@ -5,10 +5,10 @@ Inventory of the current working tree, 2026-10-31. This is a documentation-led a
 ## Verification evidence, 2026-10-31
 
 - `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` passed on this working tree.
-- The Windows MSVC target check with `fltk/fltk-bundled` passed, with unused `mut` warnings in `src/storage.rs:42` and `src/main.rs:976`. This is a type check, not a Windows runtime test.
+- The Windows MSVC target check passed, with unused `mut` warnings in `src/storage.rs:42` and `src/main.rs:976`. This is a type check, not a Windows runtime test.
 - `dev/smoke.py target/debug/Streamerz` passed on `DISPLAY=:99`, including its page and user-card checks with simulated events.
 - The scenario coverage generator reports 5 of 476 triggers and 20 of 405 sub-actions exercised by scenarios. Other unit tests cover additional paths. Scenarios alone do not verify real transports.
-- The full test suite did not finish: FLTK icon/image tests waited indefinitely without a display, and a serial rerun on `DISPLAY=:99` also stalled in the icon test. Both were interrupted after the localization failure was observed.
+- The full test suite did not finish: the icon and image tests waited indefinitely without a display, and a serial rerun on `DISPLAY=:99` also stalled in the icon test. Both were interrupted after the localization failure was observed.
 - The unused `chat.read_only_suffix` translations were removed; the localization test now passes. With the stalled icon and image tests excluded, the remaining suite passed: 269 passed, 5 ignored, 8 filtered out.
 - MIDI output functions in `src/inputs.rs:98` only write debug messages; they do not send MIDI. The MIDI input, file watcher, file tail and process trigger dispatch functions in `src/engine.rs:829` have no callers outside their direct unit tests. The tests exercise dispatch, not an actual input source. `docs/INTEGRATIONS.md` and the checked phase entries therefore overstate these features.
 - The real Streamer.bot installation expected at `~/Games/streamerbot` and OBS were not found in this environment. Live service behavior, actual device I/O, performance budget, Windows runtime, and parity with the real application are not verified here.

@@ -1,0 +1,211 @@
+{
+  "meta": {
+    "name": "Subathon",
+    "author": "Streamerz",
+    "version": "1.0.0",
+    "description": "Subathon",
+    "autoRunAction": null,
+    "minimumVersion": null
+  },
+  "data": {
+    "actions": [
+      {
+        "id": "73bb7520-f0e8-488c-8990-56d0fb3490ee",
+        "queue": null,
+        "enabled": true,
+        "excludeFromHistory": false,
+        "excludeFromPending": false,
+        "name": "Subathon: reset",
+        "group": "Subathon",
+        "alwaysRun": false,
+        "randomAction": false,
+        "concurrent": false,
+        "triggers": [],
+        "subActions": [
+          {
+            "id": "6972ec54-2177-413d-91bd-892ac64caf0b",
+            "type": 99803,
+            "enabled": true,
+            "parentId": null,
+            "weight": 0,
+            "clockId": "%group.clockId%",
+            "operation": "reset",
+            "maxMs": "%group.max%",
+            "startMs": "%group.start%",
+            "index": 0
+          }
+        ],
+        "collapsedGroups": []
+      },
+      {
+        "id": "ef4f7af8-1df3-414e-b69d-1de57ad52d26",
+        "queue": null,
+        "enabled": true,
+        "excludeFromHistory": false,
+        "excludeFromPending": false,
+        "name": "Subathon: subscriptions",
+        "group": "Subathon",
+        "alwaysRun": false,
+        "randomAction": false,
+        "concurrent": false,
+        "triggers": [
+          {
+            "id": "b252d74a-c82d-481a-b5c4-40348d3ca99c",
+            "type": 103,
+            "enabled": true,
+            "exclusions": []
+          },
+          {
+            "id": "d7cea5ac-6b15-4872-aaf5-706fcbe20007",
+            "type": 104,
+            "enabled": true,
+            "exclusions": []
+          },
+          {
+            "id": "30a262a9-ed0c-4a1e-ac34-0977c2ae6219",
+            "type": 105,
+            "enabled": true,
+            "exclusions": []
+          }
+        ],
+        "subActions": [
+          {
+            "id": "e5d22358-363e-406e-9e5e-8d5eb1afbbb0",
+            "type": 120,
+            "enabled": true,
+            "parentId": null,
+            "weight": 0,
+            "input": "%fromGiftBomb%",
+            "operation": 7,
+            "value": "true",
+            "subActions": [
+              {
+                "id": "e09a4afc-4a92-4bc6-a55e-800b0e635695",
+                "type": 99901,
+                "enabled": true,
+                "parentId": null,
+                "weight": 0,
+                "subActions": [
+                  {
+                    "id": "05c46c56-c7c1-433a-8b2f-6d14f45a293d",
+                    "type": 124,
+                    "enabled": true,
+                    "parentId": null,
+                    "weight": 0
+                  }
+                ]
+              },
+              {
+                "id": "11606f5a-53db-4cd9-b77a-2c480828d3ac",
+                "type": 99902,
+                "enabled": true,
+                "parentId": null,
+                "weight": 0,
+                "subActions": []
+              }
+            ],
+            "index": 0
+          },
+          {
+            "id": "9567d386-cdcb-40f6-8cf0-3c1ce21620a6",
+            "type": 99803,
+            "enabled": true,
+            "parentId": null,
+            "weight": 0,
+            "clockId": "%group.clockId%",
+            "operation": "add",
+            "maxMs": "%group.max%",
+            "perUnitMs": "%group.subscription%",
+            "units": "1",
+            "index": 1
+          }
+        ],
+        "collapsedGroups": []
+      },
+      {
+        "id": "066352e2-75a7-46b8-bb00-55111eda5add",
+        "queue": null,
+        "enabled": true,
+        "excludeFromHistory": false,
+        "excludeFromPending": false,
+        "name": "Subathon: community gifts",
+        "group": "Subathon",
+        "alwaysRun": false,
+        "randomAction": false,
+        "concurrent": false,
+        "triggers": [
+          {
+            "id": "1fd62cf9-7fdc-4dde-81da-d6434c770acb",
+            "type": 106,
+            "enabled": true,
+            "exclusions": []
+          }
+        ],
+        "subActions": [
+          {
+            "id": "3c2bed61-29b2-45a1-abdc-f569cb2e9f1c",
+            "type": 99803,
+            "enabled": true,
+            "parentId": null,
+            "weight": 0,
+            "clockId": "%group.clockId%",
+            "operation": "add",
+            "maxMs": "%group.max%",
+            "perUnitMs": "%group.subscription%",
+            "units": "%gifts%",
+            "index": 0
+          }
+        ],
+        "collapsedGroups": []
+      },
+      {
+        "id": "461aaeda-3963-48df-9a05-93dde5af82ac",
+        "queue": null,
+        "enabled": true,
+        "excludeFromHistory": false,
+        "excludeFromPending": false,
+        "name": "Subathon: donations",
+        "group": "Subathon",
+        "alwaysRun": false,
+        "randomAction": false,
+        "concurrent": false,
+        "triggers": [
+          {
+            "id": "af6ffa2d-9cc8-4497-8a29-cc2e2f17c3ba",
+            "type": 201,
+            "enabled": true,
+            "exclusions": []
+          }
+        ],
+        "subActions": [
+          {
+            "id": "661522b9-5bae-4e6e-9c9b-55a185368b58",
+            "type": 99803,
+            "enabled": true,
+            "parentId": null,
+            "weight": 0,
+            "clockId": "%group.clockId%",
+            "operation": "add",
+            "maxMs": "%group.max%",
+            "perUnitMs": "%group.donation%",
+            "units": "%donationAmount%",
+            "expectedCurrency": "%group.currency%",
+            "index": 0
+          }
+        ],
+        "collapsedGroups": []
+      }
+    ],
+    "queues": [],
+    "commands": [],
+    "websocketServers": [],
+    "websocketClients": [],
+    "timers": []
+  },
+  "streamerz": {
+    "groupIcons": {}
+  },
+  "version": 23,
+  "exportedFrom": "1.0.7",
+  "minimumVersion": "1.0.0-alpha.1"
+}

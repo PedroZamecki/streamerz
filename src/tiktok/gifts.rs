@@ -1,4 +1,5 @@
-//! Room-scoped gift metadata. Browser requests run on the existing reader/bridge tasks.
+//! Gift metadata: the live room's list (through the browser bridge) while live, else TikTok's public list
+//! (no login, no live), loaded when a gift form asks for it. Received gifts add what a list misses.
 use crate::{engine::Engine, model::Obj};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -76,6 +77,81 @@ pub fn summary() -> (&'static str, usize, String) {
         .unwrap_or(("unavailable", 0, String::new()))
 }
 
+/// TikTok's public gift list (the same one its gift panel shows, in the app's language).
+const PUBLIC_LIST: &str =
+    "https://webcast.tiktok.com/webcast/gift/list/?aid=1988&app_name=tiktok_web&device_platform=web_pc";
+const AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+
+fn coins_text(coins: u64) -> String {
+    match coins {
+        1 => crate::i18n::tr("automation.one_coin").into(),
+        n => crate::i18n::trf("automation.coins", &[("coins", &n.to_string())]),
+    }
+}
+
+/// The gifts as a form's picture picker shows them, cheapest first (as TikTok's gift panel): picture,
+/// name and price, and on hover what the gift is. The id stays out of sight.
+pub fn gallery() -> Vec<Value> {
+    let Ok(c) = CATALOG.lock() else { return Vec::new() };
+    let mut gifts: Vec<&Gift> = c.gifts.iter().collect();
+    gifts.sort_by(|a, b| {
+        a.coins
+            .cmp(&b.coins)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    gifts
+        .into_iter()
+        .map(|g| {
+            let name = if g.name.is_empty() {
+                crate::i18n::trf("automation.gift_unnamed", &[("id", &g.id)])
+            } else {
+                g.name.clone()
+            };
+            let kind = crate::i18n::tr(if g.streak {
+                "automation.gift_streak"
+            } else {
+                "automation.gift_single"
+            });
+            let tip = format!("{name}\n{}\n{kind}", coins_text(g.coins));
+            json!({"id": g.id, "label": name, "picture": g.picture_url, "detail": coins_text(g.coins), "tip": tip})
+        })
+        .collect()
+}
+
+/// The name of a gift in the list.
+pub fn name_of(id: &str) -> Option<String> {
+    let c = CATALOG.lock().ok()?;
+    c.gifts
+        .iter()
+        .find(|g| g.id == id && !g.name.is_empty())
+        .map(|g| g.name.clone())
+}
+
+/// What a gift picker says when it has no gifts to show (loading, failed, empty), else None.
+pub fn gallery_status() -> Option<String> {
+    use crate::i18n::{tr, trf};
+    let (state, count, error) = summary();
+    match state {
+        "loading" if count == 0 => Some(tr("automation.gifts_loading").into()),
+        "error" if count == 0 => Some(trf("automation.gifts_error", &[("error", error.trim_end_matches('.'))])),
+        "ready" if count == 0 => Some(tr("automation.gifts_empty").into()),
+        _ => None,
+    }
+}
+
+/// Whether a form should load the list as it opens: nothing complete is here and nothing is on its way.
+pub fn wants_loading() -> bool {
+    !matches!(summary().0, "ready" | "loading")
+}
+
+/// A catalog reply with what a form needs to show it again: its gifts and what to say about them.
+pub fn with_choices(mut value: Value) -> Value {
+    value["choices"] = gallery().into();
+    value["status"] = gallery_status().into();
+    value
+}
+
 pub fn invalidate() {
     if let Ok(mut c) = CATALOG.lock() {
         let generation = c.generation.wrapping_add(1);
@@ -132,7 +208,7 @@ fn publish(c: &Catalog) {
         "tiktok.gifts",
         c.gifts.iter().map(|g| (g.id.clone(), g.name.clone())).collect(),
     );
-    crate::ui::changed();
+    crate::host::changed();
 }
 
 /// A received gift also teaches us about gifts missing from a list or added during this live.
@@ -216,6 +292,64 @@ pub fn enrich(args: &mut Obj) {
             enrich_from(gift, args);
         }
     }
+}
+
+/// What a form's Refresh (or its opening with no list) loads: the live room's list when live with the
+/// browser account, else TikTok's public one.
+pub async fn load(engine: &Rc<Engine>) -> Result<Value, String> {
+    let live = engine.tiktok_connected()
+        && engine.tiktok().and_then(|t| t.room_id()).is_some()
+        && engine.tiktok_bridge.ready();
+    if live {
+        refresh(engine).await
+    } else {
+        public().await
+    }
+}
+
+/// The language TikTok names gifts in: the app's (`pt_BR` asks for `pt-BR`; English for `en`).
+fn language() -> String {
+    match crate::i18n::active() {
+        "en_US" => "en".into(),
+        code => code.replace('_', "-"),
+    }
+}
+
+async fn public() -> Result<Value, String> {
+    let generation = {
+        let mut c = CATALOG.lock().map_err(|_| "Gift catalog unavailable")?;
+        if c.state == "loading" {
+            return Ok(json!(*c));
+        }
+        let generation = c.generation.wrapping_add(1);
+        c.generation = generation;
+        if !c.room.is_empty() {
+            c.gifts.clear();
+        }
+        c.room.clear();
+        c.channel.clear();
+        c.state = "loading";
+        c.error.clear();
+        c.pending.clear();
+        publish(&c);
+        generation
+    };
+    let url = format!("{PUBLIC_LIST}&webcast_language={}", language());
+    let result = crate::http::request("GET", &url, &[("User-Agent".into(), AGENT.into())], b"")
+        .await
+        .and_then(|response| {
+            if response.status != 200 {
+                return Err(format!("TikTok answered HTTP {}", response.status));
+            }
+            serde_json::from_slice::<Value>(&response.body).map_err(|_| "TikTok sent no gift list".to_owned())
+        })
+        .and_then(|body| parse(&body));
+    let mut c = CATALOG.lock().map_err(|_| "Gift catalog unavailable")?;
+    if !c.complete(generation, result) {
+        return Err("The TikTok live changed; refresh its gifts again".into());
+    }
+    publish(&c);
+    Ok(json!(*c))
 }
 
 pub async fn refresh(engine: &Rc<Engine>) -> Result<Value, String> {
@@ -330,6 +464,39 @@ pub fn preview(trigger: &Obj, data: &Value) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gifts_are_named_in_the_apps_language() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::i18n::set("pt_BR");
+        assert_eq!(language(), "pt-BR");
+        crate::i18n::set("en_US");
+        assert_eq!(language(), "en");
+    }
+
+    #[test]
+    fn a_forms_gifts_are_cheapest_first_with_pictures_and_prices() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        invalidate();
+        assert!(wants_loading());
+        assert!(gallery_status().is_none());
+        observe(&json!({"giftId": 7, "giftName": "Lion", "diamondCount": 29999, "giftType": 1}));
+        observe(&json!({"giftId": 5655, "giftName": "Rose", "diamondCount": 1,
+            "giftPictureUrl": "https://example.test/rose.webp"}));
+        let list = gallery();
+        assert_eq!(list[0]["id"], "5655");
+        assert_eq!(list[0]["label"], "Rose");
+        assert_eq!(list[0]["detail"], "1 coin");
+        assert_eq!(list[0]["picture"], "https://example.test/rose.webp");
+        assert!(list[0]["tip"].as_str().unwrap().contains("1 coin"));
+        assert!(list[1]["tip"].as_str().unwrap().contains("29999 coins"));
+        assert_eq!(name_of("7").as_deref(), Some("Lion"));
+        // Gifts seen while live don't stop the whole list from loading.
+        assert!(wants_loading());
+        let reply = with_choices(status());
+        assert_eq!(reply["choices"][1]["label"], "Lion");
+        invalidate();
+    }
+
     use super::*;
     #[test]
     fn catalog_details_fill_sparse_events_without_overriding_wire_values() {

@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chat</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  body { display: flex; flex-direction: column; font-family: system-ui, sans-serif; background: #18181b; color: #e4e4e7; }
+  #chat { flex: 1; overflow-y: auto; padding: 6px 8px; }
+  #chat::-webkit-scrollbar { width: 8px; }
+  #chat::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 4px; }
+
+  /* streamerz.line() makes the elements; these classes are all its own. */
+  .sz-line { padding: 2px 4px; border-radius: 4px; line-height: 1.45; overflow-wrap: anywhere; }
+  .sz-line:hover { background: #27272a; }
+  .sz-head { margin-right: .35em; }
+  .sz-platform, .sz-badge, .sz-icon { height: 1.1em; width: auto; vertical-align: -.2em; margin-right: .25em; }
+  .sz-avatar { width: 1.3em; height: 1.3em; border-radius: 50%; object-fit: cover; vertical-align: -.3em; margin-right: .25em; }
+  .sz-time { color: #71717a; font-size: .8em; margin-right: .4em; font-variant-numeric: tabular-nums; }
+  .sz-name { font-weight: 700; cursor: pointer; }
+  .sz-name:hover { text-decoration: underline; }
+  .sz-emote { height: 1.6em; vertical-align: -.45em; margin: 0 .05em; }
+  .sz-emote.sz-big { height: 5em; display: block; }
+  .sz-reply { color: #a1a1aa; font-size: .85em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sz-action .sz-text { font-style: italic; }
+  .sz-picture { display: block; max-height: 5em; max-width: 100%; border-radius: 4px; margin: 2px 0; }
+  /* An event (a sub, a gift, a raid): a tinted row with a bar in its colour. */
+  .sz-event { margin: 3px 0; padding: 4px 8px; border-left: 3px solid var(--sz-accent);
+    background: color-mix(in srgb, var(--sz-accent) 14%, transparent); }
+  .sz-event .sz-text { display: block; }
+  .sz-cost { margin-left: .4em; padding: 0 .4em; border-radius: 1em; background: #3f3f46; font-size: .85em; }
+  /* A deleted message stays, struck through, as on the Chat page. */
+  .sz-deleted .sz-text, .sz-line.deleted .sz-text { text-decoration: line-through; opacity: .5; }
+
+  #bar { display: flex; gap: 6px; padding: 8px; border-top: 1px solid #3f3f46; background: #1f1f23; }
+  select, input, button { font: inherit; border-radius: 6px; border: 1px solid #3f3f46; background: #27272a;
+    color: inherit; padding: 5px 8px; }
+  input { flex: 1; min-width: 0; }
+  button { background: #7c3aed; border-color: #7c3aed; color: #fff; font-weight: 600; cursor: pointer; }
+  #note { padding: 0 8px 6px; font-size: 12px; color: #f87171; background: #1f1f23; }
+  #note:empty { display: none; }
+</style>
+</head>
+<body>
+<div id="chat"></div>
+<form id="bar">
+  <select id="where" aria-label="Send to">
+    <option value="all">All</option>
+    <option value="twitch">Twitch</option>
+    <option value="youtube">YouTube</option>
+    <option value="kick">Kick</option>
+    <option value="tiktok">TikTok</option>
+  </select>
+  <input id="text" placeholder="Send a message" autocomplete="off" maxlength="500">
+  <button>Send</button>
+</form>
+<div id="note"></div>
+<script>
+// A dock: a page that lives in a panel of OBS (Docks, Custom Browser Docks), not over the stream. Its
+// page is marked "dock" in the template, so Add to OBS gives the steps for one.
+// It reads the chat and writes in it, so its group has the permissions "Read the chat", "See follows,
+// subscriptions..." and "Send chat messages as you".
+let settings = streamerz.settings;
+streamerz.onSettings(s => {
+  settings = s;
+  document.body.style.fontSize = (Number(s.size) || 14) + "px";
+});
+
+function add(line) {
+  // Still at the bottom: the list follows the new line. Scrolled up to read: it stays put.
+  const follow = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 40;
+  const el = streamerz.line(line, {
+    time: settings.showTime !== false,
+    badges: settings.showBadges !== false,
+    avatar: settings.showAvatars === true,
+  });
+  // A click on a name starts an answer to them.
+  const name = el.querySelector(".sz-name");
+  if (name) name.onclick = () => {
+    text.value = "@" + line.user + " " + text.value;
+    if (line.platform) where.value = line.platform;
+    text.focus();
+  };
+  chat.append(el);
+  while (chat.children.length > 500) chat.firstChild.remove();
+  if (follow) chat.scrollTop = chat.scrollHeight;
+}
+
+streamerz.chat(add, {
+  history: Number(settings.history) || 50,
+  removed: r => {
+    for (const el of chat.children) {
+      if (r.msgId ? el.dataset.msg === r.msgId : el.dataset.user === r.platform + ":" + r.userId) el.classList.add("deleted");
+    }
+  },
+});
+streamerz.alerts(line => {
+  if (settings.showEvents !== false) add(line);
+});
+
+bar.onsubmit = async e => {
+  e.preventDefault();
+  const message = text.value.trim();
+  if (!message) return;
+  note.textContent = "";
+  try {
+    // Resolves once Streamerz took it; rejects with why not (a platform that is not connected).
+    await streamerz.say(message, { platform: where.value });
+    text.value = "";
+  } catch (error) {
+    note.textContent = error.message;
+  }
+};
+</script>
+</body>
+</html>

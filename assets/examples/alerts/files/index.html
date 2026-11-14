@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Alerts</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  body { font-family: var(--font, system-ui), system-ui, sans-serif; }
+  /* The cards are stacked from the top (or the bottom), each as wide as the Width setting. */
+  #list { position: absolute; inset: 0; display: flex; flex-direction: column; gap: .7em; padding: 1em 1.6em;
+    box-sizing: border-box; align-items: flex-start; }
+  .center #list { align-items: center; }
+  .right #list { align-items: flex-end; }
+  .bottom #list { flex-direction: column-reverse; }
+
+  .card { position: relative; display: flex; align-items: center; gap: .8em; box-sizing: border-box;
+    width: var(--width, 22em); max-width: 100%; padding: .55em 1em .55em .55em;
+    border-radius: var(--radius, 18px); color: var(--text, #fff);
+    /* The platform's colour, lighter at the top: --tint is set on each card. */
+    background: linear-gradient(180deg, color-mix(in srgb, var(--tint) 82%, #fff), var(--tint));
+    box-shadow: 0 .35em 1em rgba(0, 0, 0, .4), inset 0 1px 0 rgba(255, 255, 255, .25);
+    transition: opacity .45s ease, transform .45s cubic-bezier(.2, .8, .2, 1), margin .45s ease; }
+  .dark .card { background: linear-gradient(180deg, #2a2a31, #1c1c21); }
+  .light .card { background: linear-gradient(180deg, #fff, #ececf1); color: #18181b; }
+  .custom .card { background: var(--card, #27272a); }
+  .dark .card, .light .card, .custom .card { border-left: .3em solid var(--tint); }
+
+  /* Coming in and going out. */
+  .card.new, .card.old { opacity: 0; }
+  .slide .card.new, .slide .card.old { transform: translateX(-3em); }
+  .slide.right .card.new, .slide.right .card.old { transform: translateX(3em); }
+  .pop .card.new { transform: scale(.6); }
+  .pop .card.old { transform: scale(.85); }
+  .card.old { margin-top: calc(-1 * var(--tall, 4em) - .7em); }
+  .bottom .card.old { margin-top: 0; margin-bottom: calc(-1 * var(--tall, 4em) - .7em); }
+
+  .face { flex: none; width: 3.3em; height: 3.3em; border-radius: calc(var(--radius, 18px) * .6); overflow: hidden;
+    background: rgba(0, 0, 0, .3); display: grid; place-items: center; font-size: 1em; font-weight: 800;
+    box-shadow: 0 .1em .4em rgba(0, 0, 0, .35); }
+  .face img { width: 100%; height: 100%; object-fit: cover; }
+  .words { flex: 1; min-width: 0; }
+  .name { font-size: 1.25em; font-weight: 700; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .what { font-size: .9em; line-height: 1.3; opacity: .95; }
+  .said { font-size: .85em; line-height: 1.3; opacity: .8; margin-top: .15em; overflow-wrap: anywhere;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .sz-emote { height: 1.4em; vertical-align: -.35em; }
+  .gift { flex: none; height: 3em; max-width: 4em; object-fit: contain; filter: drop-shadow(0 .1em .3em rgba(0, 0, 0, .4)); }
+  /* The platform's logo on a tile, hanging over the card's corner. */
+  .logo { position: absolute; right: -1em; bottom: -.7em; width: 2em; height: 2em; border-radius: .5em;
+    background: #fff center / 70% no-repeat; box-shadow: 0 .15em .5em rgba(0, 0, 0, .45); }
+  .logo.tiktok, .logo.kick { background-color: #000; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="list"></div>
+<script>
+// One card for each thing that happens in the channels, on every platform at once: a follow, a sub,
+// a gift, a cheer or a Super Chat, a raid, a reward. streamerz.alerts(fn) gives each as a chat line
+// with {platform, user, event (what happened, in words), icon, accent, text (what they wrote), picture}.
+// Its group has the permission "See follows, subscriptions, gifts, donations and raids".
+let settings = streamerz.settings;
+
+streamerz.onSettings(s => {
+  settings = s;
+  document.body.className = [
+    { "Platform colors": "tinted", Dark: "dark", Light: "light", "Custom color": "custom" }[s.look] || "tinted",
+    (s.animation || "Slide").toLowerCase(),
+    (s.side || "Left").toLowerCase(),
+    s.newest === "At the bottom" ? "bottom" : "",
+  ].join(" ");
+  const root = document.documentElement.style;
+  root.fontSize = 22 * ((Number(s.scale) || 100) / 100) + "px";
+  root.setProperty("--radius", (Number(s.radius) || 0) + "px");
+  root.setProperty("--width", (Number(s.width) || 22) + "em");
+  root.setProperty("--card", s.cardColor || "#27272a");
+  root.setProperty("--text", s.look === "Light" ? "#18181b" : s.textColor || "#fff");
+  root.setProperty("--font", s.font ? '"' + s.font + '"' : "system-ui");
+});
+
+// What kind of thing an alert is, by its icon: each kind has its own switch in the settings.
+const kinds = {
+  "user-plus": "follows", star: "subs", flame: "subs", gift: "gifts", gem: "cheers",
+  "badge-dollar-sign": "cheers", sticker: "cheers", swords: "raids", "share-2": "follows",
+};
+// A timeout, a ban and an announcement are told in the chat, never celebrated here.
+const never = new Set(["clock", "ban", "megaphone"]);
+
+function show(line) {
+  // "From" is a platforms setting: the list of the ones ticked.
+  if (Array.isArray(settings.platforms) && !settings.platforms.includes(line.platform)) return;
+  if (never.has(line.icon)) return;
+  if (settings[kinds[line.icon] || "rewards"] === false) return;
+
+  const card = document.createElement("div");
+  card.className = "card new";
+  const platform = streamerz.platforms[line.platform] || { color: "#52525b" };
+  // YouTube's memberships are green and a reward has its own colour: the line's accent says so.
+  card.style.setProperty("--tint", line.platform === "kick" ? "#1f9d0b" : line.accent || platform.color);
+
+  // The picture of who did it, or their first letter until (or unless) one is found.
+  const face = document.createElement("div");
+  face.className = "face";
+  face.textContent = String(line.user || "?").slice(0, 1).toUpperCase();
+  face.hidden = settings.showAvatar === false;
+  streamerz.avatar(line).then(url => {
+    if (!url) return;
+    const img = new Image();
+    img.onload = () => face.replaceChildren(img);
+    img.src = url;
+  });
+
+  const words = document.createElement("div");
+  words.className = "words";
+  const name = document.createElement("div");
+  name.className = "name";
+  name.textContent = line.user;
+  const what = document.createElement("div");
+  what.className = "what";
+  what.textContent = line.event + (line.cost && line.platform !== "tiktok" ? " (" + line.cost + ")" : "");
+  words.append(name, what);
+  if (settings.showMessage !== false && line.text) {
+    const said = document.createElement("div");
+    said.className = "said";
+    said.append(streamerz.words(line)); // The message, with its emotes as pictures.
+    words.append(said);
+  }
+  card.append(face, words);
+
+  if (settings.showPicture !== false && line.picture) {
+    const gift = new Image();
+    gift.className = "gift";
+    gift.src = line.picture;
+    card.append(gift);
+  }
+  if (settings.showPlatform !== false) {
+    const logo = document.createElement("div");
+    logo.className = "logo " + line.platform;
+    logo.style.backgroundImage = 'url("' + streamerz.logo(line.platform) + '")';
+    card.append(logo);
+  }
+
+  list.prepend(card);
+  // No more than the setting says at once: the oldest leaves early.
+  const most = Math.max(1, Number(settings.most) || 5);
+  [...list.querySelectorAll(".card:not(.old)")].slice(most).forEach(leave);
+  requestAnimationFrame(() => requestAnimationFrame(() => card.classList.remove("new")));
+  setTimeout(() => leave(card), (Number(settings.seconds) || 7) * 1000);
+}
+
+// A card fades and the ones after it close the gap (its height becomes a negative margin).
+function leave(card) {
+  if (card.classList.contains("old")) return;
+  card.style.setProperty("--tall", card.offsetHeight + "px");
+  card.classList.add("old");
+  setTimeout(() => card.remove(), 500);
+}
+
+streamerz.alerts(show);
+</script>
+</body>
+</html>

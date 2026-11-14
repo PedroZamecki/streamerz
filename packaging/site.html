@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Streamerz for Linux</title>
+<link rel="icon" href="streamerz.svg">
+<style>
+  :root { --bg: #fafafa; --fg: #18181b; --quiet: #71717a; --line: #e4e4e7; --code: #f4f4f5; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #09090b; --fg: #fafafa; --quiet: #a1a1aa; --line: #27272a; --code: #18181b; }
+  }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.55 system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+  header { display: flex; align-items: center; gap: 14px; }
+  header img { width: 48px; height: 48px; }
+  h1 { margin: 0; font-size: 26px; }
+  h2 { margin: 36px 0 8px; font-size: 18px; }
+  p, li { color: var(--quiet); }
+  a { color: inherit; }
+  pre { background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px;
+        overflow-x: auto; font-size: 13px; line-height: 1.5; color: var(--fg); }
+  code { font-family: ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <img src="streamerz.svg" alt="">
+    <div>
+      <h1>Streamerz for Linux</h1>
+      <p style="margin:2px 0 0">Version @VERSION@. Each way below keeps Streamerz up to date with the rest of your system.</p>
+    </div>
+  </header>
+
+  <h2>Flatpak</h2>
+  <p>Any distribution. Updates come with your other Flatpak apps (GNOME Software, Discover, or <code>flatpak update</code>).</p>
+  <pre><code>flatpak install --user https://pedrozamecki.github.io/streamerz/streamerz.flatpakref</code></pre>
+  <p>Or open the <code>.flatpak</code> file from the <a href="https://github.com/PedroZamecki/streamerz/releases/latest">latest release</a>: it adds the same updates.</p>
+
+  <h2>Debian, Ubuntu, Linux Mint</h2>
+  <p>Download <code>Streamerz-linux-x86_64.deb</code> from the <a href="https://github.com/PedroZamecki/streamerz/releases/latest">latest release</a> and install it. It adds this repository, so <code>apt upgrade</code> updates Streamerz.</p>
+  <pre><code>sudo apt install ./Streamerz-linux-x86_64.deb</code></pre>
+
+  <h2>Fedora, openSUSE</h2>
+  <p>The package adds this repository, so <code>dnf upgrade</code> or <code>zypper update</code> updates Streamerz.</p>
+  <pre><code>sudo dnf install https://github.com/PedroZamecki/streamerz/releases/latest/download/Streamerz-linux-x86_64.rpm</code></pre>
+
+  <h2>Arch Linux</h2>
+  <p>Trust the key once, then add the repository to <code>/etc/pacman.conf</code>.</p>
+  <pre><code>curl -fsSL https://pedrozamecki.github.io/streamerz/streamerz.asc | sudo pacman-key --add -
+sudo pacman-key --lsign-key @FINGERPRINT@</code></pre>
+  <pre><code>[streamerz]
+Server = https://pedrozamecki.github.io/streamerz/arch</code></pre>
+  <pre><code>sudo pacman -Sy streamerz</code></pre>
+
+  <h2>AppImage, or the program alone</h2>
+  <p><code>Streamerz-linux-x86_64.AppImage</code> and <code>Streamerz-linux-x86_64</code> on the <a href="https://github.com/PedroZamecki/streamerz/releases/latest">latest release</a> run from anywhere and update themselves (Settings, Updates).</p>
+
+  <h2>Signing key</h2>
+  <p>Every repository here is signed with <a href="streamerz.asc">this key</a>, fingerprint <code>@FINGERPRINT@</code>.</p>
+</main>
+</body>
+</html>

@@ -121,7 +121,8 @@ pub struct Suggestion {
 /// Kick's chat commands that its API can do (kick.com's help lists more: its chat modes have no API).
 pub const KICK_COMMANDS: &[Info] = &[
     info("ban", "<user> [reason]", "slash.ban", &[]),
-    info("unban", "<user>", "slash.unban_kick", &[]),
+    info("commercial", "[length]", "slash.commercial", &["15", "30", "60", "90"]),
+    info("tag", "<tags>", "slash.tag", &[]),
     info(
         "timeout",
         "<user> [seconds]",
@@ -129,6 +130,7 @@ pub const KICK_COMMANDS: &[Info] = &[
         &["60", "600", "3600", "86400"],
     ),
     info("title", "<new title>", "slash.title", &[]),
+    info("unban", "<user>", "slash.unban_kick", &[]),
 ];
 
 /// The commands to suggest for what is typed so far in `platform`'s box, those whose name starts with what
@@ -469,9 +471,11 @@ pub fn parse(text: &str) -> Result<Cmd, String> {
 #[derive(Debug, PartialEq)]
 pub enum KickCmd {
     Ban { user: String, reason: String },
-    Unban(String),
+    Commercial(u32),
+    Tags(Vec<String>),
     Timeout { user: String, secs: u64, reason: String },
     Title(String),
+    Unban(String),
 }
 
 /// What a command typed in Kick's chat box stands for, or why it can't be.
@@ -495,6 +499,25 @@ pub fn parse_kick(text: &str) -> Result<KickCmd, String> {
             user: user()?,
             reason: words[1..].join(" "),
         },
+        "commercial" | "ad" => {
+            let secs = match words.first().and_then(|w| seconds(w, 1)) {
+                Some(s) => (s as u32).clamp(7, 90),
+                None => 30,
+            };
+            KickCmd::Commercial(secs)
+        }
+        "tag" | "tags" => {
+            if rest.is_empty() {
+                return Err("usage: /tag <tags>".into());
+            }
+            let tags: Vec<String> = rest
+                .split([',', ' '])
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect();
+            KickCmd::Tags(tags)
+        }
         "unban" | "untimeout" => KickCmd::Unban(user()?),
         "timeout" => {
             let user = user()?;
@@ -527,6 +550,16 @@ pub async fn run_kick(e: &Rc<Engine>, text: &str) -> Result<String, String> {
     let k = e.kick_start();
     match parse_kick(text)? {
         KickCmd::Ban { user, reason } => k.ban_user(&user, &reason).await.map(|()| format!("banned {user}")),
+        KickCmd::Commercial(d) => k
+            .start_ad_break(d as u64)
+            .await
+            .map(|_| format!("a {d} second commercial is running")),
+        KickCmd::Tags(tags) => {
+            let summary = tags.join(", ");
+            k.set_channel_tags(tags)
+                .await
+                .map(|()| format!("tags updated ({summary})"))
+        }
         KickCmd::Unban(user) => k.unban_user(&user).await.map(|()| format!("{user} can chat again")),
         KickCmd::Timeout { user, secs, reason } => k
             .timeout_user(&user, secs, &reason)
@@ -752,6 +785,13 @@ mod tests {
             parse_kick("/title Hello there").unwrap(),
             KickCmd::Title("Hello there".into())
         );
+        assert_eq!(parse_kick("/commercial 60").unwrap(), KickCmd::Commercial(60));
+        assert_eq!(parse_kick("/ad").unwrap(), KickCmd::Commercial(30));
+        assert_eq!(
+            parse_kick("/tag rust, streamer").unwrap(),
+            KickCmd::Tags(vec!["rust".into(), "streamer".into()])
+        );
+        assert!(parse_kick("/tag").is_err());
         assert!(parse_kick("/slow on 5").unwrap_err().contains("can't be run from here"));
         assert!(parse_kick("/ban").unwrap_err().starts_with("usage"));
     }

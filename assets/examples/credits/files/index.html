@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Credits roll</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  body { font: 26px var(--font, system-ui), system-ui, sans-serif; color: var(--color); text-align: center; }
+  #roll { position: absolute; top: 100%; left: 5%; width: 90%; box-sizing: border-box; padding: 32px;
+    border-radius: 18px; background: var(--background); }
+  h1, h2 { color: var(--accent); overflow-wrap: anywhere; }
+  h1 { font-size: 44px; margin: 10px 0 60px; }
+  h2 { margin: 50px 0 16px; font-size: 28px; }
+  .name { margin: 10px 0; overflow-wrap: anywhere; }
+  #status { padding: 24px; }
+</style>
+</head>
+<body>
+<div id="roll"></div><div id="status"></div>
+<script>
+// One HTTP read when opened, rather than polling credits. Test supplies data only to this page.
+// Each section names an existing GetCredits field, such as events.follows or users.moderators.
+let settings = streamerz.settings;
+let credits = null;
+let motion;
+const roll = document.getElementById("roll");
+function draw() {
+  if (!credits) return;
+  roll.replaceChildren();
+  const add = (tag, text, parent = roll) => { const el = document.createElement(tag); el.textContent = text; parent.append(el); return el; };
+  add("h1", settings.title);
+  for (const section of settings.sections || []) {
+    const names = String(section.key || "").split(".").reduce((value, key) => value && Object.hasOwn(value, key) ? value[key] : null, credits);
+    if (!Array.isArray(names) || !names.length) continue;
+    add("h2", section.title);
+    for (const name of names) add("div", typeof name === "string" ? name : String(name.name || "")).className = "name";
+  }
+  add("h2", settings.ending);
+  motion?.cancel();
+  const distance = innerHeight + roll.offsetHeight;
+  motion = roll.animate([{ transform: "translateY(0)" }, { transform: "translateY(-" + distance + "px)" }], {
+    duration: distance / Math.max(15, Number(settings.speed) || 60) * 1000,
+    iterations: settings.repeat ? Infinity : 1, fill: "forwards", easing: "linear"
+  });
+}
+streamerz.onSettings(s => {
+  settings = s;
+  const style = document.documentElement.style;
+  for (const key of ["color", "accent", "background"]) style.setProperty("--" + key, s[key]);
+  style.setProperty("--font", s.font ? '"' + s.font + '"' : "system-ui");
+  draw();
+});
+fetch(new URL("/GetCredits", location.href)).then(r => {
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}).then(data => { credits = data; draw(); }).catch(error => {
+  document.getElementById("status").textContent = "Could not read credits: " + error.message;
+});
+streamerz.on("credits.preview", data => {
+  if (!streamerz.testing) return;
+  credits = data;
+  document.getElementById("status").textContent = "";
+  draw();
+});
+addEventListener("resize", draw);
+</script>
+</body>
+</html>

@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Poll control</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  body { font: 14px system-ui, sans-serif; background: #18181b; color: #e4e4e7; padding: 10px; box-sizing: border-box; }
+  label { display: block; margin: 8px 0 3px; color: #a1a1aa; font-size: 12px; }
+  input, textarea { width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 6px; border: 1px solid #3f3f46;
+    background: #27272a; color: inherit; font: inherit; }
+  textarea { height: 92px; resize: vertical; }
+  .row { display: flex; gap: 8px; margin-top: 10px; }
+  button { flex: 1; padding: 7px; border-radius: 6px; border: 0; font: inherit; font-weight: 600; cursor: pointer;
+    background: #7c3aed; color: #fff; }
+  button.quiet { background: #3f3f46; }
+  button:disabled { opacity: .5; cursor: default; }
+  #state { margin-top: 14px; padding-top: 10px; border-top: 1px solid #3f3f46; }
+  #state h2 { font-size: 14px; margin: 0 0 6px; }
+  .line { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; }
+  .line span { color: #a1a1aa; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #note { color: #a1a1aa; font-size: 12px; margin-top: 6px; }
+</style>
+</head>
+<body>
+<label for="question">Question</label>
+<input id="question" placeholder="What should I play next?">
+<label for="options">Choices, one per line</label>
+<textarea id="options" placeholder="Minecraft&#10;Just chatting"></textarea>
+<label for="seconds">Seconds</label>
+<input id="seconds" type="number" min="5" max="3600">
+<div class="row">
+  <button id="start">Start</button>
+  <button id="end" class="quiet">End now</button>
+</div>
+<div id="state" hidden>
+  <h2 id="title"></h2>
+  <div id="rows"></div>
+  <div id="note"></div>
+</div>
+<script>
+// The poll's control, for an OBS dock (Docks, Custom Browser Docks) or any browser. It starts and ends
+// the poll by setting the same topics the !poll and !endpoll commands set, and shows how it is going
+// from the topic the overlay page tells it on. A page of the same group may set a topic with no
+// permission at all.
+let state = null;
+streamerz.onSettings(s => {
+  if (!seconds.value) seconds.value = Number(s.seconds) || 60;
+});
+
+start.onclick = () => {
+  const options = document.getElementById("options").value.split("\n").map(o => o.trim()).filter(Boolean);
+  if (!question.value.trim() || options.length < 2) return (note.textContent = "A question and two choices at least");
+  streamerz.publish("poll.start", { question: question.value.trim(), options, seconds: Number(seconds.value) || 60 });
+};
+end.onclick = () => streamerz.publish("poll.end", Date.now());
+
+streamerz.on("poll.state", s => {
+  state = s;
+  draw();
+});
+
+function draw() {
+  document.getElementById("state").hidden = !state;
+  if (!state) return;
+  title.textContent = state.question;
+  rows.replaceChildren();
+  for (const [i, o] of state.options.entries()) {
+    const line = document.createElement("div");
+    line.className = "line";
+    const share = state.votes ? Math.round((o.total / state.votes) * 100) : 0;
+    const words = document.createElement("b");
+    words.textContent = i + 1 + ". " + o.text;
+    const votes = document.createElement("span");
+    votes.textContent = share + "% (" + o.total + ")";
+    line.append(words, votes);
+    rows.append(line);
+  }
+  const left = Math.max(0, Math.ceil((state.endsAt - Date.now()) / 1000));
+  note.textContent = state.over || !left ? "Over. " + state.votes + " votes" : left + " s left, " + state.votes + " votes";
+  end.disabled = state.over || !left;
+}
+setInterval(draw, 1000);
+</script>
+</body>
+</html>

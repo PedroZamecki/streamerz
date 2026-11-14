@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Poll</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  body { font-family: var(--font, system-ui), system-ui, sans-serif; color: var(--text, #fff); }
+  #stage { position: absolute; inset: 0; display: grid; place-items: center; padding: 1em; box-sizing: border-box; }
+  #poll { width: 100%; max-width: 26em; box-sizing: border-box; padding: 1.1em 1.3em 1.3em;
+    border-radius: var(--radius, 14px); background: var(--back, #1f1f23e6);
+    box-shadow: 0 .5em 1.6em rgba(0, 0, 0, .45);
+    transition: opacity .5s ease, transform .5s cubic-bezier(.2, .8, .2, 1); }
+  #poll.away { opacity: 0; transform: translateY(1.5em) scale(.96); }
+  #clock { text-align: center; font-size: 2.4em; font-weight: 800; line-height: 1.1; margin-bottom: .25em;
+    font-variant-numeric: tabular-nums; }
+  #question { font-size: 1.1em; font-weight: 700; margin-bottom: .6em; overflow-wrap: anywhere; }
+  .choice { display: flex; align-items: center; gap: .6em; margin-top: .45em; }
+  .number { flex: none; width: 1.7em; height: 1.7em; border-radius: 50%; display: grid; place-items: center;
+    font-weight: 800; background: rgba(255, 255, 255, .22); }
+  /* The bar: the choice's words over it, and one piece per platform in that platform's colour. */
+  .bar { position: relative; flex: 1; min-width: 0; height: 1.9em; border-radius: .4em; overflow: hidden;
+    background: rgba(255, 255, 255, .16); }
+  .fill { position: absolute; inset: 0 auto 0 0; display: flex; width: 0; transition: width .5s ease; }
+  .fill i { height: 100%; transition: flex-grow .5s ease; flex: 0 0 0; }
+  .label { position: absolute; inset: 0; display: flex; align-items: center; justify-content: space-between;
+    gap: .6em; padding: 0 .6em; font-size: .9em; text-shadow: 0 1px 2px rgba(0, 0, 0, .7); }
+  .label b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .label span { flex: none; font-size: .85em; font-variant-numeric: tabular-nums; }
+  /* When it is over, the winner stays bright and the others dim. */
+  .over .choice { opacity: .45; transition: opacity .4s ease; }
+  .over .choice.won { opacity: 1; }
+  .over .won .number { background: var(--accent, #a78bfa); }
+  #how { margin-top: .9em; font-size: .78em; opacity: .7; text-align: center; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="poll" class="away">
+    <div id="clock"></div>
+    <div id="question"></div>
+    <div id="choices"></div>
+    <div id="how"></div>
+  </div>
+</div>
+<script>
+// One poll for every platform at once: viewers vote by typing a choice's number in the chat.
+//
+// It starts from the chat (the action "Poll: start" behind the command !poll, in this overlay's
+// group) or from the dock page (dock.html). Both set a topic, and this page listens:
+//   poll.start   "Question | Choice | Choice" (the command), or {question, options, seconds} (the dock)
+//   poll.end     end it now
+// and it tells how it is going on the topic poll.state, which the dock shows.
+// It reads the chat for the votes and writes the result in it, so its group has the permissions
+// "Read the chat" and "Send chat messages as you".
+let settings = streamerz.settings;
+let poll = null; // {question, options: [text], votes: Map(voter -> [choice, platform]), endsAt, over}
+let hide = 0;
+
+streamerz.onSettings(s => {
+  settings = s;
+  const root = document.documentElement.style;
+  root.fontSize = 22 * ((Number(s.scale) || 100) / 100) + "px";
+  root.setProperty("--radius", (Number(s.radius) || 0) + "px");
+  root.setProperty("--back", s.background || "#1f1f23e6");
+  root.setProperty("--text", s.textColor || "#fff");
+  root.setProperty("--accent", s.accent || "#a78bfa");
+  root.setProperty("--font", s.font ? '"' + s.font + '"' : "system-ui");
+  clock.hidden = s.showTimer === false;
+  draw();
+});
+
+// `old` is true for what the topic held before this page opened: a poll from an hour ago doesn't start again.
+streamerz.on("poll.start", (value, old) => {
+  if (old) return;
+  let question, options, seconds;
+  if (typeof value === "string" || typeof value === "number") {
+    [question, ...options] = String(value).split("|").map(part => part.trim()).filter(Boolean);
+  } else if (value) {
+    ({ question, options, seconds } = value);
+  }
+  options = (options || []).map(o => String(o).trim()).filter(Boolean).slice(0, 8);
+  if (!question || options.length < 2) return streamerz.log("A poll needs a question and two choices: !poll Question | One | Two");
+  clearTimeout(hide);
+  poll = {
+    question, options, votes: new Map(), over: false,
+    endsAt: Date.now() + (Number(seconds) || Number(settings.seconds) || 60) * 1000,
+  };
+  build();
+  if (settings.announce !== false)
+    say(question + " " + options.map((o, i) => i + 1 + ": " + o).join(", ") + ". " + (settings.howTo || "Type the number to vote"));
+});
+streamerz.on("poll.end", (_, old) => {
+  if (!old) end();
+});
+
+// A vote: a message that is just the number of a choice. One per person on each platform.
+streamerz.chat(line => {
+  if (!poll || poll.over) return;
+  const text = String(line.text || "").trim();
+  if (!/^\d$/.test(text)) return;
+  const choice = Number(text) - 1;
+  if (choice < 0 || choice >= poll.options.length) return;
+  const voter = line.platform + ":" + line.userId;
+  if (poll.votes.has(voter) && settings.changeVote === false) return;
+  poll.votes.set(voter, [choice, line.platform]);
+  draw();
+  tell();
+});
+
+function say(text) {
+  streamerz.say(text).catch(e => streamerz.log("The poll could not write in the chat: " + e.message));
+}
+
+// The poll's rows, made once when it starts; draw() then only moves the bars.
+function build() {
+  question.textContent = poll.question;
+  choices.replaceChildren();
+  poll.options.forEach((text, i) => {
+    const row = document.createElement("div");
+    row.className = "choice";
+    const number = document.createElement("div");
+    number.className = "number";
+    number.textContent = i + 1;
+    const bar = document.createElement("div");
+    bar.className = "bar";
+    const fill = document.createElement("div");
+    fill.className = "fill";
+    for (const platform of Object.keys(streamerz.platforms)) {
+      const piece = document.createElement("i");
+      piece.dataset.platform = platform;
+      piece.style.background = streamerz.platforms[platform].color;
+      fill.append(piece);
+    }
+    const label = document.createElement("div");
+    label.className = "label";
+    label.append(document.createElement("b"), document.createElement("span"));
+    label.firstChild.textContent = text;
+    bar.append(fill, label);
+    row.append(number, bar);
+    choices.append(row);
+  });
+  how.textContent = settings.howTo || "Type the number to vote";
+  document.getElementById("poll").classList.remove("away", "over");
+  draw();
+  tell();
+}
+
+// How many votes each choice has, in all and from each platform.
+function count() {
+  const rows = poll.options.map(text => ({ text, total: 0, votes: {} }));
+  for (const [choice, platform] of poll.votes.values()) {
+    rows[choice].total++;
+    rows[choice].votes[platform] = (rows[choice].votes[platform] || 0) + 1;
+  }
+  return rows;
+}
+
+function draw() {
+  if (!poll) return;
+  const rows = count();
+  const all = poll.votes.size;
+  const best = Math.max(...rows.map(r => r.total));
+  rows.forEach((r, i) => {
+    const row = choices.children[i];
+    if (!row) return;
+    const share = all ? Math.round((r.total / all) * 100) : 0;
+    row.querySelector(".fill").style.width = share + "%";
+    for (const piece of row.querySelectorAll(".fill i")) piece.style.flexGrow = r.votes[piece.dataset.platform] || 0;
+    row.querySelector(".label span").textContent =
+      settings.showVotes === false ? "" : share + "% (" + r.total + ")";
+    row.classList.toggle("won", poll.over && r.total === best && best > 0);
+  });
+  const left = Math.max(0, Math.ceil((poll.endsAt - Date.now()) / 1000));
+  clock.textContent = String(Math.floor(left / 60)).padStart(2, "0") + ":" + String(left % 60).padStart(2, "0");
+}
+
+// How it is going, for the dock: told when it starts, at each vote and when it ends (not each second).
+function tell() {
+  streamerz.publish("poll.state", {
+    question: poll.question, options: count(), votes: poll.votes.size, endsAt: poll.endsAt, over: poll.over,
+  });
+}
+
+function end() {
+  if (!poll || poll.over) return;
+  poll.over = true;
+  poll.endsAt = Date.now();
+  document.getElementById("poll").classList.add("over");
+  how.textContent = "";
+  draw();
+  tell();
+  const rows = count();
+  const best = Math.max(...rows.map(r => r.total));
+  if (settings.announce !== false) {
+    const winners = rows.filter(r => r.total === best && best > 0).map(r => r.text);
+    say(winners.length
+      ? (settings.resultText || "The poll is over: {winner} won with {votes} of {all} votes")
+          .replace("{winner}", winners.join(" and ")).replace("{votes}", best).replace("{all}", poll.votes.size)
+      : "The poll is over: nobody voted");
+  }
+  // It stays for a while with the result, then leaves.
+  hide = setTimeout(() => document.getElementById("poll").classList.add("away"), (Number(settings.stayFor) || 12) * 1000);
+}
+
+// The clock, and the end when its time is up.
+setInterval(() => {
+  if (!poll || poll.over) return;
+  if (Date.now() >= poll.endsAt) end();
+  else draw();
+}, 1000);
+</script>
+</body>
+</html>

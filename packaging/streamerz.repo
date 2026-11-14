@@ -1,0 +1,10 @@
+# The Streamerz repository: updates come with the system's (dnf, zypper). Added by the streamerz package.
+[streamerz]
+name=Streamerz
+baseurl=https://pedrozamecki.github.io/streamerz/rpm/
+type=rpm-md
+enabled=1
+autorefresh=1
+gpgcheck=0
+repo_gpgcheck=1
+gpgkey=file:///usr/share/keyrings/streamerz.asc

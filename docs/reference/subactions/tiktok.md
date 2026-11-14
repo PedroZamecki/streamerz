@@ -29,3 +29,23 @@ None.
 
 - Without a TikTok connection, `roomId` is empty and the counts are zero.
 - The values stay as they were when the connection closed. They reset to zero when a different live starts.
+
+## Set Stream Title
+
+- Kind: sub-action
+- Code: 43010
+- Type: TikTokSetStreamTitle
+- Category: TikTok
+- Needs: TikTok sending set up (browser extension connected) and an active live room
+
+Sets the title of the TikTok LIVE broadcast.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Title | `title` | The new stream title. |
+
+### Arguments
+
+- `titleSuccess`: true when the title was updated on TikTok LIVE, false otherwise.

@@ -1,0 +1,82 @@
+{
+  "meta": {
+    "name": "Prize wheel",
+    "author": "Streamerz",
+    "version": "1.0.0",
+    "description": "A wheel with your own slices. !spin turns it and the result is written in the chat.",
+    "autoRunAction": null,
+    "minimumVersion": null
+  },
+  "data": {
+    "actions": [
+      {
+        "id": "a0000003-5a5a-4000-8000-0000000000b3",
+        "queue": null,
+        "enabled": true,
+        "excludeFromHistory": false,
+        "excludeFromPending": false,
+        "name": "Wheel: spin",
+        "group": "Prize wheel",
+        "alwaysRun": false,
+        "randomAction": false,
+        "concurrent": false,
+        "triggers": [
+          {
+            "id": "70000000-5a5a-4000-8000-0000000000b3",
+            "type": 401,
+            "enabled": true,
+            "exclusions": [],
+            "commandId": "c0000003-5a5a-4000-8000-0000000000a3"
+          }
+        ],
+        "subActions": [
+          {
+            "id": "50000000-5a5a-4000-8000-0000000000b3",
+            "weight": 0,
+            "type": 99880,
+            "parentId": null,
+            "enabled": true,
+            "index": 0,
+            "topic": "wheel.spin",
+            "value": "%user%"
+          }
+        ],
+        "collapsedGroups": []
+      }
+    ],
+    "queues": [],
+    "commands": [
+      {
+        "permittedUsers": [],
+        "permittedGroups": [],
+        "id": "c0000003-5a5a-4000-8000-0000000000a3",
+        "name": "Wheel: spin",
+        "enabled": true,
+        "include": true,
+        "mode": 0,
+        "command": "!spin",
+        "regexExplicitCapture": false,
+        "location": 0,
+        "ignoreBotAccount": true,
+        "ignoreInternal": true,
+        "sources": 6292481,
+        "persistCounter": false,
+        "persistUserCounter": false,
+        "caseSensitive": false,
+        "globalCooldown": 15,
+        "userCooldown": 60,
+        "group": "Prize wheel",
+        "grantType": 0
+      }
+    ],
+    "websocketServers": [],
+    "websocketClients": [],
+    "timers": []
+  },
+  "streamerz": {
+    "groupIcons": {}
+  },
+  "version": 23,
+  "exportedFrom": "1.0.7",
+  "minimumVersion": "1.0.0-alpha.1"
+}

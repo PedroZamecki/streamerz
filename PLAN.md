@@ -1,6 +1,6 @@
 # Streamerz plan
 
-Streamerz is a light stream automation app in Rust, built like songrequestz and tikstream: one small exe, FLTK window + tray,
+Streamerz is a light stream automation app in Rust, built like songrequestz and tikstream: one small exe, GPUI window + tray,
 ~nothing idle. Same model as Streamer.bot (actions made of sub-actions, fired by triggers, with
 variables, commands, timers and queues), same data format (imports Streamer.bot exports, reads its
 `actions.json`), and the same WebSocket/HTTP/UDP servers, so songrequestz, tikstream and existing overlays
@@ -24,7 +24,7 @@ phase, following `CLAUDE.md`.
 | Unsupported on import | Kept untouched (so a re-export loses nothing), shown disabled, logged once, skipped at run. This applies to C# code, out-of-scope integrations and the later extras. |
 | Scripting | No C#. The "Run a Program" sub-action is extended: it runs any exe/script, passes the arguments as JSON on stdin, and reads `key=value` lines or a JSON object from stdout back into arguments. No embedded interpreter. |
 | Variables | Full Streamer.bot parity: `%arg%`, `~global~`, persisted and temporary globals, user globals, inline functions (`$math()$` style, same names and syntax as the docs), same argument names per trigger. `$math()$` covers a common subset of mXparser: numbers, `+ - * / ^ %`, parentheses, comparisons, `& | ~`, abs round floor ceil min max sqrt exp ln log log10 sin cos tan asin acos atan sign rand/rnd, pi and e; anything else gives NaN with a log line, as Streamer.bot does. `%x:format%` follows .NET format strings in the OS locale (glibc locale data on Linux, Windows' own on Windows). |
-| Editor | Native FLTK window + tray (starts hidden), with the same tabs and panes as Streamer.bot: Actions (groups tree, sub-actions list, triggers list), Commands, Platforms, Stream Apps, Integrations, Servers/Clients, Settings, Log. Plain FLTK look with the dark theme. Tools: action history (last N runs with their args, re-run), pending queue view (running/queued per queue, clear), test trigger (fire any trigger with sample args). |
+| Editor | Native GPUI window + tray (starts hidden), with the same tabs and panes as Streamer.bot: Actions (groups tree, sub-actions list, triggers list), Commands, Platforms, Stream Apps, Integrations, Servers/Clients, Settings, Log. The zinc look, dark and light. Tools: action history (last N runs with their args, re-run), pending queue view (running/queued per queue, clear), test trigger (fire any trigger with sample args). |
 | Storage | One `streamerz.json` next to the exe: settings, actions, commands, timers, queues, globals, user data and tokens. Gitignored. Written atomically (temp file + rename) with a `.bak` of the previous version. |
 | Twitch | EventSub WebSocket for chat and every event, Helix REST for sub-actions, no IRC. Broadcaster account plus an optional bot account (chat is sent as the bot when set, as in Streamer.bot). Device-code OAuth with our public client ID, so there's no secret in the exe. |
 | Kick | Read through Kick's public Pusher websocket (what kick.com uses): chat, follows, subs, gifts and more, with no login. The official API with OAuth is used to send chat and moderate. That needs the **user's own Kick app** (client ID + secret pasted in Settings), because Kick requires a secret even for refresh. Official webhooks are optional, through a user-run tunnel to the local HTTP server, with signatures verified (RSA-SHA256, Kick's public key). |
@@ -33,18 +33,37 @@ phase, following `CLAUDE.md`.
 | Security | Tokens and cookies live in the OS keychain (Windows DPAPI, Linux Secret Service; `streamerz.json` with 0600 when there is none), are revoked on logout and never logged. The WebSocket and HTTP servers refuse browser origins other than local ones (`null`, `file://`, localhost) and an allowlist in Servers; clients without an Origin (apps) are unchanged. Importing actions that run programs asks first. Minimum scopes per account. |
 | Stream apps | OBS Studio (obs-websocket v5) and Streamlabs Desktop (its websocket API). Meld Studio and PolyPop are not supported. |
 | Integrations | Opt-in and off by default; a disabled one opens nothing. In scope: donations/shops (Ko-fi, StreamElements, Streamlabs, Patreon, Fourthwall, Throne, Tipeee, Treatstream, DonorDrive, Pally, Shopify, Streamloots) and webhooks/remote (Discord, IFTTT, pronouns, Streamer.bot remote instances). |
-| OS | Windows + Linux (Wayland, ksni tray). CI releases a Windows exe and the Linux AppImage on every release. |
+| OS | Windows + Linux (Wayland, ksni tray). CI releases a Windows exe and, on Linux, the AppImage, the program alone, .deb, .rpm, Arch and Flatpak packages, with signed APT, DNF/zypper, pacman and Flatpak repositories on GitHub Pages so the system updates them. |
 | Budget | Hidden window, Twitch + OBS connected: < 25 MB RSS and ~0% idle CPU, measured and written in every PR. Streamer.bot uses ~300 MB. |
-| Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, fltk, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only). No webview (wry/tao were removed in 1.1.0: TikTok uses the user's own browser). **image-webp** (WebP emotes and avatars; FLTK decodes the other formats itself). HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. **tokio-native-tls** (the crate tokio-tungstenite's native-tls feature uses, for HTTPS), **regex-lite** (If/Else, While, Switch and regex commands; .NET's backreferences and lookaround aren't supported). Anything else needs a question first. |
+| Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only). No webview (wry/tao were removed in 1.1.0: TikTok uses the user's own browser). Pictures are decoded by the window, not the core. The window is the `frontend/` crate (GPUI and gpui-kit), kept out of the core's dependencies. HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. **tokio-native-tls** (the crate tokio-tungstenite's native-tls feature uses, for HTTPS), **regex-lite** (If/Else, While, Switch and regex commands; .NET's backreferences and lookaround aren't supported). Anything else needs a question first. |
 | TikTok | Public LIVE reading is native through `webcast.rs`. The optional extension is the single account for signed search, authenticated reading and sending (`tiktok_bridge.rs`). It uses TikTok's own scripts in an offscreen browser frame, with no visible helper tab, and recovers discarded contexts on demand. Chromium background mode permits use with all browser windows closed. Separate broadcaster and bot logins are retired; reader cookies are requested from the browser only when connecting and remain in memory. |
 | Chat commands | Commands keep Streamer.bot's `sources` bitmask (Twitch 1/2/8, YouTube 1024, Kick 2097152, TikTok 4194304), so each command chooses its platforms. Built-in commands (`!commands`, `!command add/edit/remove`, `!command platforms`, `!so`, `!uptime`, `!title`) are normal commands created on first run, editable and disable-able. Replies go to the platform the command came from; a command can opt in to reply on all connected platforms. |
 | Not in scope | Meld, PolyPop, Elgato, VTube Studio/Voicemod/Speaker.bot/TITS/Crowd Control/HypeRate/Pulsoid/Lumia/Streamfog/mtion, the Streamer.bot website integration/cloud, C# and plugins. |
 | Later (own phases, after phase 14) | Quotes, credits, points, users/first words; sounds and TTS; file I/O, file tail, folder watcher, process triggers; hotkeys/inputs and MIDI; Decks, HTML overlay, multi-platform chat window. |
 
+## The window
+
+The window is GPUI. Application behavior belongs to a toolkit-independent core (`src/core/`, kept so by
+`core/boundary.rs`), and every core operation is available through MCP. The window displays core state and
+submits core operations; it doesn't own validation, persistence, platform behavior or automation rules.
+
+Shared controls use GPUI Component in the shadcn family, with Lucide icons and the zinc theme. Custom
+controls, when needed, live in `frontend/src/controls/`.
+
+The backend launches the window as a separate process of the same executable (`--frontend`). Hiding exits
+it and releases its renderer; the backend, tray, integrations and MCP keep running. They talk over
+inherited anonymous pipes and the shared core request dispatcher, with event-driven updates.
+
+- [x] The window: every page, its dialogs, menus, forms and prompts, from core models.
+- [x] Automation schemas, picker metadata, emote catalogs, validated edits, server schemas and settings in the core.
+- [ ] Make every core operation accessible through MCP and test access without a window.
+- [ ] Finish shared keyboard behavior in dialogs, selectors and JSON editing.
+- [ ] Check every page on Windows (native, or under Wine with `dev/windows.sh smoke`).
+
 ## Architecture
 
-- `main.rs`: config, shared `Status`, and the single-thread tokio runtime on its own thread. FLTK runs on
-  the main thread (as in songrequestz).
+- `main.rs`: config, shared `Status`, and the single-thread tokio runtime. The window is the `frontend/` crate
+  (GPUI), a child process of the same executable (`--frontend`) that the core (`src/core/`) serves over pipes.
 - `model.rs`: Streamer.bot data types (serde, unknown fields kept as raw JSON so nothing is lost) and
   `types.rs`, the code↔name table.
 - `engine.rs`: trigger dispatch, action runner, queues (blocking/concurrent, pause), random/weights,
@@ -55,7 +74,7 @@ phase, following `CLAUDE.md`.
 - One file or folder per platform/app/integration (`twitch/`, `obs.rs`, `kick/`, `youtube/`,
   `slobs.rs`, `integrations/<name>.rs`). Each is a task started only when enabled and stopped on disable
   (`watch` config like songrequestz).
-- `ui/`: editor tabs and one form per sub-action family.
+- `frontend/`: the window's pages and the shared controls (`frontend/src/controls/`), drawn from core models.
 
 Event flow: a platform task parses an event, turns it into a trigger and its arguments, and passes it to
 the engine; the engine runs the matching actions and emits WebSocket events. Sub-actions call back into
@@ -232,7 +251,7 @@ platform handles through channels, never through shared locks held across awaits
   live page's chat in a hidden window (video paused) that opens on first send and closes after 2 idle
   minutes. Its own `Streamerz-tiktok` binary on Linux, `Streamerz.exe --tiktok` on Windows; tikstream-login
   no longer needed.
-- [x] 24. Images and icons: FLTK's own PNG/JPEG/GIF/SVG plus `image-webp`; web pictures fetched on the engine's
+- [x] 24. Images and icons: the window decodes PNG, JPEG, GIF, WebP and SVG; web pictures fetched on the engine's
   thread into `cache/` next to `streamerz.json`, decoded only while the window shows them and freed when it hides.
   Platform and app logos (Simple Icons, CC0) on the section titles; profile pictures in Accounts (Twitch, Kick
   and YouTube from their APIs, TikTok seen at login, or its live lookup). The status bar shows "2/4 connected"
@@ -240,8 +259,8 @@ platform handles through channels, never through shared locks held across awaits
 - [x] 25. Emotes in chat: a chat view that draws text, emote pictures, platform logos, role badges and name
   colours. Twitch, Kick and YouTube emotes, the channel's BTTV, FFZ and 7TV ones (7TV on Kick too), Unicode
   emoji as Twemoji pictures; animated WebP moves only while it's on screen (one 50 ms timeout, re-armed by
-  drawing). The picker shows pictures: emotes seen, third-party ones, every emoji by group. GIFs show their
-  first frame (FLTK's animated GIF doesn't give out frames; BTTV/FFZ/7TV are asked for WebP); TikTok's
+  drawing). The picker shows pictures: the account's own emotes, third-party ones, every emoji by group. BTTV, FFZ
+  and 7TV are asked for WebP; TikTok's
   subscriber emotes stay text until a live with them can be checked. Native YouTube emotes are shown in
   received chat but omitted from the picker because the sending API accepts text only.
 - [x] 26. Ready-made actions: Actions > Templates (nothing created by itself), in `templates.rs`: welcome first
@@ -301,7 +320,12 @@ platform handles through channels, never through shared locks held across awaits
   ban (Twitch, Kick, YouTube); lines deleted or banned anywhere leave the chat.
 - [x] 37. Emote picker like 7TV's: per-platform and per-account provider tabs (Favorites, platform native
   via Twitch Helix `chat/emotes/user` & Kick `/emotes/{slug}`, 7TV, BTTV, FFZ, Emoji), search across tabs,
-  collapsible section headers, empty-state notes, and right-click `★` favorites.
+  collapsible section headers, empty-state notes, and right-click favorites. Tabs are icons (the open one
+  named, favorites a star), one fixed line on top holds the emotes the user sends most, the grid keeps a
+  scrollbar and animated emotes play. It offers only what the sending account can use: emotes only seen in
+  someone else's message (another channel's subscriber emotes) are left out of the picker and stay text in
+  the send box, and the bot is not offered the channel's Kick subscriber emotes. While the chat keeps lines,
+  every picture of the catalogs is put on disk in the background (half the picture cache at most).
 - [x] 38. Recent chat on connect: persisted `cache/chat-history.json` plus pre-join platform history
   (Twitch recent-messages, Kick v2 messages, YouTube initial/pre-join live chat, TikTok history comments)
   merged before `"Welcome to the chat room!"`; platform-authentic badges and colours everywhere.
@@ -577,8 +601,7 @@ platform handles through channels, never through shared locks held across awaits
 ## UI and UX review
 
 The agreed scope is to fix the issues cited in the UI/UX reviews and verify the affected screens.
-There is no per-page score threshold or repeated scoring requirement. Track the finite checklist in
-[docs/UI-AUDIT.md](docs/UI-AUDIT.md); scores from earlier reviews are historical context only.
+There is no per-page score threshold or repeated scoring requirement.
 
 - [x] Inventory pages and major dialogs using independent code and visual reviews.
 - [x] Complete the cited shared-control, page-layout, state, accessibility and workflow fixes.
@@ -610,7 +633,8 @@ There is no per-page score threshold or repeated scoring requirement. Track the 
 - [x] Deliver honest picker availability and shared in-app Help with explicit form states.
   Every reference has Fields and Arguments, plus When for triggers, checked by a regression test.
 - [x] Add reusable identity-preserving selectors, starting with dynamic TikTok gifts.
-  Discovery uses the current room and paired browser; channel/account changes invalidate the list.
+  Discovery uses the current room and paired browser while live, else TikTok's public list (decision
+  changed in 1.6.0: a gift form needs no live); channel/account changes invalidate the list.
 - [x] Simplify supported forms with task-specific fields, human units and value insertion.
   Keep imported values and unknown fields intact; hide options with no runtime effect.
 - [x] Share live-event matching with previews and report actual step outcomes.
@@ -657,6 +681,33 @@ There is no per-page score threshold or repeated scoring requirement. Track the 
 - [x] Share repeated logic without changing behavior or adding runtime work.
 - [x] Run local CI checks, scenarios, packaging and hidden-display smoke (limits in docs/REVIEW_1.6.0.md).
 - [x] Record removal evidence, validation results and remaining platform/service limits.
+- [x] Stream page (Live), a card per platform: the title on every platform at once or on the ones picked, category on Twitch and
+  Kick, tags on Twitch, Kick and YouTube, YouTube's description and thumbnail (title, description and tags in
+  one videos.update), ad breaks on Twitch, Kick and YouTube, and on Twitch a stream marker, a clip and
+  snoozing the next ad. Every platform set up is listed with what it shows now (a moderator sees the owner's
+  title, category and tags, read by the channel) and why it can't be changed: Twitch and Kick let only the
+  channel owner change them. TikTok's title belongs to a live and can't be read back; YouTube's description
+  and tags aren't read back either (reading them costs API quota), so their fields start empty. Forms got
+  placeholders and a Browse button with an image preview (the thumbnail).
+- [x] Actions page readability: an action's row shows its first trigger's logo or icon, its sub-action count
+  and, on hover, what runs it; trees show platform and app logos. The trigger and
+  sub-action picker got its search box back to its height (it took half the dialog), Expand and Collapse
+  all, a description panel with the logo, path and the values a trigger gives, and Cancel and OK in the
+  footer (no Close under them). Every form moved its "(blank: any)" hints into the empty boxes, and
+  trigger forms list the values they give.
+- [x] TikTok gifts without a live: the gift form loads TikTok's public gift list (no login, no live, in the
+  app's language) when it opens with none; while live with the browser account, Refresh loads the live's own
+  list. Gifts are picked from a picture grid (`controls/gallery.rs`): picture, name and price, the details
+  on hover, search, "Any gift" first, a reload icon; the id stays in Edit JSON. A gift trigger saves its
+  gift's name beside the id (`giftName`), so its row reads "Gift (Rose)" before any list loads.
+- [x] Linux packages that update with the system: from the one Linux build, the program alone
+  (`Streamerz-linux-x86_64`, it updates itself like the exe), .deb, .rpm and Arch packages (nfpm) and a
+  Flatpak (runtime `org.freedesktop.Platform` 26.08, made without the SDK), with the AppImage
+  (`dev/packages.sh`). The release signs an APT, a DNF/zypper, a pacman and a Flatpak repository with one
+  key and puts them on GitHub Pages (`dev/publish-repos.sh`); the .deb and .rpm add theirs, the .flatpak adds
+  its remote. Updates of those come from the system: Streamerz looks only when Check now is pressed. In
+  Flatpak, settings stay in the host's `~/.config/streamerz` and host programs start through
+  `flatpak-spawn --host` (`src/sandbox.rs`); Process Started/Stopped can't see programs outside it.
 - [ ] Keep the version open for further requested changes.
 
 Version 1.6.0 decisions: speech and voice control are retired. Browser discovery and extension-store
@@ -666,3 +717,113 @@ explicit types; never guess widget types from field names.
 Protected-folder updates retain elevation, with private installation staging and encoded Windows
 commands. Packed Windows file notifications are parsed without assuming four-byte record alignment.
 The version remains open; release blockers are tracked in `docs/REVIEW_1.6.0.md`.
+
+## Templates and overlays
+
+Shareable templates with overlay pages. The design, the page API and the agreed decisions are in
+`docs/TEMPLATES_PLAN.md`; the version it ships in is the owner's call.
+
+- [x] 1. Files on disk: a group's files live in `groups/<folder>/` beside the settings (not inside
+  `streamerz.json`), in folders (`img/wheel.png`), moved there once at start. Pages are served from disk in
+  pieces, with `Range` and `ETag`. Exports carry the contents; the development copy and a settings move take
+  the folder along. `group_meta` returns contents only with `files=true`. Backups hold the settings only: a
+  deleted group's files don't come back with a restored backup.
+- [x] 2. Pages call back: `POST /overlays/call` with the page's token (`run`, `say`, `set`, `get`, `publish`,
+  `log`), and the group's `permissions` (`chat.read`, `alerts.read`, `chat.send`, `actions.run`, `values.write`). `run` reaches the group's own actions only.
+- [x] 3. Feeds: `onSettings` (a group's values, sent when they change while a page listens), `countdown`,
+  `chat` and `alerts` (the Chat page's own lines and events: the name's colour, the badges and the emotes of
+  every provider already found, also the messages sent from Streamerz, and follows for the alerts), `song`
+  (title, artist, album, cover, length and place, from the Spotify app of this computer, watched only while
+  a page listens, with no login and no timer). The chat and the alerts need the group's permission.
+  A page has one WebSocket on the HTTP port for all of it (a browser keeps only six server-sent event
+  streams open to one address, so the seventh page in OBS would wait forever). `streamerz.line`, `words`,
+  `avatar`, `logo`, `icon` and `position` draw and fetch what most pages need; `/overlays/-/` serves the
+  program's own logos, badges and icons. A topic's value from before a page opened is marked, so a page can
+  act on a change only.
+  The subathon page uses `countdown` instead of its own WebSocket client. Not yet: alerts as numbers
+  (amount, months); with the memory saver on there is no chat to send; players other than Spotify.
+- [x] 4. Setting kinds: `color` (a picker with a palette and hue, saturation, lightness and opacity),
+  `slider` (`min`, `max`, `step`), `lines`, `font` (the fonts installed here, narrowed by typing), `file`
+  (one of the overlay's files filtered by `accept`, a file of this computer copied in, or a web address;
+  a page gets the address to load), `platforms` (a check box with the logo of each), `action` (one of the
+  connected actions) and `list` (rows of typed `columns`, a row a line, cells between bars); a `section`
+  heading, `description` as a tip on the label, and `showIf`. A file put in the folder by hand is served at
+  once and listed at the next save or Refresh; a save never deletes a file it did not list.
+- [x] 5. Manifest and the `.streamerz` file (`package.rs`, `zip.rs`): a group says what it is in
+  `Meta.template` (id, version, author, link, picture, pages with their size, what it needs). The file is a
+  zip of `template.json`, `actions.json` and `files/`. Before anything changes the import says what the file
+  holds, what its pages may do, the programs it runs and whether it is new, an update (found by its id,
+  under the name the group has here; values already set stay) or replaces a group of that name. Share checks
+  name a missing version, author or description, pages not listed, links to files that are not there,
+  permissions used but not asked for (and the reverse), and text that looks like a login. A file or an
+  `https` address imports. MCP: `template_check`, `template_export`, `template_inspect`, `template_import`.
+  Not done: keeping both when a different group of the same name is here (it is replaced, and the question
+  says so); an update leaves actions the newer file dropped.
+- [x] 6. OBS: Add to OBS creates a browser source of the page's size in the scene on air (one of the same
+  name is pointed at the page again), and a dock page shows its steps with the address copied. Tried
+  against a real OBS: the source is made at the page's size, a second press doesn't double it, and the page
+  is live inside OBS.
+- [x] 7. Overlays page (`core/overlays.rs`, drawn by the shared list and form): every page with its group,
+  kind, whether it is in use and its address. Above the list: Examples, Import, New overlay, Guide, Refresh.
+  Under it, a strip of icon buttons for the selected page: Add to OBS (the dock steps for a dock page), Copy
+  URL, Open in browser, Test (made-up chat, events, a TikTok gift and a song to that overlay's open pages
+  only, the next ones at each press, plus what the template's own `test` adds), Settings,
+  Page and permissions, Open folder, Export, Delete.
+- [x] 8. Develop mode: a saved file loads the overlay's open pages again (its folder is watched by the
+  system while a page is open, no timer), a page's own errors go to the Log with the line of the file,
+  **Inspect** shows the open pages, what each listens to, what was sent to them and what they logged, and
+  a new overlay gets `streamerz.d.ts` (also at `/overlays/-/streamerz.d.ts`, checked against the script).
+  `streamerz.testing` tells a page that what it handles came from Test.
+- [x] 9. Examples as bundled files (`assets/examples`, `examples.rs`, checked by `dev/test-examples.mjs`).
+  All 19 examples are bundled: Clock, Subathon, Viewer counter, Ad break, Now playing, Chat overlay,
+  Flying chat, Alerts, Emote wall, Top gifters, Credits roll, Song request queue, TikTok gifts, Poll,
+  Prize wheel, Chat dock, Goal bar, Starting soon and Buttons dock. The old Rust Subathon builder is
+  gone. Its four actions keep the countdown with the page closed and count community gifts once.
+  Top gifters uses persistent values written by actions and a Period setting. Credits reads
+  GetCredits once; Emote wall caps active images and handles moderation. Song request queue reads
+  `songrequests.queue` (or a custom published topic); request operations and the existing local media
+  watcher refresh it without a queue poll or an extra task. Every new example has scoped Test data,
+  live settings, browser checks and narrow/wide screenshots.
+- [x] 9b. Overlays and actions: an overlay is not a group of actions. Only a group with actions, commands
+  or timers is listed in Actions; one with the name of an overlay is connected to it (a chain on both
+  pages), and deleting it keeps the overlay (the question says so). Connect to actions and Disconnect on
+  the Overlays page. Alerts for pages carry `kind`, `trigger` and `args`; `streamerz.actions()` lists the
+  connected actions.
+- [x] 9c. No window needed: the request `StreamerzOverlay` (`list`, `read`, `save`, `delete`, `test`,
+  `inspect`, `obs`, `connect`, `disconnect`, `examples`, `add_example`, `shot`) and the MCP tools
+  `overlay_read`, `overlay_save`, `overlay_delete`, `overlay_test`, `overlay_inspect`, `overlay_shot` (a
+  PNG of a page from a headless browser of this computer, with its console and errors),
+  `overlay_add_to_obs`, `overlay_connect` and `overlay_examples`.
+- [ ] 9d. Move the existing Song requests (Spotify) action builder from `src/templates/songs.rs` to
+  bundled files last, as specified in `docs/TEMPLATES_PLAN.md`. Its queue display is already bundled.
+- [x] 10. Guide and MCP tools: Guide opens `docs/OVERLAYS.md` from Streamerz itself (`/overlays/-/guide`,
+  drawn as a page), the MCP tool `guide` gives the same text, and a test fails when the guide misses a call
+  of `window.streamerz`, a permission, a kind of setting, a folder of pictures or an example.
+- [ ] 11. Close: full smoke, `dev/test-overlays.mjs`, hidden RSS and idle CPU before and after, Windows check.
+
+### OBS stream outputs
+
+Scope: discover and control outputs through the backend and MCP. Keep Accounts and the current
+Stream page unchanged. Plugin installation for compatibility testing is allowed; tests use isolated
+OBS settings and local destinations.
+
+- [x] Discover the main stream, canvases, Aitum Stream Suite stream destinations, Aitum Multistream,
+  Aitum Vertical's default canvas stream and the Multi-RTMP websocket fork. Generic OBS service outputs
+  are a fallback for instantiated outputs. Keep unknown state distinct from stopped, reject duplicate
+  names and report missing APIs. Platform names inferred from output names are hints, not verified links.
+- [x] Start and stop explicit output IDs per OBS connection. Confirm a selected main stream before
+  starting extra destinations and stop it last. Never start an unselected main stream. Report each
+  result, including plugin rejection and queued requests that have not confirmed a live state.
+- [x] Expose `obs_outputs` and `obs_outputs_control` through the authenticated `StreamerzOutputs`
+  request. Discovery reuses connected ports, reads no plugin files and adds no background work.
+- [x] Verify adapters with unit tests and isolated real OBS/plugin tests, recording platform limitations
+  and commands in `docs/TESTING.md`. `dev/test-obs-outputs.py` verifies ten live scenarios through the
+  backend with local video receivers: stock, Suite horizontal/vertical, Vertical, Multistream
+  horizontal/vertical, the Multi-RTMP websocket fork, reconnection and a shared encoder without main.
+  Suite tests keep obs-browser enabled and verify actual local-page pixels before streaming. Clean
+  profiles pass `--no-first-run` to avoid Chromium's first-run startup flow. The normal OBS keeps Suite
+  disabled because it conflicts with the older Aitum plugins. The backend retains confirmed
+  Multistream stop state, handles vertical runtime names and reconnection, and deduplicates canvases
+  and RTMP runtime objects. Linux tests, Windows type-check, workflow lint and audit pass (audit has
+  eight maintenance warnings). The history scan records exact fingerprints for three already-redacted
+  legacy benchmark commits; new paths and all credentials remain blocked, with eight regression tests.

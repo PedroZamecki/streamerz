@@ -228,7 +228,7 @@ releasing list ownership does not promise an identical RSS or a return to the co
 - Current source builds with `cargo build --release`.
 - 243 non-UI tests pass, with 4 pre-existing ignored tests. In separate processes, 42 UI tests pass
   and one pre-existing UI test remains ignored. That is 285 passing tests and 5 ignored tests overall.
-  A combined run stalled on existing FLTK cross-test state; GUI process isolation is the successful
+  A combined run stalled on shared cross-test state; GUI process isolation is the successful
   verification method, not a claim that the single-process combined suite completed.
 - New tests cover record encodings, unknown nested fields, legacy channel identity ordering, update
   and restart round trips, malformed optional list fields, credits order/case, and failed atomic saves.

@@ -4,7 +4,7 @@
 # Then, with an argument, runs it under Wine: `dev/windows.sh scenarios`, `smoke`, `live` (the OS paths,
 # see dev/windows-live.py) or `tests` (the unit tests, built for Windows).
 #
-#   cargo install cargo-xwin --locked     # once; needs clang-cl, lld-link, llvm-rc, cmake, ninja
+#   cargo install cargo-xwin --locked     # once; needs clang-cl, lld-link, llvm-rc
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export XWIN_ACCEPT_LICENSE=1
@@ -12,13 +12,12 @@ target=x86_64-pc-windows-msvc
 dir=${STREAMERZ_WIN_TARGET:-target/xwin}
 exe=$dir/$target/release/Streamerz.exe
 
-# Same as CI: FLTK with the static MSVC runtime.
 cargo fetch --locked
-f=$(ls "${CARGO_HOME:-$HOME/.cargo}"/registry/src/*/fltk-sys-*/cfltk/fltk/CMake/options.cmake | tail -1)
-perl -pi -e 's/(option\(FLTK_MSVC_RUNTIME_DLL .*)ON\)/${1}OFF)/' "$f"
-grep -q 'FLTK_MSVC_RUNTIME_DLL .*OFF)' "$f"
 
-cargo xwin build --release --locked --bin Streamerz --target "$target" --target-dir "$dir"
+# The smoke drives the app through the dev instrumentation, so it is built with it.
+features=()
+[ "${1:-}" = smoke ] && features=(--features dev-ui)
+cargo xwin build --release --locked --bin Streamerz --target "$target" --target-dir "$dir" "${features[@]}"
 echo "built $exe"
 
 case "${1:-}" in
@@ -34,7 +33,7 @@ case "${1:-}" in
     # Wine prints its own noise on stderr; the scenario report is on stdout.
     WINEDEBUG=-all wine "$exe" --scenario tests/scenarios 2>/dev/null ;;
   smoke)
-    env -u WAYLAND_DISPLAY DISPLAY="${DISPLAY_SMOKE:-:99}" WINEDEBUG=-all python3 -P dev/smoke.py --exe "$exe" ;;
+    env -u WAYLAND_DISPLAY DISPLAY="${DISPLAY_SMOKE:-:99}" WINEDEBUG=-all python3 -P dev/ui-smoke.py "$exe" --wine ;;
   "") ;;
   *) echo "unknown: $1 (scenarios, smoke, live or tests)"; exit 2 ;;
 esac

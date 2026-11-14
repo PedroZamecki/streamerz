@@ -1,0 +1,101 @@
+{
+  "format": 1,
+  "name": "Viewer counter",
+  "meta": {
+    "description": "The live viewers of each connected platform and their total, counting up and down as they change.",
+    "variables": [
+      {
+        "name": "platforms",
+        "label": "Platforms",
+        "kind": "platforms",
+        "default": [
+          "twitch",
+          "youtube",
+          "kick",
+          "tiktok"
+        ],
+        "description": "The ones shown one by one",
+        "section": "What it shows"
+      },
+      {
+        "name": "showTotal",
+        "label": "Total",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "totalLabel",
+        "label": "Total label",
+        "kind": "text",
+        "default": "Viewers"
+      },
+      {
+        "name": "layout",
+        "label": "Layout",
+        "kind": "choice",
+        "default": "Row",
+        "options": [
+          "Row",
+          "Column"
+        ],
+        "section": "Look"
+      },
+      {
+        "name": "accent",
+        "label": "Total color",
+        "kind": "color",
+        "default": "#a78bfa"
+      },
+      {
+        "name": "textColor",
+        "label": "Text color",
+        "kind": "color",
+        "default": "#ffffff"
+      },
+      {
+        "name": "size",
+        "label": "Size",
+        "kind": "slider",
+        "default": 56,
+        "description": "In pixels",
+        "min": 16,
+        "max": 160,
+        "step": 2
+      },
+      {
+        "name": "font",
+        "label": "Font",
+        "kind": "font",
+        "default": "",
+        "description": "A font installed on this computer"
+      },
+      {
+        "name": "animationMs",
+        "label": "Counting time (ms)",
+        "kind": "slider",
+        "default": 800,
+        "min": 0,
+        "max": 3000,
+        "step": 100
+      }
+    ],
+    "files": [
+      {
+        "name": "index.html"
+      }
+    ],
+    "template": {
+      "id": "streamerz.example.viewers",
+      "version": "2.0.0",
+      "author": "Streamerz",
+      "pages": [
+        {
+          "file": "index.html",
+          "title": "Viewers",
+          "width": 900,
+          "height": 160
+        }
+      ]
+    }
+  }
+}

@@ -371,7 +371,7 @@ pub async fn read(
         }
         engine.set_chat_viewers("twitch", None);
         if connected.swap(false, Ordering::Relaxed) {
-            crate::ui::changed();
+            crate::host::changed();
         }
         if !wanted.load(Ordering::Relaxed) {
             break;
@@ -483,7 +483,7 @@ async fn session(
                     };
                     connected.store(true, Ordering::Relaxed);
                     crate::roles::set("twitch", crate::roles::Role::Anonymous, "");
-                    crate::ui::changed();
+                    crate::host::changed();
                     crate::say(format!("Twitch: reading #{channel} (no login: read only)"));
                     if cfg.borrow().twitch.channel_id != id {
                         cfg.send_modify(|c| c.twitch.channel_id.clone_from(&id));

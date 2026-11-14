@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Viewer counter</title>
+<style>
+  html, body { margin: 0; background: transparent; overflow: hidden; }
+  body { font-family: var(--font, system-ui), system-ui, sans-serif; color: var(--text, #fff); }
+  #row { display: flex; gap: 1.2em; align-items: flex-end; padding: .3em .4em; font-weight: 800;
+    text-shadow: 0 .05em .15em rgba(0, 0, 0, .8); }
+  .column #row { flex-direction: column; align-items: flex-start; gap: .25em; }
+  .item { display: none; align-items: center; gap: .3em; font-variant-numeric: tabular-nums; }
+  .item.on { display: flex; }
+  .item img { height: .8em; width: auto; }
+  .item small { font-size: .38em; letter-spacing: .08em; text-transform: uppercase; opacity: .85; }
+  .total { color: var(--accent, #a78bfa); }
+</style>
+</head>
+<body>
+<div id="row"></div>
+<script>
+// The viewers of each connected platform and their sum, from the topic "viewers", which Streamerz keeps
+// up to date by itself. A platform that is not connected is null: its counter is hidden.
+let settings = streamerz.settings;
+let last = null;
+const shown = {}, items = {};
+const names = ["total", "twitch", "youtube", "kick", "tiktok"];
+
+for (const name of names) {
+  const el = document.createElement("div");
+  el.className = "item" + (name === "total" ? " total" : "");
+  if (name !== "total") el.append(Object.assign(document.createElement("img"), { src: streamerz.logo(name), alt: name }));
+  el.append(Object.assign(document.createElement("span"), { className: "n", textContent: "0" }));
+  if (name === "total") el.append(document.createElement("small"));
+  row.append(el);
+  items[name] = el;
+  shown[name] = 0;
+}
+
+streamerz.onSettings(s => {
+  settings = s;
+  const root = document.documentElement.style;
+  root.fontSize = (Number(s.size) || 56) + "px";
+  root.setProperty("--accent", s.accent || "#a78bfa");
+  root.setProperty("--text", s.textColor || "#fff");
+  root.setProperty("--font", s.font ? '"' + s.font + '"' : "system-ui");
+  document.body.className = s.layout === "Column" ? "column" : "";
+  items.total.querySelector("small").textContent = s.totalLabel || "";
+  if (last) draw(last);
+});
+
+// From the number on screen to the new one, easing out.
+function count(name, to) {
+  const el = items[name].querySelector(".n"), from = shown[name], start = performance.now();
+  const ms = Math.max(0, Number(settings.animationMs) || 0);
+  const step = now => {
+    const k = ms ? Math.min(1, (now - start) / ms) : 1;
+    shown[name] = Math.round(from + (to - from) * (1 - Math.pow(1 - k, 3)));
+    el.textContent = shown[name].toLocaleString();
+    if (k < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+function draw(viewers) {
+  // A "platforms" setting is the list of the ones ticked.
+  const wanted = Array.isArray(settings.platforms) ? settings.platforms : names;
+  for (const name of names) {
+    const n = viewers[name];
+    const on = n !== null && n !== undefined && (name === "total" ? settings.showTotal !== false : wanted.includes(name));
+    items[name].classList.toggle("on", on);
+    if (on) count(name, n);
+  }
+}
+
+streamerz.on("viewers", v => draw((last = v)));
+</script>
+</body>
+</html>

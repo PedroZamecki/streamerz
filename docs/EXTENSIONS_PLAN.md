@@ -33,7 +33,7 @@ flowchart TD
     subgraph Streamerz Process
         Engine["Core Engine"] <--> IPC["Local IPC & WebSocket Server (127.0.0.1)"]
         Engine <--> ScriptHost["Embedded Script Host (Rhai / WebAssembly)"]
-        UI["FLTK GUI"] <--> Engine
+        UI["Window"] <--> Engine
     end
 
     subgraph Mode 1: External Companion / Game Integrations

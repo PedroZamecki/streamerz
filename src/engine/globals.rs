@@ -179,7 +179,7 @@ impl Engine {
                 None => put(&mut st.temp, &mut st.temp_writes, name, &v, &now),
                 Some(u) => in_user(&mut st.user_temp, u),
             }
-            crate::ui::changed();
+            crate::host::changed();
         }
 
         let mut args = Obj::new();

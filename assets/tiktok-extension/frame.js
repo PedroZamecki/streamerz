@@ -15,11 +15,28 @@
     send({ ready: true, error: "Log in to TikTok from Accounts > TikTok > Set up.", code: "login_required" });
     return;
   }
+  // The page's own requests say who the browser is (device_id, aid, region...). Keep them all: a busy page
+  // fills the browser's default record of 250 before the one we need.
+  try { performance.setResourceTimingBufferSize(2000); } catch {}
   const common = () => {
     const urls = performance.getEntriesByType("resource").map(e => e.name)
-      .filter(u => u.startsWith("https://webcast.tiktok.com/webcast/") && u.includes("device_id="));
-    return urls.length ? Object.fromEntries(new URL(urls[urls.length - 1]).searchParams) : null;
+      .filter(u => /^https:\/\/([a-z0-9-]+\.)*tiktok\.com\//.test(u) && u.includes("device_id=") && u.includes("aid="));
+    // A webcast request first (the LIVE ones), else any of TikTok's own (they carry the same keys).
+    const best = urls.filter(u => /^https:\/\/webcast[a-z0-9.-]*\.tiktok\.com\//.test(u)).pop() || urls.pop();
+    if (!best) return null;
+    const params = Object.fromEntries(new URL(best).searchParams);
+    // Only webcast requests carry verifyFp: it is TikTok's s_v_web_id cookie.
+    if (!params.verifyFp) {
+      const fp = document.cookie.match(/(?:^|; )s_v_web_id=([^;]+)/);
+      if (fp) params.verifyFp = fp[1];
+    }
+    return params;
   };
+  // TikTok's own request signing is running: its old globals, a request it already signed (X-Bogus,
+  // X-Gnarly in the address), or its wrapper in place of the browser's fetch.
+  const signed = () => !!(window.byted_acrawler || window.secsdk)
+    || performance.getEntriesByType("resource").some(e => /[?&]X-(Bogus|Gnarly)=/.test(e.name))
+    || !/\[native code\]/.test(Function.prototype.toString.call(window.fetch));
   async function request(m) {
     if (m.op === "page") {
       const params = common();
@@ -52,8 +69,8 @@
   });
   // Only while loading, never an idle poll.
   (async () => {
-    for (let i = 0; i < 60; i++) {
-      if (window.byted_acrawler && window.secsdk && common()) {
+    for (let i = 0; i < 50; i++) {
+      if (signed() && common()) {
         send({ ready: true });
         try {
           window.requestAnimationFrame = () => 0;
@@ -63,5 +80,8 @@
       }
       await new Promise(resolve => setTimeout(resolve, 500));
     }
+    // Given up: say what is missing, so the log tells why.
+    const missing = [!signed() && "signer", !common() && "request details"].filter(Boolean);
+    send({ ready: true, error: "TikTok's page didn't finish loading (no " + missing.join(", ") + "). Try again." });
   })();
 })();

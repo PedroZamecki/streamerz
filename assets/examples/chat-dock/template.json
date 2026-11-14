@@ -1,0 +1,71 @@
+{
+  "format": 1,
+  "name": "Chat dock",
+  "meta": {
+    "description": "Read and write in the chat of every platform from a dock inside OBS, drawn as Streamerz's own Chat page draws it.",
+    "variables": [
+      {
+        "name": "size",
+        "label": "Text size",
+        "kind": "slider",
+        "default": 14,
+        "description": "In pixels",
+        "min": 10,
+        "max": 28,
+        "step": 1
+      },
+      {
+        "name": "history",
+        "label": "Messages loaded at start",
+        "kind": "integer",
+        "default": 50
+      },
+      {
+        "name": "showTime",
+        "label": "Time",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "showBadges",
+        "label": "Badges",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "showAvatars",
+        "label": "Pictures",
+        "kind": "boolean",
+        "default": false
+      },
+      {
+        "name": "showEvents",
+        "label": "Subs, gifts and raids",
+        "kind": "boolean",
+        "default": true
+      }
+    ],
+    "files": [
+      {
+        "name": "index.html"
+      }
+    ],
+    "permissions": [
+      "chat.read",
+      "alerts.read",
+      "chat.send"
+    ],
+    "template": {
+      "id": "streamerz.example.chat-dock",
+      "version": "2.0.0",
+      "author": "Streamerz",
+      "pages": [
+        {
+          "file": "index.html",
+          "title": "Chat",
+          "dock": true
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,140 @@
+{
+  "format": 1,
+  "name": "Goal bar",
+  "meta": {
+    "description": "A bar that fills with follows, subs, cheers or TikTok coins from every platform, and keeps its count when Streamerz restarts.",
+    "variables": [
+      {
+        "name": "counts",
+        "label": "Counts",
+        "kind": "choice",
+        "default": "Follows",
+        "options": [
+          "Follows",
+          "Subs and members",
+          "Bits and Kicks",
+          "TikTok coins"
+        ],
+        "section": "The goal"
+      },
+      {
+        "name": "target",
+        "label": "Goal",
+        "kind": "integer",
+        "default": 50
+      },
+      {
+        "name": "current",
+        "label": "Count now",
+        "kind": "integer",
+        "default": 0,
+        "description": "Grows by itself. Change it to start again from another number"
+      },
+      {
+        "name": "platforms",
+        "label": "From",
+        "kind": "platforms",
+        "default": [
+          "twitch",
+          "youtube",
+          "kick",
+          "tiktok"
+        ]
+      },
+      {
+        "name": "title",
+        "label": "Title",
+        "kind": "text",
+        "default": "Follower goal",
+        "description": "{current} and {target} are filled in"
+      },
+      {
+        "name": "reached",
+        "label": "When it is reached",
+        "kind": "text",
+        "default": "Goal reached!",
+        "description": "Shown over the bar. Empty for nothing"
+      },
+      {
+        "name": "barColor",
+        "label": "Bar color",
+        "kind": "color",
+        "default": "#a78bfa",
+        "section": "Look"
+      },
+      {
+        "name": "barEnd",
+        "label": "Bar end color",
+        "kind": "color",
+        "default": "#f472b6",
+        "description": "The bar goes from one color to the other"
+      },
+      {
+        "name": "background",
+        "label": "Background",
+        "kind": "color",
+        "default": "#18181bd9"
+      },
+      {
+        "name": "textColor",
+        "label": "Text color",
+        "kind": "color",
+        "default": "#ffffff"
+      },
+      {
+        "name": "height",
+        "label": "Bar height",
+        "kind": "slider",
+        "default": 38,
+        "description": "In pixels",
+        "min": 12,
+        "max": 120,
+        "step": 2
+      },
+      {
+        "name": "radius",
+        "label": "Rounded corners",
+        "kind": "slider",
+        "default": 19,
+        "min": 0,
+        "max": 60,
+        "step": 1
+      },
+      {
+        "name": "font",
+        "label": "Font",
+        "kind": "font",
+        "default": "",
+        "description": "A font installed on this computer"
+      },
+      {
+        "name": "showNumbers",
+        "label": "Numbers on the bar",
+        "kind": "boolean",
+        "default": true
+      }
+    ],
+    "files": [
+      {
+        "name": "index.html"
+      }
+    ],
+    "permissions": [
+      "alerts.read",
+      "values.write"
+    ],
+    "template": {
+      "id": "streamerz.example.goal",
+      "version": "1.0.0",
+      "author": "Streamerz",
+      "pages": [
+        {
+          "file": "index.html",
+          "title": "Goal bar",
+          "width": 900,
+          "height": 140
+        }
+      ]
+    }
+  }
+}

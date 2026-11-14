@@ -1,0 +1,142 @@
+{
+  "meta": {
+    "name": "Poll",
+    "author": "Streamerz",
+    "version": "1.0.0",
+    "description": "One poll for every platform: start it with !poll Question | One | Two or from its dock, and viewers vote by typing a number.",
+    "autoRunAction": null,
+    "minimumVersion": null
+  },
+  "data": {
+    "actions": [
+      {
+        "id": "a0000001-5a5a-4000-8000-0000000000b1",
+        "queue": null,
+        "enabled": true,
+        "excludeFromHistory": false,
+        "excludeFromPending": false,
+        "name": "Poll: start",
+        "group": "Poll",
+        "alwaysRun": false,
+        "randomAction": false,
+        "concurrent": false,
+        "triggers": [
+          {
+            "id": "70000000-5a5a-4000-8000-0000000000b1",
+            "type": 401,
+            "enabled": true,
+            "exclusions": [],
+            "commandId": "c0000001-5a5a-4000-8000-0000000000a1"
+          }
+        ],
+        "subActions": [
+          {
+            "id": "50000000-5a5a-4000-8000-0000000000b1",
+            "weight": 0,
+            "type": 99880,
+            "parentId": null,
+            "enabled": true,
+            "index": 0,
+            "topic": "poll.start",
+            "value": "%rawInput%"
+          }
+        ],
+        "collapsedGroups": []
+      },
+      {
+        "id": "a0000002-5a5a-4000-8000-0000000000b2",
+        "queue": null,
+        "enabled": true,
+        "excludeFromHistory": false,
+        "excludeFromPending": false,
+        "name": "Poll: end",
+        "group": "Poll",
+        "alwaysRun": false,
+        "randomAction": false,
+        "concurrent": false,
+        "triggers": [
+          {
+            "id": "70000000-5a5a-4000-8000-0000000000b2",
+            "type": 401,
+            "enabled": true,
+            "exclusions": [],
+            "commandId": "c0000002-5a5a-4000-8000-0000000000a2"
+          }
+        ],
+        "subActions": [
+          {
+            "id": "50000000-5a5a-4000-8000-0000000000b2",
+            "weight": 0,
+            "type": 99880,
+            "parentId": null,
+            "enabled": true,
+            "index": 0,
+            "topic": "poll.end",
+            "value": "%commandId%"
+          }
+        ],
+        "collapsedGroups": []
+      }
+    ],
+    "queues": [],
+    "commands": [
+      {
+        "permittedUsers": [],
+        "permittedGroups": [
+          "Moderators"
+        ],
+        "id": "c0000001-5a5a-4000-8000-0000000000a1",
+        "name": "Poll: start",
+        "enabled": true,
+        "include": true,
+        "mode": 0,
+        "command": "!poll",
+        "regexExplicitCapture": false,
+        "location": 0,
+        "ignoreBotAccount": true,
+        "ignoreInternal": true,
+        "sources": 6292481,
+        "persistCounter": false,
+        "persistUserCounter": false,
+        "caseSensitive": false,
+        "globalCooldown": 0,
+        "userCooldown": 0,
+        "group": "Poll",
+        "grantType": 0
+      },
+      {
+        "permittedUsers": [],
+        "permittedGroups": [
+          "Moderators"
+        ],
+        "id": "c0000002-5a5a-4000-8000-0000000000a2",
+        "name": "Poll: end",
+        "enabled": true,
+        "include": true,
+        "mode": 0,
+        "command": "!endpoll",
+        "regexExplicitCapture": false,
+        "location": 0,
+        "ignoreBotAccount": true,
+        "ignoreInternal": true,
+        "sources": 6292481,
+        "persistCounter": false,
+        "persistUserCounter": false,
+        "caseSensitive": false,
+        "globalCooldown": 0,
+        "userCooldown": 0,
+        "group": "Poll",
+        "grantType": 0
+      }
+    ],
+    "websocketServers": [],
+    "websocketClients": [],
+    "timers": []
+  },
+  "streamerz": {
+    "groupIcons": {}
+  },
+  "version": 23,
+  "exportedFrom": "1.0.7",
+  "minimumVersion": "1.0.0-alpha.1"
+}

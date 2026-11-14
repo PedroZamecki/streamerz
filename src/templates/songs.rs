@@ -29,6 +29,7 @@ fn choice(name: &str, label: &str, options: &[&str], default: &str, description:
         default: json!(default),
         description: description.into(),
         options: options.iter().map(|o| o.to_string()).collect(),
+        ..Default::default()
     }
 }
 

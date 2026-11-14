@@ -1,0 +1,110 @@
+{
+  "format": 1,
+  "name": "Emote wall",
+  "meta": {
+    "description": "Emotes from chat float up the screen. Uses the same platform and third-party emote pictures as the Chat page, with a cap on active images.",
+    "variables": [
+      {
+        "name": "platforms",
+        "label": "From",
+        "kind": "platforms",
+        "default": [
+          "twitch",
+          "youtube",
+          "kick",
+          "tiktok"
+        ]
+      },
+      {
+        "name": "size",
+        "label": "Emote size",
+        "kind": "slider",
+        "default": 80,
+        "min": 24,
+        "max": 200,
+        "step": 4
+      },
+      {
+        "name": "seconds",
+        "label": "Time on screen",
+        "kind": "slider",
+        "default": 8,
+        "min": 2,
+        "max": 20,
+        "step": 1
+      },
+      {
+        "name": "most",
+        "label": "Most on screen",
+        "kind": "integer",
+        "default": 80
+      },
+      {
+        "name": "perMessage",
+        "label": "Most per message",
+        "kind": "integer",
+        "default": 12
+      }
+    ],
+    "files": [
+      {
+        "name": "index.html"
+      }
+    ],
+    "permissions": [
+      "chat.read"
+    ],
+    "template": {
+      "id": "streamerz.example.emote-wall",
+      "version": "1.0.0",
+      "author": "Streamerz",
+      "pages": [
+        {
+          "file": "index.html",
+          "title": "Emote wall",
+          "width": 1280,
+          "height": 720
+        }
+      ],
+      "test": {
+        "events": [
+          [
+            "Chat.Line",
+            {
+              "platform": "twitch",
+              "user": "ana",
+              "userId": "1",
+              "msgId": "wall-test",
+              "parts": [
+                {
+                  "e": "Test emote",
+                  "u": "/overlays/-/brands/twitch.svg"
+                },
+                {
+                  "e": "Test emote",
+                  "u": "/overlays/-/brands/twitch.svg"
+                },
+                {
+                  "e": "Test emote",
+                  "u": "/overlays/-/brands/twitch.svg"
+                },
+                {
+                  "e": "Test emote",
+                  "u": "/overlays/-/brands/twitch.svg"
+                },
+                {
+                  "e": "Test emote",
+                  "u": "/overlays/-/brands/twitch.svg"
+                },
+                {
+                  "e": "Test emote",
+                  "u": "/overlays/-/brands/twitch.svg"
+                }
+              ]
+            }
+          ]
+        ]
+      }
+    }
+  }
+}

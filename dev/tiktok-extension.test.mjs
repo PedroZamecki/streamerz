@@ -22,13 +22,14 @@ function worker() {
     cookies: { getAll: async () => state.cookies,
       onChanged: { addListener(f) { state.cookieChanged = f; } } },
     alarms: { create() {}, onAlarm: { addListener() {} } },
+    storage: { local: { get: async () => ({ ...state.settings }) } },
   };
   state.settings = {};
   state.timers = new Map();
   let nextTimer = 0;
   state.sockets = [];
   class Socket { static OPEN = 1; constructor(url) { this.url = url; this.readyState = 1; state.sockets.push(this); } send() {} }
-  const context = vm.createContext({ chrome, URL, fetch: async () => ({ ok: true, json: async () => ({ ...state.settings }) }), self: { STREAMERZ: {} }, importScripts() {}, setInterval() {},
+  const context = vm.createContext({ chrome, URL, URLSearchParams, fetch: async () => ({ ok: true, json: async () => ({ ...state.settings }) }), self: { STREAMERZ: {} }, importScripts() {}, setInterval() {},
     setTimeout(callback, ms) { const id = ++nextTimer; state.timers.set(id, { callback, ms }); return id; },
     clearTimeout(id) { state.timers.delete(id); }, WebSocket: Socket, console });
   vm.runInContext(readFileSync(new URL("../assets/tiktok-extension/bridge.js", import.meta.url), "utf8"), context);

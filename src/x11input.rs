@@ -1,6 +1,6 @@
 //! X11 sessions: key combinations grabbed on the root window (XGrabKey) and mouse clicks from XInput2's
-//! raw events, both given by the X server to any program: no permission and no setup. libX11 is already
-//! loaded (FLTK draws with it); libXi is opened only when a Mouse Click trigger is used.
+//! raw events, both given by the X server to any program: no permission and no setup. libX11 is linked
+//! (the renderer uses it too); libXi is opened only when a Mouse Click trigger is used.
 
 use std::ffi::{c_char, c_int, c_long, c_uint, c_ulong, c_void, CString};
 use std::os::fd::{AsRawFd, RawFd};
@@ -273,7 +273,8 @@ pub async fn run(
     if mouse {
         crate::say("Mouse Click: listening to X11's clicks".into());
     }
-    let fd = tokio::io::unix::AsyncFd::new(conn).map_err(|e| e.to_string())?;
+    // SAFETY: Conn owns this display and its fixed socket; only its Drop closes the connection.
+    let fd = unsafe { tokio::io::unix::AsyncFd::register(conn) }.map_err(|e| e.to_string())?;
     let mut last = (0i64, 0u64, 0i64);
     loop {
         // SAFETY: as above; an event is read only after XPending says one is there.

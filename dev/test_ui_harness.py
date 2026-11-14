@@ -3,7 +3,7 @@ import socket
 import os
 import unittest
 
-import smoke
+import harness as smoke
 
 
 class InstanceIsolation(unittest.TestCase):

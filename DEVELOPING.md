@@ -15,8 +15,9 @@ git config core.hooksPath .githooks
 
 ## Build and run
 
-The window (FLTK) builds from source: it needs CMake, a C++ compiler and the X11/Wayland/dbus
-development packages listed in `.github/workflows/lint.yml`.
+The window is GPUI (the `frontend/` crate, which the same executable starts as `Streamerz --frontend`). On
+Linux it builds against the X11/Wayland/xkbcommon/fontconfig development packages listed in
+`.github/workflows/lint.yml`; there is no C++ toolchain or CMake step.
 
 ```
 cargo build --release
@@ -73,7 +74,7 @@ Windows std (e.g. the `rustc` and both `rust-std` components from static.rust-la
 `/tmp/rt`):
 
 ```
-RUSTC=/tmp/rt/bin/rustc cargo check --target x86_64-pc-windows-msvc --features fltk/fltk-bundled --target-dir /tmp/wincheck
+RUSTC=/tmp/rt/bin/rustc cargo check --features dev-ui --target x86_64-pc-windows-msvc --target-dir /tmp/wincheck
 ```
 
 ## Streamer.bot's type codes (src/types.rs)
@@ -681,7 +682,7 @@ in its own X server on a hidden Hyprland workspace instead; it has its own point
 hyprctl eval 'hl.window_rule({ match = { class = "org.freedesktop.Xwayland" }, workspace = "special:szt silent" })'
 (setsid Xwayland :99 -geometry 1200x800 -noreset >/dev/null 2>&1 &)
 cd /tmp/szform  # a copy of the binary and a throwaway streamerz.json
-(DISPLAY=:99 FLTK_BACKEND=x11 WAYLAND_DISPLAY= setsid dbus-run-session ./Streamerz >/dev/null 2>&1 &)
+(DISPLAY=:99 WAYLAND_DISPLAY= setsid dbus-run-session ./Streamerz >/dev/null 2>&1 &)
 DISPLAY=:99 xdotool mousemove 130 108 click 1     # a click at window coordinates 130,108
 DISPLAY=:99 import -window root shot.png          # a screenshot
 ```
@@ -691,8 +692,7 @@ The window opens 1 px right and 20 px down on that screen: a click at window coo
 makes the app look hung until the button is released.
 
 Without a window manager keys go to the window under the pointer, and windows open at 0,0: move the pointer
-onto a dialog (and click its input) before typing. Type long text in chunks (one long burst stops FLTK's
-input until restart).
+onto a dialog (and click its input) before typing. Type long text in chunks.
 
 ## Streamlabs Desktop (src/slobs.rs)
 
@@ -783,7 +783,7 @@ set is asked once the first time they appear.
   Settings (`brand.rs`; it changes at once). The tray's is the simple one and follows the desktop, not the
   app: the settings portal's `color-scheme` on Linux (changes live), the taskbar's `SystemUsesLightTheme`
   on Windows (read at start). It isn't a setting.
-- `assets/icons/`: the platforms' and apps' logos (`ui/img.rs`). Twitch's and YouTube's have a white
+- `assets/icons/`: the platforms' and apps' logos (`frontend/src/assets.rs`). Twitch's and YouTube's have a white
   inside, drawn under the glyph.
 
 After changing a logo in `assets/brand/`, redraw the rest (`streamerz.png` for the desktop file and the
@@ -825,14 +825,13 @@ subscription needs a real login: run with the real config and look for `Create s
 
 ## Hover details, the channel search, sorting
 
-`ui/tip.rs` draws the panel for an emote or a badge: the chat's items carry a `Tip` (`It::Pic` with a
-tip, `It::SvgTip`), the pane finds the one under the pointer, and `tip::point` shows it after 0.3 s as a
-small window inside the app's own window (made when shown, deleted when the pointer leaves). The source's
+The chat page (`frontend/src/controls/chat.rs`) draws the panel for an emote or a badge from what the core
+sends with the line (`core/chat.rs`), as a small panel inside the app's own window. The source's
 icon comes from the picture's host (`cdn.7tv.app`, `betterttv.net`, `frankerfacez.com`, the platforms').
 
 `search.rs` finds channels by name without a login: Twitch's web GraphQL `searchUsers`, kick.com's
 `/api/search`, and YouTube's results page filtered to channels (the data after `var ytInitialData = `).
-`ui/find.rs` is its window; the `search_channels` MCP tool calls the same. Banners come the same way:
+The Accounts page shows it, and the `search_channels` MCP tool calls the same. Banners come the same way:
 kick.com's `/api/v2/channels/<slug>` and the channel page's `imageBannerViewModel` for YouTube.
 
 `ui::sort_header` is a column-title row that sorts (the Community users use it); the list sorts itself in
@@ -915,19 +914,20 @@ timers it lists (commands and timers whose `group` names it count too). `groups:
 declared settings with their defaults; `set_values` keeps declared types; `rename` and `remove`
 move or drop everything. `edit::export_groups` adds `streamerz.groups`, `groupVariables` and
 `groupIcons` to a Streamer.bot export, and `edit::import` checks all of it before changing anything.
-The UI is `ui/groups.rs`. The WebSocket requests are `StreamerzManageActionGroup`,
+The page is the Groups one (`core/pages.rs`). The WebSocket requests are `StreamerzManageActionGroup`,
 `StreamerzActionGroups`, `StreamerzGroupMeta`, `StreamerzSetGroupMeta`, `StreamerzGroupVariables`,
 `StreamerzSetGroupVariables`, `StreamerzGroupExport`, `StreamerzSaveGroupFiles` and
 `StreamerzTemplateAdd` (adds a built-in template); each has an MCP tool.
 
 `templates.rs` lists the built-in templates; a `Made` can carry group definitions and `add_to`
-applies them (defaults first, then countdowns). `templates/subathon.rs` is the subathon built only
+applies them (defaults first, then countdowns). `assets/examples/subathon` is the bundled Subathon, built only
 from these tools: countdown sub-action 99803 (its `startMs`, `maxMs`, `perUnitMs` and
-`expectedCurrency` fields take `%group.name%`), a group with five settings, and the overlay as a
+`expectedCurrency` fields take `%group.name%`), a group with typed settings, and the overlay as a
 group file. `templates/clock.rs` keeps the countdown state: it is created when the group is added
 or imported (`clock::start_for` finds the resets), capped on every add, and its remaining time is
-saved at shutdown. The overlay reads `StreamerzCountdown` and listens for
-`Misc.StreamerzCountdownChanged`.
+saved at shutdown. The overlay uses `streamerz.countdown`, which reads `StreamerzCountdown` and listens
+for `Misc.StreamerzCountdownChanged`. All bundled overlays live in `assets/examples`, registered in
+`src/examples.rs`; each has a browser check in `dev/test-examples.mjs`.
 
 ## Where the settings are
 

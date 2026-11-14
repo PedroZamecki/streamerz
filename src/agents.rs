@@ -59,9 +59,8 @@ impl Places {
             let c = var("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config"));
             (c.clone(), c)
         };
-        let mut path: Vec<PathBuf> = std::env::var_os("PATH")
-            .map(|p| std::env::split_paths(&p).collect())
-            .unwrap_or_default();
+        // In Flatpak, the host's usual folders (the sandbox's PATH is its own).
+        let mut path: Vec<PathBuf> = crate::sandbox::host_bin_dirs();
         for d in [
             ".local/bin",
             ".local/share/mise/shims",
@@ -153,7 +152,7 @@ impl Places {
         self.path
             .iter()
             .flat_map(|d| names.iter().map(move |n| d.join(n)))
-            .find(|p| p.is_file())
+            .find(|p| crate::sandbox::host_has(p))
     }
 }
 
@@ -949,9 +948,10 @@ pub fn chat(cli: &Path, dir: &Path) -> Result<(), String> {
             let base = exe.file_name().and_then(|n| n.to_str()).unwrap_or(t).to_string();
             let mut cmd = std::process::Command::new(&exe);
             cmd.args(terminal_args(&base, dir)).arg(cli);
-            cmd.current_dir(dir)
-                .env_remove("GDK_BACKEND")
-                .stdin(std::process::Stdio::null())
+            cmd.current_dir(dir).env_remove("GDK_BACKEND");
+            // In Flatpak, the terminal is the host's.
+            let mut cmd = crate::sandbox::on_host(cmd);
+            cmd.stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null());
             match cmd.spawn() {

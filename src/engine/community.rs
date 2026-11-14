@@ -432,7 +432,7 @@ impl Engine {
     pub fn reset_credits(self: &Rc<Self>) {
         self.st.borrow_mut().community.credits = Credits::default();
         self.community_changed();
-        crate::ui::changed();
+        crate::host::changed();
     }
 
     /// TestCredits: a few names in every list.
@@ -604,8 +604,8 @@ impl Engine {
             }
         }
         self.community_changed();
-        crate::ui::chat();
-        crate::ui::changed();
+        crate::host::chat();
+        crate::host::changed();
     }
 
     /// Credits and users from a trigger that fired.

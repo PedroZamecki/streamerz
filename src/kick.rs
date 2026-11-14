@@ -151,6 +151,17 @@ pub enum KickCmd {
         category_name: String,
         resp: oneshot::Sender<Result<(), String>>,
     },
+    SetChannelTags {
+        tags: Vec<String>,
+        resp: oneshot::Sender<Result<(), String>>,
+    },
+    StartAdBreak {
+        duration_seconds: u64,
+        resp: oneshot::Sender<Result<Value, String>>,
+    },
+    GetAdStatus {
+        resp: oneshot::Sender<Result<Value, String>>,
+    },
     BanUser {
         user_login: String,
         reason: String,
@@ -270,6 +281,33 @@ impl KickHandle {
                 category_name: category_name.to_string(),
                 resp: resp_tx,
             })
+            .map_err(|_| "Kick runner is down".to_string())?;
+        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    pub async fn set_channel_tags(&self, tags: Vec<String>) -> Result<(), String> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.tx
+            .send(KickCmd::SetChannelTags { tags, resp: resp_tx })
+            .map_err(|_| "Kick runner is down".to_string())?;
+        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    pub async fn start_ad_break(&self, duration_seconds: u64) -> Result<Value, String> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.tx
+            .send(KickCmd::StartAdBreak {
+                duration_seconds,
+                resp: resp_tx,
+            })
+            .map_err(|_| "Kick runner is down".to_string())?;
+        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    pub async fn get_ad_status(&self) -> Result<Value, String> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.tx
+            .send(KickCmd::GetAdStatus { resp: resp_tx })
             .map_err(|_| "Kick runner is down".to_string())?;
         resp_rx.await.map_err(|_| "Request cancelled".to_string())?
     }
@@ -422,6 +460,18 @@ impl Runner {
                     let res = self.set_channel_category_api(category_id).await;
                     let _ = resp.send(res);
                 }
+                KickCmd::SetChannelTags { tags, resp } => {
+                    let res = self.set_channel_tags_api(&tags).await;
+                    let _ = resp.send(res);
+                }
+                KickCmd::StartAdBreak { duration_seconds, resp } => {
+                    let res = self.start_ad_break_api(duration_seconds).await;
+                    let _ = resp.send(res);
+                }
+                KickCmd::GetAdStatus { resp } => {
+                    let res = self.get_ad_status_api().await;
+                    let _ = resp.send(res);
+                }
                 KickCmd::BanUser {
                     user_login,
                     reason,
@@ -491,7 +541,7 @@ impl Runner {
         }
         self.engine.chat_polls_clear("kick");
         self.engine.chat_unpinned("kick", "");
-        crate::ui::polls_changed();
+        crate::host::polls_changed();
         if self.connected.swap(false, Ordering::Relaxed) {
             crate::say("Kick: disconnected".into());
             let args = Obj::new();
@@ -587,6 +637,40 @@ impl Runner {
         .map(drop)
     }
 
+    async fn set_channel_tags_api(&self, tags: &[String]) -> Result<(), String> {
+        let token = token(&self.engine, &self.cfg, false, false).await?;
+        let tags_capped: Vec<String> = tags.iter().take(10).cloned().collect();
+        api(
+            &token,
+            "PATCH",
+            "/channels",
+            Some(json!({ "custom_tags": tags_capped })),
+        )
+        .await
+        .map(drop)
+    }
+
+    async fn start_ad_break_api(&self, duration_seconds: u64) -> Result<Value, String> {
+        let token = token(&self.engine, &self.cfg, false, false).await?;
+        let duration = duration_seconds.clamp(7, 90);
+        let id = crate::engine::uuid();
+        api(
+            &token,
+            "POST",
+            "/ads/ad-break",
+            Some(json!({
+                "break_duration_seconds": duration,
+                "id": id,
+            })),
+        )
+        .await
+    }
+
+    async fn get_ad_status_api(&self) -> Result<Value, String> {
+        let token = token(&self.engine, &self.cfg, false, false).await?;
+        api(&token, "GET", "/ads/ad-break-status", None).await
+    }
+
     /// Ban (`minutes` None) or time out a user.
     async fn ban(&self, user_login: &str, minutes: Option<u64>, reason: &str) -> Result<(), String> {
         let token = token(&self.engine, &self.cfg, false, false).await?;
@@ -640,7 +724,7 @@ pub async fn delete_message(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>
 pub const KICK_REDIRECT: &str = "http://127.0.0.1:45563/callback";
 const KICK_TOKEN_URL: &str = "https://id.kick.com/oauth/token";
 const KICK_SCOPES: &str =
-    "user:read channel:read channel:write chat:write moderation:ban moderation:chat_message:manage events:subscribe channel:rewards:read channel:rewards:write";
+    "user:read channel:read channel:write chat:write moderation:ban moderation:chat_message:manage events:subscribe channel:rewards:read channel:rewards:write ads:read ads:write";
 /// The bot only chats.
 const KICK_BOT_SCOPES: &str = "user:read chat:write";
 
@@ -823,12 +907,13 @@ pub fn kick_emotes(text: &str) -> Vec<(String, String)> {
     while let Some(i) = rest.find("[emote:") {
         let Some(j) = rest[i..].find(']') else { break };
         let tag = &rest[i..i + j + 1];
-        if tag[7..tag.len() - 1]
-            .split_once(':')
-            .is_some_and(|(id, _)| id.bytes().all(|b| b.is_ascii_digit()))
-        {
-            let id = tag[7..].split(':').next().unwrap_or("");
-            out.push((tag.to_string(), format!("https://files.kick.com/emotes/{id}/fullsize")));
+        if let Some((id, name)) = tag[7..tag.len() - 1].split_once(':') {
+            if id.bytes().all(|b| b.is_ascii_digit()) {
+                if !name.is_empty() {
+                    crate::emotes::remember_kick_tag(name, id);
+                }
+                out.push((tag.to_string(), format!("https://files.kick.com/emotes/{id}/fullsize")));
+            }
         }
         rest = &rest[i + j + 1..];
     }
@@ -965,7 +1050,7 @@ pub async fn run_pusher_loop_url(
                 failures = 0;
 
                 connected.store(true, Ordering::Relaxed);
-                crate::ui::changed();
+                crate::host::changed();
                 crate::say(format!("Kick: connected (@{channel}, chatroom {cr_id})"));
                 engine.settle_role("kick");
                 // The channel's rewards, for the editors' pickers and the price in the chat: kick.com's own
@@ -1114,7 +1199,7 @@ pub async fn run_pusher_loop_url(
                 }
 
                 connected.store(false, Ordering::Relaxed);
-                crate::ui::changed();
+                crate::host::changed();
                 let args = Obj::new();
                 engine.fire(
                     T_KICK_DISCONNECTED,
@@ -1631,6 +1716,16 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
             stream_args(&mut args);
             args.insert("channel".into(), channel.into());
             engine.chat_stream("kick", true);
+            // The streamer's own stream started: YouTube and TikTok look at once instead of at their next check.
+            let own = engine
+                .config()
+                .kick
+                .broadcaster
+                .as_ref()
+                .is_some_and(|b| b.username.eq_ignore_ascii_case(channel));
+            if own {
+                engine.notify_stream_started();
+            }
             kick(engine, T_KICK_STREAM_ONLINE, "KickStreamOnline", "StreamOnline", &args);
         }
         "StopStreamBroadcast" | "LivestreamEnded" | "StreamOffline" => {
@@ -2467,5 +2562,58 @@ mod tests {
             l.badges[3],
             ("kick:custom".into(), "https://files.kick.com/seasonal.webp".into())
         );
+    }
+
+    #[test]
+    fn kick_ads_and_tags_metadata() {
+        assert!(super::KICK_SCOPES.contains("ads:read"));
+        assert!(super::KICK_SCOPES.contains("ads:write"));
+
+        // Verify triggers registered
+        assert_eq!(
+            crate::types::name(crate::types::TRIGGERS, 35026),
+            Some("KickAdBreakBegin")
+        );
+        assert_eq!(
+            crate::types::name(crate::types::TRIGGERS, 35027),
+            Some("KickAdBreakEnd")
+        );
+
+        // Verify subactions registered
+        assert_eq!(
+            crate::types::name(crate::types::SUB_ACTIONS, 35032),
+            Some("KickSetChannelTags")
+        );
+        assert_eq!(
+            crate::types::name(crate::types::SUB_ACTIONS, 35033),
+            Some("KickAddChannelTag")
+        );
+        assert_eq!(
+            crate::types::name(crate::types::SUB_ACTIONS, 35034),
+            Some("KickClearChannelTags")
+        );
+        assert_eq!(
+            crate::types::name(crate::types::SUB_ACTIONS, 35050),
+            Some("KickRunCommercial")
+        );
+        assert_eq!(
+            crate::types::name(crate::types::SUB_ACTIONS, 35051),
+            Some("KickGetAdStatus")
+        );
+
+        // Verify SUB_ACTION_INFO titles
+        let title_of = |code| {
+            crate::types::SUB_ACTION_INFO
+                .binary_search_by_key(&code, |x| x.0)
+                .ok()
+                .map(|i| crate::types::SUB_ACTION_INFO[i].1)
+        };
+        assert_eq!(title_of(35032), Some("Set Channel Tags"));
+        assert_eq!(title_of(35050), Some("Run Commercial"));
+
+        // Duration clamping: 7..=90
+        assert_eq!(0u64.clamp(7, 90), 7);
+        assert_eq!(30u64.clamp(7, 90), 30);
+        assert_eq!(120u64.clamp(7, 90), 90);
     }
 }
