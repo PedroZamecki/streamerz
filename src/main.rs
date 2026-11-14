@@ -881,6 +881,34 @@ fn save_to(path: &Path, c: &Config) -> std::io::Result<()> {
     write_value(path, serde_json::to_value(c).unwrap_or_default())
 }
 
+fn display_config_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    display_path_text(&text, cfg!(windows))
+}
+
+fn display_path_text(text: &str, windows: bool) -> String {
+    if windows {
+        if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{unc}");
+        }
+        return text.strip_prefix(r"\\?\").unwrap_or(text).to_owned();
+    }
+    text.to_owned()
+}
+
+#[test]
+fn windows_config_path_display_omits_extended_prefix() {
+    assert_eq!(
+        display_path_text(r"\\?\C:\Streamerz\streamerz.json", true),
+        r"C:\Streamerz\streamerz.json"
+    );
+    assert_eq!(
+        display_path_text(r"\\?\C:\Streamerz\streamerz.json", false),
+        r"\\?\C:\Streamerz\streamerz.json"
+    );
+    assert_eq!(display_path_text(r"\\?\UNC\server\share", true), r"\\server\share");
+}
+
 /// `save_to`, from the config already as JSON (sealing its secrets happens here).
 fn write_value(path: &Path, mut v: serde_json::Value) -> std::io::Result<()> {
     let _dev_guard = dev_write_guard()?;
@@ -910,7 +938,48 @@ fn write_value(path: &Path, mut v: serde_json::Value) -> std::io::Result<()> {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
         _ => {}
     }
-    std::fs::rename(&tmp, path)
+    retry_rename(
+        || std::fs::rename(&tmp, path),
+        || std::thread::sleep(std::time::Duration::from_millis(50)),
+    )
+}
+
+fn retry_rename(mut rename: impl FnMut() -> std::io::Result<()>, mut wait: impl FnMut()) -> std::io::Result<()> {
+    for _ in 0..4 {
+        match rename() {
+            Ok(()) => return Ok(()),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::WouldBlock
+                ) || (cfg!(windows) && matches!(e.raw_os_error(), Some(32 | 33))) =>
+            {
+                wait();
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    rename()
+}
+
+#[cfg(test)]
+#[test]
+fn settings_rename_retries_a_transient_failure() {
+    let mut attempts = 0;
+    let mut waits = 0;
+    retry_rename(
+        || {
+            attempts += 1;
+            if attempts < 3 {
+                Err(std::io::ErrorKind::PermissionDenied.into())
+            } else {
+                Ok(())
+            }
+        },
+        || waits += 1,
+    )
+    .unwrap();
+    assert_eq!((attempts, waits), (3, 2));
 }
 
 fn save(c: &Config) -> std::io::Result<()> {
@@ -1434,7 +1503,7 @@ fn main() {
     i18n::set(&cfg.locale);
     set_debug_log(cfg.debug_log);
     fmt::set_shown_as(&cfg.date_format, &cfg.time_format);
-    say(format!("config: {}", config_path().display()));
+    say(format!("config: {}", display_config_path(&config_path())));
     // ponytail: one runtime thread is plenty for a few sockets, and lighter than one per core.
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
