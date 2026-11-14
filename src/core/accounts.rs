@@ -921,6 +921,19 @@ fn picked() -> Option<String> {
     PICKED.lock().ok().and_then(|picked| picked.clone())
 }
 
+/// Whether the setup steps speak of Firefox: the browser picked in this run, else the one the
+/// extension was found in (Zen, for one; it once got Chrome's "Load unpacked").
+fn steps_for_firefox(
+    picked: Option<&str>,
+    browsers: &[crate::browsers::Browser],
+    found_in: Option<&crate::browsers::Browser>,
+) -> bool {
+    match picked {
+        Some(name) => browsers.iter().any(|b| b.name == name && b.is_firefox_based()),
+        None => found_in.is_some_and(|b| b.is_firefox_based()),
+    }
+}
+
 static ADVANCED_SETUP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The browser whose signed Firefox add-on is being downloaded, while it is.
@@ -955,6 +968,8 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
     let folder = crate::tiktok_bridge::folder();
     let mut rows = Vec::new();
     let mut known_any = false;
+    // The first browser the extension is in, when one is: the steps speak of that one.
+    let mut found_in: Option<&crate::browsers::Browser> = None;
     if browsers.is_empty() {
         rows.push(json!({"status": state("off", tr("accounts.tiktok_sending.no_browser"))}));
     }
@@ -962,6 +977,9 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
         let known = b.has_extension_from(crate::tiktok_bridge::EXTENSION_ID, &folder)
             || (connected && (single || chosen.as_deref() == Some(b.name)));
         known_any |= known;
+        if known && found_in.is_none() {
+            found_in = Some(b);
+        }
         let running = b.is_running();
         let (health, text) = match (known, running) {
             (true, true) => ("up", tr("accounts.tiktok_sending.installed_running")),
@@ -1086,7 +1104,7 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
             _ => "off",
         };
         let browser = chosen.as_deref();
-        let firefox = browser.is_some_and(|name| browsers.iter().any(|b| b.name == name && b.is_firefox_based()));
+        let firefox = steps_for_firefox(browser, &browsers, found_in);
         let steps = [
             (
                 step(browser.is_some() || installed, browser.is_none() && !installed),
@@ -1911,6 +1929,28 @@ mod tests {
             .iter()
             .flat_map(|section| section["rows"].as_array().unwrap().clone())
             .collect()
+    }
+
+    #[test]
+    fn setup_steps_speak_of_the_browser_the_extension_is_in() {
+        use crate::browsers::{Browser, BrowserEngine};
+        let browser = |name: &'static str, engine| Browser {
+            name,
+            engine,
+            exe: "/x".into(),
+            data: "/x".into(),
+            extensions_page: "about:addons",
+        };
+        let (zen, chrome) = (
+            browser("Zen Browser", BrowserEngine::Firefox),
+            browser("Chromium", BrowserEngine::Chromium),
+        );
+        let all = [zen.clone(), chrome.clone()];
+        assert!(steps_for_firefox(None, &all, Some(&zen)));
+        assert!(!steps_for_firefox(None, &all, Some(&chrome)));
+        assert!(!steps_for_firefox(None, &all, None));
+        assert!(steps_for_firefox(Some("Zen Browser"), &all, Some(&chrome)));
+        assert!(!steps_for_firefox(Some("Chromium"), &all, Some(&zen)));
     }
 
     #[test]
