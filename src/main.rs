@@ -1297,7 +1297,12 @@ fn main() {
     } else {
         let path = default_config_path();
         let dir = path.parent().unwrap_or(Path::new("."));
-        match instance::acquire(dir) {
+        let lock = if args.iter().any(|a| a == "--restart-handover") {
+            instance::acquire_after_restart(dir)
+        } else {
+            instance::acquire(dir)
+        };
+        match lock {
             Ok(lock) => Some(lock),
             Err(e) => {
                 eprintln!("Streamerz could not acquire its instance lock: {e}");

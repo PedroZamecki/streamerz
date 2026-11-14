@@ -352,8 +352,7 @@ pub async fn stage(r: &Release) -> Result<(), String> {
 
 fn apply_unprivileged(path: &Path, new: &Path) -> Result<(), String> {
     if cfg!(windows) {
-        let old = beside(path, "old");
-        let _ = std::fs::remove_file(&old);
+        let old = free_old_path(path);
         std::fs::rename(path, &old).map_err(|e| format!("{}: {e}", path.display()))?;
         if let Err(e) = std::fs::rename(new, path) {
             let _ = std::fs::rename(&old, path);
@@ -375,6 +374,17 @@ fn apply_unprivileged(path: &Path, new: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn free_old_path(path: &Path) -> PathBuf {
+    let old = beside(path, "old");
+    if !old.exists() {
+        return old;
+    }
+    (2..)
+        .map(|n| beside(path, &format!("old.{n}")))
+        .find(|p| !p.exists())
+        .unwrap()
+}
+
 /// PowerShell receives paths only as literals inside an encoded script, never through cmd.exe.
 #[cfg(any(windows, test))]
 fn windows_elevation_command(path: &Path, new: &Path) -> String {
@@ -385,7 +395,8 @@ fn windows_elevation_command(path: &Path, new: &Path) -> String {
 $target='{}'
 $source='{}'
 $old=$target+'.old'
-if (Test-Path -LiteralPath $old) {{ Remove-Item -LiteralPath $old -Force }}
+$n=2
+while (Test-Path -LiteralPath $old) {{ $old=$target+'.old.'+$n; $n++ }}
 Move-Item -LiteralPath $target -Destination $old -Force
 try {{ Copy-Item -LiteralPath $source -Destination $target -Force }}
 catch {{ Move-Item -LiteralPath $old -Destination $target -Force; throw }}
@@ -396,7 +407,7 @@ Remove-Item -LiteralPath $source -Force
     );
     let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-    format!("$ErrorActionPreference='Stop'; $p=Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{encoded}' -Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode")
+    format!("$ErrorActionPreference='Stop'; try {{ $p=Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{encoded}' -Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode }} catch {{ $e=$_.Exception; while ($e) {{ if ($e.NativeErrorCode -eq 1223) {{ exit 122 }}; $e=$e.InnerException }}; exit 1 }}")
 }
 
 #[cfg(windows)]
@@ -423,7 +434,9 @@ fn apply_elevated_windows(path: &Path, new: &Path) -> Result<(), String> {
         ])
         .status()
         .map_err(|e| format!("powershell: {e}"))?;
-    if status.success() && !new.exists() && path.is_file() {
+    if status.code() == Some(122) {
+        Err("cancelled".into())
+    } else if status.success() && !new.exists() && path.is_file() {
         Ok(())
     } else {
         Err(format!("{}: elevation cancelled or update failed", path.display()))
@@ -549,6 +562,10 @@ pub fn tidy() {
     for ext in ["old", "part"] {
         let _ = std::fs::remove_file(beside(&path, ext));
     }
+    // Updates made while an older copy still ran left it as .old.2, .old.3...
+    for n in 2..10 {
+        let _ = std::fs::remove_file(beside(&path, &format!("old.{n}")));
+    }
     let staged = find_staged(&path);
     let tag = staged
         .as_ref()
@@ -619,7 +636,7 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
     if fresh {
         crate::say(format!("Streamerz {tag} is out"));
     }
-    if mode == Updates::Background && !asked {
+    if background_download(mode, asked, is_protected(&release.path)) {
         crate::say(format!("Downloading {tag}..."));
         match stage(&release).await {
             Ok(()) if fresh => crate::notify::send(
@@ -689,6 +706,10 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
     }
 }
 
+fn background_download(mode: Updates, asked: bool, protected: bool) -> bool {
+    mode == Updates::Background && !asked && !protected
+}
+
 /// Checks now and then once an hour while Streamerz is open.
 pub async fn watch(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>>) {
     // Flatpak and the packages are updated by the system: no timer.
@@ -705,7 +726,8 @@ pub async fn watch(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
 pub fn restart() -> ! {
     if let Some(exe) = exe() {
         let mut cmd = std::process::Command::new(exe);
-        cmd.args(std::env::args_os().skip(1));
+        cmd.args(std::env::args_os().skip(1).filter(|a| a != "--restart-handover"));
+        cmd.arg("--restart-handover");
         // The AppImage this ran from mounted itself and told its children where; the new one makes its own.
         for v in ["APPDIR", "APPIMAGE", "ARGV0", "OWD"] {
             cmd.env_remove(v);
@@ -719,6 +741,23 @@ pub fn restart() -> ! {
 mod tests {
     use super::{beside, semver, unsound};
     use std::path::Path;
+
+    #[test]
+    fn protected_background_updates_ask_instead_of_staging() {
+        assert!(!super::background_download(super::Updates::Background, false, true));
+        assert!(super::background_download(super::Updates::Background, false, false));
+        assert!(!super::background_download(super::Updates::Background, true, false));
+    }
+
+    #[test]
+    fn update_uses_an_unused_old_file_name() {
+        let root = std::env::temp_dir().join(format!("streamerz-old-{}", crate::engine::uuid()));
+        std::fs::create_dir_all(&root).unwrap();
+        let exe = root.join("Streamerz.exe");
+        std::fs::write(super::beside(&exe, "old"), b"in use").unwrap();
+        assert_eq!(super::free_old_path(&exe), super::beside(&exe, "old.2"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn an_inherited_appimage_cannot_replace_the_running_program() {
@@ -890,6 +929,10 @@ mod tests {
         let command = super::windows_elevation_command(target, source);
         assert!(!command.contains("cmd.exe"));
         assert!(!command.contains("%TEMP%"));
+        // A declined UAC prompt (ERROR_CANCELLED) may sit inside another exception.
+        assert!(command.contains("NativeErrorCode -eq 1223"));
+        assert!(command.contains("InnerException"));
+        assert!(command.contains("exit 122"));
         let encoded = command
             .split("'-EncodedCommand','")
             .nth(1)
@@ -907,6 +950,7 @@ mod tests {
         let script = String::from_utf16(&utf16).unwrap();
         assert!(script.contains("$target='C:\\Program Files\\App''s %TEMP% & $(exit 9).exe'"));
         assert!(script.contains("-LiteralPath $source"));
+        assert!(script.contains("while (Test-Path -LiteralPath $old)"));
     }
 
     #[cfg(unix)]
