@@ -126,9 +126,12 @@ fn settings(engine: &Rc<Engine>) -> Vec<Value> {
         })
         .collect();
     let path = crate::config_path();
-    let update_about = match crate::update::found() {
-        Some(tag) => trf("settings.new_versions.found", &[("version", &tag)]),
-        None => trf("settings.new_versions.about", &[("version", &crate::version())]),
+    let update_about = match (crate::update::install(), crate::update::found()) {
+        // The system updates these; Check now says what's out.
+        (crate::update::Install::Flatpak, _) => trf("settings.new_versions.flatpak", &[("version", &crate::version())]),
+        (crate::update::Install::Package, _) => trf("settings.new_versions.package", &[("version", &crate::version())]),
+        (_, Some(tag)) => trf("settings.new_versions.found", &[("version", &tag)]),
+        (_, None) => trf("settings.new_versions.about", &[("version", &crate::version())]),
     };
     let mut memory = switch(config.memory_saver);
     if config.memory_saver != crate::memory_saver() {

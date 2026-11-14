@@ -1366,5 +1366,9 @@
   "overlays.inspect.said": "Registro",
   "overlays.settings.title": "Configurações: {name}",
   "overlays.settings.hint": "O que as páginas mostram e como. Uma mudança chega às páginas abertas na hora, sem recarregar.",
-  "overlays.settings.hint_connected": "O que as páginas mostram e como. Uma mudança chega às páginas abertas na hora, sem recarregar. As ações conectadas a ele leem estas como %group.name%."
+  "overlays.settings.hint_connected": "O que as páginas mostram e como. Uma mudança chega às páginas abertas na hora, sem recarregar. As ações conectadas a ele leem estas como %group.name%.",
+  "settings.new_versions.flatpak": "Você tem a {version}. O Flatpak atualiza o Streamerz, junto com seus outros apps.",
+  "settings.new_versions.package": "Você tem a {version}. O atualizador do sistema atualiza o Streamerz, pelo repositório do Streamerz que o pacote adicionou.",
+  "update.by_flatpak": "O Streamerz {version} saiu. Atualize pela sua loja de apps ou rode flatpak update.",
+  "update.by_package": "O Streamerz {version} saiu. O atualizador do sistema instala, junto com as outras atualizações."
 }

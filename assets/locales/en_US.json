@@ -1366,5 +1366,9 @@
   "overlays.inspect.said": "Log",
   "overlays.settings.title": "Settings: {name}",
   "overlays.settings.hint": "What its pages show and how. A change reaches the open pages at once, with no reload.",
-  "overlays.settings.hint_connected": "What its pages show and how. A change reaches the open pages at once, with no reload. The actions connected to it read these as %group.name%."
+  "overlays.settings.hint_connected": "What its pages show and how. A change reaches the open pages at once, with no reload. The actions connected to it read these as %group.name%.",
+  "settings.new_versions.flatpak": "You have {version}. Flatpak updates Streamerz, with your other apps.",
+  "settings.new_versions.package": "You have {version}. Your system's updater updates Streamerz, from the Streamerz repository the package added.",
+  "update.by_flatpak": "Streamerz {version} is out. Update it from your software center, or run flatpak update.",
+  "update.by_package": "Streamerz {version} is out. Your system's updater installs it, with your other updates."
 }
