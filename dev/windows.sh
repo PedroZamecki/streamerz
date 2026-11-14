@@ -16,7 +16,7 @@ cargo fetch --locked
 
 # The smoke drives the app through the dev instrumentation, so it is built with it.
 features=()
-[ "${1:-}" = smoke ] && features=(--features gpui-dev)
+[ "${1:-}" = smoke ] && features=(--features dev-ui)
 cargo xwin build --release --locked --bin Streamerz --target "$target" --target-dir "$dir" "${features[@]}"
 echo "built $exe"
 
@@ -33,7 +33,7 @@ case "${1:-}" in
     # Wine prints its own noise on stderr; the scenario report is on stdout.
     WINEDEBUG=-all wine "$exe" --scenario tests/scenarios 2>/dev/null ;;
   smoke)
-    env -u WAYLAND_DISPLAY DISPLAY="${DISPLAY_SMOKE:-:99}" WINEDEBUG=-all python3 -P dev/gpui-smoke.py "$exe" --wine ;;
+    env -u WAYLAND_DISPLAY DISPLAY="${DISPLAY_SMOKE:-:99}" WINEDEBUG=-all python3 -P dev/ui-smoke.py "$exe" --wine ;;
   "") ;;
   *) echo "unknown: $1 (scenarios, smoke, live or tests)"; exit 2 ;;
 esac

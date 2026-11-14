@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Fill the GPUI Chat page with injected messages and save screenshots (DISPLAY=:99).
+"""Fill the Chat page with injected messages and save screenshots (DISPLAY=:99).
 
-Usage: dev/gpui-chat.py [--bin target/fast/Streamerz] [--out target/gpui-shots] [--size 1100x800] [--theme dark]
+Usage: dev/ui-chat.py [--bin target/fast/Streamerz] [--out target/ui-shots] [--size 1100x800] [--theme dark]
 Writes chat-SIZE.png (lines), chat-card-SIZE.png (a user card) and chat-options-SIZE.png (the options dialog).
 """
 import argparse
@@ -38,7 +38,7 @@ MESSAGES = [
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--bin", type=Path, default=Path("target/fast/Streamerz"))
-    parser.add_argument("--out", type=Path, default=Path("target/gpui-shots"))
+    parser.add_argument("--out", type=Path, default=Path("target/ui-shots"))
     parser.add_argument("--size", default="1100x800")
     parser.add_argument("--theme", default="dark")
     parser.add_argument("--view", default="", help="the Show choice: side, or a platform id (default: all together)")
@@ -54,7 +54,7 @@ def main():
     width, height = (int(part) for part in args.size.split("x"))
     with tempfile.TemporaryDirectory() as folder:
         config = {"start_hidden": False, "locale": "en_US", "theme": args.theme, "updates": "ignore",
-                  "instance_name": "gpui-shot", "websockets": {"port": smoke.PORT},
+                  "instance_name": "ui-shot", "websockets": {"port": smoke.PORT},
                   "window": {"chat": {"saveHistory": True, "fadeIn": args.fade}, "chat_view": args.view,
                              # Sent before: emoji, and WIDE, which is only seen in chat (not offered).
                              "emoteUse": [{"platform": "twitch", "name": name, "url": url, "count": count}
@@ -76,7 +76,7 @@ def main():
             deadline = time.monotonic() + 30
             while ws is None and time.monotonic() < deadline:
                 try:
-                    ws = smoke.Ws(expected_name="gpui-shot")
+                    ws = smoke.Ws(expected_name="ui-shot")
                 except OSError:
                     time.sleep(0.2)
             if ws is None:

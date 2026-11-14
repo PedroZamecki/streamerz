@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Open pages of the GPUI frontend on DISPLAY=:99 and save screenshots, for quick visual checks.
+"""Open pages of the window on DISPLAY=:99 and save screenshots, for quick visual checks.
 
-Usage: dev/gpui-shot.py PAGE [PAGE...] [--bin target/fast/Streamerz] [--out target/gpui-shots]
+Usage: dev/ui-shot.py PAGE [PAGE...] [--bin target/fast/Streamerz] [--out target/ui-shots]
                         [--size 1100x800] [--theme dark|light] [--config JSON-FILE]
 A page is a navigation id ("Queues", "Stream Apps"). A page may be followed by ":STEPS" (separated by ;) run after it loads: a frontend command
 or "click LABEL[#N]" (dblclick: twice) (the Nth match top to bottom), "wait SECONDS", "type TEXT" (into what has the focus), "at X Y" (a click there), "key NAME" (Return, Escape), for example "Queues:click Add". Each capture is PAGE-SIZE.png.
@@ -27,7 +27,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("pages", nargs="+")
     parser.add_argument("--bin", type=Path, default=Path("target/fast/Streamerz"))
-    parser.add_argument("--out", type=Path, default=Path("target/gpui-shots"))
+    parser.add_argument("--out", type=Path, default=Path("target/ui-shots"))
     parser.add_argument("--size", default="1100x800")
     parser.add_argument("--theme", default="dark")
     parser.add_argument("--config", type=Path, help="extra settings merged into the fixture")
@@ -39,7 +39,7 @@ def main():
     width, height = (int(part) for part in args.size.split("x"))
     with tempfile.TemporaryDirectory() as folder:
         config = {"start_hidden": False, "locale": "en_US", "theme": args.theme, "updates": "ignore",
-                  "instance_name": "gpui-shot", "websockets": {"port": smoke.PORT}}
+                  "instance_name": "ui-shot", "websockets": {"port": smoke.PORT}}
         if args.config:
             config.update(json.loads(args.config.read_text()))
         home = Path(folder)
@@ -58,7 +58,7 @@ def main():
             deadline = time.monotonic() + 30
             while ws is None and time.monotonic() < deadline:
                 try:
-                    ws = smoke.Ws(expected_name="gpui-shot")
+                    ws = smoke.Ws(expected_name="ui-shot")
                 except OSError:
                     time.sleep(0.2)
             if ws is None:

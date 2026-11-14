@@ -5,7 +5,7 @@
 # Manipulation classes (GPUI treats the failure as fatal). gpui-support.patch fills both in.
 # Needs clang, lld, flex, bison and the usual Wine build libraries; no root and no mingw-w64.
 # Usage: dev/wine/build.sh [work dir]   (default /tmp/streamerz-wine)
-# Then: dev/gpui-smoke.py <Streamerz.exe> --wine --wine-bin <work dir>/full/wine \
+# Then: dev/ui-smoke.py <Streamerz.exe> --wine --wine-bin <work dir>/full/wine \
 #         --wine-prefix <prefix> with WINESERVER=<work dir>/full/server/wineserver
 set -euo pipefail
 

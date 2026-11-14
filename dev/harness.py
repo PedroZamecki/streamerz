@@ -1,4 +1,4 @@
-"""Shared helpers for the GPUI smoke and capture scripts: the dev instance's WebSocket client and the
+"""Shared helpers for the Smoke and capture scripts: the dev instance's WebSocket client and the
 port and instance checks that keep a test from driving an instance that is not its own."""
 import base64, json, os, socket, struct
 

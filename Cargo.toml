@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [features]
 # Development instrumentation for the frontend (window captures, synthetic input, the MCP `ui` tool).
-gpui-dev = ["streamerz-frontend/test-support"]
+dev-ui = ["streamerz-frontend/test-support"]
 
 [dependencies]
 streamerz-frontend = { path = "frontend" }

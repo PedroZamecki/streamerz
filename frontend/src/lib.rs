@@ -190,7 +190,7 @@ pub fn run() -> Result<(), String> {
                         #[cfg(feature = "test-support")]
                         dev::dispatch(&value, window_handle, &view, cx);
                         #[cfg(not(feature = "test-support"))]
-                        send(json!({"request": "FrontendDevResult", "commandId": value["commandId"], "result": "frontend instrumentation requires gpui-dev"}));
+                        send(json!({"request": "FrontendDevResult", "commandId": value["commandId"], "result": "frontend instrumentation requires dev-ui"}));
                     } else if value["event"] == "core.changed" {
                         if let Some(dark) = value["appearance"]["dark"].as_bool() {
                             cx.update(|cx| {

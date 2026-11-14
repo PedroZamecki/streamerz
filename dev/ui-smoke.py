@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Exercise the GPUI process boundary and shared forms on DISPLAY=:99 with private settings.
+"""Exercise the window's process boundary and shared forms on DISPLAY=:99 with private settings.
 
-Build: cargo build --profile fast --features gpui-dev
+Build: cargo build --profile fast --features dev-ui
 Use VK_DRIVER_FILES for a software Vulkan ICD when Xvfb has no DRI3.
-This covers migrated entity lists, not full production parity.
+Every bug fixed that only shows on screen adds a step here.
 """
 import sys
 import locale
@@ -25,18 +25,18 @@ from concurrent.futures import ThreadPoolExecutor
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", nargs="?", type=Path, default=Path("target/fast/Streamerz"))
-    parser.add_argument("--out", type=Path, default=Path("target/gpui-smoke"))
+    parser.add_argument("--out", type=Path, default=Path("target/ui-smoke"))
     parser.add_argument("--theme", choices=("dark", "light"), default="dark")
     parser.add_argument("--wine", action="store_true", help="Run a Windows executable in a dedicated Wine prefix")
     parser.add_argument("--wine-bin", default="wine", help="Wine executable to run a Windows build with")
-    parser.add_argument("--wine-prefix", type=Path, default=Path("target/gpui-wine"))
+    parser.add_argument("--wine-prefix", type=Path, default=Path("target/ui-wine"))
     args = parser.parse_args()
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     smoke.PORT = int(os.environ.get("STREAMERZ_SMOKE_PORT", "8098"))
     smoke.require_free_port(smoke.PORT)
-    name = "Streamerz GPUI test " + uuid.uuid4().hex
-    with tempfile.TemporaryDirectory(prefix="streamerz-gpui-source-") as source:
+    name = "Streamerz UI test " + uuid.uuid4().hex
+    with tempfile.TemporaryDirectory(prefix="streamerz-ui-source-") as source:
         config = Path(source) / "streamerz"
         config.mkdir()
         # The fixture deliberately has a non-default name, so the handshake also verifies --config.
@@ -316,9 +316,9 @@ def main():
                 click("Add")
                 time.sleep(.25)
                 shot("command-form-narrow")
-                type_value("Name", "GPUI smoke command")
+                type_value("Name", "Smoke command")
                 click("OK")
-                command_id = get("command", "GPUI smoke command")["id"]
+                command_id = get("command", "Smoke command")["id"]
                 shot("command-created")
                 click("On/Off")
                 reply = ws.ask({"request": "StreamerzGet", "what": "command", "itemId": command_id, "id": "read"})
@@ -327,16 +327,16 @@ def main():
                 type_value("Name", "Cancelled name")
                 click("Cancel")
                 reply = ws.ask({"request": "StreamerzGet", "what": "command", "itemId": command_id, "id": "read"})
-                assert reply["item"]["name"] == "GPUI smoke command", reply
+                assert reply["item"]["name"] == "Smoke command", reply
                 # Filtering and both row and empty-list menus use the same shared actions.
-                type_value("Search", "GPUI smoke command")
-                click("GPUI smoke command", role="Cell", button=3)
+                type_value("Search", "Smoke command")
+                click("Smoke command", role="Cell", button=3)
                 shot("command-context-menu")
                 click("Edit")
-                type_value("Name", "GPUI filtered command")
+                type_value("Name", "Filtered command")
                 click("OK")
                 edited = ws.ask({"request":"StreamerzGet", "what":"command", "itemId":command_id, "id":"filtered-edit"})
-                assert edited["item"]["name"] == "GPUI filtered command", edited
+                assert edited["item"]["name"] == "Filtered command", edited
                 type_value("Search", "no matching command")
                 click("Nothing matches the search.", button=3)
                 shot("empty-context-menu")
@@ -346,58 +346,58 @@ def main():
                 # Invalid numeric values stay in the dialog and leave the core unchanged.
                 load_page("Timers")
                 click("Add")
-                type_value("Name", "GPUI smoke timer")
+                type_value("Name", "Smoke timer")
                 type_value("Interval (s)", "invalid")
                 click("OK")
                 assert 'whole number' in ui("tree")
                 shot("timer-validation")
                 type_value("Interval (s)", "45")
                 click("OK")
-                assert get("timer", "GPUI smoke timer")["interval"] == 45
+                assert get("timer", "Smoke timer")["interval"] == 45
                 click("Edit")
                 type_value("Name", "Unsaved JSON timer")
                 click("Edit JSON")
                 shot("timer-json-draft")
-                assert get("timer", "GPUI smoke timer")["interval"] == 45
+                assert get("timer", "Smoke timer")["interval"] == 45
                 click("Cancel")
                 click("Edit")
                 click("Edit JSON")
                 type_value("Edit JSON", "broken")
                 click("OK")
                 assert "Not valid JSON" in ui("tree")
-                item = get("timer", "GPUI smoke timer")
-                item["name"] = "GPUI JSON timer"
+                item = get("timer", "Smoke timer")
+                item["name"] = "JSON timer"
                 type_value("Edit JSON", json.dumps(item))
                 click("OK")
-                assert get("timer", "GPUI JSON timer")["interval"] == 45
+                assert get("timer", "JSON timer")["interval"] == 45
                 # Two independently selected lists share the controller and forms.
                 load_page("Files")
                 click("Add")
-                type_value("Name", "GPUI smoke watcher")
+                type_value("Name", "Smoke watcher")
                 click("Enabled", role="CheckBox")
                 click("OK")
-                assert get("file_watcher", "GPUI smoke watcher")["enabled"] is False
+                assert get("file_watcher", "Smoke watcher")["enabled"] is False
                 shot("file-watcher-created")
                 click("Add", occurrence=1)
-                type_value("Name", "GPUI smoke tail")
+                type_value("Name", "Smoke tail")
                 click("Enabled", role="CheckBox")
                 click("OK")
-                assert get("file_tail", "GPUI smoke tail")["enabled"] is False
+                assert get("file_tail", "Smoke tail")["enabled"] is False
                 shot("file-tail-created")
                 # Deleting a row has a cancellable in-window confirmation.
                 click("Delete", occurrence=1)
                 click("Cancel")
-                assert get("file_tail", "GPUI smoke tail")["name"] == "GPUI smoke tail"
+                assert get("file_tail", "Smoke tail")["name"] == "Smoke tail"
                 # The click can land while the cancelled confirmation is still leaving: ask again if none opens.
                 for attempt in range(3):
                     click("Delete", occurrence=1)
                     time.sleep(.5)
-                    if any(entry["label"] == "Delete GPUI smoke tail" for entry in json.loads(ui("bounds Delete GPUI smoke tail"))):
+                    if any(entry["label"] == "Delete Smoke tail" for entry in json.loads(ui("bounds Delete Smoke tail"))):
                         break
                 shot("delete-confirmation")
-                click("Delete GPUI smoke tail")
+                click("Delete Smoke tail")
                 time.sleep(.3)
-                reply = ws.ask({"request":"StreamerzGet", "what":"file_tail", "name":"GPUI smoke tail", "itemId":"", "id":"deleted"})
+                reply = ws.ask({"request":"StreamerzGet", "what":"file_tail", "name":"Smoke tail", "itemId":"", "id":"deleted"})
                 assert reply["status"] == "error", reply
                 load_page("Servers")
                 for title, kind in (("WebSocket server","server_websocket"), ("HTTP server","server_http"), ("UDP server","server_udp"), ("Stream Deck server","server_stream_deck")):
@@ -419,18 +419,18 @@ def main():
                 assert settings["item"]["port"] == 7488 and settings["item"]["autoStart"] is False, settings
                 # Client changes keep disabled clients free of sockets and timers.
                 click("Add")
-                type_value("Name", "GPUI smoke client")
+                type_value("Name", "Smoke client")
                 click("OK")
-                assert get("websocket_client", "GPUI smoke client")["autoConnect"] is False
+                assert get("websocket_client", "Smoke client")["autoConnect"] is False
                 shot("websocket-client-created")
-                controls = json.loads(ui("bounds GPUI smoke client"))
+                controls = json.loads(ui("bounds Smoke client"))
                 switches = [control for control in controls if "Switch" in control["role"]]
                 assert switches and all(not control["enabled"] for control in switches), controls
                 # Pending core input survives ending and recreating the renderer process.
                 def ask_input():
                     client = smoke.Ws(expected_name=name)
                     try:
-                        return client.ask({"request":"StreamerzRunSubaction", "item":{"type":1023,"title":"GPUI prompt","prompt":"Your name","outputVariable":"answer"}, "id":"prompt-run"})
+                        return client.ask({"request":"StreamerzRunSubaction", "item":{"type":1023,"title":"Smoke prompt","prompt":"Your name","outputVariable":"answer"}, "id":"prompt-run"})
                     finally:
                         client.s.close()
                 with ThreadPoolExecutor(max_workers=1) as executor:
