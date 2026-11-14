@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -28,6 +29,7 @@ def main():
     parser.add_argument("--out", type=Path, default=Path("target/ui-smoke"))
     parser.add_argument("--theme", choices=("dark", "light"), default="dark")
     parser.add_argument("--locale", default="en_US", help="Another language runs only the layout checks (nothing cut off, dialogs reopen)")
+    parser.add_argument("--layout-only", action="store_true", help="Check page and dialog layouts without the mutation tests")
     parser.add_argument("--wine", action="store_true", help="Run a Windows executable in a dedicated Wine prefix")
     parser.add_argument("--wine-bin", default="wine", help="Wine executable to run a Windows build with")
     parser.add_argument("--wine-prefix", type=Path, default=Path("target/ui-wine"))
@@ -49,9 +51,16 @@ def main():
             env.update(WINEPREFIX=str(args.wine_prefix.resolve()), WINEDEBUG="-all", WINEDLLOVERRIDES="mscoree,mshtml=;", GPUI_DISABLE_DIRECT_COMPOSITION="1")
         def native_path(path):
             return "Z:" + str(Path(path).resolve()).replace("/", chr(92)) if args.wine else str(path)
+        # The backend launches its renderer again from this path. A concurrent development build
+        # may replace target/fast/Streamerz, so keep this test's executable reachable until it ends.
+        binary = Path(source) / ("Streamerz.exe" if args.wine else "Streamerz")
+        try:
+            os.link(args.binary.resolve(), binary)
+        except OSError:
+            shutil.copy2(args.binary.resolve(), binary)
         ws = None
         with (out / "runtime.log").open("w") as log:
-            app = subprocess.Popen(([args.wine_bin] if args.wine else []) + [str(args.binary.resolve()), "--config", native_path(config / "fixture.json")], env=env, stdout=log, stderr=log)
+            app = subprocess.Popen(([args.wine_bin] if args.wine else []) + [str(binary), "--config", native_path(config / "fixture.json")], env=env, stdout=log, stderr=log)
             try:
                 deadline = time.monotonic() + 30
                 while time.monotonic() < deadline:
@@ -83,11 +92,23 @@ def main():
                         matches = [entry for entry in found if entry["label"] == label and entry.get("enabled", True) and (role is None or role in entry["role"])]
                         if len(matches) > occurrence:
                             entry = matches[occurrence]
+                            # A form can recenter after a reply or validation message. Use the current
+                            # rendered bounds rather than clicking where its footer was a frame ago.
+                            time.sleep(.2)
+                            current = json.loads(ui("bounds " + label))
+                            if not any(all(candidate.get(key) == entry.get(key) for key in ("path", "x", "y", "w", "h", "enabled")) for candidate in current):
+                                continue
                             x, y = round(entry["x"] + entry["w"] / 2), round(entry["y"] + entry["h"] / 2)
                             print(f"click {label}: {entry['role']} at {x},{y}", flush=True)
                             subprocess.run(["xdotool", "mousemove", str(x), str(y), "click", "--repeat", str(count), str(button)], env=env, check=True)
                             if label in ("Add", "Edit", "Cancel", "Save", "OK", "Edit JSON"):
                                 time.sleep(.3)
+                            if label in (strings["dialogs.cancel"], strings["dialogs.close"]):
+                                path = entry.get("path")
+                                while path and any(e.get("path") == path for e in json.loads(ui("bounds " + label))):
+                                    if time.monotonic() >= deadline:
+                                        raise RuntimeError(f"{label} did not close its dialog")
+                                    time.sleep(.05)
                             return
                     (out / "lookup-failure.json").write_text(ui("bounds "))
                     ui("shot " + native_path(out / "lookup-failure.png"))
@@ -100,7 +121,9 @@ def main():
                     if label == "Search":
                         shot("search-focused")
                         print("page after focus:", ui("currentpage"), flush=True)
-                    subprocess.run(["xdotool", "key", "ctrl+a", "type", "--clearmodifiers", value], env=env, check=True)
+                    subprocess.run(["xdotool", "key", "ctrl+a", "BackSpace"], env=env, check=True)
+                    if value:
+                        subprocess.run(["xdotool", "type", "--clearmodifiers", value], env=env, check=True)
                 def get(kind, name):
                     deadline = time.monotonic() + 10
                     while time.monotonic() < deadline:
@@ -110,6 +133,14 @@ def main():
                     shot("save-failure")
                     print(ws.ask({"request":"StreamerzGet", "what":kind, "itemId":"", "id":"failed-read"}), flush=True)
                     raise RuntimeError(f"the form did not save {kind} {name}")
+                def wait_saved(kind, name):
+                    item = get(kind, name)
+                    deadline = time.monotonic() + 10
+                    while any("cancel-form" in e.get("path", "") for e in json.loads(ui("bounds "))):
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError("saved form did not close")
+                        time.sleep(.05)
+                    return item
                 def shot(stem):
                     path = out / (stem + ".png")
                     result = ui("shot " + native_path(path))
@@ -184,6 +215,37 @@ def main():
                             resize(width, height)
                             load_page(page)
                             no_overflow(f"{page}-{width}")
+                            if args.layout_only or args.locale != "en_US" or page == "Accounts":
+                                assert shot(f"{page.lower().replace(' ', '_')}-{width}") == (width, height)
+                    # Every linked action must remain reachable, including beyond the first row.
+                    action_names = [f"Layout action {number} with a longer name" for number in range(1, 4)]
+                    layout_actions = []
+                    for action_name in action_names:
+                        created = ws.ask({"request":"StreamerzEditEntity", "kind":"act:action_add", "changes":[{"field":0,"value":action_name}], "id":"layout-action"})
+                        assert created["status"] == "ok", created
+                        layout_actions.append(created["saved"])
+                    for page in ("Commands", "Timers"):
+                        if page == "Timers":
+                            default = ws.ask({"request":"StreamerzEntityForm", "kind":"timer", "id":"localized-timer"})
+                            assert default["item"]["name"] == strings["automation.timer_new_name"], default
+                        for width, height in ((1100, 800), (540, 700)):
+                            resize(width, height)
+                            load_page(page)
+                            click(strings["btn.add"])
+                            deadline = time.monotonic() + 10
+                            while not any("cancel-form" in e.get("path", "") for e in json.loads(ui("bounds "))):
+                                if time.monotonic() >= deadline:
+                                    raise RuntimeError(f"the {page} form did not open")
+                                time.sleep(.05)
+                            no_overflow(f"{page}-form-{width}")
+                            if page == "Timers":
+                                for action_name in action_names:
+                                    assert any("CheckBox" in entry["role"] for entry in json.loads(ui("bounds " + action_name))), action_name
+                            shot(f"{page.lower()}-form-{width}")
+                            click(strings["dialogs.cancel"])
+                    for action_id in layout_actions:
+                        removed = ws.ask({"request":"StreamerzCoreAction", "domain":"actions", "action":"action_delete", "itemId":action_id,"id":"layout-cleanup"})
+                        assert removed["status"] == "ok", removed
                     # TikTok's setup dialog: it fits in both of its modes, and it opens again after its footer's
                     # Close (that Close once skipped the dialog's cancel, and the page never opened it again).
                     resize(1100, 1000)
@@ -192,6 +254,7 @@ def main():
                     def footer_close():
                         return [e for e in json.loads(ui("bounds " + close)) if e["label"] == close and e["w"] > 30]
                     for attempt in range(2):
+                        resize(1100 if attempt == 0 else 640, 1000 if attempt == 0 else 900)
                         click(strings["btn.set_up"])
                         deadline = time.monotonic() + 10
                         while not footer_close() and time.monotonic() < deadline:
@@ -199,10 +262,12 @@ def main():
                         assert footer_close(), f"the TikTok dialog did not open (attempt {attempt + 1})"
                         time.sleep(.4)
                         no_overflow(f"tiktok-dialog-{attempt}")
+                        shot(f"tiktok-dialog-{attempt}")
                         toggle = "accounts.tiktok_sending.simple_mode" if attempt else "accounts.tiktok_sending.advanced_mode"
                         click(strings[toggle])
                         time.sleep(.4)
                         no_overflow(f"tiktok-dialog-{attempt}-toggled")
+                        shot(f"tiktok-dialog-{attempt}-toggled")
                         entry = footer_close()[0]
                         subprocess.run(["xdotool", "mousemove", str(round(entry["x"] + entry["w"] / 2)), str(round(entry["y"] + entry["h"] / 2)), "click", "1"], env=env, check=True)
                         deadline = time.monotonic() + 10
@@ -210,8 +275,8 @@ def main():
                             time.sleep(.05)
                         assert not footer_close(), "Close left the TikTok dialog open"
                     # A dialog whose model has no title takes its button's (Chat settings once had an empty header).
-                    load_page("Settings")
-                    label = strings["btn.chat_settings"]
+                    load_page("Chat")
+                    label = strings["chat.options"]
                     click(label)
                     deadline = time.monotonic() + 10
                     while not footer_close() and time.monotonic() < deadline:
@@ -221,8 +286,8 @@ def main():
                     entry = footer_close()[0]
                     subprocess.run(["xdotool", "mousemove", str(round(entry["x"] + entry["w"] / 2)), str(round(entry["y"] + entry["h"] / 2)), "click", "1"], env=env, check=True)
                 layout_pass()
-                if args.locale != "en_US":
-                    print(f"ok: layout in {args.locale}", flush=True)
+                if args.layout_only or args.locale != "en_US":
+                    print(f"ok: {args.theme} layout in {args.locale}", flush=True)
                     return
                 for page in ("Commands", "Timers", "Files", "Stream Apps", "Servers"):
                     for width, height in ((1100, 800), (540, 700)):
@@ -241,14 +306,15 @@ def main():
                         resize(width, height)
                         load_page(page)
                         assert shot(f"{page.lower()}-{width}") == (width, height), page
-                # Donations: three rows each have their own Edit button (they once shared one element id, and only
+                # Donations: three rows each have their own Configure button (they once shared one element id, and only
                 # the last answered); the MCP connection's fields are inline.
                 resize(1100, 800)
                 load_page("Donations")
-                edits = [entry for entry in json.loads(ui("bounds Edit")) if entry["label"] == "Edit"]
+                edits = [entry for entry in json.loads(ui("bounds Configure")) if entry["label"] == "Configure"]
                 assert len(edits) == 3, edits
-                click("Edit", occurrence=0)
-                click("Cancel")
+                for _ in range(2):
+                    click("Configure", occurrence=0)
+                    click("Cancel")
                 load_page("MCP")
                 assert any(entry["label"] == "Port" for entry in json.loads(ui("bounds Port"))), "MCP port field"
                 # Actions: the tree, the open action's editor, the pickers, the forms and the operations are the core's.
@@ -283,9 +349,9 @@ def main():
                 resize(1100, 800)
                 # A notice that is only acknowledged has one button: Check now in a dev build says it doesn't update.
                 load_page("Settings")
-                at = re.search(r" at (-?\d+)\.?\d*,(-?\d+)", ui("windows"))
-                subprocess.run(["xdotool", "mousemove", str(int(at[1]) + 600), str(int(at[2]) + 400), "click", "--repeat", "15", "5"], env=env, check=True)
-                time.sleep(.3)
+                type_value("Search settings", "history")
+                assert any(e["label"] == "Keep chat history" for e in json.loads(ui("bounds Keep chat history")))
+                type_value("Search settings", "")
                 click("Check now")
                 deadline = time.monotonic() + 10
                 while not [e for e in json.loads(ui("bounds OK")) if e["label"] == "OK"] and time.monotonic() < deadline:
@@ -367,19 +433,28 @@ def main():
                 assert ws.ask({"request": "StreamerzCoreAction", "domain": "community", "action": "credits_reset", "id": "credits-reset"})["status"] == "ok"
                 model = ws.ask({"request": "StreamerzCoreView", "domain": "commands", "id": "model"})
                 assert model["tables"][0]["rows"][0]["cells"][4]["platforms"] == ["twitch", "youtube", "kick", "tiktok"], model
+                load_page("Chat")
+                click("Turn on chat history")
+                assert ws.ask({"request":"StreamerzCoreView","domain":"chat","id":"history-enabled"})["chat"]["history"] is True
                 load_page("Commands")
+                for _ in range(2):
+                    click("Add")
+                    click("Cancel")
                 click("Add")
                 time.sleep(.25)
-                shot("command-form-narrow")
-                type_value("Name", "Smoke command")
-                click("OK")
-                command_id = get("command", "Smoke command")["id"]
+                shot("command-form-wide")
+                type_value("Commands", "!smoke")
+                type_value("Reply text", "Hello from smoke")
+                click("More options")
+                type_value("Name (optional)", "Smoke command")
+                click("Add command")
+                command_id = wait_saved("command", "Smoke command")["id"]
                 shot("command-created")
                 click("On/Off")
                 reply = ws.ask({"request": "StreamerzGet", "what": "command", "itemId": command_id, "id": "read"})
                 assert reply["item"]["enabled"] is False, reply
                 click("Edit")
-                type_value("Name", "Cancelled name")
+                type_value("Name (optional)", "Cancelled name")
                 click("Cancel")
                 reply = ws.ask({"request": "StreamerzGet", "what": "command", "itemId": command_id, "id": "read"})
                 assert reply["item"]["name"] == "Smoke command", reply
@@ -388,10 +463,10 @@ def main():
                 click("Smoke command", role="Cell", button=3)
                 shot("command-context-menu")
                 click("Edit")
-                type_value("Name", "Filtered command")
-                click("OK")
-                edited = ws.ask({"request":"StreamerzGet", "what":"command", "itemId":command_id, "id":"filtered-edit"})
-                assert edited["item"]["name"] == "Filtered command", edited
+                type_value("Name (optional)", "Filtered command")
+                click("Save")
+                edited = wait_saved("command", "Filtered command")
+                assert edited["id"] == command_id, edited
                 type_value("Search", "no matching command")
                 click("Nothing matches the search.", button=3)
                 shot("empty-context-menu")
@@ -402,13 +477,13 @@ def main():
                 load_page("Timers")
                 click("Add")
                 type_value("Name", "Smoke timer")
-                type_value("Interval (s)", "invalid")
-                click("OK")
-                assert 'whole number' in ui("tree")
+                type_value("Interval", "invalid")
+                click("Save draft")
+                assert 'duration' in ui("tree").lower()
                 shot("timer-validation")
-                type_value("Interval (s)", "45")
-                click("OK")
-                assert get("timer", "Smoke timer")["interval"] == 45
+                type_value("Interval", "45 s")
+                click("Save draft")
+                assert wait_saved("timer", "Smoke timer")["interval"] == 45
                 click("Edit")
                 type_value("Name", "Unsaved JSON timer")
                 click("Edit JSON")
@@ -417,27 +492,35 @@ def main():
                 click("Cancel")
                 click("Edit")
                 click("Edit JSON")
+                subprocess.run(["xdotool", "key", "Escape"], env=env, check=True)
+                deadline = time.monotonic() + 10
+                while any("cancel-form" in entry.get("path", "") for entry in json.loads(ui("bounds "))):
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("Escape did not close the JSON editor")
+                    time.sleep(.05)
+                click("Edit")
+                click("Edit JSON")
                 type_value("Edit JSON", "broken")
-                click("OK")
+                click("Save")
                 assert "Not valid JSON" in ui("tree")
                 item = get("timer", "Smoke timer")
                 item["name"] = "JSON timer"
                 type_value("Edit JSON", json.dumps(item))
-                click("OK")
-                assert get("timer", "JSON timer")["interval"] == 45
+                click("Save")
+                assert wait_saved("timer", "JSON timer")["interval"] == 45
                 # Two independently selected lists share the controller and forms.
                 load_page("Files")
                 click("Add")
                 type_value("Name", "Smoke watcher")
                 click("Enabled", role="CheckBox")
                 click("OK")
-                assert get("file_watcher", "Smoke watcher")["enabled"] is False
+                assert wait_saved("file_watcher", "Smoke watcher")["enabled"] is False
                 shot("file-watcher-created")
                 click("Add", occurrence=1)
                 type_value("Name", "Smoke tail")
                 click("Enabled", role="CheckBox")
                 click("OK")
-                assert get("file_tail", "Smoke tail")["enabled"] is False
+                assert wait_saved("file_tail", "Smoke tail")["enabled"] is False
                 shot("file-tail-created")
                 # Deleting a row has a cancellable in-window confirmation.
                 click("Delete", occurrence=1)
@@ -476,7 +559,7 @@ def main():
                 click("Add")
                 type_value("Name", "Smoke client")
                 click("OK")
-                assert get("websocket_client", "Smoke client")["autoConnect"] is False
+                assert wait_saved("websocket_client", "Smoke client")["autoConnect"] is False
                 shot("websocket-client-created")
                 controls = json.loads(ui("bounds Smoke client"))
                 switches = [control for control in controls if "Switch" in control["role"]]
