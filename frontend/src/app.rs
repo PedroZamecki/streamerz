@@ -585,34 +585,33 @@ impl Render for Frontend {
             .flex_1()
             .min_h_0()
             .gap_0()
-            .overflow_y_scrollbar()
-            .child(
-                div().flex().h(px(24.)).ml(px(5.)).child(
-                    Button::new("fold")
-                        .mt(px(-2.))
-                        .text_color(rgb(if cx.theme().is_dark() { 0xb4b4b5 } else { 0x4c4c4d }))
-                        .small()
-                        .ghost()
-                        .w(px(26.))
-                        .px(px(0.))
-                        .child(
-                            Icon::empty()
-                                .path(if narrow {
-                                    "icons/panel-left-open.svg"
-                                } else {
-                                    "icons/panel-left-close.svg"
-                                })
-                                .size(px(17.)),
-                        )
-                        .accessibility_label(if narrow { tr("nav.unfold") } else { tr("nav.fold") })
-                        .tooltip(if narrow { tr("nav.unfold") } else { tr("nav.fold") })
-                        .disabled(small)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.folded = !this.folded;
-                            cx.notify();
-                        })),
-                ),
-            );
+            .overflow_y_scrollbar();
+        // Fixed above the list: it stays in view while the pages scroll.
+        let fold_button = div().flex().h(px(24.)).ml(px(5.)).child(
+            Button::new("fold")
+                .mt(px(-2.))
+                .text_color(rgb(if cx.theme().is_dark() { 0xb4b4b5 } else { 0x4c4c4d }))
+                .small()
+                .ghost()
+                .w(px(26.))
+                .px(px(0.))
+                .child(
+                    Icon::empty()
+                        .path(if narrow {
+                            "icons/panel-left-open.svg"
+                        } else {
+                            "icons/panel-left-close.svg"
+                        })
+                        .size(px(17.)),
+                )
+                .accessibility_label(if narrow { tr("nav.unfold") } else { tr("nav.fold") })
+                .tooltip(if narrow { tr("nav.unfold") } else { tr("nav.fold") })
+                .disabled(small)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.folded = !this.folded;
+                    cx.notify();
+                })),
+        );
         let mut title = self.selected.clone();
         let selected_bg: Hsla = rgb(if cx.theme().is_dark() { 0x2b2b2e } else { 0xdcdcdd }).into();
         for section in self.navigation.as_array().into_iter().flatten() {
@@ -743,6 +742,7 @@ impl Render for Frontend {
             .bg(cx.theme().sidebar)
             .border_r_1()
             .border_color(rgb(if cx.theme().is_dark() { 0x2b2b2e } else { 0xd4d4d8 }))
+            .child(fold_button)
             .child(navigation)
             .child(footer);
         let mut content = div()

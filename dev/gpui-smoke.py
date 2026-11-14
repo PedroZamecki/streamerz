@@ -217,6 +217,15 @@ def main():
                 for kind in ("trigger", "sub", "template"):
                     picker = ws.ask({"request": "StreamerzCoreView", "domain": "actions_picker", "kind": kind, "id": "picker"})
                     assert picker["status"] == "ok" and picker["nodes"], picker
+                # The sidebar's fold button stays on top when a short window scrolls the page list.
+                resize(1100, 320)
+                load_page("Actions")
+                subprocess.run(["xdotool", "mousemove", "60", "150", "click", "--repeat", "12", "5"], env=env, check=True)
+                time.sleep(.3)
+                fold = [e for e in json.loads(ui("bounds Show only the icons")) if e["label"] == "Show only the icons"]
+                top = int(re.search(r" at (-?\d+)\.?\d*,(-?\d+)", ui("windows"))[2])
+                assert fold and fold[0]["y"] - top < 40, f"the fold button scrolled away: {fold}, window top {top}"
+                resize(1100, 800)
                 # The trigger picker: the tree starts right under its search box (the box once took half the
                 # dialog), and Cancel and OK sit in the dialog's footer, with no Close beside them.
                 load_page("Actions")
