@@ -32,7 +32,9 @@ impl Changes {
             Event::Theme => 16,
             Event::Input => 32,
             Event::Dev => 64,
-            Event::Toggle | Event::Show | Event::Restart | Event::Quit => return,
+            // Another copy was started: the window comes to the front.
+            Event::Show => 128,
+            Event::Toggle | Event::Restart | Event::Quit => return,
         };
         self.topics.fetch_or(bit, Ordering::Release);
         self.ready.notify_one();
@@ -155,7 +157,7 @@ impl Frontend {
                         pending.insert(serial, reply);
                         protocol::write(&mut self.input, &json!({"event": "frontend.dev", "commandId": serial, "command": command})).await?;
                     }
-                    let names: Vec<_> = [(1, "config"), (2, "chat"), (4, "log"), (8, "images"), (16, "theme"), (32, "prompts")].into_iter().filter_map(|(bit, name)| (topics & bit != 0).then_some(name)).collect();
+                    let names: Vec<_> = [(1, "config"), (2, "chat"), (4, "log"), (8, "images"), (16, "theme"), (32, "prompts"), (128, "raise")].into_iter().filter_map(|(bit, name)| (topics & bit != 0).then_some(name)).collect();
                     if !names.is_empty() {
                         let mut notification = json!({"event":"core.changed", "topics":names});
                         if topics & 17 != 0 { notification["appearance"] = json!({"dark":crate::host::dark_of(&engine.config()), "animations":engine.config().animations}); }
@@ -200,5 +202,23 @@ mod tests {
             changes.mark(crate::host::Event::Image);
             assert_eq!(changes.next().await, 8);
         });
+    }
+}
+
+#[cfg(test)]
+mod raise_tests {
+    use super::Changes;
+    use crate::host::Event;
+    use std::sync::atomic::Ordering;
+
+    /// A start, the tray or another copy bring the window forward; a question (Get Input) only opens
+    /// it, so it never takes the focus from a game.
+    #[test]
+    fn only_the_users_asks_raise_the_window() {
+        let changes = Changes::default();
+        changes.mark(Event::Input);
+        assert_eq!(changes.topics.load(Ordering::Acquire) & 128, 0);
+        changes.mark(Event::Show);
+        assert_eq!(changes.topics.load(Ordering::Acquire) & 128, 128);
     }
 }

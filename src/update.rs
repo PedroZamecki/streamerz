@@ -724,6 +724,15 @@ pub async fn watch(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
 
 /// Starts the new build and quits this one.
 pub fn restart() -> ! {
+    // The user chose to restart: the new copy's window may take the front (Windows lets only the
+    // process the user acted on do that, unless it hands it on).
+    #[cfg(windows)]
+    // SAFETY: no pointers.
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(
+            windows_sys::Win32::UI::WindowsAndMessaging::ASFW_ANY,
+        );
+    }
     if let Some(exe) = exe() {
         let mut cmd = std::process::Command::new(exe);
         cmd.args(std::env::args_os().skip(1).filter(|a| a != "--restart-handover"));

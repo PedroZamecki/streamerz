@@ -42,6 +42,15 @@ pub fn show_running(config: &Path) -> bool {
     if ws["autoStart"] == false {
         return false;
     }
+    // This copy was started by the user, so Windows lets it take the front: it hands that on, or the
+    // running copy's window would open behind whatever is in front.
+    #[cfg(windows)]
+    // SAFETY: no pointers; ASFW_ANY lets the process that shows the window take the front.
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(
+            windows_sys::Win32::UI::WindowsAndMessaging::ASFW_ANY,
+        );
+    }
     let port = ws["port"].as_u64().and_then(|p| u16::try_from(p).ok()).unwrap_or(8080);
     let endpoint = ws["endpoint"].as_str().filter(|e| e.starts_with('/')).unwrap_or("/");
     ask_to_show(port, endpoint)

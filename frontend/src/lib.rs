@@ -197,6 +197,10 @@ pub fn run() -> Result<(), String> {
                         if value["topics"].as_array().is_some_and(|topics| topics.iter().any(|topic| topic == "prompts")) {
                             send(json!({"request":"StreamerzPrompts", "id":"prompts"}));
                         }
+                        // The user asked for the window (a start, the tray, a second start): in front of the others.
+                        if value["topics"].as_array().is_some_and(|topics| topics.iter().any(|topic| topic == "raise")) {
+                            let _ = window_handle.update(cx, |_, window, _| window.activate_window());
+                        }
                         view.update(cx, |view, cx| {
                             view.request_status();
                             let topics = value["topics"].as_array();

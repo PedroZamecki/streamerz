@@ -78,6 +78,10 @@ struct Host {
     id: String,
     engine: Weak<Engine>,
     ops: Vec<Value>,
+    /// The plugin's memory and `alloc`, kept once it has started: a host call reads them here, since
+    /// wasmi's `Caller::get_export` is miscompiled on Windows at opt-level 0 (it read a name's length
+    /// as a pointer and crashed).
+    exports: Option<(Memory, TypedFunc<i32, i32>)>,
 }
 
 pub struct Loaded {
@@ -129,17 +133,10 @@ fn read(mem: &[u8], packed: i64) -> Option<Value> {
 /// A host function's answer: `v` written into the plugin's memory (through its `alloc`), packed.
 fn write(caller: &mut Caller<'_, Host>, v: &Value) -> i64 {
     let bytes = v.to_string().into_bytes();
-    let Some(alloc) = caller
-        .get_export("alloc")
-        .and_then(|e| e.into_func())
-        .and_then(|f| f.typed::<i32, i32>(&*caller).ok())
-    else {
+    let Some((mem, alloc)) = caller.data().exports.clone() else {
         return 0;
     };
     let Ok(ptr) = alloc.call(&mut *caller, bytes.len() as i32) else {
-        return 0;
-    };
-    let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
         return 0;
     };
     if mem.write(&mut *caller, ptr as usize, &bytes).is_err() {
@@ -161,6 +158,7 @@ pub fn load(id: &str, path: &Path, engine: Weak<Engine>) -> Result<Loaded, Strin
             id: id.into(),
             engine,
             ops: Vec::new(),
+            exports: None,
         },
     );
     let mut linker = <Linker<Host>>::new(&wasm);
@@ -169,7 +167,8 @@ pub fn load(id: &str, path: &Path, engine: Weak<Engine>) -> Result<Loaded, Strin
             "streamerz",
             "call",
             |mut caller: Caller<'_, Host>, ptr: i32, len: i32| -> i64 {
-                let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
+                // None while the plugin starts: its start function gets no answers.
+                let Some((mem, _)) = caller.data().exports.clone() else {
                     return 0;
                 };
                 let req = read(mem.data(&caller), ((ptr as u32 as i64) << 32) | len as u32 as i64);
@@ -190,6 +189,7 @@ pub fn load(id: &str, path: &Path, engine: Weak<Engine>) -> Result<Loaded, Strin
     let alloc = inst
         .get_typed_func::<i32, i32>(&store, "alloc")
         .map_err(|e| format!("alloc: {e}"))?;
+    store.data_mut().exports = Some((memory, alloc.clone()));
     let on_event = inst
         .get_typed_func::<(i32, i32), i64>(&store, "on_event")
         .map_err(|e| format!("on_event: {e}"))?;
@@ -527,6 +527,34 @@ mod tests {
         let (reply, ops) = p.deliver(&json!({"kind": "subaction"})).unwrap();
         assert_eq!(reply.unwrap()["args"]["echoed"], true);
         assert_eq!(ops[0]["op"], "say");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An answer the host writes into the plugin's memory (through its `alloc`) reaches it: the path
+    /// that crashed on Windows.
+    #[test]
+    fn a_plugin_reads_an_answer() {
+        let ask_time = r#"(module
+          (import "streamerz" "call" (func $call (param i32 i32) (result i64)))
+          (memory (export "memory") 1)
+          (global $next (mut i32) (i32.const 1024))
+          (data (i32.const 0) "{\"name\":\"Clock\"}")
+          (data (i32.const 200) "{\"op\":\"now\"}")
+          (func (export "alloc") (param $n i32) (result i32)
+            (local $p i32)
+            (local.set $p (global.get $next))
+            (global.set $next (i32.add (global.get $next) (local.get $n)))
+            (local.get $p))
+          (func (export "manifest") (result i64) (i64.const 16))
+          (func (export "on_event") (param i32 i32) (result i64)
+            (call $call (i32.const 200) (i32.const 12))))"#;
+        let dir = std::env::temp_dir().join(format!("sz-clock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("clock.wasm");
+        std::fs::write(&path, ask_time).unwrap();
+        let mut p = load("clock", &path, Weak::new()).unwrap();
+        let (reply, _) = p.deliver(&json!({})).unwrap();
+        assert!(reply.unwrap()["unix"].as_f64().unwrap() > 1.7e9);
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -161,6 +161,8 @@ pub enum Message {
     Toggle,
     /// No tray icon (e.g. no StatusNotifier host on Linux): keep the window up, closing it quits.
     NoTray,
+    /// Show the window, in front (another copy was started).
+    Show,
     /// New log lines (sent only while the window is up).
     Log,
     /// A Get Input sub-action wants an answer (see `input`).
