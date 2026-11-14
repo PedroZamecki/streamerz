@@ -209,6 +209,17 @@ def main():
                         while footer_close() and time.monotonic() < deadline:
                             time.sleep(.05)
                         assert not footer_close(), "Close left the TikTok dialog open"
+                    # A dialog whose model has no title takes its button's (Chat settings once had an empty header).
+                    load_page("Settings")
+                    label = strings["btn.chat_settings"]
+                    click(label)
+                    deadline = time.monotonic() + 10
+                    while not footer_close() and time.monotonic() < deadline:
+                        time.sleep(.05)
+                    titles = [e for e in json.loads(ui("bounds " + label)) if e["label"] == label and "dialog-title" in e.get("path", "")]
+                    assert titles, "the Chat settings dialog has no title"
+                    entry = footer_close()[0]
+                    subprocess.run(["xdotool", "mousemove", str(round(entry["x"] + entry["w"] / 2)), str(round(entry["y"] + entry["h"] / 2)), "click", "1"], env=env, check=True)
                 layout_pass()
                 if args.locale != "en_US":
                     print(f"ok: layout in {args.locale}", flush=True)

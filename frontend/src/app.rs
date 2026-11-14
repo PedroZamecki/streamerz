@@ -403,7 +403,12 @@ impl Frontend {
                 window.close_dialog(cx);
             }
             if let Some(model) = prompts.and_then(|prompts| prompts.first()) {
-                let title = model["title"].as_str().unwrap_or_default().to_owned();
+                // A plain question (an update's) has no title of its own: it says whose it is.
+                let title = model["title"]
+                    .as_str()
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or("Streamerz")
+                    .to_owned();
                 self.prompt_id = model["id"].as_u64();
                 let prompt = cx.new(|cx| Prompt::new(model.clone(), window, cx));
                 self.prompt = Some(prompt.clone());

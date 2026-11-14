@@ -30,6 +30,8 @@ pub struct Sections {
     finder: Option<Entity<super::find::Finder>>,
     /// A button asked for a dialog: the next dialog view opens it (a refresh never does).
     opening: bool,
+    /// That button's label: the dialog's title when its model has none (Chat settings once had none).
+    opening_title: String,
     error: String,
     /// A narrow window: Settings stacks a row's control under its text.
     compact: bool,
@@ -47,6 +49,7 @@ impl Sections {
             form: None,
             dialog: None,
             opening: false,
+            opening_title: String::new(),
             finder: None,
             error: String::new(),
             compact: false,
@@ -143,6 +146,7 @@ impl Sections {
             cx.emit(Navigate(page.to_owned()));
         } else if let Some(domain) = button["dialog"].as_str() {
             self.opening = true;
+            self.opening_title = button["label"].as_str().unwrap_or_default().to_owned();
             send(
                 json!({"request": "StreamerzCoreView", "domain": domain, "id": format!("{}:dialog-view", self.route)}),
             );
@@ -207,7 +211,10 @@ impl Sections {
                 if !std::mem::take(&mut self.opening) {
                     return false;
                 }
-                let title = value["sections"][0]["title"].as_str().unwrap_or_default().to_owned();
+                let title = value["sections"][0]["title"]
+                    .as_str()
+                    .filter(|title| !title.is_empty())
+                    .map_or_else(|| std::mem::take(&mut self.opening_title), str::to_owned);
                 let nested = cx.new(|cx| Sections::new(value, format!("{}:dialog", self.route), window, cx));
                 self.dialog = Some(nested.clone());
                 let owner = cx.entity().downgrade();

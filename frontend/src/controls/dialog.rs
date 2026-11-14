@@ -36,6 +36,8 @@ pub fn shell(dialog: Dialog, title: impl Into<SharedString>, width: f32, cx: &Ap
                 .child(
                     div()
                         .id("dialog-title")
+                        .test_support()
+                        .aria_label(title.clone())
                         .min_w_0()
                         .truncate()
                         .child(title)
