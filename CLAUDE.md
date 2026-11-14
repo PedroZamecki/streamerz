@@ -22,7 +22,10 @@
   (`.github/workflows/build.yml`). Keep that working: don't add steps that change the tree after the PR
   is built.
 - Releases are automatic: each merge to `main` bumps the version from the commit types
-  (`type!:` major, `feat` minor, `fix`/`perf` patch) and publishes the Windows exe and the Linux AppImage (the only Linux file).
+  (`type!:` major, `feat` minor, `fix`/`perf` patch) and publishes the Windows exe and, on Linux, the AppImage,
+  the program alone, the .deb, .rpm and Arch packages and the .flatpak (`dev/packages.sh`, all from one build).
+  It also signs and puts the APT, DNF/zypper, pacman and Flatpak repositories on GitHub Pages
+  (`dev/publish-repos.sh`, key in the `PACKAGES_GPG_KEY` secret, public half `packaging/streamerz.asc`).
   Don't tag by hand, and don't bump the version in `Cargo.toml` (it's unused).
 - The name is **Streamerz**, capitalized, everywhere a person or the system sees it: UI, docs, window and
   notification titles, desktop entries, the executable (`Streamerz`, `Streamerz.exe`) and the release files.

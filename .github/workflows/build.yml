@@ -1,9 +1,12 @@
-# Pull requests: build Streamerz-windows-x86_64.exe (Windows) and Streamerz-linux-x86_64.AppImage as checks,
+# Pull requests: build Streamerz-windows-x86_64.exe (Windows) and, from one Linux build, the AppImage, the
+# program alone, the .deb, .rpm and Arch packages and the Flatpak repository (dev/packages.sh), as checks,
 # and keep them as artifacts named after the version and the repo's tree hash.
 # Merges to main: pick the next version from the commits since the last tag
 # (breaking "type!: " -> major, feat -> minor, fix/perf -> patch). If the merged tree is the one a pull
 # request already built (same tree, same version), those artifacts are published as they are: no second
 # build. Otherwise it builds, then publishes. Merges with only chore/ci/docs/... commits don't release.
+# The release also signs the Linux repositories and puts them on GitHub Pages (dev/publish-repos.sh), where
+# Flatpak, apt, dnf, zypper and pacman update from; signatures sit beside the files, which don't change.
 # PRs are merged with merge commits (never squashed), so every commit of the history stays.
 name: build
 
@@ -252,7 +255,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libx11-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libfontconfig-dev libfreetype-dev libssl-dev \
-            libfuse2 mold
+            libfuse2 mold flatpak appstream appstream-compose
           cp -n /var/cache/apt/archives/*.deb ~/.apt-cache/ 2>/dev/null || true
       - if: needs.version.outputs.reuse == ''
         uses: Swatinem/rust-cache@v2
@@ -271,6 +274,20 @@ jobs:
         run: |
           mkdir -p dist
           cp Streamerz-linux-x86_64.AppImage* dist/
+      # The same program as the program alone, the .deb, .rpm, Arch package and Flatpak repository.
+      - if: needs.version.outputs.reuse == ''
+        name: Pack the Linux packages
+        run: dev/packages.sh "${{ needs.version.outputs.tag || 'dev' }}"
+      - if: needs.version.outputs.reuse == ''
+        name: Check the Linux packages
+        run: |
+          dpkg-deb --contents dist/Streamerz-linux-x86_64.deb | grep -q '/usr/bin/Streamerz$'
+          dpkg-deb --contents dist/Streamerz-linux-x86_64.deb | grep -q '/etc/apt/sources.list.d/streamerz.sources$'
+          tar --zstd -tf dist/Streamerz-linux-x86_64.pkg.tar.zst | grep -qx 'usr/bin/Streamerz'
+          sudo apt-get install -y --no-install-recommends rpm > /dev/null
+          rpm -qlp dist/Streamerz-linux-x86_64.rpm | grep -qx '/etc/yum.repos.d/streamerz.repo'
+          cmp target/release/Streamerz dist/Streamerz-linux-x86_64
+          flatpak repo target/flatpak/repo
       - name: Prune transient build artifacts before caching
         if: needs.version.outputs.reuse == ''
         run: |
@@ -288,6 +305,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pages: write
+      id-token: write
+    # The Linux repositories live on GitHub Pages (Settings, Pages, source: GitHub Actions).
+    environment:
+      name: github-pages
+      url: https://pedrozamecki.github.io/streamerz/
     steps:
       - uses: actions/checkout@v4
         with:
@@ -297,6 +320,21 @@ jobs:
           pattern: streamerz-*-${{ needs.version.outputs.tag }}-${{ needs.version.outputs.tree }}
           path: artifacts
           merge-multiple: true
+      # Sign the repositories (the key is the PACKAGES_GPG_KEY secret; packaging/streamerz.asc is its
+      # public half), lay out the Pages site, and make the .flatpak from the signed Flatpak repository.
+      - name: Sign the Linux repositories
+        env:
+          PACKAGES_GPG_KEY: ${{ secrets.PACKAGES_GPG_KEY }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends flatpak createrepo-c apt-utils > /dev/null
+          printf '%s\n' "$PACKAGES_GPG_KEY" | gpg --batch --import
+          dev/publish-repos.sh "${{ needs.version.outputs.tag }}" artifacts
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: target/site
+      - name: Publish the Linux repositories
+        uses: actions/deploy-pages@v5
       # Notes list every commit since the last tag (GitHub's generator only lists pull requests).
       - name: Write release notes
         shell: bash

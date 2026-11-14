@@ -1,0 +1,83 @@
+# The .deb, .rpm and Arch packages, made from the release program by dev/packages.sh (nfpm).
+# Each one adds the Streamerz repository on GitHub Pages (signed with packaging/streamerz.asc), so
+# the system's updater updates Streamerz with everything else. Arch's pacman.conf is the user's to edit.
+name: streamerz
+arch: amd64
+platform: linux
+version: ${STREAMERZ_PACKAGE_VERSION}
+section: video
+priority: optional
+maintainer: PedroZamecki <PedroZamecki@users.noreply.github.com>
+vendor: Streamerz
+homepage: https://github.com/PedroZamecki/streamerz
+license: MIT
+description: |-
+  Stream automation: chat, actions and alerts for Twitch, YouTube, Kick and TikTok.
+  Streamer.bot's actions, triggers and servers, OBS Studio and Streamlabs Desktop,
+  in one small window that lives in the tray.
+
+contents:
+  - src: target/packaging/Streamerz
+    dst: /usr/bin/Streamerz
+    file_info: { mode: 0755 }
+  - src: target/packaging/streamerz.desktop
+    dst: /usr/share/applications/streamerz.desktop
+  - src: assets/brand/streamerz.png
+    dst: /usr/share/icons/hicolor/256x256/apps/streamerz.png
+  - src: assets/brand/streamerz.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/streamerz.svg
+  - src: target/packaging/streamerz.metainfo.xml
+    dst: /usr/share/metainfo/io.github.pedrozamecki.streamerz.metainfo.xml
+  - src: packaging/streamerz.asc
+    dst: /usr/share/keyrings/streamerz.asc
+  - src: packaging/streamerz.sources
+    dst: /etc/apt/sources.list.d/streamerz.sources
+    type: config|noreplace
+    packager: deb
+  - src: packaging/streamerz.repo
+    dst: /etc/yum.repos.d/streamerz.repo
+    type: config|noreplace
+    packager: rpm
+  - src: packaging/streamerz.repo
+    dst: /etc/zypp/repos.d/streamerz.repo
+    type: config|noreplace
+    packager: rpm
+
+overrides:
+  deb:
+    depends:
+      - libx11-6
+      - libxkbcommon0
+      - libxkbcommon-x11-0
+      - libssl3 | libssl3t64
+      - libbrotli1
+      - libzstd1
+      - zlib1g
+    recommends:
+      - xdg-utils
+  rpm:
+    # By library, so the same package fits Fedora and openSUSE (their package names differ).
+    depends:
+      - libX11.so.6()(64bit)
+      - libxkbcommon.so.0()(64bit)
+      - libxkbcommon-x11.so.0()(64bit)
+      - libssl.so.3()(64bit)
+      - libbrotlidec.so.1()(64bit)
+      - libzstd.so.1()(64bit)
+      - libz.so.1()(64bit)
+  archlinux:
+    depends:
+      - libx11
+      - libxkbcommon
+      - libxkbcommon-x11
+      - openssl
+      - brotli
+      - zstd
+      - zlib
+    recommends:
+      - xdg-utils
+
+rpm:
+  group: Applications/Multimedia
+archlinux:
+  packager: PedroZamecki <PedroZamecki@users.noreply.github.com>

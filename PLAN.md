@@ -33,7 +33,7 @@ phase, following `CLAUDE.md`.
 | Security | Tokens and cookies live in the OS keychain (Windows DPAPI, Linux Secret Service; `streamerz.json` with 0600 when there is none), are revoked on logout and never logged. The WebSocket and HTTP servers refuse browser origins other than local ones (`null`, `file://`, localhost) and an allowlist in Servers; clients without an Origin (apps) are unchanged. Importing actions that run programs asks first. Minimum scopes per account. |
 | Stream apps | OBS Studio (obs-websocket v5) and Streamlabs Desktop (its websocket API). Meld Studio and PolyPop are not supported. |
 | Integrations | Opt-in and off by default; a disabled one opens nothing. In scope: donations/shops (Ko-fi, StreamElements, Streamlabs, Patreon, Fourthwall, Throne, Tipeee, Treatstream, DonorDrive, Pally, Shopify, Streamloots) and webhooks/remote (Discord, IFTTT, pronouns, Streamer.bot remote instances). |
-| OS | Windows + Linux (Wayland, ksni tray). CI releases a Windows exe and the Linux AppImage on every release. |
+| OS | Windows + Linux (Wayland, ksni tray). CI releases a Windows exe and, on Linux, the AppImage, the program alone, .deb, .rpm, Arch and Flatpak packages, with signed APT, DNF/zypper, pacman and Flatpak repositories on GitHub Pages so the system updates them. |
 | Budget | Hidden window, Twitch + OBS connected: < 25 MB RSS and ~0% idle CPU, measured and written in every PR. Streamer.bot uses ~300 MB. |
 | Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only). No webview (wry/tao were removed in 1.1.0: TikTok uses the user's own browser). Pictures are decoded by the window, not the core. The window is the `frontend/` crate (GPUI and gpui-kit), kept out of the core's dependencies. HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. **tokio-native-tls** (the crate tokio-tungstenite's native-tls feature uses, for HTTPS), **regex-lite** (If/Else, While, Switch and regex commands; .NET's backreferences and lookaround aren't supported). Anything else needs a question first. |
 | TikTok | Public LIVE reading is native through `webcast.rs`. The optional extension is the single account for signed search, authenticated reading and sending (`tiktok_bridge.rs`). It uses TikTok's own scripts in an offscreen browser frame, with no visible helper tab, and recovers discarded contexts on demand. Chromium background mode permits use with all browser windows closed. Separate broadcaster and bot logins are retired; reader cookies are requested from the browser only when connecting and remain in memory. |
@@ -722,6 +722,14 @@ There is no per-page score threshold or repeated scoring requirement. Track the 
   list. Gifts are picked from a picture grid (`controls/gallery.rs`): picture, name and price, the details
   on hover, search, "Any gift" first, a reload icon; the id stays in Edit JSON. A gift trigger saves its
   gift's name beside the id (`giftName`), so its row reads "Gift (Rose)" before any list loads.
+- [x] Linux packages that update with the system: from the one Linux build, the program alone
+  (`Streamerz-linux-x86_64`, it updates itself like the exe), .deb, .rpm and Arch packages (nfpm) and a
+  Flatpak (runtime `org.freedesktop.Platform` 26.08, made without the SDK), with the AppImage
+  (`dev/packages.sh`). The release signs an APT, a DNF/zypper, a pacman and a Flatpak repository with one
+  key and puts them on GitHub Pages (`dev/publish-repos.sh`); the .deb and .rpm add theirs, the .flatpak adds
+  its remote. Updates of those come from the system: Streamerz looks only when Check now is pressed. In
+  Flatpak, settings stay in the host's `~/.config/streamerz` and host programs start through
+  `flatpak-spawn --host` (`src/sandbox.rs`); Process Started/Stopped can't see programs outside it.
 - [ ] Keep the version open for further requested changes.
 
 Version 1.6.0 decisions: speech and voice control are retired. Browser discovery and extension-store

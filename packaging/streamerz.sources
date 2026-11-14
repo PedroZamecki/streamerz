@@ -1,0 +1,5 @@
+# The Streamerz repository: updates come with the system's (apt). Added by the streamerz package.
+Types: deb
+URIs: https://pedrozamecki.github.io/streamerz/apt/
+Suites: ./
+Signed-By: /usr/share/keyrings/streamerz.asc

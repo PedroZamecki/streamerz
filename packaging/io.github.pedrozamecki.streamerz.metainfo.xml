@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- What software centers show (GNOME Software, Discover). dev/packages.sh fills in the release. -->
+<component type="desktop-application">
+  <id>io.github.pedrozamecki.streamerz</id>
+  <name>Streamerz</name>
+  <summary>Stream automation for Twitch, YouTube, Kick and TikTok</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="io.github.pedrozamecki">
+    <name>Pedro Zamecki</name>
+  </developer>
+  <description>
+    <p>
+      A light, fast stream automation app. Twitch, Kick, YouTube and TikTok chat, OBS Studio,
+      Streamlabs Desktop, and Streamer.bot's actions, triggers and servers, in one small window that
+      lives in your tray.
+    </p>
+  </description>
+  <launchable type="desktop-id">@DESKTOP_ID@</launchable>
+  <url type="homepage">https://github.com/PedroZamecki/streamerz</url>
+  <url type="bugtracker">https://github.com/PedroZamecki/streamerz/issues</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+</component>

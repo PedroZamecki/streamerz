@@ -66,15 +66,24 @@
 
 Download the latest [release](https://github.com/PedroZamecki/streamerz/releases):
 
-| System | File |
-| --- | --- |
-| Windows | `Streamerz-windows-x86_64.exe` |
-| Linux (any distribution) | `Streamerz-linux-x86_64.AppImage` (`chmod +x`, then run it) |
+| System | File | Updates |
+| --- | --- | --- |
+| Windows | `Streamerz-windows-x86_64.exe` | Streamerz |
+| Linux, Flatpak | `Streamerz-linux-x86_64.flatpak`, or `flatpak install --user https://pedrozamecki.github.io/streamerz/streamerz.flatpakref` | Flatpak, with your other apps |
+| Debian, Ubuntu, Mint | `Streamerz-linux-x86_64.deb` | `apt`, from the repository it adds |
+| Fedora, openSUSE | `Streamerz-linux-x86_64.rpm` | `dnf` or `zypper`, from the repository it adds |
+| Arch | `Streamerz-linux-x86_64.pkg.tar.zst`, or the [pacman repository](https://pedrozamecki.github.io/streamerz/) | `pacman` |
+| Linux (any distribution) | `Streamerz-linux-x86_64.AppImage`, or the program alone `Streamerz-linux-x86_64` (`chmod +x`, then run it) | Streamerz |
+
+[pedrozamecki.github.io/streamerz](https://pedrozamecki.github.io/streamerz/) has the steps for each. The
+Flatpak sees only part of your system: the **Process Started** and **Process Stopped** triggers can't see
+programs outside it (the other ways can).
 
 It starts hidden in the tray: click the icon to open the window. Settings are kept in `streamerz.json`
 (and the previous version in `streamerz.json.bak`). **Settings > Updates** chooses what happens with new
 versions: ask first (the default), download them in the background and use them at the next start, or
 leave them alone. Streamerz looks every hour while it's open and tells you with a desktop notification.
+The Flatpak and the packages are updated by the system instead, so they don't look.
 
 ## Where things live
 
