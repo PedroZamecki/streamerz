@@ -408,11 +408,10 @@ fn windows_apps_path(program: &str) -> Option<PathBuf> {
 /// `program` in the folders of PATH.
 #[cfg(not(windows))]
 fn on_path(program: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH")?
-        .to_str()?
-        .split(':')
-        .map(|d| Path::new(d).join(program))
-        .find(|p| p.is_file())
+    crate::sandbox::host_bin_dirs()
+        .into_iter()
+        .map(|d| d.join(program))
+        .find(|p| crate::sandbox::host_has(p))
 }
 
 const NON_BROWSERS: &[&str] = &[
@@ -723,6 +722,7 @@ impl Browser {
         if std::env::var_os("APPIMAGE").is_some() {
             c.env_remove("LD_LIBRARY_PATH").env_remove("LD_PRELOAD");
         }
+        let mut c = crate::sandbox::on_host(c);
         c.stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
@@ -893,6 +893,11 @@ fn running_profile(dir: &Path) -> bool {
     else {
         return false;
     };
+    // A Flatpak sandbox doesn't see the host's processes: the browser's socket says it runs.
+    #[cfg(target_os = "linux")]
+    if crate::sandbox::flatpak() {
+        return dir.join("SingletonSocket").exists();
+    }
     #[cfg(target_os = "linux")]
     return is_process_alive(pid);
     #[cfg(not(target_os = "linux"))]

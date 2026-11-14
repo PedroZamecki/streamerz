@@ -692,8 +692,16 @@ async fn portal_run(e: &Rc<Engine>, combos: &[(i64, i64)]) -> Result<(), Portal>
     let c = Connection::session().await.map_err(err)?;
     // The portal wants an app id; an app outside Flatpak names itself (portal 1.19+), and the name
     // must be a desktop file: a hidden one (not in the menus) is written when missing.
-    let entry = desktop_file().map_err(|x| format!("can't write streamerz.desktop ({x})"))?;
-    if let Ok(r) = Proxy::new(&c, DEST, PATH, "org.freedesktop.host.portal.Registry").await {
+    // In Flatpak, the portal knows the app by its sandbox: nothing to register.
+    let entry = if crate::sandbox::flatpak() {
+        None
+    } else {
+        Some(desktop_file().map_err(|x| format!("can't write streamerz.desktop ({x})"))?)
+    };
+    if let (Some(entry), Ok(r)) = (
+        &entry,
+        Proxy::new(&c, DEST, PATH, "org.freedesktop.host.portal.Registry").await,
+    ) {
         if let Err(x) = r
             .call_method("Register", &("streamerz", HashMap::<&str, Value>::new()))
             .await
@@ -803,8 +811,8 @@ fn desktop_file() -> std::io::Result<std::path::PathBuf> {
         .ok_or(std::io::ErrorKind::NotFound)?;
     let file = data.join("applications/streamerz.desktop");
     let body = format!(
-        "[Desktop Entry]\nType=Application\nName=Streamerz\nExec=\"{}\"\nNoDisplay=true\n",
-        crate::update::exe().ok_or(std::io::ErrorKind::NotFound)?.display()
+        "[Desktop Entry]\nType=Application\nName=Streamerz\nExec={}\nNoDisplay=true\n",
+        crate::update::launch_line().ok_or(std::io::ErrorKind::NotFound)?
     );
     if std::fs::read_to_string(&file).ok().as_deref() != Some(body.as_str()) {
         std::fs::create_dir_all(data.join("applications"))?;

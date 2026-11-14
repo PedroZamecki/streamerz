@@ -4503,9 +4503,10 @@ impl Engine {
         let args = self.expand(ctx, s(o, "arguments"));
         let dir = self.expand(ctx, s(o, "workingDir"));
         let wait = self.duration_number(ctx, o, "waitForExit");
-        let mut cmd = tokio::process::Command::new(&prog);
+        let mut cmd = std::process::Command::new(&prog);
         #[cfg(windows)]
         {
+            use std::os::windows::process::CommandExt;
             cmd.raw_arg(&args);
             cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         }
@@ -4521,6 +4522,8 @@ impl Engine {
                 cmd.env(k, self.expand(ctx, &text(v)));
             }
         }
+        // In Flatpak, the program is the host's.
+        let mut cmd = tokio::process::Command::from(crate::sandbox::on_host(cmd));
         cmd.stdin(std::process::Stdio::piped()).kill_on_drop(false);
         if wait > 0.0 {
             cmd.stdout(std::process::Stdio::piped());

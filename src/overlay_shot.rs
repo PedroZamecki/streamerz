@@ -82,7 +82,8 @@ pub async fn take(ask: Ask, ready: impl FnOnce()) -> Result<Value, String> {
         NEXT.fetch_add(1, Ordering::Relaxed)
     )));
     std::fs::create_dir_all(&scratch.0).map_err(|e| format!("cannot make a folder for the browser: {e}"))?;
-    let mut child = tokio::process::Command::new(&browser.exe)
+    let mut command = std::process::Command::new(&browser.exe);
+    command
         .arg("--headless=new")
         .arg("--remote-debugging-port=0")
         .arg(format!("--user-data-dir={}", scratch.0.display()))
@@ -95,7 +96,9 @@ pub async fn take(ask: Ask, ready: impl FnOnce()) -> Result<Value, String> {
             "--mute-audio",
             "--autoplay-policy=no-user-gesture-required",
             "about:blank",
-        ])
+        ]);
+    // In Flatpak, the browser is the host's.
+    let mut child = tokio::process::Command::from(crate::sandbox::on_host(command))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

@@ -159,7 +159,12 @@ pub async fn run(ui: Sender) {
     if let Some(s) = &settings {
         crate::host::system_accent(desktop_accent(s).await);
     }
-    match (Tray(ui.clone(), dark)).spawn().await {
+    // In Flatpak, the sandbox may not own a well-known bus name: the tray goes by its unique one.
+    match (Tray(ui.clone(), dark))
+        .disable_dbus_name(crate::sandbox::flatpak())
+        .spawn()
+        .await
+    {
         // The tray lives as long as its handle; its icon follows the desktop's colours.
         Ok(handle) => {
             if let Some(s) = &settings {

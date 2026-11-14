@@ -49,6 +49,7 @@ mod package;
 pub mod ports;
 pub mod remote;
 pub mod roles;
+mod sandbox;
 mod scenario;
 mod search;
 mod secrets;
@@ -1079,13 +1080,10 @@ fn autostart(on: bool) -> std::io::Result<()> {
         };
     }
     std::fs::create_dir_all(config.join("autostart"))?;
-    let exe = update::exe().ok_or(NotFound)?;
+    let exec = update::launch_line().ok_or(NotFound)?;
     std::fs::write(
         file,
-        format!(
-            "[Desktop Entry]\nType=Application\nName=Streamerz\nExec=\"{}\"\n",
-            exe.display()
-        ),
+        format!("[Desktop Entry]\nType=Application\nName=Streamerz\nExec={exec}\n"),
     )
 }
 
@@ -1265,6 +1263,8 @@ fn attach_parent_console() {
 }
 
 fn main() {
+    // In Flatpak, settings and caches stay in the host's folders, shared with every other copy.
+    sandbox::use_host_folders();
     if std::env::args_os().any(|arg| arg == "--frontend") {
         if let Err(error) = streamerz_frontend::run() {
             eprintln!("Streamerz frontend: {error}");
