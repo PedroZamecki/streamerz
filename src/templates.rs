@@ -57,11 +57,22 @@ pub struct Template {
 
 impl Template {
     pub fn title(&self) -> &'static str {
-        if self.name.starts_with("automation.") {
-            crate::i18n::tr(self.name)
-        } else {
-            self.name
-        }
+        let key = match self.name {
+            "Song requests (Spotify)" => "automation.recipe_songs",
+            "Welcome first chatters" => "automation.recipe_welcome",
+            "Thank follows" => "automation.recipe_follows",
+            "Thank subscriptions" => "automation.recipe_subscriptions",
+            "Thank gifted subs" => "automation.recipe_gifts",
+            "Thank cheers and Super Chats" => "automation.recipe_cheers",
+            "Raid welcome and shoutout" => "automation.recipe_raid",
+            "OBS scene on raid" => "automation.recipe_raid_scene",
+            "Socials every 20 minutes" => "automation.recipe_socials",
+            "Hydrate reminder" => "automation.recipe_hydrate",
+            "!lurk command" => "automation.recipe_lurk",
+            "!discord command" => "automation.recipe_discord",
+            name => name,
+        };
+        crate::i18n::tr(key)
     }
     pub fn description(&self) -> &'static str {
         if self.about.starts_with("automation.") {
@@ -78,8 +89,12 @@ pub(super) fn say(platform: &str, text: &str) -> Obj {
         "twitch" => 10,
         "youtube" => 4001,
         "kick" => 35001,
+        "tiktok" => 43001,
         _ => unreachable!("unsupported chat platform"),
     };
+    if platform == "tiktok" {
+        return with(new_sub(kind), json!({"text": text}));
+    }
     with(new_sub(kind), json!({"text": text, "useBot": true, "fallback": true}))
 }
 
@@ -91,8 +106,32 @@ fn with(mut o: Obj, more: Value) -> Obj {
 }
 
 /// An action in the "Templates" group with `triggers` (type codes) and `subs`, in order.
+fn localized_name(name: &str) -> &str {
+    match name {
+        "Song requests (Spotify)" => crate::i18n::tr("automation.recipe_songs"),
+        "Welcome first chatters" => crate::i18n::tr("automation.recipe_welcome"),
+        "Thank follows" => crate::i18n::tr("automation.recipe_follows"),
+        "Thank subscriptions" => crate::i18n::tr("automation.recipe_subscriptions"),
+        "Thank gifted subs" => crate::i18n::tr("automation.recipe_gifts"),
+        "Thank cheers and Super Chats" => crate::i18n::tr("automation.recipe_cheers"),
+        "Raid welcome and shoutout" => crate::i18n::tr("automation.recipe_raid"),
+        "OBS scene on raid" => crate::i18n::tr("automation.recipe_raid_scene"),
+        "Socials every 20 minutes" => crate::i18n::tr("automation.recipe_socials"),
+        "Hydrate reminder" => crate::i18n::tr("automation.recipe_hydrate"),
+        "!lurk command" => crate::i18n::tr("automation.recipe_lurk"),
+        "!discord command" => crate::i18n::tr("automation.recipe_discord"),
+        "Socials" => crate::i18n::tr("automation.recipe_socials"),
+        "Hydrate" => crate::i18n::tr("automation.recipe_hydrate"),
+        "Lurk" => crate::i18n::tr("automation.recipe_lurk"),
+        "Discord" => crate::i18n::tr("automation.recipe_discord"),
+        "Thank cheers" => crate::i18n::tr("automation.recipe_cheers"),
+        "Thank gifted subs (Twitch community)" => crate::i18n::tr("automation.recipe_community_gifts"),
+        name => name,
+    }
+}
+
 fn action(name: &str, triggers: &[u32], subs: Vec<Obj>) -> Action {
-    let mut a = new_action(name, "Templates");
+    let mut a = new_action(localized_name(name), crate::i18n::tr("btn.templates"));
     a.triggers = triggers.iter().map(|&t| new_trigger(t)).collect();
     a.sub_actions = subs
         .into_iter()
@@ -116,7 +155,13 @@ fn per_platform(name: &str, each: &[(&str, &[u32], &str)]) -> Made {
     Made {
         actions: each
             .iter()
-            .map(|(p, t, text)| action(&format!("{name} ({})", title(p)), t, vec![say(p, text)]))
+            .map(|(p, t, text)| {
+                action(
+                    &format!("{} ({})", localized_name(name), title(p)),
+                    t,
+                    vec![say(p, text)],
+                )
+            })
             .collect(),
         ..Default::default()
     }
@@ -124,6 +169,7 @@ fn per_platform(name: &str, each: &[(&str, &[u32], &str)]) -> Made {
 
 /// A timer and the action it runs, saying `text` on every platform (those not connected skip it).
 fn timed(name: &str, minutes: u64, text: &str) -> Made {
+    let name = localized_name(name);
     let timer_id = crate::engine::uuid();
     let timer = json!({"id": timer_id, "name": name, "enabled": true, "repeat": true, "interval": minutes * 60,
         "randomInterval": false, "upperInterval": 0, "lines": 0, "counter": 0});
@@ -142,11 +188,12 @@ fn timed(name: &str, minutes: u64, text: &str) -> Made {
 
 /// A chat command on every platform answering with `response` (no action needed).
 fn command(name: &str, alias: &str, response: &str, cooldown: u64) -> Made {
+    let name = localized_name(name);
     let c = json!({"permittedUsers": [], "permittedGroups": [], "id": crate::engine::uuid(), "name": name,
         "enabled": true, "include": true, "mode": 0, "command": alias, "regexExplicitCapture": false,
         "location": 0, "ignoreBotAccount": true, "ignoreInternal": true,
         "sources": 1 | 1024 | 2_097_152 | 4_194_304, "persistCounter": false, "persistUserCounter": false,
-        "caseSensitive": false, "globalCooldown": 0, "userCooldown": cooldown, "group": "Templates",
+        "caseSensitive": false, "globalCooldown": 0, "userCooldown": cooldown, "group": crate::i18n::tr("btn.templates"),
         "grantType": 0, "response": response, "replyAll": false});
     Made {
         commands: c.as_object().cloned().into_iter().collect(),
@@ -155,67 +202,84 @@ fn command(name: &str, alias: &str, response: &str, cooldown: u64) -> Made {
 }
 
 pub const TEMPLATES: &[Template] = &[
-    Template { name: "automation.template_gifts", about: "automation.template_gifts_about", make: automation::gift_thanks },
-    Template { name: "automation.template_reward", about: "automation.template_reward_about", make: automation::reward_source },
+    Template {
+        name: "automation.template_gifts",
+        about: "automation.template_gifts_about",
+        make: automation::gift_thanks,
+    },
+    Template {
+        name: "automation.template_reward",
+        about: "automation.template_reward_about",
+        make: automation::reward_source,
+    },
     Template {
         name: "Song requests (Spotify)",
-        about: "Viewers request songs for your Spotify queue with !sr, and use !song, !queue, !remove and !skip. Who can request, the limits and the replies are the group's settings. Streamerz only.",
+        about: "automation.recipe_songs_about",
         make: songs::made,
     },
     Template {
         name: "Welcome first chatters",
-        about: "Greets someone the first time they chat in a stream (Twitch, YouTube, Kick).",
+        about: "automation.recipe_welcome_about",
         make: || {
             per_platform(
                 "Welcome first chatters",
                 &[
-                    ("twitch", &[120], "Welcome to the stream, %user%! 👋"),
-                    ("youtube", &[4016], "Welcome to the stream, %user%! 👋"),
-                    ("kick", &[35008], "Welcome to the stream, %user%! 👋"),
+                    ("twitch", &[120], crate::i18n::tr("automation.recipe_welcome_message")),
+                    ("youtube", &[4016], crate::i18n::tr("automation.recipe_welcome_message")),
+                    ("kick", &[35008], crate::i18n::tr("automation.recipe_welcome_message")),
                 ],
             )
         },
     },
     Template {
         name: "Thank follows",
-        about: "Thanks new followers in chat (Twitch, Kick).",
+        about: "automation.recipe_follows_about",
         make: || {
             per_platform(
                 "Thank follows",
                 &[
-                    ("twitch", &[101], "Thanks for the follow, %user%! 💜"),
-                    ("kick", &[35011], "Thanks for the follow, %user%! 💚"),
+                    ("twitch", &[101], crate::i18n::tr("automation.recipe_follow_message")),
+                    ("kick", &[35011], crate::i18n::tr("automation.recipe_follow_message")),
+                    (
+                        "tiktok",
+                        &[crate::tiktok::T_TIKTOK_FOLLOW],
+                        crate::i18n::tr("automation.recipe_follow_message"),
+                    ),
                 ],
             )
         },
     },
     Template {
         name: "Thank subscriptions",
-        about: "Thanks new subscribers, resubs and members (Twitch, YouTube, Kick).",
+        about: "automation.recipe_subscriptions_about",
         make: || {
             per_platform(
                 "Thank subscriptions",
                 &[
-                    ("twitch", &[103, 104], "Thanks for subscribing, %user%! 🎉"),
-                    ("youtube", &[4008], "Welcome to the members, %user%! 🎉"),
-                    ("kick", &[35014], "Thanks for subscribing, %user%! 🎉"),
+                    (
+                        "twitch",
+                        &[103, 104],
+                        crate::i18n::tr("automation.recipe_subscribe_message"),
+                    ),
+                    ("youtube", &[4008], crate::i18n::tr("automation.recipe_member_message")),
+                    ("kick", &[35014], crate::i18n::tr("automation.recipe_subscribe_message")),
                 ],
             )
         },
     },
     Template {
         name: "Thank gifted subs",
-        about: "Thanks people who gift subscriptions (Twitch single and community gifts, Kick).",
+        about: "automation.recipe_gifts_about",
         make: || {
             let mut m = per_platform(
                 "Thank gifted subs",
                 &[
+                    ("twitch", &[105], crate::i18n::tr("automation.recipe_gift_message")),
                     (
-                        "twitch",
-                        &[105],
-                        "%user% gifted a sub to %recipientUser%! Thank you! 🎁",
+                        "kick",
+                        &[35016, 35017],
+                        crate::i18n::tr("automation.recipe_gifts_message"),
                     ),
-                    ("kick", &[35016, 35017], "Thanks for the gifted subs, %user%! 🎁"),
                 ],
             );
             m.actions.push(action(
@@ -223,7 +287,7 @@ pub const TEMPLATES: &[Template] = &[
                 &[106],
                 vec![say(
                     "twitch",
-                    "%user% just gifted %gifts% subs to the community! Thank you! 🎁",
+                    crate::i18n::tr("automation.recipe_community_gifts_message"),
                 )],
             ));
             m
@@ -231,29 +295,30 @@ pub const TEMPLATES: &[Template] = &[
     },
     Template {
         name: "Thank cheers and Super Chats",
-        about: "Thanks Twitch cheers and YouTube Super Chats.",
+        about: "automation.recipe_cheers_about",
         make: || {
             per_platform(
                 "Thank cheers",
                 &[
-                    ("twitch", &[102], "Thanks for the %bits% bits, %user%! 💎"),
-                    ("youtube", &[4006], "Thanks for the Super Chat, %user%! 💛"),
+                    ("twitch", &[102], crate::i18n::tr("automation.recipe_bits_message")),
+                    (
+                        "youtube",
+                        &[4006],
+                        crate::i18n::tr("automation.recipe_superchat_message"),
+                    ),
                 ],
             )
         },
     },
     Template {
         name: "Raid welcome and shoutout",
-        about: "Welcomes a Twitch raid and gives the raider a shoutout a few seconds later.",
+        about: "automation.recipe_raid_about",
         make: || Made {
             actions: vec![action(
                 "Raid welcome and shoutout",
                 &[107],
                 vec![
-                    say(
-                        "twitch",
-                        "Welcome raiders! Thanks for the raid with %viewers% viewers, %user%! 🚀",
-                    ),
+                    say("twitch", crate::i18n::tr("automation.recipe_raid_message")),
                     with(new_sub(1002), json!({"value": 5000, "maxValue": 0, "random": false})),
                     with(new_sub(29), json!({"userLogin": "%userName%"})),
                 ],
@@ -263,7 +328,7 @@ pub const TEMPLATES: &[Template] = &[
     },
     Template {
         name: "OBS scene on raid",
-        about: "Switches OBS to a \"Raid\" scene for 15 seconds when raided, then back to \"Main\" (edit the names).",
+        about: "automation.recipe_raid_scene_about",
         make: || {
             let scene = |name: &str| with(new_sub(34), json!({"connectionId": "", "sceneName": name}));
             Made {
@@ -282,33 +347,27 @@ pub const TEMPLATES: &[Template] = &[
     },
     Template {
         name: "Socials every 20 minutes",
-        about: "A timer that posts your links on every connected platform (edit the text).",
-        make: || {
-            timed(
-                "Socials",
-                20,
-                "Follow me everywhere: twitch.tv/you · youtube.com/@you · tiktok.com/@you",
-            )
-        },
+        about: "automation.recipe_socials_about",
+        make: || timed("Socials", 20, crate::i18n::tr("automation.recipe_socials_message")),
     },
     Template {
         name: "Hydrate reminder",
-        about: "A timer that reminds you (and chat) to drink water every hour.",
-        make: || timed("Hydrate", 60, "Hydration check! Time for some water 💧"),
+        about: "automation.recipe_hydrate_about",
+        make: || timed("Hydrate", 60, crate::i18n::tr("automation.recipe_hydrate_message")),
     },
     Template {
         name: "!lurk command",
-        about: "A !lurk command on every platform with a friendly reply.",
-        make: || command("Lurk", "!lurk", "%user% is now lurking. Enjoy the stream! 👀", 30),
+        about: "automation.recipe_lurk_about",
+        make: || command("Lurk", "!lurk", crate::i18n::tr("automation.recipe_lurk_message"), 30),
     },
     Template {
         name: "!discord command",
-        about: "A !discord command on every platform that posts your invite (edit the link).",
+        about: "automation.recipe_discord_about",
         make: || {
             command(
                 "Discord",
                 "!discord",
-                "Join the Discord: https://discord.gg/your-invite",
+                crate::i18n::tr("automation.recipe_discord_message"),
                 30,
             )
         },

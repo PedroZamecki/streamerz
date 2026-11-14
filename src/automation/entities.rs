@@ -13,52 +13,68 @@ pub const SOURCES: &[(&str, u64)] = &[
 ];
 
 pub const COMMANDS_FIELDS: &[F] = &[
-    ("name", "Name", Text),
-    ("enabled", "Enabled", Bool),
-    ("include", "Include in Get Commands", Bool),
-    ("mode", "Mode", Pick(&["Basic", "Regex"])),
-    ("location", "Location (Basic)", Pick(&["Start", "Exact", "Anywhere"])),
-    ("command", "Commands, one per line", Multi),
-    ("group", "Group", CommandGroup),
-    ("ignoreBotAccount", "Ignore the bot account", Bool),
-    ("ignoreInternal", "Ignore internal messages", Bool),
-    ("persistCounter", "Persist counter", Bool),
-    ("persistUserCounter", "Persist per-user counter", Bool),
-    ("caseSensitive", "Case sensitive", Bool),
-    ("sources", SOURCES[0].0, Bit(SOURCES[0].1)),
-    ("sources", SOURCES[1].0, Bit(SOURCES[1].1)),
-    ("sources", SOURCES[2].0, Bit(SOURCES[2].1)),
-    ("sources", SOURCES[3].0, Bit(SOURCES[3].1)),
-    ("sources", SOURCES[4].0, Bit(SOURCES[4].1)),
-    ("sources", SOURCES[5].0, Bit(SOURCES[5].1)),
-    ("globalCooldown", "Global cooldown (s)", Int),
-    ("userCooldown", "User cooldown (s)", Int),
-    ("grantType", "Grant type", Pick(&["Allow", "Deny"])),
-    ("permittedGroups", "Groups, one per line", Lines),
-    ("response", "Reply text", Multi),
-    ("replyAll", "Reply on every connected platform", Bool),
+    ("command", "automation.command.commands", Multi),
+    ("response", "automation.command.reply", Multi),
+    ("replyAll", "automation.command.reply_all", Bool),
+    ("sources", "automation.command.twitch_message", Bit(SOURCES[0].1)),
+    ("sources", "automation.command.twitch_whisper", Bit(SOURCES[1].1)),
+    ("sources", "automation.command.twitch_resub", Bit(SOURCES[2].1)),
+    ("sources", "automation.command.youtube_message", Bit(SOURCES[3].1)),
+    ("sources", "automation.command.kick_message", Bit(SOURCES[4].1)),
+    ("sources", "automation.command.tiktok_message", Bit(SOURCES[5].1)),
+    ("globalCooldown", "automation.command.global_cooldown", Duration(1000)),
+    ("userCooldown", "automation.command.user_cooldown", Duration(1000)),
+    (
+        "grantType",
+        "automation.command.grant",
+        Pick(&["automation.command.allow", "automation.command.deny"]),
+    ),
+    ("permittedGroups", "automation.command.user_groups", Lines),
+    (
+        "mode",
+        "automation.command.mode",
+        Pick(&["automation.command.basic", "automation.command.regex"]),
+    ),
+    (
+        "location",
+        "automation.command.location",
+        Pick(&[
+            "automation.command.start",
+            "automation.command.exact",
+            "automation.command.anywhere",
+        ]),
+    ),
+    ("caseSensitive", "automation.command.case_sensitive", Bool),
+    ("ignoreBotAccount", "automation.command.ignore_bot", Bool),
+    ("ignoreInternal", "automation.command.ignore_internal", Bool),
+    ("name", "automation.command.name", Text),
+    ("enabled", "automation.command.enabled", Bool),
+    ("include", "automation.command.include", Bool),
+    ("group", "automation.command.category", CommandGroup),
+    ("persistCounter", "automation.command.counter", Bool),
+    ("persistUserCounter", "automation.command.user_counter", Bool),
 ];
 
 pub fn command_default() -> Value {
-    json!({"permittedUsers": [], "permittedGroups": [], "id": "", "name": "New command", "enabled": true,
-            "include": true, "mode": 0, "command": "!new", "regexExplicitCapture": false, "location": 0,
+    json!({"permittedUsers": [], "permittedGroups": [], "id": "", "name": "", "enabled": true,
+            "include": true, "mode": 0, "command": "", "regexExplicitCapture": false, "location": 0,
             "ignoreBotAccount": true, "ignoreInternal": true, "sources": 6292481, "persistCounter": false,
             "persistUserCounter": false, "caseSensitive": false, "globalCooldown": 0, "userCooldown": 0,
             "group": "", "grantType": 0, "response": "", "replyAll": false})
 }
 
 pub const TIMERS_FIELDS: &[F] = &[
-    ("name", "Name", Text),
-    ("enabled", "Enabled", Bool),
-    ("repeat", "Repeat", Bool),
-    ("interval", "Interval (s)", Int),
-    ("randomInterval", "Random interval", Bool),
-    ("upperInterval", "Up to (s, random)", Int),
-    ("lines", "Chat lines", Int),
+    ("name", "automation.timer_name", Text),
+    ("enabled", "automation.timer_enable", Bool),
+    ("repeat", "automation.timer_repeat", Bool),
+    ("interval", "automation.timer_interval", Duration(1000)),
+    ("randomInterval", "automation.timer_random", Bool),
+    ("upperInterval", "automation.timer_upper", Duration(1000)),
+    ("lines", "automation.timer_lines", Int),
 ];
 
 pub fn timer_default() -> Value {
-    json!({"id": "", "name": "New timer", "enabled": false, "repeat": true, "interval": 60,
+    json!({"id": "", "name": crate::i18n::tr("automation.timer_new_name"), "enabled": false, "repeat": true, "interval": 60,
             "randomInterval": false, "upperInterval": 0, "lines": 0, "counter": 0})
 }
 
@@ -227,7 +243,28 @@ pub fn draft(config: &crate::Config, kind: &str, item_id: &str, request: &Value)
 
 /// The same, for an entity whose current values don't live in the config (a global).
 pub fn draft_of(form: Value, kind: &str, request: &Value) -> Result<crate::model::Obj, String> {
-    draft_with(form, fields(kind).ok_or("unknown entity kind")?, request)
+    if kind == "timer" {
+        return crate::core::timers::draft(form, request);
+    }
+    let new = form["item"]["id"].as_str().unwrap_or_default().is_empty();
+    let mut draft = draft_with(form, fields(kind).ok_or("unknown entity kind")?, request)?;
+    if kind == "command" && new {
+        let command = draft.get("command").and_then(Value::as_str).unwrap_or_default().trim();
+        if command.is_empty() {
+            return Err(crate::i18n::tr("automation.command.required").into());
+        }
+        if draft
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+        {
+            let name = command.lines().next().unwrap_or_default().trim().to_owned();
+            draft.insert("name".into(), name.into());
+        }
+    }
+    Ok(draft)
 }
 
 /// The same, with the fields given (a plugin's settings are not a fixed kind).
@@ -300,7 +337,49 @@ pub fn form(config: &crate::Config, kind: &str, item_id: &str) -> Result<Value, 
             .map(Value::Object)
             .ok_or_else(|| format!("no {kind} {item_id}"))?
     };
-    form_of(kind, item)
+    let mut form = form_of(kind, item)?;
+    if kind == "command" {
+        let index = COMMANDS_FIELDS
+            .iter()
+            .position(|(key, _, _)| *key == "permittedGroups")
+            .unwrap();
+        let mut names: Vec<(String, String)> = [
+            ("Moderators", "chat.card_moderator"),
+            ("VIPs", "chat.card_vip"),
+            ("Subscribers", "chat.card_subscriber"),
+        ]
+        .into_iter()
+        .map(|(id, label)| (id.into(), crate::i18n::tr(label).into()))
+        .collect();
+        for name in config
+            .groups
+            .iter()
+            .filter_map(|group| group.get("name").and_then(Value::as_str))
+            .chain(
+                form["item"]["permittedGroups"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str),
+            )
+        {
+            if !names.iter().any(|(id, _)| id == name) {
+                names.push((name.into(), name.into()));
+            }
+        }
+        form["fields"][index]["widget"] = json!({"kind":"checks","options":names.iter().map(|(id,label)| json!({"id":id,"label":label})).collect::<Vec<_>>()});
+        form["fields"][index]["value"] = form["item"]["permittedGroups"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into();
+        form["fields"][index]["holds"] = "user group names".into();
+    }
+    Ok(if kind == "timer" {
+        crate::core::timers::decorate(config, form)
+    } else {
+        form
+    })
 }
 
 /// A form for `kind` showing `item`'s values.
@@ -311,7 +390,72 @@ pub fn form_of(kind: &str, item: Value) -> Result<Value, String> {
         form["fields"][index]["value"] = super::edits::shown(widget, object.get(*key));
     }
     form["item"] = item;
+    if kind == "command" {
+        decorate_command(&mut form);
+    }
     Ok(form)
+}
+
+/// Shared presentation metadata; field indices always refer to the schema.
+fn decorate_command(form: &mut Value) {
+    use crate::i18n::tr;
+    let new = form["item"]["id"].as_str().unwrap_or_default().is_empty();
+    form["okLabel"] = tr(if new { "automation.command.add" } else { "btn.save" }).into();
+    form["focusField"] = json!(0);
+    let defaults = command_default();
+    for (key, end_key, title, collapsed) in [
+        ("sources", "globalCooldown", "automation.command.platforms", false),
+        ("globalCooldown", "mode", "automation.command.permissions", true),
+        ("mode", "name", "automation.command.matching", true),
+        ("name", "", "automation.command.more", true),
+    ] {
+        let start = COMMANDS_FIELDS.iter().position(|(field, _, _)| *field == key).unwrap();
+        let end = COMMANDS_FIELDS
+            .iter()
+            .position(|(field, _, _)| *field == end_key)
+            .unwrap_or(COMMANDS_FIELDS.len());
+        let customized = COMMANDS_FIELDS[start..end].iter().any(|(field, _, _)| {
+            form["item"]
+                .get(*field)
+                .is_some_and(|value| defaults.get(*field) != Some(value))
+        });
+        form["fields"][start]["section"] = tr(title).into();
+        form["fields"][start]["collapsed"] = json!(collapsed && !customized);
+    }
+    form["fields"][0]["placeholder"] = "!hello".into();
+    let mode = COMMANDS_FIELDS.iter().position(|(key, _, _)| *key == "mode").unwrap();
+    let location = COMMANDS_FIELDS
+        .iter()
+        .position(|(key, _, _)| *key == "location")
+        .unwrap();
+    form["fields"][location]["showIf"] = json!({"field": mode, "equals": 0});
+    for (index, (_, _, widget)) in COMMANDS_FIELDS.iter().enumerate() {
+        if let Bit(bit) = widget {
+            form["fields"][index]["brand"] = match bit {
+                1 | 2 | 8 => "twitch",
+                1024 => "youtube",
+                2_097_152 => "kick",
+                _ => "tiktok",
+            }
+            .into();
+        }
+    }
+}
+
+/// Explicit draft and activation actions use the same validated entity changes as MCP.
+pub fn activation_buttons(form: &mut Value) {
+    let Some(index) = form["fields"].as_array().and_then(|fields| {
+        fields
+            .iter()
+            .position(|field| matches!(field["key"].as_str(), Some("enabled" | "enable")))
+    }) else {
+        return;
+    };
+    form["fields"][index]["hidden"] = true.into();
+    form["okLabel"] = crate::i18n::tr("automation.create_enable").into();
+    form["commitChanges"] = json!([{"field":index,"value":true}]);
+    form["alternateSubmit"] =
+        json!({"label":crate::i18n::tr("automation.save_draft"),"changes":[{"field":index,"value":false}]});
 }
 
 #[cfg(test)]
@@ -341,5 +485,33 @@ mod tests {
         for text in ["[]", "broken", r#"{"id":"other"}"#] {
             assert!(super::draft(&config, "command", "one", &json!({"json":text})).is_err());
         }
+    }
+
+    #[test]
+    fn command_creation_leads_with_reply_and_derives_only_new_names() {
+        let config = crate::Config::default();
+        let form = form(&config, "command", "").unwrap();
+        assert_eq!(form["fields"][0]["key"], "command");
+        assert_eq!(form["fields"][1]["key"], "response");
+        assert_eq!(form["focusField"], 0);
+        assert!(draft(&config, "command", "", &json!({"changes":[]})).is_err());
+        let command = draft(
+            &config,
+            "command",
+            "",
+            &json!({"changes":[
+                {"field":0,"value":"!hello\n!hi"}, {"field":1,"value":"Hello!"}
+            ]}),
+        )
+        .unwrap();
+        assert_eq!(command["name"], "!hello");
+        assert_eq!(command["response"], "Hello!");
+        let original = json!({"id":"existing","name":"Custom name","command":"!old","mode":1,"unknown":true});
+        let edit = form_of("command", original.clone()).unwrap();
+        let mode = COMMANDS_FIELDS.iter().position(|(key, _, _)| *key == "mode").unwrap();
+        assert_eq!(edit["fields"][mode]["collapsed"], false);
+        let draft = draft_of(edit, "command", &json!({"changes":[{"field":0,"value":"!new"}]})).unwrap();
+        assert_eq!(draft["name"], "Custom name");
+        assert_eq!(draft["unknown"], true);
     }
 }

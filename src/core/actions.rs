@@ -128,6 +128,7 @@ fn action_row(action: &Action, names: &labels::Names) -> Value {
         row["logo"] = logo.into();
     }
     row["off"] = (!action.enabled).into();
+    row["toggle"] = json!({"checked": action.enabled, "action": "toggle", "label": tr("btn.on_off")});
     if !action.sub_actions.is_empty() {
         row["note"] = json!({"icon": "list-ordered", "text": action.sub_actions.len().to_string()});
     }
@@ -207,9 +208,9 @@ fn action_tree(config: &crate::Config) -> Value {
         form(button("import", "btn.import", "download", &[]), "act:import"),
         form(button("export", "btn.export", "upload", &[]), "act:export"),
         with(
-            op(
+            form(
                 picker_for(button("templates", "btn.templates", "layout-template", &[]), "template"),
-                "template_add",
+                "act:template_add",
             ),
             "tooltip",
             tr("actions.templates_tooltip"),
@@ -458,7 +459,22 @@ pub fn read(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         "tree": action_tree(&config),
         "empty": tr("actions.pick_to_edit"),
         "detail": {"title": tr("actions.details"), "text": tr("actions.details_empty")},
-        "editor": open.map(|action| editor(&config, action)),
+        "editor": open.map(|action| {
+            let mut model = editor(&config, action);
+            if let Some(run) = engine.history().iter().rev().find(|record|
+                record.action_id == action.id && record.args.get("isTest") == Some(&Value::Bool(true))) {
+                let key = match run.outcome.status() {
+                    "failed" => "automation.failed",
+                    "completed_with_skips" => "automation.completed_with_skips",
+                    _ => "automation.completed",
+                };
+                model["lastTest"] = json!({"id": run.args.get("runningActionId"),
+                    "text": trf("automation.last_test", &[("when", &crate::fmt::shown_iso(&run.queued_at, true)),
+                        ("result", tr(key))]), "outcome": run.outcome,
+                    "hint": tr("automation.completed_hint"), "details": tr("automation.run_details")});
+            }
+            model
+        }),
         // Nothing open: the same panes, empty.
         "idle": open.is_none().then(|| {
             let mut idle = editor(&config, &Action::default());
@@ -658,6 +674,142 @@ const EXPORT_FIELDS: &[F] = &[
 ];
 const ICON_FIELDS: &[F] = &[("file", "actions.icon_file", W::Text)];
 const TEST_FIELDS: &[F] = &[("args", "actions.test_args", W::Map)];
+const TEMPLATE_FIELDS: &[F] = &[
+    ("twitch", "automation.platform_twitch", W::Bool),
+    ("youtube", "automation.platform_youtube", W::Bool),
+    ("kick", "automation.platform_kick", W::Bool),
+    ("tiktok", "automation.platform_tiktok", W::Bool),
+    ("enable", "automation.recipe_enable", W::Bool),
+    ("reply", "automation.reply", W::Multi),
+    ("giftId", "automation.recipe_gift", W::Suggest("tiktok.gifts")),
+    ("rewardId", "automation.recipe_reward", W::Suggest("twitch.rewards")),
+    ("scene", "automation.scene", W::Suggest("obs.scenes")),
+    ("source", "automation.source", W::Suggest("obs.sources")),
+    ("connectionId", "automation.recipe_obs", W::ObsConnection),
+];
+
+fn template_by_name(name: &str) -> Result<&'static crate::templates::Template, String> {
+    crate::templates::TEMPLATES
+        .iter()
+        .find(|t| t.name == name || t.title() == name)
+        .ok_or_else(|| tr("actions.item_gone").into())
+}
+
+fn trigger_platform(code: u32) -> Option<&'static str> {
+    labels::trigger_logo(code)?
+        .strip_prefix("brands/")?
+        .strip_suffix(".svg")
+        .filter(|p| ["twitch", "youtube", "kick", "tiktok"].contains(p))
+}
+
+fn template_platforms(made: &crate::templates::Made) -> Vec<&'static str> {
+    let mut platforms = Vec::new();
+    for trigger in made.actions.iter().flat_map(|a| &a.triggers) {
+        if let Some(p) = trigger_platform(edit::kind(trigger) as u32) {
+            if ["twitch", "youtube", "kick", "tiktok"].contains(&p) && !platforms.contains(&p) {
+                platforms.push(p);
+            }
+        }
+    }
+    if !made.commands.is_empty() || !made.timers.is_empty() {
+        for p in ["twitch", "youtube", "kick", "tiktok"] {
+            if !platforms.contains(&p) {
+                platforms.push(p);
+            }
+        }
+    }
+    platforms
+}
+
+fn add_template(
+    engine: &Rc<Engine>,
+    template: &crate::templates::Template,
+    options: Option<&Obj>,
+) -> Result<Value, String> {
+    let mut made = (template.make)();
+    if let Some(options) = options {
+        let enabled = options.get("enable").and_then(Value::as_bool) == Some(true);
+        let selected = |p: &str| options.get(p).and_then(Value::as_bool) == Some(true);
+        if !template_platforms(&made).is_empty() && !["twitch", "youtube", "kick", "tiktok"].iter().any(|p| selected(p))
+        {
+            return Err(tr("automation.recipe_platform_required").into());
+        }
+        if enabled && template.name == "automation.template_gifts" && field(options, "reply").trim().is_empty() {
+            return Err(tr("automation.recipe_required").into());
+        }
+        if enabled
+            && template.name == "automation.template_reward"
+            && ["rewardId", "scene", "source", "connectionId"]
+                .iter()
+                .any(|key| field(options, key).trim().is_empty())
+        {
+            return Err(tr("automation.recipe_required").into());
+        }
+        made.actions.retain(|action| {
+            action.triggers.iter().all(|t| {
+                trigger_platform(edit::kind(t) as u32)
+                    .is_none_or(|p| !["twitch", "youtube", "kick", "tiktok"].contains(&p) || selected(p))
+            })
+        });
+        for action in &mut made.actions {
+            action.enabled = enabled;
+            action.sub_actions.retain(|sub| match edit::kind(sub) {
+                10 => selected("twitch"),
+                4001 => selected("youtube"),
+                35001 => selected("kick"),
+                43001 => selected("tiktok"),
+                _ => true,
+            });
+            for trigger in &mut action.triggers {
+                if template.name == "automation.template_gifts" {
+                    trigger.insert("giftId".into(), field(options, "giftId").into());
+                }
+                if template.name == "automation.template_reward" {
+                    trigger.insert("rewardId".into(), field(options, "rewardId").into());
+                }
+            }
+            for sub in &mut action.sub_actions {
+                if template.name == "automation.template_reward" && edit::kind(sub) == 30 {
+                    sub.insert("connectionId".into(), field(options, "connectionId").into());
+                }
+            }
+        }
+        for command in &mut made.commands {
+            command.insert("enabled".into(), enabled.into());
+            let mut mask = 0u64;
+            for (p, bit) in [
+                ("twitch", 1),
+                ("youtube", 1024),
+                ("kick", 2_097_152),
+                ("tiktok", 4_194_304),
+            ] {
+                if selected(p) {
+                    mask |= bit;
+                }
+            }
+            command.insert("sources".into(), mask.into());
+        }
+        for timer in &mut made.timers {
+            timer.insert("enabled".into(), enabled.into());
+        }
+        for (_, meta) in &mut made.groups {
+            for variable in &mut meta.variables {
+                if let Some(value) = options.get(&variable.name) {
+                    variable.default = value.clone();
+                }
+            }
+        }
+    }
+    let first = made.actions.first().map(|a| format!("a:{}", a.id)).unwrap_or_default();
+    let timers = !made.timers.is_empty();
+    let mut result = Ok(());
+    engine.change(|config| result = made.add_to(config));
+    result?;
+    if timers {
+        engine.timers();
+    }
+    Ok(json!({"accepted": true, "saved": first}))
+}
 
 fn shown(label: &'static str) -> &'static str {
     if ["dialogs.", "actions.", "group."]
@@ -809,7 +961,7 @@ fn context(request: &Value) -> Vec<String> {
             "action_add" | "action_edit" | "action_duplicate" | "group_rename" | "group_icon" | "group_settings"
             | "export",
         ) => ask(2, "itemId", &mut parts),
-        Some("trigger_add") => {
+        Some("trigger_add" | "template_add") => {
             ask(2, "actionId", &mut parts);
             ask(3, "code", &mut parts)
         }
@@ -914,6 +1066,12 @@ fn automation_form(
         fields.unwrap_or(&[]),
         item.clone(),
     );
+    if parts
+        .get(1)
+        .is_some_and(|kind| matches!(kind.as_str(), "trigger_add" | "sub_add"))
+    {
+        out["okLabel"] = tr("btn.add").into();
+    }
     let mut notes = Vec::new();
     // A gift is picked by its picture, name and price; the list loads as the form opens when it isn't here.
     if trigger && edit::kind(&item) as u32 == crate::tiktok::T_TIKTOK_GIFT {
@@ -943,6 +1101,24 @@ fn automation_form(
     if let Some(values) = trigger.then(|| trigger_values(edit::kind(&item) as u32)).flatten() {
         notes.push(values);
     }
+    if !trigger {
+        if let Some(action) = parts.get(2).and_then(|id| config_action(config, id)) {
+            let mut available = Vec::new();
+            for trigger in &action.triggers {
+                for name in crate::docs::arguments("trigger", edit::kind(trigger) as u32) {
+                    if !available.contains(&name) {
+                        available.push(name);
+                    }
+                }
+                if let Some(values) = trigger_values(edit::kind(trigger) as u32) {
+                    if !notes.contains(&values) {
+                        notes.push(values);
+                    }
+                }
+            }
+            out["variables"] = json!(available);
+        }
+    }
     if !notes.is_empty() {
         out["notes"] = json!(notes);
     }
@@ -966,6 +1142,52 @@ pub fn form_for(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         out
     };
     match part(1) {
+        "template_add" => {
+            let template = template_by_name(part(3))?;
+            let made = (template.make)();
+            let platforms = template_platforms(&made);
+            let config_value = serde_json::to_value(&*config).unwrap_or_default();
+            let configured = |platform: &str| {
+                let value = &config_value[platform];
+                !value["channel"].as_str().unwrap_or_default().trim().is_empty()
+                    || value["broadcaster"].is_object()
+                    || value["account"].is_object()
+            };
+            let any = platforms.iter().any(|p| configured(p));
+            let mut item =
+                obj(json!({"id":"", "enable":false, "reply":"", "giftId":"", "rewardId":"", "scene":"", "source":""}));
+            for p in ["twitch", "youtube", "kick", "tiktok"] {
+                item.insert(p.into(), json!(platforms.contains(&p) && (!any || configured(p))));
+            }
+            if let Some((_, meta)) = made.groups.first() {
+                if let Some(reply) = meta.variables.iter().find(|v| v.name == "reply") {
+                    item.insert("reply".into(), reply.default.clone());
+                }
+            }
+            let mut form = simple(
+                &parts,
+                template.title().into(),
+                TEMPLATE_FIELDS,
+                item,
+                template.description(),
+            );
+            let gifts = template.name == "automation.template_gifts";
+            let reward = template.name == "automation.template_reward";
+            for field in form["fields"].as_array_mut().unwrap() {
+                let key = field["key"].as_str().unwrap_or_default();
+                field["hidden"] = match key {
+                    "twitch" | "youtube" | "kick" | "tiktok" => !platforms.contains(&key),
+                    "reply" | "giftId" => !gifts,
+                    "rewardId" | "scene" | "source" | "connectionId" => !reward,
+                    _ => false,
+                }
+                .into();
+            }
+            form["okLabel"] = tr("btn.add").into();
+            form["notes"] = json!([tr("automation.recipe_draft_hint")]);
+            crate::automation::entities::activation_buttons(&mut form);
+            Ok(form)
+        }
         "action_add" => {
             let node = part(2);
             let group = if let Some(group) = node.strip_prefix("g:") {
@@ -1187,6 +1409,7 @@ fn fields_of(engine: &Rc<Engine>, parts: &[String], form: &Value) -> Result<&'st
         "import" => IMPORT_FIELDS,
         "export" => EXPORT_FIELDS,
         "trigger_test" => TEST_FIELDS,
+        "template_add" => TEMPLATE_FIELDS,
         "trigger_add" | "trigger_edit" => automation_fields(engine, true, &item).unwrap_or(&[]),
         "sub_add" | "sub_edit" => automation_fields(engine, false, &item).unwrap_or(&[]),
         other => return Err(format!("no form {other}")),
@@ -1271,6 +1494,7 @@ fn save_form(engine: &Rc<Engine>, parts: &[String], item: Obj) -> Result<Value, 
         }
     };
     match part(1) {
+        "template_add" => add_template(engine, template_by_name(part(3))?, Some(&item)),
         "action_add" => {
             let action = edit::new_action(&name_of()?, part(2));
             let id = action.id.clone();
@@ -1935,6 +2159,16 @@ pub fn act(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     let item = text(request, "itemId");
     let action_id = plain_id(text(request, "actionId")).to_owned();
     match operation {
+        "run_details" => {
+            let runs = engine.history();
+            let run = runs
+                .iter()
+                .find(|record| record.args.get("runningActionId").and_then(Value::as_str) == Some(item))
+                .ok_or_else(item_gone)?;
+            Ok(json!({"values": {"title": run.name,
+                "hint": run.outcome.error.as_deref().unwrap_or(tr("automation.completed_hint")),
+                "rows": run.after.iter().map(|(name, value)| json!({"name": name, "value": crate::vars::text(value)})).collect::<Vec<_>>()}}))
+        }
         "refresh" => accepted(),
         "action_toggle" => {
             edit_action(engine, plain_id(item), |action| {
@@ -1994,42 +2228,7 @@ pub fn act(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
             });
             accepted()
         }
-        "template_add" => {
-            let code = text(request, "code");
-            let template = crate::templates::TEMPLATES
-                .iter()
-                .find(|template| template.name == code || template.title() == code)
-                .ok_or("template not found")?;
-            let made = (template.make)();
-            let names: Vec<String> = made
-                .actions
-                .iter()
-                .map(|action| action.name.clone())
-                .chain(
-                    made.commands
-                        .iter()
-                        .map(|command| format!("command {}", command["command"].as_str().unwrap_or(""))),
-                )
-                .chain(
-                    made.timers
-                        .iter()
-                        .map(|timer| format!("timer {}", timer["name"].as_str().unwrap_or(""))),
-                )
-                .collect();
-            let timers = !made.timers.is_empty();
-            let first = made.actions.first().map(|action| action.id.clone());
-            let mut added = Ok(());
-            engine.change(|config| added = made.add_to(config));
-            added?;
-            if timers {
-                engine.timers();
-            }
-            crate::say(trf(
-                "actions.added_from_template",
-                &[("name", template.title()), ("items", &names.join(", "))],
-            ));
-            Ok(json!({"accepted": true, "saved": first.map(|id| format!("a:{id}")).unwrap_or_default()}))
-        }
+        "template_add" => add_template(engine, template_by_name(text(request, "code"))?, None),
         "trigger_toggle" => {
             edit_action(engine, &action_id, |action| {
                 let at = trigger_index(action, item).ok_or_else(item_gone)?;
@@ -2103,6 +2302,74 @@ pub fn act(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
 mod tests {
     use super::*;
     use crate::servers::answer;
+
+    #[test]
+    fn templates_configure_platforms_before_adding_and_keep_incomplete_recipes_as_drafts() {
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            let form = ask(
+                &engine,
+                json!({"request":"StreamerzEntityForm", "kind":"act:template_add", "code":"Thank follows"}),
+            );
+            assert_eq!(form["status"], "ok", "{form}");
+            let saved = ask(
+                &engine,
+                json!({"request":"StreamerzEditEntity", "kind":form["kind"], "changes":[
+                {"field":field(&form,"twitch"),"value":false},
+                {"field":field(&form,"youtube"),"value":false},
+                {"field":field(&form,"kick"),"value":false},
+                {"field":field(&form,"tiktok"),"value":true}]}),
+            );
+            assert_eq!(saved["status"], "ok", "{saved}");
+            let config = engine.config();
+            assert_eq!(config.actions.actions.len(), 1);
+            let action = &config.actions.actions[0];
+            assert!(!action.enabled);
+            assert_eq!(action.triggers[0]["type"], crate::tiktok::T_TIKTOK_FOLLOW);
+            assert_eq!(action.sub_actions[0]["type"], 43001);
+            drop(config);
+            let recipe = ask(
+                &engine,
+                json!({"request":"StreamerzEntityForm", "kind":"act:template_add", "code":"automation.template_reward"}),
+            );
+            let rejected = ask(
+                &engine,
+                json!({"request":"StreamerzEditEntity", "kind":recipe["kind"], "changes":[{"field":field(&recipe,"enable"),"value":true}]}),
+            );
+            assert_eq!(rejected["status"], "error");
+            assert_eq!(
+                engine.config().actions.actions.len(),
+                1,
+                "incomplete enable must add nothing"
+            );
+        });
+    }
+
+    #[test]
+    fn last_test_and_details_refer_to_the_same_completed_run() {
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(
+                json!({"actions":[crate::engine::tests::action("test", "Test", json!([]))]}),
+            );
+            assert!(engine.test("test").is_some());
+            tokio::task::yield_now().await;
+            tokio::task::yield_now().await;
+            let model = view(&engine, "test");
+            let result = &model["actions"]["editor"]["lastTest"];
+            assert!(result["id"].is_string(), "{model}");
+            let detail = ask(
+                &engine,
+                json!({"request":"StreamerzCoreAction", "domain":"actions", "action":"run_details", "itemId":result["id"]}),
+            );
+            assert_eq!(detail["status"], "ok");
+            assert_eq!(detail["values"]["title"], "Test");
+            let missing = ask(
+                &engine,
+                json!({"request":"StreamerzCoreAction", "domain":"actions", "action":"run_details", "itemId":"missing"}),
+            );
+            assert_eq!(missing["status"], "error");
+        });
+    }
 
     fn ask(engine: &Rc<Engine>, request: Value) -> Value {
         answer(engine, &request, true).unwrap()

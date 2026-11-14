@@ -166,6 +166,7 @@ fn queues(engine: &Rc<Engine>) -> Vec<Value> {
     queue["empty"] = "".into();
     queue["addTop"] = true.into();
     queue["strip"] = true.into();
+    queue["tableHeight"] = (24 + 28 * all.len().min(8)).into();
     let pending_rows = pending
         .iter()
         .enumerate()
@@ -429,7 +430,7 @@ fn backups() -> Value {
                 b["primary"] = true.into();
                 b
             },
-            button("restore", "btn.restore", "history", true),
+            button("restore", "backups.restore_restart", "history", true),
             {
                 let mut b = button("open_folder", "btn.open_folder", "folder-open", false);
                 b["top"] = true.into();
@@ -443,7 +444,7 @@ fn backups() -> Value {
             )),
         ],
     );
-    model["guide"] = tr("backups.hint").into();
+    model["guide"] = tr("backups.restore_scope").into();
     model["guideBelow"] = true.into();
     model["titleless"] = true.into();
     model["strip"] = true.into();
@@ -492,7 +493,8 @@ fn crashes() -> Value {
             json!({"id": "refresh", "label": tr("btn.refresh"), "icon": "refresh-cw", "top": true, "iconOnly": true}),
         ],
     );
-    model["detail"] = tr("crashes.detail_empty").into();
+    model["detail"] = "".into();
+    model["selectFirst"] = true.into();
     // A short table, and the report fills the rest of the page.
     model["tableHeight"] = 192.into();
     model["detailFill"] = true.into();
@@ -1072,7 +1074,7 @@ fn agent_state(state: crate::agents::State) -> (&'static str, &'static str, &'st
     match state {
         State::Added => ("up", tr("agents.state.added"), tr("agents.tip.added")),
         State::Ready => ("off", tr("agents.state.ready"), tr("agents.tip.ready")),
-        State::Outdated => ("busy", tr("agents.state.outdated"), tr("agents.outdated")),
+        State::Outdated => ("attention", tr("agents.state.outdated"), tr("agents.outdated")),
     }
 }
 
@@ -1935,6 +1937,23 @@ mod tests {
             .unwrap();
             assert_eq!(card["card"]["title"], "ana");
         });
+    }
+
+    #[test]
+    fn recovery_models_disclose_restart_and_do_not_reserve_an_empty_report_reader() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let model = backups();
+        let restore = model["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|action| action["id"] == "restore")
+            .unwrap();
+        assert_eq!(restore["label"], tr("backups.restore_restart"));
+        assert_eq!(model["guide"], tr("backups.restore_scope"));
+        let model = crashes();
+        assert_eq!(model["detail"], "");
+        assert_eq!(model["selectFirst"], true);
     }
 
     #[test]

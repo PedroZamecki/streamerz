@@ -4977,9 +4977,21 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(200)).await;
             let out = e.dev_take().unwrap();
             let said = |p: &str, t: &str| out.iter().any(|o| o["platform"] == p && o["text"] == t);
-            assert!(said("twitch", "Thanks for the follow, ana! 💜"), "{out:?}");
+            assert!(
+                said(
+                    "twitch",
+                    &crate::i18n::tr("automation.recipe_follow_message").replace("%user%", "ana")
+                ),
+                "{out:?}"
+            );
             assert!(!out.iter().any(|o| o["platform"] == "tiktok"), "{out:?}");
-            assert!(said("kick", "cy is now lurking. Enjoy the stream! 👀"), "{out:?}");
+            assert!(
+                said(
+                    "kick",
+                    &crate::i18n::tr("automation.recipe_lurk_message").replace("%user%", "cy")
+                ),
+                "{out:?}"
+            );
         });
     }
 
