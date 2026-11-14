@@ -74,6 +74,14 @@ right module (or a new one) first, then use it.
 | A list | `Rows` with `header()`, each column's look set with `set_cell` (see Lists and actions) | `Browser` |
 | A connection's state | `Health::show` | a coloured label |
 
+Cards: a section with `"card": true` draws as a rounded, bordered panel, two to a row when the window is
+wide (one when narrow): its logo and title with a short state at the right (`state`: health, text, and a
+`tip` with the reason), then a `headline` (large, quiet with `headlineMuted`), `chips` (small rounded tags, an
+optional icon) and `lines` (an icon and a quiet sentence), and its `buttons` under a line. A card with
+`rows` instead draws them as an ordinary section inside the frame (Accounts: a platform's state, account,
+channel and bot); those take the page's width, two to a row only on a very wide window. Use cards for
+things that stand side by side (platforms); keep plain labelled rows for settings.
+
 Scrolling: the wheel scrolls what is under the pointer when it can scroll (a list, a text view), else the
 page. A list that has nothing to scroll passes the wheel on. A page never has blank room to scroll into.
 
@@ -133,6 +141,13 @@ On a wide page, a long button row wraps to two rows before folding. A grid folds
 shows its words, or every one only its icon, never a mix. Keep each button's label on the widget when
 it shows only an icon, keep any explanation tooltip while folded, and dim both its text and icon when
 unavailable. Related actions in the same grid need distinct icons when their meaning differs.
+Every cell of a grid is as wide as the others, on every row.
+A list with more actions than two rows hold (Overlays) splits them instead of stacking rows: what starts or
+brings something in (New, Import, Examples) goes on the line above the list, at the right of the search,
+with its words (`"top": true`; `"iconOnly": true` for the ones every page has, such as Guide and Refresh;
+`"primary": true` for the one main action), and what is done with the selected row is a strip of equal
+icon buttons under the list (`"strip": true`), each named on hover and in the right-click menu, with what
+deletes standing apart at the right. Merge buttons that are the same step for different rows into one.
 An action on a selection must operate on that selection; make unavailable actions clearly unavailable.
 Every actionable list or tree must offer the same actions in its right-click menu using `context_menu()`;
 the Menu key and Shift+F10 open the same menu from the keyboard. Lists and trees show their selection the
@@ -145,17 +160,22 @@ a text tag and never red (red is for errors). In `Rows` use `add_state(line, tru
 `power-off` icon on the item. The icon's tooltip says "disabled".
 
 Triggers and sub-actions wear an icon: the logo of their service, else a Lucide icon chosen by their title.
-The action list itself has no icons.
+An action's row says what starts it and what it runs: its first trigger's logo or icon (a dashed circle when
+nothing starts it), its name, its count of sub-actions in quiet text at the right, and on hover the triggers
+that run it. A switched off action is dimmed with `power-off` at the right, like a trigger.
 
 ## Trees and pickers
 
 A tree looks like shadcn's file tree: a chevron on groups (right when closed, down when open), no connector
 lines, a rounded zinc selection, and an icon on every node. A group wears the logo of its platform or app
-when `img::logo` has one, else a Lucide icon chosen by name in `ui/picker_icons.rs`; an item wears the Lucide
-icon its title's words name, else its group's. Icons are drawn in `muted()`. Clicking a group opens or closes
-it. The trigger and sub-action picker is the model: search with an icon, collapse and expand all, the tree
-on the left and the selection's icon, path (muted) and description on the right. A new group or item needs
-no mapping unless the tests say so: `no_group_is_left_with_the_plain_folder` fails for a group with no icon.
+when `pick_icons::logo` has one (a node's `logo`, drawn in its own colours), else a Lucide icon chosen by name
+in `automation/pick_icons.rs`; an item wears the Lucide icon its title's words name, else its group's. Clicking
+a group opens or closes it. The trigger and sub-action picker (`controls/picker.rs`) is the model: search
+with an icon, Expand all and Collapse all beside it (`Options::fold_buttons`), the tree on the left and the
+selection's icon or logo, path (muted), description and, for a trigger, the values it gives the action on
+the right (under the tree on a narrow window), with a hint there while nothing is picked. Cancel and OK are
+the dialog's footer. A search box in a column keeps its own height; only beside a title does it take the
+rest of the row.
 
 ## Action groups
 
@@ -163,6 +183,14 @@ Keep actions, group controls, triggers, and sub-actions together on the Actions 
 shows optional user-supplied images next to group names. Group actions are available from the button
 grid and the tree's context menu. The grid folds to icons when space is limited, with the action name
 available as a tooltip. Deleting a group confirms that actions become ungrouped and its settings, files and icon are removed.
+
+An overlay is not a group: one with no actions appears only on the Overlays page. A group of actions with
+the name of an overlay is connected to it, and both pages say so with a `link` icon (a chain): at the
+right of the group's row in the tree (a row's `note`), and in the Overlays table's Connected actions
+column with what the group holds. Deleting a connected group asks its own question (a row's `confirm`,
+by button id, replaces the button's): it names the overlay and says it stays. The Overlays page has
+Connect to actions (a form: a new group of the overlay's name, or one of the groups that have no
+overlay) and Disconnect.
 
 Group settings is one dialog: a table of settings (label, value, type) with the standard button grid
 (Change value, Add, Edit and Delete setting, Files, Commands and timers). A value is typed by its
@@ -190,6 +218,36 @@ OK). Ask the least: one field per thing asked, its icon and hint saying what goe
 only as they're needed (a list of answers shows two, then one more as the last is filled). Show choices
 with their logos or icons (a platform is a chip with its logo), and grey out with a reason what can't be
 picked now.
+
+A value is set with the control made for it, never typed in a code: a colour is picked (the field's widget
+`color`: a swatch that opens a palette and sliders for hue, saturation, lightness and opacity, with the
+`#rrggbb` beside it), a number with two ends is dragged (`slider`, with `min`, `max` and `step`, its value
+beside it). A long form is split by headings: a field's `section` draws a quiet heading with a rule above
+it, for the fields from there on. What a field is for (`tip`) shows when the pointer rests on its label.
+A font is picked from the ones installed (`font`: a list that narrows as its name is typed, starting with
+the system's). A field that only matters with another one's value is shown only then (`showIf`: the other
+field's place and the value that calls for it), so a form shows what applies and nothing else.
+A few on or off choices about one thing are a line of check boxes (`checks`, each with its logo: the
+platforms), and their value is the list of the ticked ones. A file is picked from a list of the ones
+there, with Other to type a path or an address and Browse beside it (`choices` with `other` and
+`browse`). Rows of a few columns are typed a row a line, the cells between bars, with the columns named in
+the empty box and on the label's tip; a mistake is said with its line and column.
+A group's settings get these from what its maker declared (`color`, `slider`, `lines`, `font`, `file`,
+`platforms`, `action`, `list`, `section`, `showIf`).
+
+A label that says what an empty value means (`Gift (blank: any gift)`, `Max coins (0: no limit)`) shows its
+name only, with the meaning in the empty box (`Any gift`). A form's `notes` are quiet lines with an info icon
+(`notice::info`): why a list is empty, what a trigger gives the action. A field that names something found on
+a connection takes typed text too; its list shows only once something was found, and can be searched. A
+thing people know by its picture (TikTok's gifts) is picked with `controls/gallery.rs`: the field shows the
+chosen picture, name and a quiet detail (its price), and opens a searchable grid with "any" first, the
+details on hover and a reload icon beside the search (its tip says what it does). Ids stay out of sight
+(Edit JSON has them); the list loads by itself when the form opens without one, and its pictures are
+asked for only as their rows scroll into view.
+
+A form field can carry a `placeholder` (an example, shown in the empty box) and `browse` (`"file"` or
+`"image"`): a Browse button beside the box opens the system's file dialog, and an image shows under the box
+once the path is a file. A field that doesn't apply to what was picked is `hidden`.
 
 Prefer forms and tables for ordinary editing. When raw data is useful, provide JSON one button away with
 the existing editor. Ask for confirmation before an irreversible destructive action, with text that names
@@ -224,7 +282,12 @@ Accounts in its empty state. When chat history is off, disable sending controls 
 The Polls page shows what runs (a poll, a prediction) with what can be done to it, and a status line
 saying which accounts are ready; New poll and New prediction open their forms in dialogs. It keeps
 locked predictions available for resolution and distinguishes an unknown result from confirmed success
-or failure. A chat view with no chat set up (Side by side too) shows the same note and Accounts button.
+or failure. The Stream page shows a card per platform that is set up (a `"card": true` section, below), its
+state in a word ("Ready", "Read only", "Offline") with the full reason on hover and in the card, the title
+large, the category and tags as chips, then its buttons. A platform that isn't connected shows only why and
+an Accounts button. Edit stream and Run ad at the top act on every platform, picked with logo check boxes
+that grey out with the reason on hover; a card's Edit opens a form with only the fields that platform takes.
+An empty field keeps what is there. A chat view with no chat set up (Side by side too) shows the same note and Accounts button.
 
 A stream ending and a chat disconnecting are separate states. A stream end gets a desktop notification
 and leaves an available chat usable. For a disconnected chat, hide its messages and replace the composer

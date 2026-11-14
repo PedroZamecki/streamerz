@@ -61,7 +61,7 @@ reward in the trigger, set Scene, Source and Visible for in the group's settings
 It uses the first connected OBS connection. Repeated runs follow the action queue's normal ordering.
 You can edit the individual steps or choose a particular connection in the OBS steps.
 
-The existing Subathon timer, Song requests (Spotify) and overlay templates use the same editable
+The bundled Subathon example, Song requests (Spotify) and overlay templates use the same editable
 group tools. Their settings belong to the group; no hidden recipe engine runs behind the action.
 
 ## Understand a test or result

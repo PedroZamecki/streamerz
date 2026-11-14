@@ -441,3 +441,253 @@ GPUI is the only window; `src/ui*`, `fltk` and the `gpui` feature are gone (see 
 CI: `lint.yml` and `build.yml` no longer install the FLTK libraries (Xft, Pango, GL, dbus) or patch FLTK's
 CMake options; they install what GPUI links (X11, xcb, xkbcommon, Wayland, fontconfig, freetype, OpenSSL).
 That package list is untested on GitHub's runners until the version's pull request runs.
+
+## Remaining bundled overlay examples (2026-11-13)
+
+Subathon now comes from `assets/examples/subathon`, including its editable countdown actions; the Rust
+builder and old page are removed. Emote wall, Top gifters, Credits roll and Song request queue complete
+the 19 bundled examples. The separate Song requests (Spotify) action builder migration remains tracked
+in `PLAN.md` as 9d. No commit, push, release or GitHub workflow was run for this work.
+
+| Command or check | Result |
+|---|---|
+| `cargo test --locked` | 594 passed, zero failed, 8 ignored. Includes the scenario suite and queue topic coverage with the fake Spotify service. |
+| `cargo test --locked examples::` | Final focused rerun: 5 passed. Includes package/share checks for all 19 examples, Subathon import/export, and gift totals with the page closed, duplicate bomb notifications, separate viewer IDs and saved periods. |
+| `node dev/test-subathon-overlay.cjs` | Passed. Deadline, pause, expiry, clock ID changes and Test isolation; a paused or finished clock schedules no timer. |
+| `node dev/test-examples.mjs` | 285 checks passed. Installs every example, exercises live settings and Test, checks JavaScript errors, captures normal/narrow sources, and verifies that preview data does not change saved totals. |
+| `node dev/test-overlays.mjs` | 43 checks passed, including permissions, chat history, topic replay, page calls and file ranges. |
+| `cargo fmt --check` and `git diff --check` | Passed. |
+| `cargo clippy --all-targets -- -D warnings` | Passed. |
+| `cargo clippy --all-targets --features gpui-dev -- -D warnings` | Passed. |
+| `cargo build --profile fast --features gpui-dev --locked` | Passed. |
+| `cargo xwin check --features gpui-dev --target x86_64-pc-windows-msvc --target-dir target/xwin` | Passed. Native Windows runtime was not exercised. |
+| `python3 -P dev/locale.py check` | Passed. 33 of 1,368 Portuguese texts still match English. |
+| Secret scanner rules against `git diff HEAD` plus untracked text files | Zero findings, without staging the existing working changes. The normal scanner only examines staged changes, so its empty result alone was not used. |
+| `env -u WAYLAND_DISPLAY DISPLAY=:99 STREAMERZ_SMOKE_PORT=8098 python3 -P dev/gpui-smoke.py` | Passed. Shared forms, pages, cancellation, menus, renderer exit and backend access. |
+| Same GPUI smoke with a private executable copy and `--out target/gpui-smoke-examples-private` | Passed. Hidden backend: 8,632 KiB RSS, 0.00% of one CPU core over five seconds, after renderer exit, without live connections. |
+| Native Examples dialog, using `StreamerzUi` bounds and window captures on `DISPLAY=:99` | Inspected at 1,100 x 800 and 540 x 700. New rows appear and fit the shared list. |
+
+Browser tests used an isolated development instance on WebSocket 8095 and HTTP 7495, with
+`STREAMERZ_DEV=1`, a fake Twitch broadcaster with an empty token and `manualConnect: true`, and
+`window.chat.saveHistory: true` for the history regression. No real account token was supplied. The
+local Spotify app supplied the Now playing check; authenticated live song requests and real gift
+notifications were not exercised. Request, removal, playback and clear behavior for the queue topic
+were exercised with the existing fake music service. The queue refresh is driven by the existing local
+media watcher, only with Spotify enabled, a queue listener and pending requests; it adds no task or
+polling timer.
+
+The first full Rust run reproduced the previously reported category-test failure: another test had
+remembered Just Chatting in the shared catalog. The catalog fixture now starts empty and its writers
+use the shared test lock. A later full run passed. The request/export test now installs Subathon
+through the asynchronous overlay request instead of the removed action-template builder.
+
+The example browser harness now closes its Chromium targets, so finished pages release their feeds
+and do not keep running while later examples are checked. The gifters fixture uses its own period,
+since Subathon's earlier gift check also runs the leaderboard actions. A topic-change check reopens
+the queue page before sending Test, so the initial live replay has settled.
+
+Screenshots are in `/tmp/szoverlay/example-*.png`; the gallery captures are
+`/tmp/szoverlay/example-gallery-1100.png` and `example-gallery-540.png`. Smoke output and memory maps
+are in `target/gpui-smoke-examples-private`. The first smoke used the same executable as another running
+development instance and measured 31,904 KiB, including 24,720 KiB mapped from that executable. The
+private copy avoids that shared-file effect; it reuses the same build, without rebuilding it. These are
+synthetic disconnected measurements, not the required connected Twitch + OBS version baseline.
+
+Version closure remains open: connected service profiling, native Windows behavior, release packaging,
+signing/store checks and GitHub artifact reuse/publication were not performed in this task. The full
+`python3 -P dev/check.py` release/push gate was not run; no push was requested.
+
+## OBS output discovery and control (2026-11-13)
+
+Scope: backend and MCP only. Accounts and the Stream page were not changed for this task.
+Tests used OBS Studio 32.2.2 with obs-websocket 5.7.4 on `DISPLAY=:99`, temporary settings and
+plugin directories under `/tmp/streamerz-outputs-research`. The existing desktop OBS instance was
+not configured, restarted or used to publish. Test streams went only to loopback FFmpeg receivers.
+
+Commands and results:
+
+- `cargo fmt --check`: passed.
+- `cargo clippy --all-targets -- -D warnings`: passed.
+- `cargo test --profile ci-test core::outputs --locked`: six passed, one integration test ignored.
+  Covers source-specific request parameters, filtering recordings, duplicate output names, connection
+  identity, unknown versus stopped state, platform hints, omission of service secrets, partial errors,
+  selected main start confirmation, failed-main handling, stop ordering and subscription cleanup.
+- `cargo test --profile ci-test --locked`: 600 passed, nine integration tests ignored.
+- `python3 -P dev/locale.py check`: passed (33 existing Portuguese texts still match English).
+- `STREAMERZ_TEST_OBS_PORT=14457 STREAMERZ_TEST_OBS_LOCAL_STREAM=1 cargo test --profile ci-test
+  real_obs_discovery_through_shared_dispatcher --locked -- --ignored --nocapture`: passed. Stock OBS
+  discovery, authentication denial, selected main start confirmation, actual active state and stop request
+  through the shared dispatcher. OBS logged a successful connection to the loopback RTMP receiver and
+  output frames. The opt-in local-stream test requires an isolated profile configured for a local receiver.
+- `STREAMERZ_TEST_OBS_PORT=14456 STREAMERZ_TEST_OBS_VENDOR=aitum-multistream cargo test --profile
+  ci-test real_obs_discovery_through_shared_dispatcher --locked -- --ignored --nocapture`: passed.
+  Real Multistream 1.0.9 returned the configured destination and Vertical 1.6.7 returned its status.
+  Both Main and Aitum Vertical canvases were found.
+- `STREAMERZ_TEST_OBS_PORT=14455 STREAMERZ_TEST_OBS_VENDOR=aitum-stream-suite cargo test --profile
+  ci-test real_obs_discovery_through_shared_dispatcher --locked -- --ignored --nocapture`: passed for
+  the Stream Suite 1.2.5 API and main stream discovery. The isolated plugin had an empty configured-output
+  list despite the seeded profile. Its destination start/stop was not verified. An earlier attempt to
+  start the main stream in that instance timed out waiting for confirmation; it was not counted as live.
+- Temporary protocol exercise against Multistream 1.0.9: passed. Started the main stream, received
+  frames in FFmpeg, requested the selected plugin output, received frames in a second FFmpeg receiver,
+  read both runtime outputs as active and requested plugin stop, then main stop. This checks the real
+  vendor API; source-specific backend routing is covered by the unit tests above. The receiver needed
+  time for the next keyframe when joining a shared encoder. Earlier receiver setup errors and a short
+  receiver deadline were corrected before the passing run.
+
+Remaining verification: Stream Suite configured-destination start/stop, Vertical destination start/stop,
+the Multi-RTMP websocket fork on a real installation (fixture coverage only), Windows runtime and
+cross-check, release packaging, signing, stores, GitHub-only artifact reuse, and the version's hidden
+Twitch + OBS RSS/idle CPU comparison. No version was closed or pushed. There is no new idle task,
+connection or periodic refresh in the output adapter. No UI change needed a screenshot for this task.
+
+Shared check run: `python3 -P dev/check.py` completed with four failures. Rust tests, CI-profile
+Clippy, formatting, locales, Subathon browser test, six Python tests and extension packaging passed.
+The TikTok extension tests had three failures in existing browser mocks (`chrome.storage.local` is
+missing, with asynchronous `URLSearchParams` errors). The history secret scan reported nine historical
+findings, unrelated to the output adapter; they were not copied into these notes. `cargo audit` and
+`actionlint` were unavailable on PATH, so neither check passed. The staged secret scan passed but did
+not cover unstaged work; the scanner was also applied directly to the output-change files, including
+the untracked module, with no findings. These unrelated failures and unavailable tools remain open;
+no push or release was attempted.
+
+### Persistent OBS plugin installation (2026-11-13)
+
+Installed upstream release binaries in OBS's supported per-user plugin directory,
+`~/.config/obs-studio/plugins`, with their data files and locales. Each downloaded package matched its
+GitHub release asset's SHA-256 digest and had no missing runtime libraries. No OBS upgrade or privileged
+system file changes were needed. Versions: Aitum Multistream 1.0.9, Aitum Vertical 1.6.7, Aitum Stream
+Suite 1.2.5 and the Multi-RTMP websocket fork 0.7.4.3-ws0.3. A backup of the previous Plugin Manager
+state and an installation manifest live in `~/.local/share/Streamerz/obs-plugin-install-backups`.
+
+The normal OBS Plugin Manager enables Multistream, Vertical and Multi-RTMP; Stream Suite is installed
+but disabled because it replaces the older Aitum plugins. The normal desktop OBS log confirms all three
+enabled plugins loaded and the Multi-RTMP vendor registered. Separate test configurations under
+`~/.local/share/Streamerz/obs-plugin-tests` share the installed binaries but use private scenes, settings
+and plugin enablement: the legacy configuration disables Suite; the Suite configuration disables the
+older Aitum plugins. Neither configuration copies production credentials.
+
+Both installed-binary discovery tests passed through `StreamerzOutputs` (ports 14456 and 14455, with
+`STREAMERZ_TEST_OBS_VENDOR=sorayuki.multi_rtmp` and `aitum-stream-suite`, respectively). The installed
+Multi-RTMP fork also passed a local receiver exercise: create a temporary target, configure a loopback
+server, start the main stream, receive frames, start that target by ID, receive frames in a second
+receiver, read its running state, request stop and delete the temporary target. No public stream ran.
+
+This live test found that released Multi-RTMP 0.7.4.3-ws0.3 uses `isRunning` in its target list/state,
+although its README describes `streaming`. The backend now accepts both fields, with a regression
+fixture for the actual release format. The first protocol exercise received frames but failed its old
+`streaming` assertion; the corrected exercise passed, including stop and target cleanup. Formatting and
+`cargo clippy --all-targets -- -D warnings` passed after the adapter fix. `cargo test --profile ci-test core::outputs --locked` also passed after the fix
+(six passed, one real-OBS integration test ignored by default). Stream Suite configured destination streaming and Vertical destination streaming
+remain unverified; successful module/API loading alone does not count as stream verification.
+
+### Complete output verification (2026-11-13)
+
+Repeatable live test: `env -u WAYLAND_DISPLAY DISPLAY=:99 python3 -P dev/test-obs-outputs.py`.
+It uses the installed binaries, generated scenes with a color source, isolated OBS profiles and fixed
+loopback RTMP destinations. It never copies production scenes, logins or stream services. `FirstRun`
+marks the setup wizard as already completed, and the harness waits for OBS's main window rather than
+assuming an open websocket means the plugins finished loading. `src/core/outputs/live_tests.rs` drives
+`StreamerzOutputs` through the real backend, not a parallel implementation of its controls. FFmpeg
+must receive video frames. Repeated start must be idempotent, selected stop must close that receiver
+and leave the main stream live, repeated stop must be idempotent, and final stop must report inactive.
+A stale output ID is rejected before anything starts. Temporary instances and receivers are removed.
+
+Initial results: nine live scenarios passed and the browser-enabled Suite test failed. The failure
+was fixed and the full matrix repeated below. The final Suite tests all keep obs-browser enabled:
+
+| Scenario | Result |
+| --- | --- |
+| Stock OBS main stream | Passed |
+| Stream Suite horizontal destination | Passed with obs-browser enabled and rendered local-page pixels verified |
+| Stream Suite vertical destination on its extra canvas | Passed with obs-browser enabled and rendered local-page pixels verified |
+| Aitum Vertical canvas stream group | Passed |
+| Multistream horizontal destination sharing the main encoder | Passed |
+| Multistream vertical destination | Passed |
+| Multi-RTMP websocket fork target by ID | Passed |
+| Main stream reconnection after replacing its local receiver | Passed; no second start request |
+| Shared encoder requested without selecting the main stream | Passed; acknowledgement stayed unconfirmed and the main stayed stopped |
+| Stream Suite with obs-browser enabled on X11 | Passed after the clean-profile startup fix below |
+
+The original browser-enabled Suite failure happened before configured outputs loaded. A plain OBS
+browser source also failed with the same fresh profile. A diagnostic browser build showed
+`CefInitialize` never returning on the browser thread; running initialization on the main thread
+exposed Chromium exit code 28. Passing `--no-first-run` to the installed OBS fixes the fresh-cache
+startup flow. This matches the [CEF embedder fix](https://github.com/tauri-apps/tauri/pull/15980)
+for Chromium's Linux first-run EULA flow. Rebuilding against the installed CEF alone did not fix it.
+The final test uses the original installed browser module and helper, with no replacement, preload,
+Qt event-loop override or D-Bus override. No system package was changed.
+
+The harness waits for Suite's configured output to appear, including retrying OBS's temporary
+not-ready response, then creates a local browser source and checks screenshot pixels against its
+solid green page. This is required for every Suite scenario, including vertical streaming. Browser
+hardware acceleration is disabled only in the generated Xvfb profile; `--disable-gpu` and
+`--password-store=basic` keep that disposable profile on software rendering and away from the desktop
+credential store. The test still fails if the page does not render or local receivers get no video.
+The normal OBS keeps Suite disabled because it conflicts with the older Aitum plugins. Its process,
+plugins and configuration were not changed during this fix.
+
+Verification found and fixed:
+
+- Multistream's stopped runtime objects disappear from OBS's list. Its existing vendor start/stop events
+  now preserve confirmed state, scoped to the connection and cleared on disconnect or profile/scene
+  collection changes. No watcher, timer or poll was added. Vertical Multistream runtime names are also
+  matched, so the configured destination gets its actual state without a duplicate runtime row.
+- A start during native reconnection now waits for the existing `RECONNECTED` event. A stop can cancel
+  reconnection even if OBS temporarily reports `outputActive: false`.
+- Native OBS and Suite reports of the same canvas are merged by UUID. Multi-RTMP's shared internal
+  `multi-output` runtime objects are not exposed as duplicate destinations or paired with a target by
+  name. An unrelated runtime label cannot override another plugin's state.
+- Missing optional vendors still return their capability result but do not create error-level log noise.
+- The TikTok extension test fixture now supplies the browser storage and URLSearchParams APIs already
+  used by the extension. All twelve tests pass without asynchronous failures.
+- Audit identified Tokio's I/O safety advisory RUSTSEC-2026-0386. Tokio was patched from 1.53.2 to
+  1.53.3; the five Linux AsyncFd sites now use its explicit registration API with documented ownership
+  guarantees. Existing tests and platform checks passed after the migration. Filesystem watcher tests
+  exercise real Linux descriptors; physical input and MIDI devices were not tested.
+
+Final commands and results:
+
+- `python3 -P dev/check.py`, with the verified temporary cargo-audit 0.23.0 and actionlint 1.7.12 on PATH:
+  Rust tests **605 passed, 10 ignored**, all scenarios included; CI-profile Clippy, formatting, locales,
+  twelve TikTok extension tests, Subathon browser test, fourteen Python tests, workflow validation and
+  extension packaging passed. Audit passed with eight unmaintained transitive-dependency warnings
+  reporting no fixed upgrade; the Tokio advisory is gone. Ignored service/platform tests are listed by
+  the runner and are not counted as passed.
+- The shared runner now exits 0. `dev/scan_secrets.py --history` reports nine reviewed legacy home-path
+  occurrences across three old commits of `docs/memory-results.json`. The current file was already
+  redacted. `dev/secrets-history.json` records exact commit, file, rule and full-line SHA-256
+  fingerprints with a reason, without storing the personal path. This preserves published history,
+  so the old paths remain in those historical commits. It exempts no credentials, staged changes,
+  changed lines, other files or new commits. Reintroducing a path in the current file invalidates
+  the baseline. Git errors fail closed. Eight new scanner tests cover these boundaries.
+- `cargo xwin check --locked --all-targets --features gpui-dev --target x86_64-pc-windows-msvc
+  --target-dir target/xwin`: passed. This is type-checking, not Windows runtime or plugin verification.
+- The original nine-scenario matrix is in `target/obs-outputs-verification/run-2km30tg5/results.json`.
+  The canvas/runtime deduplication checks were also exercised against Suite horizontal/vertical and the
+  fork in `target/obs-outputs-verification/run-nl3qjwk2/results.json`, all passed. Each retained test run
+  has its OBS and backend logs; the browser-enabled debugger trace is
+  `target/obs-outputs-verification/suite-browser-backtrace.txt`.
+
+Not performed: public Twitch/Kick/YouTube/TikTok publication, native Windows plugin/runtime tests,
+macOS runtime, release/AppImage packaging, signing, store uploads, GitHub artifact reuse/publication,
+and the full version's connected Twitch + OBS RSS/idle CPU comparison. Extension packages were built
+locally only. No UI changed in this task. No version was closed, no PR was pushed and no release ran.
+
+Failure-fix verification:
+
+- `python3 -P -m unittest discover -s dev -p test_scan_secrets.py`: eight passed.
+- `PATH=<verified temporary tools>:$PATH python3 -P dev/check.py`: exit 0; log in
+  `target/obs-outputs-verification/failure-fix-checks.log`, 605 Rust tests and fourteen Python tests
+  passed, ten Rust service/platform tests ignored, audit passed with eight maintenance warnings.
+- `env -u WAYLAND_DISPLAY DISPLAY=:99 python3 -P dev/test-obs-outputs.py --case suite-browser`:
+  passed with installed binaries, exact page pixel `(20, 190, 70)` and full backend stream lifecycle;
+  results in `target/obs-outputs-verification/run-bq608kbi/results.json`.
+- `env -u WAYLAND_DISPLAY DISPLAY=:99 python3 -P dev/test-obs-outputs.py`: all ten scenarios
+  passed after the fix, including actual browser pixels in all three Suite runs. Results:
+  `target/obs-outputs-verification/run-f2chvrz2/results.json`; combined log:
+  `target/obs-outputs-verification/fixed-full-matrix.log`. All private OBS instances and FFmpeg
+  receivers exited; the original desktop OBS remained running. No public stream was started.
+- `python3 -P -m unittest discover -s dev -p 'test_*.py'`: fourteen passed after the final harness
+  changes. `python3 -P -m py_compile dev/scan_secrets.py dev/test_scan_secrets.py
+  dev/test-obs-outputs.py` and `git diff --check` passed.

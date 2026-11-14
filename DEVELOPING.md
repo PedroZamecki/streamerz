@@ -920,13 +920,14 @@ The page is the Groups one (`core/pages.rs`). The WebSocket requests are `Stream
 `StreamerzTemplateAdd` (adds a built-in template); each has an MCP tool.
 
 `templates.rs` lists the built-in templates; a `Made` can carry group definitions and `add_to`
-applies them (defaults first, then countdowns). `templates/subathon.rs` is the subathon built only
+applies them (defaults first, then countdowns). `assets/examples/subathon` is the bundled Subathon, built only
 from these tools: countdown sub-action 99803 (its `startMs`, `maxMs`, `perUnitMs` and
-`expectedCurrency` fields take `%group.name%`), a group with five settings, and the overlay as a
+`expectedCurrency` fields take `%group.name%`), a group with typed settings, and the overlay as a
 group file. `templates/clock.rs` keeps the countdown state: it is created when the group is added
 or imported (`clock::start_for` finds the resets), capped on every add, and its remaining time is
-saved at shutdown. The overlay reads `StreamerzCountdown` and listens for
-`Misc.StreamerzCountdownChanged`.
+saved at shutdown. The overlay uses `streamerz.countdown`, which reads `StreamerzCountdown` and listens
+for `Misc.StreamerzCountdownChanged`. All bundled overlays live in `assets/examples`, registered in
+`src/examples.rs`; each has a browser check in `dev/test-examples.mjs`.
 
 ## Where the settings are
 
