@@ -1,0 +1,108 @@
+{
+  "format": 1,
+  "name": "Buttons dock",
+  "meta": {
+    "description": "A dock of buttons in OBS: one for each action connected to it. The ones it comes with show a banner on the stream.",
+    "variables": [
+      {
+        "name": "main",
+        "label": "Big button",
+        "kind": "action",
+        "default": "",
+        "description": "Drawn wide at the top. Empty for none",
+        "section": "Buttons"
+      },
+      {
+        "name": "columns",
+        "label": "Columns",
+        "kind": "slider",
+        "default": 2,
+        "min": 1,
+        "max": 4,
+        "step": 1
+      },
+      {
+        "name": "buttonColor",
+        "label": "Button color",
+        "kind": "color",
+        "default": "#7c3aed"
+      },
+      {
+        "name": "confirm",
+        "label": "Ask before running",
+        "kind": "boolean",
+        "default": false
+      },
+      {
+        "name": "bannerHide",
+        "label": "Hide after (seconds)",
+        "kind": "integer",
+        "default": 0,
+        "description": "How long the banner stays. 0: until an action hides it",
+        "section": "Banner"
+      },
+      {
+        "name": "bannerColor",
+        "label": "Banner color",
+        "kind": "color",
+        "default": "#7c3aed"
+      },
+      {
+        "name": "bannerText",
+        "label": "Banner text color",
+        "kind": "color",
+        "default": "#ffffff"
+      },
+      {
+        "name": "bannerSize",
+        "label": "Banner text size",
+        "kind": "slider",
+        "default": 54,
+        "min": 20,
+        "max": 120,
+        "step": 2
+      },
+      {
+        "name": "font",
+        "label": "Font",
+        "kind": "font",
+        "default": "",
+        "description": "A font installed on this computer"
+      }
+    ],
+    "files": [
+      {
+        "name": "dock.html"
+      },
+      {
+        "name": "banner.html"
+      }
+    ],
+    "permissions": [
+      "actions.run"
+    ],
+    "template": {
+      "id": "streamerz.example.control-dock",
+      "version": "1.0.0",
+      "author": "Streamerz",
+      "pages": [
+        {
+          "file": "dock.html",
+          "title": "Buttons",
+          "dock": true
+        },
+        {
+          "file": "banner.html",
+          "title": "Banner",
+          "width": 1920,
+          "height": 200
+        }
+      ],
+      "test": {
+        "topics": {
+          "banner.text": "Be right back"
+        }
+      }
+    }
+  }
+}

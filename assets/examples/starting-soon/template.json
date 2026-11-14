@@ -1,0 +1,123 @@
+{
+  "format": 1,
+  "name": "Starting soon",
+  "meta": {
+    "description": "A full screen for before the stream: your picture, a countdown and music, all set from its settings.",
+    "variables": [
+      {
+        "name": "title",
+        "label": "Title",
+        "kind": "text",
+        "default": "Starting soon",
+        "section": "What it shows"
+      },
+      {
+        "name": "subtitle",
+        "label": "Under the title",
+        "kind": "text",
+        "default": "Grab a drink, we are almost there"
+      },
+      {
+        "name": "minutes",
+        "label": "Countdown (minutes)",
+        "kind": "slider",
+        "default": 5,
+        "description": "Counts from when the page opens. 0: no countdown",
+        "min": 0,
+        "max": 60,
+        "step": 1
+      },
+      {
+        "name": "done",
+        "label": "When it ends",
+        "kind": "text",
+        "default": "Starting now!"
+      },
+      {
+        "name": "background",
+        "label": "Background picture",
+        "kind": "file",
+        "default": "img/background.svg",
+        "description": "One of the overlay's pictures, one of this computer (it is copied in) or a web address",
+        "section": "Picture and music",
+        "accept": "image"
+      },
+      {
+        "name": "dim",
+        "label": "Darken the picture (%)",
+        "kind": "slider",
+        "default": 35,
+        "min": 0,
+        "max": 90,
+        "step": 5
+      },
+      {
+        "name": "music",
+        "label": "Music",
+        "kind": "file",
+        "default": "",
+        "description": "Plays on a loop. Empty for none",
+        "accept": "sound"
+      },
+      {
+        "name": "volume",
+        "label": "Volume (%)",
+        "kind": "slider",
+        "default": 40,
+        "min": 0,
+        "max": 100,
+        "step": 5
+      },
+      {
+        "name": "textColor",
+        "label": "Text color",
+        "kind": "color",
+        "default": "#ffffff",
+        "section": "Look"
+      },
+      {
+        "name": "accent",
+        "label": "Accent color",
+        "kind": "color",
+        "default": "#a78bfa"
+      },
+      {
+        "name": "scale",
+        "label": "Size (%)",
+        "kind": "slider",
+        "default": 100,
+        "min": 50,
+        "max": 200,
+        "step": 5
+      },
+      {
+        "name": "font",
+        "label": "Font",
+        "kind": "font",
+        "default": "",
+        "description": "A font installed on this computer"
+      }
+    ],
+    "files": [
+      {
+        "name": "index.html"
+      },
+      {
+        "name": "img/background.svg"
+      }
+    ],
+    "template": {
+      "id": "streamerz.example.starting-soon",
+      "version": "1.0.0",
+      "author": "Streamerz",
+      "pages": [
+        {
+          "file": "index.html",
+          "title": "Starting soon",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    }
+  }
+}

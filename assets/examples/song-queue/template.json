@@ -1,0 +1,99 @@
+{
+  "format": 1,
+  "name": "Song request queue",
+  "meta": {
+    "description": "Upcoming requests from the Song requests (Spotify) actions. Add that action template separately and connect Spotify in Integrations. Reads its published topic without polling.",
+    "variables": [
+      {
+        "name": "topic",
+        "label": "Topic",
+        "kind": "text",
+        "default": "songrequests.queue",
+        "description": "Another template can publish the same array of {title, artist, user} rows under its own topic"
+      },
+      {
+        "name": "title",
+        "label": "Title",
+        "kind": "text",
+        "default": "Up next"
+      },
+      {
+        "name": "empty",
+        "label": "When empty",
+        "kind": "text",
+        "default": "No songs requested yet"
+      },
+      {
+        "name": "rows",
+        "label": "Rows",
+        "kind": "integer",
+        "default": 5
+      },
+      {
+        "name": "showRequester",
+        "label": "Show who requested",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "color",
+        "label": "Text color",
+        "kind": "color",
+        "default": "#ffffff"
+      },
+      {
+        "name": "accent",
+        "label": "Accent",
+        "kind": "color",
+        "default": "#a78bfa"
+      },
+      {
+        "name": "background",
+        "label": "Background",
+        "kind": "color",
+        "default": "#18181be6"
+      },
+      {
+        "name": "font",
+        "label": "Font",
+        "kind": "font",
+        "default": ""
+      }
+    ],
+    "files": [
+      {
+        "name": "index.html"
+      }
+    ],
+    "permissions": [],
+    "template": {
+      "id": "streamerz.example.song-queue",
+      "version": "1.0.0",
+      "author": "Streamerz",
+      "pages": [
+        {
+          "file": "index.html",
+          "title": "Song request queue",
+          "width": 700,
+          "height": 520
+        }
+      ],
+      "test": {
+        "topics": {
+          "songrequests.queue": [
+            {
+              "title": "A test song",
+              "artist": "Streamerz",
+              "user": "ana"
+            },
+            {
+              "title": "Another song",
+              "artist": "Streamerz",
+              "user": "bruno"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

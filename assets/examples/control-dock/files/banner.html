@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Banner</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; font-family: var(--font, system-ui), system-ui, sans-serif; }
+  #banner { max-width: 92%; padding: .35em 1.1em; border-radius: .5em; background: var(--back, #7c3aed); color: var(--text, #fff);
+    font-size: var(--size, 54px); font-weight: 900; text-align: center; box-shadow: 0 .15em .6em rgba(0, 0, 0, .45);
+    transition: opacity .4s ease, transform .5s cubic-bezier(.2, 1.4, .4, 1); }
+  #banner.away { opacity: 0; transform: translateY(60%) scale(.9); }
+</style>
+</head>
+<body>
+<div id="banner" class="away"></div>
+<script>
+// The banner shows the topic "banner.text", which the actions of this overlay set with the Overlay
+// sub-action (Banner: Be right back, Banner: hide...). Empty text hides it.
+let settings = streamerz.settings;
+let hide = 0;
+
+streamerz.onSettings(s => {
+  settings = s;
+  const root = document.documentElement.style;
+  root.setProperty("--back", s.bannerColor || "#7c3aed");
+  root.setProperty("--text", s.bannerText || "#fff");
+  root.setProperty("--size", (Number(s.bannerSize) || 54) + "px");
+  root.setProperty("--font", s.font ? '"' + s.font + '"' : "system-ui");
+});
+
+streamerz.on("banner.text", text => {
+  clearTimeout(hide);
+  if (!text) return banner.classList.add("away");
+  banner.textContent = String(text);
+  banner.classList.remove("away");
+  const after = Number(settings.bannerHide) || 0;
+  if (after > 0) hide = setTimeout(() => banner.classList.add("away"), after * 1000);
+});
+</script>
+</body>
+</html>

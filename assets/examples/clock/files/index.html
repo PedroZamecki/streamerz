@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Clock</title>
+<style>
+  /* An overlay sits over the stream: the background stays transparent. */
+  html, body { margin: 0; background: transparent; }
+  #clock { padding: 16px 24px; font-family: system-ui, sans-serif; text-shadow: 0 2px 8px rgba(0, 0, 0, .7); }
+  #time { font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; }
+  #label { margin-top: 6px; font-size: .3em; letter-spacing: .12em; text-transform: uppercase; opacity: .85; }
+</style>
+</head>
+<body>
+<div id="clock"><div id="time"></div><div id="label"></div></div>
+<script>
+// Streamerz adds `streamerz` to every page it serves. This overlay uses one thing from it: the
+// settings. They are edited in Streamerz (Overlays, Settings), never here.
+let settings = {};
+
+function draw() {
+  const now = new Date();
+  time.textContent = now.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: settings.seconds ? "2-digit" : undefined,
+    hour12: settings.format === "12 hours",
+  });
+}
+
+// onSettings runs once now and again whenever a setting changes, without reloading the page.
+streamerz.onSettings(s => {
+  settings = s;
+  clock.style.color = s.color || "#ffffff";
+  clock.style.fontSize = (Number(s.size) || 64) + "px";
+  label.textContent = s.label || "";
+  label.style.display = s.label ? "" : "none";
+  draw();
+});
+
+// The page keeps its own time: Streamerz sends nothing while the clock runs.
+setInterval(draw, 1000);
+</script>
+</body>
+</html>

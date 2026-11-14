@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>My overlay</title>
+<style>
+  /* An overlay sits over the stream: keep the background transparent. */
+  html, body { margin: 0; background: transparent; }
+  #box { font: bold 40px sans-serif; color: white; text-shadow: 0 2px 6px black; padding: 20px; }
+</style>
+</head>
+<body>
+<div id="box">Hello</div>
+<script>
+// Streamerz adds `streamerz` to this page. Everything it can do is in the guide:
+// Overlays, Guide (docs/OVERLAYS.md).
+
+// The group's settings: edit them in Streamerz (Overlays, Settings), not here.
+// onSettings runs now and again whenever one changes, with no reload of the page.
+streamerz.onSettings(settings => {
+  box.textContent = settings.text || "Hello";
+});
+
+// Live viewers of every connected platform.
+streamerz.on("viewers", viewers => {
+  document.title = viewers.total + " watching";
+});
+
+// More to try. Each one needs its permission ticked in the overlay's settings first.
+// streamerz.chat(line => console.log(line.user, line.text), {history: 20});
+// streamerz.alerts(alert => console.log(alert.user, alert.event));
+// streamerz.say("Hello chat");
+// streamerz.run("An action of this group", {name: "value"});
+</script>
+</body>
+</html>

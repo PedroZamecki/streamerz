@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Flying chat</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  body { font-family: var(--font, system-ui), system-ui, sans-serif; color: var(--text, #fff); font-weight: 700; }
+  #sky { position: absolute; left: 0; right: 0; top: var(--top, 0%); height: var(--tall, 100%); overflow: hidden; }
+  /* A message starts just off the right edge and flies to just off the left one. */
+  .fly { position: absolute; left: 100%; white-space: nowrap; will-change: transform;
+    animation: fly var(--time, 10s) linear forwards; opacity: var(--see, 1); }
+  @keyframes fly { to { transform: translateX(calc(-100vw - 100%)); } }
+  .outline .fly { text-shadow: 0 0 .12em #000, 0 .06em .18em rgba(0, 0, 0, .9), 0 0 .5em rgba(0, 0, 0, .5); }
+  .boxed .fly { padding: .1em .55em; border-radius: 2em; background: rgba(10, 10, 14, .6); }
+  /* An event (a sub, a gift) flies in its colour, on one line like a message. */
+  .fly.sz-event { color: var(--sz-accent); }
+  .fly .sz-what { display: inline; margin-right: .35em; }
+
+  .sz-head { margin-right: .35em; }
+  .sz-platform, .sz-badge, .sz-avatar, .sz-icon { height: 1em; width: auto; vertical-align: -.15em; margin-right: .2em; }
+  .sz-avatar { width: 1.2em; height: 1.2em; border-radius: 50%; object-fit: cover; vertical-align: -.25em; }
+  .sz-emote { height: 1.4em; vertical-align: -.35em; margin: 0 .05em; }
+  .sz-reply, .sz-picture, .sz-time { display: none; }
+  .nameless .sz-name { display: none; }
+</style>
+</head>
+<body>
+<div id="sky"></div>
+<script>
+// Chat messages fly across the screen, right to left, as on Niconico ("danmaku"). The page keeps a
+// few lanes and gives each message the lane that has been free the longest, so they don't overlap.
+// It reads the chat, so its group has the permission "Read the chat".
+let settings = streamerz.settings;
+let ignored = new Set();
+let lanes = []; // When each lane's last message has moved clear of the right edge (ms).
+
+streamerz.onSettings(s => {
+  settings = s;
+  const root = document.documentElement.style;
+  root.fontSize = (Number(s.size) || 32) + "px";
+  root.setProperty("--text", s.textColor || "#fff");
+  root.setProperty("--font", s.font ? '"' + s.font + '"' : "system-ui");
+  root.setProperty("--see", (Number(s.opacity) || 100) / 100);
+  // Where they fly: the whole picture, or its top or bottom half.
+  root.setProperty("--top", s.area === "Bottom half" ? "50%" : "0%");
+  root.setProperty("--tall", s.area === "Whole screen" || !s.area ? "100%" : "50%");
+  document.body.className = [
+    s.look === "Boxed" ? "boxed" : "outline",
+    s.showName === false ? "nameless" : "",
+  ].join(" ");
+  ignored = new Set(String(s.ignore || "").split("\n").map(n => n.trim().toLowerCase()).filter(Boolean));
+  lanes = [];
+});
+
+function fly(line) {
+  // "From" is a platforms setting: the list of the ones ticked.
+  if (Array.isArray(settings.platforms) && !settings.platforms.includes(line.platform)) return;
+  if (ignored.has(String(line.user || "").toLowerCase())) return;
+  if (settings.hideCommands !== false && !line.event && String(line.text || "").startsWith("!")) return;
+  if (sky.children.length >= (Number(settings.most) || 40)) return;
+
+  const el = streamerz.line(line, {
+    platform: settings.showPlatform !== false,
+    badges: settings.showBadges === true,
+    avatar: settings.showAvatars === true,
+  });
+  el.classList.add("fly");
+  const seconds = Math.max(2, Number(settings.speed) || 10);
+  el.style.setProperty("--time", seconds + "s");
+  sky.append(el);
+
+  // The lane: as many as fit in the height, the one free for the longest. Every lane is as tall as a
+  // line with an emote in it, so a message never touches the ones above and below.
+  const tall = parseFloat(getComputedStyle(document.documentElement).fontSize) * 1.9;
+  const count = Math.max(1, Math.floor(sky.clientHeight / tall));
+  if (lanes.length !== count) lanes = Array(count).fill(0);
+  const now = performance.now();
+  let lane = 0;
+  for (let i = 1; i < count; i++) if (lanes[i] < lanes[lane]) lane = i;
+  // Free lanes are picked at random, so the top isn't always the fullest.
+  const free = lanes.map((t, i) => (t <= now ? i : -1)).filter(i => i >= 0);
+  if (free.length) lane = free[Math.floor(Math.random() * free.length)];
+  el.style.top = lane * tall + "px";
+  // It is clear of the right edge once it has moved its own width.
+  const speed = (sky.clientWidth + el.offsetWidth) / (seconds * 1000);
+  lanes[lane] = now + (el.offsetWidth + 40) / speed;
+
+  el.addEventListener("animationend", () => el.remove());
+}
+
+streamerz.chat(fly, {
+  removed: r => {
+    for (const el of [...sky.children]) {
+      if (r.msgId ? el.dataset.msg === r.msgId : el.dataset.user === r.platform + ":" + r.userId) el.remove();
+    }
+  },
+});
+streamerz.alerts(line => {
+  if (settings.showEvents !== false) fly(line);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ad break</title>
+<style>
+  html, body { margin: 0; background: transparent; overflow: hidden; }
+  body { font-family: var(--font, system-ui), system-ui, sans-serif; }
+  #box { position: relative; display: flex; align-items: center; gap: .45em; width: max-content; margin: .3em;
+    padding: .35em .55em; overflow: hidden; border-radius: var(--radius, 12px); background: var(--back, #0a0a0eeb);
+    color: var(--text, #fff); font-weight: 800; box-shadow: 0 .2em .8em rgba(0, 0, 0, .4);
+    transition: opacity .35s ease, transform .35s cubic-bezier(.2, .8, .2, 1); }
+  #box.away { opacity: 0; transform: translateY(.4em); }
+  #badge { padding: .1em .45em; border-radius: calc(var(--radius, 12px) * .6); background: var(--accent, #fbbf24); color: #111; }
+  #time { font-variant-numeric: tabular-nums; }
+  #after { font-weight: 600; opacity: .85; }
+  #bar { position: absolute; left: 0; bottom: 0; height: .12em; width: 100%; background: var(--accent, #fbbf24);
+    transform-origin: left; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="box" class="away"><span id="badge"></span><span id="time"></span><span id="after"></span><div id="bar"></div></div>
+<script>
+// While Twitch plays an ad the topic "ad" holds {running: true, duration (seconds), endsAt (ms)}; when it
+// ends, {running: false}. The page counts down by itself from endsAt: nothing is sent every second.
+let settings = streamerz.settings;
+let ad = null, timer = 0;
+
+streamerz.onSettings(s => {
+  settings = s;
+  const root = document.documentElement.style;
+  root.fontSize = (Number(s.size) || 34) + "px";
+  root.setProperty("--accent", s.accent || "#fbbf24");
+  root.setProperty("--back", s.background || "#0a0a0eeb");
+  root.setProperty("--text", s.textColor || "#fff");
+  root.setProperty("--radius", (Number(s.radius) || 0) + "px");
+  root.setProperty("--font", s.font ? '"' + s.font + '"' : "system-ui");
+  badge.textContent = s.label || "Ad";
+  after.textContent = s.after || "";
+  after.hidden = !s.after;
+  bar.hidden = s.showBar === false;
+});
+
+function show(value) {
+  ad = value;
+  clearInterval(timer);
+  // Test sends no end time: it gets one from its length.
+  if (ad && ad.running && !ad.endsAt) ad.endsAt = Date.now() + (ad.duration || 30) * 1000;
+  const left = () => (ad && ad.running ? Math.max(0, ad.endsAt - Date.now()) : 0);
+  if (!left()) return box.classList.add("away");
+  const total = (ad.duration || 30) * 1000;
+  const draw = () => {
+    const ms = left();
+    const s = Math.ceil(ms / 1000);
+    time.textContent = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+    bar.style.transform = "scaleX(" + Math.min(1, ms / total) + ")";
+    if (!ms) clearInterval(timer), box.classList.add("away");
+  };
+  box.classList.remove("away");
+  draw();
+  timer = setInterval(draw, 250);
+}
+
+streamerz.on("ad", show);
+</script>
+</body>
+</html>

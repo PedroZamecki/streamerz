@@ -1,0 +1,162 @@
+{
+  "format": 1,
+  "name": "TikTok gifts",
+  "meta": {
+    "description": "Every gift sent on your TikTok Live: who, which gift and how many, with a count that grows through a combo.",
+    "variables": [
+      {
+        "name": "look",
+        "label": "Look",
+        "kind": "choice",
+        "default": "TikTok",
+        "options": [
+          "TikTok",
+          "Dark",
+          "Light",
+          "Custom color"
+        ],
+        "section": "Look"
+      },
+      {
+        "name": "accent",
+        "label": "Accent color",
+        "kind": "color",
+        "default": "#fe2c55"
+      },
+      {
+        "name": "cardColor",
+        "label": "Card color",
+        "kind": "color",
+        "default": "#27272a",
+        "showIf": {
+          "setting": "look",
+          "is": "Custom color"
+        }
+      },
+      {
+        "name": "textColor",
+        "label": "Text color",
+        "kind": "color",
+        "default": "#ffffff"
+      },
+      {
+        "name": "radius",
+        "label": "Rounded corners",
+        "kind": "slider",
+        "default": 40,
+        "min": 0,
+        "max": 60,
+        "step": 1
+      },
+      {
+        "name": "scale",
+        "label": "Size (%)",
+        "kind": "slider",
+        "default": 100,
+        "min": 50,
+        "max": 250,
+        "step": 5
+      },
+      {
+        "name": "font",
+        "label": "Font",
+        "kind": "font",
+        "default": "",
+        "description": "A font installed on this computer"
+      },
+      {
+        "name": "side",
+        "label": "Side",
+        "kind": "choice",
+        "default": "Left",
+        "options": [
+          "Left",
+          "Center",
+          "Right"
+        ]
+      },
+      {
+        "name": "newest",
+        "label": "Newest gift",
+        "kind": "choice",
+        "default": "At the top",
+        "options": [
+          "At the top",
+          "At the bottom"
+        ]
+      },
+      {
+        "name": "text",
+        "label": "Words",
+        "kind": "text",
+        "default": "sent {gift}",
+        "description": "Under the name. {gift} is the gift's name, {user} who sent it",
+        "section": "What it shows"
+      },
+      {
+        "name": "showAvatar",
+        "label": "Picture",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "showCoins",
+        "label": "Coins",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "seconds",
+        "label": "Seconds on screen",
+        "kind": "slider",
+        "default": 6,
+        "description": "After the last gift of a combo",
+        "min": 2,
+        "max": 30,
+        "step": 1,
+        "section": "When"
+      },
+      {
+        "name": "most",
+        "label": "Most at once",
+        "kind": "integer",
+        "default": 4
+      },
+      {
+        "name": "minCoins",
+        "label": "From how many coins",
+        "kind": "integer",
+        "default": 0,
+        "description": "Smaller gifts are left out. 0: every gift"
+      },
+      {
+        "name": "bigFrom",
+        "label": "Big from (coins)",
+        "kind": "integer",
+        "default": 100,
+        "description": "A gift worth this or more is drawn bigger, with a glow"
+      }
+    ],
+    "files": [
+      {
+        "name": "index.html"
+      }
+    ],
+    "template": {
+      "id": "streamerz.example.tiktok-gifts",
+      "version": "1.0.0",
+      "author": "Streamerz",
+      "pages": [
+        {
+          "file": "index.html",
+          "title": "TikTok gifts",
+          "width": 760,
+          "height": 520
+        }
+      ],
+      "requires": [
+        "tiktok"
+      ]
+    }
+  }
+}

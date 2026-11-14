@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Emote wall</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  #wall { position: absolute; inset: 0; overflow: hidden; }
+  .emote { position: absolute; bottom: calc(-1 * var(--size)); width: var(--size); height: var(--size);
+    object-fit: contain; animation: rise var(--seconds) linear forwards; will-change: transform; }
+  @keyframes rise { to { transform: translate(var(--drift), calc(-100vh - var(--size))) rotate(var(--turn)); } }
+</style>
+</head>
+<body>
+<div id="wall"></div>
+<script>
+// Chat already has the native and third-party emotes resolved as {e: name, u: picture URL}.
+// Use CSS transforms for motion. A hard cap limits image memory during a busy chat.
+let settings = streamerz.settings;
+const wall = document.getElementById("wall");
+const limit = () => Math.max(1, Math.min(200, Number(settings.most) || 80));
+streamerz.onSettings(s => {
+  settings = s;
+  while (wall.children.length > limit()) wall.firstChild.remove();
+});
+streamerz.chat(line => {
+  if (!settings.platforms.includes(line.platform) || line.deleted) return;
+  let added = 0;
+  for (const part of line.parts || []) {
+    if (!part.u || !part.e) continue;
+    if (added >= Math.max(1, Math.min(50, Number(settings.perMessage) || 12)) || wall.children.length >= limit()) break;
+    added++;
+    const image = document.createElement("img");
+    image.className = "emote";
+    image.alt = part.e;
+    image.src = part.u;
+    image.dataset.msg = line.msgId || "";
+    image.dataset.user = line.platform + ":" + line.userId;
+    image.style.left = Math.random() * 90 + "%";
+    image.style.setProperty("--size", Math.max(24, Number(settings.size) || 80) + "px");
+    image.style.setProperty("--seconds", Math.max(2, Number(settings.seconds) || 8) + "s");
+    image.style.setProperty("--drift", (Math.random() - .5) * 240 + "px");
+    image.style.setProperty("--turn", (Math.random() - .5) * 120 + "deg");
+    image.addEventListener("animationend", () => image.remove());
+    image.addEventListener("error", () => image.remove());
+    wall.append(image);
+  }
+}, { removed: r => {
+  for (const image of [...wall.children]) {
+    if (r.msgId ? image.dataset.msg === r.msgId : image.dataset.user === r.platform + ":" + r.userId) image.remove();
+  }
+}});
+</script>
+</body>
+</html>

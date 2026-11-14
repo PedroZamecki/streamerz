@@ -1,0 +1,129 @@
+{
+  "meta": {
+    "name": "Buttons dock",
+    "author": "Streamerz",
+    "version": "1.0.0",
+    "description": "Actions that show a banner on the stream, run from the Buttons dock.",
+    "autoRunAction": null,
+    "minimumVersion": null
+  },
+  "data": {
+    "actions": [
+      {
+        "id": "a0000010-5a5a-4000-8000-000000000001",
+        "queue": null,
+        "enabled": true,
+        "excludeFromHistory": false,
+        "excludeFromPending": false,
+        "name": "Banner: Be right back",
+        "group": "Buttons dock",
+        "alwaysRun": false,
+        "randomAction": false,
+        "concurrent": false,
+        "triggers": [],
+        "subActions": [
+          {
+            "id": "50000010-5a5a-4000-8000-000000000001",
+            "weight": 0,
+            "type": 99880,
+            "parentId": null,
+            "enabled": true,
+            "index": 0,
+            "topic": "banner.text",
+            "value": "Be right back"
+          }
+        ],
+        "collapsedGroups": []
+      },
+      {
+        "id": "a0000010-5a5a-4000-8000-000000000002",
+        "queue": null,
+        "enabled": true,
+        "excludeFromHistory": false,
+        "excludeFromPending": false,
+        "name": "Banner: Hydrate",
+        "group": "Buttons dock",
+        "alwaysRun": false,
+        "randomAction": false,
+        "concurrent": false,
+        "triggers": [],
+        "subActions": [
+          {
+            "id": "50000010-5a5a-4000-8000-000000000002",
+            "weight": 0,
+            "type": 99880,
+            "parentId": null,
+            "enabled": true,
+            "index": 0,
+            "topic": "banner.text",
+            "value": "Time for some water"
+          }
+        ],
+        "collapsedGroups": []
+      },
+      {
+        "id": "a0000010-5a5a-4000-8000-000000000003",
+        "queue": null,
+        "enabled": true,
+        "excludeFromHistory": false,
+        "excludeFromPending": false,
+        "name": "Banner: Thanks for watching",
+        "group": "Buttons dock",
+        "alwaysRun": false,
+        "randomAction": false,
+        "concurrent": false,
+        "triggers": [],
+        "subActions": [
+          {
+            "id": "50000010-5a5a-4000-8000-000000000003",
+            "weight": 0,
+            "type": 99880,
+            "parentId": null,
+            "enabled": true,
+            "index": 0,
+            "topic": "banner.text",
+            "value": "Thanks for watching!"
+          }
+        ],
+        "collapsedGroups": []
+      },
+      {
+        "id": "a0000010-5a5a-4000-8000-000000000004",
+        "queue": null,
+        "enabled": true,
+        "excludeFromHistory": false,
+        "excludeFromPending": false,
+        "name": "Banner: hide",
+        "group": "Buttons dock",
+        "alwaysRun": false,
+        "randomAction": false,
+        "concurrent": false,
+        "triggers": [],
+        "subActions": [
+          {
+            "id": "50000010-5a5a-4000-8000-000000000004",
+            "weight": 0,
+            "type": 99880,
+            "parentId": null,
+            "enabled": true,
+            "index": 0,
+            "topic": "banner.text",
+            "value": ""
+          }
+        ],
+        "collapsedGroups": []
+      }
+    ],
+    "queues": [],
+    "commands": [],
+    "timers": [],
+    "websocketServers": [],
+    "websocketClients": []
+  },
+  "streamerz": {
+    "groupIcons": {}
+  },
+  "version": 23,
+  "exportedFrom": "1.0.7",
+  "minimumVersion": "1.0.0-alpha.1"
+}

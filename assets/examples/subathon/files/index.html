@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Subathon</title>
+<style>
+  html, body { margin: 0; background: transparent; overflow: hidden; }
+  body { font-family: var(--font, system-ui), system-ui, sans-serif; color: var(--color, white); }
+  #box { margin: 12px; padding: 16px 24px; border-left: 5px solid var(--accent); border-radius: 12px; background: var(--background); }
+  #label { font-size: 16px; letter-spacing: .15em; font-weight: 700; color: var(--accent); }
+  #timer { font-size: var(--size, 72px); font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.2; }
+</style>
+</head>
+<body>
+<div id="box"><div id="label"></div><div id="timer">--:--:--</div></div>
+<script>
+// The actions store the countdown. Nothing needs to be open for a sub or donation to add time.
+// A deadline is sent only when the clock changes, and the page counts from it between changes.
+let clock = null;
+let clockId = "";
+let tick;
+const display = document.getElementById("timer");
+function render() {
+  if (!clock) return;
+  const ms = clock.running ? Math.max(0, clock.deadlineMs - Date.now()) : clock.remainingMs;
+  const seconds = Math.ceil(ms / 1000);
+  display.textContent = [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60]
+    .map(n => String(n).padStart(2, "0")).join(":");
+  clearTimeout(tick);
+  if (clock.running && ms > 0) tick = setTimeout(render, ms % 1000 || 1000);
+}
+streamerz.onSettings(s => {
+  const style = document.documentElement.style;
+  for (const key of ["color", "accent", "background"]) style.setProperty("--" + key, s[key]);
+  style.setProperty("--font", s.font ? '"' + s.font + '"' : "system-ui");
+  style.setProperty("--size", s.size + "px");
+  document.getElementById("label").textContent = s.label;
+  if (clockId === s.clockId) return;
+  clockId = s.clockId;
+  clock = null;
+  clearTimeout(tick);
+  display.textContent = "--:--:--";
+  // Old subscriptions are harmless if the ID is changed while the page stays open.
+  const id = clockId;
+  streamerz.countdown(id, state => { if (id === clockId) { clock = state; render(); } });
+});
+// Test changes this page only, never the real countdown.
+streamerz.on("subathon.preview", state => { if (streamerz.testing) { clock = state; render(); } });
+</script>
+</body>
+</html>

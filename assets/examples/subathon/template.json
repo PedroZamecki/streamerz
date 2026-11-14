@@ -1,0 +1,114 @@
+{
+  "format": 1,
+  "name": "Subathon",
+  "meta": {
+    "description": "A countdown that grows with Twitch subscriptions and matching donations. Its actions keep working with the page closed. Run Subathon: reset to start again.",
+    "variables": [
+      {
+        "name": "start",
+        "label": "Starting time",
+        "kind": "duration",
+        "default": 3600000
+      },
+      {
+        "name": "max",
+        "label": "Maximum time",
+        "kind": "duration",
+        "default": 86400000
+      },
+      {
+        "name": "subscription",
+        "label": "Time per subscription",
+        "kind": "duration",
+        "default": 300000
+      },
+      {
+        "name": "donation",
+        "label": "Time per donation unit",
+        "kind": "duration",
+        "default": 60000
+      },
+      {
+        "name": "currency",
+        "label": "Donation currency",
+        "kind": "text",
+        "default": "USD"
+      },
+      {
+        "name": "clockId",
+        "label": "Clock ID",
+        "kind": "text",
+        "default": "streamerz.example.subathon",
+        "description": "Use a different ID for each independent clock"
+      },
+      {
+        "name": "label",
+        "label": "Label",
+        "kind": "text",
+        "default": "SUBATHON"
+      },
+      {
+        "name": "size",
+        "label": "Size",
+        "kind": "slider",
+        "default": 72,
+        "min": 16,
+        "max": 180,
+        "step": 2
+      },
+      {
+        "name": "color",
+        "label": "Text color",
+        "kind": "color",
+        "default": "#ffffff"
+      },
+      {
+        "name": "accent",
+        "label": "Accent",
+        "kind": "color",
+        "default": "#a78bfa"
+      },
+      {
+        "name": "background",
+        "label": "Background",
+        "kind": "color",
+        "default": "#18181be6"
+      },
+      {
+        "name": "font",
+        "label": "Font",
+        "kind": "font",
+        "default": ""
+      }
+    ],
+    "files": [
+      {
+        "name": "index.html"
+      }
+    ],
+    "permissions": [],
+    "template": {
+      "id": "streamerz.example.subathon",
+      "version": "1.0.0",
+      "author": "Streamerz",
+      "pages": [
+        {
+          "file": "index.html",
+          "title": "Subathon",
+          "width": 700,
+          "height": 200
+        }
+      ],
+      "test": {
+        "topics": {
+          "subathon.preview": {
+            "running": false,
+            "remainingMs": 3725000,
+            "deadlineMs": null,
+            "maxMs": 86400000
+          }
+        }
+      }
+    }
+  }
+}

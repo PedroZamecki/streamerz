@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chat</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  body { font-family: var(--font, system-ui), system-ui, sans-serif; color: var(--text, #fff); }
+  /* The newest message is at the bottom (or the top); older ones are pushed away and out. */
+  #chat { position: absolute; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column;
+    align-items: flex-start; gap: .35em; padding: .6em; box-sizing: border-box; }
+  .top #chat { bottom: auto; top: 0; flex-direction: column-reverse; }
+
+  /* streamerz.line() makes the elements; these classes are all its own. */
+  .sz-line { max-width: 100%; box-sizing: border-box; line-height: 1.4; overflow-wrap: anywhere;
+    transition: opacity .8s ease; }
+  .sz-line.gone { opacity: 0; }
+  .sz-head { margin-right: .4em; white-space: nowrap; }
+  .sz-platform, .sz-badge, .sz-avatar, .sz-icon { height: 1.1em; width: auto; vertical-align: -.2em; margin-right: .25em; }
+  .sz-avatar { width: 1.3em; height: 1.3em; border-radius: 50%; object-fit: cover; vertical-align: -.3em; }
+  .sz-time { font-size: .75em; opacity: .6; margin-right: .4em; }
+  .sz-name { font-weight: 700; }
+  .sz-emote { height: 1.5em; vertical-align: -.4em; margin: 0 .05em; }
+  .sz-emote.sz-big { height: 4em; display: block; }
+  .sz-reply { font-size: .8em; opacity: .65; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sz-action .sz-text { font-style: italic; }
+  .sz-picture { display: block; max-height: 4em; max-width: 100%; border-radius: .3em; margin-top: .2em; }
+  /* An event (a sub, a gift, a raid) stands out in its own colour. */
+  .sz-event { font-weight: 600; }
+  .sz-event .sz-what { color: var(--sz-accent); }
+  .sz-event .sz-text { display: block; font-weight: 400; }
+  .sz-cost { margin-left: .4em; padding: 0 .4em; border-radius: 1em; background: rgba(255, 255, 255, .16); font-size: .85em; }
+
+  /* The looks. Bubbles: each message in its own rounded box. */
+  .bubbles .sz-line { padding: .3em .7em; border-radius: var(--radius, 12px); background: var(--back, #0f0f12b8); }
+  .bubbles.tint .sz-line { border-left: .2em solid var(--sz-platform); }
+  /* Plain: only the words, with a shadow to read over the game. */
+  .plain .sz-line { text-shadow: 0 1px 3px rgba(0, 0, 0, .95), 0 0 2px rgba(0, 0, 0, .9); }
+  .plain.tint .sz-line { border-left: .2em solid var(--sz-platform); padding-left: .5em; }
+  /* Cards: the name on a line of its own, in the platform's colour. */
+  .cards .sz-line { padding: .45em .8em; border-radius: var(--radius, 12px); background: var(--back, #0f0f12b8);
+    box-shadow: 0 .2em .6em rgba(0, 0, 0, .35); }
+  .cards .sz-head { display: block; margin: 0 0 .1em; font-size: .85em; }
+  .cards.tint .sz-line { border-top: .18em solid var(--sz-platform); }
+
+  /* How a message comes in. */
+  .rise .sz-line { animation: rise .3s cubic-bezier(.2, .8, .2, 1); }
+  .slide .sz-line { animation: slide .35s cubic-bezier(.2, .8, .2, 1); }
+  .fade .sz-line { animation: fade .5s ease; }
+  @keyframes rise { from { opacity: 0; transform: translateY(1em); } }
+  @keyframes slide { from { opacity: 0; transform: translateX(-2em); } }
+  @keyframes fade { from { opacity: 0; } }
+</style>
+</head>
+<body>
+<div id="chat"></div>
+<script>
+// This overlay reads the chat and what happens in the channels, so its group has the permissions
+// "Read the chat" and "See follows, subscriptions..." (Overlays, Page and permissions).
+//
+// A line is what Streamerz's own Chat page shows, the moment it arrives: the name's colour, the badges
+// and the emotes of every provider (the platform's, 7TV, BetterTTV, FrankerFaceZ) are already found.
+// streamerz.line(line, options) turns one into an element; the CSS above dresses it.
+let settings = streamerz.settings;
+let ignored = new Set();
+
+streamerz.onSettings(s => {
+  settings = s;
+  document.body.className = [
+    (s.look || "Bubbles").toLowerCase(),
+    (s.animation || "Rise").toLowerCase(),
+    s.newest === "At the top" ? "top" : "",
+    s.platformColor !== false ? "tint" : "",
+  ].join(" ");
+  const root = document.documentElement.style;
+  root.fontSize = (Number(s.size) || 24) + "px";
+  root.setProperty("--radius", (Number(s.radius) || 0) + "px");
+  root.setProperty("--back", s.background || "#0f0f12b8");
+  root.setProperty("--text", s.textColor || "#fff");
+  root.setProperty("--font", s.font ? '"' + s.font + '"' : "system-ui");
+  // The names to leave out (bots), one per line.
+  ignored = new Set(String(s.ignore || "").split("\n").map(n => n.trim().toLowerCase()).filter(Boolean));
+  trim();
+});
+
+// Only as many messages as the setting says stay on the page.
+function trim() {
+  const max = Math.max(1, Number(settings.max) || 15);
+  while (chat.children.length > max) chat.firstChild.remove();
+}
+
+function add(line) {
+  // "From" is a platforms setting: the list of the ones ticked.
+  if (Array.isArray(settings.platforms) && !settings.platforms.includes(line.platform)) return;
+  if (ignored.has(String(line.user || "").toLowerCase())) return;
+  if (settings.hideCommands !== false && !line.event && String(line.text || "").startsWith("!")) return;
+  const el = streamerz.line(line, {
+    platform: settings.showPlatform !== false,
+    badges: settings.showBadges !== false,
+    avatar: settings.showAvatars === true,
+    time: settings.showTime === true,
+  });
+  chat.append(el);
+  trim();
+  const seconds = Number(settings.fadeAfter) || 0;
+  if (seconds > 0) {
+    setTimeout(() => el.classList.add("gone"), seconds * 1000);
+    setTimeout(() => el.remove(), seconds * 1000 + 800);
+  }
+}
+
+// history: the newest messages already in Streamerz, so the overlay is not empty when it opens.
+// removed: a moderator deleted one message (msgId) or all of a user's (userId).
+streamerz.chat(add, {
+  history: 10,
+  removed: r => {
+    for (const el of [...chat.children]) {
+      if (r.msgId ? el.dataset.msg === r.msgId : el.dataset.user === r.platform + ":" + r.userId) el.remove();
+    }
+  },
+});
+
+// Subs, gifts, raids and the like, in the same list (the setting turns them off).
+streamerz.alerts(line => {
+  if (settings.showEvents !== false) add(line);
+});
+</script>
+</body>
+</html>

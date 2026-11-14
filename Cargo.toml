@@ -14,13 +14,14 @@ gpui-dev = ["streamerz-frontend/test-support"]
 
 [dependencies]
 streamerz-frontend = { path = "frontend" }
-tokio = { version = "1", features = [
+tokio = { version = "1.53.3", features = [
     "rt",
     "macros",
     "sync",
     "time",
     "net",
     "io-util",
+    "fs",
     "process",
     "signal",
 ] }
@@ -81,7 +82,7 @@ libc = "0.2"
 
 [target."cfg(windows)".dependencies]
 tray-icon = { version = "0.26.0", default-features = false }
-windows = { version = "0.62", features = ["Data_Xml_Dom", "Foundation", "Foundation_Collections", "Media_Control", "UI_Notifications", "Win32_System_WinRT"] }
+windows = { version = "0.62", features = ["Data_Xml_Dom", "Foundation", "Foundation_Collections", "Media_Control", "Storage_Streams", "UI_Notifications", "Win32_System_WinRT"] }
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Globalization",

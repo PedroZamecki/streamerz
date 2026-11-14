@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Prize wheel</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  body { font-family: var(--font, system-ui), system-ui, sans-serif; color: #fff; }
+  #stage { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: .8em; transition: opacity .6s ease, transform .6s cubic-bezier(.2, .8, .2, 1); }
+  #stage.away { opacity: 0; transform: scale(.85); }
+  #title { font-size: 1.5em; font-weight: 800; text-shadow: 0 2px 6px rgba(0, 0, 0, .8); min-height: 1.3em; text-align: center; }
+  #box { position: relative; width: min(74vmin, 100%); aspect-ratio: 1; }
+  #wheel { width: 100%; height: 100%; border-radius: 50%; filter: drop-shadow(0 .5em 1.2em rgba(0, 0, 0, .5)); }
+  #wheel text { font-weight: 700; fill: var(--text, #fff); paint-order: stroke; stroke: rgba(0, 0, 0, .35); stroke-width: .8px; }
+  /* The pointer at the top, and the hub in the middle. */
+  #pointer { position: absolute; left: 50%; top: -3%; width: 9%; aspect-ratio: 1 / 1.3; transform: translateX(-50%);
+    background: #fff; clip-path: polygon(0 0, 100% 0, 50% 100%); filter: drop-shadow(0 .15em .3em rgba(0, 0, 0, .6)); z-index: 2; }
+  #hub { position: absolute; left: 50%; top: 50%; width: 14%; aspect-ratio: 1; transform: translate(-50%, -50%);
+    border-radius: 50%; background: #fff; box-shadow: 0 .2em .6em rgba(0, 0, 0, .5), inset 0 0 0 .35em rgba(0, 0, 0, .12); }
+  #result { font-size: 1.7em; font-weight: 800; padding: .25em .9em; border-radius: 2em; background: rgba(15, 15, 18, .85);
+    box-shadow: 0 .3em 1em rgba(0, 0, 0, .45); opacity: 0; transform: translateY(.6em) scale(.9);
+    transition: opacity .35s ease, transform .35s cubic-bezier(.3, 1.5, .5, 1); text-align: center; max-width: 90%; }
+  #result.on { opacity: 1; transform: none; }
+</style>
+</head>
+<body>
+<div id="stage" class="away">
+  <div id="title"></div>
+  <div id="box">
+    <div id="pointer"></div>
+    <svg id="wheel" viewBox="-100 -100 200 200"></svg>
+    <div id="hub"></div>
+  </div>
+  <div id="result"></div>
+</div>
+<script>
+// A wheel whose slices are a list setting, a row each with its chances (Overlays, the cog). It spins when the topic
+// "wheel.spin" is set, which the action "Wheel: spin" of this overlay's group does (the command !spin),
+// with the name of who asked as its value. The page picks the slice, so what it shows is what wins.
+// It writes the result in the chat, so its group has the permission "Send chat messages as you".
+const palettes = {
+  Rainbow: ["#ef4444", "#f59e0b", "#eab308", "#22c55e", "#06b6d4", "#3b82f6", "#8b5cf6", "#ec4899"],
+  Purple: ["#7c3aed", "#a78bfa", "#5b21b6", "#c4b5fd", "#6d28d9", "#8b5cf6"],
+  Sunset: ["#f97316", "#ef4444", "#db2777", "#9333ea", "#f59e0b", "#e11d48"],
+  Ocean: ["#0ea5e9", "#14b8a6", "#2563eb", "#06b6d4", "#0d9488", "#4f46e5"],
+};
+let settings = streamerz.settings;
+let slices = [];
+let turned = 0;   // How far the wheel has turned in all, in degrees.
+let busy = false;
+let hide = 0;
+
+streamerz.onSettings(s => {
+  settings = s;
+  const root = document.documentElement.style;
+  root.fontSize = 24 * ((Number(s.scale) || 100) / 100) + "px";
+  root.setProperty("--text", s.textColor || "#fff");
+  root.setProperty("--font", s.font ? '"' + s.font + '"' : "system-ui");
+  title.textContent = s.title || "";
+  // "Slices" is a list setting: rows of {label, weight}. A slice with more chances is wider.
+  const rows = Array.isArray(s.slices)
+    ? s.slices
+    : String(s.slices || "").split("\n").map(label => ({ label, weight: 1 }));
+  slices = rows
+    .map(r => ({ label: String(r.label || "").trim(), weight: Math.max(0, Number(r.weight) || 0) }))
+    .filter(r => r.label && r.weight > 0);
+  if (slices.length < 2) slices = [{ label: "Yes", weight: 1 }, { label: "No", weight: 1 }];
+  if (!busy) draw();
+  // With "Hide after" at 0 the wheel is always there.
+  if (!(Number(s.hideAfter) > 0)) stage.classList.remove("away");
+});
+
+// The slices as pieces of a circle, each as wide as its chances, with its words along its middle.
+function draw() {
+  const colors = palettes[settings.colors] || palettes.Rainbow;
+  const total = slices.reduce((sum, s) => sum + s.weight, 0);
+  const point = deg => {
+    const a = ((deg - 90) * Math.PI) / 180;
+    return [Math.cos(a) * 98, Math.sin(a) * 98];
+  };
+  const NS = "http://www.w3.org/2000/svg";
+  wheel.replaceChildren();
+  let from = 0;
+  slices.forEach((slice, i) => {
+    const step = (360 * slice.weight) / total;
+    slice.from = from;
+    slice.to = from + step;
+    const [x1, y1] = point(from), [x2, y2] = point(from + step);
+    const piece = document.createElementNS(NS, "path");
+    piece.setAttribute("d", step >= 359.99
+      ? "M0 -98 A98 98 0 1 1 -0.01 -98 Z"
+      : `M0 0 L${x1} ${y1} A98 98 0 ${step > 180 ? 1 : 0} 1 ${x2} ${y2} Z`);
+    // Two neighbours never share a colour, also where the last meets the first.
+    let color = colors[i % colors.length];
+    if (i === slices.length - 1 && color === colors[0] && slices.length > 2) color = colors[1 % colors.length];
+    piece.setAttribute("fill", color);
+    piece.setAttribute("stroke", "rgba(255,255,255,.55)");
+    piece.setAttribute("stroke-width", ".8");
+    const label = document.createElementNS(NS, "text");
+    const text = slice.label;
+    label.textContent = text.length > 18 ? text.slice(0, 17) + "..." : text;
+    // Along the slice's middle, read from the rim inward; on the left half turned around, so no
+    // word is upside down.
+    const middle = from + step / 2, left = middle > 180;
+    label.setAttribute("x", left ? -90 : 90);
+    label.setAttribute("y", 0);
+    label.setAttribute("text-anchor", left ? "start" : "end");
+    label.setAttribute("dominant-baseline", "central");
+    label.setAttribute("font-size", Math.max(5, Math.min(11, step / 2.6, 190 / Math.max(6, text.length))));
+    label.setAttribute("transform", `rotate(${middle + (left ? 90 : -90)})`);
+    wheel.append(piece, label);
+    from += step;
+  });
+}
+
+// `old` is true for the value the topic held before this page opened: an old spin doesn't spin again.
+streamerz.on("wheel.spin", (who, old) => {
+  if (old || busy) return;
+  busy = true;
+  clearTimeout(hide);
+  result.classList.remove("on");
+  stage.classList.remove("away");
+  // A slice wins by its chances: a random point around the wheel, and the slice it falls in.
+  const total = slices.reduce((sum, s) => sum + s.weight, 0);
+  let at = Math.random() * total, won = 0;
+  while (won < slices.length - 1 && at >= slices[won].weight) at -= slices[won++].weight;
+  const slice = slices[won], step = slice.to - slice.from;
+  // Where inside the slice it stops is random too, so it doesn't always land in the middle.
+  const inside = (0.15 + Math.random() * 0.7) * step;
+  const target = 360 - (slice.from + inside);
+  const seconds = Math.max(2, Number(settings.spinSeconds) || 6);
+  turned = Math.ceil(turned / 360) * 360 + 360 * Math.round(seconds) + target;
+  wheel.style.transition = `transform ${seconds}s cubic-bezier(.12, .7, .1, 1)`;
+  // It starts once the wheel is on screen.
+  requestAnimationFrame(() => (wheel.style.transform = `rotate(${turned}deg)`));
+  setTimeout(() => {
+    const user = typeof who === "string" && who ? who : "";
+    result.textContent = slice.label;
+    result.classList.add("on");
+    if (settings.announce !== false) {
+      const text = String(settings.message || "{user} spun the wheel: {result}")
+        .replace("{user}", user || "Someone").replace("{result}", slice.label);
+      streamerz.say(text).catch(e => streamerz.log("The wheel could not write in the chat: " + e.message));
+    }
+    busy = false;
+    const after = Number(settings.hideAfter) || 0;
+    if (after > 0) hide = setTimeout(() => stage.classList.add("away"), after * 1000);
+  }, seconds * 1000 + 300);
+});
+draw();
+</script>
+</body>
+</html>

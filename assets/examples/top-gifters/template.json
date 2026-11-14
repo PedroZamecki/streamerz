@@ -1,0 +1,88 @@
+{
+  "format": 1,
+  "name": "Top gifters",
+  "meta": {
+    "description": "Gifted Twitch subscriptions, counted by actions even with no page open. Change Period to start a fresh board; previous periods stay saved.",
+    "variables": [
+      {
+        "name": "period",
+        "label": "Period",
+        "kind": "integer",
+        "default": 1
+      },
+      {
+        "name": "title",
+        "label": "Title",
+        "kind": "text",
+        "default": "Top gifters"
+      },
+      {
+        "name": "rows",
+        "label": "Rows",
+        "kind": "integer",
+        "default": 5
+      },
+      {
+        "name": "color",
+        "label": "Text color",
+        "kind": "color",
+        "default": "#ffffff"
+      },
+      {
+        "name": "accent",
+        "label": "Accent",
+        "kind": "color",
+        "default": "#a78bfa"
+      },
+      {
+        "name": "background",
+        "label": "Background",
+        "kind": "color",
+        "default": "#18181be6"
+      },
+      {
+        "name": "font",
+        "label": "Font",
+        "kind": "font",
+        "default": ""
+      }
+    ],
+    "files": [
+      {
+        "name": "index.html"
+      }
+    ],
+    "permissions": [],
+    "template": {
+      "id": "streamerz.example.top-gifters",
+      "version": "1.0.0",
+      "author": "Streamerz",
+      "pages": [
+        {
+          "file": "index.html",
+          "title": "Top gifters",
+          "width": 620,
+          "height": 560
+        }
+      ],
+      "test": {
+        "topics": {
+          "gifters.preview": [
+            {
+              "user": "ana",
+              "count": 25
+            },
+            {
+              "user": "bruno",
+              "count": 12
+            },
+            {
+              "user": "caio",
+              "count": 5
+            }
+          ]
+        }
+      }
+    }
+  }
+}

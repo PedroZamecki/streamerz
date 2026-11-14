@@ -1,0 +1,157 @@
+{
+  "format": 1,
+  "name": "Credits roll",
+  "meta": {
+    "description": "Names from this stream, read once from GetCredits when the page opens. Choose the sections and speed. Test previews made-up names without changing the stream credits.",
+    "variables": [
+      {
+        "name": "title",
+        "label": "Title",
+        "kind": "text",
+        "default": "Thanks for watching"
+      },
+      {
+        "name": "ending",
+        "label": "Closing line",
+        "kind": "text",
+        "default": "See you next stream"
+      },
+      {
+        "name": "sections",
+        "label": "Sections",
+        "kind": "list",
+        "default": [
+          {
+            "key": "events.follows",
+            "title": "New followers"
+          },
+          {
+            "key": "events.subs",
+            "title": "Subscribers"
+          },
+          {
+            "key": "events.giftsubs",
+            "title": "Gifted subscriptions"
+          },
+          {
+            "key": "events.giftbombs",
+            "title": "Community gifts"
+          },
+          {
+            "key": "users.moderators",
+            "title": "Moderators"
+          },
+          {
+            "key": "users.users",
+            "title": "Everyone in chat"
+          }
+        ],
+        "columns": [
+          {
+            "name": "key",
+            "label": "Credits field",
+            "kind": "text",
+            "default": ""
+          },
+          {
+            "name": "title",
+            "label": "Heading",
+            "kind": "text",
+            "default": ""
+          }
+        ]
+      },
+      {
+        "name": "speed",
+        "label": "Pixels per second",
+        "kind": "slider",
+        "default": 60,
+        "min": 15,
+        "max": 180,
+        "step": 5
+      },
+      {
+        "name": "repeat",
+        "label": "Repeat",
+        "kind": "boolean",
+        "default": false
+      },
+      {
+        "name": "color",
+        "label": "Text color",
+        "kind": "color",
+        "default": "#ffffff"
+      },
+      {
+        "name": "accent",
+        "label": "Accent",
+        "kind": "color",
+        "default": "#a78bfa"
+      },
+      {
+        "name": "background",
+        "label": "Background",
+        "kind": "color",
+        "default": "#18181be6"
+      },
+      {
+        "name": "font",
+        "label": "Font",
+        "kind": "font",
+        "default": ""
+      }
+    ],
+    "files": [
+      {
+        "name": "index.html"
+      }
+    ],
+    "permissions": [],
+    "template": {
+      "id": "streamerz.example.credits",
+      "version": "1.0.0",
+      "author": "Streamerz",
+      "pages": [
+        {
+          "file": "index.html",
+          "title": "Credits roll",
+          "width": 700,
+          "height": 720
+        }
+      ],
+      "test": {
+        "topics": {
+          "credits.preview": {
+            "events": {
+              "follows": [
+                "ana",
+                "bruno"
+              ],
+              "subs": [
+                "caio"
+              ],
+              "giftsubs": [
+                "duda"
+              ],
+              "giftbombs": [
+                "eli"
+              ]
+            },
+            "users": {
+              "moderators": [
+                "mod_one"
+              ],
+              "users": [
+                "ana",
+                "bruno",
+                "caio",
+                "duda",
+                "eli"
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

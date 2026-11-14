@@ -1,5 +1,6 @@
 //! What overlays are told: topics with a last value (so an overlay that opens late shows the current
-//! state), sent to the pages that listen as `Overlay` events. Built-in topics: `viewers` and `ad`.
+//! state), sent to the pages that listen as `Overlay` events. Built-in topics: `viewers`, `ad` and
+//! `songrequests.queue` (read from request state, with no cached copy).
 //! Anything else is published by the Overlay sub-action. A topic nobody listens to costs a map entry.
 
 use super::Engine;
@@ -29,6 +30,9 @@ impl Engine {
         if topic == "viewers" {
             return Some(self.viewers_value());
         }
+        if topic == "songrequests.queue" {
+            return Some(self.song_queue_value());
+        }
         self.overlay_state.borrow().get(topic).cloned()
     }
 
@@ -36,6 +40,7 @@ impl Engine {
     pub fn overlay_topics(&self) -> Vec<String> {
         let mut t: Vec<String> = self.overlay_state.borrow().keys().cloned().collect();
         t.push("viewers".into());
+        t.push("songrequests.queue".into());
         t.sort();
         t
     }
@@ -128,7 +133,7 @@ mod tests {
                 e.overlay_publish(&format!("n{i}"), json!(i));
             }
             let topics = e.overlay_topics();
-            assert_eq!(topics.len(), super::MAX_TOPICS + 1, "the topics kept and viewers");
+            assert_eq!(topics.len(), super::MAX_TOPICS + 2, "the topics kept and viewers");
             // A topic already kept still changes when the map is full.
             e.overlay_publish("t1", json!(3));
             assert_eq!(e.overlay_value("t1"), Some(json!(3)));

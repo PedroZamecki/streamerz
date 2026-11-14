@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Streamerz overlays: the guide</title>
+<style>
+  body { margin: 0; background: #18181b; color: #e4e4e7; font: 16px/1.6 system-ui, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 32px 24px 80px; }
+  h1 { font-size: 30px; margin: 0 0 12px; }
+  h2 { font-size: 22px; margin: 40px 0 10px; padding-top: 14px; border-top: 1px solid #3f3f46; }
+  h3 { font-size: 17px; margin: 26px 0 8px; }
+  a { color: #a78bfa; }
+  code { font: 14px ui-monospace, monospace; background: #27272a; padding: 1px 5px; border-radius: 4px; }
+  pre { background: #09090b; border: 1px solid #3f3f46; border-radius: 8px; padding: 12px 14px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 15px; }
+  th, td { border: 1px solid #3f3f46; padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: #27272a; }
+  nav { position: sticky; top: 0; background: #18181bee; backdrop-filter: blur(6px); border-bottom: 1px solid #3f3f46;
+    padding: 8px 24px; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 14px; }
+  nav a { text-decoration: none; color: #a1a1aa; }
+  nav a:hover { color: #e4e4e7; }
+</style>
+</head>
+<body>
+<nav id="nav"></nav>
+<main id="page"></main>
+<script>
+// The guide is docs/OVERLAYS.md, the same text an assistant reads with the MCP tool `guide`, drawn here
+// so it is at hand with no internet. The little Markdown it uses: headings, paragraphs, lists, tables,
+// code, bold and links.
+const text = __GUIDE__;
+const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const inline = s => {
+  // Code first, so what is inside it is left as it is.
+  const kept = [];
+  s = esc(s).replace(/`([^`]+)`/g, (_, c) => "\u0000" + (kept.push("<code>" + c + "</code>") - 1) + "\u0000");
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => kept[i]);
+};
+// A table row's cells: split at the bars that are not escaped and not inside code.
+const cells = row => {
+  const out = [];
+  let cell = "", code = false;
+  const line = row.trim().replace(/^\|/, "").replace(/\|$/, "");
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === "`") code = !code;
+    if (c === "\\" && line[i + 1] === "|") { cell += "|"; i++; }
+    else if (c === "|" && !code) { out.push(cell); cell = ""; }
+    else cell += c;
+  }
+  out.push(cell);
+  return out.map(x => x.trim());
+};
+const lines = text.split("\n");
+let html = "", links = "", i = 0;
+while (i < lines.length) {
+  const line = lines[i];
+  if (line.startsWith("```")) {
+    let code = "";
+    for (i++; i < lines.length && !lines[i].startsWith("```"); i++) code += lines[i] + "\n";
+    html += "<pre><code>" + esc(code) + "</code></pre>";
+    i++;
+  } else if (/^#{1,3} /.test(line)) {
+    const level = line.match(/^#+/)[0].length, title = line.slice(level + 1);
+    const id = title.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+    html += `<h${level} id="${id}">${inline(title)}</h${level}>`;
+    if (level === 2) links += `<a href="#${id}">${esc(title)}</a>`;
+    i++;
+  } else if (line.startsWith("|")) {
+    const rows = [];
+    for (; i < lines.length && lines[i].startsWith("|"); i++) rows.push(cells(lines[i]));
+    html += "<table><tr>" + rows[0].map(c => "<th>" + inline(c) + "</th>").join("") + "</tr>" +
+      rows.slice(2).map(r => "<tr>" + r.map(c => "<td>" + inline(c) + "</td>").join("") + "</tr>").join("") + "</table>";
+  } else if (/^(\d+\.|-) /.test(line)) {
+    const ordered = /^\d/.test(line);
+    let items = [];
+    for (; i < lines.length && (/^(\d+\.|-) /.test(lines[i]) || /^ {2,}\S/.test(lines[i])); i++) {
+      if (/^ /.test(lines[i])) items[items.length - 1] += " " + lines[i].trim();
+      else items.push(lines[i].replace(/^(\d+\.|-) /, ""));
+    }
+    html += (ordered ? "<ol>" : "<ul>") + items.map(x => "<li>" + inline(x) + "</li>").join("") + (ordered ? "</ol>" : "</ul>");
+  } else if (!line.trim()) {
+    i++;
+  } else {
+    let para = "";
+    for (; i < lines.length && lines[i].trim() && !/^(#|\||```|\d+\. |- )/.test(lines[i]); i++) para += lines[i] + " ";
+    html += "<p>" + inline(para.trim()) + "</p>";
+  }
+}
+page.innerHTML = html;
+nav.innerHTML = links;
+</script>
+</body>
+</html>

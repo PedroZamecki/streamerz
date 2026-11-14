@@ -1,0 +1,183 @@
+{
+  "format": 1,
+  "name": "Chat overlay",
+  "meta": {
+    "description": "The chat of every platform, drawn as Streamerz's own Chat page draws it: badges, emotes of every provider, replies and events.",
+    "variables": [
+      {
+        "name": "look",
+        "label": "Look",
+        "kind": "choice",
+        "default": "Bubbles",
+        "options": [
+          "Bubbles",
+          "Plain",
+          "Cards"
+        ],
+        "section": "Look"
+      },
+      {
+        "name": "size",
+        "label": "Text size",
+        "kind": "slider",
+        "default": 24,
+        "description": "In pixels",
+        "min": 12,
+        "max": 64,
+        "step": 1
+      },
+      {
+        "name": "font",
+        "label": "Font",
+        "kind": "font",
+        "default": "",
+        "description": "A font installed on this computer"
+      },
+      {
+        "name": "background",
+        "label": "Background",
+        "kind": "color",
+        "default": "#0f0f12b8",
+        "description": "Of a bubble or a card"
+      },
+      {
+        "name": "textColor",
+        "label": "Text color",
+        "kind": "color",
+        "default": "#ffffff"
+      },
+      {
+        "name": "radius",
+        "label": "Rounded corners",
+        "kind": "slider",
+        "default": 12,
+        "min": 0,
+        "max": 32,
+        "step": 1
+      },
+      {
+        "name": "platformColor",
+        "label": "Line in the platform's color",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "newest",
+        "label": "Newest message",
+        "kind": "choice",
+        "default": "At the bottom",
+        "options": [
+          "At the bottom",
+          "At the top"
+        ]
+      },
+      {
+        "name": "animation",
+        "label": "Comes in with",
+        "kind": "choice",
+        "default": "Rise",
+        "options": [
+          "Rise",
+          "Slide",
+          "Fade",
+          "None"
+        ]
+      },
+      {
+        "name": "showPlatform",
+        "label": "Platform logo",
+        "kind": "boolean",
+        "default": true,
+        "section": "What it shows"
+      },
+      {
+        "name": "showBadges",
+        "label": "Badges",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "showAvatars",
+        "label": "Pictures",
+        "kind": "boolean",
+        "default": false,
+        "description": "The picture of who wrote. Twitch and Kick are asked once per person"
+      },
+      {
+        "name": "showTime",
+        "label": "Time",
+        "kind": "boolean",
+        "default": false
+      },
+      {
+        "name": "showEvents",
+        "label": "Subs, gifts and raids",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "max",
+        "label": "Messages on screen",
+        "kind": "integer",
+        "default": 15,
+        "section": "When"
+      },
+      {
+        "name": "fadeAfter",
+        "label": "Fade after (seconds)",
+        "kind": "integer",
+        "default": 0,
+        "description": "0: a message stays until it is pushed out"
+      },
+      {
+        "name": "platforms",
+        "label": "From",
+        "kind": "platforms",
+        "default": [
+          "twitch",
+          "youtube",
+          "kick",
+          "tiktok"
+        ],
+        "description": "The platforms whose chat it shows",
+        "section": "Which"
+      },
+      {
+        "name": "hideCommands",
+        "label": "Hide commands",
+        "kind": "boolean",
+        "default": true,
+        "description": "Messages that start with !"
+      },
+      {
+        "name": "ignore",
+        "label": "Ignore these names",
+        "kind": "lines",
+        "default": "",
+        "description": "One per line: your bots, for example"
+      }
+    ],
+    "files": [
+      {
+        "name": "index.html"
+      }
+    ],
+    "permissions": [
+      "chat.read",
+      "alerts.read"
+    ],
+    "template": {
+      "id": "streamerz.example.chat",
+      "version": "2.1.0",
+      "author": "Streamerz",
+      "pages": [
+        {
+          "file": "index.html",
+          "title": "Chat",
+          "width": 520,
+          "height": 800
+        }
+      ]
+    }
+  }
+}

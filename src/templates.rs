@@ -4,9 +4,7 @@
 
 mod automation;
 pub mod clock;
-pub mod overlays;
 pub mod songs;
-pub mod subathon;
 
 use crate::edit::{new_action, new_sub, new_trigger};
 use crate::model::{Action, Obj};
@@ -29,7 +27,12 @@ impl Made {
     /// actions reset start now.
     pub fn add_to(self, c: &mut crate::Config) -> Result<(), String> {
         for (group, meta) in self.groups {
-            crate::groups::create(c, &group);
+            // Pages alone are an overlay: only what has actions is a group of them.
+            let overlay = meta.files.iter().any(|f| crate::groups::is_page(&f.name));
+            let used = self.actions.iter().any(|a| a.group == group);
+            if used || !overlay {
+                crate::groups::create(c, &group);
+            }
             crate::groups::set_meta(c, &group, meta)?;
             // What is set stays; the rest starts at its default.
             let values = crate::groups::values(c, &group);
@@ -154,21 +157,6 @@ fn command(name: &str, alias: &str, response: &str, cooldown: u64) -> Made {
 pub const TEMPLATES: &[Template] = &[
     Template { name: "automation.template_gifts", about: "automation.template_gifts_about", make: automation::gift_thanks },
     Template { name: "automation.template_reward", about: "automation.template_reward_about", make: automation::reward_source },
-    Template {
-        name: "Ad break overlay",
-        about: "A badge with the time left while Twitch plays an ad: an overlay page for an OBS browser source.",
-        make: overlays::ad,
-    },
-    Template {
-        name: "Viewer counter overlay",
-        about: "The live viewers of each connected platform and the total, counting up and down: an overlay page for an OBS browser source.",
-        make: overlays::viewers,
-    },
-    Template {
-        name: "Subathon timer",
-        about: "A countdown that grows with Twitch subscriptions and donations, with an overlay. Its times are the group's settings.",
-        make: subathon::made,
-    },
     Template {
         name: "Song requests (Spotify)",
         about: "Viewers request songs for your Spotify queue with !sr, and use !song, !queue, !remove and !skip. Who can request, the limits and the replies are the group's settings. Streamerz only.",

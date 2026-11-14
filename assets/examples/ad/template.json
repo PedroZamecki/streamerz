@@ -1,0 +1,104 @@
+{
+  "format": 1,
+  "name": "Ad break",
+  "meta": {
+    "description": "A badge with the time left while Twitch plays an ad, and a bar that empties with it.",
+    "variables": [
+      {
+        "name": "label",
+        "label": "Badge text",
+        "kind": "text",
+        "default": "Ad",
+        "description": "The word on the badge"
+      },
+      {
+        "name": "after",
+        "label": "After the time",
+        "kind": "text",
+        "default": "Back soon",
+        "description": "Beside the time. Empty for none"
+      },
+      {
+        "name": "accent",
+        "label": "Badge color",
+        "kind": "color",
+        "default": "#fbbf24",
+        "section": "Look"
+      },
+      {
+        "name": "background",
+        "label": "Background",
+        "kind": "color",
+        "default": "#0a0a0eeb"
+      },
+      {
+        "name": "textColor",
+        "label": "Text color",
+        "kind": "color",
+        "default": "#ffffff"
+      },
+      {
+        "name": "size",
+        "label": "Size",
+        "kind": "slider",
+        "default": 34,
+        "description": "In pixels",
+        "min": 14,
+        "max": 96,
+        "step": 1
+      },
+      {
+        "name": "radius",
+        "label": "Rounded corners",
+        "kind": "slider",
+        "default": 12,
+        "min": 0,
+        "max": 40,
+        "step": 1
+      },
+      {
+        "name": "font",
+        "label": "Font",
+        "kind": "font",
+        "default": "",
+        "description": "A font installed on this computer"
+      },
+      {
+        "name": "showBar",
+        "label": "Bar that empties",
+        "kind": "boolean",
+        "default": true
+      }
+    ],
+    "files": [
+      {
+        "name": "index.html"
+      }
+    ],
+    "template": {
+      "id": "streamerz.example.ad",
+      "version": "2.0.0",
+      "author": "Streamerz",
+      "pages": [
+        {
+          "file": "index.html",
+          "title": "Ad break",
+          "width": 560,
+          "height": 140
+        }
+      ],
+      "requires": [
+        "twitch"
+      ],
+      "test": {
+        "topics": {
+          "ad": {
+            "running": true,
+            "duration": 30,
+            "isAutomatic": true
+          }
+        }
+      }
+    }
+  }
+}
