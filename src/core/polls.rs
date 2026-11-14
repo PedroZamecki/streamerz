@@ -468,6 +468,12 @@ fn model(seen: &Seen) -> Vec<Value> {
         ],
     );
     poll_table["intro"] = tr("polls.hint").into();
+    if !seen.ready.iter().any(|ready| *ready) {
+        poll_table["actions"].as_array_mut().unwrap().push(json!({
+            "id": "accounts", "label": tr("nav.page.accounts"), "icon": "user", "top": true,
+            "navigate": "Accounts", "needs": "none"
+        }));
+    }
     poll_table["status"] = json!({"health": health, "text": text});
     let prediction_table = table(
         "prediction",
@@ -1179,6 +1185,11 @@ mod tests {
             .unwrap();
             assert_eq!(second["tables"][0]["status"]["text"], tr("polls.accounts_needed"));
             assert_eq!(second["tables"][1]["kind"], "prediction");
+            assert!(second["tables"][0]["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|action| action["navigate"] == "Accounts"));
             // The same through the actions request.
             let act = json!({"request": "StreamerzCoreAction", "domain": "polls", "action": "refresh"});
             assert_eq!(crate::servers::answer(&engine, &act, true).unwrap()["status"], "ok");

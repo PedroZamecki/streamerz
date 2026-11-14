@@ -1514,6 +1514,9 @@ pub async fn read_chat_with_standby(
     run_once: bool,
 ) {
     let set_state = |on: bool, sb: bool| {
+        if on || sb {
+            crate::core::status::clear_failure("youtube");
+        }
         let mut ch = connected.swap(on, Ordering::Relaxed) != on;
         if let Some(s) = standby {
             ch |= s.swap(sb, Ordering::Relaxed) != sb;
@@ -1575,6 +1578,9 @@ pub async fn read_chat_with_standby(
             Ok(x) => x,
             Err(e) => {
                 let is_offline = e == "not live";
+                if !is_offline {
+                    crate::core::status::record_failure("youtube", crate::core::status::Failure::Connect);
+                }
                 set_state(false, is_offline);
                 if !live.borrow().0.is_empty() {
                     *live.borrow_mut() = Default::default();
@@ -1683,6 +1689,7 @@ pub async fn read_chat_with_standby(
                     };
                     failures += 1;
                     if failures == 1 {
+                        crate::core::status::record_failure("youtube", crate::core::status::Failure::Closed);
                         crate::warn(format!("YouTube: chat read failed ({why}), retrying"));
                     }
                     if run_once || failures > RETRIES {

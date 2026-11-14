@@ -784,6 +784,8 @@ fn texts() -> Value {
         ("checkAtLeastOne", tr("chat.check_at_least_one")),
         ("fallback", tr("chat.fallback_account")),
         ("sendAs", tr("chat.send_as")),
+        ("enableHistory", tr("chat.enable_history")),
+        ("historyUnavailable", tr("settings.chat.keep_history.memory_saver")),
     ] {
         texts[key] = text.into();
     }
@@ -919,6 +921,7 @@ pub fn read(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         "gen": generation, "reset": reset, "look": look, "seq": last.max(asked.unwrap_or(0)), "lines": models,
         "platforms": list, "connected": connected, "history": config.window.chat.save_history && !crate::memory_saver(),
         "historyDisabled": !config.window.chat.save_history || crate::memory_saver(),
+        "canEnableHistory": !crate::memory_saver(),
         "pins": pins, "polls": polls, "totalViewers": total_viewers, "viewersBreakdown": viewers_breakdown,
         "modes": modes(engine), "texts": texts(), "fadeIn": config.window.chat.fade_in, "me": my_names(&config),
         "view": view(&config, &list.iter().filter(|platform| platform["present"] == true).filter_map(|platform| platform["id"].as_str()).collect::<Vec<_>>()),
@@ -2328,6 +2331,11 @@ mod tests {
             assert!(set_option(&engine, "show_nowhere", &json!(true)).is_err());
             set_option(&engine, "keep_history", &json!(false)).unwrap();
             assert!(!engine.config().window.chat.save_history);
+            let fresh = read(&engine, &json!({})).unwrap();
+            assert_eq!(fresh["chat"]["history"], false);
+            assert_eq!(fresh["chat"]["canEnableHistory"], true);
+            set_option(&engine, "keep_history", &json!(true)).unwrap();
+            assert!(engine.config().window.chat.save_history);
             assert_eq!(options(&engine)[1]["rows"].as_array().unwrap().len(), 6);
         });
     }

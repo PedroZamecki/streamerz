@@ -1445,6 +1445,7 @@ async fn supervise_eventsub(
         let ws = match crate::http::ws_connect(&url).await {
             Ok((ws, _)) => ws,
             Err(e) => {
+                crate::core::status::record_failure("twitch", crate::core::status::Failure::Connect);
                 crate::warn(format!(
                     "Twitch: EventSub connect failed for @{} ({e}); retrying in {backoff_secs}s",
                     broadcaster.login
@@ -1456,6 +1457,7 @@ async fn supervise_eventsub(
         };
 
         is_connected.store(true, Ordering::Relaxed);
+        crate::core::status::clear_failure("twitch");
         crate::host::changed();
 
         let bot_task = bot.map(|bot_acct| {
@@ -1495,6 +1497,14 @@ async fn supervise_eventsub(
         if !wanted.load(Ordering::Relaxed) {
             break;
         }
+        crate::core::status::record_failure(
+            "twitch",
+            if auth_refused.load(Ordering::Relaxed) {
+                crate::core::status::Failure::Handshake
+            } else {
+                crate::core::status::Failure::Closed
+            },
+        );
         if started.elapsed() >= Duration::from_secs(15) {
             backoff_secs = 2;
         }

@@ -367,7 +367,10 @@ pub async fn read(
         }
         match session(&engine, &cfg, &connected, &channel).await {
             Ok(()) => backoff = 2,
-            Err(e) => crate::warn(format!("Twitch: chat without login: {e}")),
+            Err(e) => {
+                crate::core::status::record_failure("twitch", crate::core::status::Failure::Connect);
+                crate::warn(format!("Twitch: chat without login: {e}"));
+            }
         }
         engine.set_chat_viewers("twitch", None);
         if connected.swap(false, Ordering::Relaxed) {
@@ -482,6 +485,7 @@ async fn session(
                         ..Default::default()
                     };
                     connected.store(true, Ordering::Relaxed);
+                    crate::core::status::clear_failure("twitch");
                     crate::roles::set("twitch", crate::roles::Role::Anonymous, "");
                     crate::host::changed();
                     crate::say(format!("Twitch: reading #{channel} (no login: read only)"));
