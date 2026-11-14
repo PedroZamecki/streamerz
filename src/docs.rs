@@ -89,6 +89,33 @@ pub fn summary(kind: &str, code: u32) -> Option<&'static str> {
         .find(|p| !p.starts_with('-') && !p.starts_with('#') && !p.trim().is_empty())
 }
 
+/// The arguments a trigger gives its action, as its reference lists them (`user`, `giftId`...), in order.
+pub fn arguments(kind: &str, code: u32) -> Vec<&'static str> {
+    let Some(text) = text(kind, code) else {
+        return Vec::new();
+    };
+    let Some(start) = text.find("### Arguments") else {
+        return Vec::new();
+    };
+    let mut out: Vec<&'static str> = Vec::new();
+    for line in text[start..].lines().skip(1) {
+        let line = line.trim();
+        if line.starts_with('#') {
+            break;
+        }
+        let Some(item) = line.strip_prefix("- ") else { continue };
+        // The names come before the explanation (`a`, `b` and `c`: what they hold).
+        let names = item.split_once(": ").map_or(item, |(names, _)| names);
+        for (at, part) in names.split('`').enumerate() {
+            let name = part.trim();
+            if at % 2 == 1 && !name.is_empty() && !name.contains(' ') && !out.contains(&name) {
+                out.push(name);
+            }
+        }
+    }
+    out
+}
+
 /// Explicitly unavailable trigger types, kept for lossless imports.
 pub fn available(kind: &str, code: u32) -> bool {
     if kind == "subaction" {
@@ -142,6 +169,18 @@ pub fn search(query: &str) -> Vec<Entry> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_triggers_arguments_are_read_from_its_reference() {
+        let args = super::arguments("trigger", 41002);
+        for name in ["user", "coins", "giftId", "giftPictureUrl", "uniqueId"] {
+            assert!(args.contains(&name), "{name}: {args:?}");
+        }
+        // Each once, and no words from the explanations.
+        assert_eq!(args.iter().filter(|a| **a == "user").count(), 1);
+        assert!(args.iter().all(|a| !a.contains(' ')));
+        assert!(super::arguments("trigger", 999_999).is_empty());
+    }
+
     use super::*;
 
     #[test]

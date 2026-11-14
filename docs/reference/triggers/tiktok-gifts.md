@@ -16,7 +16,7 @@ Fires when a gift is received on TikTok Live, optionally for one selected gift a
 
 | Field | Key | What it holds |
 | --- | --- | --- |
-| Gift | `giftId` | Choose a gift by name. Streamerz saves its exact ID. Blank matches any gift. You can enter a numeric ID when the catalog is unavailable. |
+| Gift | `giftId` | Choose a gift by its picture, name and price. Streamerz saves its exact ID (and its name as `giftName`). Any gift matches every gift. An ID can still be set in Edit JSON. |
 | Run when | `giftDelivery` | 1: the gift or combo completes. 0: every gift update. New triggers use 1. Older triggers without this setting keep 0. Ordinary gifts match both choices. |
 | Minimum total coins | `minCoins` | The gift's unit value times its cumulative quantity must be at least this number. Zero sets no minimum. |
 | Maximum total coins | `maxCoins` | The same total must be at most this number. Zero sets no maximum. Bounds are inclusive. |
@@ -47,8 +47,11 @@ running an action or sending a message.
 
 - A combo gift (`giftType` 1) adds to `userTotalCoins` only when its streak ends (`repeatEnd`). The total doesn't grow with each repeat.
 - The totals start over with each new live.
-- Refresh gifts reads the current room's catalog through the paired TikTok browser account. New
-  gifts do not need an app update. Public reception works without an account or catalog.
+- The gift list loads when the Gift form opens without one: TikTok's public list (no login or live
+  needed, in the app's language), or, while live with the paired TikTok browser account, the live's
+  own list. The refresh icon beside the gift search loads it again. New gifts do not need an app
+  update. Public reception works without an account or catalog.
+- The trigger saves the gift's name (`giftName`) beside its ID, so it reads well before a list loads.
 - A failed refresh keeps known selections usable. A room or browser-account change clears the list;
   late replies from the old context are discarded. Received gifts can add missing entries.
 - If a gift message omits its name, picture, unit value or combo type, Streamerz fills the missing
