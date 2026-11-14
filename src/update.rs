@@ -437,6 +437,26 @@ trap 'rm -f -- "$TMP"' EXIT HUP INT TERM
 cp -- "$NEW" "$TMP" && chmod 755 "$TMP" && mv -fT -- "$TMP" "$TARGET" && rm -f -- "$NEW" "$TARGET.part" "$TARGET.old" "$TARGET.version"
 "#;
 
+/// Runs `shell` in the first of `terms` that starts, and waits for it. Only the first: trying the next
+/// while the user types the password in it would open a second. gnome-terminal returns at once unless
+/// told to wait.
+#[cfg(unix)]
+fn in_terminal(terms: &[String], shell: &str) {
+    for t in terms {
+        let mut c = std::process::Command::new(t);
+        match t.rsplit('/').next().unwrap_or(t) {
+            "xdg-terminal-exec" => {}
+            "gnome-terminal" => drop(c.args(["--wait", "--"])),
+            "kgx" => drop(c.arg("--")),
+            _ => drop(c.arg("-e")),
+        }
+        if let Ok(mut child) = c.args(["sh", "-c", shell]).spawn() {
+            let _ = child.wait();
+            return;
+        }
+    }
+}
+
 #[cfg(unix)]
 fn apply_elevated_unix(path: &Path, new: &Path) -> Result<(), String> {
     let script = ELEVATION_SCRIPT;
@@ -480,19 +500,7 @@ fn apply_elevated_unix(path: &Path, new: &Path) -> Result<(), String> {
         .map(String::from),
     );
 
-    for t in terms {
-        let mut c = std::process::Command::new(&t);
-        match t.as_str() {
-            "xdg-terminal-exec" => {}
-            "gnome-terminal" | "kgx" => drop(c.arg("--")),
-            _ => drop(c.arg("-e")),
-        }
-        if let Ok(mut child) = c.args(["sh", "-c", &shell]).spawn() {
-            if child.wait().is_ok_and(|st| st.success()) && !new.exists() {
-                return Ok(());
-            }
-        }
-    }
+    in_terminal(&terms, &shell);
 
     if !new.exists() {
         Ok(())
@@ -648,7 +656,16 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
         return;
     }
     crate::say(format!("Updating to {tag}..."));
-    if let Err(e) = stage(&release).await.and_then(|()| apply(&release.path)) {
+    // The password or UAC prompt can take as long as the user needs: it waits on a thread of its own,
+    // never on the one that runs chat, the servers and the window.
+    let path = release.path.clone();
+    let applied = match stage(&release).await {
+        Ok(()) => tokio::task::spawn_blocking(move || apply(&path))
+            .await
+            .unwrap_or_else(|e| Err(e.to_string())),
+        Err(e) => Err(e),
+    };
+    if let Err(e) = applied {
         if e == "cancelled" {
             crate::say(tr("update.cancelled").to_string());
             return;
@@ -907,5 +924,25 @@ mod tests {
         assert!(super::private_dir(&root).is_err());
         std::fs::remove_file(link).unwrap();
         std::fs::remove_dir(root).unwrap();
+    }
+
+    /// Only one terminal opens for the password, even when it returns at once.
+    #[cfg(unix)]
+    #[test]
+    fn the_password_terminal_opens_once() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("streamerz-terms-{}", crate::engine::uuid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("log");
+        let mut terms = vec![dir.join("missing").display().to_string()];
+        for name in ["first", "second"] {
+            let path = dir.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\necho {name} >> '{}'\n", log.display())).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            terms.push(path.display().to_string());
+        }
+        super::in_terminal(&terms, "true");
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "first\n");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
