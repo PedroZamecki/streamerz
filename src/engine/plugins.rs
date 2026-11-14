@@ -133,7 +133,7 @@ fn read(mem: &[u8], packed: i64) -> Option<Value> {
 /// A host function's answer: `v` written into the plugin's memory (through its `alloc`), packed.
 fn write(caller: &mut Caller<'_, Host>, v: &Value) -> i64 {
     let bytes = v.to_string().into_bytes();
-    let Some((mem, alloc)) = caller.data().exports.clone() else {
+    let Some((mem, alloc)) = caller.data().exports else {
         return 0;
     };
     let Ok(ptr) = alloc.call(&mut *caller, bytes.len() as i32) else {
@@ -168,7 +168,7 @@ pub fn load(id: &str, path: &Path, engine: Weak<Engine>) -> Result<Loaded, Strin
             "call",
             |mut caller: Caller<'_, Host>, ptr: i32, len: i32| -> i64 {
                 // None while the plugin starts: its start function gets no answers.
-                let Some((mem, _)) = caller.data().exports.clone() else {
+                let Some((mem, _)) = caller.data().exports else {
                     return 0;
                 };
                 let req = read(mem.data(&caller), ((ptr as u32 as i64) << 32) | len as u32 as i64);
@@ -189,7 +189,7 @@ pub fn load(id: &str, path: &Path, engine: Weak<Engine>) -> Result<Loaded, Strin
     let alloc = inst
         .get_typed_func::<i32, i32>(&store, "alloc")
         .map_err(|e| format!("alloc: {e}"))?;
-    store.data_mut().exports = Some((memory, alloc.clone()));
+    store.data_mut().exports = Some((memory, alloc));
     let on_event = inst
         .get_typed_func::<(i32, i32), i64>(&store, "on_event")
         .map_err(|e| format!("on_event: {e}"))?;
