@@ -31,12 +31,13 @@ impl Browser {
         self.engine == BrowserEngine::Firefox
     }
 
-    /// The published extension store installation URL for this browser engine.
+    /// The extension's store page for this browser engine. Firefox has none: Streamerz downloads the
+    /// signed add-on itself (`tiktok_bridge::firefox_xpi`).
     pub fn store_url(&self) -> &'static str {
         match self.engine {
             BrowserEngine::Chromium => crate::tiktok_bridge::CHROME_STORE_URL,
             BrowserEngine::Edge => crate::tiktok_bridge::EDGE_STORE_URL,
-            BrowserEngine::Firefox => crate::tiktok_bridge::FIREFOX_AMO_URL,
+            BrowserEngine::Firefox => "",
         }
     }
 
@@ -759,6 +760,14 @@ impl Browser {
     /// has no settings file of its own, reads it there.
     pub fn open_setup(&self, page: &Path, pairing: &str) -> std::io::Result<()> {
         self.command(&format!("{}{pairing}", file_url(page))).spawn().map(drop)
+    }
+
+    /// The setup page and, in a second tab, the signed add-on: Firefox asks to add it.
+    pub fn open_setup_with_addon(&self, page: &Path, pairing: &str, addon: &Path) -> std::io::Result<()> {
+        self.command(&format!("{}{pairing}", file_url(page)))
+            .arg(file_url(addon))
+            .spawn()
+            .map(drop)
     }
 
     /// Whether this browser is currently running (has an active lock or running process).

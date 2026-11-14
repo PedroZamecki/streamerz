@@ -311,9 +311,11 @@ each is ticked off as it happens. Never change another program's files or settin
 When an integration uses a browser extension as its account, show one Browser account row with the
 shared Health state and Set up action. Do not also show independent account or bot logins. Distinguish
 extension unavailable, page loading, login required and account ready. Disable sending while the account
-is unavailable. Setup lists the Chromium browsers found (and whether the extension is in them), and Set up on one writes
-the extension, copies its folder and opens a setup tab in that browser's existing window (closing itself
-once connected); the steps then tick themselves off, and Log in opens once the extension connects. It
+is unavailable. Setup lists the Chromium and Firefox browsers found (and whether the extension is in them). Set up on a
+Chromium one writes the extension, copies its folder and opens a setup tab in that browser's existing window
+(closing itself once connected); on a Firefox one it downloads the signed add-on of the pinned version and
+opens it beside the setup tab, so Firefox asks to add it. An extension refused for its version says which
+side to update; the steps then tick themselves off, and Log in opens once the extension connects. It
 offers Log in for the one explicit sign-in window; ordinary requests must not open helper tabs or windows.
 A channel picker shows search failures plainly and still accepts a pasted handle or link.
 

@@ -873,11 +873,7 @@ fn typed_channel(engine: &Rc<Engine>, p: P, config: &crate::Config) -> String {
     p.typed_channel(config).to_owned()
 }
 
-/// Whether version `a` ("1.2.0") comes before `b`.
-fn older(a: &str, b: &str) -> bool {
-    let parts = |v: &str| v.split('.').map(|n| n.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
-    parts(a) < parts(b)
-}
+use crate::tiktok_bridge::older;
 
 /// TikTok sending through the browser: its health and a line saying so.
 fn sending_state(config: &crate::Config, bridge: &crate::tiktok_bridge::Bridge) -> (&'static str, String) {
@@ -889,8 +885,11 @@ fn sending_state(config: &crate::Config, bridge: &crate::tiktok_bridge::Bridge) 
         bridge.is_outdated(),
         bridge.version(),
     );
+    let refused = bridge.refused();
     if !crate::tiktok_bridge::set_up(config) {
         ("off", tr("accounts.tiktok_sending.not_set_up").to_string())
+    } else if !connected && !refused.is_empty() {
+        ("down", refused)
     } else if !connected {
         ("standby", tr("accounts.tiktok_sending.waiting").to_string())
     } else if !error.is_empty() {
@@ -923,6 +922,13 @@ fn picked() -> Option<String> {
 }
 
 static ADVANCED_SETUP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The browser whose signed Firefox add-on is being downloaded, while it is.
+static DOWNLOADING: Mutex<Option<String>> = Mutex::new(None);
+
+fn downloading() -> Option<String> {
+    DOWNLOADING.lock().ok().and_then(|d| d.clone())
+}
 
 fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
     let config = engine.config();
@@ -1007,7 +1013,8 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
     } else {
         browsers.iter().find_map(|b| {
             let version = b.store_copy_version()?;
-            older(&version, "1.3.0").then(|| (b.name.to_owned(), version))
+            // Firefox's copy comes from Streamerz itself, never a store that can lag behind.
+            (!b.is_firefox_based() && older(&version, "1.3.0")).then(|| (b.name.to_owned(), version))
         })
     };
     let any_running = browsers.iter().any(|b| b.is_running());
@@ -1044,6 +1051,13 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
         ("down", error)
     } else if connected {
         ("busy", tr("accounts.tiktok_sending.loading").to_string())
+    } else if let Some(browser) = downloading() {
+        (
+            "busy",
+            trf("accounts.tiktok_sending.firefox_downloading", &[("browser", &browser)]),
+        )
+    } else if !bridge.refused().is_empty() {
+        ("down", bridge.refused())
     } else if let Some((browser, version)) = old_store_copy.clone() {
         // A store copy older than 1.3.0 has no way to learn where Streamerz is: it waits forever.
         (
@@ -1072,6 +1086,7 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
             _ => "off",
         };
         let browser = chosen.as_deref();
+        let firefox = browser.is_some_and(|name| browsers.iter().any(|b| b.name == name && b.is_firefox_based()));
         let steps = [
             (
                 step(browser.is_some() || installed, browser.is_none() && !installed),
@@ -1083,7 +1098,11 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
             (
                 step(installed, browser.is_some() && !installed),
                 trf(
-                    "accounts.tiktok_sending.step_load",
+                    if firefox {
+                        "accounts.tiktok_sending.step_load_firefox"
+                    } else {
+                        "accounts.tiktok_sending.step_load"
+                    },
                     &[("browser", browser.unwrap_or(tr("accounts.tiktok_sending.your_browser")))],
                 ),
             ),
@@ -1773,8 +1792,15 @@ fn sending(engine: &Rc<Engine>, action: &str) -> Result<Value, String> {
                 .ok_or_else(|| format!("tiktok_sending has no action {action}"))?;
             let browsers = crate::browsers::installed();
             let b = browsers.get(index).ok_or("no such browser")?;
-            let folder = crate::tiktok_bridge::install(engine)?;
-            let page = crate::tiktok_bridge::write_setup_page(b.name, b.extensions_page, &folder, b.store_url())?;
+            let mut folder = crate::tiktok_bridge::install(engine)?;
+            let setup = if b.is_firefox_based() {
+                // Firefox loads a folder only as a temporary add-on, with its own manifest.
+                folder = crate::tiktok_bridge::write_firefox_files(&engine.config())?;
+                crate::tiktok_bridge::Setup::FirefoxTemporary
+            } else {
+                crate::tiktok_bridge::Setup::Chromium { store: b.store_url() }
+            };
+            let page = crate::tiktok_bridge::write_setup_page(b.name, b.extensions_page, &folder, &setup)?;
             b.open_setup(&page, &crate::tiktok_bridge::pairing(&engine.config()))
                 .map_err(|error| {
                     trf(
@@ -1809,12 +1835,46 @@ fn sending(engine: &Rc<Engine>, action: &str) -> Result<Value, String> {
                 b.command("https://www.tiktok.com/live/history/center")
                     .spawn()
                     .map_err(cant_open)?;
+            } else if b.is_firefox_based() {
+                // Firefox: the signed add-on of exactly this version, downloaded, then opened next to
+                // the setup page (Firefox asks to add it, and the extension pairs from that page).
+                let folder = crate::tiktok_bridge::install(engine)?;
+                if downloading().is_some() {
+                    return accepted;
+                }
+                if let Ok(mut d) = DOWNLOADING.lock() {
+                    *d = Some(b.name.to_owned());
+                }
+                let (engine, b) = (engine.clone(), b.clone());
+                tokio::task::spawn_local(async move {
+                    let got = crate::tiktok_bridge::firefox_xpi().await;
+                    if let Ok(mut d) = DOWNLOADING.lock() {
+                        *d = None;
+                    }
+                    crate::host::changed();
+                    let opened = got.and_then(|addon| {
+                        let setup = crate::tiktok_bridge::Setup::Firefox { addon: &addon };
+                        let page = crate::tiktok_bridge::write_setup_page(b.name, b.extensions_page, &folder, &setup)?;
+                        b.open_setup_with_addon(&page, &crate::tiktok_bridge::pairing(&engine.config()), &addon)
+                            .map_err(|error| {
+                                trf(
+                                    "accounts.tiktok_sending.cant_open",
+                                    &[("browser", b.name), ("error", &error.to_string())],
+                                )
+                            })
+                    });
+                    if let Err(error) = opened {
+                        crate::warn(format!("TikTok extension: {error}"));
+                        let _ = crate::host::confirm(error, tr("dialogs.ok"), "").await;
+                    }
+                });
             } else {
                 // Not connected yet (not installed, or installed but never paired): the setup page, with
                 // the pairing in its address. It also offers the store and the steps to load the copy on
                 // disk; the extension closes it once it connects.
                 let folder = crate::tiktok_bridge::install(engine)?;
-                let page = crate::tiktok_bridge::write_setup_page(b.name, b.extensions_page, &folder, b.store_url())?;
+                let setup = crate::tiktok_bridge::Setup::Chromium { store: b.store_url() };
+                let page = crate::tiktok_bridge::write_setup_page(b.name, b.extensions_page, &folder, &setup)?;
                 b.open_setup(&page, &crate::tiktok_bridge::pairing(&engine.config()))
                     .map_err(cant_open)?;
             }

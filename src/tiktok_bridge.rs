@@ -19,7 +19,9 @@ use tokio_tungstenite::tungstenite::Message;
 pub const PATH: &str = "/streamerz/tiktok";
 /// Fixed by the public key in the extension's manifest.
 pub const EXTENSION_ID: &str = "lhijoeeghjcohapolkfkacipklhbnecc";
-/// The current extension version bundled with Streamerz.
+/// The extension version this Streamerz is built with: what it writes to disk, and the signed Firefox
+/// add-on it downloads. Store copies update themselves and may be newer; they work while their
+/// protocol is in [`MIN_PROTOCOL`]..=[`PROTOCOL`].
 pub const EXTENSION_VERSION: &str = "1.4.0";
 /// The published Google Chrome Web Store extension ID.
 pub const CHROME_STORE_ID: &str = "anckdakmhognoancpeefjlgicihplcjc";
@@ -32,15 +34,17 @@ pub const EDGE_STORE_URL: &str =
     "https://microsoftedge.microsoft.com/addons/detail/98d0235c-b425-4d57-82f0-26c1f0b7dc71";
 /// The Mozilla Firefox Add-ons (AMO) extension ID.
 pub const FIREFOX_GECKO_ID: &str = "tiktok-bridge@streamerz.app";
-/// The Mozilla Firefox Add-ons (AMO) signed XPI installation URL.
-pub const FIREFOX_AMO_URL: &str =
-    "https://addons.mozilla.org/firefox/downloads/file/5226064/f83aa4a6dc864605ac46-1.2.0.xpi";
-/// The messages this side speaks; an extension with another needs reinstalling.
+/// The messages this side speaks: the newest, and the oldest still understood. An extension outside
+/// the range is refused with a reason saying which side to update.
 const PROTOCOL: u64 = 2;
+const MIN_PROTOCOL: u64 = 2;
 /// How long one request in the tab may take (the first one opens and loads it).
 const CALL: Duration = Duration::from_secs(45);
 /// TikTok's chat box takes this many characters.
 const MAX_CHARS: usize = 150;
+
+/// Firefox's manifest: a persistent background page (an event page's socket dies when it idles).
+const FIREFOX_MANIFEST: &[u8] = include_bytes!("../assets/tiktok-extension/manifest.firefox.json");
 
 const FILES: [(&str, &[u8]); 6] = [
     (
@@ -106,6 +110,80 @@ pub fn from_extension(origin: Option<&str>) -> bool {
 /// The extension's folder (the browser loads it from there): see `extension_folder`.
 pub fn folder() -> PathBuf {
     crate::extension_folder()
+}
+
+/// The same files for Firefox, with its own manifest, loaded as a temporary add-on in development.
+pub fn firefox_folder() -> PathBuf {
+    folder().with_file_name("tiktok-extension-firefox")
+}
+
+/// Whether version `a` ("1.2.0") comes before `b`.
+pub fn older(a: &str, b: &str) -> bool {
+    let parts = |v: &str| v.split('.').map(|n| n.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
+    parts(a) < parts(b)
+}
+
+/// The signed Firefox add-on of exactly [`EXTENSION_VERSION`]. Firefox installs only signed add-ons,
+/// and AMO keeps an unlisted one's file private, so dev/publish-extensions.py puts each version on a
+/// release of its own.
+pub fn firefox_xpi_url() -> String {
+    format!(
+        "https://github.com/{}/releases/download/tiktok-extension-v{EXTENSION_VERSION}/streamerz-tiktok-{EXTENSION_VERSION}.xpi",
+        crate::brand::REPO
+    )
+}
+
+fn firefox_xpi_path() -> PathBuf {
+    folder().with_file_name(format!("streamerz-tiktok-{EXTENSION_VERSION}.xpi"))
+}
+
+/// Whether `bytes` is the signed add-on of this version (Firefox checks the signature itself).
+fn firefox_xpi_ok(bytes: &[u8]) -> bool {
+    let Ok(files) = crate::zip::read(bytes, 16 << 20) else {
+        return false;
+    };
+    let signed = files
+        .iter()
+        .any(|(name, _)| name.starts_with("META-INF/") && (name.ends_with(".rsa") || name.ends_with(".sig")));
+    let manifest = files
+        .iter()
+        .find(|(name, _)| name == "manifest.json")
+        .and_then(|(_, bytes)| serde_json::from_slice::<Value>(bytes).ok())
+        .unwrap_or(Value::Null);
+    signed
+        && manifest["version"] == EXTENSION_VERSION
+        && manifest["browser_specific_settings"]["gecko"]["id"] == FIREFOX_GECKO_ID
+}
+
+/// Downloads the signed Firefox add-on (once per version) and checks it is that add-on.
+pub async fn firefox_xpi() -> Result<PathBuf, String> {
+    use crate::i18n::trf;
+    let path = firefox_xpi_path();
+    if std::fs::read(&path).is_ok_and(|bytes| firefox_xpi_ok(&bytes)) {
+        return Ok(path);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| format!("{}: {err}", parent.display()))?;
+    }
+    let part = path.with_extension("part");
+    let got = crate::http::download(&firefox_xpi_url(), &[], &part, 16 << 20).await;
+    let bytes = std::fs::read(&part).unwrap_or_default();
+    let _ = std::fs::remove_file(&part);
+    let got = got?;
+    if got.status == 404 {
+        return Err(trf(
+            "accounts.tiktok_sending.firefox_missing",
+            &[("version", EXTENSION_VERSION)],
+        ));
+    }
+    if got.status != 200 || !got.complete || !firefox_xpi_ok(&bytes) {
+        return Err(trf(
+            "accounts.tiktok_sending.firefox_bad",
+            &[("version", EXTENSION_VERSION)],
+        ));
+    }
+    std::fs::write(&path, &bytes).map_err(|err| format!("{}: {err}", path.display()))?;
+    Ok(path)
 }
 
 /// A development restart reuses only the pairing explicitly created by Set up.
@@ -201,35 +279,109 @@ fn escape_js(s: &str) -> String {
         .replace('>', r"\u003e")
 }
 
-fn setup_html(browser: &str, extensions_page: &str, ext_folder: &std::path::Path, store_url: &str) -> String {
+/// What the setup tab offers, by how the extension gets into the browser.
+pub enum Setup<'a> {
+    /// Chromium: its store, or the copy Streamerz keeps, loaded unpacked.
+    Chromium { store: &'a str },
+    /// Firefox: the signed add-on Streamerz downloaded; Firefox asks to add it.
+    Firefox { addon: &'a std::path::Path },
+    /// Firefox in development: the copy Streamerz keeps, as a temporary add-on.
+    FirefoxTemporary,
+}
+
+/// One step of the setup tab: its text, then a value to copy or a link to follow.
+struct Step {
+    text: String,
+    copy: Option<(String, String)>,
+    link: Option<(String, String)>,
+}
+
+fn setup_html(browser: &str, extensions_page: &str, ext_folder: &std::path::Path, setup: &Setup) -> String {
     use crate::i18n::{tr, trf};
-    let folder_str = ext_folder.display().to_string();
-    let title = escape_html(&trf("accounts.tiktok_sending.page_title", &[("browser", browser)]));
-    let lead = escape_html(tr("accounts.tiktok_sending.page_lead"));
-    let step1 = escape_html(&trf("accounts.tiktok_sending.page_step_open", &[("browser", browser)]));
-    let step2 = escape_html(tr("accounts.tiktok_sending.page_step_load"));
-    let copy_addr = escape_html(tr("accounts.tiktok_sending.page_copy_address"));
-    let copy_dir = escape_html(tr("accounts.tiktok_sending.page_copy_folder"));
-    let page_html = escape_html(extensions_page);
-    let folder_html = escape_html(&folder_str);
-    let page_js = escape_js(extensions_page);
-    let folder_js = escape_js(&folder_str);
-    let copied_js = escape_js(tr("accounts.tiktok_sending.page_copied"));
-    let browser_html = escape_html(browser);
-    let store_section = if !store_url.is_empty() {
-        let store_url_html = escape_html(store_url);
-        format!(
-            r#"<section>
-    <p class="step"><strong>Option 1 (Fastest):</strong> Install with 1-click from the official store</p>
-    <div style="margin:10px 0 6px;">
-      <a href="{store_url_html}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:9px 18px;background:#2563eb;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:600;font-size:14px;box-shadow:0 1px 2px rgba(0,0,0,0.15);">Install Extension for {browser_html} &rarr;</a>
-    </div>
-    <p style="margin:8px 0 0;color:var(--muted);font-size:12px;">Or install manually below via developer mode:</p>
-  </section>"#
-        )
-    } else {
-        String::new()
+    let b = [("browser", browser)];
+    let folder = ext_folder.display().to_string();
+    let copy_addr = tr("accounts.tiktok_sending.page_copy_address").to_owned();
+    let copy_dir = tr("accounts.tiktok_sending.page_copy_folder").to_owned();
+    let step = |text: String| Step {
+        text,
+        copy: None,
+        link: None,
     };
+    let manual = |open: String, load: String, page: &str| {
+        [
+            Step {
+                copy: Some((page.to_owned(), copy_addr.clone())),
+                ..step(open)
+            },
+            Step {
+                copy: Some((folder.clone(), copy_dir.clone())),
+                ..step(load)
+            },
+        ]
+    };
+    let (lead, steps): (String, Vec<Step>) = match setup {
+        Setup::Chromium { store } => {
+            let mut steps = Vec::new();
+            if !store.is_empty() {
+                steps.push(Step {
+                    link: Some((
+                        (*store).to_owned(),
+                        trf("accounts.tiktok_sending.page_store_button", &b),
+                    )),
+                    ..step(trf("accounts.tiktok_sending.page_store", &b))
+                });
+            }
+            steps.extend(manual(
+                trf("accounts.tiktok_sending.page_step_open", &b),
+                tr("accounts.tiktok_sending.page_step_load").to_owned(),
+                extensions_page,
+            ));
+            (tr("accounts.tiktok_sending.page_lead").to_owned(), steps)
+        }
+        Setup::Firefox { addon } => (
+            trf("accounts.tiktok_sending.page_firefox_lead", &b),
+            vec![Step {
+                link: Some((
+                    crate::browsers::file_url(addon),
+                    trf("accounts.tiktok_sending.page_firefox_button", &b),
+                )),
+                ..step(trf("accounts.tiktok_sending.page_firefox_again", &b))
+            }],
+        ),
+        Setup::FirefoxTemporary => (
+            trf("accounts.tiktok_sending.page_firefox_temp_lead", &b),
+            manual(
+                tr("accounts.tiktok_sending.page_firefox_temp_open").to_owned(),
+                tr("accounts.tiktok_sending.page_firefox_temp_load").to_owned(),
+                FIREFOX_DEBUGGING,
+            )
+            .into(),
+        ),
+    };
+    let title = escape_html(&trf("accounts.tiktok_sending.page_title", &b));
+    let lead = escape_html(&lead);
+    let copied_js = escape_js(tr("accounts.tiktok_sending.page_copied"));
+    let mut sections = String::new();
+    let mut binds = String::new();
+    for (index, step) in steps.iter().enumerate() {
+        sections += &format!("  <section>\n    <p class=\"step\">{}</p>\n", escape_html(&step.text));
+        if let Some((value, label)) = &step.copy {
+            let value_html = escape_html(value);
+            sections += &format!(
+                "    <div class=\"bar\"><code title=\"{value_html}\">{value_html}</code><button type=\"button\" id=\"copy-{index}\">{}</button></div>\n",
+                escape_html(label)
+            );
+            binds += &format!("  bind(\"copy-{index}\", {});\n", escape_js(value));
+        }
+        if let Some((href, label)) = &step.link {
+            sections += &format!(
+                "    <div class=\"bar\"><a class=\"go\" href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">{}</a></div>\n",
+                escape_html(href),
+                escape_html(label)
+            );
+        }
+        sections += "  </section>\n";
+    }
     format!(
         r#"<!doctype html>
 <html lang="en">
@@ -251,24 +403,15 @@ fn setup_html(browser: &str, extensions_page: &str, ext_folder: &std::path::Path
   p.step {{ margin:0 0 10px; }}
   .bar {{ display:flex; gap:8px; align-items:center; }}
   code {{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:8px 10px; background:var(--bg); border:1px solid var(--line); border-radius:6px; font:13px/1.3 ui-monospace,SFMono-Regular,Consolas,monospace; }}
-  button {{ flex:none; padding:8px 14px; background:var(--btn); color:var(--ink); border:1px solid var(--line); border-radius:6px; font:inherit; font-weight:500; cursor:pointer; }}
-  button:hover {{ background:var(--btn-hover); }}
+  button, a.go {{ flex:none; padding:8px 14px; background:var(--btn); color:var(--ink); border:1px solid var(--line); border-radius:6px; font:inherit; font-weight:500; cursor:pointer; text-decoration:none; }}
+  button:hover, a.go:hover {{ background:var(--btn-hover); }}
 </style>
 </head>
 <body>
 <main>
   <h1>{title}</h1>
   <p class="lead">{lead}</p>
-  {store_section}
-  <section>
-    <p class="step">{step1}</p>
-    <div class="bar"><code title="{page_html}">{page_html}</code><button type="button" id="copy-page">{copy_addr}</button></div>
-  </section>
-  <section>
-    <p class="step">{step2}</p>
-    <div class="bar"><code title="{folder_html}">{folder_html}</code><button type="button" id="copy-folder">{copy_dir}</button></div>
-  </section>
-</main>
+{sections}</main>
 <script>
   const copied = {copied_js};
   function bind(id, text) {{
@@ -289,40 +432,61 @@ fn setup_html(browser: &str, extensions_page: &str, ext_folder: &std::path::Path
       setTimeout(() => {{ btn.textContent = label; }}, 1400);
     }});
   }}
-  bind("copy-page", {page_js});
-  bind("copy-folder", {folder_js});
-</script>
+{binds}</script>
 </body>
 </html>
 "#
     )
 }
 
+/// Firefox's page for temporary add-ons.
+const FIREFOX_DEBUGGING: &str = "about:debugging#/runtime/this-firefox";
+
 pub fn write_setup_page(
     browser: &str,
     extensions_page: &str,
     ext_folder: &std::path::Path,
-    store_url: &str,
+    setup: &Setup,
 ) -> Result<PathBuf, String> {
     let path = setup_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|err| format!("can't create {}: {err}", parent.display()))?;
     }
-    let html = setup_html(browser, extensions_page, ext_folder, store_url);
+    let html = setup_html(browser, extensions_page, ext_folder, setup);
     write_private(&path, html.as_bytes()).map_err(|err| format!("can't write {}: {err}", path.display()))?;
     Ok(path)
 }
 
 fn write_files(c: &crate::Config) -> Result<PathBuf, String> {
-    let dir = folder();
-    std::fs::create_dir_all(&dir).map_err(|err| format!("can't create {}: {err}", dir.display()))?;
+    write_dir(&folder(), c, None)
+}
+
+/// Writes the Firefox copy (its own manifest) for a temporary add-on. Returns its folder.
+pub fn write_firefox_files(c: &crate::Config) -> Result<PathBuf, String> {
+    write_dir(&firefox_folder(), c, Some(FIREFOX_MANIFEST))
+}
+
+fn write_dir(dir: &std::path::Path, c: &crate::Config, manifest: Option<&[u8]>) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(dir).map_err(|err| format!("can't create {}: {err}", dir.display()))?;
     let settings = json!({"url": server_url(c), "token": c.tiktok.bridge_token, "build": build()});
     let config = format!("self.STREAMERZ = {settings};\n");
     let config_json = settings.to_string();
-    let files = FILES.iter().map(|(n, b)| (*n, *b)).chain([
-        ("config.js", config.as_bytes()),
-        ("config.json", config_json.as_bytes()),
-    ]);
+    let files = FILES
+        .iter()
+        .map(|(n, b)| {
+            (
+                *n,
+                if *n == "manifest.json" {
+                    manifest.unwrap_or(b)
+                } else {
+                    *b
+                },
+            )
+        })
+        .chain([
+            ("config.js", config.as_bytes()),
+            ("config.json", config_json.as_bytes()),
+        ]);
     for (name, bytes) in files {
         let path = dir.join(name);
         // Unchanged files stay as they are: the browser notices nothing.
@@ -331,7 +495,7 @@ fn write_files(c: &crate::Config) -> Result<PathBuf, String> {
         }
         write_private(&path, bytes).map_err(|err| format!("can't write {}: {err}", path.display()))?;
     }
-    Ok(dir)
+    Ok(dir.to_path_buf())
 }
 
 /// A fingerprint of the extension's files: the extension restarts itself when it changes (a new
@@ -343,6 +507,7 @@ fn build() -> String {
         hash.update(name.as_bytes());
         hash.update(bytes);
     }
+    hash.update(FIREFOX_MANIFEST);
     hash.finalize()[..6].iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -364,6 +529,11 @@ pub fn refresh(c: &crate::Config) {
             crate::warn(format!("TikTok extension: {err}"));
         }
     }
+    if set_up(c) && firefox_folder().is_dir() {
+        if let Err(err) = write_firefox_files(c) {
+            crate::warn(format!("TikTok extension: {err}"));
+        }
+    }
 }
 
 /// Turns sending off: the token goes (the extension is refused from then on) and so does its folder.
@@ -371,6 +541,8 @@ pub fn remove(e: &Rc<Engine>) {
     e.change(|c| c.tiktok.bridge_token.clear());
     e.tiktok_bridge.disconnect();
     let _ = std::fs::remove_dir_all(folder());
+    let _ = std::fs::remove_dir_all(firefox_folder());
+    let _ = std::fs::remove_file(firefox_xpi_path());
     let _ = std::fs::remove_file(setup_path());
 }
 
@@ -388,6 +560,7 @@ pub fn status(e: &Engine) -> Value {
         "version": b.version(),
         "latestVersion": EXTENSION_VERSION,
         "outdated": b.is_outdated(),
+        "refused": b.refused(),
         "folder": folder().display().to_string(),
         "extensionId": EXTENSION_ID
     })
@@ -435,6 +608,8 @@ pub struct Bridge {
     ready: std::cell::Cell<bool>,
     login_required: std::cell::Cell<bool>,
     error: RefCell<String>,
+    /// Why the last extension that tried was turned away (another protocol), until one connects.
+    refused: RefCell<String>,
     warming: std::cell::Cell<bool>,
     refresh_pending: std::cell::Cell<bool>,
 }
@@ -457,9 +632,14 @@ impl Bridge {
         self.version.borrow().clone()
     }
 
+    /// Older than the version this Streamerz is built with (a newer store copy is fine).
     pub fn is_outdated(&self) -> bool {
         let v = self.version.borrow();
-        !v.is_empty() && v.as_str() != EXTENSION_VERSION
+        !v.is_empty() && older(&v, EXTENSION_VERSION)
+    }
+
+    pub fn refused(&self) -> String {
+        self.refused.borrow().clone()
     }
 
     pub fn ready(&self) -> bool {
@@ -925,6 +1105,27 @@ fn same(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+/// Why an extension's hello can't be served: a protocol this Streamerz doesn't speak, and which side
+/// to update.
+fn refusal(hello: &Value) -> Option<String> {
+    use crate::i18n::trf;
+    let protocol = hello["protocol"].as_u64().unwrap_or(0);
+    let version = hello["version"].as_str().unwrap_or("?");
+    if protocol > PROTOCOL {
+        Some(trf(
+            "accounts.tiktok_sending.streamerz_too_old",
+            &[("version", version)],
+        ))
+    } else if protocol < MIN_PROTOCOL {
+        Some(trf(
+            "accounts.tiktok_sending.extension_too_old",
+            &[("version", version), ("latest", EXTENSION_VERSION)],
+        ))
+    } else {
+        None
+    }
+}
+
 /// One connection from the extension, until it closes. The first message must be its hello, with
 /// this install's token.
 pub async fn serve<S>(e: Rc<Engine>, ws: tokio_tungstenite::WebSocketStream<S>)
@@ -944,15 +1145,15 @@ where
         let _ = sink.close().await;
         return;
     }
-    if hello["protocol"].as_u64() != Some(PROTOCOL) {
-        crate::warn(
-            "TikTok extension: it's from another version of Streamerz, reload it in the browser's extensions page"
-                .into(),
-        );
+    if let Some(why) = refusal(&hello) {
+        crate::warn(format!("TikTok extension: {why}"));
+        *e.tiktok_bridge.refused.borrow_mut() = why;
+        crate::host::changed();
         let _ = sink.close().await;
         return;
     }
     let b = &e.tiktok_bridge;
+    b.refused.borrow_mut().clear();
     let serial = b.serial.get() + 1;
     b.serial.set(serial);
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
@@ -1153,18 +1354,69 @@ mod tests {
 
     #[test]
     fn setup_page_escapes_paths_and_includes_both_copy_targets() {
+        let folder = std::path::Path::new(r"/tmp/a&b<c>\tiktok-extension");
         let html = setup_html(
             "Chromium",
             "chrome://extensions",
-            std::path::Path::new(r"/tmp/a&b<c>\tiktok-extension"),
-            CHROME_STORE_URL,
+            folder,
+            &Setup::Chromium {
+                store: CHROME_STORE_URL,
+            },
         );
         assert!(html.contains("chrome://extensions"));
         assert!(html.contains("/tmp/a&amp;b&lt;c&gt;\\tiktok-extension"));
         assert!(!html.contains("/tmp/a&b<c>"));
-        assert!(html.contains(r#"bind("copy-folder", "/tmp/a\u0026b\u003cc\u003e\\tiktok-extension");"#));
+        assert!(html.contains(r#"bind("copy-2", "/tmp/a\u0026b\u003cc\u003e\\tiktok-extension");"#));
         assert!(html.contains(CHROME_STORE_URL));
-        assert!(html.contains("Install Extension for Chromium"));
+        // Everything on it is the user's language (it once had English of its own).
+        assert!(!html.contains("Option 1"));
+        let firefox = setup_html(
+            "Zen Browser",
+            "about:addons",
+            folder,
+            &Setup::Firefox {
+                addon: std::path::Path::new("/tmp/streamerz-tiktok-1.4.0.xpi"),
+            },
+        );
+        assert!(firefox.contains("file:///tmp/streamerz-tiktok-1.4.0.xpi"));
+        assert!(!firefox.contains("chrome://"));
+        let temporary = setup_html("Mozilla Firefox", "about:addons", folder, &Setup::FirefoxTemporary);
+        assert!(temporary.contains(FIREFOX_DEBUGGING));
+    }
+
+    #[test]
+    fn the_firefox_addon_must_be_signed_and_this_version() {
+        let xpi = |version: &str, signed: bool| {
+            let mut files = vec![(
+                "manifest.json".to_owned(),
+                json!({"version": version, "browser_specific_settings": {"gecko": {"id": FIREFOX_GECKO_ID}}})
+                    .to_string()
+                    .into_bytes(),
+            )];
+            if signed {
+                files.push(("META-INF/mozilla.rsa".to_owned(), b"signature".to_vec()));
+            }
+            crate::zip::write(&files).unwrap()
+        };
+        assert!(firefox_xpi_ok(&xpi(EXTENSION_VERSION, true)));
+        assert!(!firefox_xpi_ok(&xpi(EXTENSION_VERSION, false)));
+        assert!(!firefox_xpi_ok(&xpi("0.0.1", true)));
+        assert!(!firefox_xpi_ok(b"<html>Not Found</html>"));
+        assert!(firefox_xpi_url().ends_with(&format!(
+            "/releases/download/tiktok-extension-v{EXTENSION_VERSION}/streamerz-tiktok-{EXTENSION_VERSION}.xpi"
+        )));
+    }
+
+    #[test]
+    fn extensions_outside_the_protocol_range_are_told_which_side_to_update() {
+        let hello = |protocol: u64| json!({"op": "hello", "protocol": protocol, "version": "9.9.9"});
+        assert!(refusal(&hello(PROTOCOL)).is_none());
+        assert!(refusal(&hello(MIN_PROTOCOL)).is_none());
+        let newer = refusal(&hello(PROTOCOL + 1)).unwrap();
+        let older_one = refusal(&hello(MIN_PROTOCOL - 1)).unwrap();
+        assert_ne!(newer, older_one);
+        assert!(newer.contains("9.9.9"));
+        assert!(older(EXTENSION_VERSION, "99.0.0") && !older("2.0.0", "1.10.0") && older("1.9.0", "1.10.0"));
     }
 
     #[test]
