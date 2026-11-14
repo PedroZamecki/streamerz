@@ -68,6 +68,8 @@ pub struct Release {
     url: String,
     /// The file's SHA-256 as GitHub lists it, when it does.
     sha256: Option<String>,
+    /// Its size in bytes, as GitHub lists it (0 when it doesn't).
+    size: u64,
 }
 
 /// How this copy was installed, which says who updates it.
@@ -151,6 +153,7 @@ pub async fn newer() -> Option<Release> {
             .as_str()
             .and_then(|d| d.strip_prefix("sha256:"))
             .map(str::to_string),
+        size: a["size"].as_u64().unwrap_or(0),
         tag,
         path,
     })
@@ -164,17 +167,25 @@ fn beside(path: &Path, ext: &str) -> PathBuf {
     PathBuf::from(n)
 }
 
-/// A program, not an error page (an ELF or an exe, not tiny), with the SHA-256 GitHub lists when it
-/// lists one.
-fn sound(body: &[u8], sha256: Option<&str>) -> bool {
-    use sha2::{Digest, Sha256};
-    let program = body.starts_with(b"\x7fELF") || body.starts_with(b"MZ");
-    program
-        && body.len() > 100_000
-        && sha256.is_none_or(|want| {
-            let got: String = Sha256::digest(body).iter().map(|b| format!("{b:02x}")).collect();
-            got == want.to_lowercase()
-        })
+/// The largest release file taken: the plain Linux program is ~45 MB.
+const MAX_SIZE: u64 = 256 << 20;
+
+/// Why a downloaded file isn't the program it should be: an error page (not an ELF or an exe, or tiny),
+/// a download cut short (fewer bytes than GitHub lists), or another file (not the SHA-256 GitHub lists).
+fn unsound(got: &crate::http::Download, size: u64, sha256: Option<&str>) -> Option<String> {
+    let program = got.magic.starts_with(b"\x7fELF") || got.magic.starts_with(b"MZ");
+    if got.status != 200 {
+        Some(format!("HTTP {}", got.status))
+    } else if !got.complete || (size > 0 && got.len != size) {
+        Some(trf(
+            "update.cut_short",
+            &[("got", &got.len.to_string()), ("size", &size.to_string())],
+        ))
+    } else if !program || got.len <= 100_000 || sha256.is_some_and(|want| !want.eq_ignore_ascii_case(&got.sha256)) {
+        Some(tr("update.not_program").to_string())
+    } else {
+        None
+    }
 }
 
 /// True when writing or renaming in `path`'s directory requires administrator / elevated permissions.
@@ -320,11 +331,16 @@ pub async fn stage(r: &Release) -> Result<(), String> {
         return Ok(());
     }
     let headers = [("User-Agent".to_string(), "Streamerz".to_string())];
-    let got = crate::http::request("GET", &r.url, &headers, b"").await?;
-    if got.status != 200 || !sound(&got.body, r.sha256.as_deref()) {
-        return Err(format!("{}: not the program it should be (HTTP {})", r.url, got.status));
+    // Written to .part as it arrives, never held in memory, and checked before it becomes .new.
+    let got = crate::http::download(&r.url, &headers, &part, MAX_SIZE).await;
+    let bad = match &got {
+        Ok(got) => unsound(got, r.size, r.sha256.as_deref()),
+        Err(e) => Some(e.clone()),
+    };
+    if let Some(why) = bad {
+        let _ = std::fs::remove_file(&part);
+        return Err(why);
     }
-    std::fs::write(&part, &got.body).map_err(|e| format!("{}: {e}", part.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -395,7 +411,10 @@ fn apply_elevated_windows(path: &Path, new: &Path) -> Result<(), String> {
     }
     let powershell =
         PathBuf::from(std::ffi::OsString::from_wide(&system[..length])).join("WindowsPowerShell/v1.0/powershell.exe");
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let status = std::process::Command::new(powershell)
+        .creation_flags(CREATE_NO_WINDOW)
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -635,7 +654,11 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
             return;
         }
         crate::error(format!("Update to {tag} failed: {e}"));
-        let _ = crate::host::confirm(trf("update.failed", &[("error", &e)]), tr("dialogs.ok"), "").await;
+        let mut told = trf("update.failed", &[("error", &e)]);
+        if install() == Install::AppImage {
+            told = format!("{told}\n\n{}", tr("update.app_manager"));
+        }
+        let _ = crate::host::confirm(told, tr("dialogs.ok"), "").await;
         return;
     }
     let done = trf("update.done", &[("version", &tag)]);
@@ -677,8 +700,7 @@ pub fn restart() -> ! {
 
 #[cfg(test)]
 mod tests {
-    use super::{beside, semver, sound};
-    use sha2::{Digest, Sha256};
+    use super::{beside, semver, unsound};
     use std::path::Path;
 
     #[test]
@@ -708,14 +730,21 @@ mod tests {
 
     #[test]
     fn downloads_are_checked() {
-        let mut elf = b"\x7fELF".to_vec();
-        elf.resize(200_000, 1);
-        let hash: String = Sha256::digest(&elf).iter().map(|b| format!("{b:02x}")).collect();
-        assert!(sound(&elf, None));
-        assert!(sound(&elf, Some(&hash)));
-        assert!(!sound(&elf, Some("00")));
-        assert!(!sound(b"<html>not found</html>", None));
-        assert!(!sound(&elf[..1000], None));
+        let got = |status, len, complete, sha256: &str, magic: &[u8]| crate::http::Download {
+            status,
+            len,
+            complete,
+            sha256: sha256.into(),
+            magic: magic.to_vec(),
+        };
+        assert!(unsound(&got(200, 200_000, true, "ab", b"\x7fELF"), 200_000, Some("AB")).is_none());
+        assert!(unsound(&got(200, 200_000, true, "ab", b"MZ\x90\0"), 0, None).is_none());
+        // The 1.7.0 failure: a 25 MB exe cut at 16 MB.
+        assert!(unsound(&got(200, 16 << 20, true, "ab", b"MZ\x90\0"), 25_311_232, Some("ab")).is_some());
+        assert!(unsound(&got(200, 200_000, false, "ab", b"MZ\x90\0"), 0, None).is_some());
+        assert!(unsound(&got(200, 200_000, true, "ab", b"MZ\x90\0"), 200_000, Some("00")).is_some());
+        assert!(unsound(&got(200, 22, true, "ab", b"<htm"), 0, None).is_some());
+        assert!(unsound(&got(404, 200_000, true, "ab", b"MZ\x90\0"), 0, None).is_some());
     }
 
     #[test]

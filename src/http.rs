@@ -61,21 +61,92 @@ pub async fn request(method: &str, url: &str, headers: &[(String, String)], body
         let r = tokio::time::timeout(TIMEOUT, once(&method, &url, headers, body))
             .await
             .map_err(|_| format!("{url}: timed out"))??;
-        let location = r.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("location"));
-        match (r.status, location) {
-            (301 | 302 | 303 | 307 | 308, Some((_, to))) => {
-                url = if to.starts_with("http") {
-                    to.clone()
-                } else {
-                    let (tls, host, port, _) = parse(&url)?;
-                    format!("{}://{host}:{port}{to}", if tls { "https" } else { "http" })
-                };
+        match redirect(&url, r.status, &r.headers)? {
+            Some(to) => {
+                url = to;
                 if r.status == 303 {
                     method = "GET".into();
                 }
             }
-            _ => return Ok(r),
+            None => return Ok(r),
         }
+    }
+    Err(format!("{url}: too many redirects"))
+}
+
+/// Where a redirect points, if `status` is one.
+fn redirect(url: &str, status: u16, headers: &[(String, String)]) -> Result<Option<String>, String> {
+    let location = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("location"));
+    match (status, location) {
+        (301 | 302 | 303 | 307 | 308, Some((_, to))) => Ok(Some(if to.starts_with("http") {
+            to.clone()
+        } else {
+            let (tls, host, port, _) = parse(url)?;
+            format!("{}://{host}:{port}{to}", if tls { "https" } else { "http" })
+        })),
+        _ => Ok(None),
+    }
+}
+
+/// A file [`download`] wrote.
+pub struct Download {
+    pub status: u16,
+    /// Bytes written.
+    pub len: u64,
+    /// Every byte the server announced arrived (its Content-Length, the last chunk, or the end).
+    pub complete: bool,
+    /// The body's SHA-256, in lowercase hex.
+    pub sha256: String,
+    /// Its first bytes (up to 4), for its file type.
+    pub magic: Vec<u8>,
+}
+
+/// GETs `url` into the file `to`, following redirects, a piece at a time: a release of tens of MB never
+/// sits in memory. Stops at `max` bytes. Each read may take [`TIMEOUT`], the whole download as long as it
+/// needs.
+pub async fn download(
+    url: &str,
+    headers: &[(String, String)],
+    to: &std::path::Path,
+    max: u64,
+) -> Result<Download, String> {
+    use sha2::Digest;
+    use std::io::Write;
+    let mut url = url.to_string();
+    for _ in 0..6 {
+        let mut open = tokio::time::timeout(TIMEOUT, open("GET", &url, headers, b""))
+            .await
+            .map_err(|_| format!("{url}: timed out"))??;
+        if let Some(next) = redirect(&url, open.status, &open.headers)? {
+            url = next;
+            continue;
+        }
+        let file = std::fs::File::create(to).map_err(|e| format!("{}: {e}", to.display()))?;
+        let mut file = std::io::BufWriter::with_capacity(64 << 10, file);
+        let mut hash = sha2::Sha256::new();
+        let mut magic = Vec::with_capacity(4);
+        let mut failed = None;
+        let limit = usize::try_from(max).unwrap_or(usize::MAX);
+        let (len, complete) = body(&mut open, "GET", limit, &mut |piece: &[u8]| {
+            if magic.len() < 4 {
+                magic.extend_from_slice(&piece[..piece.len().min(4 - magic.len())]);
+            }
+            hash.update(piece);
+            if let Err(e) = file.write_all(piece) {
+                failed.get_or_insert(e);
+            }
+        })
+        .await?;
+        if let Some(e) = failed.or_else(|| file.flush().err()) {
+            return Err(format!("{}: {e}", to.display()));
+        }
+        return Ok(Download {
+            status: open.status,
+            len: len as u64,
+            complete,
+            sha256: hash.finalize().iter().map(|b| format!("{b:02x}")).collect(),
+            magic,
+        });
     }
     Err(format!("{url}: too many redirects"))
 }
@@ -110,7 +181,30 @@ pub async fn ws_connect(
     .await
 }
 
-async fn once(method: &str, url: &str, headers: &[(String, String)], body: &[u8]) -> Result<Response, String> {
+/// A response whose head was read: the body is still to come, from `io` after `rest`.
+struct Open {
+    status: u16,
+    headers: Vec<(String, String)>,
+    io: Box<dyn Io>,
+    rest: Vec<u8>,
+}
+
+async fn once(method: &str, url: &str, headers: &[(String, String)], body_bytes: &[u8]) -> Result<Response, String> {
+    let mut open = open(method, url, headers, body_bytes).await?;
+    let mut out = Vec::new();
+    body(&mut open, method, MAX_BODY, &mut |piece: &[u8]| {
+        out.extend_from_slice(piece)
+    })
+    .await?;
+    Ok(Response {
+        status: open.status,
+        headers: open.headers,
+        body: out,
+    })
+}
+
+/// Sends the request and reads the response's head.
+async fn open(method: &str, url: &str, headers: &[(String, String)], body: &[u8]) -> Result<Open, String> {
     let (tls, host, port, path) = parse(url)?;
     let tcp = TcpStream::connect((host.as_str(), port))
         .await
@@ -162,71 +256,108 @@ async fn once(method: &str, url: &str, headers: &[(String, String)], body: &[u8]
         .filter_map(|l| l.split_once(':'))
         .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
         .collect();
-    let get = |name: &str| {
-        headers
-            .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case(name))
-            .map(|(_, v)| v.as_str())
-    };
-    let mut rest = raw.split_off(head_end + 4);
-    let chunked = get("transfer-encoding").is_some_and(|v| v.eq_ignore_ascii_case("chunked"));
-    let body = if chunked {
-        dechunk(&mut io, rest).await?
-    } else if let Some(len) = get("content-length").and_then(|v| v.parse::<usize>().ok()) {
-        while rest.len() < len.min(MAX_BODY) {
-            if read_more(&mut io, &mut rest).await? == 0 {
-                break;
-            }
-        }
-        rest.truncate(len);
-        rest
-    } else if status == 204 || status == 304 || method == "HEAD" {
-        Vec::new()
-    } else {
-        while rest.len() < MAX_BODY && read_more(&mut io, &mut rest).await? > 0 {}
-        rest
-    };
-    Ok(Response { status, headers, body })
+    let rest = raw.split_off(head_end + 4);
+    Ok(Open {
+        status,
+        headers,
+        io,
+        rest,
+    })
 }
 
+/// Hands the body to `sink` piece by piece, up to `limit` bytes: its length, and whether all of it came.
+async fn body(
+    open: &mut Open,
+    method: &str,
+    limit: usize,
+    sink: &mut dyn FnMut(&[u8]),
+) -> Result<(usize, bool), String> {
+    let get = |name: &str| {
+        open.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.clone())
+    };
+    let chunked = get("transfer-encoding").is_some_and(|v| v.eq_ignore_ascii_case("chunked"));
+    let length = get("content-length").and_then(|v| v.parse::<usize>().ok());
+    let io = &mut open.io;
+    let mut buf = std::mem::take(&mut open.rest);
+    let mut total = 0;
+    if chunked {
+        loop {
+            let line_end = loop {
+                if let Some(i) = buf.windows(2).position(|w| w == b"\r\n") {
+                    break i;
+                }
+                if read_more(io, &mut buf).await? == 0 {
+                    return Ok((total, false));
+                }
+            };
+            let size = String::from_utf8_lossy(&buf[..line_end]);
+            let size = usize::from_str_radix(size.split(';').next().unwrap_or("").trim(), 16).unwrap_or(0);
+            buf.drain(..line_end + 2);
+            if size == 0 {
+                return Ok((total, true));
+            }
+            if total + size > limit {
+                return Ok((total, false));
+            }
+            let mut left = size;
+            while left > 0 {
+                if buf.is_empty() && read_more(io, &mut buf).await? == 0 {
+                    return Ok((total, false));
+                }
+                let take = buf.len().min(left);
+                sink(&buf[..take]);
+                buf.drain(..take);
+                total += take;
+                left -= take;
+            }
+            while buf.len() < 2 {
+                if read_more(io, &mut buf).await? == 0 {
+                    return Ok((total, false));
+                }
+            }
+            buf.drain(..2);
+        }
+    }
+    let want = match length {
+        Some(len) => len,
+        None if open.status == 204 || open.status == 304 || method == "HEAD" => return Ok((0, true)),
+        None => usize::MAX,
+    };
+    loop {
+        let take = buf.len().min(want - total).min(limit - total);
+        if take > 0 {
+            sink(&buf[..take]);
+            total += take;
+        }
+        buf.clear();
+        if total == want {
+            return Ok((total, true));
+        }
+        if total >= limit {
+            return Ok((total, false));
+        }
+        if read_more(io, &mut buf).await? == 0 {
+            // Without a length, the end of the connection is the end of the body.
+            return Ok((total, length.is_none()));
+        }
+    }
+}
+
+/// One read, which may take up to [`TIMEOUT`].
 async fn read_more(io: &mut Box<dyn Io>, buf: &mut Vec<u8>) -> Result<usize, String> {
-    let mut chunk = [0u8; 8192];
-    match io.read(&mut chunk).await {
-        Ok(n) => {
+    let mut chunk = [0u8; 16384];
+    match tokio::time::timeout(TIMEOUT, io.read(&mut chunk)).await {
+        Ok(Ok(n)) => {
             buf.extend_from_slice(&chunk[..n]);
             Ok(n)
         }
         // Servers that close without TLS close_notify: treat as the end.
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(0),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-async fn dechunk(io: &mut Box<dyn Io>, mut buf: Vec<u8>) -> Result<Vec<u8>, String> {
-    let mut out = Vec::new();
-    loop {
-        let line_end = loop {
-            if let Some(i) = buf.windows(2).position(|w| w == b"\r\n") {
-                break i;
-            }
-            if read_more(io, &mut buf).await? == 0 {
-                return Ok(out);
-            }
-        };
-        let size = String::from_utf8_lossy(&buf[..line_end]);
-        let size = usize::from_str_radix(size.split(';').next().unwrap_or("").trim(), 16).unwrap_or(0);
-        buf.drain(..line_end + 2);
-        if size == 0 || out.len() + size > MAX_BODY {
-            return Ok(out);
-        }
-        while buf.len() < size + 2 {
-            if read_more(io, &mut buf).await? == 0 {
-                out.extend_from_slice(&buf[..buf.len().min(size)]);
-                return Ok(out);
-            }
-        }
-        out.extend_from_slice(&buf[..size]);
-        buf.drain(..size + 2);
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(0),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err("timed out".into()),
     }
 }
 
@@ -279,5 +410,68 @@ mod tests {
                 .unwrap();
             assert_eq!((r.status, r.text().as_str()), (200, "hello world"));
         });
+    }
+
+    /// Bigger than any in-memory body (the 1.7.0 update failed at 16 MB), with and without a length,
+    /// and a body cut short.
+    #[test]
+    fn downloads_stream_to_a_file() {
+        use sha2::Digest;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let data: Vec<u8> = (0..(20usize << 20)).map(|i| (i % 251) as u8).collect();
+        let want: String = sha2::Sha256::digest(&data).iter().map(|b| format!("{b:02x}")).collect();
+        let dir = std::env::temp_dir().join(format!("streamerz-download-{}", crate::engine::uuid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        rt.block_on(async {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = l.local_addr().unwrap().port();
+            let served = data.clone();
+            tokio::spawn(async move {
+                for kind in 0..3 {
+                    let (mut s, _) = l.accept().await.unwrap();
+                    let mut buf = [0u8; 1024];
+                    let _ = s.read(&mut buf).await;
+                    match kind {
+                        0 => {
+                            let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", served.len());
+                            s.write_all(head.as_bytes()).await.unwrap();
+                            s.write_all(&served).await.unwrap();
+                        }
+                        1 => {
+                            s.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+                                .await
+                                .unwrap();
+                            for piece in served.chunks(1 << 20) {
+                                s.write_all(format!("{:x}\r\n", piece.len()).as_bytes()).await.unwrap();
+                                s.write_all(piece).await.unwrap();
+                                s.write_all(b"\r\n").await.unwrap();
+                            }
+                            s.write_all(b"0\r\n\r\n").await.unwrap();
+                        }
+                        _ => {
+                            let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", served.len());
+                            s.write_all(head.as_bytes()).await.unwrap();
+                            s.write_all(&served[..1000]).await.unwrap();
+                        }
+                    }
+                }
+            });
+            let url = format!("http://127.0.0.1:{port}/f");
+            for kind in 0..2 {
+                let to = dir.join(format!("f{kind}"));
+                let got = download(&url, &[], &to, 64 << 20).await.unwrap();
+                assert!(got.complete, "kind {kind}");
+                assert_eq!((got.len, got.sha256.as_str()), (data.len() as u64, want.as_str()));
+                assert_eq!(std::fs::metadata(&to).unwrap().len(), data.len() as u64);
+                assert_eq!(got.magic, data[..4]);
+            }
+            let got = download(&url, &[], &dir.join("cut"), 64 << 20).await.unwrap();
+            assert!(!got.complete);
+            assert_eq!(got.len, 1000);
+        });
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

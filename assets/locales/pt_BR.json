@@ -1009,7 +1009,7 @@
   "update.cancelled": "Atualização cancelada.",
   "update.dev": "Esta é uma versão de desenvolvimento: não é atualizada automaticamente.",
   "update.done": "Atualizado para {version}. Reiniciar agora para usá-lo?",
-  "update.failed": "A atualização não funcionou:\n{error}\n\nSe o Streamerz foi instalado via pacote ou gerenciador de aplicativos (como o Gear Lever), atualize por lá.",
+  "update.failed": "A atualização não funcionou:\n{error}",
   "update.later": "Mais tarde",
   "update.newest": "O Streamerz {version} é a versão mais recente.",
   "update.now": "Atualizar",
@@ -1370,5 +1370,8 @@
   "settings.new_versions.flatpak": "Você tem a {version}. O Flatpak atualiza o Streamerz, junto com seus outros apps.",
   "settings.new_versions.package": "Você tem a {version}. O atualizador do sistema atualiza o Streamerz, pelo repositório do Streamerz que o pacote adicionou.",
   "update.by_flatpak": "O Streamerz {version} saiu. Atualize pela sua loja de apps ou rode flatpak update.",
-  "update.by_package": "O Streamerz {version} saiu. O atualizador do sistema instala, junto com as outras atualizações."
+  "update.by_package": "O Streamerz {version} saiu. O atualizador do sistema instala, junto com as outras atualizações.",
+  "update.app_manager": "Se o Streamerz foi instalado por um gerenciador de aplicativos (como o Gear Lever), atualize por lá.",
+  "update.cut_short": "o download parou antes do fim ({got} de {size} bytes). Tente de novo mais tarde.",
+  "update.not_program": "o arquivo baixado não é o programa do Streamerz (a soma de verificação não confere)."
 }

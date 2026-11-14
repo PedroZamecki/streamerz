@@ -1002,7 +1002,7 @@
   "update.cancelled": "Update cancelled.",
   "update.dev": "This is a development build: it doesn't update.",
   "update.done": "Updated to {version}. Restart now to use it?",
-  "update.failed": "The update didn't work:\n{error}\n\nIf Streamerz came from a package or an app manager (Gear Lever, for one), update it there.",
+  "update.failed": "The update didn't work:\n{error}",
   "update.later": "Later",
   "update.newest": "Streamerz {version} is the newest.",
   "update.now": "Update",
@@ -1370,5 +1370,8 @@
   "settings.new_versions.flatpak": "You have {version}. Flatpak updates Streamerz, with your other apps.",
   "settings.new_versions.package": "You have {version}. Your system's updater updates Streamerz, from the Streamerz repository the package added.",
   "update.by_flatpak": "Streamerz {version} is out. Update it from your software center, or run flatpak update.",
-  "update.by_package": "Streamerz {version} is out. Your system's updater installs it, with your other updates."
+  "update.by_package": "Streamerz {version} is out. Your system's updater installs it, with your other updates.",
+  "update.app_manager": "If Streamerz came from an app manager (Gear Lever, for one), update it there.",
+  "update.cut_short": "the download stopped early ({got} of {size} bytes). Try again later.",
+  "update.not_program": "the downloaded file isn't the Streamerz program (its checksum doesn't match)."
 }
