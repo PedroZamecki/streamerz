@@ -696,6 +696,7 @@ async fn publish_catalog(engine: Rc<Engine>) {
 }
 
 fn fire_disconnected(engine: &Rc<Engine>, info: &ObsConnInfo) {
+    crate::core::outputs::reset_connection(&info.id);
     let args = obs_args(info);
     engine.fire(T_OBS_DISCONNECTED, "ObsDisconnected", "OBS Studio", "obs", &args, |t| {
         field_matches(t, "connectionId", &info.id)
@@ -724,6 +725,7 @@ pub(crate) fn handle_obs_message(
         OP_EVENT => {
             let event_type = d.get("eventType").and_then(Value::as_str).unwrap_or("");
             let event_data = d.get("eventData").and_then(Value::as_object);
+            crate::core::outputs::observe(&info.id, event_type, &d["eventData"]);
 
             let mut args = obs_args(info);
             args.insert("eventType".into(), event_type.to_string().into());
@@ -896,7 +898,10 @@ pub(crate) fn handle_obs_message(
                         .and_then(Value::as_str)
                         .unwrap_or("OBS request returned error");
                     let what = d.get("requestType").and_then(Value::as_str).unwrap_or("request");
-                    crate::error(format!("OBS {what}: {comment}"));
+                    // An absent optional vendor is a capability result, returned to the caller.
+                    if what != "CallVendorRequest" || comment != "No vendor was found by that name." {
+                        crate::error(format!("OBS {what}: {comment}"));
+                    }
                     let _ = resp_tx.send(Err(comment.to_string()));
                 }
             }
