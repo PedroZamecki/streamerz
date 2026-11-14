@@ -163,6 +163,53 @@ fn run(command: &str, view: &Entity<Frontend>, window: &mut Window, cx: &mut App
                 .collect::<Vec<_>>()
                 .join("\n")
         }
+        "overflow" => json!(overflow(window)).to_string(),
         _ => "unknown frontend command".into(),
     }
+}
+
+/// What the frame cuts off sideways: buttons, boxes and fields that their clip (a dialog, a card, the
+/// window) only partly shows, such as a button pushed past a dialog's edge. Up and down is a scroll's
+/// business, so only left and right count. Each finding is a box in window pixels.
+fn overflow(window: &Window) -> Vec<serde_json::Value> {
+    let scale = window.scale_factor();
+    let width = f32::from(window.viewport_size().width) * scale;
+    let mut found = Vec::new();
+    for quad in window.painted_quads() {
+        let (bounds, mask) = (quad.bounds, quad.content_mask.bounds);
+        let (left, right) = (bounds.origin.x.0, bounds.origin.x.0 + bounds.size.width.0);
+        let (from, to) = (
+            mask.origin.x.0.max(0.),
+            (mask.origin.x.0 + mask.size.width.0).min(width),
+        );
+        // A quad that paints nothing hides nothing; a rounded corner is a quad seen through a slice of
+        // its own width, not a clip.
+        let widths = &quad.border_widths;
+        let bordered = !quad.border_color.is_transparent()
+            && [widths.top, widths.right, widths.bottom, widths.left]
+                .iter()
+                .any(|w| w.0 > 0.);
+        if (quad.background.is_transparent() && !bordered) || to - from < 16. * scale {
+            continue;
+        }
+        // A table's header runs under its scrollbar's gutter, from the table's own left edge.
+        if (left - from).abs() <= scale && right - to <= 14. * scale {
+            continue;
+        }
+        // Only what is partly shown: wholly hidden is a scrolled-away row or a closed drawer.
+        if right > from && left < to && (left < from - scale || right > to + scale) {
+            let seen = |f: &serde_json::Value| {
+                f["x"] == (left / scale).round() && f["y"] == (bounds.origin.y.0 / scale).round()
+            };
+            if found.iter().any(seen) {
+                continue;
+            }
+            found.push(json!({
+                "x": (left / scale).round(), "y": (bounds.origin.y.0 / scale).round(),
+                "w": (bounds.size.width.0 / scale).round(), "h": (bounds.size.height.0 / scale).round(),
+                "clip": [(from / scale).round(), (to / scale).round()],
+            }));
+        }
+    }
+    found
 }

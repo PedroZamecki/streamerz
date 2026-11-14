@@ -11,6 +11,10 @@ use crate::{
 };
 use serde_json::{json, Value};
 use std::rc::Rc;
+use std::sync::OnceLock;
+
+// The renderer loads its language at startup, while core labels can refresh immediately.
+static STARTUP_LOCALE: OnceLock<String> = OnceLock::new();
 
 pub const DOMAINS: &[&str] = &[
     "settings",
@@ -70,8 +74,12 @@ pub fn read(engine: &Rc<Engine>, domain: &str) -> Result<Value, String> {
         _ => return Err(format!("no sections page for {domain}")),
     };
     let config = engine.config();
-    Ok(json!({"domain": domain, "sections": sections,
-        "appearance": {"dark": crate::host::dark_of(&config), "animations": config.animations}}))
+    let mut model = json!({"domain": domain, "sections": sections,
+        "appearance": {"dark": crate::host::dark_of(&config), "animations": config.animations}});
+    if domain == "settings" {
+        model["searchHint"] = tr("settings.search").into();
+    }
+    Ok(model)
 }
 
 fn notifications(engine: &Rc<Engine>) -> Vec<Value> {
@@ -92,6 +100,7 @@ fn notifications(engine: &Rc<Engine>) -> Vec<Value> {
 
 fn settings(engine: &Rc<Engine>) -> Vec<Value> {
     let config = engine.config();
+    let startup_locale = STARTUP_LOCALE.get_or_init(|| config.locale.clone());
     let chosen = config
         .theme
         .unwrap_or(if config.dark { Theme::Dark } else { Theme::Light });
@@ -137,6 +146,24 @@ fn settings(engine: &Rc<Engine>) -> Vec<Value> {
     if config.memory_saver != crate::memory_saver() {
         memory["button"] = json!({"id": "restart", "label": tr("update.restart"), "icon": "rotate-cw", "tooltip": tr("settings.restart_required")});
     }
+    let mut language = choice(
+        languages
+            .iter()
+            .position(|language| language.0 == config.locale)
+            .map_or(0, |index| index + 1),
+        language_names,
+    );
+    if startup_locale != &config.locale {
+        language["button"] = json!({"id": "restart", "label": tr("update.restart"), "icon": "rotate-cw", "tooltip": tr("settings.restart_required")});
+    }
+    let updates = row(
+        "updates",
+        tr("settings.new_versions"),
+        &update_about,
+        json!({"type": "select", "value": UPDATES.iter().position(|mode| *mode == config.updates).unwrap_or(0),
+            "options": [tr("settings.updates.ask"), tr("settings.updates.background"), tr("settings.updates.ignore")],
+            "button": {"id": "check_now", "label": tr("settings.check_now"), "icon": "refresh-cw"}}),
+    );
     let mut about = row(
         "about",
         &trf("settings.about.version", &[("version", crate::brand::VERSION)]),
@@ -144,8 +171,8 @@ fn settings(engine: &Rc<Engine>) -> Vec<Value> {
         button("open_github", tr("btn.open_github"), "external-link"),
     );
     about["logo"] = true.into();
-    vec![
-        section(tr("settings.about"), "info", vec![about]),
+    let mut blocks = vec![
+        section(tr("settings.about"), "info", vec![about, updates]),
         section(
             tr("settings.appearance"),
             "sun",
@@ -171,13 +198,7 @@ fn settings(engine: &Rc<Engine>) -> Vec<Value> {
                     "language",
                     tr("settings.language"),
                     tr("settings.language.about"),
-                    choice(
-                        languages
-                            .iter()
-                            .position(|language| language.0 == config.locale)
-                            .map_or(0, |index| index + 1),
-                        language_names,
-                    ),
+                    language,
                 ),
                 row(
                     "animations",
@@ -203,26 +224,7 @@ fn settings(engine: &Rc<Engine>) -> Vec<Value> {
                 memory,
             )],
         ),
-        section(
-            tr("settings.chat"),
-            "message-square",
-            vec![row(
-                "chat_settings",
-                tr("settings.chat.moved"),
-                tr("settings.chat.moved.about"),
-                json!({"type": "buttons", "buttons": [{"id": "chat_settings", "label": tr("btn.chat_settings"), "icon": "sliders-horizontal", "dialog": "chat_options"}]}),
-            )],
-        ),
-        section(
-            tr("notifications.title"),
-            "bell",
-            vec![row(
-                "notifications",
-                tr("notifications.title"),
-                tr("notifications.about"),
-                json!({"type": "buttons", "buttons": [{"id": "notifications", "label": tr("notifications.manage"), "dialog": "notifications"}]}),
-            )],
-        ),
+        namespace_sections(notifications(engine), "notification").remove(0),
         section(
             tr("settings.startup"),
             "power",
@@ -276,18 +278,6 @@ fn settings(engine: &Rc<Engine>) -> Vec<Value> {
             ],
         ),
         section(
-            tr("settings.updates"),
-            "download",
-            vec![row(
-                "updates",
-                tr("settings.new_versions"),
-                &update_about,
-                json!({"type": "select", "value": UPDATES.iter().position(|mode| *mode == config.updates).unwrap_or(0),
-                    "options": [tr("settings.updates.ask"), tr("settings.updates.background"), tr("settings.updates.ignore")],
-                    "button": {"id": "check_now", "label": tr("settings.check_now"), "icon": "refresh-cw"}}),
-            )],
-        ),
-        section(
             tr("settings.log"),
             "scroll-text",
             vec![row(
@@ -320,7 +310,23 @@ fn settings(engine: &Rc<Engine>) -> Vec<Value> {
                 json!({"type": "text", "value": config.instance_name}),
             )],
         ),
-    ]
+    ];
+    // Reuse the full Chat options model instead of exposing a different subset in Settings.
+    let chat = namespace_sections(super::chat::options(engine), "chat");
+    blocks.splice(2..2, chat);
+    blocks
+}
+
+/// Reuse another settings domain inline, retaining stable keys within that domain.
+fn namespace_sections(mut sections: Vec<Value>, namespace: &str) -> Vec<Value> {
+    for section in &mut sections {
+        for row in section["rows"].as_array_mut().into_iter().flatten() {
+            if let Some(key) = row["key"].as_str() {
+                row["key"] = format!("{namespace}.{key}").into();
+            }
+        }
+    }
+    sections
 }
 
 fn spotify_on(config: &crate::Config) -> bool {
@@ -341,7 +347,7 @@ fn integrations(engine: &Rc<Engine>) -> Vec<Value> {
             status(
                 health,
                 text,
-                json!({"id": "configure", "label": tr("btn.configure"), "icon": "sliders-horizontal", "dialog": "spotify", "icon_only": true, "iconOnly": true}),
+                json!({"id": "configure", "label": tr("btn.configure"), "icon": "sliders-horizontal", "dialog": "spotify", "icon_only": on, "iconOnly": on, "keepLabel": !on}),
             ),
             json!({"about": tr("accounts.spotify.about")}),
         ],
@@ -417,7 +423,7 @@ fn donations(engine: &Rc<Engine>) -> Vec<Value> {
             ("down", tr("lists.donations.not_connected"))
         }
     };
-    let edit = |kind: &str, name: &str| json!({"id": "edit", "label": tr("btn.edit"), "icon": "pencil", "form": kind, "name": name, "icon_only": true, "iconOnly": true});
+    let edit = |kind: &str, name: &str, configured: bool| json!({"id": "edit", "label": tr(if configured { "btn.edit" } else { "btn.configure" }), "icon": if configured { "pencil" } else { "sliders-horizontal" }, "form": kind, "name": name, "icon_only": configured, "iconOnly": configured, "keepLabel": !configured});
     let (se_health, se_text) = token_status(&donations.streamelements_token, runtime.0);
     let (sl_health, sl_text) = token_status(&donations.streamlabs_token, runtime.1);
     let (drive_health, drive_text) = match (
@@ -442,19 +448,44 @@ fn donations(engine: &Rc<Engine>) -> Vec<Value> {
             "StreamElements",
             "streamelements",
             tr("lists.donations.streamelements_guide"),
-            status(se_health, se_text, edit("donations_streamelements", "StreamElements")),
+            status(
+                se_health,
+                se_text,
+                edit(
+                    "donations_streamelements",
+                    "StreamElements",
+                    !donations.streamelements_token.trim().is_empty(),
+                ),
+            ),
         ),
         block(
             "Streamlabs",
             "streamlabs",
             tr("lists.donations.streamlabs_guide"),
-            status(sl_health, sl_text, edit("donations_streamlabs", "Streamlabs")),
+            status(
+                sl_health,
+                sl_text,
+                edit(
+                    "donations_streamlabs",
+                    "Streamlabs",
+                    !donations.streamlabs_token.trim().is_empty(),
+                ),
+            ),
         ),
         block(
             "DonorDrive",
             "donordrive",
             tr("lists.donations.donordrive_guide"),
-            status(drive_health, &drive_text, edit("donations_donordrive", "DonorDrive")),
+            status(
+                drive_health,
+                &drive_text,
+                edit(
+                    "donations_donordrive",
+                    "DonorDrive",
+                    !donations.donordrive_instance.trim().is_empty()
+                        && !donations.donordrive_participant_id.trim().is_empty(),
+                ),
+            ),
         ),
     ]
 }
@@ -475,6 +506,14 @@ pub fn mcp_connection(config: &crate::Config, about: &str) -> Value {
 
 /// Change one setting by its row key. Choices arrive as their index.
 pub fn set(engine: &Rc<Engine>, domain: &str, key: &str, value: &Value) -> Result<Value, String> {
+    if domain == "settings" {
+        if let Some(key) = key.strip_prefix("notification.") {
+            return set(engine, "notifications", key, value);
+        }
+        if let Some(key) = key.strip_prefix("chat.") {
+            return super::chat::set_option(engine, key, value);
+        }
+    }
     let on = value.as_bool();
     let index = value.as_u64().map(|index| index as usize);
     let need_bool = || on.ok_or_else(|| format!("{key}: true or false"));
@@ -506,6 +545,7 @@ pub fn set(engine: &Rc<Engine>, domain: &str, key: &str, value: &Value) -> Resul
             crate::host::system_dark(crate::host::system_is_dark());
         }
         ("settings", "language") => {
+            STARTUP_LOCALE.get_or_init(|| engine.config().locale.clone());
             let index = index.ok_or("language: a choice")?;
             // The first is "automatic": no language saved, the system's followed.
             let code = if index == 0 {
@@ -734,6 +774,40 @@ mod tests {
             set(&engine, "mcp", "address", &json!("")).unwrap();
             assert_eq!(engine.config().websockets.address, "127.0.0.1");
             assert!(set(&engine, "mcp", "other", &json!("x")).is_err());
+        });
+    }
+
+    #[test]
+    fn inline_settings_reuse_chat_and_notification_keys_without_collisions() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            let model = read(&engine, "settings").unwrap();
+            let rows: Vec<_> = model["sections"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|section| section["rows"].as_array().unwrap())
+                .collect();
+            let keys: Vec<_> = rows.iter().filter_map(|row| row["key"].as_str()).collect();
+            let unique: std::collections::HashSet<_> = keys.iter().copied().collect();
+            assert_eq!(keys.len(), unique.len(), "inline domains must not share control state");
+            assert!(keys.contains(&"notification.updates"));
+            assert!(keys.contains(&"updates"));
+            assert!(keys.contains(&"chat.keep_history"));
+            assert!(!rows
+                .iter()
+                .any(|row| row["control"]["buttons"].as_array().is_some_and(|buttons| buttons
+                    .iter()
+                    .any(|button| button["dialog"] == "notifications" || button["dialog"] == "chat_options"))));
+            let update_policy = engine.config().updates;
+            set(&engine, "settings", "notification.updates", &json!(false)).unwrap();
+            assert!(!engine.config().notifications.updates);
+            assert!(engine.config().updates == update_policy);
+            set(&engine, "settings", "chat.keep_history", &json!(true)).unwrap();
+            assert!(engine.config().window.chat.save_history);
+            assert!(set(&engine, "settings", "chat.missing", &json!(true)).is_err());
+            assert!(set(&engine, "settings", "notification.missing", &json!(true)).is_err());
         });
     }
 

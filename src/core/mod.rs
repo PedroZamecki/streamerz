@@ -25,6 +25,7 @@ pub mod sections;
 pub mod settings;
 pub mod status;
 pub mod stream;
+pub mod timers;
 pub mod undo;
 pub mod view;
 

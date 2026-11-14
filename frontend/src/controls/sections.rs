@@ -24,10 +24,15 @@ pub struct Sections {
     route: String,
     selects: HashMap<String, Entity<SelectState<Vec<String>>>>,
     inputs: HashMap<String, Entity<InputState>>,
+    search: Option<Entity<InputState>>,
     form: Option<Entity<Form>>,
     dialog: Option<Entity<Sections>>,
     /// The channel finder, while it is open.
     finder: Option<Entity<super::find::Finder>>,
+    /// A button asked for a dialog: the next dialog view opens it (a refresh never does).
+    opening: bool,
+    /// That button's label: the dialog's title when its model has none (Chat settings once had none).
+    opening_title: String,
     error: String,
     /// A narrow window: Settings stacks a row's control under its text.
     compact: bool,
@@ -36,19 +41,33 @@ pub struct Sections {
 
 impl Sections {
     pub fn new(model: Value, route: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let search = model["searchHint"]
+            .as_str()
+            .map(|hint| cx.new(|cx| InputState::new(window, cx).placeholder(hint.to_owned())));
         let mut this = Self {
             domain: model["domain"].as_str().unwrap_or_default().to_owned(),
             model: Value::Null,
             route,
             selects: HashMap::new(),
             inputs: HashMap::new(),
+            search,
             form: None,
             dialog: None,
+            opening: false,
+            opening_title: String::new(),
             finder: None,
             error: String::new(),
             compact: false,
             subscriptions: Vec::new(),
         };
+        if let Some(search) = this.search.clone() {
+            this.subscriptions
+                .push(cx.subscribe(&search, |_, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        cx.notify();
+                    }
+                }));
+        }
         this.update_model(model, window, cx);
         this
     }
@@ -117,6 +136,9 @@ impl Sections {
         }
         self.model = model;
         // An open dialog follows the core too (a login finishing, an extension connecting).
+        if !window.has_active_dialog(cx) {
+            self.dialog = None;
+        }
         if let Some(dialog) = &self.dialog {
             let domain = dialog.read(cx).domain.clone();
             send(
@@ -136,6 +158,8 @@ impl Sections {
         if let Some(page) = button["go"].as_str() {
             cx.emit(Navigate(page.to_owned()));
         } else if let Some(domain) = button["dialog"].as_str() {
+            self.opening = true;
+            self.opening_title = button["label"].as_str().unwrap_or_default().to_owned();
             send(
                 json!({"request": "StreamerzCoreView", "domain": domain, "id": format!("{}:dialog-view", self.route)}),
             );
@@ -188,12 +212,22 @@ impl Sections {
         match operation {
             "dialog-view" => {
                 if let Some(dialog) = &self.dialog {
-                    if dialog.read(cx).domain == value["domain"].as_str().unwrap_or_default() {
-                        dialog.update(cx, |dialog, cx| dialog.update_model(value, window, cx));
+                    if window.has_active_dialog(cx) {
+                        if dialog.read(cx).domain == value["domain"].as_str().unwrap_or_default() {
+                            dialog.update(cx, |dialog, cx| dialog.update_model(value, window, cx));
+                        }
                         return false;
                     }
                 }
-                let title = value["sections"][0]["title"].as_str().unwrap_or_default().to_owned();
+                // A refresh that arrives after the dialog closed opens nothing; only a press does.
+                self.dialog = None;
+                if !std::mem::take(&mut self.opening) {
+                    return false;
+                }
+                let title = value["sections"][0]["title"]
+                    .as_str()
+                    .filter(|title| !title.is_empty())
+                    .map_or_else(|| std::mem::take(&mut self.opening_title), str::to_owned);
                 let nested = cx.new(|cx| Sections::new(value, format!("{}:dialog", self.route), window, cx));
                 self.dialog = Some(nested.clone());
                 let owner = cx.entity().downgrade();
@@ -213,16 +247,25 @@ impl Sections {
             "form" => {
                 let title = value["title"].as_str().unwrap_or_default().to_owned();
                 let form = cx.new(|cx| Form::new(value, format!("{}:save", self.route), window, cx));
-                self.subscriptions
-                    .push(cx.subscribe(&form, |sections, _, _: &super::form::Cancelled, cx| {
-                        sections.form = None;
-                        cx.notify();
-                    }));
                 self.form = Some(form.clone());
+                let owner = cx.entity().downgrade();
                 window.open_dialog(cx, move |dialog, _, cx| {
                     crate::controls::dialog::shell(dialog, title.clone(), 560., cx)
                         .child(crate::controls::dialog::body(form.clone()))
                         .footer(form.read(cx).buttons_view())
+                        .on_cancel({
+                            let (form, owner) = (form.clone(), owner.clone());
+                            move |_, _, cx| {
+                                if form.read(cx).pending {
+                                    return false;
+                                }
+                                let _ = owner.update(cx, |sections, cx| {
+                                    sections.form = None;
+                                    cx.notify();
+                                });
+                                true
+                            }
+                        })
                 });
                 false
             }
@@ -283,7 +326,15 @@ impl Sections {
         // A narrow window folds the long buttons of an account's lines to their icon.
         let fold = !roomy && self.compact;
         let buttons = |list: &[Value], cx: &mut Context<Self>| {
-            let mut line = div().flex().gap_2().flex_shrink_0().when(compact, |line| line.w_full());
+            // Never wider than its place: buttons that don't fit on one line go on the next, at the right.
+            let mut line = div()
+                .flex()
+                .flex_wrap()
+                .justify_end()
+                .gap_2()
+                .flex_shrink_0()
+                .max_w_full()
+                .when(compact, |line| line.w_full());
             for (index, button) in list.iter().enumerate() {
                 let spec = button.clone();
                 let label = button["label"].as_str().unwrap_or_default().to_owned();
@@ -291,7 +342,7 @@ impl Sections {
                     .as_str()
                     .is_some_and(|id| id.ends_with("login") || id.ends_with("logout"));
                 // A gear and the like are always just their icon (the label is its tooltip).
-                let icon_only = (fold && !login && spec["icon"].is_string())
+                let icon_only = (fold && !login && spec["icon"].is_string() && spec["keepLabel"] != true)
                     || spec["icon_only"] == true
                     || spec["iconOnly"] == true;
                 let mut widget = Button::new((
@@ -309,8 +360,9 @@ impl Sections {
                     90.
                 }))
                 .when(icon_only, |button| button.w(px(36.)))
+                // A column of equal buttons, each as wide as its label needs past that.
                 .when(roomy && !compact, |button| {
-                    button.w(px(if list.len() == 1 { 150. } else { 114. }))
+                    button.min_w(px(if list.len() == 1 { 150. } else { 114. }))
                 })
                 .when(compact, |button| button.flex_1())
                 .child(super::body::button_body(
@@ -340,10 +392,9 @@ impl Sections {
                     .gap_2()
                     .flex_shrink_0()
                     .when(roomy, |line| line.px(px(4.)))
-                    .when(
-                        roomy && (control["button"].is_object() || key == "memory_saver"),
-                        |line| line.w(px(180.)).justify_start(),
-                    );
+                    .when(roomy && control["button"].is_object(), |line| {
+                        line.w(px(180.)).justify_start()
+                    });
                 line = line.child(
                     Switch::new(SharedString::from(format!("switch-{key}")))
                         .accessibility_label(row["label"].as_str().unwrap_or_default().to_owned())
@@ -359,7 +410,7 @@ impl Sections {
                 line.into_any_element()
             }
             Some("select") => {
-                let mut line = div().flex().items_center().gap_2().flex_shrink_0();
+                let mut line = div().flex().flex_wrap().items_center().gap_2().min_w_0().max_w_full();
                 if let Some(select) = self.selects.get(key) {
                     line = line.child(
                         div()
@@ -469,12 +520,12 @@ impl Sections {
             .gap_2()
             .h(px(24.))
             .when_some(section["brand"].as_str(), |header, brand| {
-                header.child(
-                    img(format!("brands/{brand}.svg"))
-                        .id(SharedString::from(format!("card-brand-{index}")))
-                        .size(px(20.))
-                        .flex_shrink_0(),
-                )
+                header.child(super::body::brand_logo(
+                    SharedString::from(format!("card-brand-{index}")),
+                    brand,
+                    px(20.),
+                    cx,
+                ))
             })
             .child(
                 div()
@@ -628,7 +679,38 @@ impl Render for Sections {
         if !self.error.is_empty() {
             page = page.child(super::notice::error(&self.error, cx));
         }
-        let sections = self.model["sections"].as_array().cloned().unwrap_or_default();
+        let mut sections = self.model["sections"].as_array().cloned().unwrap_or_default();
+        if let Some(search) = &self.search {
+            page = page.child(
+                Input::new(search)
+                    .small()
+                    .prefix(Icon::empty().path("icons/search.svg").small())
+                    .aria_label(self.model["searchHint"].as_str().unwrap_or_default().to_owned()),
+            );
+            let query = search.read(cx).value().trim().to_lowercase();
+            if !query.is_empty() {
+                for section in &mut sections {
+                    let title_matches = section["title"]
+                        .as_str()
+                        .is_some_and(|title| title.to_lowercase().contains(&query));
+                    if !title_matches {
+                        if let Some(rows) = section["rows"].as_array_mut() {
+                            rows.retain(|row| {
+                                ["label", "about", "tip"].iter().any(|key| {
+                                    row[key]
+                                        .as_str()
+                                        .is_some_and(|text| text.to_lowercase().contains(&query))
+                                })
+                            });
+                        }
+                    }
+                }
+                sections.retain(|section| section["rows"].as_array().is_some_and(|rows| !rows.is_empty()));
+                if sections.is_empty() {
+                    page = page.child(super::notice::info(crate::i18n::tr("lists.no_matches"), cx));
+                }
+            }
+        }
         // Cards sit side by side, two to a row when there is room.
         let width = f32::from(window.viewport_size().width);
         let columns = if width >= 1000. { 2 } else { 1 };
@@ -1038,7 +1120,7 @@ impl Render for Sections {
                                 about.min_h(px(36.)).flex().flex_col().justify_center()
                             })
                             .when(about_only && !roomy && section_index > 0 && !after_cards, |about| {
-                                about.mt(px(4.)).min_h(px(141.)).line_height(px(17.))
+                                about.mt(px(4.)).line_height(px(17.))
                             })
                             // Under cards: a quiet note, close to them.
                             .when(about_only && after_cards, |about| about.mt(px(6.)).line_height(px(17.)))
@@ -1056,10 +1138,7 @@ impl Render for Sections {
                     .min_h(px(26.))
                     .w_full();
                 // Narrow: a select or buttons go under the text, a switch stays beside it.
-                let stacked = roomy
-                    && self.compact
-                    && row["control"].is_object()
-                    && (row["control"]["type"] != "switch" || key == "memory_saver");
+                let stacked = roomy && self.compact && row["control"].is_object() && row["control"]["type"] != "switch";
                 if stacked {
                     line = line.flex_col().items_stretch().gap(px(0.)).pb(px(14.));
                 }
@@ -1074,13 +1153,34 @@ impl Render for Sections {
                         .min_h(px(64.))
                         .child(img("brands/streamerz.svg").id("app-logo").size(px(56.)).flex_shrink_0());
                 } else if let Some(brand) = row["brand"].as_str().filter(|b| !b.is_empty()) {
-                    line = line.child(img(format!("brands/{brand}.svg")).size(px(28.)).flex_shrink_0());
+                    line = line.child(super::body::brand_logo(
+                        SharedString::from(format!("logo-{key}")),
+                        brand,
+                        px(28.),
+                        cx,
+                    ));
                 } else if let Some(icon) = row["icon"].as_str().filter(|i| !i.is_empty()) {
-                    line = line.child(img(format!("brands/{icon}.svg")).size(px(28.)).flex_shrink_0());
+                    line = line.child(super::body::brand_logo(
+                        SharedString::from(format!("logo-{key}")),
+                        icon,
+                        px(28.),
+                        cx,
+                    ));
+                }
+                // Text keeps a readable width beside its buttons: when both don't fit, the buttons go under
+                // it, at the right, instead of squeezing it to a word per line.
+                let beside = row["control"].is_object() && !channel;
+                let has_text = row["label"].as_str().is_some_and(|label| !label.is_empty())
+                    || !about.is_empty()
+                    || row["value"].is_string()
+                    || row["status"].is_object();
+                if beside && has_text && !roomy {
+                    line = line.flex_wrap();
+                    text = text.min_w(px(200.));
                 }
                 line = line.child(text);
-                if row["control"].is_object() && !channel {
-                    line = line.child(self.control(row, &key, cx));
+                if beside {
+                    line = line.child(div().ml_auto().max_w_full().child(self.control(row, &key, cx)));
                 }
                 block = block.child(line);
             }

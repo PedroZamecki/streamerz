@@ -34,6 +34,8 @@ pub enum Event {
     Theme,
     Input,
     Toggle,
+    /// Show the window if it's hidden (another copy was started).
+    Show,
     Restart,
     Quit,
 }
@@ -126,6 +128,10 @@ pub fn quit() {
 pub fn toggle() {
     emit(Event::Toggle);
 }
+/// Shows the window, leaving it as it is when it's up already.
+pub fn show() {
+    emit(Event::Show);
+}
 pub fn restart() {
     emit(Event::Restart);
 }
@@ -155,6 +161,8 @@ pub enum Message {
     Toggle,
     /// No tray icon (e.g. no StatusNotifier host on Linux): keep the window up, closing it quits.
     NoTray,
+    /// Show the window, in front (another copy was started).
+    Show,
     /// New log lines (sent only while the window is up).
     Log,
     /// A Get Input sub-action wants an answer (see `input`).

@@ -91,8 +91,18 @@ from `controls/dialog.rs`:
   right, the main action last; one that stands apart (Edit JSON) sits at the left. A dialog that only shows
   something gets a Close button there (`dialog::close_footer`). Buttons never go in the body.
 
+Every Cancel or Close button closes through `dialog::dismiss`, as the X and Escape do: the dialog's
+`on_cancel` runs, so the page that opened it knows it closed and can open it again. Never call
+`window.close_dialog` from a Cancel or Close button.
+
 A form or a prompt hands its buttons to the footer (`Form::buttons_view`, `Prompt::buttons_view`). The user
 card is the one dialog with a header of its own: its banner (picture, name, account age, open and close).
+
+Forms focus their primary text field, or their first empty visible text field. Commands and Reply lead
+command creation. Related advanced fields use shared collapsible sections; nondefault permissions and
+matching start expanded. Collapsing a section never discards its values. New timers and templates offer
+Save draft and Create and enable explicitly, using core-provided validated field changes. Edit JSON
+remains one button away and saves its explicit values. Long translated footer groups wrap together.
 
 Motion: dialogs, menus and popovers move as the toolkit's components do (short, eased out, events still
 handled), and nothing moves when Animations is off in Settings or with the memory saver (the window asks
@@ -144,6 +154,20 @@ Every actionable list or tree must offer the same actions in its right-click men
 build it from the same action list as their buttons. The Menu key and Shift+F10 open the same menu from the
 keyboard. Lists and trees show their selection the same way: a soft zinc fill, ringed while the list has
 keyboard focus. Unavailable items use the theme's muted colour (`theme::quiet`), never a hard-coded grey.
+
+A truly empty list or tree shows its explanation beside enabled creation actions, without table headers,
+an empty frame or disabled selection buttons. A filtered-empty list retains its structure and Clear
+search route. Actions hides the inactive editor until an action is selected. New, Templates and Import
+remain visible in the empty state. Common operations retain words by wrapping before folding to icons.
+
+Responsive columns may declare a priority (zero always stays visible). Secondary values that would be
+unreadable move into persistent selected-row details, accessible from the keyboard as well as the mouse.
+Compute layout on model or width changes. A Show selector uses the shared segmented tabs; long translated
+groups wrap as units. Settings inlines the same Chat and notification controls used by their other entry
+points, with related version and update controls together. Save is a compact manual retry while changes
+save automatically; failures retain a visible error and retry path.
+Settings search matches labels and explanations, including the formerly nested Chat and notification
+controls. Filtering never changes their values.
 Keep action names and icons consistent between the buttons and menu.
 
 Show a switched off item (a trigger or sub-action) with dimmed text and the Lucide `power-off` icon, never
@@ -268,7 +292,11 @@ connection states when they apply; an error should say what happened and, when p
 Keep disabled integrations inactive, as required by the project rules.
 
 Keep filter fields and toolbar actions inside narrow pages. Let search take the remaining width;
-stack navigation and actions when one row cannot fit. A chat with no configured channel offers
+stack navigation and actions when one row cannot fit. Nothing is ever cut off, in any language: a row of
+buttons wraps to a second line instead of running past its dialog or card, a row's buttons go under its
+text before squeezing the text, and a button with words is as wide as its label needs (`min_w`, never a
+fixed `w`; only icon buttons are fixed). A label that can't grow truncates with an ellipsis and has a
+tooltip. A chat with no configured channel offers
 Accounts in its empty state. When chat history is off, disable sending controls with an explanation.
 The Polls page shows what runs (a poll, a prediction) with what can be done to it, and a status line
 saying which accounts are ready; New poll and New prediction open their forms in dialogs. It keeps
@@ -303,11 +331,21 @@ each is ticked off as it happens. Never change another program's files or settin
 When an integration uses a browser extension as its account, show one Browser account row with the
 shared Health state and Set up action. Do not also show independent account or bot logins. Distinguish
 extension unavailable, page loading, login required and account ready. Disable sending while the account
-is unavailable. Setup lists the Chromium browsers found (and whether the extension is in them), and Set up on one writes
-the extension, copies its folder and opens a setup tab in that browser's existing window (closing itself
-once connected); the steps then tick themselves off, and Log in opens once the extension connects. It
+is unavailable. Setup lists the Chromium and Firefox browsers found (and whether the extension is in them). Set up on a
+Chromium one writes the extension, copies its folder and opens a setup tab in that browser's existing window
+(closing itself once connected); on a Firefox one it downloads the signed add-on of the pinned version and
+opens it beside the setup tab, so Firefox asks to add it. An extension refused for its version says which
+side to update; the steps then tick themselves off, and Log in opens once the extension connects. It
 offers Log in for the one explicit sign-in window; ordinary requests must not open helper tabs or windows.
 A channel picker shows search failures plainly and still accepts a pasted handle or link.
+
+Installation evidence and connection state are separate. List detected copies with their version,
+profile, enabled/disabled state and whether a local copy uses another folder. Unreadable metadata means
+verification is unavailable, not that the extension is absent. Distinguish an authenticated socket,
+TikTok account loading, login needed, pairing refusal and protocol incompatibility. Show the running
+extension's actual version independently of the bundled version. Explicit re-pairing overrides defaults
+from an unpacked copy. Browser-scoped setup actions may sit beside the browser they affect; dialog-wide
+Cancel, Close and commit actions stay in the footer. No setup or diagnostic read changes browser profiles.
 
 ## Check before finishing
 
@@ -319,6 +357,8 @@ A channel picker shows search failures plainly and still accepts a pasted handle
 - Run input-driven checks serially on the shared hidden display so one test cannot send input to
   another instance. `DISPLAY=:99 python3 -P dev/ui-shot.py PAGE...` captures pages and
   `DISPLAY=:99 python3 -P dev/ui-smoke.py` visits every page with isolated settings; its disconnected memory
-  sample is separate from the live integration budget.
+  sample is separate from the live integration budget. The smoke fails when anything on a page or in the
+  TikTok setup dialog is cut off sideways (the dev `overflow` command: a painted button, field or box only
+  partly inside its clip); run it in Portuguese too (`--locale pt_BR`), whose words are the longest.
 - Exercise the main task, cancellation and validation by hand. Add a regression test for each bug fixed,
   or a smoke step when a unit test is not suitable. Run `dev/ui-smoke.py` before closing the version.

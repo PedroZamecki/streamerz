@@ -1952,7 +1952,7 @@ impl Engine {
                             return Flow::Continue;
                         }
                     };
-                    let units = self.expand(ctx, s(o, "units")).parse::<f64>().unwrap_or(-1.0);
+                    let units = crate::fmt::parse_number(&self.expand(ctx, s(o, "units"))).unwrap_or(-1.0);
                     let per_unit = ms("perUnitMs");
                     if !reset && (!units.is_finite() || units < 0.0) {
                         crate::warn("Countdown: invalid amount".to_string());

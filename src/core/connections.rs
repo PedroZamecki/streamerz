@@ -29,6 +29,12 @@ pub fn apply(engine: &Rc<Engine>, kind: &str, id: &str, action: &str) -> Result<
     if empty || action == "refresh" {
         return Ok(json!({"accepted": true}));
     }
+    if action == "disconnect" && !id.is_empty() {
+        super::status::clear_failure(&format!(
+            "{}:{id}",
+            if kind == "obs_connection" { "obs" } else { "slobs" }
+        ));
+    }
     let one = (!id.is_empty()).then_some(id);
     match (kind, action) {
         ("obs_connection", "connect") => engine.obs_start().connect(one),
@@ -70,6 +76,10 @@ pub(super) fn table(engine: &Rc<Engine>, kind: &str) -> Result<Value, String> {
     let items = entities::items(&config, kind).ok_or("unknown connection kind")?;
     let rows = items.iter().map(|item| {
         let connected = if obs { engine.obs_connected(Some(text(item, "id"))) } else { engine.slobs_up(text(item, "id")) };
+        let failure = if !connected {
+            super::status::failure(&format!("{}:{}", if obs { "obs" } else { "slobs" }, text(item, "id")))
+        } else { None };
+        let state = failure.as_ref().and_then(|f| f["text"].as_str()).unwrap_or_else(|| tr(if connected { "lists.live.connected" } else { "lists.live.disconnected" }));
         let address = format!("{}:{}", text(item, "host"), item.get("port").and_then(Value::as_u64).unwrap_or(if obs { 4455 } else { 59650 }));
         let auto_connect = flag(item, "autoConnect");
         let reconnect = obs && flag(item, "reconnect");
@@ -77,7 +87,7 @@ pub(super) fn table(engine: &Rc<Engine>, kind: &str) -> Result<Value, String> {
         let secret = !text(item, if obs { "password" } else { "token" }).is_empty();
         let is_default = !obs && flag(item, "default");
         let brand = if obs { "obsstudio" } else { "streamlabs" };
-        let mut cells = vec![json!(auto_connect), json!({"text": text(item, "name"), "showTitle": true, "brand": brand}), json!({"health": if connected { "up" } else { "off" }, "text": tr(if connected { "lists.live.connected" } else { "lists.live.disconnected" })}), json!(address)];
+        let mut cells = vec![json!(auto_connect), json!({"text": text(item, "name"), "showTitle": true, "brand": brand}), json!({"health": if connected { "up" } else if failure.is_some() { "attention" } else { "off" }, "text": state}), json!(address)];
         if obs { cells.push(if reconnect { note("refresh-cw", trf("lists.retry_every", &[("seconds", &retry_interval.to_string())])) } else { note("circle-off", tr("lists.no_retry")) }); }
         cells.push(note(if secret { "lock" } else { "lock-open" }, tr(if secret { "lists.secret_set" } else { "lists.secret_none" })));
         if !obs { cells.push(json!(if is_default { tr("lists.default_badge") } else { "" })); }
@@ -86,6 +96,9 @@ pub(super) fn table(engine: &Rc<Engine>, kind: &str) -> Result<Value, String> {
             "name": text(item, "name"),
             "brand": brand,
             "connected": connected,
+            "failure": failure,
+            "detail": state,
+            "detailOk": connected,
             "autoConnect": auto_connect,
             "address": address,
             "reconnect": reconnect,

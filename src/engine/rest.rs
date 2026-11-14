@@ -4020,7 +4020,7 @@ impl Engine {
                                 // "#AARRGGBB" from the color picker: Kick takes #RRGGBB.
                                 let h = self.expand(ctx, s(o, "backgroundColor"));
                                 let h = h.trim_start_matches('#');
-                                format!("#{}", &h[h.len().saturating_sub(6)..])
+                                kick_background_color(h)
                             };
                             json!({"background_color": c})
                         }
@@ -4607,10 +4607,21 @@ fn split_args(s: &str) -> Vec<String> {
     out
 }
 
+fn kick_background_color(h: &str) -> String {
+    let start = h.char_indices().rev().nth(5).map_or(0, |(i, _)| i);
+    format!("#{}", &h[start..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::tests::{action, engine, log, run};
     use super::*;
+
+    #[test]
+    fn kick_color_handles_unicode() {
+        assert_eq!(super::kick_background_color("é12345"), "#é12345");
+        assert_eq!(super::kick_background_color("FFAABBCC"), "#AABBCC");
+    }
 
     #[test]
     fn redemption_status_reads_the_forms_choice() {
@@ -4966,9 +4977,21 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(200)).await;
             let out = e.dev_take().unwrap();
             let said = |p: &str, t: &str| out.iter().any(|o| o["platform"] == p && o["text"] == t);
-            assert!(said("twitch", "Thanks for the follow, ana! 💜"), "{out:?}");
+            assert!(
+                said(
+                    "twitch",
+                    &crate::i18n::tr("automation.recipe_follow_message").replace("%user%", "ana")
+                ),
+                "{out:?}"
+            );
             assert!(!out.iter().any(|o| o["platform"] == "tiktok"), "{out:?}");
-            assert!(said("kick", "cy is now lurking. Enjoy the stream! 👀"), "{out:?}");
+            assert!(
+                said(
+                    "kick",
+                    &crate::i18n::tr("automation.recipe_lurk_message").replace("%user%", "cy")
+                ),
+                "{out:?}"
+            );
         });
     }
 

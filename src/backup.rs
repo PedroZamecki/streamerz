@@ -232,15 +232,26 @@ pub fn on_start() {
     let marker = root().join("last-version");
     let last = std::fs::read_to_string(&marker).unwrap_or_default();
     let now = crate::brand::VERSION;
-    if !due(last.trim(), now, crate::config_path().is_file()) {
+    if now == "dev" {
         return;
     }
-    match make(Kind::Update, last.trim(), now) {
-        Ok(b) => crate::say(format!("Backed up the settings before {now} ({})", b.name())),
-        Err(e) => crate::error(format!("Backup before {now}: {e}")),
+    if due(last.trim(), now, crate::config_path().is_file()) {
+        match make(Kind::Update, last.trim(), now) {
+            Ok(b) => crate::say(format!("Backed up the settings before {now} ({})", b.name())),
+            Err(e) => {
+                crate::error(format!("Backup before {now}: {e}"));
+                return;
+            }
+        }
     }
-    let _ = std::fs::create_dir_all(root());
-    let _ = std::fs::write(marker, now);
+    let _ = record_version(&marker, now);
+}
+
+fn record_version(marker: &Path, now: &str) -> std::io::Result<()> {
+    if let Some(parent) = marker.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(marker, now)
 }
 
 /// A version's first start makes a backup, when there are settings to keep and it's a release.
@@ -266,6 +277,18 @@ mod tests {
         assert!(!due("1.1.0", "1.1.0", true));
         assert!(!due("1.0.0", "dev", true));
         assert!(!due("", "1.1.0", false));
+    }
+
+    #[test]
+    fn fresh_install_records_its_version_before_settings_exist() {
+        let dir = scratch("first-version");
+        let marker = dir.join("backups/last-version");
+        assert!(!due("", "1.7.0", false));
+        record_version(&marker, "1.7.0").unwrap();
+        let last = std::fs::read_to_string(&marker).unwrap();
+        assert!(due(&last, "1.8.0", true));
+        assert_eq!(last, "1.7.0");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

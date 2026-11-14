@@ -69,15 +69,31 @@ pub fn matches(c: &Obj, text: &str) -> Option<(String, String, Obj)> {
     for alias in aliases(c) {
         let a = fold(alias);
         let hit = match n(c, "location") as i64 {
-            // Start: the alias, then a space or the end. ponytail: lowercase keeps byte offsets for
-            // the text that matters here (ASCII aliases); exotic case-folding may shift rawInput.
+            // Start: the alias, then a space or the end.
             0 => t.starts_with(&a) && t[a.len()..].chars().next().is_none_or(char::is_whitespace),
             1 => t == a,
             _ => t.contains(&a),
         };
         if hit {
             let raw = match n(c, "location") as i64 {
-                0 => text.get(alias.len()..).unwrap_or("").trim().to_string(),
+                0 => {
+                    let mut folded_len = 0;
+                    let end = text
+                        .char_indices()
+                        .find_map(|(i, ch)| {
+                            if folded_len == a.len() {
+                                return Some(i);
+                            }
+                            folded_len += if cs {
+                                ch.len_utf8()
+                            } else {
+                                ch.to_lowercase().map(char::len_utf8).sum()
+                            };
+                            None
+                        })
+                        .unwrap_or(text.len());
+                    text[end..].trim().to_string()
+                }
                 1 => String::new(),
                 _ => text.to_string(),
             };
@@ -165,6 +181,12 @@ mod tests {
 
     fn cmd(v: Value) -> Obj {
         v.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn unicode_case_matching_keeps_raw_input() {
+        let command = cmd(json!({"command": "!İ"}));
+        assert_eq!(matches(&command, "!i\u{307} hello").unwrap().1, "hello");
     }
 
     #[test]

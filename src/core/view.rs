@@ -227,13 +227,17 @@ fn table(engine: &Rc<Engine>, kind: &str) -> Result<Value, String> {
                 column("repeat", "lists.timers.repeat", 120),
                 column("lines", "lists.timers.lines", 120),
                 column("counter", "lists.timers.runs", 100),
+                column("actions", "automation.timer_actions", 220),
             ];
             let rows = config.timers.iter().map(|item| {
                 let random = flag(item, "randomInterval");
                 let interval = signed(item, "interval").to_string();
                 let every = if random { trf("lists.timers.every_random", &[("min", &interval), ("max", &signed(item, "upperInterval").to_string())]) } else { trf("lists.timers.every", &[("seconds", &interval)]) };
                 let lines = signed(item, "lines");
-                json!({"id": text(item, "id"), "name": text(item, "name"), "enabled": flag(item, "enabled"), "cells": [flag(item, "enabled"), text(item, "name"), note(if random { "shuffle" } else { "timer" }, every), note(if flag(item, "repeat") { "repeat" } else { "play" }, tr(if flag(item, "repeat") { "lists.timers.repeats" } else { "lists.timers.once" })), note("message-square", if lines > 0 { trf("lists.timers.lines_count", &[("count", &lines.to_string())]) } else { String::new() }), note("hash", trf("lists.timers.ran_count", &[("count", &signed(item, "counter").to_string())]))]})
+                let linked = crate::core::timers::linked(&config, text(item, "id"));
+                let actions = config.actions.actions.iter().filter(|a| linked.contains(&a.id))
+                    .map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ");
+                json!({"id": text(item, "id"), "name": text(item, "name"), "enabled": flag(item, "enabled"), "cells": [flag(item, "enabled"), text(item, "name"), note(if random { "shuffle" } else { "timer" }, every), note(if flag(item, "repeat") { "repeat" } else { "play" }, tr(if flag(item, "repeat") { "lists.timers.repeats" } else { "lists.timers.once" })), note("message-square", if lines > 0 { trf("lists.timers.lines_count", &[("count", &lines.to_string())]) } else { String::new() }), note("hash", trf("lists.timers.ran_count", &[("count", &signed(item, "counter").to_string())])), actions]})
             }).collect::<Vec<_>>();
             ("lists.timers.empty", "lists.timers.what", "", columns, rows)
         }

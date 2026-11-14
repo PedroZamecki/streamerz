@@ -197,18 +197,99 @@ pub struct Rows {
     /// The width the table has to draw in (0 until it is known): columns shrink to fit it and the
     /// last one takes what is left, so a narrow window needs no horizontal scrolling.
     pub fit: f32,
+    visible: Vec<usize>,
+    fitted: Vec<f32>,
 }
 impl Rows {
-    /// The model's column widths fitted to `fit`.
-    pub fn widths(&self) -> Vec<f32> {
-        let mut widths: Vec<f32> = self.model["columns"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|column| column["width"].as_f64().unwrap_or(160.) as f32)
-            .collect();
-        fit_widths(&mut widths, self.fit);
-        widths
+    pub fn new(model: Value, action: Handler, sort: Sorter) -> Self {
+        let mut rows = Self {
+            model,
+            action,
+            sort,
+            fit: 0.,
+            visible: Vec::new(),
+            fitted: Vec::new(),
+        };
+        rows.layout();
+        rows
+    }
+
+    /// Recompute only when the model or measured width changes, never per visible cell.
+    pub fn layout(&mut self) {
+        let columns = self.model["columns"].as_array().map_or(&[][..], Vec::as_slice);
+        let rows = self.model["rows"].as_array().map_or(&[][..], Vec::as_slice);
+        let mut widths = Vec::with_capacity(columns.len());
+        let mut mins = Vec::with_capacity(columns.len());
+        let mut priorities = Vec::with_capacity(columns.len());
+        for (index, column) in columns.iter().enumerate() {
+            let sample = rows.iter().take(64).map(|row| &row["cells"][index]);
+            let mut longest = 0;
+            let mut logos = 0;
+            let mut is_switch = false;
+            for value in sample {
+                is_switch |= value.is_boolean();
+                logos = logos.max(value["platforms"].as_array().map_or(0, Vec::len));
+                longest = longest.max(
+                    value
+                        .as_str()
+                        .or_else(|| value["text"].as_str())
+                        .map_or(0, |s| s.chars().count()),
+                );
+            }
+            let key = column["key"].as_str().unwrap_or_default();
+            let essential = is_switch || matches!(key, "name" | "command" | "action" | "what");
+            let priority = column["priority"]
+                .as_u64()
+                .unwrap_or(if essential { 0 } else { 1 + index as u64 });
+            let min = if is_switch {
+                48.
+            } else if logos > 0 {
+                logos as f32 * 22. + 11.
+            } else if longest == 0 {
+                48.
+            } else {
+                (24. + longest as f32 * 6.).clamp(64., if essential { 120. } else { 96. })
+            };
+            let preferred = column["width"].as_f64().unwrap_or(160.) as f32;
+            widths.push(if is_switch || logos > 0 {
+                min
+            } else {
+                preferred.min((24. + longest as f32 * 7.).max(min))
+            });
+            mins.push(min);
+            priorities.push(priority);
+        }
+        self.visible = visible_columns(&mins, &priorities, self.fit);
+        self.fitted = self.visible.iter().map(|&index| widths[index]).collect();
+        let visible_mins: Vec<_> = self.visible.iter().map(|&index| mins[index]).collect();
+        // A descriptive column receives spare room, rather than an empty trailing state column.
+        let total: f32 = self.fitted.iter().sum();
+        if total < self.fit {
+            let flexible = self
+                .visible
+                .iter()
+                .position(|&index| {
+                    matches!(
+                        columns[index]["key"].as_str(),
+                        Some("description" | "what" | "command" | "text" | "message")
+                    )
+                })
+                .or_else(|| self.visible.iter().position(|&index| columns[index]["key"] == "name"))
+                .unwrap_or_else(|| self.fitted.len().saturating_sub(1));
+            if let Some(width) = self.fitted.get_mut(flexible) {
+                *width += self.fit - total;
+            }
+        } else {
+            fit_widths_above(&mut self.fitted, &visible_mins, self.fit);
+        }
+    }
+
+    pub fn hidden_columns(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.model["columns"].as_array().map_or(0, Vec::len)).filter(|index| !self.visible.contains(index))
+    }
+
+    fn source_column(&self, index: usize) -> usize {
+        self.visible.get(index).copied().unwrap_or(index)
     }
     pub fn id(&self, row: usize) -> Option<&str> {
         self.model["rows"][row]["id"].as_str()
@@ -216,16 +297,16 @@ impl Rows {
 }
 impl TableDelegate for Rows {
     fn columns_count(&self, _: &App) -> usize {
-        self.model["columns"].as_array().map_or(0, Vec::len)
+        self.visible.len()
     }
     fn rows_count(&self, _: &App) -> usize {
         self.model["rows"].as_array().map_or(0, Vec::len)
     }
     fn column(&self, index: usize, _: &App) -> Column {
-        let column = &self.model["columns"][index];
+        let column = &self.model["columns"][self.source_column(index)];
         let key = column["key"].as_str().unwrap_or_default();
         let mut built = Column::new(key.to_owned(), column["label"].as_str().unwrap_or_default().to_owned())
-            .width(px(self.widths().get(index).copied().unwrap_or(160.)))
+            .width(px(self.fitted.get(index).copied().unwrap_or(160.)))
             .resizable(false)
             .paddings(Edges {
                 top: px(0.),
@@ -256,7 +337,7 @@ impl TableDelegate for Rows {
     fn render_th(&mut self, index: usize, _: &mut Window, cx: &mut Context<TableState<Self>>) -> impl IntoElement {
         // A quiet small label above the box.
         // The sorted column is the bright one with an arrow; a sortable one sorts on a click.
-        let column = &self.model["columns"][index];
+        let column = &self.model["columns"][self.source_column(index)];
         let key = column["key"].as_str().unwrap_or_default().to_owned();
         let sorted = self.model["sort"]["column"] == key.as_str();
         let desc_first = column["descFirst"] == true;
@@ -281,7 +362,14 @@ impl TableDelegate for Rows {
                 th.cursor_pointer()
                     .on_click(move |_, window, cx| sort(click_key.clone(), flip, window, cx))
             })
-            .child(self.column(index, cx).name.clone())
+            // A label longer than its column ends in an ellipsis (it was cut mid-word), whole on hover.
+            .min_w_0()
+            .overflow_hidden()
+            .tooltip({
+                let name = self.column(index, cx).name.clone();
+                move |window, cx| gpui_kit::component::tooltip::Tooltip::new(name.clone()).build(window, cx)
+            })
+            .child(div().min_w_0().truncate().child(self.column(index, cx).name.clone()))
             .when(sorted, |th| {
                 th.child(
                     gpui_kit::component::Icon::empty()
@@ -295,7 +383,7 @@ impl TableDelegate for Rows {
             })
     }
     fn perform_sort(&mut self, index: usize, _: ColumnSort, window: &mut Window, cx: &mut Context<TableState<Self>>) {
-        let column = &self.model["columns"][index];
+        let column = &self.model["columns"][self.source_column(index)];
         let key = column["key"].as_str().unwrap_or_default().to_owned();
         // The same column flips; another starts as the model asks (dates newest first, text A to Z).
         let desc = if self.model["sort"]["column"] == key.as_str() {
@@ -312,6 +400,7 @@ impl TableDelegate for Rows {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
+        let column = self.source_column(column);
         // Every cell is centred in its row.
         let content = (|| -> AnyElement {
             let record = &self.model["rows"][row];
@@ -379,7 +468,7 @@ impl TableDelegate for Rows {
             }
             if !text.is_empty() || value["brand"].is_string() {
                 if let Some(brand) = value["brand"].as_str() {
-                    cell = cell.child(img(format!("brands/{brand}.svg")).id("brand").size_4().flex_shrink_0());
+                    cell = cell.child(super::body::brand_logo("brand", brand, px(16.), cx));
                 } else if let Some(icon) = value["icon"].as_str() {
                     cell = cell.child(Icon::empty().path(format!("icons/{icon}.svg")).small());
                 } else if column == 1 && record["enabled"] == false {
@@ -391,7 +480,7 @@ impl TableDelegate for Rows {
         div().size_full().flex().items_center().pl(px(1.)).child(content)
     }
     fn cell_label(&self, row: usize, column: usize, _: &App) -> Option<SharedString> {
-        let cell = &self.model["rows"][row]["cells"][column];
+        let cell = &self.model["rows"][row]["cells"][self.source_column(column)];
         cell.as_str()
             .or_else(|| cell["text"].as_str())
             .map(|text| text.to_owned().into())
@@ -426,7 +515,15 @@ impl TableDelegate for Rows {
             .items_center()
             .justify_center()
             .text_color(cx.theme().muted_foreground)
-            .child(self.model["empty"].as_str().unwrap_or_default().to_owned())
+            // A long message wraps inside the table instead of running past both its sides.
+            .child(
+                div()
+                    .min_w_0()
+                    .max_w_full()
+                    .px_4()
+                    .text_center()
+                    .child(self.model["empty"].as_str().unwrap_or_default().to_owned()),
+            )
             .context_menu(move |menu, _, _| {
                 Action::actions(&model).into_iter().fold(menu, |menu, action| {
                     let handler = handler.clone();
@@ -441,10 +538,41 @@ impl TableDelegate for Rows {
     }
 }
 
+/// Keep identifying columns and remove the least important until the remaining ones are readable.
+fn visible_columns(mins: &[f32], priorities: &[u64], fit: f32) -> Vec<usize> {
+    let mut visible: Vec<_> = (0..mins.len()).collect();
+    if fit <= 0. {
+        return visible;
+    }
+    while visible.len() > 1 && visible.iter().map(|&index| mins[index]).sum::<f32>() > fit {
+        let candidate = visible
+            .iter()
+            .enumerate()
+            .filter(|(_, index)| priorities[**index] > 0)
+            .max_by_key(|(_, index)| priorities[**index])
+            .map(|(position, _)| position);
+        let Some(position) = candidate else { break };
+        visible.remove(position);
+    }
+    visible
+}
+
 /// Narrows `widths` to `fit` (each keeps a readable minimum), or widens the last one to fill it.
 /// `fit` 0 means unknown: nothing changes.
+/// The narrowest a column shrinks to.
+const MIN_WIDTH: f32 = 48.;
+
+#[cfg(test)]
 pub fn fit_widths(widths: &mut [f32], fit: f32) {
-    const MIN: f32 = 48.;
+    fit_widths_above(widths, &vec![MIN_WIDTH; widths.len()], fit);
+}
+
+/// [`fit_widths`], each column no narrower than its own minimum.
+pub fn fit_widths_above(widths: &mut [f32], mins: &[f32], fit: f32) {
+    let min = |index: usize| mins.get(index).copied().unwrap_or(MIN_WIDTH);
+    for (index, width) in widths.iter_mut().enumerate() {
+        *width = width.max(min(index));
+    }
     let total: f32 = widths.iter().sum();
     if fit <= 0. || widths.is_empty() || total <= 0. {
         return;
@@ -461,13 +589,17 @@ pub fn fit_widths(widths: &mut [f32], fit: f32) {
         if total <= fit + 0.5 {
             break;
         }
-        let spare: f32 = widths.iter().map(|width| (width - MIN).max(0.)).sum();
+        let spare: f32 = widths
+            .iter()
+            .enumerate()
+            .map(|(i, width)| (width - min(i)).max(0.))
+            .sum();
         if spare <= 0. {
             break;
         }
         let cut = ((total - fit) / spare).min(1.);
-        for width in widths.iter_mut() {
-            *width -= (*width - MIN).max(0.) * cut;
+        for (index, width) in widths.iter_mut().enumerate() {
+            *width -= (*width - min(index)).max(0.) * cut;
         }
     }
 }
@@ -475,6 +607,32 @@ pub fn fit_widths(widths: &mut [f32], fit: f32) {
 #[cfg(test)]
 mod tests {
     use super::fit_widths;
+
+    #[test]
+    fn narrow_tables_drop_secondary_columns_without_hiding_identity() {
+        let minimums = [48., 120., 120., 96., 99., 96., 96.];
+        let priorities = [0, 0, 0, 4, 5, 6, 7];
+        assert_eq!(super::visible_columns(&minimums, &priorities, 400.), vec![0, 1, 2, 3]);
+        assert_eq!(
+            super::visible_columns(&minimums, &priorities, 900.),
+            (0..7).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            super::visible_columns(&minimums, &priorities, 0.),
+            (0..7).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_column_of_logos_keeps_room_for_all_of_them() {
+        // Commands at 540 px: Sources once shrank until Kick's logo was a green bar and TikTok's gone.
+        let mut widths = [72., 200., 160., 120., 130., 100., 140.];
+        let mut mins = [48.; 7];
+        mins[4] = 4. * 16. + 3. * 6. + 17.;
+        super::fit_widths_above(&mut widths, &mins, 420.);
+        assert!(widths[4] >= mins[4] - 0.01, "{widths:?}");
+        assert!(widths.iter().all(|width| *width >= 48. - 0.01));
+    }
 
     #[test]
     fn columns_shrink_to_a_narrow_table_and_the_last_fills_a_wide_one() {

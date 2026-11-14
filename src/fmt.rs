@@ -156,7 +156,25 @@ pub fn shown_clock(secs: i64) -> String {
 
 pub fn locale() -> &'static Locale {
     static L: OnceLock<Locale> = OnceLock::new();
-    L.get_or_init(os_locale)
+    // Tests read the same everywhere: a machine with a decimal comma (pt-BR, de-DE) once failed them.
+    L.get_or_init(if cfg!(test) { Locale::en_us } else { os_locale })
+}
+
+/// Parse an ungrouped number formatted in the user's locale.
+pub fn parse_number(text: &str) -> Option<f64> {
+    parse_number_with_decimal(text, &locale().dec)
+}
+
+fn parse_number_with_decimal(text: &str, decimal: &str) -> Option<f64> {
+    let text = text.trim();
+    if decimal != "." && text.contains(decimal) {
+        if text.contains('.') {
+            return None;
+        }
+        text.replace(decimal, ".").parse().ok()
+    } else {
+        text.parse().ok()
+    }
 }
 
 /// The user's locale, through glibc (the same data `date` and `printf` use).
@@ -967,6 +985,12 @@ fn custom_date(t: &Time, f: &str, l: &Locale, english: bool) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parses_locale_decimal_numbers() {
+        assert_eq!(super::parse_number_with_decimal("2,5", ","), Some(2.5));
+        assert_eq!(super::parse_number_with_decimal("2.5", "."), Some(2.5));
+        assert_eq!(super::parse_number_with_decimal("1.2,5", ","), None);
+    }
     use super::*;
 
     fn en() -> &'static Locale {

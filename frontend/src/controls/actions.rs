@@ -1,8 +1,8 @@
 //! The Actions page: the action tree beside the open action's triggers and sub-actions. Every row and
 //! button comes from the core; a press opens the form, picker, confirmation or operation it names.
 use super::{
-    form::{Cancelled, Form},
-    picker::{Picked, Picker},
+    form::Form,
+    picker::{Chosen, Picked, Picker},
     tree::{Node, Options, PaneEvent, TreePane},
 };
 use crate::{i18n::tr, send};
@@ -35,8 +35,10 @@ pub struct ActionsPage {
     detail_pane: Pane,
     open: String,
     form: Option<Entity<Form>>,
-    form_subscription: Option<Subscription>,
     picker_subscription: Option<Subscription>,
+    picker_chosen_subscription: Option<Subscription>,
+    picker: Option<Entity<Picker>>,
+    picker_choice: String,
     /// The button that asked for a picker, and its row.
     asked: Option<(Value, Option<Node>)>,
     select_after: Option<String>,
@@ -68,8 +70,10 @@ impl ActionsPage {
             subs: None,
             open: String::new(),
             form: None,
-            form_subscription: None,
             picker_subscription: None,
+            picker_chosen_subscription: None,
+            picker: None,
+            picker_choice: String::new(),
             asked: None,
             select_after: None,
             error: String::new(),
@@ -106,11 +110,7 @@ impl ActionsPage {
 
     /// The panes of the open action exist while the core sends its editor.
     fn sync_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let mut editor = self.model["actions"]["editor"].clone();
-        // Nothing open: the same panes, empty and off.
-        if !editor.is_object() {
-            editor = self.model["actions"]["idle"].clone();
-        }
+        let editor = self.model["actions"]["editor"].clone();
         if !editor.is_object() {
             self.triggers = None;
             self.subs = None;
@@ -236,7 +236,7 @@ impl ActionsPage {
                 .child(
                     Button::new("cancel-action")
                         .label(tr("dialogs.cancel"))
-                        .on_click(|_, window, cx| window.close_dialog(cx)),
+                        .on_click(|_, window, cx| crate::controls::dialog::dismiss(window, cx)),
                 )
                 .child(if danger { confirm.danger() } else { confirm });
             let footer = crate::controls::dialog::footer(None, buttons, cx);
@@ -287,8 +287,24 @@ impl ActionsPage {
     fn open_picker(&mut self, model: Value, window: &mut Window, cx: &mut Context<Self>) {
         let title = model["title"].as_str().unwrap_or_default().to_owned();
         let picker = cx.new(|cx| Picker::new(model, window, cx));
+        self.picker = Some(picker.clone());
+        self.picker_chosen_subscription = Some(cx.subscribe(&picker, |page, _, chosen: &Chosen, cx| {
+            page.picker_choice = chosen.0.clone();
+            page.form = None;
+            if chosen.0.is_empty() {
+                return;
+            }
+            if let Some((spec, node)) = &page.asked {
+                send(json!({"request": "StreamerzEntityForm", "kind": spec["form"],
+                    "actionId": page.action_id(), "code": chosen.0,
+                    "anchor": node.as_ref().map(|node| node.id.as_str()).unwrap_or_default(),
+                    "id": format!("{}:picker-form:{}", page.route, chosen.0)}));
+            }
+            cx.notify();
+        }));
         self.picker_subscription = Some(
             cx.subscribe_in(&picker, window, |page, _, picked: &Picked, window, cx| {
+                page.picker = None;
                 window.close_dialog(cx);
                 if let Some((spec, node)) = page.asked.take() {
                     let pane = if spec["form"].as_str().is_some_and(|kind| kind.contains("trigger")) {
@@ -302,10 +318,29 @@ impl ActionsPage {
                 }
             }),
         );
+        let owner = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, window, cx| {
             crate::controls::dialog::shell(dialog, title.clone(), Picker::width(window), cx)
                 .child(crate::controls::dialog::body(picker.clone()))
                 .footer(picker.read(cx).buttons_view())
+                .on_cancel({
+                    let owner = owner.clone();
+                    move |_, _, cx| {
+                        owner
+                            .update(cx, |page, cx| {
+                                if page.form.as_ref().is_some_and(|form| form.read(cx).pending) {
+                                    return false;
+                                }
+                                page.picker = None;
+                                page.asked = None;
+                                page.form = None;
+                                page.picker_subscription = None;
+                                page.picker_chosen_subscription = None;
+                                true
+                            })
+                            .unwrap_or(true)
+                    }
+                })
         });
     }
 
@@ -313,11 +348,6 @@ impl ActionsPage {
         let title = value["title"].as_str().unwrap_or_default().to_owned();
         let route = format!("{}:save", self.route);
         let form = cx.new(|cx| Form::new(value, route, window, cx));
-        self.form_subscription = Some(cx.subscribe(&form, |page, _, _: &Cancelled, cx| {
-            page.form = None;
-            page.form_subscription = None;
-            cx.notify();
-        }));
         self.form = Some(form.clone());
         let owner = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _, cx| {
@@ -332,7 +362,6 @@ impl ActionsPage {
                         }
                         let _ = owner.update(cx, |page, cx| {
                             page.form = None;
-                            page.form_subscription = None;
                             cx.notify();
                         });
                         true
@@ -350,6 +379,23 @@ impl ActionsPage {
 
     /// A reply to one of this page's requests. Returns whether the page should be read again.
     pub fn apply(&mut self, operation: &str, value: Value, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if let Some(choice) = operation.strip_prefix("picker-form:") {
+            if choice != self.picker_choice || self.picker.is_none() {
+                return false;
+            }
+            if value["status"] == "error" {
+                self.error = value["error"].as_str().unwrap_or_default().to_owned();
+            } else {
+                let form = cx.new(|cx| Form::new(value, format!("{}:save", self.route), window, cx));
+                self.form = Some(form.clone());
+                self.picker
+                    .as_ref()
+                    .unwrap()
+                    .update(cx, |picker, cx| picker.set_form(form, cx));
+            }
+            cx.notify();
+            return false;
+        }
         // A form's picture picker: its pictures or its reloaded list (`gallery:<field>:images|choices`).
         if let Some((index, what)) = operation.strip_prefix("gallery:").and_then(|rest| rest.split_once(':')) {
             if let (Some(form), Ok(index)) = (&self.form, index.parse()) {
@@ -385,9 +431,13 @@ impl ActionsPage {
             }
             "save" | "act" => {
                 if operation == "save" {
+                    self.picker = None;
+                    self.asked = None;
                     self.form = None;
-                    self.form_subscription = None;
                     window.close_dialog(cx);
+                }
+                if value["values"].is_object() {
+                    super::list::show_values(&value["values"], window, cx);
                 }
                 if let Some(text) = value["copy"].as_str() {
                     cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
@@ -411,6 +461,14 @@ impl Render for ActionsPage {
         let content = viewport - if viewport < 700. { 52. } else { 176. };
         let stacked = content < 760.;
         let idle = !self.model["actions"]["editor"].is_object();
+        if idle {
+            return div()
+                .size_full()
+                .flex()
+                .gap_3()
+                .child(div().flex_1().min_w_0().child(self.actions.clone()))
+                .into_any_element();
+        }
         // The page's own padding is 8 here (the shell's is 10): widths follow from it.
         let inner = content - 16.;
         let (left_width, right_width) = if stacked { (inner, inner) } else { (340., inner - 348.) };
@@ -418,7 +476,7 @@ impl Render for ActionsPage {
             pane.set_options(
                 Options {
                     width: left_width,
-                    icons_first: true,
+                    icons_first: false,
                     header: true,
                     ..Options::default()
                 },
@@ -476,6 +534,37 @@ impl Render for ActionsPage {
             _ => detail_of(Self::default_detail(&self.model)),
         };
         let mut right = div().flex_1().min_w_0().min_h_0().flex().flex_col().gap(px(4.));
+        if let Some(result) = editor["lastTest"].as_object() {
+            let id = result.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let text = result
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let hint = result
+                .get("outcome")
+                .and_then(|v| v["error"].as_str())
+                .or_else(|| result.get("hint").and_then(Value::as_str))
+                .unwrap_or_default()
+                .to_owned();
+            let label = result
+                .get("details")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            right =
+                right
+                    .child(super::notice::info(&text, cx))
+                    .child(super::notice::info(&hint, cx))
+                    .child(Button::new("last-test-details").label(label).on_click(cx.listener(
+                        move |page, _, _, _cx| {
+                            send(
+                                json!({"request": "StreamerzCoreAction", "domain": "actions", "action": "run_details",
+                        "itemId": id, "id": format!("{}:act", page.route)}),
+                            );
+                        },
+                    )));
+        }
         if let (Some(triggers), Some(subs)) = (&self.triggers, &self.subs) {
             right = right
                 .child({

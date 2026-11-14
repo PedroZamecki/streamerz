@@ -604,7 +604,7 @@ pub async fn fetch_user(client_id: &str, access_token: &str, login: Option<&str>
 /// Helper to parse hex colors like `#e5e5e5` into RGB.
 pub fn parse_hex_color(hex: &str) -> (i64, i64, i64) {
     let s = hex.trim_start_matches('#');
-    if s.len() >= 6 {
+    if s.len() >= 6 && s.is_ascii() {
         let r = i64::from_str_radix(&s[0..2], 16).unwrap_or(255);
         let g = i64::from_str_radix(&s[2..4], 16).unwrap_or(255);
         let b = i64::from_str_radix(&s[4..6], 16).unwrap_or(255);
@@ -1445,6 +1445,7 @@ async fn supervise_eventsub(
         let ws = match crate::http::ws_connect(&url).await {
             Ok((ws, _)) => ws,
             Err(e) => {
+                crate::core::status::record_failure("twitch", crate::core::status::Failure::Connect);
                 crate::warn(format!(
                     "Twitch: EventSub connect failed for @{} ({e}); retrying in {backoff_secs}s",
                     broadcaster.login
@@ -1456,6 +1457,7 @@ async fn supervise_eventsub(
         };
 
         is_connected.store(true, Ordering::Relaxed);
+        crate::core::status::clear_failure("twitch");
         crate::host::changed();
 
         let bot_task = bot.map(|bot_acct| {
@@ -1495,6 +1497,14 @@ async fn supervise_eventsub(
         if !wanted.load(Ordering::Relaxed) {
             break;
         }
+        crate::core::status::record_failure(
+            "twitch",
+            if auth_refused.load(Ordering::Relaxed) {
+                crate::core::status::Failure::Handshake
+            } else {
+                crate::core::status::Failure::Closed
+            },
+        );
         if started.elapsed() >= Duration::from_secs(15) {
             backoff_secs = 2;
         }
@@ -4924,6 +4934,11 @@ async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn malformed_unicode_color_does_not_panic() {
+        assert_eq!(super::parse_hex_color("aé123"), (255, 255, 255));
+    }
+
     #[test]
     fn twitch_errors_read_as_plain_words() {
         let owner = r#"Helix GET predictions failed: HTTP 401 {"error":"Unauthorized","status":401,"message":"The ID in broadcaster_id must match the user ID found in the request's OAuth token."}"#;

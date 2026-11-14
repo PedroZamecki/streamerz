@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use app::Frontend;
 
-gpui_kit::actions!(streamerz, [CoreUndo, CoreRedo]);
+gpui_kit::actions!(streamerz, [CoreUndo, CoreRedo, CoreSave]);
 
 /// A picture the app is built with, by the path the window loads it from: a platform's logo
 /// (`brands/twitch.svg`), a badge (`badges/kick-vip.svg`) or a Lucide icon (`icons/heart.svg`).
@@ -50,6 +50,7 @@ pub fn run() -> Result<(), String> {
         cx.set_app_identity("streamerz", "Streamerz");
         gpui_kit::init(cx);
         cx.bind_keys([
+            KeyBinding::new("ctrl-s", CoreSave, None),
             KeyBinding::new("ctrl-z", CoreUndo, None),
             KeyBinding::new("ctrl-y", CoreRedo, None),
             KeyBinding::new("ctrl-shift-z", CoreRedo, None),
@@ -87,14 +88,10 @@ pub fn run() -> Result<(), String> {
             .unwrap_or("Chat")
             .to_owned();
 
-        let bounds = if let (Some(x), Some(y)) = (x, y) {
-            Bounds {
-                origin: point(px(x), px(y)),
-                size: size(px(w), px(h)),
-            }
-        } else {
-            Bounds::centered(None, size(px(w), px(h)), cx)
-        };
+        let screens: Vec<Bounds<Pixels>> = cx.displays().iter().map(|d| d.visible_bounds()).collect();
+        let primary = cx.primary_display().map(|d| d.visible_bounds());
+        let saved = x.zip(y).map(|(x, y)| point(px(x), px(y)));
+        let bounds = fit(saved, size(px(w), px(h)), &screens, primary);
 
         let window_bounds = if maximized {
             WindowBounds::Maximized(bounds)
@@ -201,6 +198,10 @@ pub fn run() -> Result<(), String> {
                         if value["topics"].as_array().is_some_and(|topics| topics.iter().any(|topic| topic == "prompts")) {
                             send(json!({"request":"StreamerzPrompts", "id":"prompts"}));
                         }
+                        // The user asked for the window (a start, the tray, a second start): in front of the others.
+                        if value["topics"].as_array().is_some_and(|topics| topics.iter().any(|topic| topic == "raise")) {
+                            let _ = window_handle.update(cx, |_, window, _| window.activate_window());
+                        }
                         view.update(cx, |view, cx| {
                             view.request_status();
                             let topics = value["topics"].as_array();
@@ -226,4 +227,85 @@ pub fn run() -> Result<(), String> {
         .detach();
     });
     Ok(())
+}
+
+/// Room around the window for what the system draws: Windows' title bar and borders sit outside the
+/// size asked for.
+const FRAME: f32 = 48.;
+
+/// Where the window opens: where it was, if that is still on a screen, else centred on the primary
+/// one; never larger than the screen's free area (without the taskbar) with room for the frame.
+fn fit(
+    saved: Option<Point<Pixels>>,
+    wanted: Size<Pixels>,
+    screens: &[Bounds<Pixels>],
+    primary: Option<Bounds<Pixels>>,
+) -> Bounds<Pixels> {
+    let on = |screen: &Bounds<Pixels>, at: Point<Pixels>| {
+        let centre = point(at.x + wanted.width / 2., at.y + wanted.height / 2.);
+        screen.contains(&centre)
+    };
+    let screen = saved
+        .and_then(|at| screens.iter().find(|s| on(s, at)).copied())
+        .or(primary)
+        .or_else(|| screens.first().copied());
+    let Some(screen) = screen else {
+        return Bounds::new(saved.unwrap_or_default(), wanted);
+    };
+    let room = size(
+        (screen.size.width - px(FRAME / 3.)).max(px(400.)),
+        (screen.size.height - px(FRAME)).max(px(300.)),
+    );
+    let size = size(wanted.width.min(room.width), wanted.height.min(room.height));
+    let top = screen.origin.y + px(FRAME * 2. / 3.);
+    let origin = match saved.filter(|at| on(&screen, *at)) {
+        Some(at) => point(
+            at.x.max(screen.origin.x).min(screen.right() - size.width),
+            at.y.max(top).min(screen.bottom() - size.height),
+        ),
+        None => point(
+            screen.center().x - size.width / 2.,
+            (screen.center().y - size.height / 2.).max(top),
+        ),
+    };
+    Bounds::new(origin, size)
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::{fit, FRAME};
+    use gpui_kit::{point, px, size, Bounds, Pixels};
+
+    /// 1920x1080 at 125% with a 60 px taskbar: 1536x816 logical, where the default 1100x800 window once
+    /// opened with its title bar above the screen.
+    fn screen() -> Bounds<Pixels> {
+        Bounds::new(point(px(0.), px(0.)), size(px(1536.), px(816.)))
+    }
+
+    #[test]
+    fn the_window_and_its_frame_fit_the_free_area() {
+        let b = fit(None, size(px(1100.), px(800.)), &[screen()], Some(screen()));
+        assert!(b.origin.y >= px(FRAME * 2. / 3.), "{b:?}");
+        assert!(b.bottom() <= screen().bottom(), "{b:?}");
+        assert!(b.origin.x >= px(0.) && b.right() <= screen().right(), "{b:?}");
+    }
+
+    #[test]
+    fn a_saved_place_on_a_screen_gone_comes_back_to_one() {
+        let b = fit(
+            Some(point(px(3000.), px(-200.))),
+            size(px(1100.), px(700.)),
+            &[screen()],
+            Some(screen()),
+        );
+        assert!(screen().contains(&b.center()), "{b:?}");
+        // On a screen, it stays where it was.
+        let kept = fit(
+            Some(point(px(100.), px(80.))),
+            size(px(800.), px(600.)),
+            &[screen()],
+            Some(screen()),
+        );
+        assert_eq!(kept.origin, point(px(100.), px(80.)));
+    }
 }

@@ -529,6 +529,7 @@ async fn run_conn_loop(
                             } else if op == OP_IDENTIFIED {
                                 identified = true;
                                 is_connected.store(true, Ordering::Relaxed);
+                                crate::core::status::clear_failure(&format!("obs:{}", info.id));
                                 crate::say(format!(
                                     "OBS '{}' ({}): connected and identified at {url}",
                                     info.name, info.id
@@ -539,7 +540,7 @@ async fn run_conn_loop(
                                     field_matches(t, "connectionId", &info.id)
                                 });
                                 engine.emit("ObsStudio", "Connected", || json!(args));
-                                tokio::task::spawn_local(publish_catalog(engine.clone()));
+                                tokio::task::spawn_local(publish_catalog(engine.clone(), info.id.clone()));
                                 break;
                             }
                         }
@@ -547,6 +548,10 @@ async fn run_conn_loop(
                 }
 
                 if !identified {
+                    crate::core::status::record_failure(
+                        &format!("obs:{}", info.id),
+                        crate::core::status::Failure::Handshake,
+                    );
                     crate::error(format!("OBS '{}': identification failed", info.name));
                 } else {
                     // Step 2: Active communication loop
@@ -607,6 +612,7 @@ async fn run_conn_loop(
                                         let _ = sink.send(Message::Pong(data)).await;
                                     }
                                     Some(Ok(Message::Close(_))) | Some(Err(_)) | None => {
+                                        crate::core::status::record_failure(&format!("obs:{}", info.id), crate::core::status::Failure::Closed);
                                         crate::warn(format!("OBS '{}': connection closed", info.name));
                                         break;
                                     }
@@ -630,6 +636,7 @@ async fn run_conn_loop(
                 }
             }
             Err(e) => {
+                crate::core::status::record_failure(&format!("obs:{}", info.id), crate::core::status::Failure::Connect);
                 crate::warn(format!("OBS '{}': failed to connect to {url}: {e}", info.name));
             }
         }
@@ -657,6 +664,15 @@ thread_local! {
     static SEEN: std::cell::RefCell<HashMap<String, Seen>> = Default::default();
 }
 
+/// Last program scene received from this explicit connection, without a request or a poll.
+pub fn current_scene(connection: &str) -> Option<String> {
+    SEEN.with_borrow(|seen| {
+        seen.get(connection)
+            .map(|(_, scene)| scene.clone())
+            .filter(|scene| !scene.is_empty())
+    })
+}
+
 /// Streamer.bot's obs.* variables for a connection (and the old names Streamerz used).
 fn obs_args(info: &ObsConnInfo) -> Obj {
     let ((studio, ws), _) = SEEN.with_borrow(|m| m.get(&info.id).cloned().unwrap_or_default());
@@ -676,7 +692,7 @@ fn obs_args(info: &ObsConnInfo) -> Obj {
 }
 
 /// Reads OBS's scenes and inputs into the catalog (the editors' pickers).
-async fn publish_catalog(engine: Rc<Engine>) {
+async fn publish_catalog(engine: Rc<Engine>, connection: String) {
     let Some(obs) = engine.obs() else { return };
     let names = |v: &Value, list: &str, key: &str| -> Vec<(String, String)> {
         v[list]
@@ -687,10 +703,13 @@ async fn publish_catalog(engine: Rc<Engine>) {
             .map(|n| (n.to_string(), n.to_string()))
             .collect()
     };
-    if let Ok(v) = obs.send_request(None, "GetSceneList", json!({})).await {
+    if let Ok(v) = obs.send_request(Some(&connection), "GetSceneList", json!({})).await {
+        if let Some(scene) = v["currentProgramSceneName"].as_str() {
+            SEEN.with_borrow_mut(|seen| seen.entry(connection.clone()).or_default().1 = scene.to_owned());
+        }
         crate::catalog::set("obs.scenes", names(&v, "scenes", "sceneName"));
     }
-    if let Ok(v) = obs.send_request(None, "GetInputList", json!({})).await {
+    if let Ok(v) = obs.send_request(Some(&connection), "GetInputList", json!({})).await {
         crate::catalog::set("obs.sources", names(&v, "inputs", "inputName"));
     }
 }
@@ -778,7 +797,7 @@ pub(crate) fn handle_obs_message(
                 // The scenes and sources the editors offer follow what OBS has.
                 "SceneListChanged" | "SceneCreated" | "SceneRemoved" | "SceneNameChanged" | "InputCreated"
                 | "InputRemoved" | "InputNameChanged" => {
-                    tokio::task::spawn_local(publish_catalog(engine.clone()));
+                    tokio::task::spawn_local(publish_catalog(engine.clone(), info.id.clone()));
                 }
                 "StreamStateChanged" => {
                     // Starting and stopping are their own states (outputActive false while starting).

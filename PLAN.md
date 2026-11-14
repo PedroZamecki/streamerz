@@ -10,8 +10,8 @@ Platforms: **Twitch, OBS Studio, Kick, YouTube, Streamlabs Desktop**, then the c
 Every documented trigger and sub-action for those is in scope. `COVERAGE.md` lists each one, and each
 phase ticks its own items there.
 
-Development starts only after this plan is agreed. Work one phase at a time, one branch and one PR per
-phase, following `CLAUDE.md`.
+Development starts only after this plan is agreed. Work in versions, with one branch and one PR per
+version. Implement its phases on that branch, following `AGENTS.md`.
 
 ## Decisions (agreed)
 
@@ -36,7 +36,7 @@ phase, following `CLAUDE.md`.
 | OS | Windows + Linux (Wayland, ksni tray). CI releases a Windows exe and, on Linux, the AppImage, the program alone, .deb, .rpm, Arch and Flatpak packages, with signed APT, DNF/zypper, pacman and Flatpak repositories on GitHub Pages so the system updates them. |
 | Budget | Hidden window, Twitch + OBS connected: < 25 MB RSS and ~0% idle CPU, measured and written in every PR. Streamer.bot uses ~300 MB. |
 | Dependencies | The songrequestz set (tokio single-thread runtime, tokio-tungstenite, futures-util, serde, serde_json, sha2, base64, ksni/zbus, tray-icon/windows-sys, embed-resource), plus **native-tls** (SChannel/OpenSSL, through tokio-tungstenite's feature), **flate2** with miniz_oxide (import/export), serde_json's **preserve_order** (indexmap, so Streamer.bot's JSON keeps its key order), and **rsa** (Kick webhooks only). No webview (wry/tao were removed in 1.1.0: TikTok uses the user's own browser). Pictures are decoded by the window, not the core. The window is the `frontend/` crate (GPUI and gpui-kit), kept out of the core's dependencies. HTTP is a small HTTP/1.1 client written here over tokio + TLS, with keep-alive per host. **tokio-native-tls** (the crate tokio-tungstenite's native-tls feature uses, for HTTPS), **regex-lite** (If/Else, While, Switch and regex commands; .NET's backreferences and lookaround aren't supported). Anything else needs a question first. |
-| TikTok | Public LIVE reading is native through `webcast.rs`. The optional extension is the single account for signed search, authenticated reading and sending (`tiktok_bridge.rs`). It uses TikTok's own scripts in an offscreen browser frame, with no visible helper tab, and recovers discarded contexts on demand. Chromium background mode permits use with all browser windows closed. Separate broadcaster and bot logins are retired; reader cookies are requested from the browser only when connecting and remain in memory. |
+| TikTok | Public LIVE reading is native through `webcast.rs`. The optional extension is the single account for signed search, authenticated reading and sending (`tiktok_bridge.rs`). It uses TikTok's own scripts in an offscreen browser frame, with no visible helper tab, and recovers discarded contexts on demand. Chromium background mode permits use with all browser windows closed. Separate broadcaster and bot logins are retired; reader cookies are requested from the browser only when connecting and remain in memory. Each Streamerz pins one extension version (`EXTENSION_VERSION`: the copy it writes to disk and the signed Firefox add-on it downloads) and accepts a range of message protocols, so store copies that update themselves keep working; outside the range the setup says which side to update. Firefox gets an MV2 build with a persistent background page; AMO signs it unlisted, and CI attaches each signed version to a prerelease tagged `tiktok-extension-vX.Y.Z`, where Streamerz downloads it. |
 | Chat commands | Commands keep Streamer.bot's `sources` bitmask (Twitch 1/2/8, YouTube 1024, Kick 2097152, TikTok 4194304), so each command chooses its platforms. Built-in commands (`!commands`, `!command add/edit/remove`, `!command platforms`, `!so`, `!uptime`, `!title`) are normal commands created on first run, editable and disable-able. Replies go to the platform the command came from; a command can opt in to reply on all connected platforms. |
 | Not in scope | Meld, PolyPop, Elgato, VTube Studio/Voicemod/Speaker.bot/TITS/Crowd Control/HypeRate/Pulsoid/Lumia/Streamfog/mtion, the Streamer.bot website integration/cloud, C# and plugins. |
 | Later (own phases, after phase 14) | Quotes, credits, points, users/first words; sounds and TTS; file I/O, file tail, folder watcher, process triggers; hotkeys/inputs and MIDI; Decks, HTML overlay, multi-platform chat window. |
@@ -518,6 +518,18 @@ platform handles through channels, never through shared locks held across awaits
 - [ ] Verify migrated and development logins with the real keyring, and test the workflow on Windows.
 
 ## Feature audit
+
+- [x] Consolidate the UI, UX and newcomer reviews into
+  [the 1.7.1 UI and UX proposal](docs/UI-REVIEW-1.7.1.md), correcting conflicting findings and click counts.
+- [x] Agree the [1.7.1 UI scope](docs/UI-REVIEW-1.7.1.md), including related fixes found during
+  implementation. Keep the current version branch open.
+- [ ] Phase A (R-01 through R-05): shared controls, Chat, command creation, dialogs and empty states.
+- [ ] Phase B (R-06 through R-12): Accounts, overlays, action authoring/results, health, timers and templates.
+- [ ] Investigate extension installation, connection, pairing and version detection; expose reliable
+  evidence and actionable guidance without confusing an unavailable check with a missing extension.
+- [ ] Phase C (R-13 through R-15): settings, localization, responsive controls and recovery.
+- [ ] Verify all phases with regression tests, narrow/wide UI screenshots, platform checks and hidden
+  memory/CPU measurements. Record commands, results and unavailable checks in `docs/TESTING.md`.
 
 - [ ] Review [the feature audit and proposed sequence](docs/FEATURE-AUDIT.md), verify its findings against
   the implementation and real services, and agree priorities before adding implementation phases.

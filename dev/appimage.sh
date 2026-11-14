@@ -30,5 +30,7 @@ export UPDATE_INFORMATION="$LDAI_UPDATE_INFORMATION"
 export LDAI_OUTPUT=Streamerz-linux-x86_64.AppImage
 export LINUXDEPLOY_OUTPUT_VERSION="$clean_ver"
 
-APPIMAGE_EXTRACT_AND_RUN=1 "$ld" --appdir "$app" --executable target/release/Streamerz \
+# Cargo strips the release binary, and distribution libraries are already stripped. The bundled
+# strip is older than some hosts' RELR relocation sections and cannot safely process those libraries.
+NO_STRIP=1 APPIMAGE_EXTRACT_AND_RUN=1 "$ld" --appdir "$app" --executable target/release/Streamerz \
     --desktop-file "$desktop" --icon-file assets/brand/streamerz.png --output appimage

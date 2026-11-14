@@ -5,7 +5,8 @@ use gpui_kit::component::{
     button::Button,
     input::{Input, InputEvent, InputState},
     list::ListItem,
-    menu::PopupMenuItem,
+    menu::{ContextMenuExt, PopupMenuItem},
+    switch::Switch,
     tree::{tree, TreeItem, TreeState},
     ActiveTheme, Disableable, Icon, Sizable,
 };
@@ -37,7 +38,7 @@ pub enum PaneEvent {
 }
 impl EventEmitter<PaneEvent> for TreePane {}
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq)]
 pub struct Options {
     /// Folders start closed (a picker); the others start open.
     pub closed: bool,
@@ -175,8 +176,11 @@ impl TreePane {
     }
     pub fn set_options(&mut self, options: Options, cx: &mut Context<Self>) {
         let (closed, now) = (self.options.closed, options);
-        self.options = Options { closed, ..now };
-        cx.notify();
+        let options = Options { closed, ..now };
+        if self.options != options {
+            self.options = options;
+            cx.notify();
+        }
     }
     fn query(&self, cx: &App) -> String {
         match &self.search {
@@ -318,13 +322,24 @@ impl TreePane {
             .into_iter()
             .flatten()
             .filter(|spec| spec["menuOnly"] != true)
+            .filter(|spec| !self.model["nodes"].as_array().is_some_and(Vec::is_empty) || enabled(spec, None))
             .filter(|spec| spec["hidden"] != true || enabled(spec, self.selected.as_ref()))
+            .filter(|spec| {
+                !self.model["nodes"].as_array().is_some_and(Vec::is_empty)
+                    || matches!(spec["id"].as_str(), Some("add" | "templates" | "import"))
+            })
             .cloned()
             .collect();
         if specs.is_empty() {
             return None;
         }
-        let per_row = self.model["perRow"].as_u64().unwrap_or(4).max(1) as usize;
+        let requested = self.model["perRow"].as_u64().unwrap_or(4).max(1) as usize;
+        // Wrap before folding so labelled actions remain available in an ordinary tree pane.
+        let per_row = if self.options.width > 0. && !self.options.compact {
+            requested.min(((self.options.width + 8.) / 104.).floor().max(1.) as usize)
+        } else {
+            requested
+        };
         let mut column = div().flex().flex_col().gap(px(4.)).w_full().flex_shrink_0();
         for (row, chunk) in specs.chunks(per_row).enumerate() {
             let mut line = div().flex().gap_2().w_full();
@@ -402,6 +417,7 @@ impl Render for TreePane {
                 }
                 let folder = entry.is_folder();
                 let weak = weak.clone();
+                let toggle_owner = weak.clone();
                 ListItem::new(SharedString::from(format!("{id}-row-{ix}")))
                     .selected(selected)
                     .accessibility_label(item.label.to_string())
@@ -436,6 +452,32 @@ impl Render for TreePane {
                             .text_size(px(if value["kind"] == "action" { 12.5 } else { 13.5 }))
                             .pl(px(entry.depth() as f32 * 14.))
                             .text_color(color)
+                            .when(value["toggle"].is_object(), |line| {
+                                let weak = toggle_owner.clone();
+                                let node_id = item.id.to_string();
+                                let toggle = value["toggle"].clone();
+                                line.child(
+                                    Switch::new(SharedString::from(format!("{id}-toggle-{ix}")))
+                                        .small()
+                                        .checked(toggle["checked"] == true)
+                                        .accessibility_label(toggle["label"].as_str().unwrap_or_default().to_owned())
+                                        .on_click(move |_, _, cx| {
+                                            cx.stop_propagation();
+                                            let _ = weak.update(cx, |pane, cx| {
+                                                let spec = pane.model["buttons"]
+                                                    .as_array()
+                                                    .and_then(|buttons| {
+                                                        buttons.iter().find(|spec| spec["id"] == toggle["action"])
+                                                    })
+                                                    .cloned();
+                                                let node = find(&pane.model["nodes"], &node_id).map(node_of);
+                                                if let Some(spec) = spec {
+                                                    pane.press(spec, node, cx);
+                                                }
+                                            });
+                                        }),
+                                )
+                            })
                             .child(
                                 div()
                                     .w(px(14.))
@@ -634,6 +676,40 @@ impl Render for TreePane {
             } else {
                 field.into_any_element()
             });
+        }
+        if empty && self.query(cx).is_empty() {
+            let specs = self.model["buttons"].as_array().cloned().unwrap_or_default();
+            let owner = weak.clone();
+            let mut state = div()
+                .id("empty-tree-state")
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .justify_center()
+                .gap_3()
+                .p_3()
+                .child(super::notice::info(
+                    self.model["empty"].as_str().unwrap_or_default(),
+                    cx,
+                ));
+            if let Some(buttons) = self.buttons(cx) {
+                state = state.child(buttons);
+            }
+            return body.child(state.context_menu(move |mut menu, _, _| {
+                for spec in &specs {
+                    let pressed = spec.clone();
+                    let owner = owner.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(spec["label"].as_str().unwrap_or_default().to_owned())
+                            .disabled(!enabled(spec, None))
+                            .on_click(move |_, _, cx| {
+                                let _ = owner.update(cx, |pane, cx| pane.press(pressed.clone(), None, cx));
+                            }),
+                    );
+                }
+                menu
+            }));
         }
         body = body.child(
             div()

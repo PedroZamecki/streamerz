@@ -41,6 +41,7 @@ pub async fn run(
         let message = match event {
             Event::Input => Some(Message::Input),
             Event::Toggle => Some(Message::Toggle),
+            Event::Show => Some(Message::Show),
             Event::Restart => Some(Message::Restart),
             Event::Quit => Some(Message::Quit),
             _ => None,
@@ -51,6 +52,7 @@ pub async fn run(
     });
     let show = !engine.config().start_hidden || !super::prompts::list().is_empty();
     let mut renderer = if show {
+        to_front(&changes);
         open(engine.clone(), changes.clone(), requests_tx.clone())
     } else {
         // Hidden from the start: once, after startup settles, let the kernel take back the idle code pages.
@@ -73,7 +75,7 @@ pub async fn run(
                 match message {
                     Some(Message::Toggle) => {
                         if let Some(task) = renderer.take() { task.abort(); let _ = task.await; crate::host::detach(); }
-                        else { renderer = open(engine.clone(), changes.clone(), requests_tx.clone()); }
+                        else { to_front(&changes); renderer = open(engine.clone(), changes.clone(), requests_tx.clone()); }
                     }
                     Some(Message::Input) => {
                         // Logins that ran out: each becomes a question in the window (a prompt).
@@ -83,6 +85,10 @@ pub async fn run(
                         if pending && renderer.is_none() { renderer = open(engine.clone(), changes.clone(), requests_tx.clone()); }
                     }
                     Some(Message::NoTray) => {
+                        if renderer.is_none() { renderer = open(engine.clone(), changes.clone(), requests_tx.clone()); }
+                    }
+                    Some(Message::Show) => {
+                        to_front(&changes);
                         if renderer.is_none() { renderer = open(engine.clone(), changes.clone(), requests_tx.clone()); }
                     }
                     Some(Message::Restart) => {
@@ -117,4 +123,18 @@ pub async fn run(
     }
     engine.save_shutdown();
     crate::crash::quit(0);
+}
+
+/// The user asked for the window (a start, the tray, another start): it comes to the front. A window
+/// opened for a question (a Get Input) doesn't, so it never takes the focus from a game. Windows lets
+/// only the process the user acted on take the front, so this one hands that on to the window's.
+fn to_front(changes: &super::frontend::Changes) {
+    #[cfg(windows)]
+    // SAFETY: no pointers; ASFW_ANY lets the window's process take the front.
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(
+            windows_sys::Win32::UI::WindowsAndMessaging::ASFW_ANY,
+        );
+    }
+    changes.mark(crate::host::Event::Show);
 }

@@ -7,6 +7,53 @@ use crate::{
 use serde_json::{json, Value};
 use std::rc::Rc;
 
+/// Connection failures carry a fixed, translated reason rather than a raw transport error, which
+/// may contain credentials or remote user data. At most 64 configured connections are retained.
+#[derive(Clone, Copy)]
+pub enum Failure {
+    Connect,
+    Handshake,
+    Closed,
+    Bind,
+}
+
+thread_local! {
+    static FAILURES: std::cell::RefCell<std::collections::VecDeque<(String, Failure, i64)>> = const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+}
+
+pub fn record_failure(key: &str, reason: Failure) {
+    if key.is_empty() || key.len() > 256 {
+        return;
+    }
+    FAILURES.with_borrow_mut(|items| {
+        items.retain(|(id, _, _)| id != key);
+        if items.len() == 64 {
+            items.pop_front();
+        }
+        items.push_back((key.to_owned(), reason, crate::fmt::unix_now().as_secs() as i64));
+    });
+    crate::host::changed();
+}
+
+pub fn clear_failure(key: &str) {
+    FAILURES.with_borrow_mut(|items| items.retain(|(id, _, _)| id != key));
+}
+
+pub fn failure(key: &str) -> Option<Value> {
+    FAILURES.with_borrow(|items| {
+        items.iter().find(|(id, _, _)| id == key).map(|(_, reason, when)| {
+            let reason = tr(match reason {
+                Failure::Connect => "conns.failure.connect",
+                Failure::Handshake => "conns.failure.handshake",
+                Failure::Closed => "conns.failure.closed",
+                Failure::Bind => "conns.failure.bind",
+            });
+            let time = crate::fmt::shown_clock(*when);
+            json!({"reason": reason, "at": when, "text": trf("conns.failure.at", &[("reason", reason), ("time", &time)])})
+        })
+    })
+}
+
 struct Connection {
     name: String,
     brand: &'static str,
@@ -131,12 +178,13 @@ pub fn summary(engine: &Rc<Engine>) -> Value {
         .count();
     let total = connections.len();
     let (health, text) = if total == 0 {
-        ("off", tr("conns.nothing_set_up").to_owned())
+        ("unset", tr("conns.nothing_set_up").to_owned())
     } else {
         let health = match (up, standby) {
             (0, 0) => "off",
             (up, standby) if up + standby == total && up > 0 => "up",
-            _ => "busy",
+            (0, standby) if standby == total => "standby",
+            _ => "attention",
         };
         let numbers = [
             ("up", up.to_string()),
@@ -167,9 +215,13 @@ pub fn summary(engine: &Rc<Engine>) -> Value {
             } else {
                 ("off", tr("conns.off"), tr("conns.off_tip"), tr("btn.connect"))
             };
+            let failure = (!connection.up && !connection.standby).then(|| failure(&connection.key)).flatten();
+            let health = if failure.is_some() { "attention" } else { health };
+            let reason = failure.as_ref().and_then(|f| f["text"].as_str()).unwrap_or(tip);
+            let state = failure.as_ref().and_then(|f| f["text"].as_str()).unwrap_or(state);
             json!({"name": connection.name, "brand": connection.brand, "up": connection.up,
                 "standby": connection.standby, "page": connection.page, "key": connection.key,
-                "health": health, "state": state, "tip": tip, "button": button})
+                "health": health, "state": state, "tip": reason, "failure": failure, "button": button})
         }).collect::<Vec<_>>()})
 }
 
@@ -184,13 +236,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn failure_history_is_bounded_and_contains_only_fixed_reasons() {
+        FAILURES.with_borrow_mut(|items| items.clear());
+        for n in 0..70 {
+            record_failure(&format!("test:{n}"), Failure::Connect);
+        }
+        assert!(failure("test:0").is_none());
+        let last = failure("test:69").unwrap();
+        assert_eq!(last["reason"], tr("conns.failure.connect"));
+        assert!(last["at"].is_i64());
+        assert_eq!(FAILURES.with_borrow(|items| items.len()), 64);
+        clear_failure("test:69");
+        assert!(failure("test:69").is_none());
+        FAILURES.with_borrow_mut(|items| items.clear());
+    }
+
+    #[test]
     fn nothing_set_up_says_so_and_saving_succeeds() {
         let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         crate::engine::tests::run(async {
             let engine = crate::engine::tests::engine(json!({"actions": []}));
             let status = summary(&engine);
             assert_eq!(status["total"], 0);
-            assert_eq!(status["health"], "off");
+            assert_eq!(status["health"], "unset");
             assert_eq!(status["text"], tr("conns.nothing_set_up"));
             engine.change(|config| {
                 config

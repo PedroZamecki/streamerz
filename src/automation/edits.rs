@@ -112,7 +112,16 @@ pub fn apply(fields: &[F], original: &Obj, changes: &[Value]) -> Result<Obj, Str
             }
             W::Duration(unit) => parse_duration_field(input()?, *unit)?,
             W::Multi => input()?.replace("\r\n", "\n").replace('\n', "\r\n").into(),
-            W::Lines => input()?.lines().map(Value::from).collect(),
+            W::Lines => {
+                if let Some(values) = value.as_array() {
+                    if !values.iter().all(Value::is_string) {
+                        return Err(invalid());
+                    }
+                    Value::Array(values.clone())
+                } else {
+                    input()?.lines().map(Value::from).collect()
+                }
+            }
             W::Map => Value::Object(
                 input()?
                     .lines()

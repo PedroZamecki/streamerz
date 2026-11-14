@@ -420,6 +420,8 @@ const SETTLE: std::time::Duration = std::time::Duration::from_millis(300);
 fn saved(change: &crate::fswatch::Change) -> bool {
     use crate::fswatch::Change;
     let path = match change {
+        #[cfg(target_os = "linux")]
+        Change::WriteClosed(_) => return false,
         Change::Created(p) | Change::Modified(p) | Change::Deleted(p) | Change::Renamed(_, p) => p,
     };
     let name = crate::fswatch::name_of(path);
@@ -521,35 +523,85 @@ pub async fn add_to_obs(e: &Rc<Engine>, group: &str, file: &str) -> Result<(&'st
         obs_source(&c, group, file)
     };
     let obs = e.obs_start();
+    put_obs_source(obs.as_ref(), None, "", &name, settings).await
+}
+
+/// Add to the exact connection and scene disclosed by the setup form. Do not fall back to a
+/// different running OBS connection or scene if the chosen destination disappears.
+pub async fn add_to_obs_at(
+    e: &Rc<Engine>,
+    group: &str,
+    file: &str,
+    connection: &str,
+    scene: &str,
+) -> Result<(&'static str, String), String> {
+    if scene.trim().is_empty() || !e.obs_connected(Some(connection)) {
+        return Err("The selected OBS connection or scene is unavailable".into());
+    }
+    let (name, settings) = {
+        let config = e.config();
+        if groups::file_path(&config, group, file).is_none() {
+            return Err("that page is gone".into());
+        }
+        obs_source(&config, group, file)
+    };
+    let obs = e.obs().ok_or("The selected OBS connection is unavailable")?;
+    put_obs_source(obs.as_ref(), Some(connection), scene, &name, settings).await
+}
+
+async fn put_obs_source(
+    obs: &dyn crate::ports::ObsPort,
+    connection: Option<&str>,
+    scene: &str,
+    name: &str,
+    settings: Value,
+) -> Result<(&'static str, String), String> {
     let inputs = obs
-        .send_request(None, "GetInputList", json!({"inputKind": "browser_source"}))
+        .send_request(connection, "GetInputList", json!({"inputKind": "browser_source"}))
         .await?;
     let exists = inputs["inputs"]
         .as_array()
-        .is_some_and(|list| list.iter().any(|i| i["inputName"].as_str() == Some(&name)));
+        .is_some_and(|list| list.iter().any(|i| i["inputName"].as_str() == Some(name)));
     if exists {
         obs.send_request(
-            None,
+            connection,
             "SetInputSettings",
             json!({"inputName": name, "inputSettings": settings, "overlay": true}),
         )
         .await?;
-        return Ok(("updated", name));
+        if !scene.is_empty()
+            && obs
+                .send_request(
+                    connection,
+                    "GetSceneItemId",
+                    json!({"sceneName": scene, "sourceName": name}),
+                )
+                .await
+                .is_err()
+        {
+            obs.send_request(
+                connection,
+                "CreateSceneItem",
+                json!({"sceneName": scene, "sourceName": name, "sceneItemEnabled": true}),
+            )
+            .await?;
+        }
+        return Ok(("updated", name.to_owned()));
     }
-    let scene = obs.send_request(None, "GetCurrentProgramScene", json!({})).await?;
-    let scene = scene["sceneName"]
-        .as_str()
-        .or(scene["currentProgramSceneName"].as_str())
-        .ok_or("OBS did not say which scene is on")?
-        .to_string();
-    obs.send_request(
-        None,
-        "CreateInput",
-        json!({"sceneName": scene, "inputName": name, "inputKind": "browser_source", "inputSettings": settings,
-            "sceneItemEnabled": true}),
-    )
-    .await?;
-    Ok(("added", name))
+    let current;
+    let scene = if scene.is_empty() {
+        current = obs
+            .send_request(connection, "GetCurrentProgramScene", json!({}))
+            .await?;
+        current["sceneName"]
+            .as_str()
+            .or(current["currentProgramSceneName"].as_str())
+            .ok_or("OBS did not say which scene is on")?
+    } else {
+        scene
+    };
+    obs.send_request(connection, "CreateInput", json!({"sceneName": scene, "inputName": name, "inputKind": "browser_source", "inputSettings": settings, "sceneItemEnabled": true})).await?;
+    Ok(("added", name.to_owned()))
 }
 
 const CLIENT: &str = include_str!("../assets/overlays/client.js");

@@ -8,6 +8,8 @@ pub fn appearance(state: &str, cx: &App) -> (&'static str, Hsla) {
         "up" => ("circle-check", 0x3cb371, 0x166534),
         "down" => ("circle-alert", 0xe06050, 0xb91c1c),
         "busy" => ("loader-circle", 0xe0a830, 0x92400e),
+        "unset" => ("circle-dashed", 0x999999, 0x52525b),
+        "attention" => ("circle-alert", 0xe0a830, 0x92400e),
         "locked" => ("lock", 0xe0a830, 0x92400e),
         "standby" => ("moon", 0x64b5f6, 0x1d4ed8),
         _ => ("circle-off", 0x999999, 0x52525b),

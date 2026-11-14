@@ -94,7 +94,7 @@ fn read_examples(engine: &Rc<Engine>) -> Result<Value, String> {
             _ => "",
         };
         rows.push(json!({"id": example.slug, "name": about["name"], "enabled": true,
-            "can": {"add_example": about["installed"]["state"] != "same"},
+            "can": {"add_example": about["installed"]["state"] != "same", "example_obs": about["pages"].as_array().is_some_and(|pages| pages.iter().any(|page| page["dock"] != true))},
             "detail": about["about"], "detailOk": true,
             "cells": [about["name"], about["about"], state]}));
     }
@@ -106,7 +106,8 @@ fn read_examples(engine: &Rc<Engine>) -> Result<Value, String> {
         column("state", "overlays.header.state", 90),
     ],
     "rows": rows, "empty": "", "search": false, "showTitle": false,
-    "actions": [button("add_example", "overlays.examples.add", "plus", true)]});
+    "actions": [button("add_example", "overlays.examples.add", "plus", true),
+        {"id":"example_obs", "label":tr("overlays.btn.add_to_obs"), "icon":"monitor-play", "needs":"row", "form":"overlay:example_obs:"}]});
     table["perRow"] = 1.into();
     table["titleless"] = true.into();
     table["detail"] = "".into();
@@ -323,7 +324,7 @@ pub fn read(engine: &Rc<Engine>, domain: &str) -> Result<Value, String> {
                 _ => tr("overlays.delete_confirm").to_owned(),
             };
             json!({"id": row_id(&group, &file), "name": overlays::page_name(&page), "enabled": true,
-                "can": {"connect": !connected, "disconnect": connected},
+                "can": {"connect": !connected, "disconnect": connected, "obs_setup": !page.dock, "add_to_obs": page.dock},
                 "confirm": {"delete": delete, "disconnect": trf("overlays.disconnect_confirm", &[("name", &group)])},
                 "detail": if meta.description.is_empty() { address.clone() } else { format!("{}\n{address}", meta.description) },
                 "detailOk": true,
@@ -348,8 +349,18 @@ pub fn read(engine: &Rc<Engine>, domain: &str) -> Result<Value, String> {
     examples["dialog"] = EXAMPLES.into();
     let mut new = top(form_button("new", "overlays.btn.new", "plus", false));
     new["primary"] = true.into();
+    let guide = super::status::failure("http")
+        .and_then(|failure| failure["text"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| {
+            tr(if server_on {
+                "overlays.guide"
+            } else {
+                "overlays.guide_server_off"
+            })
+            .to_owned()
+        });
     let mut table = json!({"kind": "overlay", "title": "", "what": "", "domain": DOMAIN,
-    "guide": if server_on { tr("overlays.guide") } else { tr("overlays.guide_server_off") },
+    "guide": guide,
     "columns": [
         column("name", "overlays.header.page", 220),
         column("group", "overlays.header.group", 170),
@@ -361,11 +372,14 @@ pub fn read(engine: &Rc<Engine>, domain: &str) -> Result<Value, String> {
     "rows": rows, "empty": tr("overlays.empty"), "search": true, "showTitle": false,
     "actions": [
         examples,
+        if !server_on { top(button("enable_server", "overlays.enable_server", "power", false)) }
+        else { icon(top(button("server_state", "overlays.server_state", "server", false))) },
         top(form_button("import", "btn.import", "download", false)),
         new,
         icon(top(button("guide", "overlays.btn.guide", "book-open", false))),
         icon(top(button("refresh", "btn.refresh", "refresh-cw", false))),
-        button("add_to_obs", "overlays.btn.add_to_obs", "monitor-play", true),
+        {"id":"obs_setup", "label":tr("overlays.btn.add_to_obs"), "icon":"monitor-play", "needs":"row", "form":"overlay:obs_setup:", "hideDisabled":true},
+        {"id":"add_to_obs", "label":tr("overlays.btn.add_to_obs"), "icon":"monitor-play", "needs":"row", "hideDisabled":true},
         button("copy_url", "overlays.btn.copy_url", "copy", true),
         button("open", "overlays.btn.open", "external-link", true),
         tip(button("test", "overlays.btn.test", "play", true), "overlays.test.tip"),
@@ -392,6 +406,14 @@ pub fn read(engine: &Rc<Engine>, domain: &str) -> Result<Value, String> {
 pub fn act(engine: &Rc<Engine>, action: &str, id: &str) -> Result<Value, String> {
     let accepted = Ok(json!({"accepted": true}));
     match action {
+        "enable_server" => {
+            let address = overlays::base(&engine.config());
+            engine.change(|config| config.http.auto_start = true);
+            Ok(json!({"accepted":true, "message": trf("overlays.server_starting", &[("address", &address)])}))
+        }
+        "server_state" => Ok(json!({"values":{"title":tr("overlays.server_state"), "rows":[
+            {"name":tr("overlays.header.address"),"value":overlays::base(&engine.config())}
+        ]}})),
         "refresh" => {
             sync(engine);
             accepted
@@ -422,7 +444,14 @@ pub fn act(engine: &Rc<Engine>, action: &str, id: &str) -> Result<Value, String>
             crate::oauth::open_browser(&folder.display().to_string());
             accepted
         }
-        "add_example" => add_example(engine, id).map(|_| json!({"accepted": true})),
+        "add_example" => add_example(engine, id).map(|group| {
+            let saved = overlays::list(&engine.config())
+                .into_iter()
+                .find(|(g, _)| g == &group)
+                .map(|(g, f)| row_id(&g, &f))
+                .unwrap_or_default();
+            json!({"accepted": true, "saved": saved})
+        }),
         "test" => {
             let (group, _) = row(engine, id)?;
             if overlays::open_pages(&group) == 0 {
@@ -585,6 +614,9 @@ fn free_groups(config: &crate::Config) -> Vec<String> {
 
 /// A page is served by the HTTP server: say so instead of opening an address that answers nothing.
 fn server_on(engine: &Rc<Engine>) -> Result<(), String> {
+    if let Some(failure) = super::status::failure("http") {
+        return Err(failure["text"].as_str().unwrap_or_default().to_owned());
+    }
     if engine.config().http.auto_start {
         Ok(())
     } else {
@@ -643,12 +675,65 @@ fn home() -> std::path::PathBuf {
         .unwrap_or_default()
 }
 
+/// A stable destination value includes the scene disclosed before committing, rather than a list
+/// position that could change when OBS changes scenes or another connection arrives.
+fn obs_destinations(engine: &Rc<Engine>) -> Vec<(String, String)> {
+    engine
+        .config()
+        .obs
+        .connections
+        .iter()
+        .filter_map(|item| {
+            let id = item.get("id")?.as_str()?;
+            if !engine.obs_connected(Some(id)) {
+                return None;
+            }
+            let scene = crate::obs::current_scene(id)?;
+            let name = item.get("name").and_then(Value::as_str).unwrap_or(id);
+            Some((format!("{}:{}", enc(id), enc(&scene)), format!("{name}: {scene}")))
+        })
+        .collect()
+}
+
+fn obs_setup_form(engine: &Rc<Engine>, name: &str, raw: &str) -> Result<Value, String> {
+    let (id, snapshot) = raw.split_once('|').unwrap_or((raw, ""));
+    if name == "example_obs" {
+        crate::examples::package(id)?;
+    } else {
+        row(engine, id)?;
+    }
+    let destinations = obs_destinations(engine);
+    if destinations.is_empty() {
+        return Err(tr("overlays.obs.none").into());
+    }
+    let selected = if snapshot.is_empty() {
+        destinations[0].0.clone()
+    } else {
+        dec(snapshot)
+    };
+    let kind = format!("overlay:{name}:{id}|{}", enc(&selected));
+    let mut destination = field("destination", tr("overlays.obs.destination"), "text", selected.into());
+    destination["choices"] = destinations
+        .iter()
+        .map(|(id, label)| json!({"id":id,"label":label}))
+        .collect::<Vec<_>>()
+        .into();
+    destination["strict"] = true.into();
+    let address = overlays::base(&engine.config());
+    let hint = trf("overlays.obs.setup_effects", &[("address", &address)]);
+    let mut out = form(kind, tr("overlays.btn.add_to_obs").into(), &hint, vec![destination]);
+    out["okLabel"] = tr("overlays.btn.add_to_obs").into();
+    out["json"] = false.into();
+    Ok(out)
+}
+
 /// `StreamerzEntityForm` for this page's forms.
 pub fn form_for(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     let (name, id) = parts(request);
     let kind = request["kind"].as_str().unwrap_or_default().to_owned();
     let config = engine.config();
     match name.as_str() {
+        "example_obs" | "obs_setup" => obs_setup_form(engine, &name, &id),
         "settings" => {
             let (group, _) = row(engine, &id)?;
             let mut form = super::actions::group_settings_form(&config, &group);
@@ -806,6 +891,60 @@ pub fn edit_form(engine: &Rc<Engine>, request: &Value, preview: bool) -> Result<
     }
     let text = |key: &str| item[key].as_str().unwrap_or_default().trim().to_owned();
     match name.as_str() {
+        "example_obs" | "obs_setup" => {
+            let raw = id.split_once('|').map_or(id.as_str(), |(id, _)| id);
+            let destination = text("destination");
+            let (connection, scene) = destination
+                .split_once(':')
+                .ok_or_else(|| tr("forms.invalid_field").to_owned())?;
+            let (connection, scene) = (dec(connection), dec(scene));
+            if !engine.obs_connected(Some(&connection)) || scene.is_empty() {
+                return Err(tr("overlays.obs.none").into());
+            }
+            let (group, file) = if name == "example_obs" {
+                let group = add_example(engine, raw)?;
+                let file = overlays::list(&engine.config())
+                    .into_iter()
+                    .find(|(g, f)| g == &group && !overlays::page_of(&engine.config(), g, f).dock)
+                    .map(|(_, f)| f)
+                    .ok_or_else(gone)?;
+                (group, file)
+            } else {
+                row(engine, raw)?
+            };
+            let saved = row_id(&group, &file);
+            let listening = crate::servers::wait_for_http(&engine.config().http);
+            if !engine.config().http.auto_start {
+                super::status::clear_failure("http");
+            }
+            engine.change(|config| config.http.auto_start = true);
+            let engine = engine.clone();
+            tokio::task::spawn_local(async move {
+                // Binding the existing server acknowledges readiness. Source creation preserves
+                // the selected scene even if the scene on air changes while OBS answers.
+                let result = listening.await.unwrap_or_else(|_| Err(tr("conns.failure.bind").into()));
+                let result = match result {
+                    Ok(()) => overlays::add_to_obs_at(&engine, &group, &file, &connection, &scene).await,
+                    Err(error) => Err(error),
+                };
+                match result {
+                    Ok((what, name)) => crate::say(trf(
+                        if what == "updated" {
+                            "overlays.obs.updated"
+                        } else {
+                            "overlays.obs.added"
+                        },
+                        &[("name", &name)],
+                    )),
+                    Err(error) => super::prompts::notice(
+                        tr("overlays.btn.add_to_obs").into(),
+                        trf("overlays.obs.partial", &[("error", &error)]),
+                    ),
+                }
+                crate::host::changed();
+            });
+            Ok(json!({"saved": saved}))
+        }
         "connect" => {
             let (group, _) = row(engine, &id)?;
             // The first choice is a new group of the overlay's name; the rest are the groups there.
@@ -1479,6 +1618,61 @@ mod tests {
     use crate::engine::tests::{engine, run};
 
     #[test]
+    fn overlay_setup_is_explicit_and_destinations_do_not_follow_later_scene_changes() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        run(async {
+            let e = engine(json!({"actions":[]}));
+            e.change(|config| {
+                config.http.auto_start = false;
+                config.http.address = "127.0.0.1".into();
+                config.http.port = 18747;
+            });
+            let before = e.config().http.clone();
+            let model = read(&e, DOMAIN).unwrap();
+            assert!(model["tables"][0]["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["id"] == "enable_server"));
+            assert!(!e.config().http.auto_start);
+            assert!(form_for(&e, &json!({"kind":"overlay:example_obs:clock"})).is_err());
+            assert!(
+                groups::all(&e.config()).is_empty(),
+                "missing OBS must not install an example"
+            );
+            act(&e, "enable_server", "").unwrap();
+            assert!(e.config().http.auto_start);
+            assert_eq!(e.config().http.address, before.address);
+            assert_eq!(e.config().http.port, before.port);
+            let fake = Rc::new(crate::ports::fakes::FakeObs::default());
+            fake.connected.set(true);
+            e.set_obs(fake.clone());
+            let group = add_example(&e, "clock").unwrap();
+            let file = overlays::list(&e.config())
+                .into_iter()
+                .find(|(g, _)| g == &group)
+                .unwrap()
+                .1;
+            fake.answer("GetInputList", json!({"inputs":[]}));
+            fake.answer("CreateInput", json!({}));
+            overlays::add_to_obs_at(&e, &group, &file, "chosen", "Disclosed scene")
+                .await
+                .unwrap();
+            assert_eq!(fake.requests("CreateInput")[0]["sceneName"], "Disclosed scene");
+            assert!(fake.requests("GetCurrentProgramScene").is_empty());
+            fake.connected.set(false);
+            assert!(overlays::add_to_obs_at(&e, &group, &file, "chosen", "Disclosed scene")
+                .await
+                .is_err());
+            assert_eq!(
+                fake.requests("CreateInput").len(),
+                1,
+                "never fall back after a disconnect"
+            );
+        });
+    }
+
+    #[test]
     fn the_page_lists_every_overlay_and_works_without_a_frontend() {
         let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         run(async {
@@ -1514,7 +1708,10 @@ mod tests {
             // An overlay makes no group of actions, and says it has none connected.
             assert!(groups::names(&e.config()).is_empty());
             assert_eq!(rows[0]["cells"][3], "");
-            assert_eq!(rows[0]["can"], json!({"connect": true, "disconnect": false}));
+            assert_eq!(
+                rows[0]["can"],
+                json!({"connect": true, "disconnect": false, "obs_setup": true, "add_to_obs":false})
+            );
             let page = String::from_utf8(groups::read_file(&e.config(), "Clock", "index.html").unwrap()).unwrap();
             assert!(page.contains("streamerz.onSettings"));
             // Copy URL and the dock's steps give the address; a row that is gone says so.
@@ -1644,7 +1841,10 @@ mod tests {
             assert!(groups::connected(&e.config(), "Clock") && !groups::exists(&e.config(), "Votes"));
             let rows = read(&e, DOMAIN).unwrap()["tables"][0]["rows"].clone();
             assert_eq!(rows[0]["cells"][3], json!({"text": "An empty group", "icon": "link"}));
-            assert_eq!(rows[0]["can"], json!({"connect": false, "disconnect": true}));
+            assert_eq!(
+                rows[0]["can"],
+                json!({"connect": false, "disconnect": true, "obs_setup":true, "add_to_obs":false})
+            );
             assert!(rows[0]["confirm"]["delete"]
                 .as_str()
                 .unwrap()

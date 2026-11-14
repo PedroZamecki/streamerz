@@ -2,13 +2,14 @@
 use super::gallery::Gallery;
 use crate::{i18n::tr, send};
 use gpui_kit::component::{
-    button::Button,
+    button::{Button, ButtonVariants},
     checkbox::Checkbox,
     color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
+    menu::{DropdownMenu, PopupMenuItem},
     select::{SearchableVec, Select, SelectEvent, SelectState},
     slider::{Slider, SliderEvent, SliderState},
-    ActiveTheme, Disableable, IndexPath, Sizable, WindowExt,
+    ActiveTheme, Disableable, IndexPath, Sizable,
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -88,7 +89,6 @@ fn color_of(text: &str) -> Option<Hsla> {
 fn tidy(value: f32) -> f64 {
     (f64::from(value) * 1e4).round() / 1e4
 }
-pub struct Cancelled;
 pub struct Form {
     pub model: Value,
     fields: Vec<Field>,
@@ -99,9 +99,11 @@ pub struct Form {
     buttons_view: Entity<FormButtons>,
     /// A file picked with Browse, for its field (set into the box on the next draw, which has the window).
     picked: Option<(usize, String)>,
+    autofocus: bool,
+    /// Section headings toggle their fields without changing form values.
+    section_toggles: std::collections::HashSet<usize>,
     _subscriptions: Vec<Subscription>,
 }
-impl EventEmitter<Cancelled> for Form {}
 impl Form {
     pub fn new(model: Value, route: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
@@ -371,21 +373,36 @@ impl Form {
                 cx.new(|_| FormButtons(weak))
             },
             picked: None,
+            autofocus: true,
+            section_toggles: std::collections::HashSet::new(),
             _subscriptions: subscriptions,
         }
     }
     pub fn show_json(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.json_editor = Some(cx.new(|cx| TextareaState::new(window, cx).default_value(text.to_owned())));
+        self.autofocus = true;
         self.pending = false;
         self.error.clear();
         cx.notify();
     }
-    fn submit(&mut self, preview: bool, cx: &mut Context<Self>) {
+    pub(super) fn submit(&mut self, preview: bool, cx: &mut Context<Self>) {
+        let changes = self.model["commitChanges"].clone();
+        self.submit_action(preview, &changes, cx);
+    }
+
+    fn submit_action(&mut self, preview: bool, overrides: &Value, cx: &mut Context<Self>) {
         let mut request = json!({"request": if preview { "StreamerzEntityDraft" } else { "StreamerzEditEntity" }, "kind": self.model["kind"], "itemId": self.model["item"]["id"].as_str().unwrap_or_default(), "id": if preview { self.route.replace(":save", ":json") } else { self.route.clone() }});
         if let Some(editor) = &self.json_editor {
             request["json"] = editor.read(cx).value().to_string().into();
         } else {
-            request["changes"] = json!(self.changes(cx));
+            let mut changes = self.changes(cx);
+            if !preview {
+                for change in overrides.as_array().into_iter().flatten() {
+                    changes.retain(|existing| existing["field"] != change["field"]);
+                    changes.push(change.clone());
+                }
+            }
+            request["changes"] = json!(changes);
         }
         send(request);
         self.pending = true;
@@ -497,12 +514,39 @@ impl Form {
         .detach();
     }
 }
-/// How tall a quiet line of text is drawn, wrapped at the dialog's width (about 85 characters a line).
-fn wrapped(text: &str, line: f32) -> f32 {
-    line * (text.chars().count() as f32 / 85.).ceil().max(1.)
+/// Leave room for wrapped text, including explicit line breaks.
+fn wrapped(text: &str, line: f32, width: f32) -> f32 {
+    text.lines()
+        .map(|text| line * (text.chars().count() as f32 / (width / 7.).max(1.)).ceil().max(1.))
+        .sum::<f32>()
+        .max(line)
 }
 impl Render for Form {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.autofocus {
+            self.autofocus = false;
+            if let Some(editor) = &self.json_editor {
+                // The old field leaves the focus tree when JSON replaces it. Keep dismissal and
+                // keyboard input routed through the open dialog.
+                editor.update(cx, |editor, cx| editor.focus(window, cx));
+            } else {
+                let index = self.model["focusField"]
+                    .as_u64()
+                    .map(|index| index as usize)
+                    .or_else(|| {
+                        self.fields.iter().enumerate().position(|(index, field)| {
+                            self.shown(index, cx)
+                                && self.model["fields"][index]["value"].as_str().is_some_and(str::is_empty)
+                                && matches!(field, Field::Text(_) | Field::Multi(_))
+                        })
+                    });
+                match index.and_then(|index| self.fields.get(index)) {
+                    Some(Field::Text(input)) => input.update(cx, |input, cx| input.focus(window, cx)),
+                    Some(Field::Multi(input)) => input.update(cx, |input, cx| input.focus(window, cx)),
+                    _ => {}
+                }
+            }
+        }
         if let Some((index, path)) = self.picked.take() {
             match self.fields.get(index) {
                 Some(Field::Text(input)) => input.update(cx, |input, cx| input.set_value(path, window, cx)),
@@ -528,7 +572,8 @@ impl Render for Form {
             .overflow_y_scroll()
             .flex_1()
             .min_h_0();
-        let mut wanted = 0.;
+        let note_width = (f32::from(window.viewport_size().width).min(560.) - 80.).max(100.);
+        let mut wanted = 16.;
         if let Some(hint) = self.model["hint"].as_str().filter(|hint| !hint.is_empty()) {
             body = body.child(
                 div()
@@ -537,7 +582,7 @@ impl Render for Form {
                     .text_color(cx.theme().muted_foreground)
                     .child(hint.to_owned()),
             );
-            wanted += wrapped(hint, 18.) + 8.;
+            wanted += wrapped(hint, 18., note_width) + 8.;
         }
         if !self.error.is_empty() {
             body = body.child(super::notice::error(&self.error, cx));
@@ -551,7 +596,7 @@ impl Render for Form {
             .filter_map(Value::as_str)
         {
             body = body.child(super::notice::info(note, cx).flex_shrink_0());
-            wanted += 18. * (note.chars().count() as f32 / 85.).ceil().max(1.) + 4.;
+            wanted += wrapped(note, 18., note_width) + 4.;
         }
         if let Some(editor) = &self.json_editor {
             wanted += 440.;
@@ -561,25 +606,46 @@ impl Render for Form {
             while index < self.fields.len() {
                 // A heading above the field that starts a part of the form.
                 if let Some(title) = self.model["fields"][index]["section"].as_str() {
+                    let collapsed =
+                        (self.model["fields"][index]["collapsed"] == true) ^ self.section_toggles.contains(&index);
+                    let heading = index;
                     body = body.child(
-                        div()
-                            .flex_shrink_0()
-                            .mt(px(if index == 0 { 0. } else { 6. }))
-                            .pb(px(2.))
-                            .border_b_1()
-                            .border_color(cx.theme().border)
-                            .text_size(px(12.))
-                            .text_color(crate::theme::quiet(cx))
-                            .child(title.to_owned()),
+                        Button::new(("form-section", index))
+                            .small()
+                            .ghost()
+                            .w_full()
+                            .justify_start()
+                            .icon(gpui_kit::component::Icon::empty().path(if collapsed {
+                                "icons/chevron-right.svg"
+                            } else {
+                                "icons/chevron-down.svg"
+                            }))
+                            .label(title.to_owned())
+                            .on_click(cx.listener(move |form, _, _, cx| {
+                                if !form.section_toggles.remove(&heading) {
+                                    form.section_toggles.insert(heading);
+                                }
+                                cx.notify();
+                            })),
                     );
                     wanted += 30.;
+                    if collapsed {
+                        index += 1;
+                        while index < self.fields.len() && !self.model["fields"][index]["section"].is_string() {
+                            index += 1;
+                        }
+                        continue;
+                    }
                 }
                 if !self.shown(index, cx) {
                     index += 1;
                     continue;
                 }
                 if matches!(self.fields[index], Field::Bool(_)) {
-                    let mut row = div().flex().items_center().gap_2().h(px(26.)).flex_shrink_0();
+                    let long = self.model["fields"][index]["label"]
+                        .as_str()
+                        .is_some_and(|label| label.chars().count() > 28);
+                    let mut row = div().flex().items_center().gap_2().min_h(px(26.)).flex_shrink_0();
                     for place in 0..2 {
                         let Some(Field::Bool(checked)) = self.fields.get(index) else {
                             break;
@@ -590,6 +656,14 @@ impl Render for Form {
                         }
                         // A box that starts a part of the form goes on a line of its own, under the heading.
                         if place > 0 && self.model["fields"][index]["section"].is_string() {
+                            break;
+                        }
+                        if place > 0
+                            && (long
+                                || self.model["fields"][index]["label"]
+                                    .as_str()
+                                    .is_some_and(|label| label.chars().count() > 28))
+                        {
                             break;
                         }
                         let field_index = index;
@@ -626,6 +700,8 @@ impl Render for Form {
                                 .child(
                                     Checkbox::new(("field", index))
                                         .small()
+                                        .w_full()
+                                        .min_w_0()
                                         .label(label)
                                         .checked(*checked)
                                         .disabled(self.pending || self.model["fields"][index]["disabled"] == true)
@@ -645,7 +721,7 @@ impl Render for Form {
                     .as_str()
                     .unwrap_or_default()
                     .to_owned();
-                let (editor, height) = match &self.fields[index] {
+                let (editor, height): (AnyElement, f32) = match &self.fields[index] {
                     Field::Gallery(gallery) => (Gallery::field(gallery, label.clone(), self.pending, cx), 26.),
                     Field::Choice {
                         select,
@@ -700,13 +776,22 @@ impl Render for Form {
                     Field::Checks { ids, on } => {
                         let options = &self.model["fields"][index]["widget"]["options"];
                         let field_index = index;
-                        // One line: each box with its logo, as close as they read well.
-                        let mut row = div().flex().items_center().gap(px(10.)).overflow_hidden();
+                        // Action and permission lists can contain any number of long names.
+                        let width = (f32::from(window.viewport_size().width).min(560.) - 230.).max(90.);
+                        let mut height = 0.;
+                        let mut row = div().w_full().min_w_0().flex().flex_col().gap_1();
+                        if ids.is_empty() {
+                            row = row.child(tr("forms.none"));
+                            height = 26.;
+                        }
                         for (at, _) in ids.iter().enumerate() {
                             let name = options[at]["label"].as_str().unwrap_or_default().to_owned();
                             let brand = options[at]["brand"].as_str().map(str::to_owned);
+                            height += wrapped(&name, 26., width - 24.) + 4.;
                             row = row.child(
                                 div()
+                                    .w_full()
+                                    .min_w_0()
                                     .flex()
                                     .flex_shrink_0()
                                     .items_center()
@@ -722,6 +807,8 @@ impl Render for Form {
                                     .child(
                                         Checkbox::new(("check", index * 16 + at))
                                             .small()
+                                            .w_full()
+                                            .min_w_0()
                                             .label(name)
                                             .checked(on[at])
                                             .disabled(self.pending)
@@ -735,7 +822,7 @@ impl Render for Form {
                                     ),
                             );
                         }
-                        (row.into_any_element(), 26.)
+                        (row.into_any_element(), height)
                     }
                     Field::Text(state) => {
                         let input = Input::new(state)
@@ -885,6 +972,11 @@ impl Render for Form {
                 };
                 // What the field is for, when its maker said: shown over its label.
                 let about = self.model["fields"][index]["tip"].as_str().map(str::to_owned);
+                let variables = self.model["variables"].as_array().cloned().unwrap_or_default();
+                let insertable =
+                    !variables.is_empty() && matches!(self.fields[index], Field::Text(_) | Field::Multi(_));
+                let height = if insertable { height.max(54.0_f32) } else { height };
+                let owner = cx.entity().downgrade();
                 body = body.child(
                     div()
                         .flex()
@@ -898,8 +990,47 @@ impl Render for Form {
                                 .id(("form-lbl", index))
                                 .w(px(150.))
                                 .flex_shrink_0()
-                                .truncate()
-                                .child(label)
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(div().truncate().child(label))
+                                .when(insertable, |label| {
+                                    label.child(
+                                        Button::new(("insert-variable", index))
+                                            .small()
+                                            .ghost()
+                                            .label(tr("forms.insert_variable"))
+                                            .disabled(self.pending)
+                                            .dropdown_menu(move |mut menu, _, _| {
+                                                for name in variables.iter().filter_map(Value::as_str) {
+                                                    let value = format!("%{name}%");
+                                                    let owner = owner.clone();
+                                                    menu = menu.item(PopupMenuItem::new(value.clone()).on_click(
+                                                        move |_, window, cx| {
+                                                            let _ = owner.update(cx, |form, cx| {
+                                                                match form.fields.get(index) {
+                                                                    Some(Field::Text(input)) => {
+                                                                        input.update(cx, |input, cx| {
+                                                                            input.insert(value.clone(), window, cx);
+                                                                            input.focus(window, cx);
+                                                                        })
+                                                                    }
+                                                                    Some(Field::Multi(input)) => {
+                                                                        input.update(cx, |input, cx| {
+                                                                            input.insert(value.clone(), window, cx);
+                                                                            input.focus(window, cx);
+                                                                        })
+                                                                    }
+                                                                    _ => {}
+                                                                }
+                                                            });
+                                                        },
+                                                    ));
+                                                }
+                                                menu
+                                            }),
+                                    )
+                                })
                                 .when(!label_tip.is_empty(), |el| {
                                     el.tooltip(move |window, cx| {
                                         gpui_kit::component::tooltip::Tooltip::new(label_tip.clone()).build(window, cx)
@@ -932,7 +1063,8 @@ impl Form {
     pub fn buttons(&self, cx: &mut Context<Self>) -> Div {
         let left = (self.json_editor.is_none() && self.model["json"] != false).then(|| {
             Button::new("edit-json")
-                .icon(gpui_kit::component::Icon::empty().path("icons/pencil.svg"))
+                .ghost()
+                .icon(gpui_kit::component::Icon::empty().path("icons/braces.svg"))
                 .label(tr("btn.edit_json"))
                 .disabled(self.pending)
                 .on_click(cx.listener(|form, _, _, cx| form.submit(true, cx)))
@@ -942,23 +1074,33 @@ impl Form {
             .flex()
             .gap_2()
             .child(
-                Button::new("save-form")
-                    .label(
-                        self.model["okLabel"]
-                            .as_str()
-                            .map_or_else(|| tr("dialogs.ok").to_owned(), str::to_owned),
-                    )
-                    .disabled(self.pending)
-                    .on_click(cx.listener(|form, _, _, cx| form.submit(false, cx))),
-            )
-            .child(
                 Button::new("cancel-form")
                     .label(tr("dialogs.cancel"))
                     .disabled(self.pending)
-                    .on_click(cx.listener(|_, _, window, cx| {
-                        cx.emit(Cancelled);
-                        window.close_dialog(cx);
-                    })),
+                    .on_click(cx.listener(|_, _, window, cx| super::dialog::dismiss(window, cx))),
+            )
+            .children(
+                (self.json_editor.is_none() && self.model["alternateSubmit"].is_object()).then(|| {
+                    let action = self.model["alternateSubmit"].clone();
+                    Button::new("alternate-submit")
+                        .label(action["label"].as_str().unwrap_or_default().to_owned())
+                        .disabled(self.pending)
+                        .on_click(cx.listener(move |form, _, _, cx| form.submit_action(false, &action["changes"], cx)))
+                }),
+            )
+            .child(
+                Button::new("save-form")
+                    .primary()
+                    .label(
+                        if self.json_editor.is_some() {
+                            Some(tr("btn.save"))
+                        } else {
+                            self.model["okLabel"].as_str()
+                        }
+                        .map_or_else(|| tr("dialogs.ok").to_owned(), str::to_owned),
+                    )
+                    .disabled(self.pending)
+                    .on_click(cx.listener(|form, _, _, cx| form.submit(false, cx))),
             );
         super::dialog::footer(left, right, cx)
     }

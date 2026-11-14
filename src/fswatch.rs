@@ -11,6 +11,8 @@ use tokio::sync::mpsc::UnboundedSender;
 pub enum Change {
     Created(PathBuf),
     Modified(PathBuf),
+    #[cfg(target_os = "linux")]
+    WriteClosed(PathBuf),
     Deleted(PathBuf),
     Renamed(PathBuf, PathBuf),
 }
@@ -19,6 +21,14 @@ pub enum Change {
 /// the folder can't be watched (missing, no access).
 pub async fn watch(dir: PathBuf, recursive: bool, tx: UnboundedSender<Change>) -> std::io::Result<()> {
     imp::watch(dir, recursive, tx).await
+}
+
+/// File tails additionally need the end of a replacement write; ordinary watchers stay unchanged.
+pub async fn watch_tail(dir: PathBuf, tx: UnboundedSender<Change>) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    return imp::watch_tail(dir, tx).await;
+    #[cfg(not(target_os = "linux"))]
+    watch(dir, false, tx).await
 }
 
 /// Whether `name` matches a Windows-style filter (`*.txt`, `log?.txt`; `*.*` and empty: anything),
@@ -84,6 +94,7 @@ mod imp {
     struct Inotify {
         fd: AsyncFd<OwnedFd>,
         dirs: HashMap<i32, PathBuf>,
+        mask: u32,
     }
 
     #[derive(Default)]
@@ -125,7 +136,7 @@ mod imp {
                 return;
             };
             // SAFETY: a valid inotify fd and a NUL-terminated path.
-            let wd = unsafe { libc::inotify_add_watch(self.fd.get_ref().as_raw_fd(), c.as_ptr(), MASK) };
+            let wd = unsafe { libc::inotify_add_watch(self.fd.get_ref().as_raw_fd(), c.as_ptr(), self.mask) };
             if wd < 0 {
                 return;
             }
@@ -144,11 +155,25 @@ mod imp {
         watch_with_buffer(dir, recursive, tx, 16 * 1024).await
     }
 
+    pub async fn watch_tail(dir: PathBuf, tx: UnboundedSender<Change>) -> std::io::Result<()> {
+        watch_with_mask(dir, false, tx, 16 * 1024, MASK | libc::IN_CLOSE_WRITE).await
+    }
+
     pub(super) async fn watch_with_buffer(
         dir: PathBuf,
         recursive: bool,
         tx: UnboundedSender<Change>,
         size: usize,
+    ) -> std::io::Result<()> {
+        watch_with_mask(dir, recursive, tx, size, MASK).await
+    }
+
+    async fn watch_with_mask(
+        dir: PathBuf,
+        recursive: bool,
+        tx: UnboundedSender<Change>,
+        size: usize,
+        mask: u32,
     ) -> std::io::Result<()> {
         if !dir.is_dir() {
             return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no such folder"));
@@ -161,6 +186,7 @@ mod imp {
         // SAFETY: raw is a fresh fd we own.
         let fd = unsafe { OwnedFd::from_raw_fd(raw) };
         let mut ino = Inotify {
+            mask,
             // SAFETY: OwnedFd keeps this descriptor open and unchanged until AsyncFd drops it.
             fd: unsafe { AsyncFd::register(fd) }?,
             dirs: HashMap::new(),
@@ -232,6 +258,8 @@ mod imp {
                     Change::Created(path)
                 } else if ev.mask & libc::IN_DELETE != 0 {
                     Change::Deleted(path)
+                } else if ev.mask & libc::IN_CLOSE_WRITE != 0 {
+                    Change::WriteClosed(path)
                 } else if ev.mask & libc::IN_MODIFY != 0 {
                     Change::Modified(path)
                 } else {

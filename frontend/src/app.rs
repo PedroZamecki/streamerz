@@ -9,7 +9,7 @@ use crate::{
         sections::{Navigate, Sections},
     },
     i18n::tr,
-    send, CoreRedo, CoreUndo,
+    send, CoreRedo, CoreSave, CoreUndo,
 };
 use gpui_kit::base::Selectable;
 use gpui_kit::component::{
@@ -215,10 +215,12 @@ impl Frontend {
                         .gap_2()
                         .h(px(30.))
                         .child(
-                            img(format!("brands/{}.svg", item["brand"].as_str().unwrap_or_default()))
-                                .id(("conn-logo", index))
-                                .size_4()
-                                .flex_shrink_0(),
+                            crate::controls::body::brand_logo(
+                                ("conn-logo", index),
+                                item["brand"].as_str().unwrap_or_default(),
+                                px(16.),
+                                cx,
+                            ),
                         )
                         .child({
                             let name = item["name"].as_str().unwrap_or_default().to_owned();
@@ -283,7 +285,7 @@ impl Frontend {
             }
             let close = Button::new("conns-close")
                 .label(tr("dialogs.close"))
-                .on_click(|_, window, cx| window.close_dialog(cx));
+                .on_click(|_, window, cx| crate::controls::dialog::dismiss(window, cx));
             let footer = crate::controls::dialog::footer(None, close, cx);
             crate::controls::dialog::shell(dialog, tr("conns.title"), 460., cx)
                 .child(crate::controls::dialog::body(list))
@@ -401,7 +403,12 @@ impl Frontend {
                 window.close_dialog(cx);
             }
             if let Some(model) = prompts.and_then(|prompts| prompts.first()) {
-                let title = model["title"].as_str().unwrap_or_default().to_owned();
+                // A plain question (an update's) has no title of its own: it says whose it is.
+                let title = model["title"]
+                    .as_str()
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or("Streamerz")
+                    .to_owned();
                 self.prompt_id = model["id"].as_u64();
                 let prompt = cx.new(|cx| Prompt::new(model.clone(), window, cx));
                 self.prompt = Some(prompt.clone());
@@ -548,6 +555,13 @@ impl Frontend {
                 } else {
                     let route = format!("list:{}:{kind}", self.generation);
                     let list = cx.new(|cx| List::new(model.clone(), route, window, cx));
+                    self.list_subscriptions.push(cx.subscribe_in(
+                        &list,
+                        window,
+                        |this, _, event: &Navigate, window, cx| {
+                            this.select(&event.0, window, cx);
+                        },
+                    ));
                     self.list_subscriptions
                         .push(cx.subscribe(&list, |this, _, change: &ViewChange, cx| {
                             this.change_view(change);
@@ -670,7 +684,9 @@ impl Render for Frontend {
                                         .path(format!("icons/{}.svg", page["icon"].as_str().unwrap_or_default()))
                                         .size_4(),
                                 )
-                                .when(!narrow, |row| row.child(label)),
+                                .when(!narrow, |row| {
+                                    row.min_w_0().child(div().min_w_0().truncate().child(label))
+                                }),
                         )
                         .selected(selected)
                         .on_click(cx.listener(move |this, _, window, cx| this.select(&id, window, cx))),
@@ -774,7 +790,7 @@ impl Render for Frontend {
                 tabs["selected"] = kind.into();
             }
             let owner = cx.entity().downgrade();
-            content = content.child(crate::controls::tabs::bar(&tabs, cx, move |kind, _, cx| {
+            content = content.child(crate::controls::tabs::bar(&tabs, window, cx, move |kind, _, cx| {
                 let _ = owner.update(cx, |this, cx| {
                     this.view["tab"] = kind.into();
                     this.request_read();
@@ -877,8 +893,8 @@ impl Render for Frontend {
             .flex_shrink_0()
             .child(
                 Button::new("save")
-                    .w(px(if small { 36. } else { 110. }))
-                    .child(bar_content("save", tr("btn.save"), small, cx))
+                    .w(px(36.))
+                    .child(bar_content("save", tr("btn.save"), true, cx))
                     .accessibility_label(tr("btn.save"))
                     .tooltip(tr("ui.save_tooltip"))
                     .on_click(|_, _, _| send(json!({"request": "StreamerzCoreSave", "id": "save"}))),
@@ -920,14 +936,16 @@ impl Render for Frontend {
             )
             .child(
                 Button::new("hide")
-                    .w(px(if small { 36. } else { 110. }))
+                    .when(small, |button| button.w(px(36.)))
+                    .when(!small, |button| button.min_w(px(110.)))
                     .child(bar_content("eye-off", tr("btn.hide"), small, cx))
                     .accessibility_label(tr("btn.hide"))
                     .on_click(|_, _, cx| cx.quit()),
             )
             .child(
                 Button::new("quit")
-                    .w(px(if small { 36. } else { 110. }))
+                    .when(small, |button| button.w(px(36.)))
+                    .when(!small, |button| button.min_w(px(110.)))
                     .child(bar_content("log-out", tr("btn.quit"), small, cx))
                     .accessibility_label(tr("btn.quit"))
                     .on_click(|_, _, _| send(json!({"request": "StreamerzCoreQuit", "id": "quit"}))),
@@ -958,6 +976,9 @@ impl Render for Frontend {
                     cx.stop_propagation();
                 }
             })
+            .on_action(cx.listener(|_this, _: &CoreSave, _window, _cx| {
+                send(json!({"request": "StreamerzCoreSave", "id": "save"}));
+            }))
             .on_action(cx.listener(|_this, _: &CoreUndo, _window, _cx| {
                 send(json!({"request": "StreamerzCoreAction", "domain": "actions", "action": "undo", "id": "undo"}));
             }))

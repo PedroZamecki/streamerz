@@ -1042,6 +1042,7 @@ pub async fn run_pusher_loop_url(
                 }
 
                 if !established {
+                    crate::core::status::record_failure("kick", crate::core::status::Failure::Handshake);
                     crate::warn("Kick: connection established handshake failed".into());
                     failures += 1;
                     tokio::time::sleep(crate::http::backoff(failures)).await;
@@ -1050,6 +1051,7 @@ pub async fn run_pusher_loop_url(
                 failures = 0;
 
                 connected.store(true, Ordering::Relaxed);
+                crate::core::status::clear_failure("kick");
                 crate::host::changed();
                 crate::say(format!("Kick: connected (@{channel}, chatroom {cr_id})"));
                 engine.settle_role("kick");
@@ -1191,6 +1193,7 @@ pub async fn run_pusher_loop_url(
                             let _ = sink.send(Message::Pong(data)).await;
                         }
                         Message::Close(_) => {
+                            crate::core::status::record_failure("kick", crate::core::status::Failure::Closed);
                             crate::warn("Kick: connection closed by server".into());
                             break;
                         }
@@ -1215,6 +1218,7 @@ pub async fn run_pusher_loop_url(
                 failures += 1;
                 // The same line for every try of an outage would fill the log.
                 if failures == 1 {
+                    crate::core::status::record_failure("kick", crate::core::status::Failure::Connect);
                     crate::warn(format!("Kick: connection error: {e}, retrying"));
                 }
             }

@@ -68,6 +68,8 @@ pub struct Release {
     url: String,
     /// The file's SHA-256 as GitHub lists it, when it does.
     sha256: Option<String>,
+    /// Its size in bytes, as GitHub lists it (0 when it doesn't).
+    size: u64,
 }
 
 /// How this copy was installed, which says who updates it.
@@ -151,6 +153,7 @@ pub async fn newer() -> Option<Release> {
             .as_str()
             .and_then(|d| d.strip_prefix("sha256:"))
             .map(str::to_string),
+        size: a["size"].as_u64().unwrap_or(0),
         tag,
         path,
     })
@@ -164,17 +167,25 @@ fn beside(path: &Path, ext: &str) -> PathBuf {
     PathBuf::from(n)
 }
 
-/// A program, not an error page (an ELF or an exe, not tiny), with the SHA-256 GitHub lists when it
-/// lists one.
-fn sound(body: &[u8], sha256: Option<&str>) -> bool {
-    use sha2::{Digest, Sha256};
-    let program = body.starts_with(b"\x7fELF") || body.starts_with(b"MZ");
-    program
-        && body.len() > 100_000
-        && sha256.is_none_or(|want| {
-            let got: String = Sha256::digest(body).iter().map(|b| format!("{b:02x}")).collect();
-            got == want.to_lowercase()
-        })
+/// The largest release file taken: the plain Linux program is ~45 MB.
+const MAX_SIZE: u64 = 256 << 20;
+
+/// Why a downloaded file isn't the program it should be: an error page (not an ELF or an exe, or tiny),
+/// a download cut short (fewer bytes than GitHub lists), or another file (not the SHA-256 GitHub lists).
+fn unsound(got: &crate::http::Download, size: u64, sha256: Option<&str>) -> Option<String> {
+    let program = got.magic.starts_with(b"\x7fELF") || got.magic.starts_with(b"MZ");
+    if got.status != 200 {
+        Some(format!("HTTP {}", got.status))
+    } else if !got.complete || (size > 0 && got.len != size) {
+        Some(trf(
+            "update.cut_short",
+            &[("got", &got.len.to_string()), ("size", &size.to_string())],
+        ))
+    } else if !program || got.len <= 100_000 || sha256.is_some_and(|want| !want.eq_ignore_ascii_case(&got.sha256)) {
+        Some(tr("update.not_program").to_string())
+    } else {
+        None
+    }
 }
 
 /// True when writing or renaming in `path`'s directory requires administrator / elevated permissions.
@@ -320,11 +331,16 @@ pub async fn stage(r: &Release) -> Result<(), String> {
         return Ok(());
     }
     let headers = [("User-Agent".to_string(), "Streamerz".to_string())];
-    let got = crate::http::request("GET", &r.url, &headers, b"").await?;
-    if got.status != 200 || !sound(&got.body, r.sha256.as_deref()) {
-        return Err(format!("{}: not the program it should be (HTTP {})", r.url, got.status));
+    // Written to .part as it arrives, never held in memory, and checked before it becomes .new.
+    let got = crate::http::download(&r.url, &headers, &part, MAX_SIZE).await;
+    let bad = match &got {
+        Ok(got) => unsound(got, r.size, r.sha256.as_deref()),
+        Err(e) => Some(e.clone()),
+    };
+    if let Some(why) = bad {
+        let _ = std::fs::remove_file(&part);
+        return Err(why);
     }
-    std::fs::write(&part, &got.body).map_err(|e| format!("{}: {e}", part.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -336,8 +352,7 @@ pub async fn stage(r: &Release) -> Result<(), String> {
 
 fn apply_unprivileged(path: &Path, new: &Path) -> Result<(), String> {
     if cfg!(windows) {
-        let old = beside(path, "old");
-        let _ = std::fs::remove_file(&old);
+        let old = free_old_path(path);
         std::fs::rename(path, &old).map_err(|e| format!("{}: {e}", path.display()))?;
         if let Err(e) = std::fs::rename(new, path) {
             let _ = std::fs::rename(&old, path);
@@ -359,6 +374,17 @@ fn apply_unprivileged(path: &Path, new: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn free_old_path(path: &Path) -> PathBuf {
+    let old = beside(path, "old");
+    if !old.exists() {
+        return old;
+    }
+    (2..)
+        .map(|n| beside(path, &format!("old.{n}")))
+        .find(|p| !p.exists())
+        .unwrap()
+}
+
 /// PowerShell receives paths only as literals inside an encoded script, never through cmd.exe.
 #[cfg(any(windows, test))]
 fn windows_elevation_command(path: &Path, new: &Path) -> String {
@@ -369,7 +395,8 @@ fn windows_elevation_command(path: &Path, new: &Path) -> String {
 $target='{}'
 $source='{}'
 $old=$target+'.old'
-if (Test-Path -LiteralPath $old) {{ Remove-Item -LiteralPath $old -Force }}
+$n=2
+while (Test-Path -LiteralPath $old) {{ $old=$target+'.old.'+$n; $n++ }}
 Move-Item -LiteralPath $target -Destination $old -Force
 try {{ Copy-Item -LiteralPath $source -Destination $target -Force }}
 catch {{ Move-Item -LiteralPath $old -Destination $target -Force; throw }}
@@ -380,7 +407,7 @@ Remove-Item -LiteralPath $source -Force
     );
     let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-    format!("$ErrorActionPreference='Stop'; $p=Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{encoded}' -Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode")
+    format!("$ErrorActionPreference='Stop'; try {{ $p=Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{encoded}' -Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode }} catch {{ $e=$_.Exception; while ($e) {{ if ($e.NativeErrorCode -eq 1223) {{ exit 122 }}; $e=$e.InnerException }}; exit 1 }}")
 }
 
 #[cfg(windows)]
@@ -395,7 +422,10 @@ fn apply_elevated_windows(path: &Path, new: &Path) -> Result<(), String> {
     }
     let powershell =
         PathBuf::from(std::ffi::OsString::from_wide(&system[..length])).join("WindowsPowerShell/v1.0/powershell.exe");
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let status = std::process::Command::new(powershell)
+        .creation_flags(CREATE_NO_WINDOW)
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -404,7 +434,9 @@ fn apply_elevated_windows(path: &Path, new: &Path) -> Result<(), String> {
         ])
         .status()
         .map_err(|e| format!("powershell: {e}"))?;
-    if status.success() && !new.exists() && path.is_file() {
+    if status.code() == Some(122) {
+        Err("cancelled".into())
+    } else if status.success() && !new.exists() && path.is_file() {
         Ok(())
     } else {
         Err(format!("{}: elevation cancelled or update failed", path.display()))
@@ -417,6 +449,26 @@ TMP=$(mktemp "${TARGET}.update.XXXXXX") || exit 1
 trap 'rm -f -- "$TMP"' EXIT HUP INT TERM
 cp -- "$NEW" "$TMP" && chmod 755 "$TMP" && mv -fT -- "$TMP" "$TARGET" && rm -f -- "$NEW" "$TARGET.part" "$TARGET.old" "$TARGET.version"
 "#;
+
+/// Runs `shell` in the first of `terms` that starts, and waits for it. Only the first: trying the next
+/// while the user types the password in it would open a second. gnome-terminal returns at once unless
+/// told to wait.
+#[cfg(unix)]
+fn in_terminal(terms: &[String], shell: &str) {
+    for t in terms {
+        let mut c = std::process::Command::new(t);
+        match t.rsplit('/').next().unwrap_or(t) {
+            "xdg-terminal-exec" => {}
+            "gnome-terminal" => drop(c.args(["--wait", "--"])),
+            "kgx" => drop(c.arg("--")),
+            _ => drop(c.arg("-e")),
+        }
+        if let Ok(mut child) = c.args(["sh", "-c", shell]).spawn() {
+            let _ = child.wait();
+            return;
+        }
+    }
+}
 
 #[cfg(unix)]
 fn apply_elevated_unix(path: &Path, new: &Path) -> Result<(), String> {
@@ -461,19 +513,7 @@ fn apply_elevated_unix(path: &Path, new: &Path) -> Result<(), String> {
         .map(String::from),
     );
 
-    for t in terms {
-        let mut c = std::process::Command::new(&t);
-        match t.as_str() {
-            "xdg-terminal-exec" => {}
-            "gnome-terminal" | "kgx" => drop(c.arg("--")),
-            _ => drop(c.arg("-e")),
-        }
-        if let Ok(mut child) = c.args(["sh", "-c", &shell]).spawn() {
-            if child.wait().is_ok_and(|st| st.success()) && !new.exists() {
-                return Ok(());
-            }
-        }
-    }
+    in_terminal(&terms, &shell);
 
     if !new.exists() {
         Ok(())
@@ -521,6 +561,10 @@ pub fn tidy() {
     let Some((path, _)) = installed() else { return };
     for ext in ["old", "part"] {
         let _ = std::fs::remove_file(beside(&path, ext));
+    }
+    // Updates made while an older copy still ran left it as .old.2, .old.3...
+    for n in 2..10 {
+        let _ = std::fs::remove_file(beside(&path, &format!("old.{n}")));
     }
     let staged = find_staged(&path);
     let tag = staged
@@ -592,7 +636,7 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
     if fresh {
         crate::say(format!("Streamerz {tag} is out"));
     }
-    if mode == Updates::Background && !asked {
+    if background_download(mode, asked, is_protected(&release.path)) {
         crate::say(format!("Downloading {tag}..."));
         match stage(&release).await {
             Ok(()) if fresh => crate::notify::send(
@@ -629,13 +673,26 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
         return;
     }
     crate::say(format!("Updating to {tag}..."));
-    if let Err(e) = stage(&release).await.and_then(|()| apply(&release.path)) {
+    // The password or UAC prompt can take as long as the user needs: it waits on a thread of its own,
+    // never on the one that runs chat, the servers and the window.
+    let path = release.path.clone();
+    let applied = match stage(&release).await {
+        Ok(()) => tokio::task::spawn_blocking(move || apply(&path))
+            .await
+            .unwrap_or_else(|e| Err(e.to_string())),
+        Err(e) => Err(e),
+    };
+    if let Err(e) = applied {
         if e == "cancelled" {
             crate::say(tr("update.cancelled").to_string());
             return;
         }
         crate::error(format!("Update to {tag} failed: {e}"));
-        let _ = crate::host::confirm(trf("update.failed", &[("error", &e)]), tr("dialogs.ok"), "").await;
+        let mut told = trf("update.failed", &[("error", &e)]);
+        if install() == Install::AppImage {
+            told = format!("{told}\n\n{}", tr("update.app_manager"));
+        }
+        let _ = crate::host::confirm(told, tr("dialogs.ok"), "").await;
         return;
     }
     let done = trf("update.done", &[("version", &tag)]);
@@ -647,6 +704,10 @@ pub async fn check(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
     } else {
         crate::say(format!("Updated to {tag}: it runs from the next start."));
     }
+}
+
+fn background_download(mode: Updates, asked: bool, protected: bool) -> bool {
+    mode == Updates::Background && !asked && !protected
 }
 
 /// Checks now and then once an hour while Streamerz is open.
@@ -663,9 +724,19 @@ pub async fn watch(cfg: std::sync::Arc<tokio::sync::watch::Sender<crate::Config>
 
 /// Starts the new build and quits this one.
 pub fn restart() -> ! {
+    // The user chose to restart: the new copy's window may take the front (Windows lets only the
+    // process the user acted on do that, unless it hands it on).
+    #[cfg(windows)]
+    // SAFETY: no pointers.
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(
+            windows_sys::Win32::UI::WindowsAndMessaging::ASFW_ANY,
+        );
+    }
     if let Some(exe) = exe() {
         let mut cmd = std::process::Command::new(exe);
-        cmd.args(std::env::args_os().skip(1));
+        cmd.args(std::env::args_os().skip(1).filter(|a| a != "--restart-handover"));
+        cmd.arg("--restart-handover");
         // The AppImage this ran from mounted itself and told its children where; the new one makes its own.
         for v in ["APPDIR", "APPIMAGE", "ARGV0", "OWD"] {
             cmd.env_remove(v);
@@ -677,9 +748,25 @@ pub fn restart() -> ! {
 
 #[cfg(test)]
 mod tests {
-    use super::{beside, semver, sound};
-    use sha2::{Digest, Sha256};
+    use super::{beside, semver, unsound};
     use std::path::Path;
+
+    #[test]
+    fn protected_background_updates_ask_instead_of_staging() {
+        assert!(!super::background_download(super::Updates::Background, false, true));
+        assert!(super::background_download(super::Updates::Background, false, false));
+        assert!(!super::background_download(super::Updates::Background, true, false));
+    }
+
+    #[test]
+    fn update_uses_an_unused_old_file_name() {
+        let root = std::env::temp_dir().join(format!("streamerz-old-{}", crate::engine::uuid()));
+        std::fs::create_dir_all(&root).unwrap();
+        let exe = root.join("Streamerz.exe");
+        std::fs::write(super::beside(&exe, "old"), b"in use").unwrap();
+        assert_eq!(super::free_old_path(&exe), super::beside(&exe, "old.2"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn an_inherited_appimage_cannot_replace_the_running_program() {
@@ -708,14 +795,21 @@ mod tests {
 
     #[test]
     fn downloads_are_checked() {
-        let mut elf = b"\x7fELF".to_vec();
-        elf.resize(200_000, 1);
-        let hash: String = Sha256::digest(&elf).iter().map(|b| format!("{b:02x}")).collect();
-        assert!(sound(&elf, None));
-        assert!(sound(&elf, Some(&hash)));
-        assert!(!sound(&elf, Some("00")));
-        assert!(!sound(b"<html>not found</html>", None));
-        assert!(!sound(&elf[..1000], None));
+        let got = |status, len, complete, sha256: &str, magic: &[u8]| crate::http::Download {
+            status,
+            len,
+            complete,
+            sha256: sha256.into(),
+            magic: magic.to_vec(),
+        };
+        assert!(unsound(&got(200, 200_000, true, "ab", b"\x7fELF"), 200_000, Some("AB")).is_none());
+        assert!(unsound(&got(200, 200_000, true, "ab", b"MZ\x90\0"), 0, None).is_none());
+        // The 1.7.0 failure: a 25 MB exe cut at 16 MB.
+        assert!(unsound(&got(200, 16 << 20, true, "ab", b"MZ\x90\0"), 25_311_232, Some("ab")).is_some());
+        assert!(unsound(&got(200, 200_000, false, "ab", b"MZ\x90\0"), 0, None).is_some());
+        assert!(unsound(&got(200, 200_000, true, "ab", b"MZ\x90\0"), 200_000, Some("00")).is_some());
+        assert!(unsound(&got(200, 22, true, "ab", b"<htm"), 0, None).is_some());
+        assert!(unsound(&got(404, 200_000, true, "ab", b"MZ\x90\0"), 0, None).is_some());
     }
 
     #[test]
@@ -844,6 +938,10 @@ mod tests {
         let command = super::windows_elevation_command(target, source);
         assert!(!command.contains("cmd.exe"));
         assert!(!command.contains("%TEMP%"));
+        // A declined UAC prompt (ERROR_CANCELLED) may sit inside another exception.
+        assert!(command.contains("NativeErrorCode -eq 1223"));
+        assert!(command.contains("InnerException"));
+        assert!(command.contains("exit 122"));
         let encoded = command
             .split("'-EncodedCommand','")
             .nth(1)
@@ -861,6 +959,7 @@ mod tests {
         let script = String::from_utf16(&utf16).unwrap();
         assert!(script.contains("$target='C:\\Program Files\\App''s %TEMP% & $(exit 9).exe'"));
         assert!(script.contains("-LiteralPath $source"));
+        assert!(script.contains("while (Test-Path -LiteralPath $old)"));
     }
 
     #[cfg(unix)]
@@ -878,5 +977,25 @@ mod tests {
         assert!(super::private_dir(&root).is_err());
         std::fs::remove_file(link).unwrap();
         std::fs::remove_dir(root).unwrap();
+    }
+
+    /// Only one terminal opens for the password, even when it returns at once.
+    #[cfg(unix)]
+    #[test]
+    fn the_password_terminal_opens_once() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("streamerz-terms-{}", crate::engine::uuid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("log");
+        let mut terms = vec![dir.join("missing").display().to_string()];
+        for name in ["first", "second"] {
+            let path = dir.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\necho {name} >> '{}'\n", log.display())).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            terms.push(path.display().to_string());
+        }
+        super::in_terminal(&terms, "true");
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "first\n");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

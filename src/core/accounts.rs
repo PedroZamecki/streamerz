@@ -694,6 +694,14 @@ pub fn read(engine: &Rc<Engine>, domain: &str) -> Result<Value, String> {
     Ok(json!({"domain": domain, "sections": sections}))
 }
 
+/// Reading capability, independent of whether sending is authorized.
+fn can_connect(engine: &Rc<Engine>, p: P, config: &crate::Config) -> bool {
+    !p.channel(config).trim().is_empty()
+        || p.raw_account_name(config, false).is_some()
+        || (p == P::YouTube && !config.youtube.video_id.trim().is_empty())
+        || (p == P::TikTok && !engine.tiktok_bridge.user().is_empty())
+}
+
 fn accounts(engine: &Rc<Engine>) -> Vec<Value> {
     let (on, standby, tiktok) = states(engine);
     let bridge = &engine.tiktok_bridge;
@@ -715,6 +723,8 @@ fn accounts(engine: &Rc<Engine>) -> Vec<Value> {
     for (i, p) in ALL.into_iter().enumerate() {
         let slug = p.slug();
         let active = on[i] || standby[i];
+        let ready = can_connect(engine, p, &config);
+        let unset = !ready && !active;
         let (health, text) = if on[i] {
             ("up", tr("conns.connected").to_string())
         } else if standby[i] {
@@ -740,11 +750,23 @@ fn accounts(engine: &Rc<Engine>) -> Vec<Value> {
                 ("off", trf("accounts.off_why", &[("why", &why)]))
             }
         };
-        let mut line = vec![if active {
-            button(&format!("{slug}.disconnect"), tr("btn.disconnect"), "unplug")
+        let mut line = if active {
+            vec![button(&format!("{slug}.disconnect"), tr("btn.disconnect"), "unplug")]
+        } else if ready {
+            vec![button(&format!("{slug}.connect"), tr("btn.connect"), "plug")]
+        } else if p == P::TikTok {
+            let mut setup = button("tiktok.sending", tr("btn.set_up"), "puzzle");
+            setup["dialog"] = "tiktok_sending".into();
+            vec![setup, button("tiktok.channel", tr("accounts.channel_pick"), "search")]
         } else {
-            button(&format!("{slug}.connect"), tr("btn.connect"), "plug")
-        }];
+            vec![
+                button(&format!("{slug}.login"), tr("btn.login"), "log-in"),
+                button(&format!("{slug}.channel"), tr("accounts.channel_pick"), "search"),
+            ]
+        };
+        if !unset && p != P::TikTok && p.raw_account_name(&config, true).is_none() {
+            line.push(button(&format!("{slug}.bot_login"), tr("accounts.add_bot"), "plus"));
+        }
         // The rarely needed settings, behind the gear (TikTok has none).
         if external_fields(&format!("account_{slug}")).is_some() {
             let mut settings = button("settings", tr("accounts.settings_tooltip"), "settings");
@@ -752,10 +774,38 @@ fn accounts(engine: &Rc<Engine>) -> Vec<Value> {
             settings["icon_only"] = true.into();
             line.push(settings);
         }
-        let mut rows = vec![json!({"status": state(health, &text), "control": buttons(line)})];
+        let health = if unset { "unset" } else { health };
+        let text = if unset {
+            tr("accounts.setup_read_or_login").to_owned()
+        } else {
+            text
+        };
+        let mut status = if unset && p == P::TikTok {
+            let (health, text) = sending_state(&config, bridge);
+            state(health, &text)
+        } else {
+            state(health, &text)
+        };
+        if !active {
+            if let Some(failure) = super::status::failure(slug) {
+                status["health"] = "attention".into();
+                status["text"] = failure["text"].clone();
+            }
+        }
+        let mut rows = vec![json!({"status": status, "control": buttons(line)})];
+        if unset {
+            if p == P::TikTok {
+                rows.push(json!({"about": tr("accounts.tiktok_native_reading")}));
+            }
+            sections.push(section(p.name(), slug, rows));
+            continue;
+        }
         if p != P::TikTok {
             for bot in [false, true] {
                 let name = p.raw_account_name(&config, bot);
+                if bot && name.is_none() {
+                    continue;
+                }
                 let key = format!("{slug}.{}", if bot { "bot" } else { "account" });
                 let label = tr(if bot {
                     "accounts.row_bot"
@@ -794,7 +844,6 @@ fn accounts(engine: &Rc<Engine>) -> Vec<Value> {
                 }
             }
         } else {
-            rows.push(channel_row(engine, p, &config));
             let (health, text) = sending_state(&config, bridge);
             let mut set_up = button("tiktok.sending", tr("btn.set_up"), "puzzle");
             set_up["dialog"] = "tiktok_sending".into();
@@ -806,6 +855,7 @@ fn accounts(engine: &Rc<Engine>) -> Vec<Value> {
                 sending["picture"] = face.into();
             }
             rows.push(sending);
+            rows.push(channel_row(engine, p, &config));
         }
         rows.push(
             json!({"key": format!("{slug}.autostart"), "label": tr("accounts.autostart"),
@@ -841,7 +891,15 @@ fn channel_row(engine: &Rc<Engine>, p: P, config: &crate::Config) -> Value {
     } else {
         tr("accounts.channel_theirs").into()
     };
-    let mut pick = button(&format!("{}.channel", p.slug()), tr("accounts.channel_pick"), "search");
+    let mut pick = button(
+        &format!("{}.channel", p.slug()),
+        tr(if shown.is_empty() {
+            "accounts.channel_pick"
+        } else {
+            "accounts.channel_change"
+        }),
+        "search",
+    );
     pick["tooltip"] = tr("accounts.channel_tooltip").into();
     let mut row = json!({"key": format!("{}.channel", p.slug()), "label": tr("accounts.channel"),
         "value": if shown.is_empty() { tr("accounts.channel_placeholder").to_owned() } else { shown.clone() },
@@ -873,11 +931,7 @@ fn typed_channel(engine: &Rc<Engine>, p: P, config: &crate::Config) -> String {
     p.typed_channel(config).to_owned()
 }
 
-/// Whether version `a` ("1.2.0") comes before `b`.
-fn older(a: &str, b: &str) -> bool {
-    let parts = |v: &str| v.split('.').map(|n| n.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
-    parts(a) < parts(b)
-}
+use crate::tiktok_bridge::older;
 
 /// TikTok sending through the browser: its health and a line saying so.
 fn sending_state(config: &crate::Config, bridge: &crate::tiktok_bridge::Bridge) -> (&'static str, String) {
@@ -889,17 +943,32 @@ fn sending_state(config: &crate::Config, bridge: &crate::tiktok_bridge::Bridge) 
         bridge.is_outdated(),
         bridge.version(),
     );
+    let refused = bridge.refused();
     if !crate::tiktok_bridge::set_up(config) {
-        ("off", tr("accounts.tiktok_sending.not_set_up").to_string())
+        let installed = crate::browsers::installed().iter().any(|browser| {
+            browser
+                .extension_installs(crate::tiktok_bridge::EXTENSION_ID, &crate::tiktok_bridge::folder())
+                .iter()
+                .any(|copy| matches!(copy.state, "enabled" | "disabled"))
+        });
+        if installed {
+            ("attention", tr("accounts.tiktok_sending.installed_unpaired").into())
+        } else {
+            ("unset", tr("accounts.tiktok_sending.not_set_up").into())
+        }
+    } else if !connected && !refused.is_empty() {
+        ("down", refused)
     } else if !connected {
         ("standby", tr("accounts.tiktok_sending.waiting").to_string())
+    } else if bridge.login_required() {
+        ("attention", tr("accounts.tiktok_sending.socket_login").into())
     } else if !error.is_empty() {
-        ("off", error)
+        ("attention", error)
     } else if !ready {
-        ("standby", tr("accounts.tiktok_sending.loading").to_string())
+        ("standby", tr("accounts.tiktok_sending.socket_loading").to_string())
     } else if outdated {
         (
-            "standby",
+            "attention",
             trf(
                 "accounts.tiktok_sending.outdated",
                 &[
@@ -915,6 +984,38 @@ fn sending_state(config: &crate::Config, bridge: &crate::tiktok_bridge::Bridge) 
     }
 }
 
+fn extension_evidence(copy: &crate::browsers::ExtensionInstall) -> String {
+    let version = copy.version.as_deref().unwrap_or("?");
+    let key = match copy.state {
+        "disabled" => "accounts.tiktok_sending.detect_disabled",
+        "missing_folder" => "accounts.tiktok_sending.detect_missing_folder",
+        "enabled"
+            if copy
+                .version
+                .as_deref()
+                .is_some_and(|version| older(version, crate::tiktok_bridge::EXTENSION_VERSION)) =>
+        {
+            "accounts.tiktok_sending.detect_outdated"
+        }
+        "enabled" => "accounts.tiktok_sending.detect_enabled",
+        "unverifiable" => "accounts.tiktok_sending.detect_unknown",
+        _ => "accounts.tiktok_sending.not_detected",
+    };
+    let mut text = trf(
+        key,
+        &[
+            ("version", version),
+            ("profile", &copy.profile),
+            ("latest", crate::tiktok_bridge::EXTENSION_VERSION),
+        ],
+    );
+    if copy.expected_folder == Some(false) && copy.state == "enabled" {
+        text.push('\n');
+        text.push_str(tr("accounts.tiktok_sending.detect_other_folder"));
+    }
+    text
+}
+
 /// The browser the setup was started in this run.
 static PICKED: Mutex<Option<String>> = Mutex::new(None);
 
@@ -922,7 +1023,27 @@ fn picked() -> Option<String> {
     PICKED.lock().ok().and_then(|picked| picked.clone())
 }
 
+/// Whether the setup steps speak of Firefox: the browser picked in this run, else the one the
+/// extension was found in (Zen, for one; it once got Chrome's "Load unpacked").
+fn steps_for_firefox(
+    picked: Option<&str>,
+    browsers: &[crate::browsers::Browser],
+    found_in: Option<&crate::browsers::Browser>,
+) -> bool {
+    match picked {
+        Some(name) => browsers.iter().any(|b| b.name == name && b.is_firefox_based()),
+        None => found_in.is_some_and(|b| b.is_firefox_based()),
+    }
+}
+
 static ADVANCED_SETUP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The browser whose signed Firefox add-on is being downloaded, while it is.
+static DOWNLOADING: Mutex<Option<String>> = Mutex::new(None);
+
+fn downloading() -> Option<String> {
+    DOWNLOADING.lock().ok().and_then(|d| d.clone())
+}
 
 fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
     let config = engine.config();
@@ -945,25 +1066,61 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
     let is_advanced = ADVANCED_SETUP.load(std::sync::atomic::Ordering::Relaxed);
     let browsers = crate::browsers::installed();
     let chosen = picked().or_else(|| crate::browsers::running_browser().map(|b| b.name.to_owned()));
-    let single = browsers.len() == 1;
     let folder = crate::tiktok_bridge::folder();
     let mut rows = Vec::new();
     let mut known_any = false;
+    // The first browser the extension is in, when one is: the steps speak of that one.
+    let mut found_in: Option<&crate::browsers::Browser> = None;
     if browsers.is_empty() {
         rows.push(json!({"status": state("off", tr("accounts.tiktok_sending.no_browser"))}));
     }
     for (index, b) in browsers.iter().enumerate() {
-        let known = b.has_extension_from(crate::tiktok_bridge::EXTENSION_ID, &folder)
-            || (connected && (single || chosen.as_deref() == Some(b.name)));
+        let copies = b.extension_installs(crate::tiktok_bridge::EXTENSION_ID, &folder);
+        let known = copies.iter().any(|copy| copy.state == "enabled");
+        let outdated_copy = copies.iter().any(|copy| {
+            copy.state == "enabled"
+                && copy
+                    .version
+                    .as_deref()
+                    .is_some_and(|version| older(version, crate::tiktok_bridge::EXTENSION_VERSION))
+        });
         known_any |= known;
+        if known && found_in.is_none() {
+            found_in = Some(b);
+        }
         let running = b.is_running();
         let (health, text) = match (known, running) {
-            (true, true) => ("up", tr("accounts.tiktok_sending.installed_running")),
-            (true, false) => ("standby", tr("accounts.tiktok_sending.installed_closed")),
-            (false, true) => ("off", tr("accounts.tiktok_sending.running")),
-            (false, false) => ("off", tr("accounts.tiktok_sending.not_installed")),
+            (true, true) => ("up", tr("accounts.tiktok_sending.installed_running").to_owned()),
+            (true, false) => ("standby", tr("accounts.tiktok_sending.installed_closed").to_owned()),
+            (false, _) => (
+                "unset",
+                copies
+                    .iter()
+                    .find(|copy| copy.state != "not_detected")
+                    .map(extension_evidence)
+                    .unwrap_or_else(|| tr("accounts.tiktok_sending.not_detected").to_owned()),
+            ),
         };
-        let (label, icon) = if connected && login_required && known {
+        let evidence = copies
+            .iter()
+            .filter(|copy| copy.state != "not_detected")
+            .map(extension_evidence)
+            .filter(|evidence| evidence != &text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let health = if outdated_copy
+            || (!known
+                && copies
+                    .iter()
+                    .any(|copy| matches!(copy.state, "disabled" | "missing_folder" | "unverifiable")))
+        {
+            "attention"
+        } else {
+            health
+        };
+        let (label, icon) = if outdated_copy {
+            (tr("accounts.tiktok_sending.update_copy"), "download")
+        } else if connected && login_required && known {
             (tr("btn.login"), "log-in")
         } else if known && !running {
             (tr("btn.open_browser"), "external-link")
@@ -973,7 +1130,7 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
             (tr("accounts.tiktok_sending.install"), "download")
         };
         let mut row_btns = vec![button(&format!("setup:{index}"), label, icon)];
-        if is_advanced && !known {
+        if (is_advanced && !known) || outdated_copy {
             row_btns.push(button(
                 &format!("manual_setup:{index}"),
                 tr("accounts.tiktok_sending.load_unpacked"),
@@ -984,8 +1141,8 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
             "key": format!("browser.{index}"),
             "label": b.name,
             "brand": b.icon(),
-            "status": state(health, text),
-            "control": buttons(row_btns),
+            "status": state(health, &text),
+            "control": buttons(row_btns), "about": evidence,
         });
         if is_advanced {
             // The home folder as ~, so the path fits beside the buttons.
@@ -993,11 +1150,11 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
             let home = std::env::var("HOME")
                 .or_else(|_| std::env::var("USERPROFILE"))
                 .unwrap_or_default();
-            row["about"] = match path.strip_prefix(&home).filter(|_| !home.is_empty()) {
+            let path = match path.strip_prefix(&home).filter(|_| !home.is_empty()) {
                 Some(rest) => format!("~{rest}"),
                 None => path,
-            }
-            .into();
+            };
+            row["about"] = format!("{}\n{path}", row["about"].as_str().unwrap_or_default()).into();
         }
         rows.push(row);
     }
@@ -1007,7 +1164,8 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
     } else {
         browsers.iter().find_map(|b| {
             let version = b.store_copy_version()?;
-            older(&version, "1.3.0").then(|| (b.name.to_owned(), version))
+            // Firefox's copy comes from Streamerz itself, never a store that can lag behind.
+            (!b.is_firefox_based() && older(&version, "1.3.0")).then(|| (b.name.to_owned(), version))
         })
     };
     let any_running = browsers.iter().any(|b| b.is_running());
@@ -1033,17 +1191,21 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
     } else if logged {
         (
             "up",
-            trf(
-                "accounts.tiktok_sending.complete_version",
-                &[("version", crate::tiktok_bridge::EXTENSION_VERSION)],
-            ),
+            trf("accounts.tiktok_sending.complete_version", &[("version", &version)]),
         )
     } else if login_required {
-        ("standby", tr("accounts.tiktok_sending.login_needed").to_string())
+        ("attention", tr("accounts.tiktok_sending.socket_login").to_string())
     } else if !error.is_empty() {
         ("down", error)
     } else if connected {
-        ("busy", tr("accounts.tiktok_sending.loading").to_string())
+        ("busy", tr("accounts.tiktok_sending.socket_loading").to_string())
+    } else if let Some(browser) = downloading() {
+        (
+            "busy",
+            trf("accounts.tiktok_sending.firefox_downloading", &[("browser", &browser)]),
+        )
+    } else if !bridge.refused().is_empty() {
+        ("down", bridge.refused())
     } else if let Some((browser, version)) = old_store_copy.clone() {
         // A store copy older than 1.3.0 has no way to learn where Streamerz is: it waits forever.
         (
@@ -1072,6 +1234,7 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
             _ => "off",
         };
         let browser = chosen.as_deref();
+        let firefox = steps_for_firefox(browser, &browsers, found_in);
         let steps = [
             (
                 step(browser.is_some() || installed, browser.is_none() && !installed),
@@ -1083,7 +1246,11 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
             (
                 step(installed, browser.is_some() && !installed),
                 trf(
-                    "accounts.tiktok_sending.step_load",
+                    if firefox {
+                        "accounts.tiktok_sending.step_load_firefox"
+                    } else {
+                        "accounts.tiktok_sending.step_load"
+                    },
                     &[("browser", browser.unwrap_or(tr("accounts.tiktok_sending.your_browser")))],
                 ),
             ),
@@ -1105,7 +1272,11 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
             section(
                 tr("accounts.tiktok_sending.title"),
                 "tiktok",
-                vec![json!({"about": tr("accounts.tiktok_sending.why")})],
+                vec![
+                    json!({"about": tr("accounts.tiktok_sending.why")}),
+                    json!({"status": state(health, &text)}),
+                    json!({"label":tr("overlays.header.address"), "value":crate::tiktok_bridge::server_url(&config)}),
+                ],
             ),
             section(tr("accounts.tiktok_sending.browsers"), "", rows),
             section(
@@ -1114,7 +1285,6 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
                 steps
                     .into_iter()
                     .map(|(health, text)| json!({"status": state(health, &text)}))
-                    .chain([json!({"status": state(health, &text)})])
                     .collect(),
             ),
             section(
@@ -1133,20 +1303,21 @@ fn tiktok_sending(engine: &Rc<Engine>) -> Vec<Value> {
             section(
                 tr("accounts.tiktok_sending.title"),
                 "tiktok",
-                vec![json!({"about": tr("accounts.tiktok_sending.why")})],
+                vec![
+                    json!({"about": tr("accounts.tiktok_sending.why")}),
+                    json!({"status": state(health, &text)}),
+                    json!({"label":tr("overlays.header.address"), "value":crate::tiktok_bridge::server_url(&config)}),
+                ],
             ),
             section(tr("accounts.tiktok_sending.browsers"), "", rows),
             section(
                 "",
                 "",
-                vec![
-                    json!({"control": buttons(vec![
-                        enabled(button("remove", tr("btn.remove_streamerz"), "trash-2"), set_up),
-                        enabled(button("retry", tr("btn.retry"), "refresh-cw"), connected && (!ready || login_required)),
-                        button("toggle_advanced", tr("accounts.tiktok_sending.advanced_mode"), "settings"),
-                    ])}),
-                    json!({"status": state(health, &text)}),
-                ],
+                vec![json!({"control": buttons(vec![
+                    enabled(button("remove", tr("btn.remove_streamerz"), "trash-2"), set_up),
+                    enabled(button("retry", tr("btn.retry"), "refresh-cw"), connected && (!ready || login_required)),
+                    button("toggle_advanced", tr("accounts.tiktok_sending.advanced_mode"), "settings"),
+                ])})],
             ),
         ]
     }
@@ -1290,7 +1461,15 @@ pub fn act(engine: &Rc<Engine>, domain: &str, action: &str, id: &str) -> Result<
     match what {
         // An expired login can't connect: Connect and Logout open the platform's login page instead.
         "connect" if p.expired(&engine.config(), false) => login(engine, p, false),
-        "connect" | "disconnect" => p.connect(engine, what == "connect"),
+        "connect" if !can_connect(engine, p, &engine.config()) => {
+            return Err(tr("accounts.setup_read_or_login").into());
+        }
+        "connect" | "disconnect" => {
+            if what == "disconnect" {
+                super::status::clear_failure(slug);
+            }
+            p.connect(engine, what == "connect");
+        }
         "login" | "bot_login" => login(engine, p, what == "bot_login"),
         "logout" | "bot_logout" if p.expired(&engine.config(), what == "bot_logout") => {
             login(engine, p, what == "bot_logout")
@@ -1773,8 +1952,15 @@ fn sending(engine: &Rc<Engine>, action: &str) -> Result<Value, String> {
                 .ok_or_else(|| format!("tiktok_sending has no action {action}"))?;
             let browsers = crate::browsers::installed();
             let b = browsers.get(index).ok_or("no such browser")?;
-            let folder = crate::tiktok_bridge::install(engine)?;
-            let page = crate::tiktok_bridge::write_setup_page(b.name, b.extensions_page, &folder, b.store_url())?;
+            let mut folder = crate::tiktok_bridge::install(engine)?;
+            let setup = if b.is_firefox_based() {
+                // Firefox loads a folder only as a temporary add-on, with its own manifest.
+                folder = crate::tiktok_bridge::write_firefox_files(&engine.config())?;
+                crate::tiktok_bridge::Setup::FirefoxTemporary
+            } else {
+                crate::tiktok_bridge::Setup::Chromium { store: b.store_url() }
+            };
+            let page = crate::tiktok_bridge::write_setup_page(b.name, b.extensions_page, &folder, &setup)?;
             b.open_setup(&page, &crate::tiktok_bridge::pairing(&engine.config()))
                 .map_err(|error| {
                     trf(
@@ -1809,12 +1995,46 @@ fn sending(engine: &Rc<Engine>, action: &str) -> Result<Value, String> {
                 b.command("https://www.tiktok.com/live/history/center")
                     .spawn()
                     .map_err(cant_open)?;
+            } else if b.is_firefox_based() {
+                // Firefox: the signed add-on of exactly this version, downloaded, then opened next to
+                // the setup page (Firefox asks to add it, and the extension pairs from that page).
+                let folder = crate::tiktok_bridge::install(engine)?;
+                if downloading().is_some() {
+                    return accepted;
+                }
+                if let Ok(mut d) = DOWNLOADING.lock() {
+                    *d = Some(b.name.to_owned());
+                }
+                let (engine, b) = (engine.clone(), b.clone());
+                tokio::task::spawn_local(async move {
+                    let got = crate::tiktok_bridge::firefox_xpi().await;
+                    if let Ok(mut d) = DOWNLOADING.lock() {
+                        *d = None;
+                    }
+                    crate::host::changed();
+                    let opened = got.and_then(|addon| {
+                        let setup = crate::tiktok_bridge::Setup::Firefox { addon: &addon };
+                        let page = crate::tiktok_bridge::write_setup_page(b.name, b.extensions_page, &folder, &setup)?;
+                        b.open_setup_with_addon(&page, &crate::tiktok_bridge::pairing(&engine.config()), &addon)
+                            .map_err(|error| {
+                                trf(
+                                    "accounts.tiktok_sending.cant_open",
+                                    &[("browser", b.name), ("error", &error.to_string())],
+                                )
+                            })
+                    });
+                    if let Err(error) = opened {
+                        crate::warn(format!("TikTok extension: {error}"));
+                        let _ = crate::host::confirm(error, tr("dialogs.ok"), "").await;
+                    }
+                });
             } else {
                 // Not connected yet (not installed, or installed but never paired): the setup page, with
                 // the pairing in its address. It also offers the store and the steps to load the copy on
                 // disk; the extension closes it once it connects.
                 let folder = crate::tiktok_bridge::install(engine)?;
-                let page = crate::tiktok_bridge::write_setup_page(b.name, b.extensions_page, &folder, b.store_url())?;
+                let setup = crate::tiktok_bridge::Setup::Chromium { store: b.store_url() };
+                let page = crate::tiktok_bridge::write_setup_page(b.name, b.extensions_page, &folder, &setup)?;
                 b.open_setup(&page, &crate::tiktok_bridge::pairing(&engine.config()))
                     .map_err(cant_open)?;
             }
@@ -1851,6 +2071,28 @@ mod tests {
             .iter()
             .flat_map(|section| section["rows"].as_array().unwrap().clone())
             .collect()
+    }
+
+    #[test]
+    fn setup_steps_speak_of_the_browser_the_extension_is_in() {
+        use crate::browsers::{Browser, BrowserEngine};
+        let browser = |name: &'static str, engine| Browser {
+            name,
+            engine,
+            exe: "/x".into(),
+            data: "/x".into(),
+            extensions_page: "about:addons",
+        };
+        let (zen, chrome) = (
+            browser("Zen Browser", BrowserEngine::Firefox),
+            browser("Chromium", BrowserEngine::Chromium),
+        );
+        let all = [zen.clone(), chrome.clone()];
+        assert!(steps_for_firefox(None, &all, Some(&zen)));
+        assert!(!steps_for_firefox(None, &all, Some(&chrome)));
+        assert!(!steps_for_firefox(None, &all, None));
+        assert!(steps_for_firefox(Some("Zen Browser"), &all, Some(&chrome)));
+        assert!(!steps_for_firefox(Some("Chromium"), &all, Some(&zen)));
     }
 
     #[test]
@@ -1914,17 +2156,17 @@ mod tests {
                 .filter_map(|button| button["id"].as_str().map(str::to_owned))
                 .collect();
             for id in [
-                "twitch.connect",
                 "twitch.login",
-                "twitch.bot_login",
                 "twitch.channel",
                 "kick.login",
-                "youtube.bot_login",
                 "tiktok.channel",
                 "tiktok.sending",
             ] {
                 assert!(ids.contains(&id.to_owned()), "{id} in {ids:?}");
             }
+            assert!(!ids.contains(&"twitch.connect".to_owned()));
+            assert!(!ids.contains(&"twitch.bot_login".to_owned()));
+            assert!(act(&engine, "accounts", "twitch.connect", "").is_err());
             assert!(
                 !ids.contains(&"tiktok.login".to_owned()),
                 "TikTok logs in through its browser account"
@@ -2056,12 +2298,17 @@ mod tests {
             // TikTok has nothing rare to set: no gear on its card.
             assert!(external_form(&engine, "account_tiktok").is_none());
             assert!(external_form(&engine, "account_orkut").is_none());
+            engine.change(|config| config.kick.channel = "example".into());
             let model = read(&engine, "accounts").unwrap();
             let gears = model["sections"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .filter(|section| section["rows"][0]["control"]["buttons"][1]["icon_only"] == true)
+                .filter(|section| {
+                    section["rows"][0]["control"]["buttons"]
+                        .as_array()
+                        .is_some_and(|buttons| buttons.iter().any(|button| button["icon_only"] == true))
+                })
                 .count();
             assert_eq!(gears, 3);
             // Autostart is on by default, and its switch turns it off.

@@ -144,6 +144,7 @@ mod tests {
     #[test]
     fn viewers_add_up_the_connected_platforms_and_polls_follow_listeners() {
         let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::host::set_viewers_visible(false);
         run(async {
             let e = engine(json!({"actions": []}));
             e.st.borrow_mut().dev_out = Some(Vec::new());

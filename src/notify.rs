@@ -189,31 +189,114 @@ async fn show_toast(t: &Toast) -> Result<bool, String> {
     Ok(tokio::time::timeout(TOAST_WAIT, wait).await.unwrap_or(false))
 }
 
-/// Shows it through the Windows Runtime, in-process (so its Activated event reaches us), as from
-/// PowerShell's app id like the other notifications; waits for a click.
+/// Streamerz's own app id: its toasts say Streamerz, with its icon (they once came as from PowerShell).
 #[cfg(windows)]
-async fn show_toast(t: &Toast) -> Result<bool, String> {
-    use windows::core::HSTRING;
-    use windows::Data::Xml::Dom::XmlDocument;
-    use windows::Foundation::TypedEventHandler;
-    use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
+const APP_ID: &str = "PedroZamecki.Streamerz";
+
+/// Registers [`APP_ID`] for this user, once a run: its name and icon under
+/// HKCU\Software\Classes\AppUserModelId. An app outside the Store needs nothing more to send toasts
+/// as itself: no Start menu shortcut, no helper program.
+#[cfg(windows)]
+fn app_id() -> windows::core::HSTRING {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        const PNG: &[u8] = include_bytes!("../assets/brand/streamerz.png");
+        let icon = crate::default_config_path().with_file_name("streamerz.png");
+        if std::fs::read(&icon).map_or(true, |old| old != PNG) {
+            let _ = std::fs::write(&icon, PNG);
+        }
+        let key = format!(r"Software\Classes\AppUserModelId\{APP_ID}");
+        let icon = icon.display().to_string();
+        let icon = icon.strip_prefix(r"\\?\").unwrap_or(&icon);
+        for (name, value) in [("DisplayName", "Streamerz"), ("IconUri", icon)] {
+            if let Err(e) = set_user_value(&key, name, value) {
+                crate::warn(format!("Notifications: can't register Streamerz ({e})"));
+            }
+        }
+    });
+    windows::core::HSTRING::from(APP_ID)
+}
+
+/// Sets the text value `name` of the user's key `key`, creating the key.
+#[cfg(windows)]
+fn set_user_value(key: &str, name: &str, value: &str) -> std::io::Result<()> {
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegCreateKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE,
+        REG_SZ,
+    };
+    let w = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let (key, name, value) = (w(key), w(name), w(value));
+    let mut handle: HKEY = std::ptr::null_mut();
+    // SAFETY: NUL-terminated UTF-16 strings that outlive the calls; the size is in bytes; the key opened
+    // here is closed here.
+    let err = unsafe {
+        let err = RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            0,
+            std::ptr::null(),
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE,
+            std::ptr::null(),
+            &mut handle,
+            std::ptr::null_mut(),
+        );
+        if err != 0 {
+            err
+        } else {
+            let err = RegSetValueExW(
+                handle,
+                name.as_ptr(),
+                0,
+                REG_SZ,
+                value.as_ptr().cast(),
+                (value.len() * 2) as u32,
+            );
+            RegCloseKey(handle);
+            err
+        }
+    };
+    match err {
+        0 => Ok(()),
+        e => Err(std::io::Error::from_raw_os_error(e as i32)),
+    }
+}
+
+/// A toast's XML: its title, text and, when given, a quieter line and a picture.
+#[cfg(any(windows, test))]
+fn toast_xml(title: &str, text: &str, attribution: &str, icon: &str) -> String {
     fn esc(s: &str) -> String {
         s.replace('&', "&amp;")
             .replace('<', "&lt;")
             .replace('>', "&gt;")
             .replace('"', "&quot;")
     }
-    let image = if std::path::Path::new(&t.icon_path).is_file() {
-        format!(r#"<image placement="appLogoOverride" src="{}"/>"#, esc(&t.icon_path))
+    let attribution = if attribution.is_empty() {
+        String::new()
+    } else {
+        format!(r#"<text placement="attribution">{}</text>"#, esc(attribution))
+    };
+    let image = if !icon.is_empty() && std::path::Path::new(icon).is_file() {
+        format!(r#"<image placement="appLogoOverride" src="{}"/>"#, esc(icon))
     } else {
         String::new()
     };
-    let xml = format!(
-        r#"<toast><visual><binding template="ToastGeneric"><text>{}</text><text>{}</text><text placement="attribution">{}</text>{image}</binding></visual></toast>"#,
-        esc(&t.title),
-        esc(&t.text),
-        esc(&t.attribution)
-    );
+    format!(
+        r#"<toast><visual><binding template="ToastGeneric"><text>{}</text><text>{}</text>{attribution}{image}</binding></visual></toast>"#,
+        esc(title),
+        esc(text)
+    )
+}
+
+/// Shows it through the Windows Runtime, in-process (so its Activated event reaches us), as
+/// Streamerz; waits for a click.
+#[cfg(windows)]
+async fn show_toast(t: &Toast) -> Result<bool, String> {
+    use windows::core::HSTRING;
+    use windows::Data::Xml::Dom::XmlDocument;
+    use windows::Foundation::TypedEventHandler;
+    use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
+    let xml = toast_xml(&t.title, &t.text, &t.attribution, &t.icon_path);
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     let tx = std::sync::Mutex::new(Some(tx));
     let toast = (|| -> windows::core::Result<ToastNotification> {
@@ -226,10 +309,7 @@ async fn show_toast(t: &Toast) -> Result<bool, String> {
             }
             Ok(())
         }))?;
-        ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(
-            r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe",
-        ))?
-        .Show(&toast)?;
+        ToastNotificationManager::CreateToastNotifierWithId(&app_id())?.Show(&toast)?;
         Ok(toast)
     })()
     .map_err(|e| e.to_string())?;
@@ -271,26 +351,32 @@ async fn show(title: &str, body: &str) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
-/// A toast through the system's own Windows Runtime, by PowerShell; the text travels in the environment,
-/// never in the script. Shown as from PowerShell's app id, which every Windows has registered.
+/// A toast through the Windows Runtime, as Streamerz (no helper program, nothing to wait for).
 #[cfg(windows)]
 async fn show(title: &str, body: &str) -> Result<(), String> {
-    const SCRIPT: &str = r"
-[void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
-$x = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
-$t = $x.GetElementsByTagName('text')
-[void]$t.Item(0).AppendChild($x.CreateTextNode($env:STREAMERZ_TITLE))
-[void]$t.Item(1).AppendChild($x.CreateTextNode($env:STREAMERZ_BODY))
-[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe').Show([Windows.UI.Notifications.ToastNotification]::new($x))";
-    tokio::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
-        .env("STREAMERZ_TITLE", title)
-        .env("STREAMERZ_BODY", body)
-        .creation_flags(0x0800_0000) // no console window
-        .status()
-        .await
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    use windows::core::HSTRING;
+    use windows::Data::Xml::Dom::XmlDocument;
+    use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
+    (|| -> windows::core::Result<()> {
+        let doc = XmlDocument::new()?;
+        doc.LoadXml(&HSTRING::from(toast_xml(title, body, "", "")))?;
+        let toast = ToastNotification::CreateToastNotification(&doc)?;
+        ToastNotificationManager::CreateToastNotifierWithId(&app_id())?.Show(&toast)
+    })()
+    .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod xml_tests {
+    #[test]
+    fn toast_text_is_escaped_and_empty_parts_left_out() {
+        let xml = super::toast_xml("A & B", "<b>hi</b>", "", "");
+        assert!(xml.contains("<text>A &amp; B</text><text>&lt;b&gt;hi&lt;/b&gt;</text>"));
+        assert!(!xml.contains("attribution") && !xml.contains("<image"));
+        assert!(
+            super::toast_xml("t", "x", "by \"me\"", "").contains(r#"placement="attribution">by &quot;me&quot;</text>"#)
+        );
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
