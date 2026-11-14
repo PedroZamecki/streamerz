@@ -22,6 +22,7 @@ mod edit;
 mod emote_events;
 mod emotes;
 pub mod engine;
+mod examples;
 pub mod fileio;
 mod fmt;
 mod fswatch;
@@ -42,7 +43,9 @@ pub mod model;
 mod notify;
 mod oauth;
 pub mod obs;
+mod overlay_shot;
 mod overlays;
+mod package;
 pub mod ports;
 pub mod remote;
 pub mod roles;
@@ -69,6 +72,7 @@ mod webcast;
 #[cfg(not(windows))]
 mod x11input;
 pub mod youtube;
+mod zip;
 
 /// Trims heap memory and returns unused virtual memory pages back to the operating system.
 #[cfg(all(target_os = "linux", not(target_env = "musl")))]
@@ -172,6 +176,9 @@ pub struct Config {
     action_group_icons: model::Obj,
     /// What each action group declares besides its values: settings, files, commands and timers.
     action_groups: model::Obj,
+    /// This installation's secret behind the tokens overlay pages call back with (`overlays::token`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    overlay_key: String,
     user_globals: model::Obj,
     /// When each persisted global was last written (ISO 8601).
     global_writes: model::Obj,
@@ -260,6 +267,7 @@ impl Default for Config {
             action_group_variables: Map::new(),
             action_group_icons: Map::new(),
             action_groups: Map::new(),
+            overlay_key: String::new(),
             user_globals: Map::new(),
             global_writes: Map::new(),
             websockets: servers::WsSettings::default(),
@@ -303,6 +311,12 @@ pub struct WindowState {
     pub chat_view: String,
     pub w: i32,
     pub h: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<i32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub maximized: bool,
     /// Chat: hide the time, hide the badges.
     pub chat_no_time: bool,
     pub chat_no_badges: bool,
@@ -323,12 +337,25 @@ pub struct WindowState {
     /// Starred favorite emotes and emoji in the picker: (name, image URL).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub favorite_emotes: Vec<(String, String)>,
+    /// The emotes and emoji the user sends, counted: the picker's row of the most used.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub emote_use: Vec<EmoteUse>,
     /// The sidebar shows only its icons.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub nav_collapsed: bool,
     /// How many chat lines are kept, for how long, and how they come and go.
     #[serde(skip_serializing_if = "ChatLimits::is_default")]
     pub chat: ChatLimits,
+}
+
+/// An emote (or emoji) the user sent on a platform, and how many times.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EmoteUse {
+    pub platform: String,
+    pub name: String,
+    pub url: String,
+    pub count: u32,
 }
 
 fn chat_youtube_tag_default() -> bool {
@@ -342,6 +369,9 @@ impl Default for WindowState {
             chat_view: String::new(),
             w: 0,
             h: 0,
+            x: None,
+            y: None,
+            maximized: false,
             chat_no_time: false,
             chat_no_badges: false,
             chat_still_emotes: false,
@@ -350,6 +380,7 @@ impl Default for WindowState {
             chat_hidden: Vec::new(),
             chat_all_platform: String::new(),
             favorite_emotes: Vec::new(),
+            emote_use: Vec::new(),
             nav_collapsed: false,
             chat: ChatLimits::default(),
         }
@@ -978,6 +1009,13 @@ fn load_from(path: &Path) -> Config {
     };
     c.own_channels();
     usergroups::migrate(&mut c.groups);
+    // Group files older versions kept inside the settings go to the folder beside them.
+    if path == config_path() {
+        groups::files_to_disk(&mut c);
+        if c.overlay_key.is_empty() {
+            c.overlay_key = format!("{:016x}{:016x}", math::secure_u64(), math::secure_u64());
+        }
+    }
     let _ = save_to(path, &c);
     c
 }
@@ -1182,8 +1220,7 @@ fn prepare_dev(source: &Path) -> std::io::Result<PathBuf> {
                         }
                     }
                 }
-                {
-                    let name = "plugins";
+                for name in ["plugins", "groups"] {
                     let from = source.with_file_name(name);
                     if from.exists() {
                         if let Err(e) = storage::copy_tree(&from, &dir.join(name)) {
@@ -1325,6 +1362,8 @@ fn main() {
     if std::env::var_os("STREAMERZ_CRASH_TEST").is_some() {
         panic!("crash test");
     }
+    // The pictures overlay pages may use are the window's own: handed over here, where both meet.
+    overlays::pictures(streamerz_frontend::asset);
     backup::on_start();
     let mut cfg = load_from(&config_path());
     tiktok_bridge::restore_pairing(&mut cfg);

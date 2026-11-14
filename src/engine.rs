@@ -311,6 +311,15 @@ impl Engine {
         *self.local_spotify.borrow_mut() = Some(task);
     }
 
+    /// The last page showing the song or queue closed: the player is watched no longer, unless the monitor
+    /// (its triggers) is on.
+    pub fn spotify_local_idle(&self) {
+        let monitoring = self.cfg.borrow().spotify.local_monitor;
+        if !monitoring && !self.listening("Overlay", "song") && !self.listening("Overlay", "songrequests.queue") {
+            self.spotify_local_stop();
+        }
+    }
+
     pub fn spotify_local_stop(&self) {
         if let Some(task) = self.local_spotify.borrow_mut().take() {
             task.abort();
@@ -352,6 +361,16 @@ impl Engine {
 /// The engine's command queue, once it runs (none in a tool or a test).
 pub fn commands() -> Option<&'static tokio::sync::mpsc::UnboundedSender<UiCmd>> {
     CMDS.get()
+}
+
+/// Whether the chat keeps lines now: off (or in memory saver), nothing of it loads in the background.
+pub fn chat_keeps_lines() -> bool {
+    !crate::memory_saver()
+        && CURRENT
+            .try_with(|c| c.borrow().upgrade())
+            .ok()
+            .flatten()
+            .is_some_and(|e| e.config().window.chat.save_history)
 }
 
 /// Lets `save_on_crash` reach `e`. Call on the engine's thread.
@@ -817,7 +836,19 @@ impl Engine {
 
     /// Run `f` on the config, and save it soon (once for a burst of changes).
     pub fn change(self: &Rc<Self>, f: impl FnOnce(&mut Config)) {
+        // Overlay pages follow their group's settings: only looked at while one listens.
+        let before = self
+            .listening_to("Settings")
+            .then(|| self.cfg.borrow().action_group_variables.clone());
         self.cfg.send_modify(f);
+        if let Some(before) = before {
+            let c = self.cfg.borrow();
+            for (group, values) in &c.action_group_variables {
+                if before.get(group) != Some(values) {
+                    self.emit("Settings", group, || crate::overlays::settings(&c, group));
+                }
+            }
+        }
         crate::host::changed();
         let mut st = self.st.borrow_mut();
         if st.save_pending {

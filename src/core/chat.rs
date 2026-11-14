@@ -276,32 +276,21 @@ fn parts(engine: &Rc<Engine>, line: &Line) -> Vec<Value> {
     build_parts(&text, &lookup, last)
 }
 
-/// What a message being typed will look like: its emotes and emoji as pictures. The ones the platform's
-/// catalogs know, the ones seen in this chat lately and Kick's tags are found (a word that is none stays
-/// text). Empty when nothing in it is a picture, so the box shows nothing extra.
+/// What a message being typed will look like: its emotes and emoji as pictures. Only the ones the user
+/// can send are found: the catalogs of their accounts and channel, their favorites, their own 7TV sets
+/// and Kick tags typed out. One only seen in someone else's message stays text, as it would be sent.
+/// Empty when nothing in it is a picture.
 pub fn preview(engine: &Rc<Engine>, platform: &str, text: &str) -> Vec<Value> {
     if text.trim().is_empty() {
         return Vec::new();
     }
-    let seen = if platform == "all" {
-        let mut all_seen = Vec::new();
-        for p in PLATFORMS {
-            all_seen.extend(engine.chat_emotes(p));
-        }
-        all_seen
-    } else if PLATFORMS.contains(&platform) {
-        engine.chat_emotes(platform)
-    } else {
-        Vec::new()
-    };
     let cfg = engine.config();
     let favorites = cfg.window.favorite_emotes.clone();
     let tw_b_uid = cfg.twitch.broadcaster.as_ref().map(|b| b.user_id.clone());
     let tw_bot_uid = cfg.twitch.bot.as_ref().map(|b| b.user_id.clone());
     let kick_uid = cfg.kick.broadcaster.as_ref().map(|b| b.user_id.to_string());
     let lookup = move |word: &str| {
-        crate::emotes::third(platform, word)
-            .or_else(|| seen.iter().find(|emote| emote.0 == word).map(|emote| emote.1.clone()))
+        crate::emotes::sendable(platform, word)
             .or_else(|| {
                 favorites
                     .iter()
@@ -327,16 +316,10 @@ pub fn preview(engine: &Rc<Engine>, platform: &str, text: &str) -> Vec<Value> {
                 None
             })
             .or_else(|| {
-                if word.starts_with("[emote:") && word.ends_with(']') {
-                    let id = word.strip_prefix("[emote:")?.split(':').next()?;
-                    if !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) {
-                        return Some(format!("https://files.kick.com/emotes/{id}/fullsize"));
-                    }
-                }
-                // A Kick tag's picture is by its number.
-                let tag = crate::emotes::kick_tag(word)?;
-                let id = tag.strip_prefix("[emote:")?.split(':').next()?;
-                Some(format!("https://files.kick.com/emotes/{id}/fullsize"))
+                // A Kick tag typed out: its picture is by its number.
+                let id = word.strip_prefix("[emote:")?.strip_suffix(']')?.split(':').next()?;
+                (!id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+                    .then(|| format!("https://files.kick.com/emotes/{id}/fullsize"))
             })
     };
     let parts = build_parts(&flat(text), &lookup, None);
@@ -533,6 +516,38 @@ fn line_model(engine: &Rc<Engine>, line: &Line, youtube_tag: bool, can_reply: bo
         put("acts", json!(acts));
     }
     Value::Object(model)
+}
+
+/// A line as overlay pages get it: what the Chat page draws of it, so the name's colour, the badges
+/// and the emotes of every provider are already found. `text` is the message in plain words, `parts`
+/// the same in pieces (`{t: text}` or `{e: name, u: picture, big}`), and `avatar` the picture of who
+/// wrote it when the platform sent one.
+pub fn overlay_line(engine: &Rc<Engine>, line: &Line, avatar: &str) -> Value {
+    let youtube_tag = engine.config().window.chat_youtube_tag;
+    let show = Show {
+        time: true,
+        badges: true,
+    };
+    let mut model = line_model(engine, line, youtube_tag, false, &show);
+    if let Some(model) = model.as_object_mut() {
+        model.remove("seq");
+        model.remove("acts");
+        model.insert("text".into(), flat(&line.text).into());
+        for role in [
+            ("broadcaster", line.broadcaster),
+            ("moderator", line.moderator),
+            ("vip", line.vip),
+            ("subscriber", line.subscriber),
+        ] {
+            if role.1 {
+                model.insert(role.0.into(), true.into());
+            }
+        }
+        if !avatar.is_empty() {
+            model.insert("avatar".into(), avatar.into());
+        }
+    }
+    model
 }
 
 /// What the page shows of each line (the chat options).
@@ -1124,22 +1139,11 @@ fn emotes(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
                 .find(|provider| *provider == Provider::Platform)
         })
         .unwrap_or(providers[0]);
-    let mut seen: Vec<(String, String)> = Vec::new();
-    for shown in PLATFORMS
-        .iter()
-        .filter(|shown| (platform == "all" || **shown == platform) && **shown != "youtube")
-    {
-        for emote in engine.chat_emotes(shown) {
-            if !seen.iter().any(|have| have.0 == emote.0) {
-                seen.push(emote);
-            }
-        }
-    }
     let as_broadcaster = sender(engine, &config, platform).0["role"] == "broadcaster";
     let favorites = &config.window.favorite_emotes;
     let query = request["query"].as_str().unwrap_or_default().trim().to_lowercase();
     let found: Vec<EmoteSection> = if query.is_empty() {
-        sections(platform, active, as_broadcaster, &seen, favorites)
+        sections(platform, active, as_broadcaster, favorites)
     } else {
         // Searching looks in every tab of the platform.
         let mut names = std::collections::HashSet::new();
@@ -1147,7 +1151,7 @@ fn emotes(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
             .iter()
             .filter(|provider| **provider != Provider::Favorites)
             .flat_map(|provider| {
-                sections(platform, *provider, as_broadcaster, &seen, favorites)
+                sections(platform, *provider, as_broadcaster, favorites)
                     .into_iter()
                     .map(move |section| (*provider, section))
             })
@@ -1190,10 +1194,70 @@ fn emotes(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     Ok(json!({"emotes": {
         "platform": platform, "tabs": tabs, "active": id(active), "sections": found, "query": query,
         "favorites": favorites.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+        "frequent": most_used(engine, &config, platform), "frequentEmpty": tr("emotes.most_used_empty"),
         "help": format!("{who}{}", tr("chat.emote_picker_help")), "empty": tr("picker.no_matches"),
         "search": tr("chat.search_emotes"), "title": tr("chat.emote_btn_tooltip"),
-        "foldHint": tr("emotes.favorites_hint"),
     }}))
+}
+
+/// The emotes counted for `platform` ("all": every platform's) that can still be sent there, most used
+/// first: a row's worth.
+fn most_used(engine: &Rc<Engine>, config: &crate::Config, platform: &str) -> Vec<Value> {
+    let mut used: Vec<&crate::EmoteUse> = config
+        .window
+        .emote_use
+        .iter()
+        .filter(|used| platform == "all" || used.platform == platform)
+        .collect();
+    used.sort_by_key(|used| std::cmp::Reverse(used.count));
+    let mut names = std::collections::HashSet::new();
+    used.into_iter()
+        .filter(|used| names.insert(used.name.as_str()))
+        // An emote the user no longer has (a subscription ended) leaves the row.
+        .filter(|used| {
+            preview(engine, &used.platform, &used.name)
+                .iter()
+                .any(|part| part["e"] == used.name.as_str())
+        })
+        .take(MOST_USED_SHOWN)
+        .map(|used| json!([used.name, used.url]))
+        .collect()
+}
+
+/// Emotes in the row of the most used (as many as fit a picker's line), and how many are counted.
+const MOST_USED_SHOWN: usize = 12;
+const MOST_USED_KEPT: usize = 60;
+
+/// Count the emotes and emoji of a message sent to `platform`.
+fn count_use(list: &mut Vec<crate::EmoteUse>, platform: &str, parts: &[Value]) {
+    for part in parts {
+        let (Some(name), Some(url)) = (part["e"].as_str(), part["u"].as_str()) else {
+            continue;
+        };
+        match list
+            .iter_mut()
+            .find(|used| used.platform == platform && used.name == name)
+        {
+            Some(used) => {
+                used.count = used.count.saturating_add(1);
+                url.clone_into(&mut used.url);
+            }
+            None => {
+                // Full: the least used goes (a new one may be the start of a favorite).
+                if list.len() >= MOST_USED_KEPT {
+                    if let Some(least) = (0..list.len()).min_by_key(|at| list[*at].count) {
+                        list.remove(least);
+                    }
+                }
+                list.push(crate::EmoteUse {
+                    platform: platform.to_owned(),
+                    name: name.to_owned(),
+                    url: url.to_owned(),
+                    count: 1,
+                });
+            }
+        }
+    }
 }
 
 /// Send a message to one platform or to every connected one. `replySeq` answers a line.
@@ -1258,6 +1322,20 @@ fn send(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
         if platform == "tiktok" {
             sent.push("tiktok");
         }
+    }
+    drop(config);
+    let counted: Vec<(&str, Vec<Value>)> = PLATFORMS
+        .into_iter()
+        .filter(|platform| sent.contains(platform))
+        .map(|platform| (platform, preview(engine, platform, &text)))
+        .filter(|(_, parts)| !parts.is_empty())
+        .collect();
+    if !counted.is_empty() {
+        engine.change(|config| {
+            for (platform, parts) in &counted {
+                count_use(&mut config.window.emote_use, platform, parts);
+            }
+        });
     }
     Ok(json!({"sent": sent}))
 }
@@ -2252,6 +2330,69 @@ mod tests {
             assert!(!engine.config().window.chat.save_history);
             assert_eq!(options(&engine)[1]["rows"].as_array().unwrap().len(), 6);
         });
+    }
+
+    #[test]
+    fn the_picker_line_is_what_you_send_most_and_can_still_send() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            engine.dev_mode();
+            engine.change(|config| {
+                config.window.chat.save_history = true;
+                config.twitch.broadcaster = Some(Default::default());
+            });
+            engine.simulate_chat_connection("twitch", Some(true));
+            // Someone else's emote, seen in chat: not the user's to send.
+            engine
+                .inject_chat(
+                    "twitch",
+                    "viewer",
+                    "",
+                    "viewer",
+                    "theirSub hi",
+                    &json!({"emotes": [["theirSub", "https://x/their.png"]]}),
+                )
+                .unwrap();
+            assert!(preview(&engine, "twitch", "theirSub ok").is_empty());
+            let page = request_sync(
+                &engine,
+                json!({"op": "emotes", "platform": "twitch", "provider": "platform"}),
+            )
+            .unwrap();
+            assert!(!page.to_string().contains("theirSub"), "{page}");
+            assert_eq!(page["emotes"]["frequent"], json!([]));
+            for text in ["\u{1F602} \u{1F602} theirSub", "\u{1F44D}", "\u{1F602}"] {
+                request_sync(&engine, json!({"op": "send", "platform": "twitch", "text": text})).unwrap();
+            }
+            let page = request_sync(&engine, json!({"op": "emotes", "platform": "twitch"})).unwrap();
+            let names: Vec<&str> = page["emotes"]["frequent"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|emote| emote[0].as_str())
+                .collect();
+            assert_eq!(names, ["\u{1F602}", "\u{1F44D}"]);
+            // Counted for the platform it went to only.
+            let kick = request_sync(&engine, json!({"op": "emotes", "platform": "kick"})).unwrap();
+            assert_eq!(kick["emotes"]["frequent"], json!([]));
+        });
+    }
+
+    #[test]
+    fn counting_keeps_the_most_used_when_the_list_is_full() {
+        let mut list = Vec::new();
+        let part = |name: &str| json!({"e": name, "u": format!("https://x/{name}.png")});
+        count_use(&mut list, "twitch", &[part("a"), part("a"), json!({"t": " "})]);
+        count_use(&mut list, "kick", &[part("a")]);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].count, 2);
+        for at in 0..MOST_USED_KEPT {
+            count_use(&mut list, "twitch", &[part(&format!("n{at}"))]);
+        }
+        assert_eq!(list.len(), MOST_USED_KEPT);
+        assert!(list.iter().any(|used| used.name == "a" && used.count == 2));
+        assert!(list.iter().any(|used| used.name == format!("n{}", MOST_USED_KEPT - 1)));
     }
 
     #[test]

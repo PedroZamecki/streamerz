@@ -46,6 +46,8 @@ def main():
     parser.add_argument("--fade", type=int, default=0, help="the fade in of new lines, in ms")
     parser.add_argument("--type", default="", help="text typed into the first send box once the lines are in")
     parser.add_argument("--pick", default="", help="after --type: an emote searched for in the list and picked")
+    parser.add_argument("--picker", action="store_true",
+                        help="open the emote list: shots of its first tab and of the 7TV tab")
     parser.add_argument("--lines", type=int, default=0, help="extra lines to inject, to test scrolling")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
@@ -53,7 +55,13 @@ def main():
     with tempfile.TemporaryDirectory() as folder:
         config = {"start_hidden": False, "locale": "en_US", "theme": args.theme, "updates": "ignore",
                   "instance_name": "gpui-shot", "websockets": {"port": smoke.PORT},
-                  "window": {"chat": {"saveHistory": True, "fadeIn": args.fade}, "chat_view": args.view},
+                  "window": {"chat": {"saveHistory": True, "fadeIn": args.fade}, "chat_view": args.view,
+                             # Sent before: emoji, and WIDE, which is only seen in chat (not offered).
+                             "emoteUse": [{"platform": "twitch", "name": name, "url": url, "count": count}
+                                          for name, url, count in (
+                                              ("\U0001F602", "https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.3/assets/72x72/1f602.png", 9),
+                                              ("WIDE", "https://emotes.test/WIDE.png", 8),
+                                              ("\U0001F44D", "https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.3/assets/72x72/1f44d.png", 5))]},
                   # A fake Twitch account, so the send box is on (dev mode keeps what it sends).
                   "twitch": {"broadcaster": {"userId": "1", "login": "streamer", "displayName": "Streamer",
                                              "token": {"accessToken": "fake", "expiresAt": 4102444800}}}}
@@ -120,6 +128,8 @@ def main():
                 time.sleep(0.2)
             if window:
                 subprocess.run(["xdotool", "windowsize", "--sync", window, str(width), str(height)], env=env)
+                # No window manager gives it focus: an unfocused window keeps its animated pictures still.
+                subprocess.run(["xdotool", "windowfocus", window], env=env)
             print("page", ui("page Chat"))
             if args.down:
                 ws.ask({"request": "SimulateChatConnection", "platform": args.down, "connected": False, "id": "d"})
@@ -136,6 +146,30 @@ def main():
                 print(ui("shot " + str(args.out / f"chat-fading-{args.size}.png")))
             time.sleep(max(1, args.fade / 1000 + 0.5))
             print(ui("shot " + str(args.out / f"chat-live-{args.size}.png")))
+            if args.picker:
+                button = [e for e in json.loads(ui("bounds Emotes & emoji")) if e.get("enabled", True)]
+                if button:
+                    b = button[0]
+                    subprocess.run(["xdotool", "mousemove", str(round(b["x"] + b["w"] / 2)), str(round(b["y"] + b["h"] / 2)), "click", "1"], env=env)
+                    # The catalogs take a few seconds to come.
+                    time.sleep(12)
+                    print(ui("shot " + str(args.out / f"chat-picker-open-{args.size}.png")))
+                    for label in ("7TV", "Emoji"):
+                        tab = [e for e in json.loads(ui("bounds " + label)) if e.get("label") == label]
+                        if not tab:
+                            print("no tab", label)
+                            continue
+                        t = tab[0]
+                        subprocess.run(["xdotool", "mousemove", str(round(t["x"] + t["w"] / 2)), str(round(t["y"] + t["h"] / 2)), "click", "1"], env=env)
+                        time.sleep(4)
+                        print(ui("shot " + str(args.out / f"chat-picker-{label.lower()}-{args.size}.png")))
+                        # Animated emotes play: a moment later, the same list differs.
+                        time.sleep(0.4)
+                        print(ui("shot " + str(args.out / f"chat-picker-{label.lower()}-later-{args.size}.png")))
+                    subprocess.run(["xdotool", "key", "Escape"], env=env)
+                    time.sleep(0.5)
+                else:
+                    print("no emote button found")
             if args.type:
                 boxes = [e for e in json.loads(ui("bounds Send a message")) if e.get("enabled", True)]
                 if boxes:

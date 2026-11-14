@@ -124,6 +124,9 @@ struct Store {
     /// Fast lookup maps for chat line rendering: `[twitch, kick, youtube]`.
     lookup: [HashMap<String, String>; 3],
     kick_tags: HashMap<String, String>,
+    /// Kick emotes seen in chat that the catalog doesn't have: drawn in the lines they came in, not
+    /// offered as the user's own.
+    seen_kick: HashMap<String, String>,
     cat: Catalog,
 }
 
@@ -134,6 +137,7 @@ fn store() -> &'static Mutex<Store> {
             last_key: String::new(),
             lookup: [HashMap::new(), HashMap::new(), HashMap::new()],
             kick_tags: HashMap::new(),
+            seen_kick: HashMap::new(),
             cat: Catalog::default(),
         })
     })
@@ -208,9 +212,24 @@ pub fn twemoji(e: &str) -> String {
     )
 }
 
-/// The third-party or catalog emote called `word` on `platform`, if loaded.
+/// The third-party or catalog emote called `word` on `platform`, if loaded, or a Kick one seen in chat.
 pub fn third(platform: &str, word: &str) -> Option<String> {
     let s = store().lock().ok()?;
+    catalog(&s, platform, word).or_else(|| {
+        matches!(platform, "kick" | "all")
+            .then(|| s.seen_kick.get(word).cloned())
+            .flatten()
+    })
+}
+
+/// The emote called `word` that the user can send on `platform`: one of the catalogs loaded for the
+/// accounts (their own, their channel's and the third-party sets), never one only seen in chat.
+pub fn sendable(platform: &str, word: &str) -> Option<String> {
+    let s = store().lock().ok()?;
+    catalog(&s, platform, word)
+}
+
+fn catalog(s: &Store, platform: &str, word: &str) -> Option<String> {
     if platform == "all" {
         return s.lookup[0]
             .get(word)
@@ -311,26 +330,35 @@ pub fn kick_tag(word: &str) -> Option<String> {
     store().lock().ok()?.kick_tags.get(word).cloned()
 }
 
-/// Remember a Kick native emote tag dynamically (from chat messages or API).
-#[allow(dead_code)]
+/// Kick emotes seen in chat that are kept, before the oldest are forgotten.
+const SEEN_KICK: usize = 2000;
+
+/// Remember a Kick native emote tag seen in chat: sent as Kick's tag when typed, and drawn in chat, but
+/// not the user's to pick.
 pub fn remember_kick_tag(name: &str, id: &str) {
     if id.is_empty() || name.is_empty() {
         return;
     }
     if let Ok(mut st) = store().lock() {
+        if st.lookup[1].contains_key(name) {
+            return;
+        }
+        if st.seen_kick.len() >= SEEN_KICK {
+            st.seen_kick.clear();
+        }
         let tag = format!("[emote:{id}:{name}]");
         let url = format!("https://files.kick.com/emotes/{id}/fullsize");
         st.kick_tags.entry(name.to_string()).or_insert(tag);
-        st.lookup[1].entry(name.to_string()).or_insert(url);
+        st.seen_kick.entry(name.to_string()).or_insert(url);
     }
 }
 
-/// Sections for `(platform, provider, as_broadcaster)`, merged with `seen` emotes from live chat.
+/// Sections for `(platform, provider, as_broadcaster)`: what the account sending can use. Emotes only
+/// seen in chat (another channel's subscriber emotes, say) are left out: the user may not have them.
 pub fn sections(
     platform: &str,
     provider: Provider,
     as_broadcaster: bool,
-    seen: &[(String, String)],
     favorites: &[(String, String)],
 ) -> Vec<EmoteSection> {
     let slot = usize::from(!as_broadcaster);
@@ -359,22 +387,9 @@ pub fn sections(
             };
             let mut out = Vec::new();
             match platform {
+                // The sending account's own (the bot's are not the broadcaster's).
                 "twitch" => {
-                    let acct_secs = &st.cat.twitch_native[slot];
-                    let fallback_secs = &st.cat.twitch_native[0];
-                    let base = if !acct_secs.is_empty() {
-                        acct_secs
-                    } else {
-                        fallback_secs
-                    };
-                    if !seen.is_empty() {
-                        out.push(EmoteSection {
-                            title: tr("emotes.seen_in_chat").into(),
-                            note: None,
-                            emotes: seen.to_vec(),
-                        });
-                    }
-                    out.extend(base.iter().cloned());
+                    out.extend(st.cat.twitch_native[slot].iter().cloned());
                     if out.is_empty() {
                         out.push(EmoteSection {
                             title: tr("emotes.twitch_emotes").into(),
@@ -384,19 +399,15 @@ pub fn sections(
                     }
                 }
                 "kick" => {
-                    if !seen.is_empty() {
-                        out.push(EmoteSection {
-                            title: tr("emotes.seen_in_chat").into(),
-                            note: None,
-                            emotes: seen.to_vec(),
-                        });
-                    }
-                    for mut sec in st.cat.kick_native.iter().cloned() {
-                        if !as_broadcaster && sec.title == tr("emotes.kick_subscriber_emotes") && sec.note.is_none() {
-                            sec.note = Some(tr("emotes.kick_bot_sub_warning").into());
-                        }
-                        out.push(sec);
-                    }
+                    // The channel's subscriber emotes are the broadcaster's; the bot is not known to
+                    // be subscribed.
+                    out.extend(
+                        st.cat
+                            .kick_native
+                            .iter()
+                            .filter(|sec| as_broadcaster || sec.title != tr("emotes.kick_subscriber_emotes"))
+                            .cloned(),
+                    );
                     if out.is_empty() {
                         out.push(EmoteSection {
                             title: tr("emotes.kick_emotes").into(),
@@ -405,22 +416,9 @@ pub fn sections(
                         });
                     }
                 }
-                "youtube" => {
-                    out.push(EmoteSection {
-                        title: tr("emotes.channel_and_seen").into(),
-                        note: seen.is_empty().then(|| tr("emotes.youtube_seen_hint").into()),
-                        emotes: seen.to_vec(),
-                    });
-                }
-
+                // YouTube's own emoji can't be sent, TikTok's neither.
+                "youtube" | "tiktok" => {}
                 _ => {
-                    if !seen.is_empty() {
-                        out.push(EmoteSection {
-                            title: tr("emotes.seen_across_chats").into(),
-                            note: None,
-                            emotes: seen.to_vec(),
-                        });
-                    }
                     out.extend(st.cat.twitch_native[0].iter().cloned());
                     out.extend(st.cat.kick_native.iter().cloned());
                 }
@@ -492,20 +490,34 @@ fn rebuild_lookups(cat: &Catalog) -> [HashMap<String, String>; 3] {
     [tw, kick, yt]
 }
 
-/// Pictures of each platform's own emotes put on disk ahead of the list (two screens of them), so it
-/// opens with them drawn. Files only: nothing is decoded until the list shows it.
-const PREFETCH: usize = 96;
-
-fn prefetch(cat: &Catalog) {
-    for sections in [&cat.twitch_native[0], &cat.twitch_native[1], &cat.kick_native] {
-        for (_, url) in sections.iter().flat_map(|section| &section.emotes).take(PREFETCH) {
-            crate::core::images::lookup(url);
-        }
-    }
+/// Every picture the picker can show, in the order it shows them (the platforms' own first), put on
+/// disk in the background while the chat keeps lines: the picker opens with them drawn.
+fn warm(cat: &Catalog) {
+    let sets = [
+        &cat.twitch_native[0],
+        &cat.twitch_native[1],
+        &cat.kick_native,
+        &cat.twitch_7tv[0],
+        &cat.twitch_7tv[1],
+        &cat.kick_7tv,
+        &cat.youtube_7tv,
+        &cat.twitch_bttv,
+        &cat.youtube_bttv,
+        &cat.twitch_ffz,
+    ];
+    let mut seen = std::collections::HashSet::new();
+    let urls: Vec<String> = sets
+        .into_iter()
+        .flatten()
+        .flat_map(|section| section.emotes.iter().map(|emote| emote.1.clone()))
+        .chain(groups().flat_map(|(_, emoji)| emoji.into_iter().map(twemoji)))
+        .filter(|url| seen.insert(url.clone()))
+        .collect();
+    crate::core::images::warm(urls, crate::engine::chat_keeps_lines);
 }
 
 fn apply_catalog(cat: Catalog) {
-    prefetch(&cat);
+    warm(&cat);
     let lookup = rebuild_lookups(&cat);
     if let Ok(mut st) = store().lock() {
         st.lookup = lookup;
@@ -1357,7 +1369,7 @@ mod tests {
             ("[tiktok:123]".into(), "https://example.test/sticker.png".into()),
             ("🙂".into(), "https://example.test/emoji.png".into()),
         ];
-        let sections = sections("tiktok", Provider::Favorites, true, &[], &favorites);
+        let sections = sections("tiktok", Provider::Favorites, true, &favorites);
         assert_eq!(sections[0].emotes.len(), 1);
         assert_eq!(sections[0].emotes[0].0, "🙂");
     }
@@ -1370,7 +1382,7 @@ mod tests {
             ("😀".into(), twemoji("😀")),
         ];
         for platform in ["youtube", "all"] {
-            let items = sections(platform, Provider::Favorites, true, &[], &favorites);
+            let items = sections(platform, Provider::Favorites, true, &favorites);
             assert_eq!(items[0].emotes.len(), 1);
             assert_eq!(items[0].emotes[0].0, "😀");
         }
@@ -1465,6 +1477,39 @@ mod tests {
         assert_eq!(secs.len(), 3);
         assert_eq!(tags.get("KEKW").map(String::as_str), Some("[emote:37226:KEKW]"));
         assert_eq!(tags.get("chanSub").map(String::as_str), Some("[emote:1002:chanSub]"));
+    }
+
+    #[test]
+    fn a_kick_emote_seen_in_chat_is_drawn_but_not_offered_as_the_users() {
+        remember_kick_tag("onlySeenHere", "424242");
+        assert!(third("kick", "onlySeenHere").is_some());
+        assert!(third("all", "onlySeenHere").is_some());
+        assert_eq!(sendable("kick", "onlySeenHere"), None);
+        assert_eq!(kick_tag("onlySeenHere"), Some("[emote:424242:onlySeenHere]".into()));
+    }
+
+    #[test]
+    fn the_bot_is_not_offered_the_channels_kick_subscriber_emotes() {
+        let sub = EmoteSection {
+            title: tr("emotes.kick_subscriber_emotes").into(),
+            note: None,
+            emotes: vec![("subOnly".into(), "https://files.kick.com/emotes/7/fullsize".into())],
+        };
+        let free = EmoteSection {
+            title: tr("emotes.kick_channel_emotes").into(),
+            note: None,
+            emotes: vec![("free".into(), "https://files.kick.com/emotes/8/fullsize".into())],
+        };
+        store().lock().unwrap().cat.kick_native = vec![free, sub];
+        let titles = |as_broadcaster| -> Vec<String> {
+            sections("kick", Provider::Platform, as_broadcaster, &[])
+                .into_iter()
+                .map(|section| section.title)
+                .collect()
+        };
+        assert_eq!(titles(true).len(), 2);
+        assert_eq!(titles(false), [tr("emotes.kick_channel_emotes")]);
+        store().lock().unwrap().cat.kick_native.clear();
     }
 
     #[test]

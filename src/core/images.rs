@@ -55,25 +55,14 @@ pub fn lookup(url: &str) -> Option<PathBuf> {
     if url.is_empty() || !url.starts_with("http") || crate::memory_saver() {
         return None;
     }
-    if let Some(path) = KNOWN.with_borrow(|known| known.get(url).cloned()) {
-        if path.is_file() {
-            return Some(path);
-        }
-        KNOWN.with_borrow_mut(|known| known.remove(url));
+    if let Some(path) = lookup_on_disk(url) {
+        return Some(path);
+    }
+    // Being put on disk ahead of time: that download says when it lands.
+    if WARMING_NOW.with_borrow_mut(|now| now.get_mut(url).map(|asked| *asked = true).is_some()) {
+        return None;
     }
     let stem = stem(url);
-    for extension in EXTENSIONS {
-        let path = dir().join(format!("{stem}.{extension}"));
-        if path.is_file() {
-            KNOWN.with_borrow_mut(|known| {
-                if known.len() > 4000 {
-                    known.clear();
-                }
-                known.insert(url.to_owned(), path.clone());
-            });
-            return Some(path);
-        }
-    }
     if ASKED.with_borrow_mut(|asked| {
         if asked.len() > 20_000 {
             asked.clear();
@@ -85,36 +74,124 @@ pub fn lookup(url: &str) -> Option<PathBuf> {
     None
 }
 
+/// The file holding `url`, if it is on disk already.
+fn lookup_on_disk(url: &str) -> Option<PathBuf> {
+    if let Some(path) = KNOWN.with_borrow(|known| known.get(url).cloned()) {
+        if path.is_file() {
+            return Some(path);
+        }
+        KNOWN.with_borrow_mut(|known| known.remove(url));
+    }
+    let path = on_disk(&stem(url))?;
+    KNOWN.with_borrow_mut(|known| {
+        if known.len() > 4000 {
+            known.clear();
+        }
+        known.insert(url.to_owned(), path.clone());
+    });
+    Some(path)
+}
+
+/// The file named `stem`, whatever kind of picture it is.
+fn on_disk(stem: &str) -> Option<PathBuf> {
+    let folder = dir();
+    EXTENSIONS
+        .into_iter()
+        .map(|extension| folder.join(format!("{stem}.{extension}")))
+        .find(|path| path.is_file())
+}
+
 fn fetch(url: String, stem: String) {
     tokio::task::spawn_local(async move {
-        let _one = FETCHING.acquire().await;
-        let Ok(response) = crate::http::request("GET", &url, &[], b"").await else {
-            return;
-        };
-        if response.status != 200 {
-            return;
-        }
-        let Some(extension) = sniff(&response.body) else {
-            return;
-        };
-        let folder = dir();
-        let file = folder.join(format!("{stem}.{extension}"));
-        let part = folder.join(format!("{stem}.part"));
-        // Whole or nothing: a half-written file would be a broken picture for good.
-        let saved = std::fs::create_dir_all(&folder)
-            .and_then(|()| std::fs::write(&part, &response.body))
-            .and_then(|()| std::fs::rename(&part, &file));
-        if saved.is_ok() {
-            let count = ARRIVED.with(|arrived| {
-                arrived.set(arrived.get() + 1);
-                arrived.get()
-            });
-            if count % 200 == 1 {
-                prune(&folder, KEEP_BYTES);
-            }
+        if download(&url, &stem).await.is_some() {
             crate::host::images_changed();
         }
     });
+}
+
+/// Puts `url` on disk as `stem` and its kind; the bytes written, or `None` when it isn't a picture.
+async fn download(url: &str, stem: &str) -> Option<u64> {
+    let _one = FETCHING.acquire().await;
+    let response = crate::http::request("GET", url, &[], b"").await.ok()?;
+    if response.status != 200 {
+        return None;
+    }
+    let extension = sniff(&response.body)?;
+    let folder = dir();
+    let file = folder.join(format!("{stem}.{extension}"));
+    let part = folder.join(format!("{stem}.part"));
+    // Whole or nothing: a half-written file would be a broken picture for good.
+    std::fs::create_dir_all(&folder)
+        .and_then(|()| std::fs::write(&part, &response.body))
+        .and_then(|()| std::fs::rename(&part, &file))
+        .ok()?;
+    let count = ARRIVED.with(|arrived| {
+        arrived.set(arrived.get() + 1);
+        arrived.get()
+    });
+    if count % 200 == 1 {
+        prune(&folder, KEEP_BYTES);
+    }
+    Some(response.body.len() as u64)
+}
+
+/// The most the pictures put on disk ahead of time may take: under the folder's budget, so what a
+/// chat shows keeps its room and the same pictures stay from one run to the next.
+const WARM_BYTES: u64 = KEEP_BYTES / 2;
+/// Downloads at a time for them: half the slots, the others stay free for what a page shows.
+const WARM_AT_ONCE: usize = AT_ONCE / 2;
+
+thread_local! {
+    /// Bumped by each new list to put on disk: the one before stops.
+    static WARMING: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// The pictures of that list being downloaded now, and whether a page asked for each meanwhile.
+    static WARMING_NOW: RefCell<HashMap<String, bool>> = RefCell::default();
+}
+
+/// Put the pictures of `urls` on disk in the background, in order, while `wanted` says so: a list
+/// opened later draws them at once. Nothing is decoded, and no frontend is woken unless it asked for
+/// one of them meanwhile.
+pub fn warm(urls: Vec<String>, wanted: impl Fn() -> bool + 'static) {
+    if urls.is_empty() || crate::memory_saver() || !wanted() {
+        return;
+    }
+    let run = WARMING.with(|warming| {
+        warming.set(warming.get() + 1);
+        warming.get()
+    });
+    let queue = std::rc::Rc::new(RefCell::new(urls.into_iter()));
+    let bytes = std::rc::Rc::new(std::cell::Cell::new(0));
+    let wanted = std::rc::Rc::new(wanted);
+    for _ in 0..WARM_AT_ONCE {
+        let (queue, bytes, wanted) = (queue.clone(), bytes.clone(), wanted.clone());
+        tokio::task::spawn_local(async move {
+            loop {
+                if bytes.get() >= WARM_BYTES || WARMING.get() != run || crate::memory_saver() || !wanted() {
+                    return;
+                }
+                let Some(url) = queue.borrow_mut().next() else { return };
+                if !url.starts_with("http") {
+                    continue;
+                }
+                let stem = stem(&url);
+                if let Some(path) = on_disk(&stem) {
+                    bytes.set(bytes.get() + std::fs::metadata(path).map_or(0, |meta| meta.len()));
+                    continue;
+                }
+                // Asked by a page already (being downloaded, or tried this run), or by a list before.
+                if ASKED.with_borrow(|asked| asked.contains(&url))
+                    || WARMING_NOW.with_borrow(|now| now.contains_key(&url))
+                {
+                    continue;
+                }
+                WARMING_NOW.with_borrow_mut(|now| now.insert(url.clone(), false));
+                bytes.set(bytes.get() + download(&url, &stem).await.unwrap_or(0));
+                if WARMING_NOW.with_borrow_mut(|now| now.remove(&url)) == Some(true) {
+                    crate::host::images_changed();
+                }
+            }
+        });
+    }
 }
 
 /// Drop the least recently written pictures until the folder holds at most `keep` bytes.

@@ -1,12 +1,16 @@
-//! The emote and emoji picker: a tab per source, a search across them, and a grid of pictures.
+//! The emote and emoji picker: a tab per source (its icon, named when open), a search across them, the
+//! user's most used in one fixed line, and a grid of pictures under it.
 //!
 //! The core decides the tabs and what each holds (`StreamerzChat` op `emotes`); this draws them. The
 //! grid is virtualised, and asks the core for the pictures of the rows in view only. A click picks
-//! (Shift keeps the picker open to pick several), a right-click keeps or drops a favorite.
+//! (Shift keeps the picker open to pick several), a right-click keeps or drops a favorite. Animated
+//! pictures play.
 use crate::send;
 use gpui_kit::component::{
     input::{Input, InputEvent, InputState},
+    scroll::{Scrollbar, ScrollbarMode},
     tab::{Tab, TabBar},
+    tooltip::Tooltip,
     ActiveTheme, Icon, Sizable,
 };
 use gpui_kit::prelude::FluentBuilder;
@@ -42,6 +46,8 @@ pub struct EmotePicker {
     provider: String,
     data: Value,
     rows: Vec<Row>,
+    /// The user's most used, for the fixed line over the grid.
+    frequent: Vec<(String, String)>,
     folded: HashSet<String>,
     favorites: HashSet<String>,
     input: Entity<InputState>,
@@ -66,6 +72,7 @@ impl EmotePicker {
             provider: String::new(),
             data: Value::Null,
             rows: Vec::new(),
+            frequent: Vec::new(),
             folded: HashSet::new(),
             favorites: HashSet::new(),
             input,
@@ -119,8 +126,11 @@ impl EmotePicker {
             .flatten()
             .filter_map(|name| name.as_str().map(str::to_owned))
             .collect();
+        self.frequent = pairs(&data["frequent"]);
         self.data = data;
         self.layout();
+        let wanted: Vec<String> = self.frequent.iter().map(|(_, url)| url.clone()).collect();
+        self.want_urls(wanted);
         cx.notify();
     }
 
@@ -129,12 +139,7 @@ impl EmotePicker {
         for section in self.data["sections"].as_array().into_iter().flatten() {
             let title = section["title"].as_str().unwrap_or_default().to_owned();
             let open = !self.folded.contains(&title);
-            let emotes: Vec<(String, String)> = section["emotes"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|emote| Some((emote[0].as_str()?.to_owned(), emote[1].as_str()?.to_owned())))
-                .collect();
+            let emotes = pairs(&section["emotes"]);
             self.rows.push(Row::Head {
                 title,
                 open,
@@ -179,17 +184,108 @@ impl EmotePicker {
 
     /// Note the pictures of the rows in view that are not here yet.
     fn want(&mut self, range: Range<usize>) {
-        for row in self.rows.get(range).into_iter().flatten() {
-            if let Row::Cells(cells) = row {
-                for (_, url) in cells {
-                    if url.starts_with("http") && !self.images.contains_key(url) {
-                        self.missing.insert(url.clone());
-                    }
-                }
+        let urls: Vec<String> = self
+            .rows
+            .get(range)
+            .into_iter()
+            .flatten()
+            .filter_map(|row| match row {
+                Row::Cells(cells) => Some(cells.iter().map(|(_, url)| url.clone())),
+                Row::Head { .. } => None,
+            })
+            .flatten()
+            .collect();
+        self.want_urls(urls);
+    }
+
+    fn want_urls(&mut self, urls: Vec<String>) {
+        for url in urls {
+            if url.starts_with("http") && !self.images.contains_key(&url) {
+                self.missing.insert(url);
             }
         }
         self.ask_images();
     }
+
+    /// One emote: its picture (playing when animated), its name on hover; a click picks it, a
+    /// right-click keeps or drops it as a favorite.
+    fn cell(&self, id: ElementId, name: &str, url: &str, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let (pick, picked_url, keep) = (name.to_owned(), url.to_owned(), (name.to_owned(), url.to_owned()));
+        let tip = SharedString::from(name.to_owned());
+        div()
+            .id(id)
+            .w(px(CELL))
+            .h(px(CELL))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(theme.radius)
+            .cursor_pointer()
+            .hover(|style| style.bg(theme.accent))
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            .when(self.favorites.contains(name), |cell| cell.border_1().border_color(theme.primary))
+            .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
+                cx.emit(Picked(pick.clone(), picked_url.clone(), event.modifiers().shift));
+            }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |view, _, _, cx| {
+                    send(json!({"request": "StreamerzChat", "op": "favorite", "name": keep.0, "url": keep.1, "id": "chat:favorite"}));
+                    if !view.favorites.remove(&keep.0) {
+                        view.favorites.insert(keep.0.clone());
+                    }
+                    cx.notify();
+                }),
+            )
+            .child(match self.images.get(url) {
+                // An element id lets an animated picture play.
+                Some(file) => img(file.clone())
+                    .id("picture")
+                    .w(px(PICTURE))
+                    .h(px(PICTURE))
+                    .object_fit(ObjectFit::Contain)
+                    .into_any_element(),
+                None => div()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(name.chars().take(3).collect::<String>())
+                    .into_any_element(),
+            })
+            .into_any_element()
+    }
+
+    /// A tab's icon: the platform's or the source's logo, a smile for emoji, a star for favorites
+    /// (filled while open).
+    fn tab_icon(&self, id: &str, open: bool) -> AnyElement {
+        let logo = |name: String| img(name).size_4().flex_shrink_0().into_any_element();
+        let icon = |name: &str| {
+            Icon::empty()
+                .path(SharedString::from(format!("icons/{name}.svg")))
+                .size_4()
+                .into_any_element()
+        };
+        match id {
+            "favorites" => icon(if open { "star-filled" } else { "star" }),
+            "emoji" => icon("smile"),
+            "platform" => match self.platform.as_str() {
+                platform @ ("twitch" | "kick" | "youtube" | "tiktok") => logo(format!("brands/{platform}.svg")),
+                _ => icon("layers"),
+            },
+            "7tv" | "bttv" | "ffz" => logo(format!("brands/{id}.svg")),
+            _ => icon("smile"),
+        }
+    }
+}
+
+/// `[[name, url], ...]` as pairs.
+fn pairs(list: &Value) -> Vec<(String, String)> {
+    list.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|emote| Some((emote[0].as_str()?.to_owned(), emote[1].as_str()?.to_owned())))
+        .collect()
 }
 
 impl Render for EmotePicker {
@@ -216,10 +312,21 @@ impl Render for EmotePicker {
                     .segmented()
                     .small()
                     .selected_index(if searching { usize::MAX } else { active })
-                    .children(
-                        tabs.iter()
-                            .map(|(_, label)| Tab::new().aria_label(label.clone()).label(label.clone())),
-                    )
+                    .children(tabs.iter().enumerate().map(|(at, (id, label))| {
+                        // Only the open tab says its name (favorites never: the star says it).
+                        let open = !searching && at == active;
+                        let tip = SharedString::from(label.clone());
+                        let icon = div()
+                            .id(("emote-tab", at))
+                            .flex()
+                            .items_center()
+                            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                            .child(self.tab_icon(id, open));
+                        Tab::new()
+                            .aria_label(label.clone())
+                            .prefix(icon)
+                            .when(open && id != "favorites", |tab| tab.label(label.clone()))
+                    }))
                     .on_click(cx.listener(move |view, index: &usize, window, cx| {
                         if let Some(id) = ids.get(*index) {
                             view.provider = id.clone();
@@ -247,7 +354,34 @@ impl Render for EmotePicker {
         if !self.error.is_empty() {
             body = body.child(super::notice::error(&self.error, cx));
         }
-        if self.rows.is_empty() && self.data != Value::Null {
+        if self.data == Value::Null {
+            return body.into_any_element();
+        }
+        // The most used: one line, always there, whatever the grid under it scrolls to.
+        let frequent: Vec<AnyElement> = self
+            .frequent
+            .iter()
+            .take(COLUMNS)
+            .enumerate()
+            .map(|(at, (name, url))| self.cell(("emote-frequent", at).into(), name, url, cx))
+            .collect();
+        body = body.child(
+            div()
+                .h(px(CELL))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .overflow_hidden()
+                .border_b_1()
+                .border_color(theme.border)
+                .when(frequent.is_empty(), |line| {
+                    line.text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(self.data["frequentEmpty"].as_str().unwrap_or_default().to_owned())
+                })
+                .children(frequent),
+        );
+        if self.rows.is_empty() {
             return body
                 .child(
                     div()
@@ -267,9 +401,14 @@ impl Render for EmotePicker {
                 view.want(range.clone());
                 let theme = cx.theme().clone();
                 range
-                    .filter_map(|at| view.rows.get(at).map(|row| (at, row)))
-                    .map(|(at, row)| match row {
-                        Row::Head { title, open, count, note } => {
+                    .filter(|at| *at < view.rows.len())
+                    .map(|at| match &view.rows[at] {
+                        Row::Head {
+                            title,
+                            open,
+                            count,
+                            note,
+                        } => {
                             let folded = title.clone();
                             div()
                                 .id(("emote-head", at))
@@ -287,14 +426,30 @@ impl Render for EmotePicker {
                                 }))
                                 .child(
                                     Icon::empty()
-                                        .path(if *open { "icons/chevron-down.svg" } else { "icons/chevron-right.svg" })
+                                        .path(if *open {
+                                            "icons/chevron-down.svg"
+                                        } else {
+                                            "icons/chevron-right.svg"
+                                        })
                                         .size_4()
                                         .text_color(theme.muted_foreground),
                                 )
                                 .child(div().font_weight(FontWeight::BOLD).child(title.clone()))
-                                .child(div().text_xs().text_color(theme.muted_foreground).child(count.to_string()))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .child(count.to_string()),
+                                )
                                 .when_some(note.clone(), |head, note| {
-                                    head.child(div().text_xs().min_w_0().truncate().text_color(theme.muted_foreground).child(note))
+                                    head.child(
+                                        div()
+                                            .text_xs()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_color(theme.muted_foreground)
+                                            .child(note),
+                                    )
                                 })
                                 .into_any_element()
                         }
@@ -302,49 +457,7 @@ impl Render for EmotePicker {
                             .h(px(CELL))
                             .flex()
                             .children(cells.iter().enumerate().map(|(column, (name, url))| {
-                                let favorite = view.favorites.contains(name);
-                                let (pick, picked_url, keep, star) = (name.clone(), url.clone(), (name.clone(), url.clone()), favorite);
-                                let picture = view.images.get(url).map(|file| {
-                                    img(file.clone()).w(px(PICTURE)).h(px(PICTURE)).object_fit(ObjectFit::Contain)
-                                });
-                                div()
-                                    .id(("emote", at * COLUMNS + column))
-                                    .w(px(CELL))
-                                    .h(px(CELL))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded(theme.radius)
-                                    .cursor_pointer()
-                                    .hover(|style| style.bg(theme.accent))
-                                    .tooltip({
-                                        let tip = SharedString::from(name.clone());
-                                        move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
-                                    })
-                                    .when(star, |cell| cell.border_1().border_color(theme.primary))
-                                    .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
-                                        cx.emit(Picked(pick.clone(), picked_url.clone(), event.modifiers().shift));
-                                    }))
-                                    .on_mouse_down(
-                                        MouseButton::Right,
-                                        cx.listener(move |view, _, _, cx| {
-                                            send(json!({"request": "StreamerzChat", "op": "favorite", "name": keep.0, "url": keep.1, "id": "chat:favorite"}));
-                                            if view.favorites.contains(&keep.0) {
-                                                view.favorites.remove(&keep.0);
-                                            } else {
-                                                view.favorites.insert(keep.0.clone());
-                                            }
-                                            cx.notify();
-                                        }),
-                                    )
-                                    .child(match picture {
-                                        Some(picture) => picture.into_any_element(),
-                                        None => div()
-                                            .text_xs()
-                                            .text_color(theme.muted_foreground)
-                                            .child(name.chars().take(3).collect::<String>())
-                                            .into_any_element(),
-                                    })
+                                view.cell(("emote", at * COLUMNS + column).into(), name, url, cx)
                             }))
                             .into_any_element(),
                     })
@@ -352,7 +465,18 @@ impl Render for EmotePicker {
             }),
         )
         .track_scroll(&self.scroll)
-        .h(px(CELL * 8.));
-        body.child(list).into_any_element()
+        .size_full();
+        // The scrollbar stays in sight: the list is long and its length is worth seeing.
+        body.child(
+            div().relative().h(px(CELL * 8.)).child(list).child(
+                div().absolute().inset_0().child(
+                    Scrollbar::vertical(&self.scroll)
+                        .id("emote-scrollbar")
+                        .mode(ScrollbarMode::Always)
+                        .viewport_from_layout(),
+                ),
+            ),
+        )
+        .into_any_element()
     }
 }
