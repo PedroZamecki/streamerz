@@ -75,20 +75,28 @@ fn system() -> String {
             parts.push(format!("{label} {v}"));
         }
     }
-    let shows = match (
+    let shows = display_description(
+        cfg!(windows),
         std::env::var_os("WAYLAND_DISPLAY").is_some(),
         std::env::var_os("DISPLAY").is_some(),
-    ) {
-        (true, true) => "Wayland and X11 available",
-        (true, false) => "Wayland",
-        (false, true) => "X11",
-        _ => "no display",
-    };
+    );
     parts.push(shows.to_string());
     if crate::update::appimage().is_some() {
         parts.push("AppImage".into());
     }
     parts.join(", ")
+}
+
+fn display_description(windows: bool, wayland: bool, x11: bool) -> &'static str {
+    if windows {
+        return "Windows display";
+    }
+    match (wayland, x11) {
+        (true, true) => "Wayland and X11 available",
+        (true, false) => "Wayland",
+        (false, true) => "X11",
+        _ => "no display",
+    }
 }
 
 /// Resident memory in MB (Linux), for a report.
@@ -607,6 +615,12 @@ pub async fn offer() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_display_does_not_depend_on_unix_variables() {
+        assert_eq!(display_description(true, false, false), "Windows display");
+        assert_eq!(display_description(false, false, false), "no display");
+    }
 
     #[test]
     fn a_report_says_its_version_and_message() {
