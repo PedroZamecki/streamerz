@@ -4,13 +4,12 @@ Use this pattern for every new or changed Streamerz screen. It describes the int
 screens may still need to be brought into line when they are changed. Follow `PLAN.md` for behavior and
 the project rules in `AGENTS.md` for implementation and verification.
 
-## GPUI migration
+## The window
 
-GPUI is the frontend for the current rewrite. Shared controls live in `frontend/src/controls/` and
-use GPUI Component, the shadcn family and Lucide. The production adapter below remains the visual and
-behavior reference while pages are migrated. Do not introduce new screens into that adapter.
+The window is GPUI. Shared controls live in `frontend/src/controls/` and use GPUI Component, the shadcn
+family and Lucide.
 
-| Need | GPUI shared block |
+| Need | Shared block |
 |---|---|
 | Editable entity lists, singleton settings, selection, filtering and actions | `controls/list.rs` |
 | Virtualized tables, cell rendering and matching context menus | `controls/rows.rs` |
@@ -21,7 +20,7 @@ behavior reference while pages are migrated. Do not introduce new screens into t
 | Zinc colors and component tokens | `theme.rs` |
 | Lucide bodies and brand assets | `assets/lucide.rs`, `frontend/src/assets.rs` |
 
-All dialogs stay inside the GPUI window. Pending core prompts belong to `src/core/prompts.rs` and are
+All dialogs stay inside the window. Pending core prompts belong to `src/core/prompts.rs` and are
 answered through the same dispatcher as MCP. Closing the renderer must preserve pending prompts.
 Forms send changed field values to the core; validation, wire types and persistence belong to
 `src/automation/`. Keep unknown imported fields and unchanged values intact.
@@ -33,8 +32,6 @@ The frontend process is disposable. Pages query core models through inherited pi
 by stable IDs and discard responses from a previous page generation. Updates follow core events.
 No page may add a refresh timer or start an integration merely to display its state.
 
-The sections below describe the shared production patterns that the GPUI blocks must preserve.
-
 ## Page
 
 Give each page one clear purpose. Put its main content first, with a short title or column headings where
@@ -42,37 +39,33 @@ needed. Keep related controls together and use the same order and names for the 
 Use the existing sidebar for navigation. Avoid adding another navigation system for a single feature.
 
 Use the shared zinc theme (`frontend/src/theme.rs`) and the controls in `frontend/src/controls/`. Use the muted
-text colour for secondary text and `Health` for connection state. Use Lucide icons from `assets/lucide.rs` and the
+text colour for secondary text and `controls/health.rs` for connection state. Use Lucide icons from `assets/lucide.rs` and the
 existing brand assets. Don't introduce
 local colors, decorative symbols or custom widget styling for one screen.
 
 ## Building blocks
 
 The UI is modular: a look or behaviour used in more than one place lives in one shared block, and every
-screen uses that block instead of styling a widget by hand. The table below was written for the retired FLTK
-window (the module names are its); in GPUI the same blocks are the controls in `frontend/src/controls/`
-(rows, lists, trees, forms, prompts for dialogs and questions, notices, tabs, health) and the shared theme.
-The rules and what each block is for still hold. To change how something looks
-everywhere, change its module. When a screen needs something new that others could use, add it to the
-right module (or a new one) first, then use it.
+screen uses that block instead of styling a widget by hand: the controls in `frontend/src/controls/`
+(rows, lists, trees, forms, prompts for dialogs and questions, notices, tabs, health, cards, gallery) and
+the shared theme. To change how something looks everywhere, change its module. When a screen needs something
+new that others could use, add it to the right module (or a new one) first, then use it.
 
 | Need | Use | Never |
 |---|---|---|
-| A page that may not fit | `scroll::page` (as tall as its content, lists get a minimum) | `Scroll::new` with a guessed height |
-| A scroll area in a dialog | `scroll::area` | FLTK's scrollbar with arrows |
-| A text view, tree or browser | `scroll::view`, or `scroll::paint_bars` at the end of its own draw | its default bars |
-| A list drawn by hand | `scroll::thumb`, `scroll::dragged`, `scroll::draw_thumb` | a bar of its own |
-| A right-click or any popup menu | `menu::Menu` (`context_menu()` for a list's buttons, `pick`, `tick_menu`) | `MenuButton::popup`, `menu_at_pointer` |
-| A dropdown | `fit::choice()`; `menu::dropdown` on a MenuButton; `menu::input_choice` on an InputChoice | FLTK's own pulldown |
-| Something floating over the window | `popover::Popover` (rounded, closed by Escape or a click outside) | a borderless window |
-| A dialog | `dialogs::window` (or `window_tone`), then `dialogs::run`, or `open`/`close` for a live one | a window of its own, `make_modal` |
-| A message or a question | `dialogs::message`, `success`, `alert` (warning), `error`, `choice`, `danger` (can't be undone), `pick_one` | `fltk::dialog::alert_default` and the like |
-| A short form in a dialog | `fields::field` (icon and hint, no label column), `fields::Growing` (grows as it's filled), `fields::chip` (a platform to pick) | a column of labels and empty fields |
-| A password or a token | `fields::secret` (forms: `W::Secret`): dots, and an eye that shows what's typed | `SecretInput`, or a plain field |
-| Something that comes and goes | `anim::play` (eased, short, off in Settings); popovers and dialogs already animate | a timer of its own, or a delay |
-| A row of buttons | `grid()` | buttons placed by hand |
-| A list | `Rows` with `header()`, each column's look set with `set_cell` (see Lists and actions) | `Browser` |
-| A connection's state | `Health::show` | a coloured label |
+| A list of things to add, edit and delete | `list.rs` (`List`: selection, filter, buttons, right-click menu, form dialogs) | a table and buttons wired by hand |
+| A table | `rows.rs` (`Rows`: virtualised, one action list for buttons and the right-click menu) | a table of its own |
+| A tree (actions, groups, files) | `tree.rs` (`TreePane`: search, button bar, right-click menu, logos) | nested rows drawn by hand |
+| A page of settings or platforms | `sections.rs` (labelled rows, `"card": true` cards) from a core model | a page laid out by hand |
+| A form | `form.rs` (schema fields, placeholders, Browse, secrets with an eye), validated by the core | fields placed by hand, checks in the window |
+| Picking one item of a tree with its description | `picker.rs` (`Picker`) | a list with a separate description |
+| Picking one item by its picture | `gallery.rs` (`Gallery`) | a dropdown of names |
+| A dialog | `dialog.rs` (`shell`, `body`, `footer`: header, body, buttons in the footer) | a window of its own |
+| A message or a question from the core | `prompt.rs` (`Prompt`), asked through `src/core/prompts.rs` | a dialog the window owns |
+| Why something is empty or can't be done | `notice::info`; a validation error: `notice::error` | a coloured label |
+| A page's "Show" selector | `tabs.rs` (`bar`) | buttons of its own |
+| The inside of a button | `body.rs` (`button_body`: icon and label) | an icon and text placed by hand |
+| A connection's state | `health.rs` (`appearance`) | a coloured label |
 
 Cards: a section with `"card": true` draws as a rounded, bordered panel, two to a row when the window is
 wide (one when narrow): its logo and title with a short state at the right (`state`: health, text, and a
@@ -101,10 +94,9 @@ from `controls/dialog.rs`:
 A form or a prompt hands its buttons to the footer (`Form::buttons_view`, `Prompt::buttons_view`). The user
 card is the one dialog with a header of its own: its banner (picture, name, account age, open and close).
 
-Motion: a dialog rises into place while the window behind it fades from sharp to blurred, and sinks as it
-closes; a menu or a popover unrolls from the top. Everything moves through `anim::play` (eased out, under a
-fifth of a second, events still handled), and nothing moves when Animations is off in Settings or with the
-memory saver. A switch's knob slides across (`anim::start`, which doesn't wait). A focus ring shows only
+Motion: dialogs, menus and popovers move as the toolkit's components do (short, eased out, events still
+handled), and nothing moves when Animations is off in Settings or with the memory saver (the window asks
+the toolkit to reduce motion). Never add a timer of your own for it. A focus ring shows only
 when the keyboard moved the focus, never after a click, and always fits inside its control. A menu marks
 only the row under the mouse; off every row, none is marked.
 
@@ -116,27 +108,26 @@ room) and lines up with its right edge when it would leave the window.
 
 ## Lists and actions
 
-Use `Rows` for lists and `header()` for column titles when columns need names. Make each row easy to scan:
-put its identifying value first and keep secondary details brief. Show what a row is, not only its name:
-each column says how it draws (`Rows::set_cell`), and the MCP and Stream Apps pages show the pattern:
+Use `Rows` (`controls/rows.rs`) for lists, with column titles when columns need names. Make each row easy to
+scan: put its identifying value first and keep secondary details brief. Show what a row is, not only its
+name: the core's model says how each cell draws, and the MCP and Stream Apps pages show the pattern:
 
 | Cell | Holds | For |
 |---|---|---|
-| `Switch` | `1` or `0` | the row's on/off flag, turned in place (a click or Space, see `on_switch`); first column |
-| `Lead` | `logo-or-icon\|text` | what the row is (an app's logo and its name) |
-| `State` | `icon\|rrggbb\|text` | a live state in its colour (Connected, Found, Not found) |
-| `Status` | `icon\|rrggbb\|tip` | a state as an icon alone, explained on hover |
-| `Note` | `icon\|text` | a quiet detail (every 5 s, 10 s each, Moderators) |
-| `Badge` | `text` | a short tag in an outline (default, *.png) |
-| `Link` | a path or address | quiet, underlined on hover |
-| `Logos` | `twitch,youtube` | the platforms something applies to |
+| `true` or `false` | a switch | the row's on/off flag, turned in place (a click or Space); first column |
+| `{"brand", "text"}` | a logo and a name | what the row is (an app's logo and its name) |
+| `{"icon", "text"}` | a Lucide icon and text | what the row is, or a quiet detail (every 5 s, Moderators) |
+| `{"health", "text"}` | a state in its colour and icon | a live state (Connected, Found, Not found) |
+| `{"platforms": [...]}` | platform logos | the platforms something applies to |
+| a string | text | anything else, ending in an ellipsis (whole on hover) when it doesn't fit |
 
 A list of things that can be turned off gives each row a switch (and dims the row when off) instead of
 writing "disabled" in a column. A list of connections shows each one's live state and connects or
 disconnects the selected one, not only all of them. Give an empty list a useful hint that
 explains what belongs there or how to add it. Use search when it helps users find items in a long list.
 
-Put related actions together using `grid()`, which fills the available width and folds to icons when narrow.
+Put related actions together in the list's button rows (`controls/list.rs`), which fill the available width
+and fold to icons when narrow.
 On a wide page, a long button row wraps to two rows before folding. A grid folds as one: every button
 shows its words, or every one only its icon, never a mix. Keep each button's label on the widget when
 it shows only an icon, keep any explanation tooltip while folded, and dim both its text and icon when
@@ -149,15 +140,15 @@ with its words (`"top": true`; `"iconOnly": true` for the ones every page has, s
 icon buttons under the list (`"strip": true`), each named on hover and in the right-click menu, with what
 deletes standing apart at the right. Merge buttons that are the same step for different rows into one.
 An action on a selection must operate on that selection; make unavailable actions clearly unavailable.
-Every actionable list or tree must offer the same actions in its right-click menu using `context_menu()`;
-the Menu key and Shift+F10 open the same menu from the keyboard. Lists and trees show their selection the
-same way: a soft zinc fill (`rows::selected`), ringed while the list has keyboard focus, never FLTK's
-dotted box. Unavailable items use `muted()`, never a hard-coded grey.
+Every actionable list or tree must offer the same actions in its right-click menu: `Rows` and `TreePane`
+build it from the same action list as their buttons. The Menu key and Shift+F10 open the same menu from the
+keyboard. Lists and trees show their selection the same way: a soft zinc fill, ringed while the list has
+keyboard focus. Unavailable items use the theme's muted colour (`theme::quiet`), never a hard-coded grey.
 Keep action names and icons consistent between the buttons and menu.
 
 Show a switched off item (a trigger or sub-action) with dimmed text and the Lucide `power-off` icon, never
-a text tag and never red (red is for errors). In `Rows` use `add_state(line, true)`; in a tree set the
-`power-off` icon on the item. The icon's tooltip says "disabled".
+a text tag and never red (red is for errors). In `Rows` a row with `"enabled": false` draws that way; in a
+tree set the `power-off` icon on the item. The icon's tooltip says "disabled".
 
 Triggers and sub-actions wear an icon: the logo of their service, else a Lucide icon chosen by their title.
 An action's row says what starts it and what it runs: its first trigger's logo or icon (a dashed circle when
@@ -326,7 +317,8 @@ A channel picker shows search failures plainly and still accepts a pasted handle
   the screenshots for clipping, readable labels, alignment and usable actions; check relevant empty,
   populated, error and disabled states, including the right-click menu.
 - Run input-driven checks serially on the shared hidden display so one test cannot send input to
-  another instance. `python3 dev/gpui-shot.py PAGE...` captures pages and `python3 dev/gpui-smoke.py` visits every page with
-  isolated settings (`dev/ui-review.py` captures the released 1.6.0 reference); its disconnected memory sample is separate from the live integration budget.
+  another instance. `DISPLAY=:99 python3 -P dev/ui-shot.py PAGE...` captures pages and
+  `DISPLAY=:99 python3 -P dev/ui-smoke.py` visits every page with isolated settings; its disconnected memory
+  sample is separate from the live integration budget.
 - Exercise the main task, cancellation and validation by hand. Add a regression test for each bug fixed,
-  or a smoke step when a unit test is not suitable. Run `dev/gpui-smoke.py` before closing the version.
+  or a smoke step when a unit test is not suitable. Run `dev/ui-smoke.py` before closing the version.

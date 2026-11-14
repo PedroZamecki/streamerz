@@ -19,7 +19,7 @@ STREAMERZ_DEV=1 target/fast/Streamerz
 ```
 
 [DEVELOPING.md](DEVELOPING.md) explains the code, the dev mode and how to test against the real services.
-`dev/gpui-smoke.py` opens the app on a hidden display and visits every page.
+`dev/ui-smoke.py` opens the app on a hidden display and visits every page.
 
 ## Send a change
 
@@ -39,7 +39,7 @@ STREAMERZ_DEV=1 target/fast/Streamerz
    minor release, `fix` and `perf` a patch, `type!:` a major one.
 5. Open a pull request. Every commit stays in the history (it is merged, never squashed), so keep each
    commit clean. CI builds Windows and Linux, runs the tests and the security checks.
-6. A bug fix comes with a test (a unit test, or a step in `dev/gpui-smoke.py` for what only shows on screen).
+6. A bug fix comes with a test (a unit test, or a step in `dev/ui-smoke.py` for what only shows on screen).
 
 ## Rules worth knowing
 

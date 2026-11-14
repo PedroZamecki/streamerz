@@ -312,7 +312,7 @@ Each phase ends with its tests, `cargo fmt`, `clippy`, and a tick here.
 5. **Manifest and file**: zip writer and reader, export checks, import dialog, update, URL import.
    Tests: round trip, a damaged file, a zip with `../` names, an oversized file.
 6. **OBS**: Add to OBS, the steps for a dock page. Tested against real OBS.
-7. **Overlays page**: list, menus, New, Test. Smoke step in `dev/gpui-smoke.py`, screenshots narrow and wide.
+7. **Overlays page**: list, menus, New, Test. Smoke step in `dev/ui-smoke.py`, screenshots narrow and wide.
 8. **Develop mode**: folder, reload, error forwarding, inspector, `streamerz.d.ts`.
 9. **Examples**: 1 to 8 and 18 first (they replace the Rust templates for ad, viewers and subathon), then
    9 to 17, each one added only with its Chromium check. Song requests moves to a bundled file last.

@@ -74,7 +74,7 @@ Windows std (e.g. the `rustc` and both `rust-std` components from static.rust-la
 `/tmp/rt`):
 
 ```
-RUSTC=/tmp/rt/bin/rustc cargo check --features gpui-dev --target x86_64-pc-windows-msvc --target-dir /tmp/wincheck
+RUSTC=/tmp/rt/bin/rustc cargo check --features dev-ui --target x86_64-pc-windows-msvc --target-dir /tmp/wincheck
 ```
 
 ## Streamer.bot's type codes (src/types.rs)

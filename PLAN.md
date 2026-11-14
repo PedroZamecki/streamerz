@@ -24,7 +24,7 @@ phase, following `CLAUDE.md`.
 | Unsupported on import | Kept untouched (so a re-export loses nothing), shown disabled, logged once, skipped at run. This applies to C# code, out-of-scope integrations and the later extras. |
 | Scripting | No C#. The "Run a Program" sub-action is extended: it runs any exe/script, passes the arguments as JSON on stdin, and reads `key=value` lines or a JSON object from stdout back into arguments. No embedded interpreter. |
 | Variables | Full Streamer.bot parity: `%arg%`, `~global~`, persisted and temporary globals, user globals, inline functions (`$math()$` style, same names and syntax as the docs), same argument names per trigger. `$math()$` covers a common subset of mXparser: numbers, `+ - * / ^ %`, parentheses, comparisons, `& | ~`, abs round floor ceil min max sqrt exp ln log log10 sin cos tan asin acos atan sign rand/rnd, pi and e; anything else gives NaN with a log line, as Streamer.bot does. `%x:format%` follows .NET format strings in the OS locale (glibc locale data on Linux, Windows' own on Windows). |
-| Editor | Native GPUI window + tray (starts hidden), with the same tabs and panes as Streamer.bot: Actions (groups tree, sub-actions list, triggers list), Commands, Platforms, Stream Apps, Integrations, Servers/Clients, Settings, Log. Plain FLTK look with the dark theme. Tools: action history (last N runs with their args, re-run), pending queue view (running/queued per queue, clear), test trigger (fire any trigger with sample args). |
+| Editor | Native GPUI window + tray (starts hidden), with the same tabs and panes as Streamer.bot: Actions (groups tree, sub-actions list, triggers list), Commands, Platforms, Stream Apps, Integrations, Servers/Clients, Settings, Log. The zinc look, dark and light. Tools: action history (last N runs with their args, re-run), pending queue view (running/queued per queue, clear), test trigger (fire any trigger with sample args). |
 | Storage | One `streamerz.json` next to the exe: settings, actions, commands, timers, queues, globals, user data and tokens. Gitignored. Written atomically (temp file + rename) with a `.bak` of the previous version. |
 | Twitch | EventSub WebSocket for chat and every event, Helix REST for sub-actions, no IRC. Broadcaster account plus an optional bot account (chat is sent as the bot when set, as in Streamer.bot). Device-code OAuth with our public client ID, so there's no secret in the exe. |
 | Kick | Read through Kick's public Pusher websocket (what kick.com uses): chat, follows, subs, gifts and more, with no login. The official API with OAuth is used to send chat and moderate. That needs the **user's own Kick app** (client ID + secret pasted in Settings), because Kick requires a secret even for refresh. Official webhooks are optional, through a user-run tunnel to the local HTTP server, with signatures verified (RSA-SHA256, Kick's public key). |
@@ -41,45 +41,24 @@ phase, following `CLAUDE.md`.
 | Not in scope | Meld, PolyPop, Elgato, VTube Studio/Voicemod/Speaker.bot/TITS/Crowd Control/HypeRate/Pulsoid/Lumia/Streamfog/mtion, the Streamer.bot website integration/cloud, C# and plugins. |
 | Later (own phases, after phase 14) | Quotes, credits, points, users/first words; sounds and TTS; file I/O, file tail, folder watcher, process triggers; hotkeys/inputs and MIDI; Decks, HTML overlay, multi-platform chat window. |
 
-## GPUI rewrite (current version)
+## The window
 
-The frontend uses GPUI. Application behavior belongs to a toolkit-independent core, and every core
-operation is available through MCP. Frontends display core state and submit core operations; they do
-not own validation, persistence, platform behavior or automation rules. Replacing the frontend must
-not require changes to those rules.
+The window is GPUI. Application behavior belongs to a toolkit-independent core (`src/core/`, kept so by
+`core/boundary.rs`), and every core operation is available through MCP. The window displays core state and
+submits core operations; it doesn't own validation, persistence, platform behavior or automation rules.
 
-Shared controls use GPUI Component in the shadcn family, with Lucide icons and the zinc theme.
-Optional syntax and speech features stay disabled. Custom controls, if needed, live in shared modules.
+Shared controls use GPUI Component in the shadcn family, with Lucide icons and the zinc theme. Custom
+controls, when needed, live in `frontend/src/controls/`.
 
-The backend launches a separate GPUI frontend process from the same executable. Hiding exits the
-frontend and releases its renderer. The backend, tray, integrations and MCP keep running. Communication
-uses inherited anonymous pipes and the shared core request dispatcher, with event-driven updates.
+The backend launches the window as a separate process of the same executable (`--frontend`). Hiding exits
+it and releases its renderer; the backend, tray, integrations and MCP keep running. They talk over
+inherited anonymous pipes and the shared core request dispatcher, with event-driven updates.
 
-Production Streamerz 1.6.0 is the behavior and visual reference. Keep the existing feature set,
-translations, settings compatibility and shared design patterns while simplifying implementation.
-Do not close this version until Linux and Windows under Wine have been compared page by page,
-including dialogs, context menus, special buttons, validation and cancellation.
-
-- [x] Create `refactor/GPUI` from the clean production source.
-- [x] Execute the installed 1.6.0 with isolated settings and capture all 22 pages in both themes and sizes.
-- [ ] Inventory and exercise every page action and dialog against 1.6.0.
-- [ ] Extract automation metadata, validation, commands, queries and host interactions into the core.
-  - [x] Move automation schemas, picker metadata, emote catalogs and metadata caching out of the UI.
-  - [x] Share validated entity edits and semantic list queries between MCP and the frontend pipe.
-  - [x] Move built-in server schemas and atomic settings edits into the core; isolate listener restarts.
-  - [ ] Finish all host interactions, account setup, settings and page-specific core operations.
-    - [x] Queues, globals, history, backups, crashes, plugins, log, settings, donations, MCP, groups, integrations, the status line and cancellable browser logins.
-    - [x] Accounts, Actions, Chat, Community and Polls built (gaps per page in docs/GPUI-PARITY.md; the Wine smoke has an intermittent hang at the prompt-survives-restart step).
-- [ ] Make every core operation accessible through MCP and test access without a frontend.
-- [ ] Replace shared controls and all pages with GPUI; remove the old frontend and dependencies.
-  - [x] Establish shared GPUI tables, forms, health states and Lucide assets.
-  - [ ] Finish shared dialogs, selectors, JSON editing and keyboard behavior.
-  - [x] Complete every page and retire the production adapter.
-  - [x] Remove the FLTK window and everything only it used: `src/ui*`, the `fltk` dependency and its build and CI
-    steps (CMake, Pango, Xft packages), the `--gpui` opt-in and the `gpui` feature (GPUI is the only window;
-    `gpui-dev` stays for the development instrumentation), the legacy smoke drivers and their locale texts.
-- [ ] Compare production, Linux development and Windows development under Wine for every page and function.
-- [ ] Run local checks and release packaging; record hidden RSS and idle CPU before and after.
+- [x] The window: every page, its dialogs, menus, forms and prompts, from core models.
+- [x] Automation schemas, picker metadata, emote catalogs, validated edits, server schemas and settings in the core.
+- [ ] Make every core operation accessible through MCP and test access without a window.
+- [ ] Finish shared keyboard behavior in dialogs, selectors and JSON editing.
+- [ ] Check every page on Windows (native, or under Wine with `dev/windows.sh smoke`).
 
 ## Architecture
 
@@ -95,7 +74,7 @@ including dialogs, context menus, special buttons, validation and cancellation.
 - One file or folder per platform/app/integration (`twitch/`, `obs.rs`, `kick/`, `youtube/`,
   `slobs.rs`, `integrations/<name>.rs`). Each is a task started only when enabled and stopped on disable
   (`watch` config like songrequestz).
-- `ui/`: editor tabs and one form per sub-action family.
+- `frontend/`: the window's pages and the shared controls (`frontend/src/controls/`), drawn from core models.
 
 Event flow: a platform task parses an event, turns it into a trigger and its arguments, and passes it to
 the engine; the engine runs the matching actions and emits WebSocket events. Sub-actions call back into
@@ -272,7 +251,7 @@ platform handles through channels, never through shared locks held across awaits
   live page's chat in a hidden window (video paused) that opens on first send and closes after 2 idle
   minutes. Its own `Streamerz-tiktok` binary on Linux, `Streamerz.exe --tiktok` on Windows; tikstream-login
   no longer needed.
-- [x] 24. Images and icons: FLTK's own PNG/JPEG/GIF/SVG plus `image-webp`; web pictures fetched on the engine's
+- [x] 24. Images and icons: the window decodes PNG, JPEG, GIF, WebP and SVG; web pictures fetched on the engine's
   thread into `cache/` next to `streamerz.json`, decoded only while the window shows them and freed when it hides.
   Platform and app logos (Simple Icons, CC0) on the section titles; profile pictures in Accounts (Twitch, Kick
   and YouTube from their APIs, TikTok seen at login, or its live lookup). The status bar shows "2/4 connected"
@@ -280,8 +259,8 @@ platform handles through channels, never through shared locks held across awaits
 - [x] 25. Emotes in chat: a chat view that draws text, emote pictures, platform logos, role badges and name
   colours. Twitch, Kick and YouTube emotes, the channel's BTTV, FFZ and 7TV ones (7TV on Kick too), Unicode
   emoji as Twemoji pictures; animated WebP moves only while it's on screen (one 50 ms timeout, re-armed by
-  drawing). The picker shows pictures: the account's own emotes, third-party ones, every emoji by group. GIFs show their
-  first frame (FLTK's animated GIF doesn't give out frames; BTTV/FFZ/7TV are asked for WebP); TikTok's
+  drawing). The picker shows pictures: the account's own emotes, third-party ones, every emoji by group. BTTV, FFZ
+  and 7TV are asked for WebP; TikTok's
   subscriber emotes stay text until a live with them can be checked. Native YouTube emotes are shown in
   received chat but omitted from the picker because the sending API accepts text only.
 - [x] 26. Ready-made actions: Actions > Templates (nothing created by itself), in `templates.rs`: welcome first
@@ -622,8 +601,7 @@ platform handles through channels, never through shared locks held across awaits
 ## UI and UX review
 
 The agreed scope is to fix the issues cited in the UI/UX reviews and verify the affected screens.
-There is no per-page score threshold or repeated scoring requirement. Track the finite checklist in
-[docs/UI-AUDIT.md](docs/UI-AUDIT.md); scores from earlier reviews are historical context only.
+There is no per-page score threshold or repeated scoring requirement.
 
 - [x] Inventory pages and major dialogs using independent code and visual reviews.
 - [x] Complete the cited shared-control, page-layout, state, accessibility and workflow fixes.
@@ -712,7 +690,7 @@ There is no per-page score threshold or repeated scoring requirement. Track the 
   and tags aren't read back either (reading them costs API quota), so their fields start empty. Forms got
   placeholders and a Browse button with an image preview (the thumbnail).
 - [x] Actions page readability: an action's row shows its first trigger's logo or icon, its sub-action count
-  and, on hover, what runs it; trees show platform and app logos again (as 1.6.0 did). The trigger and
+  and, on hover, what runs it; trees show platform and app logos. The trigger and
   sub-action picker got its search box back to its height (it took half the dialog), Expand and Collapse
   all, a description panel with the logo, path and the values a trigger gives, and Cancel and OK in the
   footer (no Close under them). Every form moved its "(blank: any)" hints into the empty boxes, and

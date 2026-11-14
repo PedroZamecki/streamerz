@@ -42,8 +42,8 @@
 - Integrations are opt-in: with no login or channel set, one opens no socket, timer or task. Once set up, it
   connects at start by itself (Advanced has the switch to turn that off), and a disabled one opens nothing.
 - Windows-only code can be type-checked locally before pushing (official rustc with the Windows std,
-  e.g. installed to /tmp/rt): `RUSTC=/tmp/rt/bin/rustc cargo check --features gpui-dev
-  --target x86_64-pc-windows-msvc --target-dir /tmp/wincheck`, or `cargo xwin check --features gpui-dev
+  e.g. installed to /tmp/rt): `RUSTC=/tmp/rt/bin/rustc cargo check --features dev-ui
+  --target x86_64-pc-windows-msvc --target-dir /tmp/wincheck`, or `cargo xwin check --features dev-ui
   --target x86_64-pc-windows-msvc --target-dir target/xwin`.
 - `PLAN.md` is the spec: follow it, tick its phases off, and update it when a decision changes.
   Ask before guessing on anything it doesn't cover. Streamer.bot (https://docs.streamer.bot, source of the
@@ -83,9 +83,9 @@
 - Check every UI change on the hidden display (`DISPLAY=:99`) with a screenshot, narrow and wide. Use the
   MCP `ui` tool (dev mode): `shot` saves the app's own window as a PNG (no desktop screenshot, no blind
   coordinates), `find TEXT` says where to click. Run the dev instance only with `env -u WAYLAND_DISPLAY
-  DISPLAY=:99`, and kill it by pid (`pkill -x Streamerz`). `dev/gpui-smoke.py` starts it, visits every page,
-  right-clicks, opens the user card and fails on a crash report or a missing screenshot: run it before
-  closing a version. Every bug fixed gets a test (a unit test where it can be, else a step in the smoke).
+  DISPLAY=:99`, and kill it by pid (`pkill -x Streamerz`). `DISPLAY=:99 python3 -P dev/ui-smoke.py` (after
+  `cargo build --profile fast --features dev-ui`) starts it, visits every page, right-clicks, opens the user
+  card and fails on a crash report or a missing screenshot: run it before closing a version. Every bug fixed gets a test (a unit test where it can be, else a step in the smoke).
 
 ## Code
 

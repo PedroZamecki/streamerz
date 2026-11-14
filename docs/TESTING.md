@@ -47,44 +47,6 @@ They run:
   Wine locally;
 - from an assistant: the MCP `run_scenario` tool.
 
-## GPUI rewrite, local checkpoints (2026-11-09)
-
-Work is in progress on `refactor/GPUI`. These checkpoints do not establish full page parity or release
-readiness. No release packaging, signing, store publication or GitHub-only checks have passed for the
-rewrite yet.
-
-| Command or check | Result |
-|---|---|
-| `PYTHONPATH=dev python3 -P dev/ui-review.py target/gpui-reference/squashfs-root/usr/bin/Streamerz --out target/gpui-reference/captures` | Passed, all 22 installed 1.6.0 pages captured in dark/light and 1100x800/540x700. |
-| `cargo test --profile ci-test --locked` | Passed at the Servers checkpoint: 554 passed, zero failed, 13 ignored. Includes scenarios, core boundary, cancellation-safe pipe framing, prompt validation, direct core execution, JSON identity preservation, atomic server settings and WebSocket session retention across HTTP/UDP edits. |
-| `cargo test --profile ci-test host::theme_tests` | Passed, one regression test for explicit theme selection overriding the legacy dark flag. |
-| `cargo clippy --all-targets --features gpui-dev -- -D warnings` | Passed at the latest shared-control checkpoint. Rerun after further edits. |
-| `cargo xwin check --locked --features gpui-dev --target x86_64-pc-windows-msvc --target-dir target/xwin` | Passed, including the current shared forms and process boundary. Windows execution under Wine remains pending. |
-| `python3 -P dev/locale.py check` | Passed. Reports 28 existing English texts in pt_BR out of 1,290 keys. |
-| `git diff --check` | Passed at this checkpoint. |
-| `VK_DRIVER_FILES=target/gpui-vulkan/lvp.json python3 -P dev/gpui-smoke.py` (absolute ICD path) | Passed in dark mode: Commands/Timers forms, cancellation, toggling, numeric and JSON validation, unsaved JSON drafts, both Files lists, row and empty-list menus, deletion cancellation/confirmation, native captures, pending input across renderer restart, renderer exit and backend availability. Captures include Stream Apps. This does not cover the remaining pages. |
-| `python3 -P -m unittest discover -s dev -p 'test_*.py'` | Passed, six tests. |
-| GPUI smoke with `--theme light --out target/gpui-smoke-light` | Passed after fixing theme resolution. Screenshots now assert a light or dark background, rather than trusting the requested setting alone. The same forms, menus, validation and renderer-restart checks ran in both themes. |
-| Expanded Servers smoke, dark and light | Passed: all four built-in server dialogs, invalid ports and cancellation, saving a disabled HTTP server, adding a disabled WebSocket client, and continued MCP connectivity. The filtered-command edit check verifies the saved item ID. |
-| `PYTHONPATH=dev python3 -P dev/ui-review.py target/gpui-reference/squashfs-root/usr/bin/Streamerz --out target/gpui-reference/server-dialogs --pages Servers --dialogs` | Passed: production server page and six server/client dialogs captured in both themes and sizes. |
-
-The production reference is extracted from the installed AppImage whose metadata declares 1.6.0.
-All UI runs use isolated settings on DISPLAY=:99 with WAYLAND_DISPLAY unset. Artifacts stay under
-`target/gpui-reference` and `target/gpui-smoke`; none contain the user's accounts or tokens.
-
-Issues found during development included stale screenshot presentation, ambiguous field targeting,
-missing empty-list menus, signed imported timer values, duplicate field edits, and direct core actions
-being skipped by the sub-action API. Core regression tests and the GPUI smoke exercise these paths.
-Input checks wait for dialog entrance and exit transitions before clicking the next control.
-
-The reference hidden RSS was 45,548 KiB (dark) and 45,456 KiB (light), with zero CPU ticks during each
-five-second idle sample. An early GPUI backend sample immediately after renderer exit was about
-36,600 KiB. The current dark smoke measured 37,052 KiB after a three-second settling period and zero
-CPU ticks over five seconds. The corrected light-mode run measured 37,644 KiB and zero idle CPU ticks.
-These were isolated development runs with no live Twitch or OBS connection. They do not
-verify the required under-25-MB live hidden budget. Renderer software-driver measurements also do not
-represent normal GPU usage.
-
 ### 3. Protocol parity with Streamer.bot (`dev/sb.sh`, `dev/sb-oracle.py`, `dev/sb-probe.py`)
 
 The real Streamer.bot runs under system Wine (`dev/sb.sh`, ws://127.0.0.1:8080; Proton crashes it).
@@ -93,12 +55,12 @@ The real Streamer.bot runs under system Wine (`dev/sb.sh`, ws://127.0.0.1:8080; 
 both talk to Streamerz (8090) the same way to compare. Back up its `data/` folder first and put it back
 after; nothing read from it goes in the repo.
 
-### 4. UI smoke (`dev/gpui-smoke.py`)
+### 4. UI smoke (`dev/ui-smoke.py`)
 
 Every page, narrow and wide, right-click menus, the user card, with screenshots and a crash check:
 
-- Linux: the `gpui-dev` build (`cargo build --profile fast --features gpui-dev`) on Xvfb (`DISPLAY=:99`);
-- Windows: `Streamerz.exe` under Wine on the same display (`dev/gpui-smoke.py EXE --wine`, or `dev/windows.sh smoke`).
+- Linux: the `dev-ui` build (`cargo build --profile fast --features dev-ui`) on Xvfb (`DISPLAY=:99`);
+- Windows: `Streamerz.exe` under Wine on the same display (`dev/ui-smoke.py EXE --wine`, or `dev/windows.sh smoke`).
 
 ### 5. Live checks (`dev/live.py`)
 
@@ -153,17 +115,17 @@ in [UNTESTED.md](UNTESTED.md).
 
 ## Windows under Wine
 
-### GPUI frontend under Wine
+### The window under Wine
 
-Stock Wine cannot run the GPUI frontend: it stubs `IDWriteFontSet::GetMatchingFonts` (no font resolves) and
+Stock Wine cannot run the window: it stubs `IDWriteFontSet::GetMatchingFonts` (no font resolves) and
 the Direct Manipulation classes (GPUI fails window creation), and the current Wine master (11.21) still does.
 `dev/wine/build.sh` builds Wine 11.20 with `dev/wine/gpui-support.patch` (about five minutes, no root, clang
 only, in `/tmp/streamerz-wine`). Run the smoke with it, a prefix of its own and Noto Sans and Liberation Sans
 copied into the prefix's `drive_c/windows/Fonts`:
 
     WINESERVER=/tmp/streamerz-wine/full/server/wineserver env -u WAYLAND_DISPLAY DISPLAY=:99 \
-      python3 -P dev/gpui-smoke.py <Streamerz.exe> --wine --wine-bin /tmp/streamerz-wine/full/wine \
-      --wine-prefix target/gpui-wine-patched
+      python3 -P dev/ui-smoke.py <Streamerz.exe> --wine --wine-bin /tmp/streamerz-wine/full/wine \
+      --wine-prefix target/ui-wine-patched
 
 The smoke sets `GPUI_DISABLE_DIRECT_COMPOSITION` for Wine (upstream stubs the composition swap chain) and
 resizes through the app's `resize` dev command, since a bare Xvfb never tells Wine about X resizes. Compare its
@@ -175,7 +137,7 @@ runtime, release), then runs it under Wine on the hidden display:
 - `dev/windows.sh tests`: every unit test, built for Windows (Windows-only ones included: DPAPI, the Run key,
   Toolhelp, error texts), in a prefix of its own (`/tmp/szwinetest`);
 - `dev/windows.sh scenarios`: every scenario on the exe;
-- `dev/windows.sh smoke`: `dev/gpui-smoke.py --wine`, every page, ending with the session's end (`wineboot -e`,
+- `dev/windows.sh smoke`: `dev/ui-smoke.py --wine`, every page, ending with the session's end (`wineboot -e`,
   which sends `WM_ENDSESSION`);
 - `dev/windows.sh live`: `dev/windows-live.py`, the OS paths the scenarios fake, made real: RegisterHotKey
   from the keyboard and from Keyboard Press (SendInput), the low-level mouse hook, the clipboard listener
@@ -347,7 +309,7 @@ duration editing and inserting a real event value at 1280 by 820 and 760 by 620.
 inspected on DISPLAY=:99. The forms keep unknown fields and unchanged imported representations;
 execution tests distinguish reported failures, skipped operations and successful runs.
 
-Windows cross-target type-check passed with `fltk/fltk-bundled`. Native Windows runtime checks remain
+Windows cross-target type-check passed. Native Windows runtime checks remain
 pending. OBS and the reference application are installed, but their local services were not listening
 during this run; these results do not establish connected live-service behavior.
 
@@ -420,28 +382,6 @@ Streamerz as ProductName and FileDescription, with FileVersion and ProductVersio
 the four-size executable icon check passed. AppImage packaging still required `NO_STRIP=1` locally.
 Commitlint passed over every local version commit. The working tree was clean after recording results.
 
-## Legacy window removal (2026-11-10)
-
-GPUI is the only window; `src/ui*`, `fltk` and the `gpui` feature are gone (see `docs/GPUI-PARITY.md`).
-
-| Command or check | Result |
-|---|---|
-| `cargo fmt --check` | Passed. |
-| `cargo clippy --workspace --all-targets -- -D warnings` | Passed (default features). |
-| `cargo clippy --workspace --all-targets --features gpui-dev -- -D warnings` | Passed. |
-| `cargo test` | 498 passed, 0 failed, 8 ignored. The i18n test scans `src` and `frontend/src`; 290 old-window texts were removed from both languages. |
-| `cargo test --workspace --features gpui-dev` | Same bin tests; the frontend crate has none of its own. |
-| `python3 -P dev/locale.py check` | Passed (24 English texts still in pt_BR out of 1,039). |
-| `python3 -P -m unittest discover -s dev -p 'test_*.py'` | Six passed. |
-| `cargo build --profile fast --features gpui-dev` | Built. |
-| `cargo xwin check --locked --features gpui-dev --target x86_64-pc-windows-msvc --target-dir target/xwin` | Passed, no warnings. |
-| `env -u WAYLAND_DISPLAY DISPLAY=:101 STREAMERZ_SMOKE_PORT=8101 python3 -P dev/gpui-smoke.py` (own Xvfb) | Passed (the Files page's second Delete click sometimes landed while the cancelled confirmation was leaving; the smoke now asks again, and three runs passed). Core 11.3 MB RSS, 0.00% idle CPU. |
-| `cargo build --release` (`--target-dir target/gpui-release`) | 41,841,656 bytes, from 45,835,240 before. |
-
-CI: `lint.yml` and `build.yml` no longer install the FLTK libraries (Xft, Pango, GL, dbus) or patch FLTK's
-CMake options; they install what GPUI links (X11, xcb, xkbcommon, Wayland, fontconfig, freetype, OpenSSL).
-That package list is untested on GitHub's runners until the version's pull request runs.
-
 ## Remaining bundled overlay examples (2026-11-13)
 
 Subathon now comes from `assets/examples/subathon`, including its editable countdown actions; the Rust
@@ -458,13 +398,13 @@ in `PLAN.md` as 9d. No commit, push, release or GitHub workflow was run for this
 | `node dev/test-overlays.mjs` | 43 checks passed, including permissions, chat history, topic replay, page calls and file ranges. |
 | `cargo fmt --check` and `git diff --check` | Passed. |
 | `cargo clippy --all-targets -- -D warnings` | Passed. |
-| `cargo clippy --all-targets --features gpui-dev -- -D warnings` | Passed. |
-| `cargo build --profile fast --features gpui-dev --locked` | Passed. |
-| `cargo xwin check --features gpui-dev --target x86_64-pc-windows-msvc --target-dir target/xwin` | Passed. Native Windows runtime was not exercised. |
+| `cargo clippy --all-targets --features dev-ui -- -D warnings` | Passed. |
+| `cargo build --profile fast --features dev-ui --locked` | Passed. |
+| `cargo xwin check --features dev-ui --target x86_64-pc-windows-msvc --target-dir target/xwin` | Passed. Native Windows runtime was not exercised. |
 | `python3 -P dev/locale.py check` | Passed. 33 of 1,368 Portuguese texts still match English. |
 | Secret scanner rules against `git diff HEAD` plus untracked text files | Zero findings, without staging the existing working changes. The normal scanner only examines staged changes, so its empty result alone was not used. |
-| `env -u WAYLAND_DISPLAY DISPLAY=:99 STREAMERZ_SMOKE_PORT=8098 python3 -P dev/gpui-smoke.py` | Passed. Shared forms, pages, cancellation, menus, renderer exit and backend access. |
-| Same GPUI smoke with a private executable copy and `--out target/gpui-smoke-examples-private` | Passed. Hidden backend: 8,632 KiB RSS, 0.00% of one CPU core over five seconds, after renderer exit, without live connections. |
+| `env -u WAYLAND_DISPLAY DISPLAY=:99 STREAMERZ_SMOKE_PORT=8098 python3 -P dev/ui-smoke.py` | Passed. Shared forms, pages, cancellation, menus, renderer exit and backend access. |
+| Same UI smoke with a private executable copy and `--out target/ui-smoke-examples-private` | Passed. Hidden backend: 8,632 KiB RSS, 0.00% of one CPU core over five seconds, after renderer exit, without live connections. |
 | Native Examples dialog, using `StreamerzUi` bounds and window captures on `DISPLAY=:99` | Inspected at 1,100 x 800 and 540 x 700. New rows appear and fit the shared list. |
 
 Browser tests used an isolated development instance on WebSocket 8095 and HTTP 7495, with
@@ -488,7 +428,7 @@ the queue page before sending Test, so the initial live replay has settled.
 
 Screenshots are in `/tmp/szoverlay/example-*.png`; the gallery captures are
 `/tmp/szoverlay/example-gallery-1100.png` and `example-gallery-540.png`. Smoke output and memory maps
-are in `target/gpui-smoke-examples-private`. The first smoke used the same executable as another running
+are in `target/ui-smoke-examples-private`. The first smoke used the same executable as another running
 development instance and measured 31,904 KiB, including 24,720 KiB mapped from that executable. The
 private copy avoids that shared-file effect; it reuses the same build, without rebuilding it. These are
 synthetic disconnected measurements, not the required connected Twitch + OBS version baseline.
@@ -661,7 +601,7 @@ Final commands and results:
   so the old paths remain in those historical commits. It exempts no credentials, staged changes,
   changed lines, other files or new commits. Reintroducing a path in the current file invalidates
   the baseline. Git errors fail closed. Eight new scanner tests cover these boundaries.
-- `cargo xwin check --locked --all-targets --features gpui-dev --target x86_64-pc-windows-msvc
+- `cargo xwin check --locked --all-targets --features dev-ui --target x86_64-pc-windows-msvc
   --target-dir target/xwin`: passed. This is type-checking, not Windows runtime or plugin verification.
 - The original nine-scenario matrix is in `target/obs-outputs-verification/run-2km30tg5/results.json`.
   The canvas/runtime deduplication checks were also exercised against Suite horizontal/vertical and the
