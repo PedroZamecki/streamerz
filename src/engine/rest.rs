@@ -4020,7 +4020,7 @@ impl Engine {
                                 // "#AARRGGBB" from the color picker: Kick takes #RRGGBB.
                                 let h = self.expand(ctx, s(o, "backgroundColor"));
                                 let h = h.trim_start_matches('#');
-                                format!("#{}", &h[h.len().saturating_sub(6)..])
+                                kick_background_color(h)
                             };
                             json!({"background_color": c})
                         }
@@ -4607,10 +4607,21 @@ fn split_args(s: &str) -> Vec<String> {
     out
 }
 
+fn kick_background_color(h: &str) -> String {
+    let start = h.char_indices().rev().nth(5).map_or(0, |(i, _)| i);
+    format!("#{}", &h[start..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::tests::{action, engine, log, run};
     use super::*;
+
+    #[test]
+    fn kick_color_handles_unicode() {
+        assert_eq!(super::kick_background_color("é12345"), "#é12345");
+        assert_eq!(super::kick_background_color("FFAABBCC"), "#AABBCC");
+    }
 
     #[test]
     fn redemption_status_reads_the_forms_choice() {
