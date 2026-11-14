@@ -604,7 +604,7 @@ pub async fn fetch_user(client_id: &str, access_token: &str, login: Option<&str>
 /// Helper to parse hex colors like `#e5e5e5` into RGB.
 pub fn parse_hex_color(hex: &str) -> (i64, i64, i64) {
     let s = hex.trim_start_matches('#');
-    if s.len() >= 6 {
+    if s.len() >= 6 && s.is_ascii() {
         let r = i64::from_str_radix(&s[0..2], 16).unwrap_or(255);
         let g = i64::from_str_radix(&s[2..4], 16).unwrap_or(255);
         let b = i64::from_str_radix(&s[4..6], 16).unwrap_or(255);
@@ -4924,6 +4924,11 @@ async fn poll(engine: Rc<Engine>, broadcaster: TwitchAccount) {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn malformed_unicode_color_does_not_panic() {
+        assert_eq!(super::parse_hex_color("aé123"), (255, 255, 255));
+    }
+
     #[test]
     fn twitch_errors_read_as_plain_words() {
         let owner = r#"Helix GET predictions failed: HTTP 401 {"error":"Unauthorized","status":401,"message":"The ID in broadcaster_id must match the user ID found in the request's OAuth token."}"#;
