@@ -132,6 +132,8 @@ impl Prompt {
         } else {
             tr("dialogs.ok")
         };
+        // A confirm with no yes is only acknowledged: its one button (OK) is the main one.
+        let only_no = confirm && yes.is_empty();
         let right = div()
             .flex()
             .gap_2()
@@ -139,11 +141,12 @@ impl Prompt {
                 row.child(
                     Button::new("cancel-prompt")
                         .label(no.to_owned())
+                        .when(only_no, |button| button.primary())
                         .disabled(self.pending)
                         .on_click(cx.listener(|prompt, _, _, cx| prompt.cancel(cx))),
                 )
             })
-            .when(!waiting, |row| {
+            .when(!waiting && !only_no, |row| {
                 row.child(
                     Button::new("answer-prompt")
                         .primary()

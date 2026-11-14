@@ -226,6 +226,19 @@ def main():
                 top = int(re.search(r" at (-?\d+)\.?\d*,(-?\d+)", ui("windows"))[2])
                 assert fold and fold[0]["y"] - top < 40, f"the fold button scrolled away: {fold}, window top {top}"
                 resize(1100, 800)
+                # A notice that is only acknowledged has one button: Check now in a dev build says it doesn't update.
+                load_page("Settings")
+                at = re.search(r" at (-?\d+)\.?\d*,(-?\d+)", ui("windows"))
+                subprocess.run(["xdotool", "mousemove", str(int(at[1]) + 600), str(int(at[2]) + 400), "click", "--repeat", "15", "5"], env=env, check=True)
+                time.sleep(.3)
+                click("Check now")
+                deadline = time.monotonic() + 10
+                while not [e for e in json.loads(ui("bounds OK")) if e["label"] == "OK"] and time.monotonic() < deadline:
+                    time.sleep(.05)
+                every = json.loads(ui("bounds "))
+                assert [e for e in every if "cancel-prompt" in e.get("path", "")], "no OK on the notice"
+                assert not [e for e in every if "answer-prompt" in e.get("path", "")], "an empty second button on the notice"
+                click("OK")
                 # The trigger picker: the tree starts right under its search box (the box once took half the
                 # dialog), and Cancel and OK sit in the dialog's footer, with no Close beside them.
                 load_page("Actions")
