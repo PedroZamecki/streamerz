@@ -201,13 +201,26 @@ pub struct Rows {
 impl Rows {
     /// The model's column widths fitted to `fit`.
     pub fn widths(&self) -> Vec<f32> {
-        let mut widths: Vec<f32> = self.model["columns"]
-            .as_array()
-            .into_iter()
-            .flatten()
+        let columns = self.model["columns"].as_array().map_or(&[][..], Vec::as_slice);
+        let mut widths: Vec<f32> = columns
+            .iter()
             .map(|column| column["width"].as_f64().unwrap_or(160.) as f32)
             .collect();
-        fit_widths(&mut widths, self.fit);
+        // A column of logos keeps room for its longest row of them: shrunk, they were cut in half.
+        let rows = self.model["rows"].as_array().map_or(&[][..], Vec::as_slice);
+        let mins: Vec<f32> = (0..columns.len())
+            .map(|index| {
+                // The first rows say it: a long list is never scanned whole.
+                let logos = rows
+                    .iter()
+                    .take(64)
+                    .filter_map(|row| row["cells"][index]["platforms"].as_array().map(Vec::len))
+                    .max()
+                    .unwrap_or(0) as f32;
+                (logos * 16. + (logos - 1.).max(0.) * 6. + 17.).max(MIN_WIDTH)
+            })
+            .collect();
+        fit_widths_above(&mut widths, &mins, self.fit);
         widths
     }
     pub fn id(&self, row: usize) -> Option<&str> {
@@ -379,7 +392,7 @@ impl TableDelegate for Rows {
             }
             if !text.is_empty() || value["brand"].is_string() {
                 if let Some(brand) = value["brand"].as_str() {
-                    cell = cell.child(img(format!("brands/{brand}.svg")).id("brand").size_4().flex_shrink_0());
+                    cell = cell.child(super::body::brand_logo("brand", brand, px(16.), cx));
                 } else if let Some(icon) = value["icon"].as_str() {
                     cell = cell.child(Icon::empty().path(format!("icons/{icon}.svg")).small());
                 } else if column == 1 && record["enabled"] == false {
@@ -426,7 +439,15 @@ impl TableDelegate for Rows {
             .items_center()
             .justify_center()
             .text_color(cx.theme().muted_foreground)
-            .child(self.model["empty"].as_str().unwrap_or_default().to_owned())
+            // A long message wraps inside the table instead of running past both its sides.
+            .child(
+                div()
+                    .min_w_0()
+                    .max_w_full()
+                    .px_4()
+                    .text_center()
+                    .child(self.model["empty"].as_str().unwrap_or_default().to_owned()),
+            )
             .context_menu(move |menu, _, _| {
                 Action::actions(&model).into_iter().fold(menu, |menu, action| {
                     let handler = handler.clone();
@@ -443,8 +464,20 @@ impl TableDelegate for Rows {
 
 /// Narrows `widths` to `fit` (each keeps a readable minimum), or widens the last one to fill it.
 /// `fit` 0 means unknown: nothing changes.
+/// The narrowest a column shrinks to.
+const MIN_WIDTH: f32 = 48.;
+
+#[cfg(test)]
 pub fn fit_widths(widths: &mut [f32], fit: f32) {
-    const MIN: f32 = 48.;
+    fit_widths_above(widths, &vec![MIN_WIDTH; widths.len()], fit);
+}
+
+/// [`fit_widths`], each column no narrower than its own minimum.
+pub fn fit_widths_above(widths: &mut [f32], mins: &[f32], fit: f32) {
+    let min = |index: usize| mins.get(index).copied().unwrap_or(MIN_WIDTH);
+    for (index, width) in widths.iter_mut().enumerate() {
+        *width = width.max(min(index));
+    }
     let total: f32 = widths.iter().sum();
     if fit <= 0. || widths.is_empty() || total <= 0. {
         return;
@@ -461,13 +494,17 @@ pub fn fit_widths(widths: &mut [f32], fit: f32) {
         if total <= fit + 0.5 {
             break;
         }
-        let spare: f32 = widths.iter().map(|width| (width - MIN).max(0.)).sum();
+        let spare: f32 = widths
+            .iter()
+            .enumerate()
+            .map(|(i, width)| (width - min(i)).max(0.))
+            .sum();
         if spare <= 0. {
             break;
         }
         let cut = ((total - fit) / spare).min(1.);
-        for width in widths.iter_mut() {
-            *width -= (*width - MIN).max(0.) * cut;
+        for (index, width) in widths.iter_mut().enumerate() {
+            *width -= (*width - min(index)).max(0.) * cut;
         }
     }
 }
@@ -475,6 +512,17 @@ pub fn fit_widths(widths: &mut [f32], fit: f32) {
 #[cfg(test)]
 mod tests {
     use super::fit_widths;
+
+    #[test]
+    fn a_column_of_logos_keeps_room_for_all_of_them() {
+        // Commands at 540 px: Sources once shrank until Kick's logo was a green bar and TikTok's gone.
+        let mut widths = [72., 200., 160., 120., 130., 100., 140.];
+        let mut mins = [48.; 7];
+        mins[4] = 4. * 16. + 3. * 6. + 17.;
+        super::fit_widths_above(&mut widths, &mins, 420.);
+        assert!(widths[4] >= mins[4] - 0.01, "{widths:?}");
+        assert!(widths.iter().all(|width| *width >= 48. - 0.01));
+    }
 
     #[test]
     fn columns_shrink_to_a_narrow_table_and_the_last_fills_a_wide_one() {

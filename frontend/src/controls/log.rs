@@ -91,7 +91,9 @@ impl Render for LogView {
         if !narrow {
             bar = bar.child(
                 div()
-                    .w(px(44.))
+                    .min_w(px(44.))
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
                     .child(log["show"].as_str().unwrap_or_default().to_owned()),
             );
         }
