@@ -2211,6 +2211,44 @@ pub fn trigger_matches(code: u32, trigger: &Obj, args: &Obj) -> bool {
 pub(crate) mod tests {
     use super::*;
 
+    /// A sub-action ticked in COVERAGE.md is one the engine runs (Guest Star and some reward ones were
+    /// ticked while `supported` skipped them).
+    #[test]
+    fn every_ticked_sub_action_in_coverage_runs() {
+        let mut phase = "";
+        let mut listed = false;
+        let mut skipped = Vec::new();
+        for line in include_str!("../COVERAGE.md").lines() {
+            if let Some(title) = line.strip_prefix("## ") {
+                (phase, listed) = (title, false);
+                continue;
+            }
+            if line.starts_with("**") {
+                listed = line.starts_with("**Sub-actions");
+                continue;
+            }
+            let Some(item) = line.strip_prefix("- [x] ").filter(|i| listed && !i.starts_with("~~")) else {
+                continue;
+            };
+            let title = item.rsplit_once(": ").map_or(item, |(_, t)| t);
+            let title = title.split(" (").next().unwrap_or(title).trim();
+            let named: Vec<_> = crate::types::SUB_ACTION_INFO
+                .iter()
+                .filter(|(_, name, ..)| *name == title)
+                .collect();
+            let here: Vec<_> = named
+                .iter()
+                .filter(|(_, _, category, _)| phase.contains(category.split('/').next().unwrap_or_default()))
+                .copied()
+                .collect();
+            let pool = if here.is_empty() { named } else { here };
+            if !pool.is_empty() && !pool.iter().any(|(code, ..)| supported(*code)) {
+                skipped.push(format!("{phase}: {title}"));
+            }
+        }
+        assert!(skipped.is_empty(), "ticked but not run: {skipped:#?}");
+    }
+
     #[test]
     fn action_results_capture_failures_and_skips_without_leaking_between_runs() {
         let _guard = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
