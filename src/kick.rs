@@ -63,6 +63,11 @@ fn known_rewards(v: &Value) {
     crate::catalog::set("kick.rewards", list);
 }
 
+/// The channel's rewards as last read, in Kick's shape.
+pub fn rewards_known() -> Vec<Value> {
+    REWARDS.with_borrow(|m| m.values().cloned().collect())
+}
+
 /// A reward Streamerz created or changed (Kick's shape).
 pub fn reward_saved(reward: &Value) {
     known_rewards(&json!({"data": [reward]}));
@@ -2439,48 +2444,51 @@ mod tests {
 
     #[test]
     fn parse_kick_other_events() {
-        let (tx, _rx) = watch::channel(Config::default());
-        let engine = Engine::new(Arc::new(tx), |_| {});
+        // A redemption is counted and saved: it needs the runtime.
+        crate::engine::tests::run(async {
+            let (tx, _rx) = watch::channel(Config::default());
+            let engine = Engine::new(Arc::new(tx), |_| {});
 
-        // Subscription
-        let sub = json!({ "username": "subber", "months": 1 });
-        handle_kick_event(&engine, "chan", "App\\Events\\SubscriptionEvent", &sub);
+            // Subscription
+            let sub = json!({ "username": "subber", "months": 1 });
+            handle_kick_event(&engine, "chan", "App\\Events\\SubscriptionEvent", &sub);
 
-        // Resub
-        let resub = json!({ "username": "resubber", "months": 5 });
-        handle_kick_event(&engine, "chan", "App\\Events\\SubscriptionEvent", &resub);
+            // Resub
+            let resub = json!({ "username": "resubber", "months": 5 });
+            handle_kick_event(&engine, "chan", "App\\Events\\SubscriptionEvent", &resub);
 
-        // Gift sub
-        let gift = json!({ "gifter_username": "santa", "gifted_usernames": ["u1", "u2"] });
-        handle_kick_event(&engine, "chan", "App\\Events\\GiftedSubscriptionsEvent", &gift);
+            // Gift sub
+            let gift = json!({ "gifter_username": "santa", "gifted_usernames": ["u1", "u2"] });
+            handle_kick_event(&engine, "chan", "App\\Events\\GiftedSubscriptionsEvent", &gift);
 
-        // Ban & Timeout
-        let timeout = json!({ "user": "troll", "banned_by": "mod", "reason": "spam", "duration": 300 });
-        handle_kick_event(&engine, "chan", "App\\Events\\UserBannedEvent", &timeout);
-        let ban = json!({ "user": "hacker", "banned_by": "mod", "reason": "rules", "duration": 0 });
-        handle_kick_event(&engine, "chan", "App\\Events\\UserBannedEvent", &ban);
+            // Ban & Timeout
+            let timeout = json!({ "user": "troll", "banned_by": "mod", "reason": "spam", "duration": 300 });
+            handle_kick_event(&engine, "chan", "App\\Events\\UserBannedEvent", &timeout);
+            let ban = json!({ "user": "hacker", "banned_by": "mod", "reason": "rules", "duration": 0 });
+            handle_kick_event(&engine, "chan", "App\\Events\\UserBannedEvent", &ban);
 
-        // Channel update
-        let chan_up = json!({ "title": "New Title", "category": "Gaming" });
-        handle_kick_event(&engine, "chan", "App\\Events\\ChannelUpdateEvent", &chan_up);
+            // Channel update
+            let chan_up = json!({ "title": "New Title", "category": "Gaming" });
+            handle_kick_event(&engine, "chan", "App\\Events\\ChannelUpdateEvent", &chan_up);
 
-        // Kicks gifted
-        let kicks = json!({ "amount": 100, "sender": "tipper" });
-        handle_kick_event(&engine, "chan", "App\\Events\\KicksGiftedEvent", &kicks);
+            // Kicks gifted
+            let kicks = json!({ "amount": 100, "sender": "tipper" });
+            handle_kick_event(&engine, "chan", "App\\Events\\KicksGiftedEvent", &kicks);
 
-        // Reward redemption
-        let reward = json!({ "reward_id": "r1", "user": "viewer", "user_input": "hello" });
-        handle_kick_event(&engine, "chan", "App\\Events\\RewardRedeemedEvent", &reward);
+            // Reward redemption
+            let reward = json!({ "reward_id": "r1", "user": "viewer", "user_input": "hello" });
+            handle_kick_event(&engine, "chan", "App\\Events\\RewardRedeemedEvent", &reward);
 
-        // 7TV emotes
-        let em_add = json!({ "name": "KEKW" });
-        handle_kick_event(&engine, "chan", "7tv:emote_added", &em_add);
-        let em_rem = json!({ "name": "OMEGALUL" });
-        handle_kick_event(&engine, "chan", "7tv:emote_removed", &em_rem);
+            // 7TV emotes
+            let em_add = json!({ "name": "KEKW" });
+            handle_kick_event(&engine, "chan", "7tv:emote_added", &em_add);
+            let em_rem = json!({ "name": "OMEGALUL" });
+            handle_kick_event(&engine, "chan", "7tv:emote_removed", &em_rem);
 
-        // Viewer count
-        let vc = json!({ "viewers": 1500 });
-        handle_kick_event(&engine, "chan", "App\\Events\\ViewerCountUpdated", &vc);
+            // Viewer count
+            let vc = json!({ "viewers": 1500 });
+            handle_kick_event(&engine, "chan", "App\\Events\\ViewerCountUpdated", &vc);
+        });
     }
 
     #[test]

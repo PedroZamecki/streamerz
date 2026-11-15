@@ -21,6 +21,7 @@ pub mod read;
 #[cfg(windows)]
 mod renderer_job;
 pub mod requests;
+pub mod rewards;
 pub mod sections;
 pub mod settings;
 pub mod status;

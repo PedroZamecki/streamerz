@@ -700,6 +700,8 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
                 crate::core::actions::act(e, req)
             } else if crate::core::overlays::supports(get("domain")) {
                 crate::core::overlays::act(e, get("action"), get("itemId"))
+            } else if crate::core::rewards::supports(get("domain")) {
+                crate::core::rewards::act(e, get("action"), get("itemId"))
             } else if crate::core::polls::supports(get("domain")) {
                 crate::core::polls::act(e, get("action"))
             } else if crate::core::stream::supports(get("domain")) {

@@ -14,6 +14,9 @@ pub struct Book {
     /// Groups by name, each with its rewards. A reward is in one group at most.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub groups: BTreeMap<String, Vec<String>>,
+    /// The Kick rewards Streamerz made (Kick doesn't say which an app may change).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub made: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -32,7 +35,7 @@ pub fn key(platform: &str, id: &str) -> String {
 
 impl Book {
     pub fn is_empty(&self) -> bool {
-        self.counters.is_empty() && self.groups.is_empty()
+        self.counters.is_empty() && self.groups.is_empty() && self.made.is_empty()
     }
 
     /// One redemption of `reward` by `user`: the reward's count and the user's, after it.

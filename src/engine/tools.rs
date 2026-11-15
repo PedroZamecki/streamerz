@@ -1336,6 +1336,10 @@ impl Engine {
                 let got = kick.api("POST", "/channels/rewards", Some(body)).await?;
                 ctx.args.insert("rewardId".into(), got["data"]["id"].clone());
                 crate::kick::reward_saved(&got["data"]);
+                if let Some(id) = got["data"]["id"].as_str() {
+                    let key = crate::rewards::key("kick", id);
+                    self.change(|c| c.rewards.made.push(key));
+                }
             }
             // Delete Reward
             99604 => {
