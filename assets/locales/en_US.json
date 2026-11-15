@@ -1610,5 +1610,10 @@
   "actions.test_sub_values": "Values it added or changed:",
   "tools.reply_to": "Reply to",
   "tools.needs_login": "Log in to {platform} in Accounts first: this needs its login.",
-  "tools.needs_more": "This needs more Twitch permissions: in Accounts, Twitch, press Allow more."
+  "tools.needs_more": "This needs more Twitch permissions: in Accounts, Twitch, press Allow more.",
+  "tools.rewards_on": "Turn on (one per line)",
+  "tools.rewards_paused": "Pause (one per line)",
+  "tools.rewards_off": "Turn off (one per line)",
+  "tools.rewards_rest_off": "Turn off the rest",
+  "tools.reward_group": "Reward group"
 }

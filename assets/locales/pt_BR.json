@@ -1610,5 +1610,10 @@
   "actions.test_sub_values": "Valores que adicionou ou mudou:",
   "tools.reply_to": "Responder a",
   "tools.needs_login": "Entre na {platform} em Contas antes: isto precisa do login.",
-  "tools.needs_more": "Isto precisa de mais permissões da Twitch: em Contas, Twitch, clique em Permitir mais."
+  "tools.needs_more": "Isto precisa de mais permissões da Twitch: em Contas, Twitch, clique em Permitir mais.",
+  "tools.rewards_on": "Ligar (uma por linha)",
+  "tools.rewards_paused": "Pausar (uma por linha)",
+  "tools.rewards_off": "Desligar (uma por linha)",
+  "tools.rewards_rest_off": "Desligar as outras",
+  "tools.reward_group": "Grupo de recompensas"
 }

@@ -323,5 +323,129 @@
       "runs": [{"action": "all", "after": {"isLive": true, "viewerCount": 14, "twitchIsLive": true, "twitchViewerCount": 10, "kickViewerCount": 4,
         "kickStreamTitle": "Kk", "targetUserId": 70}}]
     }
+  },
+  {
+    "name": "twitch: latest follower from Twitch, latest subscriber from the last Sub seen, Set Cost adds to what it costs",
+    "fakes": {"twitch": {
+      "GET channels/followers": {"total": 42, "data": [{"user_name": "Fae", "user_login": "fae", "user_id": "11", "followed_at": "2026-11-15T01:00:00Z"}]},
+      "GET subscriptions": {"total": 7, "data": []},
+      "GET channel_points/custom_rewards": {"data": [{"id": "rw1", "cost": 100}]}
+    }},
+    "actions": [{"name": "latest", "subActions": [
+      {"type": 507},
+      {"type": 509},
+      {"type": 202, "rewardId": "rw1", "cost": 25, "operator": 1}
+    ]}],
+    "steps": [
+      {"fire": 103, "args": {"user": "Sam", "userName": "sam", "userId": "12", "userType": "twitch", "tier": "tier 2"}},
+      {"run": "latest"}
+    ],
+    "expect": {
+      "calls": [
+        {"platform": "twitch", "call": "GET channels/followers"},
+        {"platform": "twitch", "call": "GET subscriptions"},
+        {"platform": "twitch", "call": "GET channel_points/custom_rewards", "query": {"id": "rw1"}},
+        {"platform": "twitch", "call": "PATCH channel_points/custom_rewards", "body": {"cost": 125}}
+      ],
+      "runs": [{"action": "latest", "after": {"totalFollowers": 42, "latestFollower.user": "Fae", "latestFollower.userId": "11",
+        "totalSubscribers": 7, "latestSubscriber.userName": "Sam", "latestSubscriber.userId": "12", "latestSubscriber.tier": "Tier2",
+        "latestSubscriber.isGift": false}}]
+    }
+  },
+  {
+    "name": "rewards: redemptions count per reward and per user, reset, and groups and Configure Rewards change only Streamerz's own",
+    "config": {"rewards": {"groups": {"Games": ["twitch:rw1", "twitch:rw2", "kick:k1"]}}},
+    "fakes": {"twitch": {
+      "GET channel_points/custom_rewards": {"data": [{"id": "rw1", "is_enabled": true, "is_paused": false}, {"id": "rw2", "is_enabled": false, "is_paused": false}]}
+    }, "kick": {
+      "GET /channels/rewards": {"data": [{"id": "k1", "is_enabled": false, "is_paused": false}]}
+    }},
+    "actions": [
+      {"name": "redeemed", "triggers": [{"type": 112}], "subActions": [{"type": 1009, "value": "counted"}]},
+      {"name": "manage", "subActions": [
+        {"type": 209, "rewardId": "rw1"},
+        {"type": 211, "groupName": "games", "state": 2},
+        {"type": 203, "enable": ["rw2"], "disableNotConfigured": true},
+        {"type": 35111, "groupName": "Games", "state": true},
+        {"type": 35104, "disable": ["k1"]},
+        {"type": 35110, "rewardId": "k1"},
+        {"type": 210, "rewardId": "rw1"},
+        {"type": 212, "groupName": "Games", "state": 0},
+        {"type": 35109, "rewardId": "k1"},
+        {"type": 35112, "groupName": "Games", "state": false}
+      ]},
+      {"name": "again", "triggers": [{"type": 35024}], "subActions": [{"type": 1009, "value": "kick"}]}
+    ],
+    "steps": [
+      {"fire": 112, "args": {"rewardId": "rw1", "userId": "5", "user": "Ana"}},
+      {"fire": 112, "args": {"rewardId": "rw1", "userId": "5", "user": "Ana"}},
+      {"fire": 112, "args": {"rewardId": "rw1", "userId": "6", "user": "Bob"}},
+      {"run": "manage"},
+      {"fire": 112, "args": {"rewardId": "rw1", "userId": "5", "user": "Ana"}},
+      {"fire": 35024, "args": {"rewardId": "k1", "userId": "5", "user": "Ana"}}
+    ],
+    "expect": {
+      "calls": [
+        {"platform": "twitch", "call": "GET channel_points/custom_rewards", "query": {"only_manageable_rewards": "true"}},
+        {"platform": "twitch", "call": "PATCH channel_points/custom_rewards", "query": {"id": "rw1"}, "body": {"is_enabled": false}},
+        {"platform": "twitch", "call": "PATCH channel_points/custom_rewards", "query": {"id": "rw2"}, "body": {"is_enabled": true}},
+        {"platform": "twitch", "call": "PATCH channel_points/custom_rewards", "query": {"id": "rw1"}, "body": {"is_enabled": false}},
+        {"platform": "twitch", "call": "PATCH channel_points/custom_rewards", "query": {"id": "rw2"}, "body": {"is_enabled": true, "is_paused": false}},
+        {"platform": "kick", "call": "PATCH /channels/rewards/k1", "body": {"is_enabled": true}},
+        {"platform": "kick", "call": "PATCH /channels/rewards/k1", "body": {"is_enabled": false}},
+        {"platform": "twitch", "call": "PATCH channel_points/custom_rewards", "query": {"id": "rw1"}, "body": {"is_paused": true}},
+        {"platform": "twitch", "call": "PATCH channel_points/custom_rewards", "query": {"id": "rw2"}, "body": {"is_paused": true}},
+        {"platform": "kick", "call": "PATCH /channels/rewards/k1", "body": {"is_paused": false}}
+      ],
+      "runs": [
+        {"action": "redeemed", "args": {"counter": 1, "userCounter": 1}},
+        {"action": "redeemed", "args": {"counter": 2, "userCounter": 2}},
+        {"action": "redeemed", "args": {"counter": 3, "userCounter": 1}},
+        {"action": "manage"},
+        {"action": "redeemed", "args": {"counter": 1, "userCounter": 1}},
+        {"action": "again", "args": {"counter": 1, "userCounter": 1}}
+      ]
+    }
+  },
+  {
+    "name": "twitch Guest Star: settings, the running session, invites and slots",
+    "fakes": {"twitch": {
+      "GET guest_star/channel_settings": {"data": [{"is_moderator_send_live_enabled": true, "slot_count": 4, "group_layout": "TILED_LAYOUT"}]},
+      "GET guest_star/session": {"data": [{"id": "gs1", "guests": [{"user_id": "5", "user_login": "ana", "user_display_name": "Ana", "slot_id": "1", "is_live": true, "volume": 80}]}]},
+      "GET guest_star/invites": {"data": [{"user_id": "6", "status": "INVITED", "invited_at": "2026-11-15T00:00:00Z"}]},
+      "POST guest_star/session": {"data": [{"id": "gs2", "guests": []}]}
+    }},
+    "actions": [{"name": "gs", "subActions": [
+      {"type": 520},
+      {"type": 521, "slotCount": 3, "groupLayout": "tiled_layout", "browserSourceAudioEnabled": true},
+      {"type": 522},
+      {"type": 525},
+      {"type": 526, "userLogin": "bob"},
+      {"type": 527, "userLogin": "bob"},
+      {"type": 528, "userLogin": "bob", "slot": 2},
+      {"type": 529, "sourceSlot": 2, "destinationSlot": 3},
+      {"type": 531, "slot": 3, "audioEnabled": true, "videoEnabled": true, "live": true, "volume": 70},
+      {"type": 530, "userLogin": "bob", "slot": 3},
+      {"type": 524},
+      {"type": 523}
+    ]}],
+    "steps": [{"run": "gs"}],
+    "expect": {
+      "calls": [
+        {"platform": "twitch", "call": "GET guest_star/channel_settings"},
+        {"platform": "twitch", "call": "PUT guest_star/channel_settings", "body": {"slot_count": 3, "group_layout": "TILED_LAYOUT"}},
+        {"platform": "twitch", "call": "GET guest_star/session"},
+        {"platform": "twitch", "call": "GET guest_star/invites", "query": {"session_id": "gs1"}},
+        {"platform": "twitch", "call": "POST guest_star/invites", "query": {"session_id": "gs1", "guest_id": "id-bob"}},
+        {"platform": "twitch", "call": "DELETE guest_star/invites", "query": {"guest_id": "id-bob"}},
+        {"platform": "twitch", "call": "POST guest_star/slot", "query": {"guest_id": "id-bob", "slot_id": "2"}},
+        {"platform": "twitch", "call": "PATCH guest_star/slot", "query": {"source_slot_id": "2", "destination_slot_id": "3"}},
+        {"platform": "twitch", "call": "PATCH guest_star/slot_settings", "query": {"slot_id": "3", "is_live": "true", "volume": "70"}},
+        {"platform": "twitch", "call": "DELETE guest_star/slot", "query": {"slot_id": "3"}},
+        {"platform": "twitch", "call": "DELETE guest_star/session", "query": {"session_id": "gs1"}},
+        {"platform": "twitch", "call": "POST guest_star/session"}
+      ],
+      "runs": [{"action": "gs", "after": {"moderatorSendLiveEnabled": true, "slotCount": 4, "guestStarSessionId": "gs2", "guestCount": 0, "inviteCount": 1, "invite0Status": "INVITED"}}]
+    }
   }
 ]

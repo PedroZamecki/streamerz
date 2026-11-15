@@ -257,6 +257,9 @@ pub struct TwitchConfig {
     /// The broadcaster's login also asks for the permissions a few tools need (blocked terms, AutoMod
     /// level, chat colour, blocking, the schedule), once the user chose to give them.
     pub more_permissions: bool,
+    /// The latest subscriber Streamerz saw (a Sub, Resub or Gift Sub): Twitch has no call for it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_subscriber: Option<Value>,
     #[serde(flatten)]
     pub rest: Map<String, Value>,
 }

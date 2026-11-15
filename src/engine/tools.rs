@@ -207,11 +207,187 @@ impl Engine {
         }
     }
 
+    /// A reward redemption (Twitch 112, Kick 35024) counts: the trigger's arguments with `counter` and
+    /// `userCounter` after it. None for anything else.
+    pub(super) fn count_redemption(self: &Rc<Self>, kind: u32, args: &Obj) -> Option<Obj> {
+        let platform = match kind {
+            112 => "twitch",
+            35024 => "kick",
+            _ => return None,
+        };
+        let get = |k: &str| args.get(k).map(crate::vars::text).unwrap_or_default();
+        let reward = get("rewardId");
+        if reward.is_empty() {
+            return None;
+        }
+        let key = crate::rewards::key(platform, &reward);
+        let mut counts = (0, 0);
+        self.change(|c| counts = c.rewards.redeemed(&key, &get("userId")));
+        let mut out = args.clone();
+        out.insert("counter".into(), counts.0.into());
+        out.insert("userCounter".into(), counts.1.into());
+        Some(out)
+    }
+
+    /// The reward sub-actions that work on Streamerz's counters and groups (Streamer.bot's own):
+    /// Configure Rewards, Reset Counter, Reset User Counters, Set Group Enabled and Paused State.
+    async fn reward_tool(self: &Rc<Self>, ctx: &mut Ctx, o: &Obj, kind: u64, platform: &str) -> Result<(), String> {
+        let catalog = if platform == "twitch" {
+            "twitch.rewards"
+        } else {
+            "kick.rewards"
+        };
+        match kind {
+            // Reset Reward Counter / Reset Reward User Counters
+            209 | 210 | 35109 | 35110 => {
+                let id = crate::catalog::resolve(catalog, &self.expand(ctx, s(o, "rewardId")));
+                let key = crate::rewards::key(platform, &id);
+                let users = matches!(kind, 210 | 35110);
+                self.change(|c| c.rewards.reset(&key, users));
+            }
+            // Set Group Enabled State / Set Group Paused State: each reward of the group.
+            211 | 212 | 35111 | 35112 => {
+                let group = self.simple(ctx, s(o, "groupName"));
+                let ids = self.cfg.borrow().rewards.in_group(platform, &group);
+                if ids.is_empty() {
+                    return Err(format!("no {platform} rewards in the group {group}"));
+                }
+                let key = if matches!(kind, 211 | 35111) {
+                    "is_enabled"
+                } else {
+                    "is_paused"
+                };
+                let now = self.reward_states(platform, &ids).await?;
+                // Kick's state is on or off (true: on), Twitch's a choice (0 on, 1 off, 2 toggle).
+                let state = super::rest::state_of(o);
+                let changes: Vec<(String, Value)> = ids
+                    .iter()
+                    .map(|id| {
+                        let on = now.get(id).and_then(|r| r[key].as_bool()).unwrap_or(false);
+                        (id.clone(), json!({ key: new_state(state, on) }))
+                    })
+                    .collect();
+                self.update_rewards(platform, changes).await?;
+            }
+            // Configure Rewards: those listed on, off or paused; the rest off when asked.
+            _ => {
+                let list = |key: &str| -> Vec<String> {
+                    o.get(key)
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .map(|v| crate::catalog::resolve(catalog, &self.expand(ctx, &crate::vars::text(v))))
+                        .filter(|id| !id.is_empty())
+                        .collect()
+                };
+                let (on, off, paused) = (list("enable"), list("disable"), list("pause"));
+                let rest = b(o, "disableNotConfigured", false);
+                let mine = self.reward_states(platform, &[]).await?;
+                let changes: Vec<(String, Value)> = mine
+                    .keys()
+                    .filter_map(|id| {
+                        let body = if on.contains(id) {
+                            json!({"is_enabled": true, "is_paused": false})
+                        } else if paused.contains(id) {
+                            json!({"is_enabled": true, "is_paused": true})
+                        } else if off.contains(id) || rest {
+                            json!({"is_enabled": false})
+                        } else {
+                            return None;
+                        };
+                        Some((id.clone(), body))
+                    })
+                    .collect();
+                self.update_rewards(platform, changes).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The rewards Streamerz may change on `platform` (an app changes only its own), by id; only those
+    /// in `ids` when it isn't empty.
+    async fn reward_states(
+        self: &Rc<Self>,
+        platform: &str,
+        ids: &[String],
+    ) -> Result<std::collections::BTreeMap<String, Value>, String> {
+        let list = if platform == "twitch" {
+            let mut q = vec![
+                ("broadcaster_id", "{broadcaster_id}"),
+                ("only_manageable_rewards", "true"),
+            ];
+            q.extend(ids.iter().map(|id| ("id", id.as_str())));
+            self.helix_call("GET", "channel_points/custom_rewards", &q, None, false)
+                .await?
+        } else {
+            self.kick_start().api("GET", "/channels/rewards", None).await?
+        };
+        Ok(list["data"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| Some((r["id"].as_str()?.to_string(), r.clone())))
+            .filter(|(id, _)| ids.is_empty() || ids.contains(id))
+            .collect())
+    }
+
+    /// Changes each reward; what failed is said together.
+    async fn update_rewards(self: &Rc<Self>, platform: &str, changes: Vec<(String, Value)>) -> Result<(), String> {
+        let mut failed = Vec::new();
+        for (id, body) in changes {
+            let r = if platform == "twitch" {
+                let q = [("broadcaster_id", "{broadcaster_id}"), ("id", id.as_str())];
+                self.helix_call("PATCH", "channel_points/custom_rewards", &q, Some(body), false)
+                    .await
+            } else {
+                let path = format!("/channels/rewards/{}", crate::commands::url_encode(&id));
+                self.kick_start().api("PATCH", &path, Some(body)).await
+            };
+            if let Err(e) = r {
+                failed.push(format!("{id}: {e}"));
+            }
+        }
+        if failed.is_empty() {
+            Ok(())
+        } else {
+            Err(failed.join("; "))
+        }
+    }
+
+    /// Keeps who subscribed last on Twitch (Sub 103, Resub 104, Gift Sub 105: the one who got it).
+    pub(super) fn note_subscriber(self: &Rc<Self>, kind: u32, args: &Obj) {
+        let get = |k: &str| args.get(k).map(crate::vars::text).unwrap_or_default();
+        let (user, login, id) = if kind == 105 {
+            (get("recipientUser"), get("recipientUserName"), get("recipientId"))
+        } else {
+            (get("user"), get("userName"), get("userId"))
+        };
+        if id.is_empty()
+            || args
+                .get("userType")
+                .map(crate::vars::text)
+                .is_some_and(|p| p != "twitch")
+        {
+            return;
+        }
+        let tier = get("tier").to_lowercase();
+        let tier = match tier.as_str() {
+            "prime" => "Prime".to_string(),
+            t => format!("Tier{}", t.trim_start_matches("tier").trim()),
+        };
+        let latest = json!({"userName": user, "userLogin": login, "userId": id, "tier": tier, "isGift": kind == 105,
+            "at": iso_utc(crate::fmt::unix_now().as_secs() as i64)});
+        self.change(|c| c.twitch.latest_subscriber = Some(latest));
+    }
+
     /// Runs a Streamerz platform tool; false when `kind` isn't one.
     pub(super) async fn tools(self: &Rc<Self>, ctx: &mut Ctx, o: &Obj, kind: u64) -> bool {
         let r = match kind {
+            203 | 209..=212 => self.reward_tool(ctx, o, kind, "twitch").await,
+            35104 | 35109..=35112 => self.reward_tool(ctx, o, kind, "kick").await,
             99450..=99454 => self.tiktok_tool(ctx, o, kind).await,
             99500..=99599 => self.twitch_tool(ctx, o, kind).await,
+            520..=531 => self.guest_star(ctx, o, kind).await,
             99600..=99649 => self.kick_tool(ctx, o, kind).await,
             99650..=99699 => self.youtube_tool(ctx, o, kind).await,
             99700..=99713 => {
@@ -222,8 +398,8 @@ impl Engine {
         };
         if let Err(e) = r {
             let platform = match kind {
-                99500..=99599 => "Twitch",
-                99600..=99649 => "Kick",
+                99500..=99599 | 203 | 209..=212 | 520..=531 => "Twitch",
+                99600..=99649 | 35104 | 35109..=35112 => "Kick",
                 99650..=99699 => "YouTube",
                 99450..=99499 => "TikTok",
                 _ => "Streamerz",
@@ -871,6 +1047,153 @@ impl Engine {
                 self.helix_call("PATCH", "schedule/settings", &q, None, false).await?;
             }
             _ => self.unsupported(kind),
+        }
+        Ok(())
+    }
+
+    /// Twitch's Guest Star (still a beta API at Twitch): settings, the session, invites and slots.
+    async fn guest_star(self: &Rc<Self>, ctx: &mut Ctx, o: &Obj, kind: u64) -> Result<(), String> {
+        let flag = |key: &str| if b(o, key, false) { "true" } else { "false" };
+        // The live session's id, for what acts on it.
+        let session = if matches!(kind, 524..=531) {
+            let got = self.helix_mod("GET", "guest_star/session", &[], None).await?;
+            let id = got["data"][0]["id"].as_str().unwrap_or_default().to_string();
+            if id.is_empty() {
+                return Err("no Guest Star session is running".into());
+            }
+            id
+        } else {
+            String::new()
+        };
+        let slot = (n(o, "slot") as u64).to_string();
+        match kind {
+            520 => {
+                let got = self.helix_mod("GET", "guest_star/channel_settings", &[], None).await?;
+                let s = &got["data"][0];
+                for (arg, key) in [
+                    ("moderatorSendLiveEnabled", "is_moderator_send_live_enabled"),
+                    ("slotCount", "slot_count"),
+                    ("browserSourceAudioEnabled", "is_browser_source_audio_enabled"),
+                    ("groupLayout", "group_layout"),
+                    ("browserSourceToken", "browser_source_token"),
+                ] {
+                    ctx.args.insert(arg.into(), s[key].clone());
+                }
+            }
+            521 => {
+                let mut body = json!({
+                    "is_moderator_send_live_enabled": b(o, "moderatorSendLiveEnabled", false),
+                    "is_browser_source_audio_enabled": b(o, "browserSourceAudioEnabled", true),
+                    "regenerate_browser_sources": b(o, "regenerateBrowserSources", false),
+                });
+                if n(o, "slotCount") as u64 > 0 {
+                    body["slot_count"] = (n(o, "slotCount") as u64).min(6).into();
+                }
+                let layout = self.expand(ctx, s(o, "groupLayout"));
+                if !layout.trim().is_empty() {
+                    body["group_layout"] = layout.trim().to_uppercase().into();
+                }
+                self.helix_call(
+                    "PUT",
+                    "guest_star/channel_settings",
+                    &[("broadcaster_id", "{broadcaster_id}")],
+                    Some(body),
+                    false,
+                )
+                .await?;
+            }
+            522 | 523 => {
+                let got = if kind == 522 {
+                    self.helix_mod("GET", "guest_star/session", &[], None).await?
+                } else {
+                    self.helix_call(
+                        "POST",
+                        "guest_star/session",
+                        &[("broadcaster_id", "{broadcaster_id}")],
+                        None,
+                        false,
+                    )
+                    .await?
+                };
+                let s = &got["data"][0];
+                ctx.args.insert("guestStarSessionId".into(), s["id"].clone());
+                let guests: Vec<Vec<(&str, Value)>> = s["guests"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|g| {
+                        vec![
+                            ("UserId", g["user_id"].clone()),
+                            ("User", g["user_display_name"].clone()),
+                            ("UserName", g["user_login"].clone()),
+                            ("Slot", g["slot_id"].clone()),
+                            ("IsLive", g["is_live"].clone()),
+                            ("Volume", g["volume"].clone()),
+                        ]
+                    })
+                    .collect();
+                Self::put_list(ctx, "guest", &guests);
+            }
+            524 => {
+                let q = [("broadcaster_id", "{broadcaster_id}"), ("session_id", session.as_str())];
+                self.helix_call("DELETE", "guest_star/session", &q, None, false).await?;
+            }
+            525 => {
+                let got = self
+                    .helix_mod("GET", "guest_star/invites", &[("session_id", session.as_str())], None)
+                    .await?;
+                let invites: Vec<Vec<(&str, Value)>> = got["data"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|i| {
+                        vec![
+                            ("UserId", i["user_id"].clone()),
+                            ("Status", i["status"].clone()),
+                            ("InvitedAt", i["invited_at"].clone()),
+                        ]
+                    })
+                    .collect();
+                Self::put_list(ctx, "invite", &invites);
+            }
+            526..=528 | 530 => {
+                let guest = self.twitch_id(&self.expand(ctx, s(o, "userLogin"))).await?;
+                let mut q = vec![("session_id", session.as_str()), ("guest_id", guest.as_str())];
+                let (method, path) = match kind {
+                    526 => ("POST", "guest_star/invites"),
+                    527 => ("DELETE", "guest_star/invites"),
+                    528 => ("POST", "guest_star/slot"),
+                    _ => ("DELETE", "guest_star/slot"),
+                };
+                if kind >= 528 {
+                    q.push(("slot_id", slot.as_str()));
+                }
+                self.helix_mod(method, path, &q, None).await?;
+            }
+            529 => {
+                let (from, to) = (
+                    (n(o, "sourceSlot") as u64).to_string(),
+                    (n(o, "destinationSlot") as u64).to_string(),
+                );
+                let q = [
+                    ("session_id", session.as_str()),
+                    ("source_slot_id", from.as_str()),
+                    ("destination_slot_id", to.as_str()),
+                ];
+                self.helix_mod("PATCH", "guest_star/slot", &q, None).await?;
+            }
+            _ => {
+                let volume = (n(o, "volume") as u64).min(100).to_string();
+                let q = [
+                    ("session_id", session.as_str()),
+                    ("slot_id", slot.as_str()),
+                    ("is_audio_enabled", flag("audioEnabled")),
+                    ("is_video_enabled", flag("videoEnabled")),
+                    ("is_live", flag("live")),
+                    ("volume", volume.as_str()),
+                ];
+                self.helix_mod("PATCH", "guest_star/slot_settings", &q, None).await?;
+            }
         }
         Ok(())
     }

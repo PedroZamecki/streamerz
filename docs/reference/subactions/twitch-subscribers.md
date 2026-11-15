@@ -36,11 +36,13 @@ None.
 
 ### Arguments
 
-Adds `totalSubscribers`, the total number of subscribers.
+- `totalSubscribers`: the total number of subscribers.
+- `latestSubscriber.userName`, `latestSubscriber.userLogin`, `latestSubscriber.userId`: who subscribed last (display name, login, id).
+- `latestSubscriber.tier` (`Tier1`, `Tier2`, `Tier3` or `Prime`) and `latestSubscriber.isGift`.
 
 ### Notes
 
-- The latest subscriber isn't read yet. Only the total is set, the same as Get Subscriber Count.
+- Twitch has no call for the latest subscriber, so it is the last one Streamerz saw (a Sub, Resub or Gift Sub, the one who got it), kept across restarts. Before the first one, only the total is set.
 
 ## Is Subscribed
 

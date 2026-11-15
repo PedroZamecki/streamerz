@@ -430,6 +430,7 @@ pub fn supported(kind: u32) -> bool {
             | 35001 | 35002 | 35010..=35012 | 35020..=35022 | 35030..=35034
             | 35040..=35043 | 35050..=35051 | 35101..=35103 | 35105..=35108 | 35113 | 43001..=43003 | 43010..=43012 | 99900..=99904
             | 99450..=99454 | 99500..=99523 | 99530..=99539 | 99600..=99607 | 99650..=99663 | 99700..=99713
+            | 203 | 209..=212 | 35104 | 35109..=35112 | 520..=531
             | 1000 | 1026 | 1027 | 1035..=1037 | 99800 | 99802 | 99803 | 99880 | 99810..=99824 | 99827..=99833 | 99840..=99875
     )
 }
@@ -1184,8 +1185,14 @@ impl Engine {
         args: &Obj,
         matches: impl Fn(&Obj) -> bool,
     ) -> usize {
+        // A reward redemption counts, and says its counts (`counter`, `userCounter`).
+        let counted = self.count_redemption(kind, args);
+        let args = counted.as_ref().unwrap_or(args);
         self.record(kind, args);
         self.chat_event(kind, args);
+        if matches!(kind, 103..=105) {
+            self.note_subscriber(kind, args);
+        }
         if !self.plugins.borrow().is_empty() {
             self.plugins_hear(name(TRIGGERS, kind).unwrap_or(trigger_name), args);
         }
@@ -1987,7 +1994,7 @@ impl Engine {
                     self.overlay_publish(topic.trim(), value);
                 }
                 plugins::SUB_PLUGIN => return self.plugin_sub(ctx, o),
-                99450..=99749 => {
+                99450..=99749 | 203 | 209..=212 | 35104 | 35109..=35112 | 520..=531 => {
                     if !self.tools(ctx, o, kind).await {
                         self.unsupported(kind);
                     }

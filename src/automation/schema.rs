@@ -250,6 +250,18 @@ const BROADCAST_FIELD: F = ("broadcast", "tools.broadcast", Text);
 /// The fields of the Streamerz platform tools (PLAN.md, Version 1.9.0).
 fn tool_fields(kind: u64) -> Option<&'static [F]> {
     Some(match kind {
+        203 => &[
+            ("enable", "tools.rewards_on", Lines),
+            ("pause", "tools.rewards_paused", Lines),
+            ("disable", "tools.rewards_off", Lines),
+            ("disableNotConfigured", "tools.rewards_rest_off", Bool),
+        ],
+        35104 => &[
+            ("enable", "tools.rewards_on", Lines),
+            ("pause", "tools.rewards_paused", Lines),
+            ("disable", "tools.rewards_off", Lines),
+            ("disableNotConfigured", "tools.rewards_rest_off", Bool),
+        ],
         99450..=99452 => &[WHO_FIELD, GROUP_FIELD],
         99453 | 99663 => &[COUNT_FIELD],
         99501 => &[WHO_FIELD, REASON_FIELD],
@@ -615,7 +627,6 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("cost", "Cost", Int),
             ("operator", "Operation", Pick(&["Set", "Add", "Subtract"])),
         ],
-        203 => &[("disableNotConfigured", "Disable not configured", Bool)],
         204 => &[
             ("rewardId", "Reward", Entity("twitch.rewards")),
             ("cooldown", "automation.duration_cooldown", Duration(1000)),
@@ -637,8 +648,14 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("operator", "Operation", Pick(&["Set", "Add", "Subtract"])),
         ],
         208..=210 => &[("rewardId", "Reward", Entity("twitch.rewards"))],
-        211 => &[("groupName", "Group name", Text), ("state", "State", Pick(STATE))],
-        212 => &[("groupName", "Group name", Text), ("state", "State", Pick(STATE))],
+        211 => &[
+            ("groupName", "tools.reward_group", Text),
+            ("state", "State", Pick(STATE)),
+        ],
+        212 => &[
+            ("groupName", "tools.reward_group", Text),
+            ("state", "State", Pick(STATE)),
+        ],
         213 => &[
             ("rewardId", "Reward", Entity("twitch.rewards")),
             ("backgroundColor", "tools.color", Color),
@@ -1149,7 +1166,6 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("cost", "Cost", Int),
             ("operator", "Operation", Pick(&["Set", "Add", "Subtract"])),
         ],
-        35104 => &[("disableNotConfigured", "Disable not configured", Bool)],
         35105 => &[("rewardId", "Reward", Entity("kick.rewards")), ("title", "Title", Text)],
         35106 => &[
             ("rewardId", "Reward", Entity("kick.rewards")),
@@ -1163,7 +1179,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("operator", "Operation", Pick(&["Set", "Add", "Subtract"])),
         ],
         35108..=35110 => &[("rewardId", "Reward", Entity("kick.rewards"))],
-        35111 | 35112 => &[("groupName", "Group name", Text), ("state", "State", Bool)],
+        35111 | 35112 => &[("groupName", "tools.reward_group", Text), ("state", "State", Bool)],
         35113 => &[
             ("rewardId", "Reward", Entity("kick.rewards")),
             ("backgroundColor", "tools.color", Color),

@@ -8,7 +8,7 @@ Twitch's Guest Star: guest sessions, invites and the slots guests sit in. Stream
 - Code: 520
 - Type: TwitchGetChannelGuestStarSettings
 - Category: Twitch/Guest Star
-- Needs: nothing (see Notes)
+- Needs: a Twitch login as a moderator of the channel (some settings: the broadcaster)
 
 Would read the channel's Guest Star settings.
 
@@ -18,11 +18,11 @@ None.
 
 ### Arguments
 
-None set.
+- `moderatorSendLiveEnabled`, `slotCount`, `browserSourceAudioEnabled`, `groupLayout`, `browserSourceToken`: the channel's settings.
 
 ### Notes
 
-- Not done in Streamerz yet: the type is known and kept, but nothing runs it.
+- Twitch still calls its Guest Star API beta, and it hasn't been tried on a live channel with Streamerz yet.
 
 ## Update Channel Guest Star Settings
 
@@ -30,7 +30,7 @@ None set.
 - Code: 521
 - Type: TwitchUpdateChannelGuestStarSettings
 - Category: Twitch/Guest Star
-- Needs: nothing (see Notes)
+- Needs: a Twitch login as a moderator of the channel (some settings: the broadcaster)
 
 Would change the channel's Guest Star settings.
 
@@ -50,7 +50,7 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: the type is known and kept, but nothing runs it.
+- Twitch still calls its Guest Star API beta, and it hasn't been tried on a live channel with Streamerz yet.
 
 ## Get Guest Star Session
 
@@ -58,7 +58,7 @@ None set.
 - Code: 522
 - Type: TwitchGetGuestStarSession
 - Category: Twitch/Guest Star
-- Needs: nothing (see Notes)
+- Needs: a Twitch login as a moderator of the channel (some settings: the broadcaster)
 
 Would read the channel's current Guest Star session.
 
@@ -68,11 +68,13 @@ None.
 
 ### Arguments
 
-None set.
+- `guestStarSessionId`: the session.
+- `guestCount`: how many guests.
+- `guest0UserId`, `guest0User`, `guest0UserName`, `guest0Slot`, `guest0IsLive`, `guest0Volume`, and so on for each one.
 
 ### Notes
 
-- Not done in Streamerz yet: the type is known and kept, but nothing runs it.
+- Twitch still calls its Guest Star API beta, and it hasn't been tried on a live channel with Streamerz yet.
 
 ## Create Guest Star Session
 
@@ -80,7 +82,7 @@ None set.
 - Code: 523
 - Type: TwitchCreateGuestStarSession
 - Category: Twitch/Guest Star
-- Needs: nothing (see Notes)
+- Needs: a Twitch login as a moderator of the channel (some settings: the broadcaster)
 
 Would start a Guest Star session.
 
@@ -90,11 +92,12 @@ None.
 
 ### Arguments
 
-None set.
+- `guestStarSessionId`: the new session.
+- `guestCount`, `guest0UserId`... as Get Guest Star Session.
 
 ### Notes
 
-- Not done in Streamerz yet: the type is known and kept, but nothing runs it.
+- Twitch still calls its Guest Star API beta, and it hasn't been tried on a live channel with Streamerz yet.
 
 ## End Guest Star Session
 
@@ -102,7 +105,7 @@ None set.
 - Code: 524
 - Type: TwitchEndGuestStarSession
 - Category: Twitch/Guest Star
-- Needs: nothing (see Notes)
+- Needs: a Twitch login as a moderator of the channel (some settings: the broadcaster)
 
 Would end the current Guest Star session.
 
@@ -116,7 +119,8 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: the type is known and kept, but nothing runs it.
+- It acts on the session running now; without one it fails with a log line.
+- Twitch still calls its Guest Star API beta, and it hasn't been tried on a live channel with Streamerz yet.
 
 ## Get Guest Star Invites
 
@@ -124,7 +128,7 @@ None set.
 - Code: 525
 - Type: TwitchGetGuestStarInvites
 - Category: Twitch/Guest Star
-- Needs: nothing (see Notes)
+- Needs: a Twitch login as a moderator of the channel (some settings: the broadcaster)
 
 Would read the pending Guest Star invites.
 
@@ -134,11 +138,13 @@ None.
 
 ### Arguments
 
-None set.
+- `inviteCount`: how many invites.
+- `invite0UserId`, `invite0Status`, `invite0InvitedAt`, and so on for each one.
 
 ### Notes
 
-- Not done in Streamerz yet: the type is known and kept, but nothing runs it.
+- It acts on the session running now; without one it fails with a log line.
+- Twitch still calls its Guest Star API beta, and it hasn't been tried on a live channel with Streamerz yet.
 
 ## Send Guest Star Invite
 
@@ -146,7 +152,7 @@ None set.
 - Code: 526
 - Type: TwitchSendGuestStarInvite
 - Category: Twitch/Guest Star
-- Needs: nothing (see Notes)
+- Needs: a Twitch login as a moderator of the channel (some settings: the broadcaster)
 
 Would invite a user to the Guest Star session.
 
@@ -162,7 +168,8 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: the type is known and kept, but nothing runs it.
+- It acts on the session running now; without one it fails with a log line.
+- Twitch still calls its Guest Star API beta, and it hasn't been tried on a live channel with Streamerz yet.
 
 ## Delete Guest Star Invite
 
@@ -170,7 +177,7 @@ None set.
 - Code: 527
 - Type: TwitchDeleteGuestStarInvite
 - Category: Twitch/Guest Star
-- Needs: nothing (see Notes)
+- Needs: a Twitch login as a moderator of the channel (some settings: the broadcaster)
 
 Would remove a user's Guest Star invite.
 
@@ -186,7 +193,8 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: the type is known and kept, but nothing runs it.
+- It acts on the session running now; without one it fails with a log line.
+- Twitch still calls its Guest Star API beta, and it hasn't been tried on a live channel with Streamerz yet.
 
 ## Assign Guest Star Slot
 
@@ -194,7 +202,7 @@ None set.
 - Code: 528
 - Type: TwitchAssignGuestStarSlot
 - Category: Twitch/Guest Star
-- Needs: nothing (see Notes)
+- Needs: a Twitch login as a moderator of the channel (some settings: the broadcaster)
 
 Would put a user into a Guest Star slot.
 
@@ -211,7 +219,8 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: the type is known and kept, but nothing runs it.
+- It acts on the session running now; without one it fails with a log line.
+- Twitch still calls its Guest Star API beta, and it hasn't been tried on a live channel with Streamerz yet.
 
 ## Update Guest Star Slot
 
@@ -219,7 +228,7 @@ None set.
 - Code: 529
 - Type: TwitchUpdateGuestStarSlot
 - Category: Twitch/Guest Star
-- Needs: nothing (see Notes)
+- Needs: a Twitch login as a moderator of the channel (some settings: the broadcaster)
 
 Would move a guest from one slot to another.
 
@@ -236,7 +245,8 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: the type is known and kept, but nothing runs it.
+- It acts on the session running now; without one it fails with a log line.
+- Twitch still calls its Guest Star API beta, and it hasn't been tried on a live channel with Streamerz yet.
 
 ## Delete Guest Star Slot
 
@@ -244,7 +254,7 @@ None set.
 - Code: 530
 - Type: TwitchDeleteGuestStarSlot
 - Category: Twitch/Guest Star
-- Needs: nothing (see Notes)
+- Needs: a Twitch login as a moderator of the channel (some settings: the broadcaster)
 
 Would remove a user from a Guest Star slot.
 
@@ -261,7 +271,8 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: the type is known and kept, but nothing runs it.
+- It acts on the session running now; without one it fails with a log line.
+- Twitch still calls its Guest Star API beta, and it hasn't been tried on a live channel with Streamerz yet.
 
 ## Update Guest Star Slot Settings
 
@@ -269,7 +280,7 @@ None set.
 - Code: 531
 - Type: TwitchUpdateGuestStarSlotSettings
 - Category: Twitch/Guest Star
-- Needs: nothing (see Notes)
+- Needs: a Twitch login as a moderator of the channel (some settings: the broadcaster)
 
 Would change one slot's audio, video, live state and volume.
 
@@ -289,4 +300,5 @@ None set.
 
 ### Notes
 
-- Not done in Streamerz yet: the type is known and kept, but nothing runs it.
+- It acts on the session running now; without one it fails with a log line.
+- Twitch still calls its Guest Star API beta, and it hasn't been tried on a live channel with Streamerz yet.

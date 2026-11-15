@@ -273,7 +273,7 @@ fn tags_of(v: Option<&Value>) -> Vec<String> {
 }
 
 /// A state field that may be a checkbox: ticked is 0 (enable, pause), unticked 1, as `new_state` reads.
-fn state_of(o: &Obj) -> f64 {
+pub(super) fn state_of(o: &Obj) -> f64 {
     match o.get("state") {
         Some(Value::Bool(on)) => f64::from(u8::from(!on)),
         _ => n(o, "state"),
@@ -1085,8 +1085,24 @@ impl Engine {
             // Set Cost (202)
             202 => {
                 let reward_id = crate::catalog::resolve("twitch.rewards", &self.expand(ctx, s(o, "rewardId")));
-                let cost = n(o, "cost") as u64;
+                let mut cost = n(o, "cost") as i64;
                 if let Some(tw) = self.twitch() {
+                    // Add or Subtract: from what it costs now (Twitch keeps it at 1 or more).
+                    let operator = n(o, "operator") as i64;
+                    if operator == 1 || operator == 2 {
+                        let q = vec![("broadcaster_id", "{broadcaster_id}"), ("id", reward_id.as_str())];
+                        match tw
+                            .helix("GET", "channel_points/custom_rewards", q, None, false, true)
+                            .await
+                        {
+                            Ok(v) => {
+                                let now = v["data"][0]["cost"].as_i64().unwrap_or(0);
+                                cost = if operator == 1 { now + cost } else { now - cost };
+                            }
+                            Err(e) => return crate::error(format!("Twitch: {e}")),
+                        }
+                    }
+                    let cost = cost.max(1);
                     if let Err(e) = tw
                         .helix(
                             "PATCH",
@@ -2239,11 +2255,29 @@ impl Engine {
                         if let Some(total) = resp.pointer("/total") {
                             ctx.args.insert("totalFollowers".into(), total.clone());
                         }
+                        // Twitch lists followers newest first.
+                        let latest = &resp["data"][0];
+                        if kind == 507 && !latest.is_null() {
+                            for (arg, key) in [
+                                ("latestFollower.user", "user_name"),
+                                ("latestFollower.userName", "user_login"),
+                                ("latestFollower.userId", "user_id"),
+                                ("latestFollower.followedAt", "followed_at"),
+                            ] {
+                                ctx.args.insert(arg.into(), latest[key].clone());
+                            }
+                        }
                     }
                 }
             }
             // Get Subscriber Count (508) / Get Latest Subscriber (509)
             508 | 509 => {
+                let latest = self.cfg.borrow().twitch.latest_subscriber.clone();
+                if let (509, Some(latest)) = (kind, latest) {
+                    for key in ["userName", "userLogin", "userId", "tier", "isGift"] {
+                        ctx.args.insert(format!("latestSubscriber.{key}"), latest[key].clone());
+                    }
+                }
                 if let Some(tw) = self.twitch() {
                     if let Ok(resp) = tw
                         .helix(

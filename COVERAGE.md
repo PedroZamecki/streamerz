@@ -339,18 +339,18 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] followers: Get Follow Age Info for Target
 - [x] followers: Get Follower Count
 - [x] followers: Get Latest Follower
-- [ ] guest-star: Assign Guest Star Slot (not run yet: Version 1.9.0)
-- [ ] guest-star: Create Guest Star Session (not run yet: Version 1.9.0)
-- [ ] guest-star: Delete Guest Star Invite (not run yet: Version 1.9.0)
-- [ ] guest-star: Delete Guest Star Slot (not run yet: Version 1.9.0)
-- [ ] guest-star: End Guest Star Session (not run yet: Version 1.9.0)
-- [ ] guest-star: Get Channel Guest Star Settings (not run yet: Version 1.9.0)
-- [ ] guest-star: Get Guest Star Invites (not run yet: Version 1.9.0)
-- [ ] guest-star: Get Guest Star Session (not run yet: Version 1.9.0)
-- [ ] guest-star: Send Guest Star Invite (not run yet: Version 1.9.0)
-- [ ] guest-star: Update Channel Guest Star Settings (not run yet: Version 1.9.0)
-- [ ] guest-star: Update Guest Star Slot Settings (not run yet: Version 1.9.0)
-- [ ] guest-star: Update Guest Star Slot (not run yet: Version 1.9.0)
+- [x] guest-star: Assign Guest Star Slot (Twitch's API is beta: not tried on a live channel yet)
+- [x] guest-star: Create Guest Star Session (Twitch's API is beta: not tried on a live channel yet)
+- [x] guest-star: Delete Guest Star Invite (Twitch's API is beta: not tried on a live channel yet)
+- [x] guest-star: Delete Guest Star Slot (Twitch's API is beta: not tried on a live channel yet)
+- [x] guest-star: End Guest Star Session (Twitch's API is beta: not tried on a live channel yet)
+- [x] guest-star: Get Channel Guest Star Settings (Twitch's API is beta: not tried on a live channel yet)
+- [x] guest-star: Get Guest Star Invites (Twitch's API is beta: not tried on a live channel yet)
+- [x] guest-star: Get Guest Star Session (Twitch's API is beta: not tried on a live channel yet)
+- [x] guest-star: Send Guest Star Invite (Twitch's API is beta: not tried on a live channel yet)
+- [x] guest-star: Update Channel Guest Star Settings (Twitch's API is beta: not tried on a live channel yet)
+- [x] guest-star: Update Guest Star Slot Settings (Twitch's API is beta: not tried on a live channel yet)
+- [x] guest-star: Update Guest Star Slot (Twitch's API is beta: not tried on a live channel yet)
 - [x] moderation: Add Moderator
 - [x] moderation: Add Vip
 - [x] moderation: Ban User
@@ -379,16 +379,16 @@ Every documented Streamer.bot trigger and sub-action in scope, from docs.streame
 - [x] predictions: Resolve Last Prediction
 - [x] raid: Cancel Raid
 - [x] raid: Start Raid
-- [ ] rewards: Configure Rewards (not run yet: Version 1.9.0)
+- [x] rewards: Configure Rewards
 - [x] rewards: Get Reward Info
-- [ ] rewards: Reset Reward Counter (not run yet: Version 1.9.0)
-- [ ] rewards: Reset Reward User Counters (not run yet: Version 1.9.0)
+- [x] rewards: Reset Reward Counter
+- [x] rewards: Reset Reward User Counters
 - [x] rewards: Set Background Color
 - [x] rewards: Set Cost
 - [x] rewards: Set Enabled State
 - [x] rewards: Set Global Cooldown
-- [ ] rewards: Set Group Enabled State (not run yet: Version 1.9.0)
-- [ ] rewards: Set Group Paused State (not run yet: Version 1.9.0)
+- [x] rewards: Set Group Enabled State
+- [x] rewards: Set Group Paused State
 - [x] rewards: Set Max Per Stream
 - [x] rewards: Set Max per User Per Stream
 - [x] rewards: Set Paused State

@@ -72,7 +72,5 @@ None.
 | Key | What it holds |
 | --- | --- |
 | `totalFollowers` | The number of followers. Set only when Twitch answers. |
-
-### Notes
-
-- This action makes the same request as Get Follower Count. It sets only `totalFollowers`. The name and time of the latest follower are not set yet.
+| `latestFollower.user`, `latestFollower.userName`, `latestFollower.userId` | Who followed last: display name, login and id. |
+| `latestFollower.followedAt` | When they followed (ISO 8601). |
