@@ -189,6 +189,11 @@ pub enum YouTubeCmd {
     LiveVideo(oneshot::Sender<String>),
     /// The channel's live broadcast, else its next one, as (video id, title).
     NextBroadcast(oneshot::Sender<Result<Option<(String, String)>, String>>),
+    /// One Data API GET as the broadcaster (path and query under /youtube/v3), the JSON answer.
+    Api {
+        path: String,
+        resp: oneshot::Sender<Result<Value, String>>,
+    },
     Disconnect,
     SendMessage {
         broadcast: String,
@@ -463,6 +468,19 @@ impl YouTubeHandle {
         rx.await.map_err(|_| "Request cancelled".to_string())?
     }
 
+    /// One Data API read as the broadcaster: `path` is under /youtube/v3, with its query
+    /// (`videos?part=snippet&id=x`). Each read costs 1 unit of quota.
+    pub async fn api(&self, path: &str) -> Result<Value, String> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(YouTubeCmd::Api {
+                path: path.to_string(),
+                resp: tx,
+            })
+            .map_err(|_| "YouTube runner is down".to_string())?;
+        rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
     pub async fn live_title(&self) -> Result<String, String> {
         Ok(self.live_page().await?.1)
     }
@@ -537,6 +555,9 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
                 }
                 YouTubeCmd::NextBroadcast(resp) => {
                     let _ = resp.send(find_next_broadcast(&runner.engine, &runner.cfg).await);
+                }
+                YouTubeCmd::Api { path, resp } => {
+                    let _ = resp.send(api_get(&runner.engine, &runner.cfg, &path).await);
                 }
                 YouTubeCmd::Connect => {
                     if !active {
@@ -1408,6 +1429,20 @@ async fn find_next_broadcast(
     }
     let v: Value = serde_json::from_slice(&res.body).unwrap_or_default();
     Ok(pick_broadcast(v["items"].as_array().map_or(&[], Vec::as_slice)))
+}
+
+/// One Data API GET as the broadcaster: the JSON answer, or YouTube's own error message.
+async fn api_get(engine: &Rc<Engine>, cfg: &Arc<watch::Sender<Config>>, path: &str) -> Result<Value, String> {
+    let tok = token(engine, cfg, false, false).await?;
+    let headers = [("Authorization".to_string(), format!("Bearer {tok}"))];
+    let url = format!("{YOUTUBE_API_BASE}/{}", path.trim_start_matches('/'));
+    let res = crate::http::request("GET", &url, &headers, b"").await?;
+    let v: Value = serde_json::from_slice(&res.body).unwrap_or_default();
+    if res.status == 200 {
+        return Ok(v);
+    }
+    let why = v["error"]["message"].as_str().map_or_else(|| res.text(), str::to_owned);
+    Err(format!("YouTube: HTTP {} {why}", res.status))
 }
 
 /// From a liveBroadcasts list: the live one, else the soonest of those still to come.

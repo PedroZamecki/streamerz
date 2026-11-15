@@ -839,3 +839,19 @@ OBS settings and local destinations.
   and RTMP runtime objects. Linux tests, Windows type-check, workflow lint and audit pass (audit has
   eight maintenance warnings). The history scan records exact fingerprints for three already-redacted
   legacy benchmark commits; new paths and all credentials remain blocked, with eight regression tests.
+
+## Version 1.9.0: Stream page study and rework
+
+The study and its findings are in [docs/STREAM-PAGE.md](docs/STREAM-PAGE.md).
+
+- [x] Study what Twitch, Kick, YouTube and TikTok let the page read and change, at what cost and how
+  fresh, against the real channels.
+- [x] Live state on every card (since when, viewers), Ads, snooze, marker and clip off while off air.
+- [x] Titles, categories and lives pushed by Twitch and Kick update the page at once; platforms read
+  and changed side by side; YouTube through the Data API with description, tags, category, privacy
+  and stream health, paced for quota.
+- [x] Kick tags from the live and its missing ads permission said; TikTok's title from the room.
+- [x] Unchanged values aren't sent again.
+- [x] Tests on real platform answers, `platform_api` (MCP) and `dev/stream-check.mjs` against the
+  real channels.
+- [ ] Verify while live on each platform (`dev/stream-check.mjs`), and measure hidden RSS and idle CPU.

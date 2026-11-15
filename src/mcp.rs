@@ -92,6 +92,7 @@ const TOOLS: &[(&str, &str, &str, &[&str])] = &[
     ("connectors", "Each connector behind a port (OBS connections and whether they are connected, Spotify enabled and signed in), without secrets.", "{}", &[]),
     ("obs_outputs", "Discover stream outputs on connected OBS: main stream, Aitum Stream Suite, Multistream, Vertical and Multi-RTMP websocket fork. Returns opaque IDs, known state, platform hints and API limitations. Does not connect OBS or read plugin files. Omit connectionId only with exactly one connected OBS.", r#"{"connectionId":{"type":"string"}}"#, &[]),
     ("obs_outputs_control", "Start or stop selected stream output IDs returned by obs_outputs, on the same connection. Returns each result separately. requested means queued, not live: call obs_outputs to inspect actual state. Never starts unselected main output. Main-stream shared encoders must be live before dependent outputs start.", r#"{"connectionId":{"type":"string"},"op":{"type":"string","enum":["start","stop"]},"outputs":{"type":"array","items":{"type":"string"},"minItems":1}}"#, &["op", "outputs"]),
+    ("platform_api", "A raw platform API call through Streamerz's own login: Twitch Helix (path like channels, query values may use {broadcaster_id}), Kick's official API (path under /public/v1) or the YouTube Data API (path under /youtube/v3). Shows what a platform really answers, to check a page or a sub-action against it. Writes act on the real channel. Needs STREAMERZ_DEV=1.", r#"{"platform": {"type": "string", "enum": ["twitch", "kick", "youtube"]}, "method": {"type": "string", "enum": ["GET", "POST", "PATCH", "PUT", "DELETE"], "description": "Default GET"}, "path": {"type": "string"}, "query": {"type": "object", "description": "Query values as strings"}, "body": {"type": "object"}}"#, &["platform", "path"]),
     ("obs_request", "A raw obs-websocket request through the OBS port, e.g. GetSceneList. Acts on the real OBS. Needs STREAMERZ_DEV=1.", r#"{"requestType": {"type": "string"}, "requestData": {"type": "object"}, "connectionId": {"type": "string", "description": "Default: the first connected"}}"#, &["requestType"]),
     ("spotify_current", "Read the current Spotify track, or null when unavailable. API playback needs Spotify enabled and signed in.", r#"{}"#, &[]),
     ("spotify_local", "Read Spotify's local Windows media session without an API login. Local information cannot control the Spotify API queue.", r#"{}"#, &[]),
@@ -454,6 +455,7 @@ impl Client {
             }
             "connectors" => self.ask(json!({"request": "StreamerzConnectors"})).await,
             "obs_outputs" | "obs_outputs_control" => self.ask(json!({"request": "StreamerzOutputs", "op": if name == "obs_outputs" { "list".to_string() } else { s("op") }, "outputs": a["outputs"], "connectionId": s("connectionId")})).await,
+            "platform_api" => self.ask(json!({"request": "StreamerzPlatformApi", "platform": s("platform"), "method": a.get("method").and_then(Value::as_str).unwrap_or("GET"), "path": s("path"), "query": a["query"], "body": a["body"]})).await,
             "obs_request" => self.ask(json!({"request": "StreamerzObsRequest", "requestType": s("requestType"), "requestData": a["requestData"], "connectionId": s("connectionId")})).await,
             "spotify_current" => self.ask(json!({"request": "StreamerzSpotifyCurrent"})).await,
             "spotify_local" => self.ask(json!({"request": "StreamerzSpotifyLocal"})).await,
@@ -532,8 +534,8 @@ async fn handle(c: &mut Client, m: &Value) -> Option<Value> {
                 song_request_template, run_scenario) work without a running app. Build actions with describe \
                 and new_action, then test offline with run_scenario before save. Other tools drive the instance \
                 selected by STREAMERZ_URL. Live tests (fire_trigger, inject_chat, chat_out, status, log, ui, \
-                obs_request) require STREAMERZ_DEV=1. Dev mode captures chat; OBS and Spotify controls still \
-                affect real applications. Read get before save: save replaces the whole item."
+                obs_request, platform_api) require STREAMERZ_DEV=1. Dev mode captures chat; OBS, Spotify and \
+                platform_api writes still affect real applications. Read get before save: save replaces the whole item."
         }),
         "ping" => json!({}),
         "tools/list" => tools(),

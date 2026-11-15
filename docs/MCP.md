@@ -49,9 +49,16 @@ browser account when `refresh: true` is passed).
 ## Development and failures
 
 Start the app with `STREAMERZ_DEV=1` for `status`, `log`, `fire_trigger`,
-`inject_chat`, `chat_out`, `ui` and `obs_request`. Offline scenario and
+`inject_chat`, `chat_out`, `ui`, `obs_request` and `platform_api`. Offline scenario and
 gift-filter preview tests need no dev flag. A normal instance does not expose
 these development requests.
+
+`platform_api` makes one Twitch Helix, Kick or YouTube Data API call through the
+running client and its login, and returns the answer as the platform gave it.
+Use it to check what a page shows against what the platform says (the Stream page's
+`dev/stream-check.mjs` does) without copying a token. A GET only reads, but a YouTube
+read costs 1 unit of the channel's daily quota; any other method changes the real
+channel.
 
 The MCP bridge does not authenticate WebSocket sessions. Use a separate local dev
 instance with authentication off. An unavailable service or bad tool argument

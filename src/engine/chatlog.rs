@@ -1724,6 +1724,7 @@ impl Engine {
         if !live {
             self.set_chat_viewers(platform, None);
         }
+        crate::core::stream::live_changed(platform, live);
         let changed = {
             let mut st = self.st.borrow_mut();
             let ended = &mut st.chat_log.ended;

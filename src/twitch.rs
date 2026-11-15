@@ -3374,6 +3374,7 @@ pub(crate) fn handle_notification(
                 es(event, "/category_name"),
             );
             let art = |id: &str| format!("https://static-cdn.jtvnw.net/ttv-boxart/{id}-144x192.jpg");
+            crate::core::stream::pushed("twitch", Some(title), Some(game));
             let (old_title, (old_id, old_game)) = SEEN.with_borrow_mut(|s| {
                 let old = (s.title.clone(), s.game.clone());
                 s.title = title.into();
