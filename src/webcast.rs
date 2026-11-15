@@ -582,7 +582,36 @@ pub(crate) async fn room_from_response(channel: &str, v: &Value, known_account: 
     if room == 0 || status != Some(2) {
         return Err(RoomLookupError::Offline);
     }
+    let live = &v["data"]["liveRoom"];
+    ROOM.with_borrow_mut(|facts| {
+        *facts = RoomFacts {
+            title: live["title"].as_str().unwrap_or_default().trim().to_owned(),
+            since: live["startTime"].as_i64().filter(|at| *at > 0),
+        }
+    });
     Ok(room)
+}
+
+/// What TikTok said about the live the chat last connected to.
+#[derive(Default, Clone, Debug, PartialEq)]
+pub struct RoomFacts {
+    pub title: String,
+    /// When it started (Unix seconds).
+    pub since: Option<i64>,
+}
+
+thread_local! {
+    static ROOM: std::cell::RefCell<RoomFacts> = std::cell::RefCell::default();
+}
+
+/// The live's title and start, as the room lookup said when the chat connected to it.
+pub fn room_facts() -> RoomFacts {
+    ROOM.with_borrow(Clone::clone)
+}
+
+/// A title set from here: what the live is called now.
+pub fn room_titled(title: &str) {
+    ROOM.with_borrow_mut(|facts| facts.title = title.to_owned());
 }
 
 pub fn ws_url(room: u64) -> String {

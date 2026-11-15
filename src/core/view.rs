@@ -78,7 +78,8 @@ fn note_page(domain: &str) {
     if !is_page {
         return;
     }
-    crate::host::set_viewers_visible(domain == "chat");
+    // The Chat and Stream pages show viewer counts: the platforms are asked for them while one is open.
+    crate::host::set_viewers_visible(matches!(domain, "chat" | "stream"));
     thread_local! {
         static SHOWN: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
     }

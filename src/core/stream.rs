@@ -7,14 +7,17 @@
 //! |---|---|---|---|---|---|
 //! | Twitch | yes | yes | yes | yes (affiliates and partners) | marker, clip, snooze the next ad |
 //! | Kick | yes | yes | yes | yes (opted in to Kick ads) | |
-//! | YouTube | yes | no | yes (search keywords) | yes (cue point, while live) | description, thumbnail |
-//! | TikTok | yes (browser extension, while live) | no | no | no | |
+//! | YouTube | yes | shown, not changed | yes (search keywords) | yes (cue point, while live) | description, thumbnail, privacy and health shown |
+//! | TikTok | yes (browser extension, while live; read from the room) | no | no | no | |
 //!
 //! Twitch and Kick let only the channel owner change these: a moderator sees them, can't change them.
-//! The page lists every platform that is set up, with what it says now and why it can't be changed when
-//! it can't. Like the Polls page, what the platforms said last lives here and a read answers from it; it
-//! asks again when it's been a while, after a change, or on Refresh. Only platforms already running are
-//! asked: this page opens no connection by itself.
+//! The page lists every platform that is set up, with whether it's live (since when, how many watch),
+//! what it says now and why it can't be changed when it can't. Ads, markers, clips and snoozes need a
+//! live and are off without one. Like the Polls page, what the platforms said last lives here and a
+//! read answers from it. Titles, categories and lives arrive by themselves (EventSub, Pusher, the chat
+//! readers); the page asks again when opened, after a change, on Refresh, when a live starts or ends,
+//! and every minute while open (YouTube every 5: it costs quota). Only platforms already running are
+//! asked: this page opens no connection by itself. The study behind it is `docs/STREAM-PAGE.md`.
 
 use crate::{
     automation::schema::{F, W},
@@ -137,8 +140,20 @@ struct Info {
     tags: Vec<String>,
     /// Ads in words: the next one, the breaks left ("" when unknown).
     ads: String,
-    /// It answered (TikTok never does; YouTube only says a title while live).
+    /// It answered (TikTok only while connected to a live; YouTube only says a title for a broadcast).
     known: bool,
+    /// Live now (Some(true)), not live (Some(false)), or not known (None).
+    live: Option<bool>,
+    /// When the live started (Unix seconds).
+    since: Option<i64>,
+    /// Viewers now, as the platform said when it was read (the chat's count, fresher, wins).
+    viewers: Option<u64>,
+    /// YouTube: the description, privacy (public, unlisted, private) and the stream's health (good,
+    /// ok, bad, noData) with what YouTube says is wrong with it.
+    description: String,
+    privacy: String,
+    health: String,
+    issue: String,
     /// YouTube: not live, but changes go to its next broadcast (scheduled, or the ready one).
     upcoming: bool,
     /// YouTube: neither live nor anything to come, so there is nothing to change.
@@ -168,6 +183,8 @@ struct Seen {
     requested: u64,
     received: u64,
     busy: bool,
+    /// Viewers by the chat's count, when it has one (set on each read of the page).
+    viewers: [Option<u64>; 4],
 }
 
 impl Seen {
@@ -191,11 +208,18 @@ impl Seen {
     fn can(&self, takes: [bool; 4]) -> [bool; 4] {
         std::array::from_fn(|i| self.access.ready[i] && takes[i])
     }
+    /// The ready platforms that take this and aren't known to be off air (ads, markers, clips).
+    fn can_live(&self, takes: [bool; 4]) -> [bool; 4] {
+        let can = self.can(takes);
+        std::array::from_fn(|i| can[i] && self.info[i].live != Some(false))
+    }
 }
 
 thread_local! {
     static SEEN: RefCell<Seen> = RefCell::default();
     static ASKED: Cell<Option<Instant>> = const { Cell::new(None) };
+    /// When YouTube was last read (it costs quota).
+    static YOUTUBE_ASKED: Cell<Option<Instant>> = const { Cell::new(None) };
     /// What the page depended on when it last asked (see `situation`).
     static SITUATION: Cell<Option<u64>> = const { Cell::new(None) };
 }
@@ -424,7 +448,7 @@ async fn run(e: &Rc<Engine>, platform: usize, job: &Job) -> Result<String, Strin
                     .as_str()
                     .map(|id| format!("https://clips.twitch.tv/{id}"))
                     .unwrap_or_default(),
-                Job::Snooze => twitch_ads(&answer["data"][0]),
+                Job::Snooze => twitch_ads(&answer["data"][0], Some(true)),
                 _ => String::new(),
             })
         }
@@ -506,23 +530,33 @@ fn unix_time(v: &Value) -> Option<i64> {
     secs.filter(|secs| *secs > 0)
 }
 
-/// Twitch's ad schedule (Get Ad Schedule, or a snooze's answer) in words.
-fn twitch_ads(data: &Value) -> String {
+/// Twitch's ad schedule (Get Ad Schedule, or a snooze's answer) in words. Ads run only while live:
+/// off air it says so, and nothing about a schedule Twitch keeps at zero then.
+fn twitch_ads(data: &Value, live: Option<bool>) -> String {
+    if live == Some(false) {
+        return tr("stream.ads_live_only").into();
+    }
     let now = crate::oauth::now() as i64;
-    let next = match unix_time(&data["next_ad_at"]) {
+    let mut words = vec![match unix_time(&data["next_ad_at"]) {
         Some(at) if at > now => trf("stream.ads_next", &[("time", &crate::fmt::shown_clock(at))]),
         _ => tr("stream.ads_ready").into(),
-    };
-    match data["snooze_count"].as_u64() {
-        Some(left) => format!("{next} {}", trf("stream.snoozes_left", &[("count", &left.to_string())])),
-        None => next,
+    }];
+    if let Some(left) = data["snooze_count"].as_u64() {
+        words.push(trf("stream.snoozes_left", &[("count", &left.to_string())]));
     }
+    // Seconds without pre-roll ads for new viewers, earned by the last ad.
+    if let Some(free) = data["preroll_free_time"].as_u64().filter(|secs| *secs >= 60) {
+        words.push(trf("stream.preroll_free", &[("minutes", &(free / 60).to_string())]));
+    }
+    words.join(" ")
 }
 
 /// Kick's ad break status in words.
-fn kick_ads(data: &Value) -> String {
+fn kick_ads(data: &Value, live: Option<bool>) -> String {
     if data["opted_in"].as_bool() == Some(false) {
         tr("stream.ads_kick_out").into()
+    } else if live == Some(false) {
+        tr("stream.ads_live_only").into()
     } else if data["ads_blocked"].as_bool() == Some(true) {
         tr("stream.ads_blocked").into()
     } else if let Some(left) = data["remaining_ad_breaks"].as_u64() {
@@ -532,8 +566,147 @@ fn kick_ads(data: &Value) -> String {
     }
 }
 
+/// Twitch's channel (Get Channel Information) into `info`.
+fn twitch_channel(info: &mut Info, data: &Value) {
+    info.title = data["title"].as_str().unwrap_or_default().into();
+    info.category = data["game_name"].as_str().unwrap_or_default().into();
+    info.tags = texts(data.get("tags"));
+    info.known = data.is_object();
+}
+
+/// Twitch's stream (Get Streams, an empty list when it's not live) into `info`.
+fn twitch_stream(info: &mut Info, data: &Value) {
+    let live = data["type"] == "live";
+    info.live = Some(live);
+    info.since = live.then(|| unix_time(&data["started_at"])).flatten();
+    info.viewers = data["viewer_count"].as_u64().filter(|_| live);
+}
+
+/// Kick's channel (the official Get Channels) into `info`. Kick says a title and category only
+/// while live: offline they come back empty.
+fn kick_channel(info: &mut Info, data: &Value) {
+    info.title = data["stream_title"].as_str().unwrap_or_default().into();
+    info.category = data["category"]["name"].as_str().unwrap_or_default().into();
+    info.tags = texts(data.get("custom_tags"));
+    info.known = data.is_object();
+    let stream = &data["stream"];
+    if stream.is_object() {
+        let live = stream["is_live"].as_bool() == Some(true);
+        info.live = Some(live);
+        info.since = live.then(|| unix_time(&stream["start_time"])).flatten();
+        info.viewers = stream["viewer_count"].as_u64().filter(|_| live);
+    }
+}
+
+/// Kick's live (Get Livestreams), which has the tags the channel lacks.
+fn kick_livestream(info: &mut Info, data: &Value) {
+    if !data.is_object() {
+        return;
+    }
+    let tags = texts(data.get("custom_tags"));
+    if !tags.is_empty() {
+        info.tags = tags;
+    }
+    if info.title.is_empty() {
+        info.title = data["stream_title"].as_str().unwrap_or_default().into();
+    }
+    info.since = info.since.or_else(|| unix_time(&data["started_at"]));
+}
+
+/// YouTube's own names for its video categories (they never change), by id.
+const YOUTUBE_CATEGORIES: &[(&str, &str)] = &[
+    ("1", "Film & Animation"),
+    ("2", "Autos & Vehicles"),
+    ("10", "Music"),
+    ("15", "Pets & Animals"),
+    ("17", "Sports"),
+    ("19", "Travel & Events"),
+    ("20", "Gaming"),
+    ("22", "People & Blogs"),
+    ("23", "Comedy"),
+    ("24", "Entertainment"),
+    ("25", "News & Politics"),
+    ("26", "Howto & Style"),
+    ("27", "Education"),
+    ("28", "Science & Technology"),
+    ("29", "Nonprofits & Activism"),
+];
+
+/// From a liveBroadcasts list: the live one, else the soonest still to come.
+fn youtube_pick(items: &[Value]) -> Option<&Value> {
+    let state = |item: &Value| item["status"]["lifeCycleStatus"].as_str().unwrap_or("").to_owned();
+    items
+        .iter()
+        .find(|item| matches!(state(item).as_str(), "live" | "liveStarting"))
+        .or_else(|| {
+            items
+                .iter()
+                .filter(|item| matches!(state(item).as_str(), "ready" | "created" | "testing" | "testStarting"))
+                .min_by_key(|item| item["snippet"]["scheduledStartTime"].as_str().unwrap_or("~").to_owned())
+        })
+}
+
+/// YouTube's broadcast and its video (videos.list) into `info`.
+fn youtube_broadcast(info: &mut Info, broadcast: &Value, video: &Value) {
+    let live = matches!(
+        broadcast["status"]["lifeCycleStatus"].as_str(),
+        Some("live" | "liveStarting")
+    );
+    let snippet = if video["snippet"].is_object() {
+        &video["snippet"]
+    } else {
+        &broadcast["snippet"]
+    };
+    info.title = snippet["title"].as_str().unwrap_or_default().into();
+    info.description = snippet["description"].as_str().unwrap_or_default().into();
+    info.tags = texts(snippet.get("tags"));
+    let category = snippet["categoryId"].as_str().unwrap_or_default();
+    info.category = YOUTUBE_CATEGORIES
+        .iter()
+        .find(|(id, _)| *id == category)
+        .map(|(_, name)| (*name).to_owned())
+        .unwrap_or_default();
+    info.privacy = video["status"]["privacyStatus"]
+        .as_str()
+        .or(broadcast["status"]["privacyStatus"].as_str())
+        .unwrap_or_default()
+        .into();
+    info.known = true;
+    info.live = Some(live);
+    info.upcoming = !live;
+    let details = &video["liveStreamingDetails"];
+    info.since = live
+        .then(|| unix_time(&details["actualStartTime"]).or_else(|| unix_time(&broadcast["snippet"]["actualStartTime"])))
+        .flatten();
+    info.viewers = details["concurrentViewers"]
+        .as_str()
+        .and_then(|n| n.parse().ok())
+        .filter(|_| live);
+}
+
+/// The health of the stream feeding a live broadcast (liveStreams.list), and YouTube's worst
+/// complaint about it.
+fn youtube_health(info: &mut Info, stream: &Value) {
+    let health = &stream["status"]["healthStatus"];
+    info.health = health["status"].as_str().unwrap_or_default().into();
+    let rank = |issue: &Value| match issue["severity"].as_str() {
+        Some("error") => 0,
+        Some("warning") => 1,
+        _ => 2,
+    };
+    info.issue = health["configurationIssues"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .min_by_key(|issue| rank(issue))
+        .and_then(|issue| issue["description"].as_str().or(issue["reason"].as_str()))
+        .unwrap_or_default()
+        .into();
+}
+
 /// What a platform says the live is now. Twitch and Kick are read for the channel read (a moderator
-/// sees the owner's); their ads only by the owner, who alone may see them.
+/// sees the owner's); their ads only by the owner, who alone may see them. A platform's reads run
+/// side by side.
 async fn look(e: &Rc<Engine>, platform: usize, ready: bool) -> Info {
     let mut info = Info::default();
     let result: Result<(), String> = async {
@@ -543,16 +716,34 @@ async fn look(e: &Rc<Engine>, platform: usize, ready: bool) -> Info {
                 if e.config().twitch.broadcaster.is_none() {
                     return Ok(());
                 }
-                let who = vec![("broadcaster_id", "{broadcaster_id}")];
-                let channel = twitch
-                    .helix("GET", "channels", who.clone(), None, false, true)
-                    .await
-                    .map_err(twitch_error)?;
-                let data = &channel["data"][0];
-                info.title = data["title"].as_str().unwrap_or_default().into();
-                info.category = data["game_name"].as_str().unwrap_or_default().into();
-                info.tags = texts(data.get("tags"));
-                info.known = data.is_object();
+                let who = || vec![("broadcaster_id", "{broadcaster_id}")];
+                // The schedule needs channel:read:ads; an older login without it reads as unknown.
+                let ads = async {
+                    if ready {
+                        Some(twitch.helix("GET", "channels/ads", who(), None, false, true).await)
+                    } else {
+                        None
+                    }
+                };
+                let (channel, stream, ads) = tokio::join!(
+                    twitch.helix("GET", "channels", who(), None, false, true),
+                    twitch.helix(
+                        "GET",
+                        "streams",
+                        vec![("user_id", "{broadcaster_id}")],
+                        None,
+                        false,
+                        true
+                    ),
+                    ads,
+                );
+                twitch_channel(&mut info, &channel.map_err(twitch_error)?["data"][0]);
+                if let Ok(stream) = stream {
+                    twitch_stream(&mut info, &stream["data"][0]);
+                }
+                if let Some(Ok(ads)) = ads {
+                    info.ads = twitch_ads(&ads["data"][0], info.live);
+                }
                 remember(KNOWN_CATEGORIES, [info.category.clone()]);
                 remember(KNOWN_TAGS, info.tags.clone());
                 // The list of categories to pick from: Twitch's most watched, once.
@@ -572,12 +763,6 @@ async fn look(e: &Rc<Engine>, platform: usize, ready: bool) -> Info {
                         );
                     }
                 }
-                // The schedule needs channel:read:ads; an older login without it reads as unknown.
-                if ready {
-                    if let Ok(ads) = twitch.helix("GET", "channels/ads", who, None, false, true).await {
-                        info.ads = twitch_ads(&ads["data"][0]);
-                    }
-                }
             }
             KICK => {
                 let Some(kick) = e.kick() else { return Ok(()) };
@@ -590,43 +775,89 @@ async fn look(e: &Rc<Engine>, platform: usize, ready: bool) -> Info {
                 } else {
                     format!("/channels?slug={}", crate::commands::url_encode(&slug))
                 };
-                let channel = kick.api("GET", &path, None).await?;
+                let ads = async {
+                    if ready {
+                        Some(kick.get_ad_status().await)
+                    } else {
+                        None
+                    }
+                };
+                let (channel, ads) = tokio::join!(kick.api("GET", &path, None), ads);
+                let channel = channel?;
                 let data = &channel["data"][0];
-                info.title = data["stream_title"].as_str().unwrap_or_default().into();
-                info.category = data["category"]["name"].as_str().unwrap_or_default().into();
-                info.tags = texts(data.get("custom_tags"));
-                info.known = data.is_object();
-                remember(KNOWN_CATEGORIES, [info.category.clone()]);
-                remember(KNOWN_TAGS, info.tags.clone());
-                if ready {
-                    if let Ok(status) = kick.get_ad_status().await {
-                        info.ads = kick_ads(&status["data"]);
+                kick_channel(&mut info, data);
+                // Live: its tags are on the live, not the channel.
+                if info.live == Some(true) {
+                    if let Some(id) = data["broadcaster_user_id"].as_u64() {
+                        if let Ok(live) = kick
+                            .api("GET", &format!("/livestreams?broadcaster_user_id={id}"), None)
+                            .await
+                        {
+                            kick_livestream(&mut info, &live["data"][0]);
+                        }
                     }
                 }
+                info.ads = match ads {
+                    Some(Ok(status)) => kick_ads(&status["data"], info.live),
+                    // An older login lacks the ads permission.
+                    Some(Err(error)) if error.contains("HTTP 401") || error.contains("HTTP 403") => {
+                        tr("stream.ads_kick_login").into()
+                    }
+                    _ => String::new(),
+                };
+                remember(KNOWN_CATEGORIES, [info.category.clone()]);
+                remember(KNOWN_TAGS, info.tags.clone());
             }
             YOUTUBE => {
                 let Some(youtube) = e.youtube() else { return Ok(()) };
-                // The watch page, as the chat reader does: no API quota spent.
-                info.title = youtube.live_title().await?;
-                info.known = !info.title.is_empty();
-                // Not live: a change goes to the next broadcast, if there is one (a logged-in owner only).
-                if !info.known && ready {
-                    match youtube.next_broadcast().await? {
-                        Some((_, title)) => {
-                            info.title = title;
-                            info.upcoming = true;
+                if ready {
+                    // The owner: the Data API says it all for 2 or 3 units of quota.
+                    let list = youtube
+                        .api("liveBroadcasts?part=snippet,status,contentDetails&mine=true&maxResults=10")
+                        .await?;
+                    let items = list["items"].as_array().map_or(&[][..], Vec::as_slice);
+                    let Some(broadcast) = youtube_pick(items) else {
+                        info.nothing = true;
+                        info.live = Some(false);
+                        return Ok(());
+                    };
+                    let id = broadcast["id"].as_str().unwrap_or_default();
+                    let video = youtube
+                        .api(&format!("videos?part=snippet,status,liveStreamingDetails&id={id}"))
+                        .await
+                        .map(|v| v["items"][0].clone())
+                        .unwrap_or_default();
+                    youtube_broadcast(&mut info, broadcast, &video);
+                    let bound = broadcast["contentDetails"]["boundStreamId"]
+                        .as_str()
+                        .unwrap_or_default();
+                    if info.live == Some(true) && !bound.is_empty() {
+                        if let Ok(streams) = youtube.api(&format!("liveStreams?part=status&id={bound}")).await {
+                            youtube_health(&mut info, &streams["items"][0]);
                         }
-                        None => info.nothing = true,
                     }
+                } else {
+                    // Someone else's channel: the watch page, as the chat reader does (no quota).
+                    info.title = youtube.live_title().await?;
+                    info.known = !info.title.is_empty();
+                    info.live = Some(info.known);
                 }
-                info.ads = if info.known {
+                info.ads = if info.live == Some(true) {
                     tr("stream.ads_ready").into()
                 } else {
                     tr("stream.ads_youtube_offline").into()
                 };
             }
-            // TikTok shares no title with apps; the page says what was set from here.
-            _ => {}
+            // TikTok says its live's title when the chat connects to it; else what was set here.
+            _ => {
+                if e.tiktok_connected() {
+                    let room = crate::webcast::room_facts();
+                    info.title = room.title;
+                    info.since = room.since;
+                    info.known = !info.title.is_empty();
+                    info.live = Some(true);
+                }
+            }
         }
         Ok(())
     }
@@ -637,9 +868,53 @@ async fn look(e: &Rc<Engine>, platform: usize, ready: bool) -> Info {
     info
 }
 
+/// Runs one platform's changes in order: what each said, and whether one failed.
+async fn run_steps(e: &Rc<Engine>, access: &Access, platform: usize, jobs: Vec<Job>) -> (Vec<String>, bool) {
+    let mut notes = Vec::new();
+    let mut trouble = false;
+    for job in jobs {
+        let what = job.what(platform);
+        if !access.ready[platform] {
+            notes.push(trf(
+                "stream.failed",
+                &[("what", &what), ("error", &access.why[platform])],
+            ));
+            trouble = true;
+            continue;
+        }
+        match run(e, platform, &job).await {
+            Ok(made) => {
+                // TikTok never says its title back: what was set here is what it is.
+                if let (TIKTOK, Job::Title(title)) = (platform, &job) {
+                    crate::webcast::room_titled(title);
+                }
+                let done = trf("stream.done", &[("what", &what)]);
+                notes.push(if made.is_empty() {
+                    done
+                } else {
+                    format!("{done} {made}")
+                })
+            }
+            Err(error) => {
+                trouble = true;
+                notes.push(trf("stream.failed", &[("what", &what), ("error", &error)]))
+            }
+        }
+    }
+    (notes, trouble)
+}
+
+/// YouTube is read at most this often unless asked (opened, Refresh, a change, a live starting or
+/// ending): each read costs quota, 2 or 3 units of the 10,000 a day.
+const YOUTUBE_EVERY: Duration = Duration::from_secs(300);
+/// Twitch and Kick are read this often while the page is open; titles, categories and lives arrive
+/// by themselves in between (EventSub, Pusher).
+const READ_EVERY: Duration = Duration::from_secs(60);
+
 /// Runs `steps`, then reads the platforms again; the model shows it all when it comes. False when a
-/// change is already running.
-fn ask(engine: &Rc<Engine>, steps: Vec<Step>) -> bool {
+/// change is already running. The platforms are changed and read side by side; `force` reads YouTube
+/// too when it was read lately.
+fn ask(engine: &Rc<Engine>, steps: Vec<Step>, force: bool) -> bool {
     let mutation = !steps.is_empty();
     let Some(sequence) = SEEN.with(|seen| seen.borrow_mut().begin(mutation)) else {
         return false;
@@ -650,53 +925,49 @@ fn ask(engine: &Rc<Engine>, steps: Vec<Step>) -> bool {
     let e = engine.clone();
     tokio::task::spawn_local(async move {
         let access = access(&e);
-        let mut notes = Vec::new();
-        let mut trouble = false;
-        // What was set here, kept where the platform doesn't say (TikTok's title).
-        let mut set_titles: [Option<String>; 4] = Default::default();
+        let mut jobs: [Vec<Job>; 4] = Default::default();
         for (platform, job) in steps {
-            let what = job.what(platform);
-            if !access.ready[platform] {
-                notes.push(trf(
-                    "stream.failed",
-                    &[("what", &what), ("error", &access.why[platform])],
-                ));
-                trouble = true;
-                continue;
-            }
-            match run(&e, platform, &job).await {
-                Ok(made) => {
-                    if let Job::Title(title) = &job {
-                        set_titles[platform] = Some(title.clone());
-                    }
-                    let done = trf("stream.done", &[("what", &what)]);
-                    notes.push(if made.is_empty() {
-                        done
-                    } else {
-                        format!("{done} {made}")
-                    })
-                }
-                Err(error) => {
-                    trouble = true;
-                    notes.push(trf("stream.failed", &[("what", &what), ("error", &error)]))
-                }
-            }
+            jobs[platform].push(job);
         }
-        let mut info: [Info; 4] = Default::default();
-        for platform in (0..4).filter(|i| access.shown[*i]) {
-            info[platform] = look(&e, platform, access.ready[platform]).await;
+        let [twitch, kick, youtube, tiktok] = jobs;
+        let ((n0, t0), (n1, t1), (n2, t2), (n3, t3)) = tokio::join!(
+            run_steps(&e, &access, TWITCH, twitch),
+            run_steps(&e, &access, KICK, kick),
+            run_steps(&e, &access, YOUTUBE, youtube),
+            run_steps(&e, &access, TIKTOK, tiktok),
+        );
+        let notes: Vec<String> = [n0, n1, n2, n3].concat();
+        let trouble = t0 || t1 || t2 || t3;
+        let youtube_due = force
+            || !YOUTUBE_ASKED.get().is_some_and(|at| at.elapsed() < YOUTUBE_EVERY)
+            || seen().info[YOUTUBE] == Info::default();
+        if youtube_due && access.shown[YOUTUBE] {
+            YOUTUBE_ASKED.set(Some(Instant::now()));
         }
+        let read = |platform: usize| {
+            let e = &e;
+            let on = access.shown[platform] && (platform != YOUTUBE || youtube_due);
+            let ready = access.ready[platform];
+            async move {
+                if on {
+                    Some(look(e, platform, ready).await)
+                } else {
+                    None
+                }
+            }
+        };
+        let (i0, i1, i2, i3) = tokio::join!(read(TWITCH), read(KICK), read(YOUTUBE), read(TIKTOK));
         let applied = SEEN.with(|seen| {
             let mut seen = seen.borrow_mut();
             if !seen.finish(sequence) {
                 return false;
             }
-            for (platform, found) in info.into_iter().enumerate() {
-                let before = std::mem::take(&mut seen.info[platform].title);
-                seen.info[platform] = found;
-                // TikTok's title is what was set from here last.
-                if platform == TIKTOK {
-                    seen.info[platform].title = set_titles[platform].take().unwrap_or(before);
+            for (platform, found) in [i0, i1, i2, i3].into_iter().enumerate() {
+                match found {
+                    Some(found) => seen.info[platform] = found,
+                    // YouTube, read lately: what it said then stands.
+                    None if platform == YOUTUBE && access.shown[platform] => {}
+                    None => seen.info[platform] = Info::default(),
                 }
             }
             seen.access = access;
@@ -714,6 +985,55 @@ fn ask(engine: &Rc<Engine>, steps: Vec<Step>) -> bool {
         }
     });
     true
+}
+
+/// A platform said its live changed by itself (Twitch's EventSub, Kick's Pusher): the page shows it
+/// at once, with no read. Empty values leave what is there.
+pub fn pushed(platform: &str, title: Option<&str>, category: Option<&str>) {
+    let Some(i) = PLATFORMS.iter().position(|(slug, _)| *slug == platform) else {
+        return;
+    };
+    let changed = SEEN.with_borrow_mut(|seen| {
+        if seen.received == 0 || !seen.access.shown[i] {
+            return false;
+        }
+        let info = &mut seen.info[i];
+        let before = (info.title.clone(), info.category.clone());
+        if let Some(title) = title {
+            info.title = title.trim().to_owned();
+            info.known = true;
+        }
+        if let Some(category) = category {
+            info.category = category.trim().to_owned();
+        }
+        before != (info.title.clone(), info.category.clone())
+    });
+    if changed {
+        remember(KNOWN_CATEGORIES, category.map(str::to_owned));
+        crate::host::changed();
+    }
+}
+
+/// A live started or ended on `platform`: the page says so at once (a read follows, with the rest).
+pub fn live_changed(platform: &str, live: bool) {
+    let Some(i) = PLATFORMS.iter().position(|(slug, _)| *slug == platform) else {
+        return;
+    };
+    SEEN.with_borrow_mut(|seen| {
+        let info = &mut seen.info[i];
+        if info.live == Some(live) {
+            return;
+        }
+        info.live = Some(live);
+        info.since = live.then(|| crate::oauth::now() as i64);
+        if !live {
+            info.viewers = None;
+        }
+    });
+    // The next read asks YouTube too: its live is a new broadcast.
+    if i == YOUTUBE {
+        YOUTUBE_ASKED.set(None);
+    }
 }
 
 /// YouTube with no live and nothing to come has nothing to change: it says so instead of offering
@@ -748,14 +1068,16 @@ fn situation(e: &Engine) -> u64 {
 }
 
 /// Asks the platforms again when the page is opened, when what it depends on changed (a connection,
-/// a login, a live starting or ending), or when it's been a while: titles and tags change rarely.
+/// a login, a live starting or ending), or when it's been a while: titles and lives arrive by
+/// themselves, and the rest (viewers, ads) changes slowly.
 fn refresh_if_due(engine: &Rc<Engine>) {
     let now = situation(engine);
     let changed = SITUATION.get() != Some(now);
-    if changed || ASKED.get().is_none_or(|at| at.elapsed() > Duration::from_secs(30)) {
+    let opened = ASKED.get().is_none();
+    if changed || opened || ASKED.get().is_some_and(|at| at.elapsed() > READ_EVERY) {
         SITUATION.set(Some(now));
         ASKED.set(Some(Instant::now()));
-        ask(engine, Vec::new());
+        ask(engine, Vec::new(), changed || opened);
     }
 }
 
@@ -766,7 +1088,9 @@ pub fn opened() {
 
 pub fn read(engine: &Rc<Engine>) -> Result<Value, String> {
     refresh_if_due(engine);
-    Ok(json!({"domain": DOMAIN, "sections": model(&seen())}))
+    let mut now = seen();
+    now.viewers = engine.chat_viewers();
+    Ok(json!({"domain": DOMAIN, "sections": model(&now)}))
 }
 
 // The page
@@ -793,13 +1117,22 @@ fn buttons(list: Vec<Value>) -> Value {
 fn state(health: &str, text: &str) -> Value {
     json!({"health": health, "text": text})
 }
-/// Why nothing that takes this can run: busy, else the first platform's reason, else "".
-fn none_why(seen: &Seen, takes: [bool; 4]) -> String {
+/// Why nothing that takes this can run: busy, else the first platform's reason (off air, for what
+/// needs a live), else "".
+fn none_why(seen: &Seen, takes: [bool; 4], needs_live: bool) -> String {
     if seen.busy {
         return tr("stream.working").into();
     }
-    if seen.can(takes).iter().any(|on| *on) {
+    let can = if needs_live {
+        seen.can_live(takes)
+    } else {
+        seen.can(takes)
+    };
+    if can.iter().any(|on| *on) {
         return String::new();
+    }
+    if needs_live && seen.can(takes).iter().any(|on| *on) {
+        return tr("stream.needs_live").into();
     }
     (0..4)
         .find(|i| takes[*i] && seen.access.shown[*i])
@@ -814,8 +1147,21 @@ fn accounts_button(id: &str) -> Value {
     button
 }
 
+/// "Live since 21:04. 132 watching." for a live, as much of it as is known.
+fn live_line(seen: &Seen, i: usize) -> String {
+    let info = &seen.info[i];
+    let mut words = vec![match info.since {
+        Some(at) => trf("stream.live_since", &[("time", &crate::fmt::shown_clock(at))]),
+        None => tr("stream.live_now").to_string(),
+    }];
+    if let Some(count) = seen.viewers[i].or(info.viewers) {
+        words.push(trf("stream.watching", &[("count", &count.to_string())]));
+    }
+    words.join(" ")
+}
+
 /// One platform's card: its state in a word (the reason on hover), what it shows now (the title, then
-/// the category and tags as chips, then its ads), and its buttons.
+/// the category and tags as chips, then the live, its ads and what's wrong), and its buttons.
 fn platform_card(seen: &Seen, i: usize) -> Value {
     let (slug, name) = PLATFORMS[i];
     let info = &seen.info[i];
@@ -828,10 +1174,26 @@ fn platform_card(seen: &Seen, i: usize) -> Value {
     } else {
         String::new()
     };
+    // Ads, markers, clips and snoozes need a live.
+    let live_why = if !why.is_empty() {
+        why.clone()
+    } else if info.live == Some(false) {
+        tr("stream.needs_live").to_string()
+    } else {
+        String::new()
+    };
     let (health, short, tip) = if !ready {
         ("off", tr(access.state[i]), access.why[i].clone())
     } else if !info.error.is_empty() {
         ("down", tr("stream.state_read_failed"), info.error.clone())
+    } else if info.live == Some(true) {
+        ("up", tr("stream.state_live"), String::new())
+    } else if info.live == Some(false) {
+        (
+            "standby",
+            tr("stream.state_not_live"),
+            tr("stream.state_not_live_tip").to_string(),
+        )
     } else {
         ("up", tr("stream.state_ready"), String::new())
     };
@@ -853,8 +1215,10 @@ fn platform_card(seen: &Seen, i: usize) -> Value {
     } else {
         let (headline, muted) = match () {
             _ if !info.title.is_empty() => (info.title.as_str(), false),
-            _ if i == TIKTOK => (tr("stream.tiktok_title_unknown"), true),
-            _ if i == YOUTUBE => (tr("stream.not_live"), true),
+            _ if i == TIKTOK && info.live == Some(true) => (tr("stream.tiktok_title_unknown"), true),
+            _ if i == TIKTOK => (tr("stream.not_live"), true),
+            // Kick and YouTube say a title only for a live (or a broadcast to come).
+            _ if info.live == Some(false) && i != TWITCH => (tr("stream.not_live"), true),
             _ => (tr("stream.no_title"), true),
         };
         card["headline"] = headline.into();
@@ -866,13 +1230,33 @@ fn platform_card(seen: &Seen, i: usize) -> Value {
         chips.extend(info.tags.iter().map(|tag| json!({"text": tag})));
         card["chips"] = chips.into();
     }
+    if info.live == Some(true) {
+        lines.push(json!({"icon": "radio", "text": live_line(seen, i)}));
+    }
     if info.upcoming {
         lines.push(json!({"icon": "calendar", "text": tr("stream.youtube_upcoming"), "muted": true}));
     }
+    // YouTube: who can watch, when it isn't everyone.
+    match info.privacy.as_str() {
+        "private" => lines.push(json!({"icon": "lock", "text": tr("stream.youtube_private")})),
+        "unlisted" => lines.push(json!({"icon": "eye-off", "text": tr("stream.youtube_unlisted")})),
+        _ => {}
+    }
+    if !info.health.is_empty() {
+        let (key, quiet) = match info.health.as_str() {
+            "good" => ("stream.health_good", true),
+            "ok" => ("stream.health_ok", true),
+            "bad" => ("stream.health_bad", false),
+            _ => ("stream.health_none", false),
+        };
+        let mut text = tr(key).to_string();
+        if !info.issue.is_empty() {
+            text = format!("{text} {}", info.issue);
+        }
+        lines.push(json!({"icon": "activity", "text": text, "muted": quiet}));
+    }
     if ADS[i] && ready && !info.ads.is_empty() {
-        // YouTube's ads wait for a live: quiet until then.
-        let waiting = i == YOUTUBE && !info.known;
-        lines.push(json!({"icon": "megaphone", "text": info.ads, "muted": waiting}));
+        lines.push(json!({"icon": "megaphone", "text": info.ads, "muted": info.live != Some(true)}));
     }
     if !ready {
         lines.push(json!({"icon": "info", "text": access.why[i], "muted": true}));
@@ -891,15 +1275,21 @@ fn platform_card(seen: &Seen, i: usize) -> Value {
             &format!("stream_ad.{slug}"),
             tr("btn.run_ad"),
             "megaphone",
-            &why,
+            &live_why,
         ));
     }
     if i == TWITCH {
-        list.push(off_unless(button(&key("snooze"), tr("btn.snooze_ad"), "clock"), &why));
-        list.push(off_unless(button(&key("marker"), tr("btn.add_marker"), "pin"), &why));
+        list.push(off_unless(
+            button(&key("snooze"), tr("btn.snooze_ad"), "clock"),
+            &live_why,
+        ));
+        list.push(off_unless(
+            button(&key("marker"), tr("btn.add_marker"), "pin"),
+            &live_why,
+        ));
         list.push(off_unless(
             button(&key("clip"), tr("btn.create_clip"), "clapperboard"),
-            &why,
+            &live_why,
         ));
     }
     if i == YOUTUBE {
@@ -923,14 +1313,14 @@ fn model(seen: &Seen) -> Vec<Value> {
             "stream_info",
             tr("btn.edit_stream"),
             "pencil",
-            &none_why(seen, TITLE),
+            &none_why(seen, TITLE, false),
         ),
         form_button(
             "run_ad",
             "stream_ad",
             tr("btn.run_ad"),
             "megaphone",
-            &none_why(seen, ADS),
+            &none_why(seen, ADS, true),
         ),
         button("refresh", tr("btn.refresh"), "refresh-cw"),
     ];
@@ -965,7 +1355,7 @@ fn clear_tags_steps(seen: &Seen) -> Vec<Step> {
 pub fn act(engine: &Rc<Engine>, action: &str) -> Result<Value, String> {
     let now = seen();
     let go = |steps: Vec<Step>| {
-        if ask(engine, steps) {
+        if ask(engine, steps, true) {
             Ok(json!({"accepted": true}))
         } else {
             Err(tr("stream.working").to_string())
@@ -975,19 +1365,19 @@ pub fn act(engine: &Rc<Engine>, action: &str) -> Result<Value, String> {
     match action {
         "refresh" => {
             ASKED.set(Some(Instant::now()));
-            ask(engine, Vec::new());
+            ask(engine, Vec::new(), true);
             Ok(json!({"accepted": true}))
         }
         "clear_tags" => {
             let steps = clear_tags_steps(&now);
             if steps.is_empty() {
-                return Err(none_why(&now, TAGS));
+                return Err(none_why(&now, TAGS, false));
             }
             go(steps)
         }
         "marker" | "clip" | "snooze" => {
-            if !now.can(ONLY_TWITCH)[TWITCH] {
-                return Err(none_why(&now, ONLY_TWITCH));
+            if !now.can_live(ONLY_TWITCH)[TWITCH] {
+                return Err(none_why(&now, ONLY_TWITCH, true));
             }
             go(vec![(
                 TWITCH,
@@ -1112,7 +1502,9 @@ pub fn external_form(kind: &str) -> Option<Result<Value, String>> {
     let fields = external_fields(kind)?;
     let now = seen();
     let off = |i: usize| {
-        if now.access.ready[i] {
+        if now.access.ready[i] && base == "stream_ad" && now.info[i].live == Some(false) {
+            tr("stream.needs_live").into()
+        } else if now.access.ready[i] {
             String::new()
         } else if now.access.shown[i] {
             now.access.why[i].clone()
@@ -1150,7 +1542,12 @@ pub fn external_form(kind: &str) -> Option<Result<Value, String>> {
             item["title"] = title.into();
             item["category"] = category.into();
             item["tags"] = json!(tags);
-            item["description"] = "".into();
+            // YouTube's description, the only one there is.
+            item["description"] = match platform {
+                None | Some(YOUTUBE) => now.info[YOUTUBE].description.clone(),
+                Some(_) => String::new(),
+            }
+            .into();
             item["clear_tags"] = false.into();
             let note = if platform.is_some() {
                 tr("stream.one_note")
@@ -1183,8 +1580,12 @@ pub fn external_form(kind: &str) -> Option<Result<Value, String>> {
     match platform {
         Some(i) => item[PLATFORMS[i].0] = true.into(),
         None => {
-            let takes = if base == "stream_ad" { ADS } else { TITLE };
-            for (i, on) in now.can(takes).into_iter().enumerate() {
+            let (takes, can) = if base == "stream_ad" {
+                (ADS, now.can_live(ADS))
+            } else {
+                (TITLE, now.can(TITLE))
+            };
+            for (i, on) in can.into_iter().enumerate() {
                 if takes[i] {
                     item[PLATFORMS[i].0] = on.into();
                 }
@@ -1194,9 +1595,13 @@ pub fn external_form(kind: &str) -> Option<Result<Value, String>> {
     Some(Ok(form_json(kind, &title, ok, &labelled, item, notes)))
 }
 
-/// The platforms a form picked, among the ready ones that take it.
+/// The platforms a form picked, among the ready ones that take it (and are live, for an ad).
 fn picked(item: &Obj, seen: &Seen, takes: [bool; 4]) -> [bool; 4] {
-    let can = seen.can(takes);
+    let can = if takes == ADS {
+        seen.can_live(takes)
+    } else {
+        seen.can(takes)
+    };
     std::array::from_fn(|i| can[i] && item.get(PLATFORMS[i].0).and_then(Value::as_bool) == Some(true))
 }
 
@@ -1272,21 +1677,32 @@ fn info_steps(item: &Obj, seen: &Seen) -> Result<Vec<Step>, String> {
     let new_tags = (clear || !tags.is_empty()).then(|| tags.clone());
     let mut steps = Vec::new();
     for i in (0..4).filter(|i| on[*i]) {
+        // What a platform already says isn't sent again (each change is a request, YouTube's 50
+        // units of quota).
+        let now = &seen.info[i];
+        let known = now.known && now.error.is_empty();
+        let title = given(&title).filter(|title| !known || *title != now.title);
+        let category = given(&category).filter(|category| !known || !category.eq_ignore_ascii_case(&now.category));
+        let tags = new_tags.clone().filter(|tags| !known || *tags != now.tags);
         if i == YOUTUBE {
-            if !title.is_empty() || !description.is_empty() || new_tags.is_some() {
-                steps.push((i, video(given(&title), given(&description), new_tags.clone())));
+            let description = given(&description).filter(|text| !known || *text != now.description);
+            if title.is_some() || description.is_some() || tags.is_some() {
+                steps.push((i, video(title, description, tags)));
             }
             continue;
         }
-        if !title.is_empty() {
-            steps.push((i, Job::Title(title.clone())));
+        if let Some(title) = title {
+            steps.push((i, Job::Title(title)));
         }
-        if categorised[i] && !category.is_empty() {
-            steps.push((i, Job::Category(category.clone())));
+        if let (true, Some(category)) = (categorised[i], category) {
+            steps.push((i, Job::Category(category)));
         }
-        if let (true, Some(tags)) = (tagged[i], &new_tags) {
-            steps.push((i, Job::Tags(tags.clone())));
+        if let (true, Some(tags)) = (tagged[i], tags) {
+            steps.push((i, Job::Tags(tags)));
         }
+    }
+    if steps.is_empty() {
+        return Err(tr("stream.unchanged").into());
     }
     Ok(steps)
 }
@@ -1303,7 +1719,7 @@ fn ad_steps(item: &Obj, seen: &Seen) -> Result<Vec<Step>, String> {
 
 fn thumbnail_steps(item: &Obj, seen: &Seen) -> Result<Vec<Step>, String> {
     if !seen.access.ready[YOUTUBE] {
-        return Err(none_why(seen, ONLY_YOUTUBE));
+        return Err(none_why(seen, ONLY_YOUTUBE, false));
     }
     let file = item.get("file").and_then(Value::as_str).unwrap_or_default().trim();
     let file = file.trim_matches('"');
@@ -1334,7 +1750,7 @@ pub fn save_external(engine: &Rc<Engine>, kind: &str, mut item: Obj) -> Option<R
         _ => thumbnail_steps(&item, &now),
     };
     Some(steps.and_then(|steps| {
-        if ask(engine, steps) {
+        if ask(engine, steps, true) {
             Ok(json!({"accepted": true}))
         } else {
             Err(tr("stream.working").into())
@@ -1644,29 +2060,58 @@ mod tests {
 
     #[test]
     fn ads_in_words() {
-        assert_eq!(kick_ads(&json!({"opted_in": false})), tr("stream.ads_kick_out"));
         assert_eq!(
-            kick_ads(&json!({"opted_in": true, "ads_blocked": true})),
+            kick_ads(&json!({"opted_in": false}), Some(true)),
+            tr("stream.ads_kick_out")
+        );
+        assert_eq!(
+            kick_ads(&json!({"opted_in": true, "ads_blocked": true}), Some(true)),
             tr("stream.ads_blocked")
         );
         assert_eq!(
-            kick_ads(&json!({"opted_in": true, "remaining_ad_breaks": 3})),
+            kick_ads(&json!({"opted_in": true, "remaining_ad_breaks": 3}), Some(true)),
             trf("stream.ads_left", &[("count", "3")])
         );
-        assert_eq!(twitch_ads(&json!({"next_ad_at": 0})), tr("stream.ads_ready"));
-        assert_eq!(twitch_ads(&json!({"next_ad_at": ""})), tr("stream.ads_ready"));
         assert_eq!(
-            twitch_ads(&json!({"next_ad_at": 0, "snooze_count": 2})),
+            twitch_ads(&json!({"next_ad_at": 0}), Some(true)),
+            tr("stream.ads_ready")
+        );
+        assert_eq!(
+            twitch_ads(&json!({"next_ad_at": ""}), Some(true)),
+            tr("stream.ads_ready")
+        );
+        assert_eq!(
+            twitch_ads(&json!({"next_ad_at": 0, "snooze_count": 2}), Some(true)),
             format!(
                 "{} {}",
                 tr("stream.ads_ready"),
                 trf("stream.snoozes_left", &[("count", "2")])
             )
         );
+        // Off air, Twitch's schedule is all zeros: it says ads wait for a live, not "Ready. 0 snoozes".
+        let off = json!({"next_ad_at": 0, "snooze_count": 0, "preroll_free_time": 0});
+        assert_eq!(twitch_ads(&off, Some(false)), tr("stream.ads_live_only"));
+        assert_eq!(
+            kick_ads(&json!({"opted_in": true}), Some(false)),
+            tr("stream.ads_live_only")
+        );
+        assert_eq!(
+            kick_ads(&json!({"opted_in": false}), Some(false)),
+            tr("stream.ads_kick_out"),
+            "not opted in says so, live or not"
+        );
+        assert_eq!(
+            twitch_ads(&json!({"next_ad_at": 0, "preroll_free_time": 1200}), Some(true)),
+            format!(
+                "{} {}",
+                tr("stream.ads_ready"),
+                trf("stream.preroll_free", &[("minutes", "20")])
+            )
+        );
         let later = crate::oauth::now() as i64 + 600;
         for next in [json!(later), json!(later.to_string())] {
             assert_eq!(
-                twitch_ads(&json!({"next_ad_at": next})),
+                twitch_ads(&json!({"next_ad_at": next}), Some(true)),
                 trf("stream.ads_next", &[("time", &crate::fmt::shown_clock(later))])
             );
         }
@@ -1733,10 +2178,10 @@ mod tests {
         assert_eq!(youtube["lines"][0]["text"], "connect it");
         assert_eq!(youtube["buttons"].as_array().unwrap().len(), 1);
         assert_eq!(youtube["buttons"][0]["go"], "Accounts");
-        // TikTok offline: its card says so, its title is unknown.
+        // TikTok offline: its card says so, and that it isn't live (not that the title is unknown).
         let tiktok = card(&sections, "tiktok");
         assert_eq!(tiktok["state"]["text"], tr("stream.state_offline"));
-        assert_eq!(tiktok["headline"], tr("stream.tiktok_title_unknown"));
+        assert_eq!(tiktok["headline"], tr("stream.not_live"));
         // The top: the buttons for every platform, and no status while each card says its own.
         assert_eq!(sections[0]["rows"].as_array().unwrap().len(), 1);
         assert!(find_button(&sections, "edit")["enabled"].is_null());
@@ -1931,9 +2376,18 @@ mod tests {
                 &engine,
                 &json!({"twitch": {
                     "GET channels": {"data": [{"title": "Old", "game_name": "Art", "tags": ["English"]}]},
+                    "GET streams": {"data": [{"type": "live", "started_at": "2026-11-10T21:00:00Z", "viewer_count": 12}]},
                     "POST clips": {"data": [{"id": "Abc"}]}},
                 "kick": {"GET /channels?slug=me": {"data": [{"stream_title": "Kick title", "category": {"name": "IRL"}}]}},
-                "youtube": {"liveVideo": "", "nextBroadcast": {"id": "v2", "title": "Next live"}}}),
+                "youtube": {
+                    "GET liveBroadcasts?part=snippet,status,contentDetails&mine=true&maxResults=10": {"items": [
+                        {"id": "old", "snippet": {"title": "Done"}, "status": {"lifeCycleStatus": "complete"}},
+                        {"id": "v2", "snippet": {"title": "Next live"},
+                         "status": {"lifeCycleStatus": "ready", "privacyStatus": "private"},
+                         "contentDetails": {"boundStreamId": "s1"}}]},
+                    "GET videos?part=snippet,status,liveStreamingDetails&id=v2": {"items": [{
+                        "snippet": {"title": "Next live", "description": "Old about", "tags": ["Old"], "categoryId": "20"},
+                        "status": {"privacyStatus": "private"}}]}}}),
                 None,
             );
             reset(Seen::default());
@@ -1942,15 +2396,40 @@ mod tests {
                     tokio::task::yield_now().await;
                 }
             };
-            ask(&engine, Vec::new());
+            ask(&engine, Vec::new(), true);
             settle().await;
             assert_eq!(seen().access.ready, [true, true, true, false], "TikTok isn't connected");
             assert_eq!(seen().info[TWITCH].title, "Old");
+            assert_eq!(seen().info[TWITCH].live, Some(true));
+            assert_eq!(seen().info[TWITCH].viewers, Some(12));
+            assert_eq!(
+                seen().info[TWITCH].since,
+                crate::engine::rest_parse_iso("2026-11-10T21:00:00Z")
+            );
             assert_eq!(seen().info[KICK].title, "Kick title", "read by the channel's slug");
             assert_eq!(seen().info[KICK].category, "IRL");
             // Not live on YouTube: what changes go to is the next live, shown with its title.
-            assert!(seen().info[YOUTUBE].upcoming);
-            assert_eq!(seen().info[YOUTUBE].title, "Next live");
+            let youtube = seen().info[YOUTUBE].clone();
+            assert!(youtube.upcoming);
+            assert_eq!(youtube.live, Some(false));
+            assert_eq!(
+                youtube.title, "Next live",
+                "the broadcast still to come, not the finished one"
+            );
+            // Read back through the Data API: what the form starts with.
+            assert_eq!(youtube.description, "Old about");
+            assert_eq!(youtube.tags, ["Old"]);
+            assert_eq!(youtube.category, "Gaming");
+            assert_eq!(youtube.privacy, "private");
+            assert!(youtube.health.is_empty(), "a stream's health is read only while live");
+            let form = external_form("stream_info.youtube").unwrap().unwrap();
+            assert_eq!(form["item"]["description"], "Old about");
+            assert_eq!(form["item"]["tags"], json!(["Old"]));
+            let page = model(&seen());
+            let lines = card(&page, "youtube")["lines"].to_string();
+            assert!(lines.contains(tr("stream.youtube_private")), "{lines}");
+            // Off air: ads can't run anywhere, and the buttons say so before they're pressed.
+            assert_eq!(find_button(&page, "youtube.ad")["enabled"], false);
             fakes.calls.borrow_mut().clear();
             let form = item(json!({"title": "New title", "tags": ["Rust"], "description": "About",
                 "twitch": true, "kick": true, "youtube": true, "tiktok": false}));
@@ -1983,5 +2462,172 @@ mod tests {
             assert!(seen().note.contains("https://clips.twitch.tv/Abc"), "{}", seen().note);
             crate::scenario::fakes::uninstall();
         });
+    }
+
+    #[test]
+    fn what_needs_a_live_is_off_until_one_starts() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let mut now = ready([true, true, true, false]);
+        for i in [TWITCH, KICK, YOUTUBE] {
+            now.info[i].live = Some(false);
+            now.info[i].known = true;
+        }
+        reset(now.clone());
+        let page = model(&now);
+        for id in [
+            "twitch.ad",
+            "twitch.snooze",
+            "twitch.marker",
+            "twitch.clip",
+            "kick.ad",
+            "youtube.ad",
+            "run_ad",
+        ] {
+            let button = find_button(&page, id);
+            assert_eq!(button["enabled"], false, "{id}");
+            assert_eq!(button["tooltip"], tr("stream.needs_live"), "{id}");
+        }
+        // Changing the title doesn't need a live.
+        assert!(find_button(&page, "twitch.edit").get("enabled").is_none());
+        assert!(find_button(&page, "edit").get("enabled").is_none());
+        assert_eq!(card(&page, "twitch")["state"]["text"], tr("stream.state_not_live"));
+        // The same through the requests, and the ad form picks nothing that would fail.
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(json!({"actions": []}));
+            assert_eq!(act(&engine, "twitch.clip").unwrap_err(), tr("stream.needs_live"));
+        });
+        let form = external_form("stream_ad").unwrap().unwrap();
+        assert_eq!(form["item"]["twitch"], false);
+        let ad = item(json!({"duration": 0, "twitch": true, "kick": true}));
+        assert_eq!(ad_steps(&ad, &now).unwrap_err(), tr("stream.pick_where"));
+        // Live on Twitch: its card says since when and how many watch (the chat's count wins).
+        let mut live = now.clone();
+        live.info[TWITCH].live = Some(true);
+        live.info[TWITCH].since = Some(1_800_000_000);
+        live.info[TWITCH].viewers = Some(5);
+        live.viewers[TWITCH] = Some(7);
+        let page = model(&live);
+        let twitch = card(&page, "twitch");
+        assert_eq!(twitch["state"]["text"], tr("stream.state_live"));
+        let text = twitch["lines"][0]["text"].as_str().unwrap();
+        assert!(text.contains(&crate::fmt::shown_clock(1_800_000_000)), "{text}");
+        assert!(text.contains(&trf("stream.watching", &[("count", "7")])), "{text}");
+        assert!(find_button(&page, "twitch.clip").get("enabled").is_none());
+        assert!(ad_steps(&ad, &live).is_ok());
+    }
+
+    #[test]
+    fn what_a_platform_already_says_is_not_sent_again() {
+        let mut now = ready([true, true, true, false]);
+        now.info[TWITCH] = Info {
+            title: "Same".into(),
+            category: "Art".into(),
+            known: true,
+            ..Info::default()
+        };
+        now.info[YOUTUBE] = Info {
+            title: "Same".into(),
+            description: "About".into(),
+            known: true,
+            ..Info::default()
+        };
+        let form = item(json!({"title": "Same", "category": "art", "description": "About",
+            "twitch": true, "kick": false, "youtube": true}));
+        assert_eq!(info_steps(&form, &now).unwrap_err(), tr("stream.unchanged"));
+        let form = item(json!({"title": "New", "category": "Art", "description": "About",
+            "twitch": true, "kick": false, "youtube": true}));
+        assert_eq!(
+            info_steps(&form, &now).unwrap(),
+            vec![
+                (TWITCH, Job::Title("New".into())),
+                (YOUTUBE, video(Some("New".into()), None, None)),
+            ],
+            "only the title changed, and YouTube's description stays out of its update"
+        );
+    }
+
+    #[test]
+    fn titles_and_lives_pushed_by_the_platforms_show_at_once() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        reset(ready([true, true, true, true]));
+        pushed("twitch", Some("From the dashboard"), Some("Just Chatting"));
+        assert_eq!(seen().info[TWITCH].title, "From the dashboard");
+        assert_eq!(seen().info[TWITCH].category, "Just Chatting");
+        pushed("kick", Some("Kick title"), None);
+        assert_eq!(seen().info[KICK].title, "Kick title");
+        live_changed("kick", true);
+        assert_eq!(seen().info[KICK].live, Some(true));
+        assert!(seen().info[KICK].since.is_some());
+        live_changed("kick", false);
+        assert_eq!(seen().info[KICK].live, Some(false));
+        assert_eq!(seen().info[KICK].since, None);
+        // Before the page has read anything, a push waits for that read.
+        reset(Seen::default());
+        pushed("twitch", Some("Early"), None);
+        assert_eq!(seen().info[TWITCH].title, "");
+    }
+
+    /// Real answers (trimmed), as the platforms gave them on 2026-11-15.
+    #[test]
+    fn each_platform_answer_reads_into_what_the_card_shows() {
+        let mut twitch = Info::default();
+        twitch_channel(
+            &mut twitch,
+            &json!({"broadcaster_language": "pt", "game_id": "509660", "game_name": "Art",
+            "title": "Fazendo os Emotes (finalmente)", "delay": 0, "tags": [], "content_classification_labels": [],
+            "is_branded_content": false}),
+        );
+        twitch_stream(&mut twitch, &Value::Null);
+        assert_eq!(
+            (twitch.title.as_str(), twitch.category.as_str()),
+            ("Fazendo os Emotes (finalmente)", "Art")
+        );
+        assert_eq!(twitch.live, Some(false), "Get Streams lists nothing off air");
+        let mut kick = Info::default();
+        kick_channel(
+            &mut kick,
+            &json!({"broadcaster_user_id": 130795575, "slug": "pedrozamecki",
+            "stream": {"is_live": false, "start_time": "0001-01-01T00:00:00Z", "viewer_count": 0},
+            "stream_title": "", "category": {"id": 0, "name": ""}}),
+        );
+        assert_eq!(kick.live, Some(false));
+        assert_eq!(kick.since, None, "Kick's year-one start means none");
+        kick_channel(
+            &mut kick,
+            &json!({"stream": {"is_live": true, "start_time": "2026-11-15T01:00:00Z",
+            "viewer_count": 40}, "stream_title": "Live", "category": {"name": "Art"}}),
+        );
+        kick_livestream(
+            &mut kick,
+            &json!({"custom_tags": ["Brasil", "Art"], "started_at": "2026-11-15T01:00:00Z"}),
+        );
+        assert_eq!((kick.live, kick.viewers), (Some(true), Some(40)));
+        assert_eq!(kick.tags, ["Brasil", "Art"], "the live has the tags");
+        let items = [
+            json!({"id": "477T5BH175Q", "snippet": {"title": "Old"}, "status": {"lifeCycleStatus": "complete"}}),
+            json!({"id": "5ZsNztCxdhk", "snippet": {"title": "Transmissão teste"},
+                "status": {"lifeCycleStatus": "ready", "privacyStatus": "private"}}),
+        ];
+        assert_eq!(youtube_pick(&items).unwrap()["id"], "5ZsNztCxdhk");
+        let live = json!({"id": "x", "snippet": {"title": "On", "actualStartTime": "2026-11-15T01:00:00Z"},
+            "status": {"lifeCycleStatus": "live", "privacyStatus": "public"}});
+        let video = json!({"snippet": {"title": "On", "description": "Hi", "tags": ["a"], "categoryId": "28"},
+            "status": {"privacyStatus": "public"}, "liveStreamingDetails": {"concurrentViewers": "31",
+            "actualStartTime": "2026-11-15T01:00:00Z"}});
+        let mut youtube = Info::default();
+        youtube_broadcast(&mut youtube, &live, &video);
+        assert_eq!((youtube.live, youtube.viewers), (Some(true), Some(31)));
+        assert_eq!(youtube.category, "Science & Technology");
+        assert!(!youtube.upcoming);
+        youtube_health(
+            &mut youtube,
+            &json!({"status": {"healthStatus": {"status": "bad", "configurationIssues": [
+            {"severity": "info", "description": "Fine"},
+            {"severity": "error", "description": "The bitrate is too low."}]}}}),
+        );
+        assert_eq!(
+            (youtube.health.as_str(), youtube.issue.as_str()),
+            ("bad", "The bitrate is too low.")
+        );
     }
 }

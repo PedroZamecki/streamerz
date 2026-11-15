@@ -1648,6 +1648,76 @@ pub(crate) fn connectors(e: &Rc<Engine>) -> Value {
     })
 }
 
+/// Development only: one platform API call through the running client and its login (Twitch Helix,
+/// Kick's official API, YouTube Data API), the answer as it came. Lets a test see what the platform
+/// says without copying a token out of the keyring.
+async fn platform_api(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
+    let method = match req["method"].as_str().unwrap_or("GET") {
+        "GET" => "GET",
+        "POST" => "POST",
+        "PATCH" => "PATCH",
+        "PUT" => "PUT",
+        "DELETE" => "DELETE",
+        _ => return Err("method must be GET, POST, PATCH, PUT or DELETE".into()),
+    };
+    let path = req["path"].as_str().unwrap_or_default().trim_start_matches('/');
+    let body = req.get("body").filter(|b| !b.is_null()).cloned();
+    let query: Vec<(String, String)> = req["query"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(k, v)| (k.clone(), v.as_str().map_or_else(|| v.to_string(), str::to_owned)))
+        .collect();
+    match req["platform"].as_str().unwrap_or_default() {
+        "twitch" => {
+            let twitch = e.twitch().ok_or("Twitch isn't connected")?;
+            let query = query.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+            twitch.helix(method, path, query, body, false, true).await
+        }
+        "kick" => {
+            let kick = e.kick().ok_or("Kick isn't connected")?;
+            let mut path = format!("/{path}");
+            for (n, (k, v)) in query.iter().enumerate() {
+                let sep = if n == 0 { '?' } else { '&' };
+                path.push_str(&format!(
+                    "{sep}{}={}",
+                    crate::commands::url_encode(k),
+                    crate::commands::url_encode(v)
+                ));
+            }
+            kick.api(method, &path, body).await
+        }
+        "youtube" => {
+            let token = crate::youtube::token(e, e.cfg_tx(), false, true).await?;
+            let mut url = format!("{}/{path}", crate::youtube::YOUTUBE_API_BASE);
+            for (n, (k, v)) in query.iter().enumerate() {
+                let sep = if n == 0 { '?' } else { '&' };
+                url.push_str(&format!(
+                    "{sep}{}={}",
+                    crate::commands::url_encode(k),
+                    crate::commands::url_encode(v)
+                ));
+            }
+            let mut headers = vec![("Authorization".to_string(), format!("Bearer {token}"))];
+            let bytes = match &body {
+                Some(b) => {
+                    headers.push(("Content-Type".to_string(), "application/json".to_string()));
+                    serde_json::to_vec(b).unwrap_or_default()
+                }
+                None => Vec::new(),
+            };
+            let r = crate::http::request(method, &url, &headers, &bytes).await?;
+            let v: Value = serde_json::from_slice(&r.body).unwrap_or_else(|_| Value::String(r.text()));
+            if (200..300).contains(&r.status) {
+                Ok(v)
+            } else {
+                Err(format!("YouTube HTTP {}: {v}", r.status))
+            }
+        }
+        _ => Err("platform must be twitch, kick or youtube".into()),
+    }
+}
+
 /// Channel search for the picker and MCP, including signed TikTok requests.
 pub(crate) async fn search_request(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
     let platform = req["platform"].as_str().unwrap_or_default();
@@ -1815,6 +1885,18 @@ pub(crate) async fn request(e: &Rc<Engine>, req: &Value, auth_required: bool, au
             } else {
                 match crate::core::overlays::request(e, req).await {
                     Ok(fields) => ok(&id, fields),
+                    Err(message) => error(&id, &message),
+                }
+            }
+        }
+        "StreamerzPlatformApi" => {
+            if auth_required && !authed {
+                error(&id, "Authentication required to use this method")
+            } else if !e.dev() {
+                error(&id, "StreamerzPlatformApi needs STREAMERZ_DEV=1")
+            } else {
+                match platform_api(e, req).await {
+                    Ok(answer) => ok(&id, json!({"answer": answer})),
                     Err(message) => error(&id, &message),
                 }
             }
@@ -2249,6 +2331,47 @@ async fn udp_server(e: Rc<Engine>, s: UdpSettings) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_raw_platform_call_goes_through_the_running_client_in_dev_mode_only() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(serde_json::json!({"actions": []}));
+            let fakes = crate::scenario::fakes::install(
+                &engine,
+                &serde_json::json!({"twitch": {"GET streams": {"data": [{"type": "live"}]}},
+                    "kick": {"GET /channels?slug=me": {"data": [{"slug": "me"}]}}}),
+                None,
+            );
+            let twitch = serde_json::json!({"request": "StreamerzPlatformApi", "id": "1", "platform": "twitch",
+                "path": "streams", "query": {"user_id": "{broadcaster_id}"}});
+            let refused = super::request(&engine, &twitch, false, true).await;
+            assert_eq!(
+                refused["status"], "error",
+                "a normal instance has no raw calls: {refused}"
+            );
+            assert!(fakes.calls.borrow().is_empty());
+            let answer = super::platform_api(&engine, &twitch).await.unwrap();
+            assert_eq!(answer["data"][0]["type"], "live");
+            assert_eq!(
+                fakes.calls.borrow()[0]["query"]["user_id"],
+                "{broadcaster_id}",
+                "the client fills in the channel"
+            );
+            let kick = serde_json::json!({"platform": "kick", "path": "/channels", "query": {"slug": "me"}});
+            assert_eq!(
+                super::platform_api(&engine, &kick).await.unwrap()["data"][0]["slug"],
+                "me"
+            );
+            for bad in [
+                serde_json::json!({"platform": "myspace", "path": "x"}),
+                serde_json::json!({"platform": "kick", "path": "x", "method": "TRACE"}),
+            ] {
+                assert!(super::platform_api(&engine, &bad).await.is_err(), "{bad}");
+            }
+            crate::scenario::fakes::uninstall();
+        });
+    }
+
     #[test]
     fn overlay_setup_waits_for_bind_and_reports_an_already_failed_listener() {
         let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());

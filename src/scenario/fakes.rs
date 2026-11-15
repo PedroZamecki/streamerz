@@ -282,6 +282,9 @@ async fn youtube(f: Rc<Fakes>, mut rx: UnboundedReceiver<crate::youtube::YouTube
                     .map(|id| (id.to_owned(), next["title"].as_str().unwrap_or_default().to_owned()));
                 drop(resp.send(Ok(found)));
             }
+            C::Api { path, resp } => {
+                drop(resp.send(f.call(P, &format!("GET {path}"), json!({}), json!({"items": []}))))
+            }
             C::SendMessage {
                 broadcast,
                 text,

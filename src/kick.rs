@@ -1776,6 +1776,11 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
                 .unwrap_or("")
                 .to_string();
             let cat = category(l);
+            crate::core::stream::pushed(
+                "kick",
+                Some(&title).filter(|t| !t.is_empty()).map(String::as_str),
+                cat.1.as_str(),
+            );
             let (old_title, old_cat) = STREAM.with_borrow_mut(|s| {
                 let old = (
                     std::mem::replace(&mut s.0, title.clone()),
