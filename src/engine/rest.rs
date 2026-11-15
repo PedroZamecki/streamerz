@@ -3545,7 +3545,8 @@ impl Engine {
             4008 => {
                 ctx.args.insert("banResult".into(), false.into());
                 let broadcast = self.expand(ctx, s(o, "broadcast"));
-                let user_id = self.expand(ctx, s(o, "userId"));
+                // A name works too: the person who started this, or someone the chat has seen.
+                let user_id = self.youtube_channel_id(ctx, &self.expand(ctx, s(o, "userId")));
                 let yt = self.youtube_start();
                 ctx.args.insert("bannedUser".into(), user_id.clone().into());
                 ctx.args.insert("bannedUserName".into(), user_id.clone().into());
@@ -3564,7 +3565,8 @@ impl Engine {
             4009 => {
                 ctx.args.insert("timeoutResult".into(), false.into());
                 let broadcast = self.expand(ctx, s(o, "broadcast"));
-                let user_id = self.expand(ctx, s(o, "userId"));
+                // A name works too: the person who started this, or someone the chat has seen.
+                let user_id = self.youtube_channel_id(ctx, &self.expand(ctx, s(o, "userId")));
                 let duration = self.duration_number(ctx, o, "duration") as u64;
                 let yt = self.youtube_start();
                 ctx.args.insert("bannedUser".into(), user_id.clone().into());

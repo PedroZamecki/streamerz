@@ -413,6 +413,7 @@ fn editor(config: &crate::Config, action: &Action) -> Value {
         op(button("undo", "btn.undo", "rotate-ccw", &[]), "undo"),
         op(button("redo", "btn.redo", "rotate-cw", &[]), "redo"),
         op(button("help", "btn.help", "circle-help", &["sub"]), "sub_help"),
+        op(button("test", "btn.test", "play", &["sub"]), "sub_test"),
         menu_only(op(button("up", "actions.move_up", "arrow-up", &["sub"]), "sub_up")),
         menu_only(op(
             button("down", "actions.move_down", "arrow-down", &["sub"]),
@@ -495,6 +496,8 @@ struct Entry {
     icon: &'static str,
     /// What it gives the action (a trigger's arguments), for the description.
     values: Option<String>,
+    /// Why it can't run now, and what to do.
+    unready: Option<String>,
 }
 
 fn tree_of(entries: Vec<Entry>) -> Vec<Value> {
@@ -539,7 +542,8 @@ fn tree_of(entries: Vec<Entry>) -> Vec<Value> {
         let mut row = node(entry.id, "item", entry.title.clone(), entry.icon, false, Vec::new());
         row["detail"] = json!({"title": entry.title, "text": entry.description, "path": path.join(" > "),
             "icon": entry.icon, "logo": crate::automation::pick_icons::logo_of_category(&entry.category),
-            "values": entry.values});
+            "values": entry.values, "unready": entry.unready,
+            "keywords": crate::automation::catalog::keywords(&entry.title)});
         level.items.push(row);
     }
     fold(root, "")
@@ -569,6 +573,7 @@ fn plugin_entries(engine: &Rc<Engine>, trigger: bool) -> Vec<Entry> {
                 description: about,
                 icon: "puzzle",
                 values: None,
+                unready: None,
             });
         }
     }
@@ -583,6 +588,7 @@ fn picker_model(engine: &Rc<Engine>, which: &str) -> Result<Value, String> {
                 .map(|item| Entry {
                     icon: labels::trigger_icon(item.id as u32),
                     values: trigger_values(item.id as u32),
+                    unready: None,
                     id: item.id.to_string(),
                     title: item.title,
                     category: item.category,
@@ -597,7 +603,8 @@ fn picker_model(engine: &Rc<Engine>, which: &str) -> Result<Value, String> {
                 .into_iter()
                 .map(|item| Entry {
                     icon: labels::sub_icon(item.id as u32),
-                    values: None,
+                    values: sub_values(item.id as u32),
+                    unready: unready(&engine.config(), item.id as u32),
                     id: item.id.to_string(),
                     title: item.title,
                     category: item.category,
@@ -626,6 +633,7 @@ fn picker_model(engine: &Rc<Engine>, which: &str) -> Result<Value, String> {
                     },
                     icon: "layout-template",
                     values: None,
+                    unready: None,
                 })
                 .collect(),
         ),
@@ -879,6 +887,19 @@ fn choices(config: &crate::Config, widget: &W) -> Option<(Vec<(String, String)>,
         }
         W::Suggest(key) | W::Entity(key) => typed(crate::catalog::choices(key)),
         W::Expression(values) => typed(values.iter().map(|v| ((*v).to_owned(), (*v).to_owned())).collect()),
+        W::Who => typed(vec![
+            ("%userName%".into(), tr("tools.who_sender").into()),
+            ("%input0%".into(), tr("tools.who_command").into()),
+        ]),
+        W::Message(from) => typed(vec![(
+            (*from).to_owned(),
+            tr(if matches!(*from, "%msgId%" | "%messageId%") {
+                "tools.message_trigger"
+            } else {
+                "tools.from_trigger"
+            })
+            .into(),
+        )]),
         _ => None,
     }
 }
@@ -922,6 +943,25 @@ fn form_fields(config: &crate::Config, fields: &[F], item: &Obj) -> Vec<Value> {
             }
             if let W::Pick(options) = widget {
                 value["widget"]["options"] = json!(options.iter().map(|option| shown(option)).collect::<Vec<_>>());
+            }
+            // Check boxes, platforms with their logos; Who and Which message also take typed text.
+            match widget {
+                W::Checks(options) => {
+                    let options: Vec<Value> = options
+                        .iter()
+                        .map(|id| match crate::engine::PLATFORMS.contains(id) {
+                            true => json!({"id": id, "label": platform_name(id), "brand": id}),
+                            false => json!({"id": id, "label": schema::check_label(id)}),
+                        })
+                        .collect();
+                    value["widget"] = json!({"kind": "checks", "options": options});
+                }
+                W::Color => value["widget"] = json!({"kind": "color"}),
+                W::Who | W::Message(_) => {
+                    value["widget"] = json!({"kind": "text"});
+                    value["other"] = true.into();
+                }
+                _ => {}
             }
             if key.is_empty() {
                 value["hidden"] = true.into();
@@ -1021,6 +1061,60 @@ fn trigger_values(code: u32) -> Option<String> {
     })
 }
 
+/// Why a sub-action can't run now, and what to do: its platform's login is missing, or it needs more
+/// of Twitch than the login gave. None when nothing stops it (or it can't be told).
+fn unready(config: &crate::Config, code: u32) -> Option<String> {
+    let category = crate::types::SUB_ACTION_INFO
+        .binary_search_by_key(&code, |x| x.0)
+        .map_or("", |i| crate::types::SUB_ACTION_INFO[i].2);
+    let (platform, logged_in) = match category.split('/').next().unwrap_or_default() {
+        "Twitch" => ("Twitch", config.twitch.broadcaster.is_some()),
+        "Kick" => ("Kick", config.kick.broadcaster.is_some()),
+        "YouTube" => ("YouTube", config.youtube.broadcaster.is_some()),
+        _ => return None,
+    };
+    if !logged_in {
+        return Some(trf("tools.needs_login", &[("platform", platform)]));
+    }
+    let scope = crate::engine::twitch_extra_scope(u64::from(code))?;
+    let granted = config
+        .twitch
+        .broadcaster
+        .as_ref()
+        .is_some_and(|a| a.token.scope.iter().any(|s| s == scope));
+    (!granted).then(|| tr("tools.needs_more").to_owned())
+}
+
+/// `Values it adds: %x%, %y%`: what a sub-action puts in the arguments, from the reference.
+fn sub_values(code: u32) -> Option<String> {
+    let values = crate::docs::arguments("subaction", code);
+    (!values.is_empty()).then(|| {
+        let list: Vec<String> = values.iter().map(|value| format!("%{value}%")).collect();
+        trf("actions.sub_values", &[("list", &list.join(", "))])
+    })
+}
+
+/// The kinds of the sub-actions that run before the one with `id` (branches included, in order).
+fn kinds_before(subs: &[Obj], id: &str, out: &mut Vec<u32>) -> bool {
+    for sub in subs {
+        if sub.get("id").and_then(Value::as_str) == Some(id) {
+            return true;
+        }
+        out.push(edit::kind(sub) as u32);
+        let inner: Vec<Obj> = sub
+            .get("subActions")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_object().cloned())
+            .collect();
+        if kinds_before(&inner, id, out) {
+            return true;
+        }
+    }
+    false
+}
+
 /// The fields a trigger or sub-action of this kind is edited with (None: JSON only).
 fn automation_fields(engine: &Rc<Engine>, trigger: bool, item: &Obj) -> Option<&'static [F]> {
     let code = edit::kind(item);
@@ -1097,9 +1191,18 @@ fn automation_form(
                 "auto": crate::tiktok::gifts::wants_loading()});
         }
     }
-    // What the trigger gives the action, so an event with no settings still says something useful.
-    if let Some(values) = trigger.then(|| trigger_values(edit::kind(&item) as u32)).flatten() {
+    // What the trigger gives the action, or the sub-action adds, so one with no settings still says
+    // something useful.
+    let kind = edit::kind(&item) as u32;
+    if let Some(values) = if trigger {
+        trigger_values(kind)
+    } else {
+        sub_values(kind)
+    } {
         notes.push(values);
+    }
+    if let Some(why) = (!trigger).then(|| unready(config, kind)).flatten() {
+        notes.insert(0, why);
     }
     if !trigger {
         if let Some(action) = parts.get(2).and_then(|id| config_action(config, id)) {
@@ -1113,6 +1216,18 @@ fn automation_form(
                 if let Some(values) = trigger_values(edit::kind(trigger) as u32) {
                     if !notes.contains(&values) {
                         notes.push(values);
+                    }
+                }
+            }
+            // And what the sub-actions before this one added.
+            let mut before = Vec::new();
+            let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+            if kinds_before(&action.sub_actions, id, &mut before) {
+                for code in before {
+                    for name in crate::docs::arguments("subaction", code) {
+                        if !available.contains(&name) {
+                            available.push(name);
+                        }
                     }
                 }
             }
@@ -2143,6 +2258,78 @@ fn step(action: &mut Action, id: &str, how: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether a sub-action only reads (a Get, a check): its test runs without asking.
+fn only_reads(kind: u64) -> bool {
+    let title = labels::sub_title(kind);
+    [
+        "Get ",
+        "Is ",
+        "Read ",
+        "User in Group",
+        "Add Random Users",
+        "Add Present User",
+        "Add Broadcaster",
+        "Add Target",
+        "Add Follow Age",
+        "Add Team",
+        "Add Viewer Count",
+        "File Exists",
+        "Folder Exists",
+        "Comment",
+        "Log",
+    ]
+    .iter()
+    .any(|start| title.starts_with(start))
+        || matches!(kind, 120 | 121 | 123 | 127 | 1003 | 1009 | 1020)
+}
+
+/// Runs one sub-action by itself, with the values of the action's last run (or a test's), after asking
+/// when it changes something, and says what happened and what it added.
+fn test_sub(engine: &Rc<Engine>, action_id: &str, sub: Obj, label: String, group: String) {
+    let kind = edit::kind(&sub);
+    let mut args = engine
+        .history()
+        .iter()
+        .rev()
+        .find(|record| record.action_id == action_id)
+        .map(|record| record.args.clone())
+        .unwrap_or_default();
+    args.insert("isTest".into(), true.into());
+    let engine = engine.clone();
+    tokio::task::spawn_local(async move {
+        if !only_reads(kind) {
+            let ask = crate::host::confirm(
+                trf("actions.test_sub_confirm", &[("what", &label)]),
+                tr("dialogs.cancel"),
+                tr("btn.test"),
+            );
+            if !ask.await.unwrap_or(false) {
+                return;
+            }
+        }
+        let before = args.clone();
+        let (after, outcome) = engine.execute_with(kind, sub, args, group).await;
+        let mut lines = vec![match outcome.error.as_deref() {
+            Some(error) => trf("actions.test_sub_failed", &[("error", error)]),
+            None if outcome.skipped > 0 => tr("actions.test_sub_skipped").to_owned(),
+            None => tr("actions.test_sub_done").to_owned(),
+        }];
+        let added: Vec<String> = after
+            .iter()
+            .filter(|(name, value)| before.get(*name) != Some(*value) && !name.starts_with("__"))
+            .map(|(name, value)| format!("%{name}%: {}", crate::vars::text(value)))
+            .collect();
+        if added.is_empty() {
+            lines.push(tr("actions.test_sub_nothing").to_owned());
+        } else {
+            lines.push(tr("actions.test_sub_values").to_owned());
+            lines.extend(added);
+        }
+        super::prompts::notice(label, lines.join("\n"));
+        crate::host::prompts_changed();
+    });
+}
+
 fn help(kind: &str, code: u32, fallback: String) -> Result<Value, String> {
     let (title, body) = match crate::docs::entry(kind, code) {
         Some(entry) => (entry.title, entry.text),
@@ -2260,6 +2447,18 @@ pub fn act(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
                 .map(edit::kind)
                 .ok_or_else(item_gone)?;
             help("subaction", code as u32, String::new())
+        }
+        "sub_test" => {
+            let config = engine.config();
+            let action = config_action(&config, &action_id).ok_or_else(item_gone)?;
+            let path = sub_path(action, item).ok_or_else(item_gone)?;
+            let sub = edit::get(&action.sub_actions, &path).cloned().ok_or_else(item_gone)?;
+            let label = labels::sub_label(&sub, &labels::names(&config));
+            let group = action.group.clone();
+            let id = action.id.clone();
+            drop(config);
+            test_sub(engine, &id, sub, label, group);
+            accepted()
         }
         "sub_toggle" => {
             edit_action(engine, &action_id, |action| {

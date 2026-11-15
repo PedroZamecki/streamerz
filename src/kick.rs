@@ -63,6 +63,17 @@ fn known_rewards(v: &Value) {
     crate::catalog::set("kick.rewards", list);
 }
 
+/// A reward Streamerz created or changed (Kick's shape).
+pub fn reward_saved(reward: &Value) {
+    known_rewards(&json!({"data": [reward]}));
+}
+
+/// A reward that was deleted.
+pub fn reward_removed(id: &str) {
+    REWARDS.with_borrow_mut(|m| drop(m.remove(id)));
+    known_rewards(&json!({"data": []}));
+}
+
 /// Public Pusher app key used by kick.com (rotated 2026-10; a dead key answers `pusher:error` 4001).
 // ponytail: hardcoded; ask web.kick.com/api/v1/realtime/connection if it keeps rotating.
 pub const KICK_PUSHER_KEY: &str = "34bf7a0ff419a2a775b9";

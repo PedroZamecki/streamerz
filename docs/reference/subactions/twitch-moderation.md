@@ -409,3 +409,165 @@ Removes the suspicious mark from a user.
 ### Arguments
 
 None set.
+
+## Purge User
+
+- Kind: sub-action
+- Code: 99501
+- Type: TwitchPurgeUser
+- Category: Twitch/Moderation
+- Needs: a Twitch login as a moderator of the channel (the broadcaster, or a moderator there)
+
+Takes away someone's messages from the Twitch chat, with a timeout of one second. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Who | `userLogin` | Who: the person who started the action (`%userName%`, the default), the name typed after a command (`%input0%`), or any name typed. Variables are filled in first. |
+| Reason | `reason` | Why, for the moderators. Optional. |
+
+### Arguments
+
+- `purgeResult`: true when it worked.
+- `purgedUserName`, `purgedUserId`: who it was.
+
+## Get Moderators
+
+- Kind: sub-action
+- Code: 99511
+- Type: TwitchGetModerators
+- Category: Twitch/Moderation
+- Needs: a Twitch login as the channel's owner (the broadcaster)
+
+Lists the channel's moderators. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+None.
+
+### Arguments
+
+- `moderatorCount`: how many moderators were found.
+- `moderator0User`, `moderator0UserName`, `moderator0UserId`, and so on for each one (`moderator1User`...).
+
+## Get VIPs
+
+- Kind: sub-action
+- Code: 99512
+- Type: TwitchGetVips
+- Category: Twitch/Moderation
+- Needs: a Twitch login as the channel's owner (the broadcaster)
+
+Lists the channel's VIPs. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+None.
+
+### Arguments
+
+- `vipCount`: how many VIPs were found.
+- `vip0User`, `vip0UserName`, `vip0UserId`, and so on for each one (`vip1User`...).
+
+## Block User
+
+- Kind: sub-action
+- Code: 99534
+- Type: TwitchBlockUser
+- Category: Twitch/Moderation
+- Needs: the broadcaster's Twitch login with more permissions (Accounts, Twitch, Allow more)
+
+Blocks someone on Twitch, as the broadcaster. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Who | `userLogin` | Who: the person who started the action (`%userName%`, the default), the name typed after a command (`%input0%`), or any name typed. Variables are filled in first. |
+
+### Arguments
+
+None set.
+
+## Unblock User
+
+- Kind: sub-action
+- Code: 99535
+- Type: TwitchUnblockUser
+- Category: Twitch/Moderation
+- Needs: the broadcaster's Twitch login with more permissions (Accounts, Twitch, Allow more)
+
+Unblocks someone on Twitch. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Who | `userLogin` | Who: the person who started the action (`%userName%`, the default), the name typed after a command (`%input0%`), or any name typed. Variables are filled in first. |
+
+### Arguments
+
+None set.
+
+## Unique Chat
+
+- Kind: sub-action
+- Code: 99504
+- Type: TwitchUniqueChat
+- Category: Twitch/Moderation/Chat Modes
+- Needs: a Twitch login as a moderator of the channel (the broadcaster, or a moderator there)
+
+Turns Twitch's unique chat on or off: a message can't repeat one sent before. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Turn | `state` | On, Off or Toggle. |
+
+### Arguments
+
+- `uniqueChat`: true when it's on.
+
+## Non-Moderator Chat Delay
+
+- Kind: sub-action
+- Code: 99505
+- Type: TwitchNonModeratorChatDelay
+- Category: Twitch/Moderation/Chat Modes
+- Needs: a Twitch login as a moderator of the channel (the broadcaster, or a moderator there)
+
+Delays the messages of people who aren't moderators by a few seconds, so moderators can remove them first. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Turn | `state` | On, Off or Toggle. |
+| Delay | `delay` | 2, 4 or 6 seconds. |
+
+### Arguments
+
+- `chatDelay`: true when it's on.
+
+## Get Chat Settings
+
+- Kind: sub-action
+- Code: 99506
+- Type: TwitchGetChatSettings
+- Category: Twitch/Moderation/Chat Modes
+- Needs: a Twitch login as a moderator of the channel (the broadcaster, or a moderator there)
+
+Reads the Twitch chat's modes. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+None.
+
+### Arguments
+
+- `emoteOnly`, `followerMode`, `slowMode`, `subscriberOnly`, `uniqueChat`, `chatDelay`: true for each mode that is on.
+- `followerModeDuration`: the minutes a follower waits (follower mode).
+- `slowModeWaitTime`: the seconds between messages (slow mode).
+- `chatDelayDuration`: the seconds of the chat delay.

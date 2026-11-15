@@ -230,9 +230,11 @@ impl TreePane {
                 let own = query.is_empty()
                     || label.to_lowercase().contains(query)
                     || (node["kind"] == "item"
-                        && node["detail"]["text"]
-                            .as_str()
-                            .is_some_and(|text| text.to_lowercase().contains(query)));
+                        && ["text", "keywords"].iter().any(|key| {
+                            node["detail"][key]
+                                .as_str()
+                                .is_some_and(|text| text.to_lowercase().contains(query))
+                        }));
                 let children = self.items(&node["children"], query);
                 if !own && children.is_empty() {
                     return None;

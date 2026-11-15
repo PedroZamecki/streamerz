@@ -28,6 +28,7 @@ pub mod plugins;
 mod processes;
 mod rest;
 mod songs;
+mod tools;
 mod watchers;
 
 pub const DEFAULT_QUEUE: &str = "00000000-0000-0000-0000-000000000000";
@@ -342,11 +343,13 @@ impl Engine {
     }
 
     /// A direct execution reports observed errors and skips using the normal runner's outcome.
-    pub async fn execute_one(self: &Rc<Self>, kind: u64, mut o: Obj) -> (Obj, RunOutcome) {
-        let mut ctx = Ctx {
-            args: Obj::new(),
-            group: String::new(),
-        };
+    pub async fn execute_one(self: &Rc<Self>, kind: u64, o: Obj) -> (Obj, RunOutcome) {
+        self.execute_with(kind, o, Obj::new(), String::new()).await
+    }
+
+    /// The same, starting from `args` (a test uses an action's values), in the action group `group`.
+    pub async fn execute_with(self: &Rc<Self>, kind: u64, mut o: Obj, args: Obj, group: String) -> (Obj, RunOutcome) {
+        let mut ctx = Ctx { args, group };
         o.insert("type".into(), kind.into());
         let outcome = RUN_OUTCOME
             .scope(RefCell::new(RunOutcome::default()), async {
@@ -426,11 +429,13 @@ pub fn supported(kind: u32) -> bool {
             | 3 | 5 | 1001..=1007 | 1009..=1025 | 1028 | 1030..=1034 | 1038..=1040 | 4001..=4014 | 7001 | 8001 | 8002 | 9001..=9003 | 10001 | 11001 | 11002 | 11004..=11008 | 15001 | 20001..=20003
             | 35001 | 35002 | 35010..=35012 | 35020..=35022 | 35030..=35034
             | 35040..=35043 | 35050..=35051 | 35101..=35103 | 35105..=35108 | 35113 | 43001..=43003 | 43010..=43012 | 99900..=99904
+            | 99450..=99454 | 99500..=99523 | 99530..=99539 | 99600..=99607 | 99650..=99663 | 99700..=99713
             | 1000 | 1026 | 1027 | 1035..=1037 | 99800 | 99802 | 99803 | 99880 | 99810..=99824 | 99827..=99833 | 99840..=99875
     )
 }
 
 pub(crate) use rest::{poll_args, prediction_args};
+pub use tools::{twitch_extra_scope, CONTENT_LABELS, PLATFORMS, TWITCH_EXTRA_SCOPES, YOUTUBE_CATEGORIES};
 
 /// A UTC civil date and time from Unix seconds.
 pub fn civil_time(secs: i64) -> crate::fmt::Time {
@@ -1982,6 +1987,11 @@ impl Engine {
                     self.overlay_publish(topic.trim(), value);
                 }
                 plugins::SUB_PLUGIN => return self.plugin_sub(ctx, o),
+                99450..=99749 => {
+                    if !self.tools(ctx, o, kind).await {
+                        self.unsupported(kind);
+                    }
+                }
                 _ => self.unsupported(kind),
             }
             Flow::Continue

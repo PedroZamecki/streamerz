@@ -164,6 +164,10 @@ pub struct YouTubeConfig {
     pub client_secret: String,
     pub broadcaster: Option<YouTubeAccount>,
     pub bot: Option<YouTubeAccount>,
+    /// The bans and timeouts Streamerz made, by the channel id banned: YouTube lifts one only by the
+    /// ban's own id, and has no list of them.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub bans: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -184,6 +188,15 @@ pub struct YouTubeToken {
 }
 
 pub enum YouTubeCmd {
+    /// Any Data API call as the broadcaster (method, path with its query, JSON body), with `{video}`
+    /// and `{chat}` filled in from `broadcast` (empty: the live one).
+    Data {
+        method: &'static str,
+        broadcast: String,
+        path: String,
+        body: Option<Value>,
+        resp: oneshot::Sender<Result<Value, String>>,
+    },
     Connect,
     /// The live video being read ("" when none).
     LiveVideo(oneshot::Sender<String>),
@@ -365,6 +378,28 @@ impl YouTubeHandle {
             })
             .map_err(|_| "YouTube runner is down".to_string())?;
         resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    /// Any Data API call as the broadcaster; `{video}` and `{chat}` in the path or body are the
+    /// broadcast's video and live chat.
+    pub async fn data(
+        &self,
+        method: &'static str,
+        broadcast: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Value, String> {
+        let (resp, rx) = oneshot::channel();
+        self.tx
+            .send(YouTubeCmd::Data {
+                method,
+                broadcast: broadcast.to_string(),
+                path: path.to_string(),
+                body,
+                resp,
+            })
+            .map_err(|_| "YouTube runner is down".to_string())?;
+        rx.await.map_err(|_| "Request cancelled".to_string())?
     }
 
     pub async fn ban_user(&self, broadcast: &str, user_id: &str) -> Result<(), String> {
@@ -635,6 +670,16 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
                     let r = runner
                         .set_title_and_description_api(&broadcast, &title, &description)
                         .await;
+                    let _ = resp.send(r);
+                }
+                YouTubeCmd::Data {
+                    method,
+                    broadcast,
+                    path,
+                    body,
+                    resp,
+                } => {
+                    let r = runner.data_api(method, &broadcast, &path, body).await;
                     let _ = resp.send(r);
                 }
                 YouTubeCmd::BanUser {
@@ -1028,6 +1073,54 @@ impl YouTubeRunner {
             .await
     }
 
+    /// Keeps the id of a ban or timeout just made (YouTube's answer), so it can be lifted later.
+    fn ban_made(&self, user_id: &str, answer: &[u8]) {
+        let id = serde_json::from_slice::<Value>(answer)
+            .ok()
+            .and_then(|v| v["id"].as_str().map(str::to_string));
+        if let Some(id) = id {
+            self.engine
+                .change(|c| drop(c.youtube.bans.insert(user_id.to_string(), id)));
+        }
+    }
+
+    /// Any Data API call as the broadcaster (see `YouTubeHandle::data`).
+    async fn data_api(
+        &self,
+        method: &'static str,
+        broadcast: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Value, String> {
+        let token = token(&self.engine, &self.cfg, false, false).await?;
+        let mut path = path.to_string();
+        let mut body = body.map(|b| b.to_string()).unwrap_or_default();
+        if path.contains("{video}") || body.contains("\"{video}\"") {
+            let video = self.target(broadcast).await?;
+            path = path.replace("{video}", &crate::commands::url_encode(&video));
+            body = body.replace("\"{video}\"", &Value::from(video).to_string());
+        }
+        if path.contains("{chat}") || body.contains("\"{chat}\"") {
+            let chat = self.live_chat_id(broadcast, &token).await?;
+            path = path.replace("{chat}", &crate::commands::url_encode(&chat));
+            body = body.replace("\"{chat}\"", &Value::from(chat).to_string());
+        }
+        let mut headers = vec![("Authorization".to_string(), format!("Bearer {token}"))];
+        if !body.is_empty() {
+            headers.push(("Content-Type".to_string(), "application/json".to_string()));
+        }
+        let url = format!("{YOUTUBE_API_BASE}/{}", path.trim_start_matches('/'));
+        let r = crate::http::request(method, &url, &headers, body.as_bytes()).await?;
+        if !(200..300).contains(&r.status) {
+            let said = serde_json::from_slice::<Value>(&r.body)
+                .ok()
+                .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
+                .unwrap_or_else(|| r.text());
+            return Err(format!("HTTP {}: {said}", r.status));
+        }
+        Ok(serde_json::from_slice(&r.body).unwrap_or(Value::Null))
+    }
+
     async fn ban_user_api(&self, broadcast: &str, user_id: &str) -> Result<(), String> {
         let token = token(&self.engine, &self.cfg, false, false).await?;
 
@@ -1038,7 +1131,7 @@ impl YouTubeRunner {
             "snippet": {
                 "liveChatId": live_chat_id,
                 "type": "permanent",
-                "bannedAuthorDetails": {
+                "bannedUserDetails": {
                     "channelId": user_id
                 }
             }
@@ -1051,6 +1144,7 @@ impl YouTubeRunner {
         let body = serde_json::to_vec(&payload).unwrap_or_default();
         let resp = crate::http::request("POST", &url, &headers, &body).await?;
         if (200..300).contains(&resp.status) {
+            self.ban_made(user_id, &resp.body);
             Ok(())
         } else {
             Err(format!("YouTube ban error {}: {}", resp.status, resp.text()))
@@ -1068,7 +1162,7 @@ impl YouTubeRunner {
                 "liveChatId": live_chat_id,
                 "type": "temporary",
                 "banDurationSeconds": duration,
-                "bannedAuthorDetails": {
+                "bannedUserDetails": {
                     "channelId": user_id
                 }
             }
@@ -1081,6 +1175,7 @@ impl YouTubeRunner {
         let body = serde_json::to_vec(&payload).unwrap_or_default();
         let resp = crate::http::request("POST", &url, &headers, &body).await?;
         if (200..300).contains(&resp.status) {
+            self.ban_made(user_id, &resp.body);
             Ok(())
         } else {
             Err(format!("YouTube timeout error {}: {}", resp.status, resp.text()))

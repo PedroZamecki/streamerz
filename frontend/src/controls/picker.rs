@@ -182,6 +182,10 @@ impl Picker {
             .when_some(detail["values"].as_str(), |panel, values| {
                 panel.child(super::notice::info(values, cx))
             })
+            // Why it can't run yet (not logged in, more permissions needed) and what to do.
+            .when_some(detail["unready"].as_str(), |panel, why| {
+                panel.child(super::notice::info(why, cx))
+            })
             .when_some(self.form.clone(), |panel, form| panel.child(form))
             .into_any_element()
     }

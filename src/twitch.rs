@@ -254,6 +254,9 @@ pub struct TwitchConfig {
     pub channel: String,
     /// `channel`'s user id, looked up on connecting.
     pub channel_id: String,
+    /// The broadcaster's login also asks for the permissions a few tools need (blocked terms, AutoMod
+    /// level, chat colour, blocking, the schedule), once the user chose to give them.
+    pub more_permissions: bool,
     #[serde(flatten)]
     pub rest: Map<String, Value>,
 }
@@ -4740,6 +4743,19 @@ fn reward_unknown(channel_id: String) {
     if due && !channel_id.is_empty() {
         tokio::task::spawn_local(async move { load_public_rewards(&channel_id).await });
     }
+}
+
+/// A reward Streamerz created or changed (Helix's shape): the editors offer it at once.
+pub fn reward_saved(reward: &Value) {
+    let Some(id) = reward["id"].as_str() else { return };
+    SEEN.with_borrow_mut(|s| drop(s.rewards.insert(id.into(), reward.clone())));
+    publish_rewards();
+}
+
+/// A reward that was deleted.
+pub fn reward_removed(id: &str) {
+    SEEN.with_borrow_mut(|s| drop(s.rewards.remove(id)));
+    publish_rewards();
 }
 
 /// Puts the channel's rewards (as known) where the editors offer them.

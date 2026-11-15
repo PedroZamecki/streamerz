@@ -119,3 +119,68 @@ None.
 ### Arguments
 
 - `tagsSuccess`: true when tags were cleared, false otherwise.
+
+## Get KICKs Leaderboard
+
+- Kind: sub-action
+- Code: 99605
+- Type: KickGetKicksLeaderboard
+- Category: Kick/Channel
+- Needs: the broadcaster's Kick login
+
+Lists who gifted the most KICKs. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Period | `period` | All time, this month or this week. |
+| How many | `count` | How many, 1 to 100. |
+
+### Arguments
+
+- `kicksLeaderCount`: how many people were found.
+- `kicksLeader0User`, `kicksLeader0UserName`, `kicksLeader0UserId`, `kicksLeader0Kicks`, `kicksLeader0Rank`, and so on for each one (`kicksLeader1User`...).
+
+## Get Stream Info
+
+- Kind: sub-action
+- Code: 99606
+- Type: KickGetStreamInfo
+- Category: Kick/Channel
+- Needs: the broadcaster's Kick login
+
+Says whether the Kick stream is live, with its title, category, viewers and uptime. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+None.
+
+### Arguments
+
+- `isLive`: true while the stream is live.
+- `streamTitle`, `streamCategory`: its title and category.
+- `viewerCount`: how many are watching.
+- `startedAt`, `uptime`, `uptimeSeconds`: when it started, and for how long it's been live (`1:02:03`).
+- `streamPlatform`: the platform (`twitch`, `kick`).
+- `language`, `thumbnailUrl`: the rest Kick gives.
+
+## Remove Channel Tag
+
+- Kind: sub-action
+- Code: 99607
+- Type: KickRemoveChannelTag
+- Category: Kick/Channel
+- Needs: the broadcaster's Kick login
+
+Removes a tag from the Kick channel. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Tag | `tag` | The tag. Variables are filled in first. |
+
+### Arguments
+
+None set.

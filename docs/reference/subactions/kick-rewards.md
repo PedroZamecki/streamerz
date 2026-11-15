@@ -329,3 +329,98 @@ Changes the background color of a reward.
 ### Notes
 
 - Kick takes `#RRGGBB`, so the alpha digits of a picked color are dropped. A `#` is optional.
+
+## Accept Redemption
+
+- Kind: sub-action
+- Code: 99601
+- Type: KickAcceptRedemption
+- Category: Kick/Rewards
+- Needs: the broadcaster's Kick login
+
+Accepts a Kick reward redemption. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Redemption | `redemptionId` | The redemption's id. Empty: the newest waiting redemption of the reward that started the action, by the same viewer (Kick's chat doesn't say which one it was). |
+
+### Arguments
+
+- `redemptionResult`: true when Kick took it.
+- `redemptionId`: the redemption.
+
+### Notes
+
+- Kick only lets an app accept the redemptions of the rewards it made.
+
+## Reject Redemption
+
+- Kind: sub-action
+- Code: 99602
+- Type: KickRejectRedemption
+- Category: Kick/Rewards
+- Needs: the broadcaster's Kick login
+
+Rejects a Kick reward redemption, giving the points back. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Redemption | `redemptionId` | The redemption's id. Empty: the newest waiting redemption of the reward that started the action, by the same viewer. |
+
+### Arguments
+
+- `redemptionResult`: true when Kick took it.
+- `redemptionId`: the redemption.
+
+### Notes
+
+- Kick only lets an app reject the redemptions of the rewards it made.
+
+## Create Reward
+
+- Kind: sub-action
+- Code: 99603
+- Type: KickCreateReward
+- Category: Kick/Rewards
+- Needs: the broadcaster's Kick login
+
+Creates a Kick channel reward (up to 50 per channel). This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Title | `title` | The title. Variables are filled in first. |
+| Cost | `cost` | What it costs, in points. |
+| Description | `description` | What the reward says to viewers. Optional. |
+| Viewer types a message | `inputRequired` | On: the viewer types a message to redeem it. |
+| Colour | `backgroundColor` | The reward's colour, picked. Empty: the platform's own. |
+| On | `enabled` | On: viewers can redeem it at once. |
+
+### Arguments
+
+- `rewardId`: the new reward's id.
+
+## Delete Reward
+
+- Kind: sub-action
+- Code: 99604
+- Type: KickDeleteReward
+- Category: Kick/Rewards
+- Needs: the broadcaster's Kick login
+
+Deletes a Kick channel reward. Kick only lets an app delete the rewards it made. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Reward | `rewardId` | The reward, picked from the channel's rewards (or its id typed). |
+
+### Arguments
+
+None set.

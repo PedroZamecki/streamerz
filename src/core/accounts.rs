@@ -839,6 +839,11 @@ fn accounts(engine: &Rc<Engine>) -> Vec<Value> {
                     }
                 }
                 rows.push(row);
+                if !bot && p == P::Twitch && name.is_some() && !p.expired(&config, false) {
+                    if let Some(more) = more_permissions_row(&config) {
+                        rows.push(more);
+                    }
+                }
                 if !bot {
                     rows.push(channel_row(engine, p, &config));
                 }
@@ -1471,6 +1476,11 @@ pub fn act(engine: &Rc<Engine>, domain: &str, action: &str, id: &str) -> Result<
             p.connect(engine, what == "connect");
         }
         "login" | "bot_login" => login(engine, p, what == "bot_login"),
+        // The few tools that need more of Twitch: the broadcaster logs in again, asked for them too.
+        "more_permissions" if p == P::Twitch => {
+            engine.change(|c| c.twitch.more_permissions = true);
+            login(engine, p, false);
+        }
         "logout" | "bot_logout" if p.expired(&engine.config(), what == "bot_logout") => {
             login(engine, p, what == "bot_logout")
         }
@@ -1480,6 +1490,26 @@ pub fn act(engine: &Rc<Engine>, domain: &str, action: &str, id: &str) -> Result<
         _ => return Err(format!("accounts has no action {action}")),
     }
     accepted
+}
+
+/// Twitch's "more permissions" row, while the login lacks what a few tools need.
+fn more_permissions_row(config: &crate::Config) -> Option<Value> {
+    let granted = &config.twitch.broadcaster.as_ref()?.token.scope;
+    if crate::engine::TWITCH_EXTRA_SCOPES
+        .iter()
+        .all(|s| granted.iter().any(|g| g == s))
+    {
+        return None;
+    }
+    let button = button(
+        "twitch.more_permissions",
+        tr("accounts.more_permissions_btn"),
+        "shield-plus",
+    );
+    Some(
+        json!({"key": "twitch.more_permissions", "label": tr("accounts.row_permissions"),
+        "value": tr("accounts.more_permissions"), "muted": true, "control": buttons(vec![button])}),
+    )
 }
 
 /// Try a connection again: a platform, an OBS or Streamlabs Desktop connection, or a donation service.
@@ -1690,16 +1720,20 @@ fn login(engine: &Rc<Engine>, p: P, bot: bool) {
 /// Twitch's device login: a code to type on Twitch's page, polled until it is approved or cancelled.
 fn twitch_login(engine: &Rc<Engine>, bot: bool) {
     let who = if bot { "Bot" } else { "Broadcaster" };
-    let scopes = if bot {
+    let mut scopes = if bot {
         crate::twitch::BOT_SCOPES
     } else {
         crate::twitch::BROADCASTER_SCOPES
-    };
+    }
+    .to_vec();
+    if !bot && engine.config().twitch.more_permissions {
+        scopes.extend_from_slice(crate::engine::TWITCH_EXTRA_SCOPES);
+    }
     let (handle_tx, handle_rx) = tokio::sync::oneshot::channel::<tokio::task::AbortHandle>();
     let engine = engine.clone();
     let task = tokio::task::spawn_local(async move {
         let title = trf("accounts.twitch_device.title", &[("who", who)]);
-        let code = match crate::twitch::device_flow_start(crate::twitch::CLIENT_ID, scopes).await {
+        let code = match crate::twitch::device_flow_start(crate::twitch::CLIENT_ID, &scopes).await {
             Ok(code) => code,
             Err(error) => {
                 super::prompts::notice(

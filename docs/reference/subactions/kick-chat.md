@@ -54,3 +54,27 @@ None set.
 ### Notes
 
 - The other account is used when the chosen one isn't logged in, as with Send Message to Channel.
+
+## Delete Chat Message
+
+- Kind: sub-action
+- Code: 99600
+- Type: KickDeleteChatMessage
+- Category: Kick/Chat
+- Needs: the broadcaster's Kick login
+
+Deletes one message from the Kick chat. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Message | `messageId` | Which message: the one that started the action (`%msgId%`, the default), or a message's ID. |
+
+### Arguments
+
+- `deleteResult`: true when Kick deleted it.
+
+### Notes
+
+- Dev mode keeps it instead of deleting, as the Chat page does.

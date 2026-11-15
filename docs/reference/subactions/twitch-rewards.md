@@ -435,3 +435,48 @@ None set.
 ### Notes
 
 - A number above 0 turns the limit on. 0 turns it off.
+
+## Create Reward
+
+- Kind: sub-action
+- Code: 99522
+- Type: TwitchCreateReward
+- Category: Twitch/Rewards
+- Needs: a Twitch login as the channel's owner (the broadcaster)
+
+Creates a channel points reward. Streamerz can change and delete the rewards it made. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Title | `title` | The title. Variables are filled in first. |
+| Cost | `cost` | What it costs, in points. |
+| Description | `prompt` | What the reward says to viewers. Optional. |
+| Viewer types a message | `inputRequired` | On: the viewer types a message to redeem it. |
+| Colour | `backgroundColor` | The reward's colour, picked. Empty: the platform's own. |
+| On | `enabled` | On: viewers can redeem it at once. |
+
+### Arguments
+
+- `rewardId`: the new reward's id.
+
+## Delete Reward
+
+- Kind: sub-action
+- Code: 99523
+- Type: TwitchDeleteReward
+- Category: Twitch/Rewards
+- Needs: a Twitch login as the channel's owner (the broadcaster)
+
+Deletes a channel points reward. Twitch only lets an app delete the rewards it made. This sub-action is Streamerz only: Streamer.bot does not have it.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Reward | `rewardId` | The reward, picked from the channel's rewards (or its id typed). |
+
+### Arguments
+
+None set.
