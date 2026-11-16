@@ -60,8 +60,8 @@ jobs:
         run: |
           rm -rf target/release/incremental target/ci-test/incremental target/debug/incremental 2>/dev/null || true
           find target -type f -name "*.d" -delete 2>/dev/null || true
-      - name: Test TikTok extension lifecycle
-        run: node --test dev/tiktok-extension.test.mjs
+      - name: Test extension lifecycle and platform checks
+        run: node --test dev/tiktok-extension.test.mjs dev/stream-check.test.mjs
 
   commits:
     runs-on: ubuntu-latest
