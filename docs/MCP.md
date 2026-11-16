@@ -121,3 +121,9 @@ Protocol references: [obs-websocket](https://github.com/obsproject/obs-websocket
 [Aitum Multistream](https://github.com/Aitum/obs-aitum-multistream/blob/main/multistream.cpp),
 [Aitum Vertical](https://github.com/Aitum/obs-vertical-canvas/blob/master/vertical-canvas.cpp),
 [Multi-RTMP websocket fork](https://github.com/davidcool/obs-multi-rtmp-websocket-support/tree/pr-obs-websocket).
+
+The Stream card forms (`stream_info.twitch` and `stream_info.youtube`) expose the platform-specific
+options through `entity_form` and `edit_entity`. YouTube category and privacy also appear in
+`stream_info`. Use the field indexes and choices returned by the form. Twitch content labels are
+booleans; omitted fields keep their current values. The dev `ui` command `form KIND` opens a real core
+form on the current sections page, allowing offline layout checks without connecting an account.

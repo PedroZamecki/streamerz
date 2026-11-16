@@ -40,12 +40,12 @@ const TOOLS: &[(&str, &str, &str, &[&str])] = &[
     ("prompts", "Read pending core input, confirmation and choice prompts. Reading does not consume them; they survive closing the frontend.", "{}", &[]),
     ("answer_prompt", "Answer a pending prompt exactly once: a string for input, a boolean for confirmation, an option ID for a choice. Null cancels input or a choice.", r#"{"promptId":{"type":"integer"},"value":{}}"#, &["promptId","value"]),
     ("connection", "Connect, disconnect or refresh OBS Studio or Streamlabs Desktop. Omit itemId for all configured connections. Refresh only reads state.", r#"{"kind":{"type":"string","enum":["obs_connection","slobs_connection"]},"action":{"type":"string","enum":["connect","disconnect","refresh"]},"itemId":{"type":"string"}}"#, &["kind","action"]),
-    ("core_view", "Read a core list model, including semantic cells and current connection state, without a frontend.", r#"{"domain":{"type":"string","enum":["commands","timers","files","stream_apps","servers","queues","globals","history","backups","crashes","settings","notifications","donations","groups","plugins","mcp","community","integrations","polls","user_card","accounts","tiktok_sending","actions","actions_picker","overlays","chat","chat_options"]},"itemId":{"type":"string","description":"The row id for user_card (platform|user id)"},"actionId":{"type":"string","description":"actions: the action (id, or the a:<id> row id) whose triggers and sub-actions to include"},"kind":{"type":"string","description":"actions_picker: trigger, sub or template"},"view":{"type":"object","description":"A page's view state by table kind: {\"tab\":\"quote\",\"community_user\":{\"sort\":{\"column\":\"name\",\"desc\":false},\"hidden\":[\"tiktok\"]}}"}}"#, &["domain"]),
+    ("core_view", "Read a core list model, including semantic cells and current connection state, without a frontend.", r#"{"domain":{"type":"string","enum":["commands","timers","files","stream_apps","servers","queues","globals","history","backups","crashes","settings","notifications","donations","groups","plugins","mcp","community","integrations","polls","stream","moderation","user_card","accounts","tiktok_sending","actions","actions_picker","overlays","chat","chat_options","obs_companion"]},"itemId":{"type":"string","description":"The row id for user_card (platform|user id)"},"actionId":{"type":"string","description":"actions: the action (id, or the a:<id> row id) whose triggers and sub-actions to include"},"kind":{"type":"string","description":"actions_picker: trigger, sub or template"},"view":{"type":"object","description":"A page's view state by table kind: {\"tab\":\"quote\",\"community_user\":{\"sort\":{\"column\":\"name\",\"desc\":false},\"hidden\":[\"tiktok\"]}}"}}"#, &["domain"]),
     ("core_status", "How many of the connections that are set up are up, and each one's state.", r#"{}"#, &[]),
     ("core_save", "Write the settings to disk now.", r#"{}"#, &[]),
-    ("core_action", "Run a page operation from a core_view model's actions (for example queues: pause, pause_all; history: run_again, clear; backups: backup_now, restore, delete; crashes: delete; community: card, card_group (itemId platform|user id|group id), open_profile, quote_delete, credits_reset, credits_test; polls: end, lock, resolve, cancel, refresh, started with entity_form/edit_entity kinds poll and prediction). accounts: <platform>.connect, .disconnect, .login, .logout, .bot_login, .bot_logout, .channel (twitch.login, kick.channel; logins and the channel search open prompts to answer with answer_prompt), unlock; tiktok_sending: setup:N, retry, remove, copy_path; connections: retry with itemId the connection key from core_status; Advanced settings are entity_form/edit_entity kinds account_twitch, account_youtube, account_kick, account_tiktok. itemId is the row id from the model. overlays (the Overlays page; rows are pages, id <group>:<file>): copy_url, add_to_obs (a dock page gets the OBS steps instead), open, test (made-up chat, alert and song to that overlay's open pages), open_folder, delete, guide; overlay_examples (the bundled examples, rows by slug): add_example; its forms include overlay:example_obs:<slug> and overlay:obs_setup:<row id> (disclosed server enable and explicit OBS destination), overlay:settings:<row id>, overlay:page:<row id> (title, size, dock, what the pages may do), overlay:export:<row id> (writes the .streamerz file), overlay:import (a file path or https address; asks before it installs) and overlay:new. actions (the Actions page; core_view actions with actionId lists groups, actions and the open action's triggers and sub-actions; ids are a:<action id>, g:<group>, or the trigger or sub-action id): action_toggle, action_delete, action_run, action_move (to=group), group_delete, group_icon_clear, template_add (code=template name), and with actionId and itemId: trigger_toggle, trigger_delete, trigger_help, sub_toggle, sub_delete, sub_help, sub_up, sub_down, sub_in, sub_out, sub_move (to=target). Forms are entity_form kinds act:action_add, act:action_edit, act:action_duplicate, act:group_add, act:group_rename, act:group_icon, act:group_settings, act:import, act:export, act:trigger_add (actionId, code), act:trigger_edit, act:trigger_test, act:sub_add (actionId, code, anchor), act:sub_edit; use the kind in the reply with edit_entity.", r#"{"domain":{"type":"string","enum":["queues","history","backups","crashes","settings","groups","community","plugins","mcp","polls","accounts","tiktok_sending","connections","actions","overlays","overlay_examples"]},"action":{"type":"string"},"itemId":{"type":"string"},"actionId":{"type":"string","description":"actions: the open action, for trigger_* and sub_* operations"},"code":{"type":"string","description":"actions: the picked template name (template_add)"},"to":{"type":"string","description":"actions: the group (action_move) or the target sub-action id (sub_move)"}}"#, &["domain", "action"]),
-    ("core_setting", "Change one setting of a core_view sections page (settings, notifications, chat_options) by its row key. Choices are their index, switches true/false, text a string. mcp: address, port and endpoint (the MCP page's connection).", r#"{"domain":{"type":"string","enum":["settings","notifications","mcp","chat_options"]},"key":{"type":"string"},"value":{}}"#, &["domain", "key", "value"]),
-    ("entity_form", "Read a core entity form, including current values and field types. Omit itemId for a new item. Action editor forms (kinds act:...) also take actionId, code (the trigger or sub-action type, from core_view actions_picker) and anchor (the sub-action to add beside); use the kind in the reply when saving.", r#"{"kind":{"type":"string"},"itemId":{"type":"string"},"actionId":{"type":"string"},"code":{"type":"string"},"anchor":{"type":"string"}}"#, &["kind"]),
+    ("core_action", "Run a page operation from a core_view model's actions (for example queues: pause, pause_all; history: run_again, clear; backups: backup_now, restore, delete; crashes: delete; community: card, card_group (itemId platform|user id|group id), open_profile, quote_delete, credits_reset, credits_test; moderation: refresh, unban (Twitch user ID), kick_open, tiktok_open, kick_unban_observed (Kick user ID), requests_refresh, automod_allow, automod_deny, terms_refresh, term_remove, shield_refresh, shield_on, shield_off, settings_refresh, chat_refresh, suspicious_monitor, suspicious_restrict, suspicious_remove, youtube_unban (recorded ban ID), link_delete; forms moderation_twitch_ban, moderation_kick_ban, moderation_kick_unban, moderation_youtube_ban, moderation_term, moderation_automod_settings, moderation_chat_settings, moderation_link:<id>, moderation_apply:<id> and moderation_resolve:<approved|denied>:<request id>; stream: refresh, clear_tags, obs.start_all, obs.stop_all, twitch.marker, twitch.clip, twitch.snooze; obs_companion: check_now, save_script, copy_script, copy_path, open_folder; metadata, ads and thumbnail use entity_form/edit_entity kinds stream_info, stream_info.<platform>, stream_ad, stream_ad.<platform>, stream_thumbnail. polls: end, lock, resolve, cancel, refresh, started with entity_form/edit_entity kinds poll and prediction). accounts: <platform>.connect, .disconnect, .login, .logout, .bot_login, .bot_logout, .channel (twitch.login, kick.channel; logins and the channel search open prompts to answer with answer_prompt), unlock; tiktok_sending: setup:N, retry, remove, copy_path; connections: retry with itemId the connection key from core_status; Advanced settings are entity_form/edit_entity kinds account_twitch, account_youtube, account_kick, account_tiktok. itemId is the row id from the model. overlays (the Overlays page; rows are pages, id <group>:<file>): copy_url, add_to_obs (a dock page gets the OBS steps instead), open, test (made-up chat, alert and song to that overlay's open pages), open_folder, delete, guide; overlay_examples (the bundled examples, rows by slug): add_example; its forms include overlay:example_obs:<slug> and overlay:obs_setup:<row id> (disclosed server enable and explicit OBS destination), overlay:settings:<row id>, overlay:page:<row id> (title, size, dock, what the pages may do), overlay:export:<row id> (writes the .streamerz file), overlay:import (a file path or https address; asks before it installs) and overlay:new. actions (the Actions page; core_view actions with actionId lists groups, actions and the open action's triggers and sub-actions; ids are a:<action id>, g:<group>, or the trigger or sub-action id): action_toggle, action_delete, action_run, action_move (to=group), group_delete, group_icon_clear, template_add (code=template name), and with actionId and itemId: trigger_toggle, trigger_delete, trigger_help, sub_toggle, sub_delete, sub_help, sub_up, sub_down, sub_in, sub_out, sub_move (to=target). Forms are entity_form kinds act:action_add, act:action_edit, act:action_duplicate, act:group_add, act:group_rename, act:group_icon, act:group_settings, act:import, act:export, act:trigger_add (actionId, code), act:trigger_edit, act:trigger_test, act:sub_add (actionId, code, anchor), act:sub_edit; use the kind in the reply with edit_entity.", r#"{"domain":{"type":"string","enum":["queues","history","backups","crashes","settings","groups","community","plugins","mcp","polls","stream","moderation","accounts","tiktok_sending","connections","actions","overlays","overlay_examples","obs_companion"]},"action":{"type":"string"},"itemId":{"type":"string"},"actionId":{"type":"string","description":"actions: the open action, for trigger_* and sub_* operations"},"code":{"type":"string","description":"actions: the picked template name (template_add)"},"to":{"type":"string","description":"actions: the group (action_move) or the target sub-action id (sub_move)"}}"#, &["domain", "action"]),
+    ("core_setting", "Change one setting of a core_view sections page (settings, notifications, chat_options, obs_companion, stream) by its row key. Choices are their index, switches true/false, text a string. mcp: address, port and endpoint (the MCP page's connection).", r#"{"domain":{"type":"string","enum":["settings","notifications","mcp","chat_options","obs_companion","stream"]},"key":{"type":"string"},"value":{}}"#, &["domain", "key", "value"]),
+    ("entity_form", "Read a core entity form, including current values and field types. Omit itemId for a new item. Action editor forms (kinds act:...) also take actionId, code (the trigger or sub-action type, from core_view actions_picker) and anchor (the sub-action to add beside). Moderation includes moderation_warn:<observed user ID>. Use the kind in the reply when saving; it can contain a state revision.", r#"{"kind":{"type":"string"},"itemId":{"type":"string"},"actionId":{"type":"string"},"code":{"type":"string"},"anchor":{"type":"string"}}"#, &["kind"]),
     ("edit_entity", "Save changed fields or JSON through core validation. Changes use field indexes from entity_form. JSON must keep the item ID. Timers include linked-action checks and explicit enable/draft state; save them atomically through this tool.", r#"{"kind":{"type":"string"},"itemId":{"type":"string"},"changes":{"type":"array","items":{"type":"object"}},"json":{"type":"string"}}"#, &["kind"]),
     ("entity_draft", "Validate changed fields or JSON and return an unsaved draft. This does not write settings.", r#"{"kind":{"type":"string"},"itemId":{"type":"string"},"changes":{"type":"array","items":{"type":"object"}},"json":{"type":"string"}}"#, &["kind"]),
 
@@ -92,6 +92,7 @@ const TOOLS: &[(&str, &str, &str, &[&str])] = &[
     ("connectors", "Each connector behind a port (OBS connections and whether they are connected, Spotify enabled and signed in), without secrets.", "{}", &[]),
     ("obs_outputs", "Discover stream outputs on connected OBS: main stream, Aitum Stream Suite, Multistream, Vertical and Multi-RTMP websocket fork. Returns opaque IDs, known state, platform hints and API limitations. Does not connect OBS or read plugin files. Omit connectionId only with exactly one connected OBS.", r#"{"connectionId":{"type":"string"}}"#, &[]),
     ("obs_outputs_control", "Start or stop selected stream output IDs returned by obs_outputs, on the same connection. Returns each result separately. requested means queued, not live: call obs_outputs to inspect actual state. Never starts unselected main output. Main-stream shared encoders must be live before dependent outputs start.", r#"{"connectionId":{"type":"string"},"op":{"type":"string","enum":["start","stop"]},"outputs":{"type":"array","items":{"type":"string"},"minItems":1}}"#, &["op", "outputs"]),
+    ("obs_preflight", "Run OBS pre-flight readiness checks across all discovered streaming outputs (main stream, Aitum Multistream/Vertical/Stream Suite, Multi-RTMP), set an output's platform override, or generate/save the OBS companion Python script.", r#"{"op":{"type":"string","enum":["check","set_output","companion_script"]},"outputId":{"type":"string"},"platform":{"type":"string","enum":["auto","twitch","kick","youtube","tiktok","ignore"]},"notify":{"type":"boolean"},"save":{"type":"boolean"},"mainService":{"type":"string"},"mainServer":{"type":"string"}}"#, &[]),
     ("platform_api", "A raw platform API call through Streamerz's own login: Twitch Helix (path like channels, query values may use {broadcaster_id}), Kick's official API (path under /public/v1) or the YouTube Data API (path under /youtube/v3). Shows what a platform really answers, to check a page or a sub-action against it. Writes act on the real channel. Needs STREAMERZ_DEV=1.", r#"{"platform": {"type": "string", "enum": ["twitch", "kick", "youtube"]}, "method": {"type": "string", "enum": ["GET", "POST", "PATCH", "PUT", "DELETE"], "description": "Default GET"}, "path": {"type": "string"}, "query": {"type": "object", "description": "Query values as strings"}, "body": {"type": "object"}}"#, &["platform", "path"]),
     ("obs_request", "A raw obs-websocket request through the OBS port, e.g. GetSceneList. Acts on the real OBS. Needs STREAMERZ_DEV=1.", r#"{"requestType": {"type": "string"}, "requestData": {"type": "object"}, "connectionId": {"type": "string", "description": "Default: the first connected"}}"#, &["requestType"]),
     ("spotify_current", "Read the current Spotify track, or null when unavailable. API playback needs Spotify enabled and signed in.", r#"{}"#, &[]),
@@ -99,6 +100,7 @@ const TOOLS: &[(&str, &str, &str, &[&str])] = &[
     ("overlays", "Every overlay (web pages Streamerz serves for an OBS browser source or dock): its pages with their URLs and sizes, files, permissions, how many of its pages are open now, and whether a group of actions is connected to it (connected, holds). Also the topics that have a value. An overlay needs no group of actions; one is connected when its pages run actions or its actions read its settings. Read guide overlays for the page API (window.streamerz).", "{}", &[]),
     ("overlay_read", "One overlay in full: its declared settings (name, label, kind, default, options, min, max, step, section, showIf), the values set, its pages (file, title, width, height, dock), files with sizes, permissions, folder on disk and what Test adds. With file, that file's text (or base64 content when it is not text).", r#"{"overlay": {"type": "string"}, "file": {"type": "string", "description": "A file to read too, e.g. index.html"}}"#, &["overlay"]),
     ("overlay_save", "Create an overlay or change one in one call; only what is given changes. files maps a file name (folders allowed: img/a.png) to its text; filesBase64 does the same for pictures, sounds and fonts; remove deletes files. settings replaces the declared settings ([{name, label, kind, default, ...}], kinds as in group_meta); values sets some of them; permissions is a list of chat.read, alerts.read, chat.send, actions.run, values.write; pages replaces the page list ([{file, title, width, height, dock}]); test is {topics: {name: value}, events: [[name, data]]} that Test also sends; connect true gives it a group of actions of its name (or names an existing group to connect). A new overlay with no page gets the commented starter page. Returns its pages with URLs and checks (what to fix). An open page loads again by itself when a file changes.", r#"{"overlay": {"type": "string", "description": "Its name"}, "files": {"type": "object"}, "filesBase64": {"type": "object"}, "remove": {"type": "array", "items": {"type": "string"}}, "settings": {"type": "array", "items": {"type": "object"}}, "values": {"type": "object"}, "permissions": {"type": "array", "items": {"type": "string"}}, "pages": {"type": "array", "items": {"type": "object"}}, "description": {"type": "string"}, "requires": {"type": "array", "items": {"type": "string"}}, "test": {"type": "object"}, "dock": {"type": "boolean", "description": "New pages are for an OBS dock"}, "connect": {"type": ["boolean", "string"]}}"#, &["overlay"]),
+    ("overlay_rename", "Rename an overlay (and any group of actions connected to it). Its files and settings stay; pages get a new address.", r#"{"overlay": {"type": "string"}, "name": {"type": "string", "description": "The new name"}}"#, &["overlay", "name"]),
     ("overlay_delete", "Delete one file of an overlay, or with no file the whole overlay (pages, files, settings). Actions connected to it are never deleted: their group stays in Actions (groupKept).", r#"{"overlay": {"type": "string"}, "file": {"type": "string"}}"#, &["overlay"]),
     ("overlay_test", "Send made-up data to an overlay's open pages only (nothing reaches the chat, the actions or other overlays): by default a chat message, an event, a TikTok gift and a song, the next ones at each round. Or exactly your own: events [[\"Twitch.Follow\", {...}], [\"Chat.Line\", {...}]] and topics {name: value}. Fails when none of its pages is open (open one in OBS or a browser, or use overlay_shot with test).", r#"{"overlay": {"type": "string"}, "rounds": {"type": "integer", "minimum": 1, "maximum": 20}, "events": {"type": "array"}, "topics": {"type": "object"}}"#, &["overlay"]),
     ("overlay_inspect", "What an overlay is doing now: its open pages and the topics and events each listens to, the last messages sent to them, what the pages logged (streamerz.log) and the errors of their scripts with the line, the topics that hold a value and its settings' values. The way to debug a page that shows nothing.", r#"{"overlay": {"type": "string"}}"#, &["overlay"]),
@@ -115,7 +117,7 @@ const TOOLS: &[(&str, &str, &str, &[&str])] = &[
     ("spotify_playback", "Control playback on Spotify's active device.", r#"{"command": {"type": "string", "enum": ["play", "pause", "next", "previous"]}}"#, &["command"]),
     ("list_plugins", "The WebAssembly plugins in the plugins folder: on or off, and for those on their manifest (sub-actions, triggers, settings). Plugin sub-actions are type 99800 with plugin and name; plugin triggers type 99801 with plugin and event. See PLUGINS.md.", "{}", &[]),
     ("plugin_enable", "Turn a plugin on or off.", r#"{"plugin": {"type": "string", "description": "Its id (the .wasm file's name)"}, "on": {"type": "boolean"}}"#, &["plugin"]),
-    ("ui", "Look at the window (needs STREAMERZ_DEV=1): `shot /tmp/a.png [n]` saves window n (0 = the top one) as a PNG you can read, `windows`, `tree [n]` lists every widget with its place, `find TEXT [n]` gives screen coordinates to click (xdotool), `page Settings` goes to a page, `chatview Twitch` selects a chat view, `form CODE` opens a sub-action form. Take a shot after every UI change you make.", r#"{"do": {"type": "string"}}"#, &["do"]),
+    ("ui", "Look at the window (needs STREAMERZ_DEV=1): `shot /tmp/a.png [n]` saves window n (0 = the top one) as a PNG you can read, `windows`, `tree [n]` lists every widget with its place, `find TEXT [n]` gives screen coordinates to click (xdotool), `page Settings` goes to a page, `chatview Twitch` selects a chat view, `form KIND` opens a core form on the current sections page (for example stream_info.twitch). Take a shot after every UI change you make.", r#"{"do": {"type": "string"}}"#, &["do"]),
     ("docs", "Streamerz's own reference page for a sub-action or trigger: what it does, its fields, the arguments it reads and sets, what login or role it needs, and examples. Read it before using one.", r#"{"kind": {"type": "string", "enum": ["subaction", "trigger"]}, "code": {"type": "integer"}}"#, &["kind", "code"]),
     ("docs_search", "Search the reference (every trigger and sub-action) by words, e.g. \"obs scene\" or \"first words\": kind, code, title and the first line of each match.", r#"{"query": {"type": "string"}, "limit": {"type": "integer", "description": "Default 20", "minimum": 0}}"#, &["query"]),
     ("guide", "Streamerz's guides: with no name, their list (README, chat, plugins, commands, integrations, the reference's index...); with one, its text.", r#"{"name": {"type": "string"}}"#, &[]),
@@ -137,21 +139,29 @@ fn tools() -> Value {
 }
 
 /// Reject malformed tool arguments before they can reach a running instance.
-fn validate_arguments(name: &str, args: &Value) -> Result<(), String> {
+#[allow(clippy::result_large_err)]
+fn validate_arguments(name: &str, args: &Value) -> crate::error::Result<()> {
     let (_, _, props, required) = TOOLS
         .iter()
         .find(|t| t.0 == name)
-        .ok_or_else(|| format!("no tool {name}"))?;
-    let object = args.as_object().ok_or("arguments must be an object")?;
-    let properties: Value = serde_json::from_str(props).expect("tool schema");
+        .ok_or_else(|| crate::error::StreamerzError::not_found(format!("no tool {name}")))?;
+    let object = args
+        .as_object()
+        .ok_or_else(|| crate::error::StreamerzError::validation("arguments must be an object"))?;
+    let properties: Value =
+        serde_json::from_str(props).map_err(|e| crate::error::StreamerzError::unexpected(e.to_string()))?;
     for key in *required {
         if !object.contains_key(*key) {
-            return Err(format!("missing argument {key}"));
+            return Err(crate::error::StreamerzError::validation(format!(
+                "missing argument {key}"
+            )));
         }
     }
     for (key, value) in object {
         let Some(schema) = properties.get(key) else {
-            return Err(format!("unknown argument {key}"));
+            return Err(crate::error::StreamerzError::validation(format!(
+                "unknown argument {key}"
+            )));
         };
         let matches_type = |kind: &str| match kind {
             "string" => value.is_string(),
@@ -173,22 +183,32 @@ fn validate_arguments(name: &str, args: &Value) -> Result<(), String> {
                 .as_array()
                 .is_some_and(|choices| !choices.contains(value))
         {
-            return Err(format!("invalid argument {key}"));
+            return Err(crate::error::StreamerzError::validation(format!(
+                "invalid argument {key}"
+            )));
         }
         if let Some(minimum) = schema["minimum"].as_i64() {
             if value.as_i64().is_some_and(|n| n < minimum) {
-                return Err(format!("{key} must be at least {minimum}"));
+                return Err(crate::error::StreamerzError::validation(format!(
+                    "{key} must be at least {minimum}"
+                )));
             }
         }
         if schema["items"]["type"] == "string" && value.as_array().is_some_and(|a| a.iter().any(|v| !v.is_string())) {
-            return Err(format!("{key} must contain strings"));
+            return Err(crate::error::StreamerzError::validation(format!(
+                "{key} must contain strings"
+            )));
         }
     }
     if name == "request" && !args["json"]["request"].is_string() {
-        return Err("json.request must be a string".into());
+        return Err(crate::error::StreamerzError::validation(
+            "json.request must be a string",
+        ));
     }
     if matches!(name, "describe" | "docs") && args["code"].as_u64().and_then(|c| u32::try_from(c).ok()).is_none() {
-        return Err("code must be an unsigned 32-bit integer".into());
+        return Err(crate::error::StreamerzError::validation(
+            "code must be an unsigned 32-bit integer",
+        ));
     }
     Ok(())
 }
@@ -200,36 +220,47 @@ struct Client {
 
 impl Client {
     /// One request to the running instance, its answer.
-    async fn ask(&mut self, mut req: Value) -> Result<Value, String> {
+    #[allow(clippy::result_large_err)]
+    async fn ask(&mut self, mut req: Value) -> crate::error::Result<Value> {
         if self.ws.is_none() {
             let u = url();
             let (ws, _) = tokio::time::timeout(Duration::from_secs(10), crate::http::ws_connect(u.as_str()))
                 .await
-                .map_err(|_| format!("connection to Streamerz at {u} timed out after 10 s"))?
+                .map_err(|_| {
+                    crate::error::StreamerzError::network(format!(
+                        "connection to Streamerz at {u} timed out after 10 s"
+                    ))
+                })?
                 .map_err(|e| {
-                    format!(
+                    crate::error::StreamerzError::network(format!(
                         "streamerz isn't running at {u} ({e}); start it, with STREAMERZ_DEV=1 for the testing tools"
-                    )
+                    ))
                 })?;
             self.ws = Some(ws);
         }
         self.next += 1;
         let id = format!("mcp{}", self.next);
         req["id"] = id.clone().into();
-        let ws = self.ws.as_mut().ok_or("no connection")?;
+        let ws = self
+            .ws
+            .as_mut()
+            .ok_or_else(|| crate::error::StreamerzError::network("no connection"))?;
         let sent = tokio::time::timeout(Duration::from_secs(10), ws.send(Message::Text(req.to_string().into()))).await;
         if !matches!(sent, Ok(Ok(()))) {
             self.ws = None;
-            return Err("the connection to streamerz dropped; try again".into());
+            return Err(crate::error::StreamerzError::network(
+                "the connection to streamerz dropped; try again",
+            ));
         }
         let wait = async {
             while let Some(Ok(m)) = ws.next().await {
                 if let Message::Text(t) = m {
                     let v: Value = serde_json::from_str(&t).unwrap_or_default();
                     if v.get("authentication").is_some() && v["request"] == "Hello" {
-                        return Some(
-                            json!({"status": "error", "error": "This instance requires WebSocket authentication. Use a separate local development instance with authentication off."}),
-                        );
+                        return Some(crate::error::StreamerzError::auth_required(
+                            "This instance requires WebSocket authentication. Use a separate local development instance with authentication off.",
+                        )
+                        .to_json_response(&Value::Null));
                     }
                     if v["id"] == id.as_str() {
                         return Some(v);
@@ -244,34 +275,43 @@ impl Client {
             10
         };
         match tokio::time::timeout(Duration::from_secs(seconds), wait).await {
-            Ok(Some(v)) if v["status"] == "error" => Err(v["error"].as_str().unwrap_or("error").to_string()),
+            Ok(Some(v)) if v["status"] == "error" => Err(crate::error::StreamerzError::from_response(&v)
+                .unwrap_or_else(|| crate::error::StreamerzError::unexpected(v["error"].as_str().unwrap_or("error")))),
             // Unknown requests are answered with just their id.
-            Ok(Some(v)) if v.get("status").is_none() => Err(format!(
+            Ok(Some(v)) if v.get("status").is_none() => Err(crate::error::StreamerzError::not_found(format!(
                 "streamerz doesn't know {} (the testing ones need it started with STREAMERZ_DEV=1)",
                 req["request"]
-            )),
+            ))),
             Ok(Some(v)) => Ok(v),
             Ok(None) => {
                 self.ws = None;
-                Err("Streamerz closed the connection; check its WebSocket settings".into())
+                Err(crate::error::StreamerzError::network(
+                    "Streamerz closed the connection; check its WebSocket settings",
+                ))
             }
             Err(_) => {
                 self.ws = None;
-                Err(format!(
+                Err(crate::error::StreamerzError::network(format!(
                     "no answer in {seconds} s (a dev-only request without STREAMERZ_DEV=1?)"
-                ))
+                )))
             }
         }
     }
 
-    async fn call(&mut self, name: &str, a: &Value) -> Result<Value, String> {
+    #[allow(clippy::result_large_err)]
+    async fn call(&mut self, name: &str, a: &Value) -> crate::error::Result<Value> {
         validate_arguments(name, a)?;
         let s = |k: &str| a[k].as_str().unwrap_or("").to_string();
         match name {
             "action_history" => self.ask(json!({"request":"StreamerzActionHistory"})).await,
             "tiktok_gifts" => self.ask(json!({"request":"StreamerzTikTokGifts", "refresh":a["refresh"]})).await,
             "preview_gift_trigger" => crate::tiktok::gifts::preview(
-                a["trigger"].as_object().ok_or("trigger must be an object")?, &a["gift"]),
+                a["trigger"]
+                    .as_object()
+                    .ok_or_else(|| crate::error::StreamerzError::validation("trigger must be an object"))?,
+                &a["gift"],
+            )
+            .map_err(Into::into),
             "entity_form" => self.ask(json!({"request": "StreamerzEntityForm", "kind": s("kind"), "itemId": s("itemId"), "actionId": s("actionId"), "code": s("code"), "anchor": s("anchor")})).await,
             "prompts" => self.ask(json!({"request": "StreamerzPrompts"})).await,
             "answer_prompt" => self.ask(json!({"request": "StreamerzAnswerPrompt", "promptId": a["promptId"], "value": a["value"]})).await,
@@ -283,7 +323,7 @@ impl Client {
             "core_action" => self.ask(json!({"request": "StreamerzCoreAction", "domain": s("domain"), "action": s("action"), "itemId": s("itemId"), "actionId": s("actionId"), "code": s("code"), "to": s("to")})).await,
             "edit_entity" => self.ask(json!({"request": "StreamerzEditEntity", "kind": s("kind"), "itemId": s("itemId"), "changes": a["changes"], "json": a["json"]})).await,
             "entity_draft" => self.ask(json!({"request": "StreamerzEntityDraft", "kind": s("kind"), "itemId": s("itemId"), "changes": a["changes"], "json": a["json"]})).await,
-            "describe_entity" => crate::automation::entities::describe(&s("kind")),
+            "describe_entity" => crate::automation::entities::describe(&s("kind")).map_err(Into::into),
             "run_subaction" => self.ask(json!({"request": "StreamerzRunSubaction", "item": a["item"]})).await,
             "core_read" => self.ask(json!({"request": "StreamerzCoreRead", "domain": s("domain")})).await,
             "status" => self.ask(json!({"request": "GetStatus"})).await,
@@ -360,8 +400,11 @@ impl Client {
                 Ok(json!({ "subActions": list }))
             }
             "describe" => {
-                let code = a["code"].as_u64().and_then(|c| u32::try_from(c).ok()).ok_or("code: a 32-bit number")?;
-                crate::automation::describe(&s("kind"), code)
+                let code = a["code"]
+                    .as_u64()
+                    .and_then(|c| u32::try_from(c).ok())
+                    .ok_or_else(|| crate::error::StreamerzError::validation("code: a 32-bit number"))?;
+                crate::automation::describe(&s("kind"), code).map_err(Into::into)
             }
             "run_scenario" => {
                 let sc = a["scenario"].clone();
@@ -371,14 +414,17 @@ impl Client {
                     crate::scenario::run(&sc)
                 })
                 .join()
-                .map_err(|_| "the scenario crashed".to_string())?;
+                .map_err(|_| crate::error::StreamerzError::unexpected("the scenario crashed"))?;
                 Ok(json!({"name": o.name, "passed": o.failures.is_empty(), "failures": o.failures}))
             }
             "docs" => {
-                let code = a["code"].as_u64().ok_or("code: a number")? as u32;
+                let code = a["code"]
+                    .as_u64()
+                    .ok_or_else(|| crate::error::StreamerzError::validation("code: a number"))?
+                    as u32;
                 crate::docs::entry(&s("kind"), code)
                     .map(|e| json!({"title": e.title, "file": e.file, "text": e.text}))
-                    .ok_or_else(|| format!("no page for {} {code}", s("kind")))
+                    .ok_or_else(|| crate::error::StreamerzError::not_found(format!("no page for {} {code}", s("kind"))))
             }
             "docs_search" => {
                 let limit = a["limit"].as_u64().unwrap_or(20) as usize;
@@ -406,7 +452,7 @@ impl Client {
                 let kind = crate::agents::KINDS
                     .iter()
                     .find(|k| k.id == s("agent"))
-                    .ok_or_else(|| format!("no agent {}; see agents", s("agent")))?;
+                    .ok_or_else(|| crate::error::StreamerzError::not_found(format!("no agent {}; see agents", s("agent"))))?;
                 let on = a["on"].as_bool().unwrap_or(true);
                 crate::agents::set(kind, &crate::agents::Places::here(), &server(), on)?;
                 Ok(json!({ "ok": true }))
@@ -415,7 +461,11 @@ impl Client {
                 "" => Ok(json!({ "guides": crate::docs::guides() })),
                 n => crate::docs::guide(n)
                     .map(|t| json!({ "text": t }))
-                    .ok_or_else(|| format!("no guide {n}; call guide with no name for the list")),
+                    .ok_or_else(|| {
+                        crate::error::StreamerzError::not_found(format!(
+                            "no guide {n}; call guide with no name for the list"
+                        ))
+                    }),
             },
             "get" => {
                 self.ask(json!({"request": "StreamerzGet", "what": s("what"), "itemId": s("id"), "name": s("name")}))
@@ -446,7 +496,8 @@ impl Client {
                     .await
             }
             "new_action" => Ok(
-                serde_json::to_value(crate::edit::new_action(&s("name"), &s("group"))).map_err(|e| e.to_string())?
+                serde_json::to_value(crate::edit::new_action(&s("name"), &s("group")))
+                    .map_err(crate::error::StreamerzError::from)?
             ),
             "song_request_template" => {
                 let made = crate::templates::songs::made();
@@ -455,6 +506,14 @@ impl Client {
             }
             "connectors" => self.ask(json!({"request": "StreamerzConnectors"})).await,
             "obs_outputs" | "obs_outputs_control" => self.ask(json!({"request": "StreamerzOutputs", "op": if name == "obs_outputs" { "list".to_string() } else { s("op") }, "outputs": a["outputs"], "connectionId": s("connectionId")})).await,
+            "obs_preflight" => {
+                let mut req = a.clone();
+                req["request"] = "StreamerzPreflight".into();
+                if req["op"].is_null() {
+                    req["op"] = "check".into();
+                }
+                self.ask(req).await
+            }
             "platform_api" => self.ask(json!({"request": "StreamerzPlatformApi", "platform": s("platform"), "method": a.get("method").and_then(Value::as_str).unwrap_or("GET"), "path": s("path"), "query": a["query"], "body": a["body"]})).await,
             "obs_request" => self.ask(json!({"request": "StreamerzObsRequest", "requestType": s("requestType"), "requestData": a["requestData"], "connectionId": s("connectionId")})).await,
             "spotify_current" => self.ask(json!({"request": "StreamerzSpotifyCurrent"})).await,
@@ -464,7 +523,7 @@ impl Client {
             "spotify_queue" => self.ask(json!({"request": "StreamerzSpotifyQueue", "query": s("query")})).await,
             "spotify_playback" => self.ask(json!({"request": "StreamerzSpotifyPlayback", "command": s("command")})).await,
             "overlays" => self.ask(json!({"request": "StreamerzOverlay", "op": "list"})).await,
-            "overlay_read" | "overlay_save" | "overlay_delete" | "overlay_test" | "overlay_inspect" | "overlay_shot" => {
+            "overlay_read" | "overlay_save" | "overlay_rename" | "overlay_delete" | "overlay_test" | "overlay_inspect" | "overlay_shot" => {
                 let mut request = a.clone();
                 request["request"] = "StreamerzOverlay".into();
                 request["op"] = name.trim_start_matches("overlay_").into();
@@ -505,7 +564,7 @@ impl Client {
             "add_template" => self.ask(json!({"request": "StreamerzTemplateAdd", "name": s("name")})).await,
             "ui" => self.ask(json!({"request": "StreamerzUi", "do": s("do")})).await,
             "request" => self.ask(a["json"].clone()).await,
-            _ => Err(format!("no tool {name}")),
+            _ => Err(crate::error::StreamerzError::not_found(format!("no tool {name}"))),
         }
     }
 }
@@ -545,7 +604,7 @@ async fn handle(c: &mut Client, m: &Value) -> Option<Value> {
             let args = p.get("arguments").unwrap_or(&empty);
             let (text, failed) = match c.call(p["name"].as_str().unwrap_or(""), args).await {
                 Ok(v) => (serde_json::to_string(&v).unwrap_or_default(), false),
-                Err(e) => (e, true),
+                Err(e) => (e.format_mcp(), true),
             };
             json!({"content": [{"type": "text", "text": text}], "isError": failed})
         }
@@ -564,10 +623,14 @@ fn rpc_error(id: Value, code: i32, message: &str) -> Value {
 /// Serve MCP on stdin/stdout until stdin closes.
 pub fn run() {
     crate::set_quiet(true);
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
+    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => {
+            let err = crate::error::StreamerzError::unexpected(format!("Could not start MCP runtime: {e}"));
+            eprintln!("Streamerz MCP: {err}");
+            return;
+        }
+    };
     let mut c = Client { ws: None, next: 0 };
     let stdout = std::io::stdout();
     for line in std::io::stdin().lock().lines() {
@@ -665,7 +728,9 @@ mod tests {
             let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
             let mut client = Client { ws: Some(ws), next: 0 };
             assert!(client.call("status", &json!({})).await.is_ok());
-            assert_eq!(client.call("status", &json!({})).await.unwrap_err(), "service unavailable");
+            let err = client.call("status", &json!({})).await.unwrap_err();
+            assert_eq!(err.description, "service unavailable");
+            assert!(!err.recommendation.is_empty());
             assert!(client.call("status", &json!({})).await.is_err());
             assert!(client.ws.is_none());
             server.await.unwrap();
@@ -763,7 +828,7 @@ mod tests {
                 let result = client.call(name, &args).await;
                 if *name == "agent_setup" {
                     // A nonexistent agent exercises dispatch without editing any configuration.
-                    assert!(result.unwrap_err().contains("no agent"));
+                    assert!(result.unwrap_err().description.contains("no agent"));
                 } else {
                     assert!(result.is_ok(), "{name}: {result:?}");
                 }
@@ -816,7 +881,7 @@ mod tests {
                 .call("agent_setup", &json!({"agent": "nothing"}))
                 .await
                 .unwrap_err();
-            assert!(e.contains("no agent"));
+            assert!(e.description.contains("no agent"));
         });
     }
 
@@ -826,6 +891,22 @@ mod tests {
         assert_eq!(t["tools"].as_array().unwrap().len(), TOOLS.len());
         for tool in t["tools"].as_array().unwrap() {
             assert!(tool["inputSchema"]["properties"].is_object(), "{}", tool["name"]);
+        }
+    }
+
+    #[test]
+    fn stream_operations_are_accepted_by_the_advertised_mcp_schemas() {
+        assert!(validate_arguments("core_view", &json!({"domain": "stream"})).is_ok());
+        assert!(validate_arguments("core_action", &json!({"domain": "stream", "action": "refresh"})).is_ok());
+        for kind in [
+            "stream_info.twitch",
+            "stream_info.youtube",
+            "stream_info",
+            "stream_ad",
+            "stream_thumbnail",
+        ] {
+            assert!(validate_arguments("entity_form", &json!({"kind": kind})).is_ok());
+            assert!(validate_arguments("edit_entity", &json!({"kind": kind, "changes": []})).is_ok());
         }
     }
 
@@ -850,5 +931,23 @@ mod tests {
             let tool = tool(name);
             assert!(tool.1.contains(word) || tool.2.contains(word), "{name} omits {word}");
         }
+    }
+
+    #[test]
+    fn structured_mcp_tool_error_includes_title_description_and_recommendation() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        rt.block_on(async {
+            let mut client = Client { ws: None, next: 0 };
+            let reply = handle(
+                &mut client,
+                &json!({"jsonrpc": "2.0", "id": 42, "method": "tools/call", "params": {"name": "no_such_tool"}}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(reply["result"]["isError"], true);
+            let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+            assert!(text.contains("no tool no_such_tool"));
+            assert!(text.contains(crate::i18n::tr("error.recommended_prefix")));
+        });
     }
 }
