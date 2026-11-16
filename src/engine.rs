@@ -1193,6 +1193,12 @@ impl Engine {
         if matches!(kind, 103..=105) {
             self.note_subscriber(kind, args);
         }
+        if matches!(
+            kind,
+            crate::twitch::T_AUTOMOD_MESSAGE_HELD | crate::twitch::T_AUTOMOD_MESSAGE_UPDATED
+        ) {
+            self.note_held(kind, args);
+        }
         if !self.plugins.borrow().is_empty() {
             self.plugins_hear(name(TRIGGERS, kind).unwrap_or(trigger_name), args);
         }

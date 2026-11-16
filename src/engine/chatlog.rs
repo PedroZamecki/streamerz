@@ -2180,6 +2180,16 @@ impl Engine {
                 ("kick", Moderate::Delete) => crate::kick::delete_message(&e, &e.cfg, &l.msg_id).await,
                 ("kick", Moderate::Timeout(s)) => e.kick_start().timeout_user(&l.user, s, "").await,
                 ("kick", Moderate::Ban) => e.kick_start().ban_user(&l.user, "").await,
+                ("youtube", Moderate::Delete) => e
+                    .youtube_start()
+                    .data(
+                        "DELETE",
+                        "",
+                        &format!("liveChat/messages?id={}", crate::commands::url_encode(&l.msg_id)),
+                        None,
+                    )
+                    .await
+                    .map(drop),
                 ("youtube", Moderate::Timeout(s)) => e.youtube_start().timeout_user("", &l.user_id, s).await,
                 ("youtube", Moderate::Ban) => e.youtube_start().ban_user("", &l.user_id).await,
                 _ => Err("not possible on this platform".into()),

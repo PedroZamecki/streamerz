@@ -1656,5 +1656,12 @@
   "rewards.needs_title": "Uma recompensa precisa de um título.",
   "rewards.failed": "Não deu certo: {error}",
   "rewards.no_twitch": "A Twitch não está conectada",
-  "btn.create": "Criar"
+  "btn.create": "Criar",
+  "chat.act_unban": "Desbanir",
+  "chat.act_mod": "Tornar moderador",
+  "chat.act_unmod": "Tirar moderador",
+  "chat.held": "Retida pelo AutoMod",
+  "chat.held_for": "Retida pelo AutoMod: {reason}",
+  "chat.held_allow": "Permitir",
+  "chat.held_deny": "Negar"
 }

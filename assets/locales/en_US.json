@@ -1656,5 +1656,12 @@
   "rewards.needs_title": "A reward needs a title.",
   "rewards.failed": "It didn't work: {error}",
   "rewards.no_twitch": "Twitch isn't connected",
-  "btn.create": "Create"
+  "btn.create": "Create",
+  "chat.act_unban": "Unban",
+  "chat.act_mod": "Make moderator",
+  "chat.act_unmod": "Remove moderator",
+  "chat.held": "Held by AutoMod",
+  "chat.held_for": "Held by AutoMod: {reason}",
+  "chat.held_allow": "Allow",
+  "chat.held_deny": "Deny"
 }

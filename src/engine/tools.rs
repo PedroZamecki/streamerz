@@ -7,6 +7,11 @@ use crate::model::Obj;
 use serde_json::{json, Value};
 use std::rc::Rc;
 
+thread_local! {
+    /// What AutoMod holds now (see `Engine::note_held`).
+    static HELD: std::cell::RefCell<Vec<Value>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// The platforms a sub-action can reach, in the order they're tried.
 pub const PLATFORMS: [&str; 4] = ["twitch", "youtube", "kick", "tiktok"];
 
@@ -205,6 +210,53 @@ impl Engine {
                 ctx.args.insert(format!("{prefix}{i}{key}"), value.clone());
             }
         }
+    }
+
+    /// Twitch's AutoMod held a message (463), or one held changed (464): the chat shows those waiting,
+    /// with Allow and Deny. The newest 20 are kept, for this session only.
+    pub(crate) fn note_held(&self, kind: u32, args: &Obj) {
+        let get = |k: &str| args.get(k).map(crate::vars::text).unwrap_or_default();
+        let id = get("messageId");
+        if id.is_empty() {
+            return;
+        }
+        HELD.with_borrow_mut(|held| {
+            held.retain(|h| h["msgId"] != id.as_str());
+            if kind == crate::twitch::T_AUTOMOD_MESSAGE_HELD {
+                held.push(
+                    json!({"msgId": id, "user": get("user"), "userId": get("userId"), "text": get("rawInput"),
+                    "reason": get("category"), "level": get("level")}),
+                );
+                if held.len() > 20 {
+                    held.remove(0);
+                }
+            }
+        });
+        crate::host::chat();
+    }
+
+    /// The messages AutoMod holds now, oldest first.
+    pub fn held(&self) -> Vec<Value> {
+        HELD.with_borrow(Clone::clone)
+    }
+
+    /// Lets a held message through, or keeps it out, and takes it off the list.
+    pub fn decide_held(self: &Rc<Self>, id: &str, allow: bool) {
+        HELD.with_borrow_mut(|held| held.retain(|h| h["msgId"] != id));
+        crate::host::chat();
+        let what = format!("/{} {id}", if allow { "allow" } else { "deny" });
+        if self.dev_out("twitch", &what, false) {
+            self.chat_note("twitch", format!("(dev, not sent) {what}"));
+            return;
+        }
+        let settings = json!({"messageId": id}).as_object().cloned().unwrap_or_default();
+        let engine = self.clone();
+        tokio::task::spawn_local(async move {
+            let (_, outcome) = engine.execute_one(if allow { 99507 } else { 99508 }, settings).await;
+            if let Some(error) = outcome.error {
+                engine.chat_note("twitch", format!("{what}: {error}"));
+            }
+        });
     }
 
     /// A reward redemption (Twitch 112, Kick 35024) counts: the trigger's arguments with `counter` and
