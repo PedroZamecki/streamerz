@@ -43,6 +43,55 @@ text colour for secondary text and `controls/health.rs` for connection state. Us
 existing brand assets. Don't introduce
 local colors, decorative symbols or custom widget styling for one screen.
 
+## Page frame, spacing and typography
+
+One frame for every page. The numbers live as tokens in `frontend/src/theme.rs`; a screen uses the token,
+never a literal. `dev/ui-spacing.py DIR` measures screenshots from `dev/ui-shot.py` against this table.
+
+**Spacing scale** (4px grid, nothing else): `SPACE_XS` 4, `SPACE_SM` 8, `SPACE_MD` 12, `SPACE_LG` 16.
+No 1, 2, 3, 5, 6, 10, 11 or 14px gaps between blocks. Icon-to-label gaps inside one control may be 4 or 8.
+
+**Frame** (drawn once, in `app.rs`; pages never add their own outer padding): 16px left and right
+(`PAGE_PAD_X`), 16px top (`PAGE_PAD_TOP`), 12px bottom (`PAGE_PAD_BOTTOM`). The scrollbar sits inside the
+right padding, so the right gutter is 16px with or without a scrollbar.
+
+**Anatomy**, top to bottom, the same order on every page:
+
+| Part | Look | Gap after it |
+|---|---|---|
+| Header: icon and title (`controls/page.rs` `header`) | H1, 18/24 bold, strong colour, line under it; page-wide actions (Add, Pause all) at its right | 12 |
+| Guide: what the page is for (`page::guide`) | 13/18, quiet; at most two lines | 12 |
+| Toolbar: search, filter, "Show" tabs, top buttons | one row, 28px high, 8px between controls | 8 |
+| Content: table, tree, cards, labelled rows, chat | fills the rest | 8 |
+| Action row under the content (edit, delete, restore...) | one row, 28px high, 8px between buttons | 8 |
+| Note under the content (a hint, a scope warning): `notice::note` | 12/16, quiet | none |
+
+Chat is a full-bleed workspace: it has the frame's side and bottom padding but no header.
+
+**Sections** inside a page: heading H2 (15/20 bold, optional icon), 8px under it to its content, and
+`SECTION_GAP` (16) between one section and the next. A page with one list uses the page header and has no H2.
+A section's own note or hint goes straight under its heading (12px caption, 4px gap), not at the bottom.
+Cards in a grid have 12px between them, 16px inside.
+
+**Typography**, five sizes only (`FONT_*`, `LINE_*`):
+
+| Role | Size / line | Weight | Colour |
+|---|---|---|---|
+| Page title (H1) | 18 / 24 | bold | strong |
+| Section title (H2), card title | 15 / 20 | bold | strong |
+| Body: labels, cells, buttons, inputs, menu and sidebar items (a sidebar item is 24px high) | 13 / 18 | normal (bold for a name) | default |
+| Caption: column heads, hints, notes, chips, status text | 12 / 16 | normal (column heads bold) | quiet |
+| Micro: sidebar group labels, tiny badges | 11 / 14 | bold | quiet |
+
+No half sizes (12.5, 13.4, 13.5, 11.5), and no `text_xs`/`text_sm`/`text_lg`. A card's large headline
+number is the one other size (22 / 28 bold). Weights are normal and bold only.
+
+**Rows and controls**: a table row is 28px, a header row 24px, a button 28px (26px in a dense row), an input
+28px. Padding inside a row or cell is 12px left and right. Label then control rows (forms, settings) are 8px apart,
+a labelled group is 16px from the next.
+The bordered rows of the connection and settings lists (Servers, Stream Apps) are 28px high with 12px
+at the sides, 8px between one row and the next, and buttons of `DENSE_CONTROL_HEIGHT` (26px) so they fit inside the border.
+
 ## Building blocks
 
 The UI is modular: a look or behaviour used in more than one place lives in one shared block, and every
@@ -63,6 +112,8 @@ new that others could use, add it to the right module (or a new one) first, then
 | A dialog | `dialog.rs` (`shell`, `body`, `footer`: header, body, buttons in the footer) | a window of its own |
 | A message or a question from the core | `prompt.rs` (`Prompt`), asked through `src/core/prompts.rs` | a dialog the window owns |
 | Why something is empty or can't be done | `notice::info`; a validation error: `notice::error` | a coloured label |
+| A hint or a scope warning under a heading, a toolbar or a button row | `notice::note` (12/16, quiet); a page's own guide: `page::guide` | a text styled by hand |
+| A small tag in a row (a lock, a retry time, the default star) | `pill` in `list.rs` (11/14, quiet, 4px padding) | a box drawn by hand |
 | A page's "Show" selector | `tabs.rs` (`bar`) | buttons of its own |
 | The inside of a button | `body.rs` (`button_body`: icon and label) | an icon and text placed by hand |
 | A connection's state | `health.rs` (`appearance`) | a coloured label |
@@ -85,8 +136,9 @@ from `controls/dialog.rs`:
 
 - **Header** (`dialog::shell`): the title, 13px bold, with the close button (X, and Escape, cancel) at its
   right, and a line under it. `shell` also centres the dialog, sets its width and gives it its shadow.
-- **Body** (`dialog::body`): the contents, inset from the edges. A long one scrolls; the header and footer
-  stay put.
+- **Body** (`dialog::body`): the contents, inset from the edges (16px at the sides). It has only 4px of
+  vertical padding because the toolkit already adds 8px above and below it, which makes 12px between the body
+  and the lines of the header and footer. A long one scrolls; the header and footer stay put.
 - **Footer** (`dialog::footer`): the buttons, under a line. The main ones (OK, Cancel, Delete) sit at the
   right, the main action last; one that stands apart (Edit JSON) sits at the left. A dialog that only shows
   something gets a Close button there (`dialog::close_footer`). Buttons never go in the body.
@@ -355,10 +407,13 @@ Cancel, Close and commit actions stay in the footer. No setup or diagnostic read
   the screenshots for clipping, readable labels, alignment and usable actions; check relevant empty,
   populated, error and disabled states, including the right-click menu.
 - Run input-driven checks serially on the shared hidden display so one test cannot send input to
-  another instance. `DISPLAY=:99 python3 -P dev/ui-shot.py PAGE...` captures pages and
+  another instance. `python3 -P dev/ui-shot.py PAGE...` captures pages (always on :99, the window of the instance it started,
+  at any `--size`, narrow ones too) and
   `DISPLAY=:99 python3 -P dev/ui-smoke.py` visits every page with isolated settings; its disconnected memory
   sample is separate from the live integration budget. The smoke fails when anything on a page or in the
   TikTok setup dialog is cut off sideways (the dev `overflow` command: a painted button, field or box only
   partly inside its clip); run it in Portuguese too (`--locale pt_BR`), whose words are the longest.
+- Show failures with `controls::notice::error` and a `StreamerzError` (`docs/ERRORS.md`): a title, what
+  happened and what to try, never a bare string.
 - Exercise the main task, cancellation and validation by hand. Add a regression test for each bug fixed,
   or a smoke step when a unit test is not suitable. Run `dev/ui-smoke.py` before closing the version.
