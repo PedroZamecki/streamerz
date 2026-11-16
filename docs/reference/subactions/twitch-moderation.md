@@ -747,4 +747,3 @@ None.
 - `vipCount`: number of VIPs returned.
 - `vip0.userId`, `vip0.userLogin`, `vip0.userName`, and so on.
 - `vips`: JSON array of returned VIP entries.
-
