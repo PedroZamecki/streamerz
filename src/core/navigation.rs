@@ -13,6 +13,7 @@ pub const NAV: &[Section] = &[
             ("Stream", "nav.page.stream", "radio"),
             ("Accounts", "nav.page.accounts", "user-round"),
             ("Community", "nav.page.community", "users"),
+            ("Moderation", "nav.page.moderation", "shield"),
             ("Polls", "nav.page.polls", "vote"),
         ],
     ),

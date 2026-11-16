@@ -64,6 +64,7 @@ pub fn supports(domain: &str) -> bool {
         || super::pages::supports(domain)
         || super::overlays::supports(domain)
         || super::polls::supports(domain)
+        || super::moderation::supports(domain)
         || super::stream::supports(domain)
         || super::sections::supports(domain)
 }
@@ -137,6 +138,9 @@ pub fn read_request(engine: &Rc<Engine>, request: &Value) -> Result<Value, Strin
 }
 
 pub fn read(engine: &Rc<Engine>, domain: &str) -> Result<Value, String> {
+    if super::moderation::supports(domain) {
+        return super::moderation::read(engine);
+    }
     if super::overlays::supports(domain) {
         return super::overlays::read(engine, domain);
     }
