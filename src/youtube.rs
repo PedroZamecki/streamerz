@@ -17,6 +17,83 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 
+/// Only supplied fields change. The API replaces each included metadata part.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct VideoUpdate {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub category: Option<String>,
+    pub privacy: Option<String>,
+}
+
+fn video_update_body(id: &str, current: &Value, update: &VideoUpdate) -> Result<Value, String> {
+    let snippet = current["snippet"]
+        .as_object()
+        .ok_or("YouTube: video metadata is unavailable")?;
+    let mut kept = serde_json::Map::new();
+    for key in [
+        "title",
+        "description",
+        "tags",
+        "categoryId",
+        "defaultLanguage",
+        "defaultAudioLanguage",
+    ] {
+        if let Some(value) = snippet.get(key) {
+            kept.insert(key.into(), value.clone());
+        }
+    }
+    for (key, value) in [
+        ("title", &update.title),
+        ("description", &update.description),
+        ("categoryId", &update.category),
+    ] {
+        if let Some(value) = value {
+            kept.insert(key.into(), value.clone().into());
+        }
+    }
+    if let Some(tags) = &update.tags {
+        kept.insert("tags".into(), json!(tags));
+    }
+    if kept.get("title").and_then(Value::as_str).is_none_or(str::is_empty)
+        || kept.get("categoryId").and_then(Value::as_str).is_none_or(str::is_empty)
+    {
+        return Err("YouTube: the current title and category are required".into());
+    }
+    let mut body = json!({"id": id, "snippet": kept});
+    if let Some(privacy) = &update.privacy {
+        if !["public", "unlisted", "private"].contains(&privacy.as_str()) {
+            return Err("YouTube: invalid privacy setting".into());
+        }
+        let status = current["status"]
+            .as_object()
+            .ok_or("YouTube: video privacy is unavailable")?;
+        let mut kept = serde_json::Map::new();
+        for key in [
+            "embeddable",
+            "license",
+            "publicStatsViewable",
+            "selfDeclaredMadeForKids",
+            "containsSyntheticMedia",
+        ] {
+            if let Some(value) = status.get(key) {
+                kept.insert(key.into(), value.clone());
+            }
+        }
+        // A publishing schedule is valid only while private. An explicit change to public or
+        // unlisted clears it, as in YouTube Studio; keeping private preserves the schedule.
+        if privacy == "private" {
+            if let Some(value) = status.get("publishAt") {
+                kept.insert("publishAt".into(), value.clone());
+            }
+        }
+        kept.insert("privacyStatus".into(), privacy.clone().into());
+        body["status"] = kept.into();
+    }
+    Ok(body)
+}
+
 // YouTube Trigger IDs
 pub const T_YT_BROADCAST_STARTED: u32 = 4001;
 pub const T_YT_BROADCAST_ENDED: u32 = 4002;
@@ -221,20 +298,37 @@ pub enum YouTubeCmd {
     /// Title, description and tags in one videos.update (each one costs 50 units of quota).
     UpdateVideo {
         broadcast: String,
-        title: Option<String>,
-        description: Option<String>,
-        tags: Option<Vec<String>>,
+        update: VideoUpdate,
         resp: oneshot::Sender<Result<(), String>>,
     },
     BanUser {
         broadcast: String,
         user_id: String,
-        resp: oneshot::Sender<Result<(), String>>,
+        resp: oneshot::Sender<Result<String, String>>,
     },
     TimeoutUser {
         broadcast: String,
         user_id: String,
         duration: u64,
+        resp: oneshot::Sender<Result<String, String>>,
+    },
+    RemoveBan {
+        id: String,
+        resp: oneshot::Sender<Result<(), String>>,
+    },
+    DeleteMessage {
+        message_id: String,
+        resp: oneshot::Sender<Result<(), String>>,
+    },
+    AddModerator {
+        broadcast: String,
+        user_id: String,
+        resp: oneshot::Sender<Result<String, String>>,
+    },
+    RemoveModerator {
+        broadcast: String,
+        moderator_id: String,
+        user_id: String,
         resp: oneshot::Sender<Result<(), String>>,
     },
     CreatePoll {
@@ -351,21 +445,13 @@ impl YouTubeHandle {
         resp_rx.await.map_err(|_| "Request cancelled".to_string())?
     }
 
-    /// Change what is given of the title, description and tags in one update.
-    pub async fn update_video(
-        &self,
-        broadcast: &str,
-        title: Option<String>,
-        description: Option<String>,
-        tags: Option<Vec<String>>,
-    ) -> Result<(), String> {
+    /// Change the supplied video metadata in one update.
+    pub async fn update_video(&self, broadcast: &str, update: VideoUpdate) -> Result<(), String> {
         let (resp, resp_rx) = oneshot::channel();
         self.tx
             .send(YouTubeCmd::UpdateVideo {
                 broadcast: broadcast.to_string(),
-                title,
-                description,
-                tags,
+                update,
                 resp,
             })
             .map_err(|_| "YouTube runner is down".to_string())?;
@@ -373,28 +459,86 @@ impl YouTubeHandle {
     }
 
     pub async fn ban_user(&self, broadcast: &str, user_id: &str) -> Result<(), String> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(YouTubeCmd::BanUser {
-                broadcast: broadcast.to_string(),
-                user_id: user_id.to_string(),
-                resp: resp_tx,
-            })
-            .map_err(|_| "YouTube runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        self.ban_user_tracked(broadcast, user_id, None).await.map(drop)
     }
 
-    pub async fn timeout_user(&self, broadcast: &str, user_id: &str, duration: u64) -> Result<(), String> {
+    /// Returns the ban resource ID, which YouTube requires to remove it later.
+    pub async fn ban_user_tracked(
+        &self,
+        broadcast: &str,
+        user_id: &str,
+        duration: Option<u64>,
+    ) -> Result<String, String> {
         let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(YouTubeCmd::TimeoutUser {
+        let cmd = if let Some(duration) = duration {
+            YouTubeCmd::TimeoutUser {
                 broadcast: broadcast.to_string(),
                 user_id: user_id.to_string(),
                 duration,
                 resp: resp_tx,
+            }
+        } else {
+            YouTubeCmd::BanUser {
+                broadcast: broadcast.to_string(),
+                user_id: user_id.to_string(),
+                resp: resp_tx,
+            }
+        };
+        self.tx.send(cmd).map_err(|_| "YouTube runner is down".to_string())?;
+        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    pub async fn timeout_user(&self, broadcast: &str, user_id: &str, duration: u64) -> Result<(), String> {
+        self.ban_user_tracked(broadcast, user_id, Some(duration))
+            .await
+            .map(drop)
+    }
+
+    pub async fn remove_ban(&self, id: &str) -> Result<(), String> {
+        let (resp, rx) = oneshot::channel();
+        self.tx
+            .send(YouTubeCmd::RemoveBan {
+                id: id.to_string(),
+                resp,
             })
             .map_err(|_| "YouTube runner is down".to_string())?;
-        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+        rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    pub async fn delete_message(&self, message_id: &str) -> Result<(), String> {
+        let (resp, rx) = oneshot::channel();
+        self.tx
+            .send(YouTubeCmd::DeleteMessage {
+                message_id: message_id.to_string(),
+                resp,
+            })
+            .map_err(|_| "YouTube runner is down".to_string())?;
+        rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    pub async fn add_moderator(&self, broadcast: &str, user_id: &str) -> Result<String, String> {
+        let (resp, rx) = oneshot::channel();
+        self.tx
+            .send(YouTubeCmd::AddModerator {
+                broadcast: broadcast.to_string(),
+                user_id: user_id.to_string(),
+                resp,
+            })
+            .map_err(|_| "YouTube runner is down".to_string())?;
+        rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    pub async fn remove_moderator(&self, broadcast: &str, moderator_id: &str, user_id: &str) -> Result<(), String> {
+        let (resp, rx) = oneshot::channel();
+        self.tx
+            .send(YouTubeCmd::RemoveModerator {
+                broadcast: broadcast.to_string(),
+                moderator_id: moderator_id.to_string(),
+                user_id: user_id.to_string(),
+                resp,
+            })
+            .map_err(|_| "YouTube runner is down".to_string())?;
+        rx.await.map_err(|_| "Request cancelled".to_string())?
     }
 
     pub async fn set_thumbnail(&self, broadcast: &str, file_path: &str) -> Result<(), String> {
@@ -625,15 +769,10 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
                 }
                 YouTubeCmd::UpdateVideo {
                     broadcast,
-                    title,
-                    description,
-                    tags,
+                    update,
                     resp,
                 } => {
-                    let r = runner
-                        .update_snippet(&broadcast, title.as_deref(), description.as_deref(), tags.as_deref())
-                        .await;
-                    let _ = resp.send(r);
+                    let _ = resp.send(runner.update_snippet(&broadcast, &update).await);
                 }
                 YouTubeCmd::SetTitle { broadcast, title, resp } => {
                     let r = runner.set_title_api(&broadcast, &title).await;
@@ -674,6 +813,27 @@ pub fn start(engine: Rc<Engine>, cfg: &Arc<watch::Sender<Config>>) -> YouTubeHan
                 } => {
                     let r = runner.timeout_user_api(&broadcast, &user_id, duration).await;
                     let _ = resp.send(r);
+                }
+                YouTubeCmd::RemoveBan { id, resp } => {
+                    let _ = resp.send(runner.remove_ban_api(&id).await);
+                }
+                YouTubeCmd::DeleteMessage { message_id, resp } => {
+                    let _ = resp.send(runner.delete_message_api(&message_id).await);
+                }
+                YouTubeCmd::AddModerator {
+                    broadcast,
+                    user_id,
+                    resp,
+                } => {
+                    let _ = resp.send(runner.add_moderator_api(&broadcast, &user_id).await);
+                }
+                YouTubeCmd::RemoveModerator {
+                    broadcast,
+                    moderator_id,
+                    user_id,
+                    resp,
+                } => {
+                    let _ = resp.send(runner.remove_moderator_api(&broadcast, &moderator_id, &user_id).await);
                 }
                 YouTubeCmd::CreatePoll {
                     broadcast,
@@ -966,62 +1126,37 @@ impl YouTubeRunner {
         Ok(live)
     }
 
-    /// Change a video's title and/or description. videos.update replaces the whole snippet (and
-    /// requires its categoryId), so the current one is read and sent back with the changes.
-    async fn update_snippet(
-        &self,
-        broadcast: &str,
-        title: Option<&str>,
-        description: Option<&str>,
-        tags: Option<&[String]>,
-    ) -> Result<(), String> {
+    /// Read the current resource so replacing a part preserves unrelated writable fields.
+    async fn update_snippet(&self, broadcast: &str, update: &VideoUpdate) -> Result<(), String> {
         let token = token(&self.engine, &self.cfg, false, false).await?;
         let video = self.target(broadcast).await?;
         let auth = ("Authorization".to_string(), format!("Bearer {token}"));
+        let part = if update.privacy.is_some() {
+            "snippet,status"
+        } else {
+            "snippet"
+        };
         let r = crate::http::request(
             "GET",
             &format!(
-                "{YOUTUBE_API_BASE}/videos?part=snippet&id={}",
+                "{YOUTUBE_API_BASE}/videos?part={part}&id={}",
                 crate::commands::url_encode(&video)
             ),
             std::slice::from_ref(&auth),
             b"",
         )
         .await?;
+        if !(200..300).contains(&r.status) {
+            return Err(format!("YouTube: can't read video {video} (HTTP {})", r.status));
+        }
         let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
-        let mut snippet = v
-            .pointer("/items/0/snippet")
-            .cloned()
-            .ok_or_else(|| format!("YouTube: can't read video {video} (HTTP {})", r.status))?;
-        if let Some(t) = title {
-            snippet["title"] = json!(t);
-        }
-        if let Some(d) = description {
-            snippet["description"] = json!(d);
-        }
-        if let Some(t) = tags {
-            snippet["tags"] = json!(t);
-        }
-        // Read-only or derived fields the update refuses or ignores.
-        if let Some(o) = snippet.as_object_mut() {
-            for k in [
-                "publishedAt",
-                "channelId",
-                "thumbnails",
-                "channelTitle",
-                "liveBroadcastContent",
-                "localized",
-            ] {
-                o.remove(k);
-            }
-        }
-        let body = serde_json::to_vec(&json!({"id": video, "snippet": snippet})).unwrap_or_default();
+        let body = video_update_body(&video, &v["items"][0], update)?;
         let headers = [auth, ("Content-Type".to_string(), "application/json".to_string())];
         let r = crate::http::request(
             "PUT",
-            &format!("{YOUTUBE_API_BASE}/videos?part=snippet"),
+            &format!("{YOUTUBE_API_BASE}/videos?part={part}"),
             &headers,
-            &body,
+            &serde_json::to_vec(&body).unwrap_or_default(),
         )
         .await?;
         if (200..300).contains(&r.status) {
@@ -1032,11 +1167,25 @@ impl YouTubeRunner {
     }
 
     async fn set_title_api(&self, broadcast: &str, title: &str) -> Result<(), String> {
-        self.update_snippet(broadcast, Some(title), None, None).await
+        self.update_snippet(
+            broadcast,
+            &VideoUpdate {
+                title: Some(title.into()),
+                ..VideoUpdate::default()
+            },
+        )
+        .await
     }
 
     async fn set_description_api(&self, broadcast: &str, description: &str) -> Result<(), String> {
-        self.update_snippet(broadcast, None, Some(description), None).await
+        self.update_snippet(
+            broadcast,
+            &VideoUpdate {
+                description: Some(description.into()),
+                ..VideoUpdate::default()
+            },
+        )
+        .await
     }
 
     async fn set_title_and_description_api(
@@ -1045,25 +1194,24 @@ impl YouTubeRunner {
         title: &str,
         description: &str,
     ) -> Result<(), String> {
-        self.update_snippet(broadcast, Some(title), Some(description), None)
-            .await
+        self.update_snippet(
+            broadcast,
+            &VideoUpdate {
+                title: Some(title.into()),
+                description: Some(description.into()),
+                ..VideoUpdate::default()
+            },
+        )
+        .await
     }
 
-    async fn ban_user_api(&self, broadcast: &str, user_id: &str) -> Result<(), String> {
+    async fn ban_user_api(&self, broadcast: &str, user_id: &str) -> Result<String, String> {
         let token = token(&self.engine, &self.cfg, false, false).await?;
 
         let live_chat_id = &self.live_chat_id(broadcast, &token).await?;
 
         let url = format!("{YOUTUBE_API_BASE}/liveChat/bans?part=snippet");
-        let payload = json!({
-            "snippet": {
-                "liveChatId": live_chat_id,
-                "type": "permanent",
-                "bannedAuthorDetails": {
-                    "channelId": user_id
-                }
-            }
-        });
+        let payload = live_chat_ban_payload(live_chat_id, user_id, None);
 
         let headers = vec![
             ("Authorization".to_string(), format!("Bearer {token}")),
@@ -1072,28 +1220,21 @@ impl YouTubeRunner {
         let body = serde_json::to_vec(&payload).unwrap_or_default();
         let resp = crate::http::request("POST", &url, &headers, &body).await?;
         if (200..300).contains(&resp.status) {
-            Ok(())
+            let id = ban_id(&resp.body)?;
+            crate::core::moderation::remember_youtube(&self.engine, &id, user_id, live_chat_id, None);
+            Ok(id)
         } else {
             Err(format!("YouTube ban error {}: {}", resp.status, resp.text()))
         }
     }
 
-    async fn timeout_user_api(&self, broadcast: &str, user_id: &str, duration: u64) -> Result<(), String> {
+    async fn timeout_user_api(&self, broadcast: &str, user_id: &str, duration: u64) -> Result<String, String> {
         let token = token(&self.engine, &self.cfg, false, false).await?;
 
         let live_chat_id = &self.live_chat_id(broadcast, &token).await?;
 
         let url = format!("{YOUTUBE_API_BASE}/liveChat/bans?part=snippet");
-        let payload = json!({
-            "snippet": {
-                "liveChatId": live_chat_id,
-                "type": "temporary",
-                "banDurationSeconds": duration,
-                "bannedAuthorDetails": {
-                    "channelId": user_id
-                }
-            }
-        });
+        let payload = live_chat_ban_payload(live_chat_id, user_id, Some(duration));
 
         let headers = vec![
             ("Authorization".to_string(), format!("Bearer {token}")),
@@ -1102,9 +1243,131 @@ impl YouTubeRunner {
         let body = serde_json::to_vec(&payload).unwrap_or_default();
         let resp = crate::http::request("POST", &url, &headers, &body).await?;
         if (200..300).contains(&resp.status) {
-            Ok(())
+            let id = ban_id(&resp.body)?;
+            crate::core::moderation::remember_youtube(&self.engine, &id, user_id, live_chat_id, Some(duration));
+            Ok(id)
         } else {
             Err(format!("YouTube timeout error {}: {}", resp.status, resp.text()))
+        }
+    }
+
+    async fn remove_ban_api(&self, id: &str) -> Result<(), String> {
+        let token = token(&self.engine, &self.cfg, false, false).await?;
+        let url = format!(
+            "{YOUTUBE_API_BASE}/liveChat/bans?id={}",
+            crate::commands::url_encode(id)
+        );
+        let headers = [("Authorization".to_string(), format!("Bearer {token}"))];
+        let resp = crate::http::request("DELETE", &url, &headers, &[]).await?;
+        if (200..300).contains(&resp.status) {
+            self.engine
+                .change(|config| config.youtube_moderation_bans.retain(|ban| ban.id != id));
+            Ok(())
+        } else {
+            Err(format!("YouTube unban error {}: {}", resp.status, resp.text()))
+        }
+    }
+
+    async fn delete_message_api(&self, message_id: &str) -> Result<(), String> {
+        let token = token(&self.engine, &self.cfg, false, false).await?;
+        let url = format!(
+            "{YOUTUBE_API_BASE}/liveChat/messages?id={}",
+            crate::commands::url_encode(message_id)
+        );
+        let headers = [("Authorization".to_string(), format!("Bearer {token}"))];
+        let resp = crate::http::request("DELETE", &url, &headers, &[]).await?;
+        if (200..300).contains(&resp.status) {
+            Ok(())
+        } else {
+            Err(format!("YouTube delete message error {}: {}", resp.status, resp.text()))
+        }
+    }
+
+    async fn add_moderator_api(&self, broadcast: &str, user_id: &str) -> Result<String, String> {
+        let token = token(&self.engine, &self.cfg, false, false).await?;
+        let live_chat_id = self.live_chat_id(broadcast, &token).await?;
+        let url = format!("{YOUTUBE_API_BASE}/liveChat/moderators?part=snippet");
+        let payload = json!({
+            "snippet": {
+                "liveChatId": live_chat_id,
+                "moderatorDetails": {
+                    "channelId": user_id
+                }
+            }
+        });
+        let headers = vec![
+            ("Authorization".to_string(), format!("Bearer {token}")),
+            ("Content-Type".to_string(), "application/json".to_string()),
+        ];
+        let body = serde_json::to_vec(&payload).unwrap_or_default();
+        let resp = crate::http::request("POST", &url, &headers, &body).await?;
+        if (200..300).contains(&resp.status) {
+            let value: Value = serde_json::from_slice(&resp.body).unwrap_or_default();
+            Ok(value["id"].as_str().unwrap_or_default().to_string())
+        } else {
+            Err(format!("YouTube add moderator error {}: {}", resp.status, resp.text()))
+        }
+    }
+
+    async fn remove_moderator_api(&self, broadcast: &str, moderator_id: &str, user_id: &str) -> Result<(), String> {
+        let token = token(&self.engine, &self.cfg, false, false).await?;
+        let target_id = if !moderator_id.trim().is_empty() {
+            moderator_id.trim().to_string()
+        } else {
+            let live_chat_id = self.live_chat_id(broadcast, &token).await?;
+            let headers = [("Authorization".to_string(), format!("Bearer {token}"))];
+            let mut page_token = String::new();
+            let mut found = None;
+            loop {
+                let mut url = format!(
+                    "{YOUTUBE_API_BASE}/liveChat/moderators?part=snippet&liveChatId={}&maxResults=50",
+                    crate::commands::url_encode(&live_chat_id)
+                );
+                if !page_token.is_empty() {
+                    url.push_str("&pageToken=");
+                    url.push_str(&crate::commands::url_encode(&page_token));
+                }
+                let resp = crate::http::request("GET", &url, &headers, &[]).await?;
+                if !(200..300).contains(&resp.status) {
+                    return Err(format!(
+                        "YouTube list moderators error {}: {}",
+                        resp.status,
+                        resp.text()
+                    ));
+                }
+                let value: Value = serde_json::from_slice(&resp.body).unwrap_or_default();
+                if let Some(item) = value["items"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|item| item["snippet"]["moderatorDetails"]["channelId"].as_str() == Some(user_id))
+                {
+                    if let Some(id) = item["id"].as_str().filter(|s| !s.is_empty()) {
+                        found = Some(id.to_string());
+                        break;
+                    }
+                }
+                match value["nextPageToken"].as_str().filter(|s| !s.is_empty()) {
+                    Some(next) => page_token = next.to_string(),
+                    None => break,
+                }
+            }
+            found.ok_or_else(|| format!("YouTube: moderator {user_id} not found in live chat"))?
+        };
+        let url = format!(
+            "{YOUTUBE_API_BASE}/liveChat/moderators?id={}",
+            crate::commands::url_encode(&target_id)
+        );
+        let headers = [("Authorization".to_string(), format!("Bearer {token}"))];
+        let resp = crate::http::request("DELETE", &url, &headers, &[]).await?;
+        if (200..300).contains(&resp.status) {
+            Ok(())
+        } else {
+            Err(format!(
+                "YouTube remove moderator error {}: {}",
+                resp.status,
+                resp.text()
+            ))
         }
     }
 
@@ -2340,6 +2603,12 @@ pub fn handle_innertube_actions(engine: &Rc<Engine>, actions: &[Value]) {
             args.insert("userType".into(), "youtube".into());
             args.insert("banType".into(), "unknown".into());
             yt(engine, T_YT_USER_BANNED, "YouTubeUserBanned", "UserBanned", &args);
+            crate::core::moderation::emit_linked_moderation_event(
+                engine,
+                "youtube",
+                crate::core::moderation::LinkedModerationEvent::Banned,
+                &args,
+            );
         }
         let shown = act.pointer("/showLiveChatActionPanelAction/panel/liveChatPollRenderer");
         let updated = act.pointer("/updateLiveChatPollAction/pollToUpdate/pollRenderer");
@@ -2583,8 +2852,85 @@ async fn while_live(engine: Rc<Engine>, cfg: Arc<watch::Sender<Config>>, video: 
     }
 }
 
+/// Build the documented liveChatBan resource for either kind of restriction.
+fn ban_id(body: &[u8]) -> Result<String, String> {
+    let value: Value = serde_json::from_slice(body)
+        .map_err(|_| "YouTube accepted the ban but returned an invalid response".to_string())?;
+    value["id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "YouTube accepted the ban but did not return its ID".to_string())
+}
+
+fn live_chat_ban_payload(live_chat_id: &str, user_id: &str, duration: Option<u64>) -> Value {
+    let mut snippet = json!({
+        "liveChatId": live_chat_id,
+        "type": if duration.is_some() { "temporary" } else { "permanent" },
+        "bannedUserDetails": { "channelId": user_id }
+    });
+    if let Some(duration) = duration {
+        snippet["banDurationSeconds"] = duration.into();
+    }
+    json!({ "snippet": snippet })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn video_updates_preserve_writable_metadata_and_handle_publishing_schedules() {
+        let current = json!({"snippet": {"title": "Old", "categoryId": "20", "tags": ["keep"],
+            "description": "About", "defaultLanguage": "pt", "thumbnails": {"default": {}}, "channelId": "owner"},
+            "status": {"privacyStatus": "private", "license": "creativeCommon", "embeddable": false,
+                "publicStatsViewable": false, "selfDeclaredMadeForKids": true, "containsSyntheticMedia": true,
+                "publishAt": "2027-01-01T00:00:00Z", "uploadStatus": "processed", "madeForKids": true}});
+        let update = VideoUpdate {
+            title: Some("New".into()),
+            category: Some("10".into()),
+            privacy: Some("private".into()),
+            ..VideoUpdate::default()
+        };
+        let body = video_update_body("video", &current, &update).unwrap();
+        assert_eq!(
+            body["snippet"],
+            json!({"title": "New", "categoryId": "10", "tags": ["keep"], "description": "About", "defaultLanguage": "pt"})
+        );
+        assert_eq!(
+            body["status"],
+            json!({"privacyStatus": "private", "license": "creativeCommon", "embeddable": false,
+            "publicStatsViewable": false, "selfDeclaredMadeForKids": true, "containsSyntheticMedia": true, "publishAt": "2027-01-01T00:00:00Z"})
+        );
+        let update = VideoUpdate {
+            privacy: Some("unlisted".into()),
+            ..VideoUpdate::default()
+        };
+        let body = video_update_body("video", &current, &update).unwrap();
+        assert_eq!(body["status"]["privacyStatus"], "unlisted");
+        assert!(body["status"].get("publishAt").is_none());
+        let body = video_update_body(
+            "video",
+            &current,
+            &VideoUpdate {
+                tags: Some(vec![]),
+                ..VideoUpdate::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(body["snippet"]["tags"], json!([]));
+        assert!(body.get("status").is_none());
+        assert!(video_update_body("video", &json!({"snippet": {"title": "Missing category"}}), &update).is_err());
+        assert!(video_update_body("video", &json!({"snippet": current["snippet"]}), &update).is_err());
+        assert!(video_update_body(
+            "video",
+            &current,
+            &VideoUpdate {
+                privacy: Some("friends".into()),
+                ..VideoUpdate::default()
+            }
+        )
+        .is_err());
+    }
+
     #[test]
     fn a_change_goes_to_the_live_broadcast_else_the_next_one() {
         let item = |id: &str, state: &str, at: &str| {
@@ -2690,6 +3036,30 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn live_chat_ban_uses_documented_user_and_duration_fields() {
+        assert_eq!(
+            live_chat_ban_payload("chat", "user", None),
+            json!({
+                "snippet": { "liveChatId": "chat", "type": "permanent", "bannedUserDetails": { "channelId": "user" } }
+            })
+        );
+        assert_eq!(
+            live_chat_ban_payload("chat", "user", Some(300)),
+            json!({
+                "snippet": { "liveChatId": "chat", "type": "temporary", "banDurationSeconds": 300,
+                    "bannedUserDetails": { "channelId": "user" } }
+            })
+        );
+    }
+
+    #[test]
+    fn successful_ban_requires_a_usable_resource_id() {
+        assert_eq!(ban_id(br#"{"id":"ban-1"}"#).unwrap(), "ban-1");
+        assert!(ban_id(br#"{}"#).unwrap_err().contains("accepted the ban"));
+        assert!(ban_id(b"not json").is_err());
+    }
 
     #[test]
     fn pinned_banners_come_and_go() {
