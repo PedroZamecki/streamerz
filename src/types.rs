@@ -484,6 +484,26 @@ pub const SUB_ACTIONS: &[(u32, &str)] = &[
     (99731, "AllGetStreamInfo"),
     (99732, "AllShoutout"),
     (99733, "AllGetUserInfoForTarget"),
+    (99740, "DiscordEmbedWebhook"),
+    (99741, "DiscordEditMessage"),
+    (99742, "DiscordDeleteMessage"),
+    (99743, "DiscordUploadFile"),
+    (99750, "ObsMoveSource"),
+    (99751, "ObsSetVolume"),
+    (99752, "ObsSetMonitor"),
+    (99753, "ObsStudioMode"),
+    (99754, "ObsSetPreviewScene"),
+    (99755, "ObsTriggerStudioTransition"),
+    (99756, "ObsSetTransition"),
+    (99757, "ObsVirtualCamera"),
+    (99758, "ObsSplitRecording"),
+    (99759, "ObsTriggerHotkey"),
+    (99760, "ObsSwitchProfile"),
+    (99761, "ObsSwitchSceneCollection"),
+    (99762, "ObsGetLastReplay"),
+    (99763, "ObsSetFilterSettings"),
+    (99764, "ObsSetInputSettings"),
+    (99765, "ObsShowSourceFor"),
     (99802, "StreamerzSpotifyQueue"),
     (99803, "StreamerzCountdown"),
     (99810, "SpotifyGetCurrent"),
@@ -2648,6 +2668,159 @@ pub const SUB_ACTION_INFO: &[(u32, &str, &str, &[&str])] = &[
         &["platforms", "userLogin"],
     ),
     (
+        99740,
+        "Rich Embed Webhook",
+        "Integrations/Discord",
+        &[
+            "webhookUrl",
+            "username",
+            "avatar",
+            "content",
+            "title",
+            "description",
+            "color",
+            "url",
+            "author",
+            "footer",
+            "image",
+            "thumbnail",
+            "fields",
+            "inlineFields",
+            "timestamp",
+            "threadId",
+            "threadName",
+        ],
+    ),
+    (
+        99741,
+        "Edit Message",
+        "Integrations/Discord",
+        &[
+            "webhookUrl",
+            "messageId",
+            "threadId",
+            "content",
+            "title",
+            "description",
+            "color",
+            "url",
+            "author",
+            "footer",
+            "image",
+            "thumbnail",
+            "fields",
+            "inlineFields",
+        ],
+    ),
+    (
+        99742,
+        "Delete Message",
+        "Integrations/Discord",
+        &["webhookUrl", "messageId", "threadId"],
+    ),
+    (
+        99743,
+        "Upload File",
+        "Integrations/Discord",
+        &[
+            "webhookUrl",
+            "file",
+            "fileName",
+            "content",
+            "username",
+            "avatar",
+            "threadId",
+        ],
+    ),
+    (
+        99750,
+        "Move or Size Source",
+        "OBS Studio/Extras",
+        &[
+            "connectionId",
+            "sceneName",
+            "sourceName",
+            "x",
+            "y",
+            "scale",
+            "rotation",
+            "cropLeft",
+            "cropRight",
+            "cropTop",
+            "cropBottom",
+        ],
+    ),
+    (
+        99751,
+        "Set Volume",
+        "OBS Studio/Extras",
+        &["connectionId", "inputName", "level", "unit", "fade"],
+    ),
+    (
+        99752,
+        "Set Audio Monitor",
+        "OBS Studio/Extras",
+        &["connectionId", "inputName", "monitor"],
+    ),
+    (99753, "Studio Mode", "OBS Studio/Extras", &["connectionId", "state"]),
+    (
+        99754,
+        "Set Preview Scene",
+        "OBS Studio/Extras",
+        &["connectionId", "sceneName"],
+    ),
+    (
+        99755,
+        "Trigger Studio Transition",
+        "OBS Studio/Extras",
+        &["connectionId"],
+    ),
+    (
+        99756,
+        "Set Transition",
+        "OBS Studio/Extras",
+        &["connectionId", "transitionName", "duration"],
+    ),
+    (99757, "Virtual Camera", "OBS Studio/Extras", &["connectionId", "state"]),
+    (99758, "Split Recording", "OBS Studio/Extras", &["connectionId"]),
+    (
+        99759,
+        "Trigger Hotkey",
+        "OBS Studio/Extras",
+        &["connectionId", "hotkeyName"],
+    ),
+    (
+        99760,
+        "Switch Profile",
+        "OBS Studio/Extras",
+        &["connectionId", "profileName"],
+    ),
+    (
+        99761,
+        "Switch Scene Collection",
+        "OBS Studio/Extras",
+        &["connectionId", "collectionName"],
+    ),
+    (99762, "Get Last Replay File", "OBS Studio/Extras", &["connectionId"]),
+    (
+        99763,
+        "Set Filter Settings",
+        "OBS Studio/Extras",
+        &["connectionId", "sourceName", "filterName", "settings"],
+    ),
+    (
+        99764,
+        "Set Input Settings",
+        "OBS Studio/Extras",
+        &["connectionId", "inputName", "settings"],
+    ),
+    (
+        99765,
+        "Show Source For a While",
+        "OBS Studio/Extras",
+        &["connectionId", "sceneName", "sourceName", "duration", "wait"],
+    ),
+    (
         99802,
         "Spotify Song Request",
         "Integrations/Spotify",
@@ -2838,4 +3011,26 @@ pub const SUB_ACTION_INFO: &[(u32, &str, &str, &[&str])] = &[
 /// The name of a code in one of the tables above.
 pub fn name(table: &[(u32, &'static str)], code: u32) -> Option<&'static str> {
     table.binary_search_by_key(&code, |&(c, _)| c).ok().map(|i| table[i].1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The tables are searched by code (`binary_search`), so a new entry out of order is never found.
+    #[test]
+    fn the_tables_are_in_order_by_code() {
+        for (name, codes) in [
+            ("SUB_ACTIONS", SUB_ACTIONS.iter().map(|x| x.0).collect::<Vec<_>>()),
+            ("TRIGGERS", TRIGGERS.iter().map(|x| x.0).collect()),
+            ("SUB_ACTION_INFO", SUB_ACTION_INFO.iter().map(|x| x.0).collect()),
+        ] {
+            let at = codes.windows(2).position(|w| w[0] >= w[1]);
+            assert!(
+                at.is_none(),
+                "{name}: {:?} is out of order or repeated",
+                at.map(|i| &codes[i..i + 2])
+            );
+        }
+    }
 }

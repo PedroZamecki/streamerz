@@ -12,6 +12,9 @@ struct Countdown {
     remaining_ms: u64,
     max_ms: u64,
     started_ms: Option<u64>,
+    /// Paused on purpose: it stays so across a restart.
+    #[serde(default)]
+    held: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -83,6 +86,7 @@ pub fn create(config: &mut Config, id: &str, start_ms: u64, max_ms: u64, now_ms:
             remaining_ms: start_ms.min(max_ms),
             max_ms,
             started_ms: Some(now_ms),
+            held: false,
         },
     )
 }
@@ -99,6 +103,45 @@ pub fn add(config: &mut Config, id: &str, amount_ms: u64, now_ms: u64) -> bool {
     if timer.started_ms.is_some() {
         timer.started_ms = Some(now_ms);
     }
+    store(config, id, &timer)
+}
+
+/// Takes `amount_ms` off the time left (never below nothing).
+pub fn subtract(config: &mut Config, id: &str, amount_ms: u64, now_ms: u64) -> bool {
+    let Some(mut timer) = load(config, id) else {
+        return false;
+    };
+    timer.remaining_ms = timer.remaining(now_ms).saturating_sub(amount_ms);
+    if timer.started_ms.is_some() {
+        timer.started_ms = Some(now_ms);
+    }
+    store(config, id, &timer)
+}
+
+/// Sets the time left, up to the cap; whether it runs doesn't change.
+pub fn set_remaining(config: &mut Config, id: &str, ms: u64, now_ms: u64) -> bool {
+    let Some(mut timer) = load(config, id) else {
+        return false;
+    };
+    timer.remaining_ms = ms.min(timer.max_ms);
+    if timer.started_ms.is_some() {
+        timer.started_ms = Some(now_ms);
+    }
+    store(config, id, &timer)
+}
+
+/// Pauses (`false`) or resumes (`true`) a countdown. A pause stays across a restart.
+pub fn set_running(config: &mut Config, id: &str, run: bool, now_ms: u64) -> bool {
+    let Some(mut timer) = load(config, id) else {
+        return false;
+    };
+    if run && timer.started_ms.is_none() {
+        timer.started_ms = Some(now_ms);
+    } else if !run && timer.started_ms.is_some() {
+        timer.remaining_ms = timer.remaining(now_ms);
+        timer.started_ms = None;
+    }
+    timer.held = !run;
     store(config, id, &timer)
 }
 
@@ -124,6 +167,7 @@ pub fn reset(config: &mut Config, id: &str, start_ms: u64, max_ms: u64, now_ms: 
             remaining_ms: start_ms.min(max_ms),
             max_ms,
             started_ms: Some(now_ms),
+            held: false,
         },
     )
 }
@@ -187,6 +231,9 @@ pub fn resume_all(config: &mut Config, now_ms: u64) {
     };
     for value in timers.values_mut() {
         if let Ok(mut timer) = serde_json::from_value::<Countdown>(value.clone()) {
+            if timer.held {
+                continue;
+            }
             timer.started_ms = Some(now_ms);
             if let Ok(updated) = serde_json::to_value(timer) {
                 *value = updated;
@@ -215,6 +262,33 @@ mod tests {
         assert_eq!(get(&c, "test", 101_250).unwrap().remaining_ms, 13_750);
         assert!(reset(&mut c, "test", u64::MAX, 20_000, 101_250));
         assert_eq!(get(&c, "test", 101_250).unwrap().remaining_ms, 20_000);
+    }
+
+    #[test]
+    fn a_countdown_subtracts_sets_and_stays_paused_across_a_restart() {
+        let mut c = Config::default();
+        assert!(create(&mut c, "t", 60_000, 120_000, 0));
+        assert!(subtract(&mut c, "t", 10_000, 5_000));
+        assert_eq!(get(&c, "t", 5_000).unwrap().remaining_ms, 45_000);
+        assert!(subtract(&mut c, "t", 99_000, 5_000), "never below nothing");
+        assert_eq!(get(&c, "t", 5_000).unwrap().remaining_ms, 0);
+        assert!(set_remaining(&mut c, "t", 500_000, 5_000), "up to the cap");
+        assert_eq!(get(&c, "t", 5_000).unwrap().remaining_ms, 120_000);
+        assert!(set_running(&mut c, "t", false, 10_000));
+        let paused = get(&c, "t", 10_000).unwrap();
+        assert_eq!((paused.running, paused.remaining_ms), (false, 115_000));
+        assert_eq!(
+            get(&c, "t", 50_000).unwrap().remaining_ms,
+            115_000,
+            "time doesn't pass while paused"
+        );
+        // A restart doesn't start what was paused on purpose.
+        pause_all(&mut c, 60_000);
+        resume_all(&mut c, 70_000);
+        assert!(!get(&c, "t", 80_000).unwrap().running);
+        assert!(set_running(&mut c, "t", true, 80_000));
+        assert_eq!(get(&c, "t", 90_000).unwrap().remaining_ms, 105_000);
+        assert!(!subtract(&mut c, "gone", 1, 0) && !set_running(&mut c, "gone", true, 0));
     }
 
     #[test]

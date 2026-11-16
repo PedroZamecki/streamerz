@@ -848,8 +848,9 @@ out). Streamerz-only sub-actions that work on every platform sit beside the per-
 moderation waits for a live test in a later version.
 
 Streamerz-only codes (kept on export, skipped by Streamer.bot, said so in their description):
-99500-99599 Twitch, 99600-99649 Kick, 99650-99699 YouTube, 99450-99499 TikTok, 99720-99749 every
-platform. Names follow Streamer.bot's (`TwitchDeleteChatMessage`, as its C# method is called).
+99450-99499 TikTok, 99500-99599 Twitch, 99600-99649 Kick, 99650-99699 YouTube, 99700-99706 the
+moderation workspace's cross-platform moderation (`docs/MODERATION-FEASIBILITY.md`), 99720-99739 every
+platform, 99740-99749 Discord, 99750-99779 OBS Studio. Names follow Streamer.bot's (`TwitchDeleteChatMessage`, as its C# method is called).
 
 ### Sub-action editor UX (every sub-action, old and new)
 
@@ -880,42 +881,42 @@ platform. Names follow Streamer.bot's (`TwitchDeleteChatMessage`, as its C# meth
 Where: "The platform it came from" (the default) or the platforms ticked (check boxes with logos). A
 platform that can't do it is skipped with a log line, and its box is greyed with the reason.
 
-- [ ] Send Message, Reply to Message, Delete Message, Pin Message, Unpin Message
-- [ ] Timeout User, Remove Timeout, Ban User, Unban User
-- [ ] Set Stream Title, Set Category, Get Stream Info (live, uptime, viewers, title, category)
-- [ ] Shoutout (Twitch's shoutout, a message elsewhere), Get User Info for Target
+- [x] Send Message, Reply to Message, Delete Message, Pin Message, Unpin Message
+- [x] Timeout User, Remove Timeout, Ban User, Unban User
+- [x] Set Stream Title, Set Category, Get Stream Info (live, uptime, viewers, title, category)
+- [x] Shoutout (Twitch's shoutout, a message elsewhere), Get User Info for Target
 
 ### Twitch, with the permissions it has
 
 - [ ] Delete Chat Message, Purge User (a 1 second timeout), Send and Pin Message, Send Whisper
-- [ ] Unique Chat, Non-Moderator Chat Delay, Get Chat Settings
-- [ ] Approve AutoMod Message, Deny AutoMod Message, Get Unban Requests, Resolve Unban Request
-- [ ] Get Moderators, Get VIPs, Is Subscribed (with the tier)
-- [ ] Get Clips for Target (random, latest or most viewed; featured only), Get Stream Info
-- [ ] Get Hype Train, Get Creator Goals, Get Bits Leaderboard
-- [ ] Set Content Classification Labels, Set Stream Language, Set Stream Delay
-- [ ] Create Reward, Delete Reward
+- [x] Unique Chat, Non-Moderator Chat Delay, Get Chat Settings
+- [x] Approve AutoMod Message, Deny AutoMod Message, Get Unban Requests, Resolve Unban Request
+- [x] Get Moderators, Get VIPs, Is Subscribed (with the tier)
+- [x] Get Clips for Target (random, latest or most viewed; featured only), Get Stream Info
+- [x] Get Hype Train, Get Creator Goals, Get Bits Leaderboard
+- [x] Set Content Classification Labels, Set Stream Language, Set Stream Delay
+- [x] Create Reward, Delete Reward
 
 ### Twitch, with more permissions (asked when needed)
 
 - [ ] Accounts says "More permissions available" with one Reconnect button; the new scopes are asked
   only then. A sub-action that needs them says so and opens it.
-- [ ] Add Blocked Term, Remove Blocked Term, Set AutoMod Level, Set Bot Chat Colour
-- [ ] Block User, Unblock User
-- [ ] Get Schedule, Add Schedule Segment, Cancel Schedule Segment, Set Vacation
+- [x] Add Blocked Term, Remove Blocked Term, Set AutoMod Level, Set Bot Chat Colour
+- [x] Block User, Unblock User
+- [x] Get Schedule, Add Schedule Segment, Cancel Schedule Segment, Set Vacation
 
 ### Streamer.bot sub-actions not run yet
 
 COVERAGE.md had them ticked; `engine::supported` skipped them (a test now reads COVERAGE.md and fails
 when a ticked sub-action isn't run).
 
-- [ ] Twitch rewards: Configure Rewards (203), Reset Reward Counter (209), Reset Reward User
+- [x] Twitch rewards: Configure Rewards (203), Reset Reward Counter (209), Reset Reward User
   Counters (210), Set Group Enabled State (211), Set Group Paused State (212)
-- [ ] Twitch Guest Star (520-531). Twitch still calls this API beta: test it live first.
-- [ ] Kick rewards: Configure (35104), Reset Counter (35109), Reset User Counters (35110), Set Group
+- [x] Twitch Guest Star (520-531). Twitch still calls this API beta: test it live first.
+- [x] Kick rewards: Configure (35104), Reset Counter (35109), Reset User Counters (35110), Set Group
   Enabled State (35111), Set Group Paused State (35112)
-- [ ] Set Cost (202) and Kick's: Add and Subtract act like Set today.
-- [ ] Get Latest Follower (507) and Get Latest Subscriber (509) set only the total today: add the
+- [x] Set Cost (202) and Kick's: Add and Subtract act like Set today.
+- [x] Get Latest Follower (507) and Get Latest Subscriber (509) set only the total today: add the
   latest one's name, id and time.
 
 ### Rewards page
@@ -933,22 +934,22 @@ above need them.
 
 ### Kick (public API)
 
-- [ ] Delete Chat Message (`kick::delete_message`, which the chat already uses)
-- [ ] Accept Redemption, Reject Redemption, Create Reward, Delete Reward
-- [ ] Get KICKs Leaderboard, Get Stream Info, Remove Channel Tag
+- [x] Delete Chat Message (`kick::delete_message`, which the chat already uses)
+- [x] Accept Redemption, Reject Redemption, Create Reward, Delete Reward
+- [x] Get KICKs Leaderboard, Get Stream Info, Remove Channel Tag
 - Kick's public API has no chat modes, moderators, VIPs, pins, raids or polls: not done.
 
 ### YouTube (Data API, the permission it has)
 
-- [ ] Delete Message (first check that InnerTube's message ids are the Data API's), Unban User (for
+- [x] Delete Message (first check that InnerTube's message ids are the Data API's), Unban User (for
   bans Streamerz made: the ban id is kept), Add Moderator, Remove Moderator
-- [ ] Set Tags, Add Tag, Remove Tag, Clear Tags, Set Category, Set Privacy, End Stream
-- [ ] Get Broadcast Info, Get User Info for Target, Add Random Users
+- [x] Set Tags, Add Tag, Remove Tag, Clear Tags, Set Category, Set Privacy, End Stream
+- [x] Get Broadcast Info, Get User Info for Target, Add Random Users
 - The Data API has no chat modes and no pinning: not done.
 
 ### TikTok
 
-- [ ] Add User to Group, Remove User from Group, User in Group, Add Random Users, Get User Info for
+- [x] Add User to Group, Remove User from Group, User in Group, Add Random Users, Get User Info for
   Target (from what the chat has seen)
 - Later, its own version: Mute, Unmute, Remove from LIVE, Delete Comment, Add Moderator, Remove
   Moderator. Each is captured from TikTok's own request on the user's live, acting only on a second test
@@ -956,8 +957,8 @@ above need them.
 
 ### Chat page
 
-- [ ] Delete on YouTube lines; Unban, Mod and Unmod for YouTube on the user card.
-- [ ] AutoMod's held messages show in the chat with Allow and Deny (Twitch).
+- [x] Delete on YouTube lines; Unban, Mod and Unmod for YouTube on the user card.
+- [x] AutoMod's held messages show in the chat with Allow and Deny (Twitch).
 
 ### Close
 
@@ -965,6 +966,42 @@ above need them.
 - [ ] Unit tests per sub-action (request shape, values added, skipped platforms).
 - [ ] Live tests on the real Twitch, Kick and YouTube channels; smoke in English and pt_BR; Windows
   type-check; hidden RSS and idle CPU before and after.
+
+### Approved from the second list (2026-11-15: "implement all of those")
+
+Done here:
+
+- [x] Fetch URL: POST, PUT, PATCH and DELETE with a body and content type; `httpStatus` and `httpOk`.
+- [x] Countdown: subtract, set, pause, resume, toggle and get (a pause survives a restart).
+- [x] Discord: rich embed, edit and delete a message, upload a file, threads and forum posts.
+- [x] OBS Studio: move, size, rotate and crop a source; volume with a fade; audio monitor; Studio Mode,
+  preview scene and its transition; the transition and its length; virtual camera; split recording;
+  hotkey by name; profile and scene collection; the last replay's file; filter and input settings;
+  show a source for a while.
+
+Kept for later in this version, in this order:
+
+- [ ] Create Clip's title and duration, Clip from a VOD, Shared Chat (read the session; send to this chat
+  only), Check AutoMod Status before sending, Get Channel Videos, Get Channel Info for any channel.
+- [ ] Core: regex match and replace, JSON query, list operations, atomic counter, a cooldown gate,
+  format duration and time, get and set the clipboard.
+- [ ] YouTube: go live and end (Transition Broadcast), add a stream to a playlist, poll results.
+- [ ] Spotify and song requests: enable, disable and toggle requests, move one next, clear a user's,
+  block a user or artist, change the rules; fade Spotify's volume.
+- [ ] OBS: start and stop an output (multistream, vertical canvas) by name, scene item lock, audio sync
+  offset and balance.
+- [ ] Streamlabs and StreamElements: points, custom alerts, skip alert, giveaway (needs a live account
+  to test).
+- [ ] Sounds and text to speech: native sound playback (1, 7, 30001, 30002) and a local voice.
+- [ ] Quality of life: chat mode for a while, then back; one step to update the stream everywhere.
+- Not planned until asked: Ask AI (needs a key and a provider chosen), media control and system audio
+  (per desktop), screen capture, TikTok moderation (needs a live test).
+
+Where it meets the moderation workspace (same thread, uncommitted in the main checkout): its
+`CrossPlatform*` sub-actions (99700-99706) act on a linked person; mine under "Every Platform" act on a
+name on the platforms ticked. Both stay; the picker names them apart (Core / Moderation and Every
+Platform). Merge them when the workspace is committed.
+
 
 ## Version 1.9.0: Stream page study and rework
 

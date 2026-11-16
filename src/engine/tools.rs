@@ -406,6 +406,64 @@ impl Engine {
         }
     }
 
+    /// The Countdown sub-action (99803): reset or add (what the templates use), and subtract, set,
+    /// pause, resume, toggle and get. Gives `countdownRemainingMs`, `countdownRunning`, `countdownMaxMs`
+    /// and `countdownLeft` (`1:30`) after any of them.
+    pub(super) fn countdown(self: &Rc<Self>, ctx: &mut Ctx, o: &Obj) {
+        use crate::templates::clock;
+        let id = self.expand(ctx, s(o, "clockId"));
+        let expected = self.expand(ctx, s(o, "expectedCurrency"));
+        let actual = self.expand(ctx, "%donationCurrency%");
+        if !expected.is_empty() && !expected.eq_ignore_ascii_case(actual.trim()) {
+            return;
+        }
+        let now = clock::now_ms();
+        let ms = |key: &str| clock::field_ms(o.get(key), |t| self.expand(ctx, t));
+        let operation = self.expand(ctx, s(o, "operation")).trim().to_lowercase();
+        let units = crate::fmt::parse_number(&self.expand(ctx, s(o, "units"))).unwrap_or(-1.0);
+        let amount = ((ms("perUnitMs").unwrap_or(0) as f64) * units).round() as u64;
+        if matches!(operation.as_str(), "add" | "subtract") && (!units.is_finite() || units < 0.0) {
+            return crate::warn("Countdown: invalid amount".to_string());
+        }
+        let known = ["reset", "add", "subtract", "set", "pause", "resume", "toggle", "get"];
+        if !known.contains(&operation.as_str()) {
+            return crate::warn("Countdown: invalid operation".to_string());
+        }
+        let running = clock::get(&self.config(), &id, now).is_some_and(|s| s.running);
+        // Read the fields first: filling in variables reads the settings, which a change holds.
+        let (start, max) = (ms("startMs"), ms("maxMs"));
+        let mut changed = false;
+        self.change(|config| {
+            changed = match operation.as_str() {
+                "reset" => clock::reset(config, &id, start.unwrap_or(0), max.unwrap_or(0), now),
+                // Add keeps the cap the template gave it.
+                "add" => clock::set_max(config, &id, max.unwrap_or(0), now) && clock::add(config, &id, amount, now),
+                "subtract" => clock::subtract(config, &id, amount, now),
+                "set" => {
+                    max.is_none_or(|max| max == 0 || clock::set_max(config, &id, max, now))
+                        && clock::set_remaining(config, &id, start.unwrap_or(0), now)
+                }
+                "pause" => clock::set_running(config, &id, false, now),
+                "resume" => clock::set_running(config, &id, true, now),
+                "toggle" => clock::set_running(config, &id, !running, now),
+                _ => clock::get(config, &id, now).is_some(),
+            };
+        });
+        if !changed {
+            return crate::warn("Countdown: timer not found".to_string());
+        }
+        if operation != "get" {
+            self.countdown_changed(&id);
+        }
+        if let Some(now) = clock::get(&self.config(), &id, clock::now_ms()) {
+            ctx.args.insert("countdownRemainingMs".into(), now.remaining_ms.into());
+            ctx.args.insert("countdownMaxMs".into(), now.max_ms.into());
+            ctx.args.insert("countdownRunning".into(), now.running.into());
+            ctx.args
+                .insert("countdownLeft".into(), self::clock(now.remaining_ms / 1000).into());
+        }
+    }
+
     /// Keeps who subscribed last on Twitch (Sub 103, Resub 104, Gift Sub 105: the one who got it).
     pub(super) fn note_subscriber(self: &Rc<Self>, kind: u32, args: &Obj) {
         let get = |k: &str| args.get(k).map(crate::vars::text).unwrap_or_default();
@@ -442,6 +500,8 @@ impl Engine {
             520..=531 => self.guest_star(ctx, o, kind).await,
             99600..=99649 => self.kick_tool(ctx, o, kind).await,
             99650..=99699 => self.youtube_tool(ctx, o, kind).await,
+            99740..=99749 => self.discord_tool(ctx, o, kind).await,
+            99750..=99779 => self.obs_tool(ctx, o, kind).await,
             99720..=99733 => {
                 self.every_platform(ctx, o, kind).await;
                 Ok(())
@@ -450,6 +510,8 @@ impl Engine {
         };
         if let Err(e) = r {
             let platform = match kind {
+                99740..=99749 => "Discord",
+                99750..=99779 => "OBS",
                 99500..=99599 | 203 | 209..=212 | 520..=531 => "Twitch",
                 99600..=99649 | 35104 | 35109..=35112 => "Kick",
                 99650..=99699 => "YouTube",
@@ -1846,6 +1908,102 @@ impl Engine {
         set("type", code.into());
         set("enabled", true.into());
         Some(sub)
+    }
+
+    /// The embed a Discord sub-action describes, with variables filled in.
+    fn discord_embed(&self, ctx: &Ctx, o: &Obj) -> crate::remote::Embed {
+        let get = |k: &str| self.expand(ctx, s(o, k)).trim().to_string();
+        let fields = match o.get("fields") {
+            Some(Value::Object(map)) => map
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        self.expand(ctx, k).trim().to_string(),
+                        self.expand(ctx, &crate::vars::text(v)).trim().to_string(),
+                    )
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        crate::remote::Embed {
+            title: get("title"),
+            description: self.expand(ctx, s(o, "description")),
+            color: get("color"),
+            url: get("url"),
+            author: get("author"),
+            footer: get("footer"),
+            image: get("image"),
+            thumbnail: get("thumbnail"),
+            fields,
+            inline: b(o, "inlineFields", false),
+            timestamp: b(o, "timestamp", false).then(|| iso_utc(crate::fmt::unix_now().as_secs() as i64)),
+        }
+    }
+
+    /// Discord webhooks: a rich embed, editing or deleting a message it posted, and a file.
+    async fn discord_tool(self: &Rc<Self>, ctx: &mut Ctx, o: &Obj, kind: u64) -> Result<(), String> {
+        let text = |ctx: &Ctx, key: &str| self.expand(ctx, s(o, key));
+        let hook = text(ctx, "webhookUrl");
+        let thread = text(ctx, "threadId").trim().to_string();
+        match kind {
+            99740 => {
+                let body = crate::remote::discord_message(
+                    &text(ctx, "content"),
+                    &text(ctx, "username"),
+                    &text(ctx, "avatar"),
+                    &self.discord_embed(ctx, o),
+                    &text(ctx, "threadName"),
+                );
+                if body.as_object().is_none_or(|m| {
+                    m.keys()
+                        .all(|k| matches!(k.as_str(), "username" | "avatar_url" | "thread_name"))
+                }) {
+                    return Err("nothing to post: give it some text or an embed".into());
+                }
+                let sent = crate::remote::discord_call("POST", &hook, "", &thread, Some(&body)).await?;
+                ctx.args.insert("messageId".into(), sent["id"].clone());
+                ctx.args.insert("discordChannelId".into(), sent["channel_id"].clone());
+            }
+            99741 => {
+                let id = text(ctx, "messageId");
+                if id.trim().is_empty() {
+                    return Err("no message given".into());
+                }
+                let embed = self.discord_embed(ctx, o);
+                // Only what is given changes: the text, and the embed when it has anything.
+                let body = crate::remote::discord_message(&text(ctx, "content"), "", "", &embed, "");
+                if body.as_object().is_none_or(|m| m.is_empty()) {
+                    return Err("nothing to change: give it some text or an embed".into());
+                }
+                crate::remote::discord_call("PATCH", &hook, id.trim(), &thread, Some(&body)).await?;
+            }
+            99742 => {
+                let id = text(ctx, "messageId");
+                if id.trim().is_empty() {
+                    return Err("no message given".into());
+                }
+                crate::remote::discord_call("DELETE", &hook, id.trim(), &thread, None).await?;
+            }
+            _ => {
+                let payload = crate::remote::discord_message(
+                    &text(ctx, "content"),
+                    &text(ctx, "username"),
+                    &text(ctx, "avatar"),
+                    &Default::default(),
+                    "",
+                );
+                let id = crate::remote::discord_upload(
+                    &hook,
+                    &thread,
+                    &payload,
+                    text(ctx, "file").trim(),
+                    text(ctx, "fileName").trim(),
+                )
+                .await?;
+                ctx.args.insert("messageId".into(), id.into());
+            }
+        }
+        Ok(())
     }
 
     async fn youtube_tool(self: &Rc<Self>, ctx: &mut Ctx, o: &Obj, kind: u64) -> Result<(), String> {

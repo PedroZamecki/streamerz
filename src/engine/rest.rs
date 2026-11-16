@@ -4493,9 +4493,41 @@ impl Engine {
             .and_then(Value::as_object)
             .map(|h| h.iter().map(|(k, v)| (k.clone(), self.expand(ctx, &text(v)))).collect())
             .unwrap_or_default();
-        let r = match crate::http::request("GET", &url, &headers, b"").await {
-            Ok(r) if (200..300).contains(&r.status) => r,
-            Ok(r) => return crate::error(format!("Fetch URL {url}: HTTP {}", r.status)),
+        // Our extension: a method other than GET, with a body (a Streamer.bot export has neither).
+        let method = ["GET", "POST", "PUT", "PATCH", "DELETE"]
+            .get(n(o, "method") as usize)
+            .copied()
+            .unwrap_or("GET");
+        let sent = self.expand(ctx, s(o, "body"));
+        let mut headers = headers;
+        if !sent.is_empty() && !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
+            let kind = self.expand(ctx, s(o, "contentType"));
+            let kind = if !kind.trim().is_empty() {
+                kind.trim().to_string()
+            } else if serde_json::from_str::<Value>(&sent).is_ok() {
+                "application/json".into()
+            } else {
+                "text/plain".into()
+            };
+            headers.push(("Content-Type".into(), kind));
+        }
+        ctx.args.insert("httpStatus".into(), 0.into());
+        ctx.args.insert("httpOk".into(), false.into());
+        let r = match crate::http::request(method, &url, &headers, sent.as_bytes()).await {
+            Ok(r) => {
+                ctx.args.insert("httpStatus".into(), r.status.into());
+                ctx.args.insert("httpOk".into(), (200..300).contains(&r.status).into());
+                if (200..300).contains(&r.status) {
+                    r
+                } else {
+                    crate::error(format!("Fetch URL {url}: HTTP {}", r.status));
+                    // A GET that failed sets nothing, as before; a request with a body still gives its answer.
+                    if method == "GET" {
+                        return;
+                    }
+                    r
+                }
+            }
             Err(e) => return crate::error(format!("Fetch URL: {e}")),
         };
         let body = r.text();

@@ -23,6 +23,7 @@ pub mod community;
 pub mod events;
 pub mod globals;
 mod midi_in;
+mod obs_tools;
 pub mod overlays;
 pub mod plugins;
 mod processes;
@@ -429,7 +430,7 @@ pub fn supported(kind: u32) -> bool {
             | 3 | 5 | 1001..=1007 | 1009..=1025 | 1028 | 1030..=1034 | 1038..=1040 | 4001..=4014 | 7001 | 8001 | 8002 | 9001..=9003 | 10001 | 11001 | 11002 | 11004..=11008 | 15001 | 20001..=20003
             | 35001 | 35002 | 35010..=35012 | 35020..=35022 | 35030..=35034
             | 35040..=35043 | 35050..=35051 | 35101..=35103 | 35105..=35108 | 35113 | 43001..=43003 | 43010..=43012 | 99900..=99904
-            | 99450..=99454 | 99500..=99523 | 99530..=99539 | 99600..=99607 | 99650..=99663 | 99720..=99733
+            | 99450..=99454 | 99500..=99523 | 99530..=99539 | 99600..=99607 | 99650..=99663 | 99720..=99733 | 99740..=99743 | 99750..=99765
             | 203 | 209..=212 | 35104 | 35109..=35112 | 520..=531
             | 1000 | 1026 | 1027 | 1035..=1037 | 99800 | 99802 | 99803 | 99880 | 99810..=99824 | 99827..=99833 | 99840..=99875
     )
@@ -1951,47 +1952,7 @@ impl Engine {
                     }
                 }
                 // Streamerz-only countdown operations, used by configurable templates.
-                99803 => {
-                    let id = self.expand(ctx, s(o, "clockId"));
-                    let expected = self.expand(ctx, s(o, "expectedCurrency"));
-                    let actual = self.expand(ctx, "%donationCurrency%");
-                    if !expected.is_empty() && !expected.eq_ignore_ascii_case(actual.trim()) {
-                        return Flow::Continue;
-                    }
-                    let now = crate::templates::clock::now_ms();
-                    let ms =
-                        |key: &str| crate::templates::clock::field_ms(o.get(key), |t| self.expand(ctx, t)).unwrap_or(0);
-                    let (start, max) = (ms("startMs"), ms("maxMs"));
-                    let reset = match s(o, "operation") {
-                        "reset" => true,
-                        "add" => false,
-                        _ => {
-                            crate::warn("Countdown: invalid operation".to_string());
-                            return Flow::Continue;
-                        }
-                    };
-                    let units = crate::fmt::parse_number(&self.expand(ctx, s(o, "units"))).unwrap_or(-1.0);
-                    let per_unit = ms("perUnitMs");
-                    if !reset && (!units.is_finite() || units < 0.0) {
-                        crate::warn("Countdown: invalid amount".to_string());
-                        return Flow::Continue;
-                    }
-                    let amount = ((per_unit as f64) * units).round() as u64;
-                    let mut changed = false;
-                    self.change(|config| {
-                        use crate::templates::clock;
-                        changed = if reset {
-                            clock::reset(config, &id, start, max, now)
-                        } else {
-                            clock::set_max(config, &id, max, now) && clock::add(config, &id, amount, now)
-                        };
-                    });
-                    if changed {
-                        self.countdown_changed(&id);
-                    } else {
-                        crate::warn("Countdown: timer not found".to_string());
-                    }
-                }
+                99803 => self.countdown(ctx, o),
                 // Streamerz-only: set an overlay topic, which the pages listening show at once.
                 99880 => {
                     let topic = self.expand(ctx, s(o, "topic"));
@@ -2000,7 +1961,7 @@ impl Engine {
                     self.overlay_publish(topic.trim(), value);
                 }
                 plugins::SUB_PLUGIN => return self.plugin_sub(ctx, o),
-                99450..=99499 | 99500..=99699 | 99720..=99749 | 203 | 209..=212 | 35104 | 35109..=35112 | 520..=531 => {
+                99450..=99499 | 99500..=99699 | 99720..=99779 | 203 | 209..=212 | 35104 | 35109..=35112 | 520..=531 => {
                     if !self.tools(ctx, o, kind).await {
                         self.unsupported(kind);
                     }
