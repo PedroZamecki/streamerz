@@ -186,6 +186,15 @@ pub fn read(engine: &Rc<Engine>) -> Result<Value, String> {
             )),
         ],
     );
+    // Nothing to show without a login: say where to get one.
+    if !logged_in {
+        if let Some(actions) = table["actions"].as_array_mut() {
+            actions.push(
+                json!({"id": "accounts", "label": tr("nav.page.accounts"), "icon": "user", "top": true,
+                "navigate": "Accounts", "needs": "none"}),
+            );
+        }
+    }
     table["guide"] = tr("rewards.guide").into();
     table["guideBelow"] = true.into();
     table["titleless"] = true.into();
@@ -451,6 +460,12 @@ mod tests {
                 c.rewards.set_group("twitch:a", "Drinks");
             });
             let page = read(&engine).unwrap();
+            // Logged in (the test has rewards, and the config has no login): the page offers Accounts.
+            assert!(page["tables"][0]["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|action| action["navigate"] == "Accounts"));
             let rows = page["tables"][0]["rows"].as_array().unwrap();
             let row = |id: &str| rows.iter().find(|r| r["id"] == id).unwrap().clone();
             let (a, b) = (row("twitch:a"), row("twitch:b"));

@@ -210,7 +210,7 @@ def main():
                         shot(f"overflow-{where}")
                         raise AssertionError(f"cut off on {where}: {found}")
                 def layout_pass():
-                    for page in ("Accounts", "Commands", "Timers", "Files", "Stream Apps", "Servers", "Queues", "Globals", "History", "Backups", "Crashes", "Plugins", "Overlays", "Log", "Settings", "Donations", "MCP", "Groups", "Integrations", "Community", "Polls", "Stream", "Chat", "Actions"):
+                    for page in ("Accounts", "Commands", "Timers", "Files", "Stream Apps", "Servers", "Queues", "Globals", "History", "Backups", "Crashes", "Plugins", "Overlays", "Log", "Settings", "Donations", "MCP", "Groups", "Integrations", "Community", "Polls", "Rewards", "Stream", "Chat", "Actions"):
                         for width, height in ((1100, 800), (540, 700)):
                             resize(width, height)
                             load_page(page)
@@ -301,7 +301,7 @@ def main():
                             red, green, blue = captured.convert("RGB").getpixel((width - 3, height // 2))
                             assert (min(red, green, blue) > 200) if args.theme == "light" else (max(red, green, blue) < 80), (args.theme, red, green, blue)
                 # Pages built on the core's table and section models: each loads, draws and keeps its window size.
-                for page in ("Queues", "Globals", "History", "Backups", "Crashes", "Plugins", "Overlays", "Log", "Settings", "Donations", "MCP", "Groups", "Integrations", "Community", "Polls", "Stream", "Chat", "Actions"):
+                for page in ("Queues", "Globals", "History", "Backups", "Crashes", "Plugins", "Overlays", "Log", "Settings", "Donations", "MCP", "Groups", "Integrations", "Community", "Polls", "Rewards", "Stream", "Chat", "Actions"):
                     for width, height in ((1100, 800), (540, 700)):
                         resize(width, height)
                         load_page(page)
