@@ -6,6 +6,8 @@
 //! sound ends, the thread drains the device, closes it and ends. Files are decoded as they play.
 
 mod decode;
+#[cfg(target_os = "linux")]
+mod helper;
 mod mixer;
 #[cfg(target_os = "linux")]
 mod pulse;
@@ -44,7 +46,7 @@ pub type Opener = fn(&str) -> Result<Box<dyn Output>, String>;
 
 fn system(device: &str) -> Result<Box<dyn Output>, String> {
     #[cfg(target_os = "linux")]
-    return pulse::open(device);
+    return helper::open(device);
     #[cfg(windows)]
     return wasapi::open(device);
     #[allow(unreachable_code)]
@@ -95,6 +97,19 @@ fn player() -> MutexGuard<'static, Player> {
 
 fn lock(m: &Mutex<Mixer>) -> MutexGuard<'_, Mixer> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The audio process (`Streamerz --sound-output <device>`): plays what Streamerz pipes to it, so the
+/// system's audio library is loaded there and not in Streamerz. Its exit code.
+pub fn output_main(device: &str) -> i32 {
+    #[cfg(target_os = "linux")]
+    return helper::run(device);
+    #[allow(unreachable_code)]
+    {
+        let _ = device;
+        eprintln!("the sound output runs in Streamerz itself on this system");
+        1
+    }
 }
 
 /// Sounds are played silently from now on (offline scenarios, tests).
@@ -177,15 +192,16 @@ pub fn play(file: &Path, name: &str, device: &str, volume: f32) -> Result<Starte
     Ok(Started { id, duration_ms, ended })
 }
 
-/// One device's thread: open it, write the mix until no sound is left, drain, close.
+/// One device's thread: open it, write the mix until no sound is left, drain, close. A sound that
+/// comes while it drains opens the device again.
 fn run(key: String, mixer: Arc<Mutex<Mixer>>, opener: Opener) {
-    let opened = opener(&key).or_else(|e| if key.is_empty() { Err(e) } else { opener("") });
-    let mut out = match opened {
-        Ok(out) => out,
-        Err(e) => return give_up(&key, &mixer, &e),
-    };
     let mut buf = vec![0f32; CHUNK * CHANNELS];
     loop {
+        let opened = opener(&key).or_else(|e| if key.is_empty() { Err(e) } else { opener("") });
+        let mut out = match opened {
+            Ok(out) => out,
+            Err(e) => return give_up(&key, &mixer, &e),
+        };
         loop {
             {
                 let mut m = lock(&mixer);
@@ -199,6 +215,7 @@ fn run(key: String, mixer: Arc<Mutex<Mixer>>, opener: Opener) {
             }
         }
         out.drain();
+        drop(out);
         let mut p = player();
         if lock(&mixer).is_empty() {
             if p.devices.get(&key).is_some_and(|m| Arc::ptr_eq(m, &mixer)) {
@@ -206,14 +223,12 @@ fn run(key: String, mixer: Arc<Mutex<Mixer>>, opener: Opener) {
             }
             let last = p.devices.is_empty();
             drop(p);
-            drop(out);
             drop(buf);
             if last {
                 give_back();
             }
             return;
         }
-        // A sound came while draining: keep the device.
     }
 }
 
@@ -629,7 +644,8 @@ mod tests {
         );
     }
 
-    /// Plays on this computer's real output (`cargo test real_output -- --ignored`): a stream named
+    /// Plays on this computer's real output through the audio process of a built Streamerz
+    /// (`STREAMERZ_SOUND_EXE=target/fast/Streamerz cargo test real_output -- --ignored`): a stream named
     /// Streamerz shows in the mixer while it plays, and the output is closed after.
     #[test]
     #[ignore]
@@ -655,6 +671,40 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(open_devices(), 0);
+    }
+
+    /// The audio process's side of the pipe, with a script in its place: it says "ok" once the device
+    /// is open, gets every frame as it was mixed, and a device it can't open comes back with its words.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_audio_process_gets_the_mix_and_says_why_it_failed() {
+        let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = scratch("helper");
+        let script = dir.join("output.sh");
+        let got = dir.join("got.raw");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\n[ \"$2\" = bad ] && {{ echo 'no output called bad' >&2; exit 1; }}\necho ok\ncat > '{}'\n",
+                got.display()
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("STREAMERZ_SOUND_EXE", &script);
+        let mut out = helper::open("").unwrap();
+        let frames: Vec<f32> = (0..CHUNK * CHANNELS).map(|i| i as f32 / 10.0).collect();
+        out.write(&frames).unwrap();
+        out.write(&frames).unwrap();
+        out.drain();
+        drop(out);
+        let bytes = std::fs::read(&got).unwrap();
+        assert_eq!(bytes.len(), 2 * CHUNK * CHANNELS * 4);
+        assert_eq!(f32::from_le_bytes(bytes[40..44].try_into().unwrap()), 1.0);
+        let failed = helper::open("bad").err();
+        std::env::remove_var("STREAMERZ_SOUND_EXE");
+        assert_eq!(failed.as_deref(), Some("no output called bad"));
     }
 
     #[test]

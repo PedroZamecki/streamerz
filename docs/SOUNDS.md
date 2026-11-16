@@ -5,7 +5,10 @@ needed in OBS. Capture the output in OBS (Desktop Audio, or the output you pick)
 stream.
 
 Nothing is opened until a sound plays. The first sound opens the output, and the output is closed again
-after the last sound ends, so a Streamerz that plays no sound costs nothing for them.
+after the last sound ends, so a Streamerz that plays no sound costs nothing for them. On Linux the output
+is a small audio process (`Streamerz --sound-output`) that starts with the first sound and ends after the
+last, so the system's audio library is never loaded in Streamerz itself. The first sound after a quiet
+spell waits for it (a few tens of milliseconds); the ones that follow don't.
 
 ## Play a sound from an action
 
@@ -58,7 +61,8 @@ action imported on Linux needs the file picked again.
 output: three copies of the file at once, one stopped by name, the rest faded out; two in a row through
 an action, the second starting when the first ends; four at once through the request, each answer with
 its own sound; and the output closed after each. With `STREAMERZ_PID` set it prints the memory, threads
-and CPU while they play and after. Done with an 18 s MP3 on PipeWire: four at once took 4% of a core in a
-dev build, and the memory after the first sound stays about 3 MB above the start (the PulseAudio library
-and what it loads), the same after every burst.
+and CPU while they play and after, and checks that the audio process ends with the last sound and that
+PulseAudio is never loaded in Streamerz. Done with an 18 s MP3 on PipeWire, in a dev build: four at once
+took 2.5% of a core, and the memory after sounds stays 0.8 MB above the start (the decoders' code, read
+once), the same after every burst; with PulseAudio loaded in Streamerz it was 3.3 MB.
 

@@ -108,7 +108,12 @@ check(new Set(ids).size === 4, "four sounds, four ids");
 await sleep(1000);
 check((await playing()).playing.length === 4 && streams() === 1, "four play at once in one stream");
 const pid = process.env.STREAMERZ_PID;
+// The audio process: started with the first sound, gone after the last; Streamerz never loads PulseAudio.
+const helpers = () => { try { return execSync(`pgrep -P ${pid} -f -- --sound-output`).toString().trim().split("\n").filter(Boolean).length; } catch { return 0; } };
+const pulseIn = () => readFileSync(`/proc/${pid}/maps`, "utf8").includes("libpulse");
 if (pid) {
+  check(helpers() === 1, "one audio process plays them: " + helpers());
+  check(!pulseIn(), "and Streamerz itself has no PulseAudio loaded");
   const rss = () => Number(/VmRSS:\s+(\d+)/.exec(readFileSync(`/proc/${pid}/status`, "utf8"))[1]);
   const ticks = () => { const f = readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1].split(" "); return Number(f[11]) + Number(f[12]); };
   const threads = () => readdirSync(`/proc/${pid}/task`).length;
@@ -117,6 +122,8 @@ if (pid) {
   await ask({ request: "StreamerzSound", op: "stop" });
   await sleep(1500);
   console.log(`     after:     ${rss()} kB, ${threads()} threads, ${await cpu(3000)}`);
+  check(helpers() === 0, "the audio process ended with the last sound");
+  check(!pulseIn(), "and PulseAudio was never loaded in Streamerz");
 }
 check((await ask({ request: "StreamerzSound", op: "stop" })).status === "ok", "stop all");
 await sleep(500);

@@ -23,7 +23,7 @@ Twitch and OBS connected) must hold with and without these features in use, meas
 |---|---|---|
 | Overlay page | Nothing: it is drawn by the window, a separate process that is gone while hidden | The window's own memory |
 | Live preview | Nothing | A headless Chromium (the one `overlay_shot` already starts) while the Preview is on screen; closed when it is not |
-| Sound player | Its code in the binary (target under 1.5 MB, measured); no thread, no device open | One audio callback thread per device while a sound plays; the device is closed when the last sound on it ends |
+| Sound player | Its code in the binary; no thread, no device open | One thread per device while a sound plays and, on Linux, the audio process; both end with the last sound, and the decoders' freed memory goes back to the system |
 | System voices | Nothing | A few MB while speaking |
 | Neural voices | A catalog and the Voices page in the binary (under 100 KB) | A separate process, downloaded on request: tens to a few hundred MB while a voice is loaded, one core for a fraction of the speech's length while speaking, 0% idle |
 
@@ -218,9 +218,12 @@ Settings are what is set before going live; controls are what is changed while l
 - A device that goes away: the sound ends with `reason: failed`, the log says why, and the next sound on
   Default goes to the new default.
 - Flatpak: the manifest asks for `--socket=pulseaudio` **(verify)** the ALSA plugin in the runtime.
-- Decided and done: Symphonia decodes; the output is the system's own, with no audio crate: PulseAudio's
-  simple API loaded with dlopen on the first sound (PipeWire answers it too) and WASAPI through the
-  `windows` crate already in the build. cpal would have added ALSA bindings and a thread of its own.
+- Decided and done: Symphonia decodes; the output is the system's own, with no audio crate: on Linux a
+  small audio process (`Streamerz --sound-output`, started with the first sound, ended after the last)
+  that loads PulseAudio's simple API (PipeWire answers it too), so its 2.4 MB of libraries never stay in
+  Streamerz (owner's choice, 2026-11-16: a few tens of ms on the first sound after a quiet spell); on
+  Windows WASAPI through the `windows` crate already in the build. cpal would have added ALSA bindings
+  and a thread of its own.
 
 ### Sub-actions
 
