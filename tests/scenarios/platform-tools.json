@@ -2926,5 +2926,175 @@
         }
       ]
     }
+  },
+  {
+    "name": "text and data: regex, text changes, split, json, counter, a cooldown gate and a duration",
+    "actions": [
+      {
+        "name": "data",
+        "subActions": [
+          {
+            "type": 99780,
+            "input": "order 66 now",
+            "pattern": "(\\d+) (\\w+)",
+            "variableName": "num"
+          },
+          {
+            "type": 99780,
+            "input": "nothing here",
+            "pattern": "\\d+",
+            "variableName": "none"
+          },
+          {
+            "type": 99781,
+            "input": "a-b-c",
+            "pattern": "-",
+            "replacement": "+",
+            "all": true,
+            "variableName": "all"
+          },
+          {
+            "type": 99781,
+            "input": "a-b-c",
+            "pattern": "-",
+            "replacement": "+",
+            "all": false,
+            "variableName": "one"
+          },
+          {
+            "type": 99781,
+            "input": "Hello Ana",
+            "pattern": "(?<n>ana)",
+            "replacement": "[${n}]",
+            "ignoreCase": true
+          },
+          {
+            "type": 99782,
+            "input": "heLLo wORLD",
+            "how": 2,
+            "variableName": "title"
+          },
+          {
+            "type": 99783,
+            "input": "red, green ,,blue",
+            "separator": ",",
+            "variableName": "color"
+          },
+          {
+            "type": 99784,
+            "input": "{\"a\":{\"b\":[5,{\"c\":\"x\"}]},\"n\":null}",
+            "path": "a.b[1].c",
+            "variableName": "deep"
+          },
+          {
+            "type": 99784,
+            "input": "{\"a\":1}",
+            "path": "a.z",
+            "variableName": "miss"
+          },
+          {
+            "type": 99785,
+            "name": "hits",
+            "operation": 0,
+            "amount": "5",
+            "persisted": false
+          },
+          {
+            "type": 99785,
+            "name": "hits",
+            "operation": 1,
+            "amount": "2",
+            "persisted": false,
+            "variableName": "left"
+          },
+          {
+            "type": 99787,
+            "seconds": "3723",
+            "style": 1,
+            "variableName": "short"
+          },
+          {
+            "type": 99787,
+            "seconds": "3723",
+            "style": 0
+          }
+        ]
+      },
+      {
+        "name": "gated",
+        "subActions": [
+          {
+            "type": 123,
+            "variableName": "reached",
+            "value": "no"
+          },
+          {
+            "type": 99786,
+            "key": "welcome",
+            "duration": 60,
+            "perUser": false
+          },
+          {
+            "type": 123,
+            "variableName": "reached",
+            "value": "yes"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "data"
+      },
+      {
+        "run": "gated"
+      },
+      {
+        "run": "gated"
+      }
+    ],
+    "expect": {
+      "runs": [
+        {
+          "action": "data",
+          "after": {
+            "numFound": true,
+            "num[0]": "66 now",
+            "num[1]": "66",
+            "num[2]": "now",
+            "noneFound": false,
+            "all": "a+b+c",
+            "one": "a+b-c",
+            "replaced": "Hello [Ana]",
+            "title": "Hello World",
+            "colorCount": 3,
+            "color0": "red",
+            "color1": "green",
+            "color2": "blue",
+            "deepFound": true,
+            "deep": "x",
+            "missFound": false,
+            "counter": 5,
+            "left": 3,
+            "short": "1h 2m 3s",
+            "duration": "1:02:03"
+          }
+        },
+        {
+          "action": "gated",
+          "after": {
+            "reached": "yes",
+            "cooldownLeft": 0
+          }
+        },
+        {
+          "action": "gated",
+          "after": {
+            "reached": "no",
+            "cooldownLeft": 60
+          }
+        }
+      ]
+    }
   }
 ]

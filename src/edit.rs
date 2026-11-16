@@ -157,7 +157,9 @@ pub fn new_sub(kind: u64) -> Obj {
             crate::automation::schema::W::Who if kind != 99514 => json!("%userName%"),
             crate::automation::schema::W::Message(from) => json!(from),
             crate::automation::schema::W::Checks(_) => json!([]),
-            crate::automation::schema::W::Bool if matches!(*key, "fallback" | "enabled" | "approve" | "wait") => {
+            crate::automation::schema::W::Bool
+                if matches!(*key, "fallback" | "enabled" | "approve" | "wait" | "persisted" | "all") =>
+            {
                 json!(true)
             }
             _ => continue,
