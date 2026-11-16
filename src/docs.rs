@@ -77,6 +77,55 @@ pub fn text(kind: &str, code: u32) -> Option<&'static str> {
     Some(&DOCS[file].1[start..end])
 }
 
+/// A reference page split for in-app Help: title for the dialog header, leading metadata lines, and
+/// the remaining Markdown body without the duplicate heading.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HelpDoc {
+    pub title: String,
+    pub meta: Vec<(String, String)>,
+    pub body: String,
+}
+
+pub fn help(kind: &str, code: u32) -> Option<HelpDoc> {
+    let entry = entry(kind, code)?;
+    let mut lines = entry.text.lines().peekable();
+    // Skip the `## Title` line (shown in the dialog header) and leading blank lines.
+    if lines.peek().is_some_and(|line| line.starts_with("## ")) {
+        lines.next();
+    }
+    while lines.peek().is_some_and(|line| line.trim().is_empty()) {
+        lines.next();
+    }
+    let mut meta: Vec<(String, String)> = Vec::new();
+    while let Some(&line) = lines.peek() {
+        if let Some(rest) = line.strip_prefix("- ") {
+            if let Some((key, value)) = rest.split_once(':') {
+                meta.push((key.trim().to_owned(), value.trim().to_owned()));
+                lines.next();
+                continue;
+            }
+        }
+        if !line.trim().is_empty() && (line.starts_with(' ') || line.starts_with('\t')) && !meta.is_empty() {
+            if let Some(last) = meta.last_mut() {
+                last.1.push(' ');
+                last.1.push_str(line.trim());
+            }
+            lines.next();
+            continue;
+        }
+        break;
+    }
+    while lines.peek().is_some_and(|line| line.trim().is_empty()) {
+        lines.next();
+    }
+    let body = lines.collect::<Vec<_>>().join("\n");
+    Some(HelpDoc {
+        title: entry.title,
+        meta,
+        body,
+    })
+}
+
 pub fn summary(kind: &str, code: u32) -> Option<&'static str> {
     let t = text(kind, code)?;
     let paras = if t.contains("\r\n\r\n") {
@@ -266,6 +315,40 @@ mod tests {
         assert!(!available("subaction", 99999));
         assert!(!available("trigger", 5001));
         assert!(available("trigger", 41002));
+    }
+
+    #[test]
+    fn help_splits_title_metadata_and_markdown_body_for_every_entry() {
+        let toast = help("trigger", 708).expect("Toast Activation help");
+        assert_eq!(toast.title, "Toast Activation");
+        assert!(!toast.body.starts_with("## "));
+        assert!(toast.body.contains("### Fields"));
+        assert!(toast.meta.iter().any(|(k, v)| k == "Kind" && v == "trigger"));
+        assert!(toast.meta.iter().any(|(k, v)| k == "Code" && v == "708"));
+
+        // Wrapped `- Needs:` line joins cleanly onto the single metadata item.
+        let stv = help("trigger", 180).expect("Seven TVEmote Added help");
+        let needs = &stv.meta.iter().find(|(k, _)| k == "Needs").expect("Needs").1;
+        assert!(needs.contains("connected)"), "{needs}");
+
+        for e in entries() {
+            let doc = help(e.kind, e.code).expect("help entry");
+            assert_eq!(doc.title, e.title);
+            assert!(
+                !doc.body.starts_with("## "),
+                "{} {} still starts with heading",
+                e.kind,
+                e.code
+            );
+            assert!(
+                doc.meta.iter().any(|(k, _)| k == "Kind") && doc.meta.iter().any(|(k, _)| k == "Code"),
+                "{} {} missing Kind/Code meta: {:?}",
+                e.kind,
+                e.code,
+                doc.meta
+            );
+            assert!(!doc.body.trim().is_empty(), "{} {} has empty body", e.kind, e.code);
+        }
     }
 
     #[test]

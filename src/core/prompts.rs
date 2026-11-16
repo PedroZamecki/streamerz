@@ -38,7 +38,16 @@ pub enum Content {
     Notice {
         title: String,
         text: String,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        markdown: bool,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        meta: Vec<NoticeMeta>,
     },
+}
+#[derive(Clone, Serialize)]
+pub struct NoticeMeta {
+    pub key: String,
+    pub value: String,
 }
 #[derive(Clone, Serialize)]
 pub struct Choice {
@@ -205,7 +214,30 @@ pub fn choice(title: String, options: Vec<Choice>) -> oneshot::Receiver<Option<S
 /// Text to read, closed with OK.
 pub fn notice(title: String, text: String) {
     if let Ok(mut broker) = BROKER.lock() {
-        broker.insert(Content::Notice { title, text }, Reply::Notice);
+        broker.insert(
+            Content::Notice {
+                title,
+                text,
+                markdown: false,
+                meta: Vec::new(),
+            },
+            Reply::Notice,
+        );
+    }
+    crate::host::prompts_changed();
+}
+/// Markdown text to read, with optional metadata tags, closed with OK.
+pub fn markdown_notice(title: String, meta: Vec<NoticeMeta>, text: String) {
+    if let Ok(mut broker) = BROKER.lock() {
+        broker.insert(
+            Content::Notice {
+                title,
+                text,
+                markdown: true,
+                meta,
+            },
+            Reply::Notice,
+        );
     }
     crate::host::prompts_changed();
 }
@@ -265,6 +297,8 @@ mod tests {
                 Content::Notice {
                     title: "Twitch Login".into(),
                     text: "Logged in".into(),
+                    markdown: false,
+                    meta: Vec::new(),
                 },
                 Reply::Notice,
             );
@@ -304,5 +338,50 @@ mod tests {
         let id = broker.list()[0].id;
         broker.answer(id, "".into()).unwrap();
         assert_eq!(receiver.try_recv().unwrap(), Some(String::new()));
+    }
+
+    #[test]
+    fn markdown_notice_serializes_markdown_flag_and_meta_while_plain_notice_omits_them() {
+        let mut broker = Broker::default();
+        broker.insert(
+            Content::Notice {
+                title: "Plain".into(),
+                text: "keep_underscores_literal".into(),
+                markdown: false,
+                meta: Vec::new(),
+            },
+            Reply::Notice,
+        );
+        broker.insert(
+            Content::Notice {
+                title: "Toast Activation".into(),
+                text: "### Fields\n\nNone.".into(),
+                markdown: true,
+                meta: vec![
+                    NoticeMeta {
+                        key: "Kind".into(),
+                        value: "trigger".into(),
+                    },
+                    NoticeMeta {
+                        key: "Code".into(),
+                        value: "708".into(),
+                    },
+                ],
+            },
+            Reply::Notice,
+        );
+        let listed = serde_json::to_value(broker.list()).unwrap();
+        let plain = &listed[0];
+        assert_eq!(plain["title"], "Plain");
+        assert!(plain.get("markdown").is_none());
+        assert!(plain.get("meta").is_none());
+
+        let md = &listed[1];
+        assert_eq!(md["title"], "Toast Activation");
+        assert_eq!(md["markdown"], true);
+        assert_eq!(md["meta"][0]["key"], "Kind");
+        assert_eq!(md["meta"][0]["value"], "trigger");
+        assert_eq!(md["meta"][1]["key"], "Code");
+        assert_eq!(md["meta"][1]["value"], "708");
     }
 }
