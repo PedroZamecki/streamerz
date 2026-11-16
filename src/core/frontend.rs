@@ -3,17 +3,32 @@
 use super::protocol;
 use crate::engine::Engine;
 use futures_util::{stream::FuturesUnordered, StreamExt};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::io;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::rc::Rc;
 use std::sync::{
     atomic::{AtomicU32, Ordering},
     Arc,
 };
-use tokio::io::BufReader;
+use std::time::Duration;
+use tokio::io::{AsyncBufRead, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Notify;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CrashInfo {
+    pub summary: String,
+    pub report_path: Option<PathBuf>,
+    pub panic_recorded: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Exit {
+    Clean,
+    Crashed(CrashInfo),
+}
 
 /// One coalesced wake-up carries the event families needed by the active page.
 #[derive(Default)]
@@ -53,12 +68,86 @@ pub struct Frontend {
     output: protocol::Reader<BufReader<ChildStdout>>,
 }
 
+/// Processes UI diagnostic frames (`FrontendLog`, `FrontendStep`, `FrontendCrash`) inside the backend.
+/// Returns `true` if the frame was handled as a diagnostic message.
+pub(crate) fn handle_diag_request(request: &Value, crash_info: &mut Option<CrashInfo>) -> bool {
+    match request["request"].as_str() {
+        Some("FrontendLog") => {
+            let level = match request["level"].as_str().unwrap_or("info") {
+                "debug" => crate::Level::Debug,
+                "warn" => crate::Level::Warn,
+                "error" => crate::Level::Error,
+                "fatal" => crate::Level::Fatal,
+                _ => crate::Level::Info,
+            };
+            let text = request["text"].as_str().unwrap_or_default().trim_end();
+            if !text.is_empty() {
+                crate::log_ui(level, text.to_owned());
+            }
+            true
+        }
+        Some("FrontendStep") => {
+            match request["kind"].as_str().unwrap_or("step") {
+                "fact" => {
+                    let value = request["value"].as_str().unwrap_or_default();
+                    match request["key"].as_str().unwrap_or_default() {
+                        "UI page" => crate::crash::fact("UI page", value),
+                        "UI action" => crate::crash::fact("UI action", value),
+                        "UI dialog" => crate::crash::fact("UI dialog", value),
+                        other if !other.is_empty() => crate::crash::step(&format!("[UI] {other}: {value}")),
+                        _ => {}
+                    }
+                }
+                _ => {
+                    let text = request["text"].as_str().unwrap_or_default();
+                    if !text.is_empty() {
+                        crate::crash::step(&format!("[UI] {text}"));
+                    }
+                }
+            }
+            true
+        }
+        Some("FrontendCrash") => {
+            let thread = request["thread"].as_str().unwrap_or("?");
+            let location = request["location"].as_str().unwrap_or("");
+            let message = request["message"].as_str().unwrap_or("(no message)");
+            let context = request["context"].as_str().unwrap_or("");
+            let backtrace = request["backtrace"].as_str().unwrap_or("");
+            let existing = request["reportPath"].as_str().map(PathBuf::from);
+            let path =
+                crate::crash::record_ui_panic(thread, location, message, context, backtrace, existing.as_deref());
+            *crash_info = Some(CrashInfo {
+                summary: message.to_owned(),
+                report_path: Some(path),
+                panic_recorded: true,
+            });
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Drains any buffered diagnostic frames from the child's stdout after process exit.
+async fn drain_diag_frames<R: AsyncBufRead + Unpin>(
+    output: &mut protocol::Reader<R>,
+    crash_info: &mut Option<CrashInfo>,
+) {
+    let _ = tokio::time::timeout(Duration::from_millis(200), async {
+        while let Ok(Some(frame)) = output.read().await {
+            handle_diag_request(&frame, crash_info);
+        }
+    })
+    .await;
+}
+
 impl Frontend {
     /// Launch the same installed executable with private inherited pipes. No extra release file.
     pub fn spawn() -> io::Result<Self> {
         let mut command = Command::new(std::env::current_exe()?);
         command
             .arg("--frontend")
+            .env("STREAMERZ_LOG_DIR", crate::crash::folder())
+            .env("STREAMERZ_VERSION", crate::brand::VERSION)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -109,30 +198,46 @@ impl Frontend {
         engine: Rc<Engine>,
         changes: Arc<Changes>,
         requests_tx: tokio::sync::mpsc::Sender<super::requests::Call>,
-    ) -> io::Result<()> {
-        protocol::write(
-            &mut self.input,
-            &json!({
-                "event": "core.ready",
-                "protocol": 1,
-                "navigation": crate::core::navigation::snapshot(),
-                "title": crate::version(),
-                "dark": crate::host::dark_of(&engine.config()),
-                "animations": engine.config().animations,
-                "translations": crate::i18n::snapshot(),
-                "window": &engine.config().window,
-            }),
-        )
-        .await?;
+        recovered_crash: Option<Value>,
+    ) -> io::Result<Exit> {
+        let mut ready = json!({
+            "event": "core.ready",
+            "protocol": 1,
+            "navigation": crate::core::navigation::snapshot(),
+            "title": crate::version(),
+            "dark": crate::host::dark_of(&engine.config()),
+            "animations": engine.config().animations,
+            "translations": crate::i18n::snapshot(),
+            "window": &engine.config().window,
+            "logDir": crate::crash::folder(),
+            "version": crate::brand::VERSION,
+            "debugLog": crate::debug_log(),
+            "activeErrors": crate::error::active_list(),
+        });
+        if let Some(crash) = recovered_crash {
+            ready["recoveredCrash"] = crash;
+        }
+        protocol::write(&mut self.input, &ready).await?;
         let mut pending = std::collections::HashMap::<u64, tokio::sync::oneshot::Sender<String>>::new();
         let mut serial = 0u64;
         let mut requests = FuturesUnordered::new();
-        loop {
+        let mut crash_info: Option<CrashInfo> = None;
+        let exit_status = loop {
             tokio::select! {
                 frame = self.output.read() => {
-                    let Some(request) = frame? else { break };
+                    let request = match frame {
+                        Ok(Some(request)) => request,
+                        Ok(None) => break None,
+                        Err(error) => {
+                            crate::warn(format!("Frontend pipe read failed: {error}"));
+                            break None;
+                        }
+                    };
                     if !request.get("request").is_some_and(|v| v.is_string()) {
                         return Err(io::Error::new(io::ErrorKind::InvalidData, "frontend request has no name"));
+                    }
+                    if handle_diag_request(&request, &mut crash_info) {
+                        continue;
                     }
                     if request["request"] == "FrontendDevResult" {
                         if let Some(reply) = request["commandId"].as_u64().and_then(|id| pending.remove(&id)) {
@@ -161,26 +266,47 @@ impl Frontend {
                     if !names.is_empty() {
                         let mut notification = json!({"event":"core.changed", "topics":names});
                         if topics & 17 != 0 { notification["appearance"] = json!({"dark":crate::host::dark_of(&engine.config()), "animations":engine.config().animations}); }
+                        if topics & 1 != 0 { notification["debugLog"] = json!(crate::debug_log()); }
                         protocol::write(&mut self.input, &notification).await?;
                     }
                 }
                 status = self.child.wait() => {
-                    return match status? {
-                        status if status.success() => Ok(()),
-                        status => Err(io::Error::other(format!("frontend exited: {status}"))),
-                    };
+                    drain_diag_frames(&mut self.output, &mut crash_info).await;
+                    break Some(status?);
                 }
             }
+        };
+
+        let status = match exit_status {
+            Some(status) => status,
+            None => match tokio::time::timeout(Duration::from_secs(2), self.child.wait()).await {
+                Ok(result) => result?,
+                Err(_) => {
+                    self.child.kill().await.or_else(|error| {
+                        if error.kind() == io::ErrorKind::InvalidInput {
+                            Ok(())
+                        } else {
+                            Err(error)
+                        }
+                    })?;
+                    self.child.wait().await?
+                }
+            },
+        };
+
+        if let Some(info) = crash_info {
+            return Ok(Exit::Crashed(info));
         }
-        self.child.kill().await.or_else(|error| {
-            if error.kind() == io::ErrorKind::InvalidInput {
-                Ok(())
-            } else {
-                Err(error)
-            }
-        })?;
-        let _ = self.child.wait().await?;
-        Ok(())
+        if status.success() {
+            return Ok(Exit::Clean);
+        }
+        let desc = status.to_string();
+        let path = crate::crash::record_ui_unclean(&desc);
+        Ok(Exit::Crashed(CrashInfo {
+            summary: desc,
+            report_path: Some(path),
+            panic_recorded: false,
+        }))
     }
 }
 
@@ -201,6 +327,69 @@ mod tests {
             assert_eq!(changes.next().await, 7);
             changes.mark(crate::host::Event::Image);
             assert_eq!(changes.next().await, 8);
+        });
+    }
+
+    #[test]
+    fn frontend_log_step_and_crash_frames_are_captured_into_unified_logs_even_during_drain() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (mut writer, reader) = tokio::io::duplex(4096);
+            protocol::write(
+                &mut writer,
+                &json!({"request": "FrontendLog", "level": "warn", "text": "slider min clamped"}),
+            )
+            .await
+            .unwrap();
+            protocol::write(
+                &mut writer,
+                &json!({"request": "FrontendStep", "kind": "fact", "key": "UI page", "value": "Overlays"}),
+            )
+            .await
+            .unwrap();
+            protocol::write(
+                &mut writer,
+                &json!({"request": "FrontendStep", "kind": "step", "text": "opened overlays settings"}),
+            )
+            .await
+            .unwrap();
+            protocol::write(
+                &mut writer,
+                &json!({
+                    "request": "FrontendCrash",
+                    "thread": "main",
+                    "location": "frontend/src/controls/form.rs:280",
+                    "message": "simulated UI panic",
+                    "context": "Context:\n  UI page: Overlays\n",
+                    "backtrace": "frame 0"
+                }),
+            )
+            .await
+            .unwrap();
+            drop(writer);
+
+            let mut proto_reader = protocol::Reader::new(BufReader::new(reader));
+            let mut crash_info = None;
+            drain_diag_frames(&mut proto_reader, &mut crash_info).await;
+
+            let info = crash_info.expect("FrontendCrash must produce CrashInfo");
+            assert_eq!(info.summary, "simulated UI panic");
+            assert!(info.panic_recorded);
+            let report_path = info.report_path.expect("crash report path");
+            assert!(report_path.is_file(), "report missing at {}", report_path.display());
+            let tail = crate::log_tail_tagged(20).join("\n");
+            assert!(tail.contains("[WARN] [UI] slider min clamped"), "{tail}");
+            assert!(
+                tail.contains(
+                    "[FATAL] [UI] Panic in thread 'main' at frontend/src/controls/form.rs:280: simulated UI panic"
+                ),
+                "{tail}"
+            );
+            let _ = std::fs::remove_file(report_path);
         });
     }
 }

@@ -3,6 +3,7 @@
 //! (`choices` with `picture`, `detail` and `tip`) and what the field says (`gallery`); the grid is
 //! virtualised and asks the core for the pictures of the rows in view only. Ids stay out of sight.
 use crate::send;
+use crate::theme::{CONTROL_HEIGHT, FONT_CAPTION, FONT_MICRO, LINE_CAPTION, LINE_MICRO, SPACE_MD, SPACE_SM, SPACE_XS};
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
@@ -133,8 +134,8 @@ impl Gallery {
     /// The core's reloaded list (`choices`, `status`), or why it failed.
     pub fn set_choices(&mut self, reply: &Value, cx: &mut Context<Self>) {
         self.loading = false;
-        if reply["status"] == "error" {
-            self.spec["status"] = reply["error"].clone();
+        if let Some(err) = crate::error::StreamerzError::from_response(reply) {
+            self.spec["status"] = json!(err.summary_line());
         } else {
             self.items = items_of(&reply["choices"]);
             self.spec["status"] = reply["status"].clone();
@@ -211,14 +212,14 @@ impl Gallery {
         let gallery = this.read(cx);
         let theme = cx.theme();
         let chosen = gallery.items.iter().find(|item| item.id == gallery.selected);
-        let mut line = div().flex().items_center().gap_2().w_full().min_w_0();
+        let mut line = div().flex().items_center().gap(px(SPACE_SM)).w_full().min_w_0();
         line = match chosen {
             Some(item) => {
                 let url = item.picture.clone();
                 line.child(gallery.picture(&url, 18., cx))
                     .child(div().min_w_0().truncate().child(item.label.clone()))
                     .when(!item.detail.is_empty(), |line| {
-                        line.child(gallery.detail(&item.detail, cx))
+                        line.child(gallery.detail(&item.detail, false, cx))
                     })
             }
             None if gallery.selected.is_empty() => line
@@ -275,7 +276,7 @@ impl Gallery {
                     .small()
                     .outline()
                     .w_full()
-                    .h(px(26.))
+                    .h(px(CONTROL_HEIGHT))
                     .accessibility_label(label)
                     .disabled(disabled)
                     .child(line),
@@ -284,14 +285,21 @@ impl Gallery {
             .into_any_element()
     }
 
-    fn detail(&self, detail: &str, cx: &App) -> Div {
+    /// The quiet detail of an item: a caption in the field, a micro line in a grid cell.
+    fn detail(&self, detail: &str, micro: bool, cx: &App) -> Div {
         let theme = cx.theme();
+        let (size, height) = if micro {
+            (FONT_MICRO, LINE_MICRO)
+        } else {
+            (FONT_CAPTION, LINE_CAPTION)
+        };
         div()
             .flex()
             .items_center()
-            .gap(px(3.))
+            .gap(px(SPACE_XS))
             .flex_shrink_0()
-            .text_size(px(11.5))
+            .text_size(px(size))
+            .line_height(px(height))
             .text_color(theme.muted_foreground)
             .when_some(self.spec["detailIcon"].as_str(), |row, icon| {
                 row.child(Icon::empty().path(format!("icons/{icon}.svg")).size_3())
@@ -316,14 +324,16 @@ impl Gallery {
         let tip = SharedString::from(tip);
         div()
             .id(("gallery-cell", key))
+            .test_support()
+            .aria_label(label.clone())
             .w(px(CELL_W))
             .h(px(CELL_H))
-            .p_1()
+            .p(px(SPACE_XS))
             .flex()
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(px(3.))
+            .gap(px(SPACE_XS))
             .rounded(theme.radius)
             .border_1()
             .border_color(if chosen { theme.ring } else { gpui::transparent_black() })
@@ -346,16 +356,16 @@ impl Gallery {
             .child(
                 div()
                     .w_full()
-                    .h(px(16.))
+                    .h(px(LINE_CAPTION))
                     .flex_shrink_0()
-                    .line_height(px(16.))
+                    .line_height(px(LINE_CAPTION))
                     .text_center()
                     .truncate()
-                    .text_size(px(11.5))
+                    .text_size(px(FONT_CAPTION))
                     .text_color(theme.foreground)
                     .child(label),
             )
-            .children(detail.map(|detail| detail.h(px(14.)).flex_shrink_0()))
+            .children(detail.map(|detail| detail.h(px(LINE_MICRO)).flex_shrink_0()))
             .into_any_element()
     }
 }
@@ -371,11 +381,12 @@ impl Render for Gallery {
         let header = div()
             .flex()
             .items_center()
-            .gap(px(4.))
+            .gap(px(SPACE_SM))
             .child(
                 div().flex_1().min_w_0().child(
                     Input::new(&self.search)
                         .small()
+                        .min_h(px(CONTROL_HEIGHT))
                         .prefix(
                             Icon::empty()
                                 .path("icons/search.svg")
@@ -389,6 +400,8 @@ impl Render for Gallery {
                 header.child(
                     Button::new("gallery-refresh")
                         .small()
+                        .h(px(CONTROL_HEIGHT))
+                        .w(px(CONTROL_HEIGHT))
                         .ghost()
                         .icon(Icon::empty().path(if self.loading {
                             "icons/loader-circle.svg"
@@ -406,7 +419,7 @@ impl Render for Gallery {
             .w(px(CELL_W * COLUMNS as f32 + 8.))
             .flex()
             .flex_col()
-            .gap_2()
+            .gap(px(SPACE_SM))
             .child(header);
         // Loading, failed or empty, said in place of the grid (what is known still shows).
         let status = self.spec["status"].as_str().filter(|_| self.items.is_empty());
@@ -417,9 +430,10 @@ impl Render for Gallery {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .p_3()
+                    .p(px(SPACE_MD))
                     .text_center()
-                    .text_size(px(12.5))
+                    .text_size(px(FONT_CAPTION))
+                    .line_height(px(LINE_CAPTION))
                     .text_color(theme.muted_foreground)
                     .child(status.to_owned()),
             );
@@ -430,16 +444,21 @@ impl Render for Gallery {
         let any = usize::from(!searching);
         let count = any + self.shown.len();
         if count == 0 {
+            let empty_msg = self.spec["empty"].as_str().unwrap_or_default().to_owned();
             return panel
                 .child(
                     div()
+                        .id(SharedString::from(format!("{}-empty", self.id)))
+                        .test_support()
+                        .aria_label(empty_msg.clone())
                         .h(px(CELL_H * 2.))
                         .flex()
                         .items_center()
                         .justify_center()
-                        .text_size(px(12.5))
+                        .text_size(px(FONT_CAPTION))
+                        .line_height(px(LINE_CAPTION))
                         .text_color(theme.muted_foreground)
-                        .child(self.spec["empty"].as_str().unwrap_or_default().to_owned()),
+                        .child(empty_msg),
                 )
                 .into_any_element();
         }
@@ -478,7 +497,7 @@ impl Render for Gallery {
                                 let item = &gallery.items[gallery.shown[at - any]];
                                 let (id, label, tip) = (item.id.clone(), item.label.clone(), item.tip.clone());
                                 let picture = gallery.picture(&item.picture, PICTURE, cx);
-                                let detail = (!item.detail.is_empty()).then(|| gallery.detail(&item.detail, cx));
+                                let detail = (!item.detail.is_empty()).then(|| gallery.detail(&item.detail, true, cx));
                                 gallery.cell(at, id, picture, label, detail, tip, cx)
                             };
                             line = line.child(cell);
@@ -491,5 +510,120 @@ impl Render for Gallery {
         .track_scroll(&self.scroll)
         .h(px(CELL_H * (rows.min(4) as f32)));
         panel.child(list).into_any_element()
+    }
+}
+
+#[cfg(all(test, feature = "test-support"))]
+mod tests {
+    use super::Gallery;
+    use gpui_kit::test::{TestEventExt, TestQueryExt, TestWindowExt};
+    use gpui_kit::{
+        div, px, size, AppContext, Bounds, Entity, IntoElement, ParentElement, Render, Styled, TestAppContext, Window,
+        WindowBounds, WindowOptions,
+    };
+    use serde_json::json;
+
+    struct GalleryHost(Entity<Gallery>);
+    impl Render for GalleryHost {
+        fn render(&mut self, _: &mut Window, cx: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .p_4()
+                .child(Gallery::field(&self.0, "Gift".into(), false, cx))
+        }
+    }
+
+    #[gpui_kit::test]
+    fn gallery_search_filters_items_hides_any_shows_empty_and_picks_filtered_id(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::theme::apply(true, cx);
+        });
+        let field = json!({
+            "key": "gift",
+            "value": "",
+            "gallery": {
+                "any": "Any gift",
+                "anyTip": "Match any gift",
+                "search": "Search gifts",
+                "empty": "No matching gifts."
+            },
+            "choices": [
+                {"id": "g-heart", "label": "Heart", "detail": "1"},
+                {"id": "g-rose", "label": "Rose", "detail": "5"},
+                {"id": "g-panda", "label": "Panda", "detail": "10"}
+            ]
+        });
+        let slot: std::rc::Rc<std::cell::RefCell<Option<Entity<Gallery>>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let s = slot.clone();
+        let window = cx.update(|cx| {
+            let bounds = Bounds {
+                origin: gpui_kit::Point::default(),
+                size: size(px(640.), px(640.)),
+            };
+            let (window, _) = gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    ..Default::default()
+                },
+                cx,
+                move |window, cx| {
+                    let gallery = cx.new(|cx| Gallery::new(&field, "gift".into(), window, cx));
+                    *s.borrow_mut() = Some(gallery.clone());
+                    cx.new(|_| GalleryHost(gallery))
+                },
+            )
+            .expect("open test window");
+            window.downcast::<gpui_kit::base::Root>().expect("root window")
+        });
+        let gallery = slot.borrow().clone().expect("gallery created");
+
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let trigger = window.find_by_label("Gift").bounds();
+            window.pointer_down(trigger.center(), gpui_kit::MouseButton::Left, cx);
+            window.pointer_up(trigger.center(), gpui_kit::MouseButton::Left, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(gallery.read(cx).shown, vec![0, 1, 2]);
+            assert!(window.try_find_by_label("Any gift").is_some());
+
+            // Non-matching search displays the empty message and hides "Any gift".
+            window.input("zzz", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(gallery.read(cx).shown.is_empty());
+            assert!(window.try_find_by_label("Any gift").is_none());
+            assert!(window.try_find_by_label("No matching gifts.").is_some());
+
+            // Replace search with "rose" -> only Rose (index 1) remains and clicking it selects "g-rose".
+            window.key_down("ctrl-a", false, cx);
+            window.key_up("ctrl-a", cx);
+            window.input("rose", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(gallery.read(cx).shown, vec![1]);
+            assert!(window.try_find_by_label("Any gift").is_none());
+            let rose = window.find_by_label("Rose").bounds();
+            window.pointer_down(rose.center(), gpui_kit::MouseButton::Left, cx);
+            window.pointer_up(rose.center(), gpui_kit::MouseButton::Left, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(gallery.read(cx).selected, "g-rose");
+        })
+        .unwrap();
     }
 }

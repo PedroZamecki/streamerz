@@ -49,7 +49,25 @@ pub(crate) fn observe(connection: &str, event: &str, data: &Value) {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+fn default_true() -> bool {
+    true
+}
+
+/// Persisted user preference for an OBS output: overrides its detected platform or excludes it from
+/// preflight readiness checks.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObsOutputPref {
+    pub connection_id: String,
+    pub source: String,
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    #[serde(default = "default_true")]
+    pub required: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Output {
     /// Opaque, connection-scoped identity. Never resolve a selection by display name alone.
@@ -64,11 +82,13 @@ pub struct Output {
     pub vertical: Option<bool>,
     pub controllable: bool,
     pub limitation: Option<String>,
+    #[serde(default = "default_true")]
+    pub required: bool,
     #[serde(skip)]
-    key: String,
+    pub key: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Inventory {
     pub connection_id: String,
@@ -81,12 +101,53 @@ fn text<'a>(v: &'a Value, key: &str) -> &'a str {
     v[key].as_str().unwrap_or("")
 }
 
-fn platform(value: &str) -> Option<String> {
+pub fn platform(value: &str) -> Option<String> {
     let s = value.to_ascii_lowercase();
     ["twitch", "youtube", "tiktok", "kick"]
         .into_iter()
         .find(|p| s.split(|c: char| !c.is_ascii_alphanumeric()).any(|word| word == *p))
         .map(str::to_owned)
+}
+
+/// Infer a known platform from an RTMP/RTMPS/WHIP ingest server URL without keeping the URL.
+pub fn platform_from_server(value: &str) -> Option<String> {
+    let s = value.trim().to_ascii_lowercase();
+    if s.is_empty() {
+        return None;
+    }
+    if s.contains("fa723fc1b171.global-contribute.live-video.net") || s.contains("kick.com") {
+        Some("kick".into())
+    } else if s.contains("twitch.tv") || s.contains("live-video.net") {
+        Some("twitch".into())
+    } else if s.contains("youtube.com") || s.contains("youtu.be") {
+        Some("youtube".into())
+    } else if s.contains("tiktok.com") || s.contains("tiktokcdn") || s.contains("musical.ly") {
+        Some("tiktok".into())
+    } else {
+        platform(&s)
+    }
+}
+
+/// Apply saved output overrides (platform mapping and required toggle) to discovered outputs.
+pub fn apply_prefs(inventory: &mut Inventory, prefs: &[ObsOutputPref]) {
+    let conn = &inventory.connection_id;
+    for o in &mut inventory.outputs {
+        if let Some(pref) = prefs
+            .iter()
+            .find(|p| p.connection_id == *conn && p.source == o.source && p.key == o.key)
+        {
+            o.required = pref.required;
+            if let Some(plat) = pref.platform.as_deref() {
+                if plat.is_empty() {
+                    o.platform = None;
+                    o.platform_source = Some("user".into());
+                } else {
+                    o.platform = Some(plat.to_owned());
+                    o.platform_source = Some("user".into());
+                }
+            }
+        }
+    }
 }
 
 fn output(connection: &str, source: &str, key: &str, name: &str) -> Output {
@@ -102,6 +163,7 @@ fn output(connection: &str, source: &str, key: &str, name: &str) -> Output {
         vertical: None,
         controllable: true,
         limitation: None,
+        required: true,
         key: key.into(),
     }
 }
@@ -149,8 +211,13 @@ pub async fn discover(port: &dyn ObsPort, conn: &str) -> Result<Inventory, Strin
     // Service settings can contain a stream key. Only keep an allowlisted platform identifier.
     if let Ok(s) = ask(port, conn, "GetStreamServiceSettings", json!({})).await {
         let settings = &s["streamServiceSettings"];
-        main.platform = platform(text(settings, "service"));
-        main.platform_source = main.platform.as_ref().map(|_| "service".into());
+        if let Some(p) = platform(text(settings, "service")) {
+            main.platform = Some(p);
+            main.platform_source = Some("service".into());
+        } else if let Some(p) = platform_from_server(text(settings, "server")) {
+            main.platform = Some(p);
+            main.platform_source = Some("server".into());
+        }
     }
     inventory.outputs.push(main);
     if let Ok(c) = ask(port, conn, "GetCanvasList", json!({})).await {
@@ -503,7 +570,8 @@ pub async fn request(engine: &Rc<Engine>, req: &Value) -> Result<Value, String> 
     if !["list", "start", "stop"].contains(&op) {
         return Err("Unknown output operation".into());
     }
-    let inventory = discover(port.as_ref(), &connection).await?;
+    let mut inventory = discover(port.as_ref(), &connection).await?;
+    apply_prefs(&mut inventory, &engine.config().obs_output_prefs);
     if op == "list" {
         return serde_json::to_value(inventory).map_err(|e| e.to_string());
     }
@@ -903,6 +971,60 @@ mod tests {
             assert_eq!(inventory.outputs.len(), 3);
             assert_eq!(inventory.outputs[1].active, Some(false));
             assert_eq!(inventory.outputs[2].active, Some(true));
+        });
+    }
+
+    #[test]
+    fn custom_rtmp_server_hostname_and_user_preferences_resolve_without_leaking_secrets() {
+        crate::engine::tests::run(async {
+            let obs = Obs::default();
+            obs.reply(
+                "GetStreamServiceSettings",
+                json!({
+                    "streamServiceType": "rtmp_custom",
+                    "streamServiceSettings": {
+                        "service": "Custom...",
+                        "server": "rtmps://fa723fc1b171.global-contribute.live-video.net/app",
+                        "key": "sk_live_secret_kick_key"
+                    }
+                }),
+            );
+            obs.reply(
+                "aitum-multistream/get_outputs",
+                json!({"success": true, "outputs": [
+                    {"name": "Main Horizontal", "vertical": false},
+                    {"name": "Vertical Extra", "vertical": true}
+                ]}),
+            );
+            let mut inv = discover(&obs, "main").await.unwrap();
+            assert_eq!(inv.outputs[0].platform.as_deref(), Some("kick"));
+            assert_eq!(inv.outputs[0].platform_source.as_deref(), Some("server"));
+            let raw = serde_json::to_string(&inv).unwrap();
+            assert!(!raw.contains("sk_live_secret_kick_key"));
+            assert!(!raw.contains("fa723fc1b171"));
+
+            let prefs = vec![
+                ObsOutputPref {
+                    connection_id: "main".into(),
+                    source: MULTI.into(),
+                    key: "Main Horizontal".into(),
+                    platform: Some("youtube".into()),
+                    required: true,
+                },
+                ObsOutputPref {
+                    connection_id: "main".into(),
+                    source: MULTI.into(),
+                    key: "Vertical Extra".into(),
+                    platform: Some(String::new()),
+                    required: false,
+                },
+            ];
+            apply_prefs(&mut inv, &prefs);
+            assert_eq!(inv.outputs[1].platform.as_deref(), Some("youtube"));
+            assert_eq!(inv.outputs[1].platform_source.as_deref(), Some("user"));
+            assert!(inv.outputs[1].required);
+            assert_eq!(inv.outputs[2].platform, None);
+            assert!(!inv.outputs[2].required);
         });
     }
 

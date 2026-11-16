@@ -49,9 +49,16 @@ browser account when `refresh: true` is passed).
 ## Development and failures
 
 Start the app with `STREAMERZ_DEV=1` for `status`, `log`, `fire_trigger`,
-`inject_chat`, `chat_out`, `ui` and `obs_request`. Offline scenario and
+`inject_chat`, `chat_out`, `ui`, `obs_request` and `platform_api`. Offline scenario and
 gift-filter preview tests need no dev flag. A normal instance does not expose
 these development requests.
+
+`platform_api` makes one Twitch Helix, Kick or YouTube Data API call through the
+running client and its login, and returns the answer as the platform gave it.
+Use it to check what a page shows against what the platform says (the Stream page's
+`dev/stream-check.mjs` does) without copying a token. A GET only reads, but a YouTube
+read costs 1 unit of the channel's daily quota; any other method changes the real
+channel.
 
 The MCP bridge does not authenticate WebSocket sessions. Use a separate local dev
 instance with authentication off. An unavailable service or bad tool argument
@@ -114,3 +121,9 @@ Protocol references: [obs-websocket](https://github.com/obsproject/obs-websocket
 [Aitum Multistream](https://github.com/Aitum/obs-aitum-multistream/blob/main/multistream.cpp),
 [Aitum Vertical](https://github.com/Aitum/obs-vertical-canvas/blob/master/vertical-canvas.cpp),
 [Multi-RTMP websocket fork](https://github.com/davidcool/obs-multi-rtmp-websocket-support/tree/pr-obs-websocket).
+
+The Stream card forms (`stream_info.twitch` and `stream_info.youtube`) expose the platform-specific
+options through `entity_form` and `edit_entity`. YouTube category and privacy also appear in
+`stream_info`. Use the field indexes and choices returned by the form. Twitch content labels are
+booleans; omitted fields keep their current values. The dev `ui` command `form KIND` opens a real core
+form on the current sections page, allowing offline layout checks without connecting an account.

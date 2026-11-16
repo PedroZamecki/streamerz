@@ -227,6 +227,8 @@ async fn kick(f: Rc<Fakes>, mut rx: UnboundedReceiver<crate::kick::KickCmd>) {
                 resp,
             } => drop(resp.send(f.unit(P, "ban", json!({"login": user_login, "reason": reason})))),
             C::UnbanUser { user_login, resp } => drop(resp.send(f.unit(P, "unban", json!({"login": user_login})))),
+            C::UnbanUserId { user_id, resp } => drop(resp.send(f.unit(P, "unbanId", json!({"userId": user_id})))),
+            C::BanUserId { user_id, duration, reason, resp } => drop(resp.send(f.unit(P, "banId", json!({"userId": user_id, "duration": duration, "reason": reason})))),
             C::TimeoutUser {
                 user_login,
                 duration,
@@ -239,6 +241,9 @@ async fn kick(f: Rc<Fakes>, mut rx: UnboundedReceiver<crate::kick::KickCmd>) {
             ))),
             C::UnTimeoutUser { user_login, resp } => {
                 drop(resp.send(f.unit(P, "untimeout", json!({"login": user_login}))))
+            }
+            C::DeleteMessage { message_id, resp } => {
+                drop(resp.send(f.unit(P, "deleteMessage", json!({"messageId": message_id}))))
             }
             C::Connect => drop(f.unit(P, "connect", json!({}))),
             C::Disconnect => drop(f.unit(P, "disconnect", json!({}))),
@@ -269,6 +274,9 @@ async fn youtube(f: Rc<Fakes>, mut rx: UnboundedReceiver<crate::youtube::YouTube
                     .as_str()
                     .map(|id| (id.to_owned(), next["title"].as_str().unwrap_or_default().to_owned()));
                 drop(resp.send(Ok(found)));
+            }
+            C::Api { path, resp } => {
+                drop(resp.send(f.call(P, &format!("GET {path}"), json!({}), json!({"items": []}))))
             }
             C::SendMessage {
                 broadcast,
@@ -301,29 +309,66 @@ async fn youtube(f: Rc<Fakes>, mut rx: UnboundedReceiver<crate::youtube::YouTube
             ))),
             C::UpdateVideo {
                 broadcast,
-                title,
-                description,
-                tags,
+                update,
                 resp,
-            } => drop(resp.send(f.unit(
-                P,
-                "updateVideo",
-                json!({"broadcast": broadcast, "title": title, "description": description, "tags": tags}),
-            ))),
+            } => {
+                let mut params = serde_json::to_value(update).unwrap();
+                params["broadcast"] = broadcast.into();
+                drop(resp.send(f.unit(P, "updateVideo", params)));
+            }
             C::BanUser {
                 broadcast,
                 user_id,
                 resp,
-            } => drop(resp.send(f.unit(P, "ban", json!({"broadcast": broadcast, "userId": user_id})))),
+            } => drop(resp.send(text(
+                f.call(
+                    P,
+                    "ban",
+                    json!({"broadcast": broadcast, "userId": user_id}),
+                    "fake-ban-id".into(),
+                ),
+                "fake-ban-id",
+            ))),
             C::TimeoutUser {
                 broadcast,
                 user_id,
                 duration,
                 resp,
+            } => drop(resp.send(text(
+                f.call(
+                    P,
+                    "timeout",
+                    json!({"broadcast": broadcast, "userId": user_id, "duration": duration}),
+                    "fake-ban-id".into(),
+                ),
+                "fake-ban-id",
+            ))),
+            C::RemoveBan { id, resp } => drop(resp.send(f.unit(P, "removeBan", json!({"id": id})))),
+            C::DeleteMessage { message_id, resp } => {
+                drop(resp.send(f.unit(P, "deleteMessage", json!({"messageId": message_id}))))
+            }
+            C::AddModerator {
+                broadcast,
+                user_id,
+                resp,
+            } => drop(resp.send(text(
+                f.call(
+                    P,
+                    "addModerator",
+                    json!({"broadcast": broadcast, "userId": user_id}),
+                    "fake-mod-id".into(),
+                ),
+                "fake-mod-id",
+            ))),
+            C::RemoveModerator {
+                broadcast,
+                moderator_id,
+                user_id,
+                resp,
             } => drop(resp.send(f.unit(
                 P,
-                "timeout",
-                json!({"broadcast": broadcast, "userId": user_id, "duration": duration}),
+                "removeModerator",
+                json!({"broadcast": broadcast, "moderatorId": moderator_id, "userId": user_id}),
             ))),
             C::CreatePoll {
                 broadcast,

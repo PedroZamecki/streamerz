@@ -23,6 +23,7 @@ pub const DOMAINS: &[&str] = &[
     "integrations",
     "spotify",
     "chat_options",
+    "obs_companion",
 ];
 
 pub fn supports(domain: &str) -> bool {
@@ -71,6 +72,7 @@ pub fn read(engine: &Rc<Engine>, domain: &str) -> Result<Value, String> {
         "donations" => donations(engine),
         "integrations" => integrations(engine),
         "spotify" => spotify(engine),
+        "obs_companion" => super::preflight::companion_sections(engine),
         _ => return Err(format!("no sections page for {domain}")),
     };
     let config = engine.config();
@@ -632,6 +634,9 @@ pub fn set(engine: &Rc<Engine>, domain: &str, key: &str, value: &Value) -> Resul
             }
         }
         ("chat_options", _) => return super::chat::set_option(engine, key, value),
+        ("obs_companion" | "stream", _) if key.starts_with("output.") => {
+            return super::preflight::set_setting(engine, key, value);
+        }
         ("notifications", "login" | "updates" | "streams" | "automation") => {
             let value = need_bool()?;
             engine.change(|config| {
@@ -653,6 +658,7 @@ pub fn set(engine: &Rc<Engine>, domain: &str, key: &str, value: &Value) -> Resul
 pub fn act(engine: &Rc<Engine>, domain: &str, action: &str) -> Result<Value, String> {
     let accepted = Ok(json!({"accepted": true}));
     match (domain, action) {
+        ("obs_companion", _) => super::preflight::act(engine, action),
         ("spotify", "open_dashboard") => {
             crate::oauth::open_browser("https://developer.spotify.com/dashboard");
             accepted

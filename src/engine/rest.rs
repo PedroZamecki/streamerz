@@ -2600,6 +2600,614 @@ impl Engine {
                     crate::error(format!("Twitch: {e}"));
                 }
             }
+            // Delete Message (581)
+            581 => {
+                ctx.args.insert("deleteMessageResult".into(), false.into());
+                let msg_id = self.expand(ctx, s(o, "messageId")).trim().to_string();
+                if msg_id.is_empty() {
+                    crate::error("Twitch Delete Message: messageId is required".into());
+                    return;
+                }
+                let Some(tw) = self.twitch() else { return };
+                match tw
+                    .helix(
+                        "DELETE",
+                        "moderation/chat",
+                        vec![
+                            ("broadcaster_id", "{broadcaster_id}"),
+                            ("moderator_id", "{moderator_id}"),
+                            ("message_id", &msg_id),
+                        ],
+                        None,
+                        false,
+                        true,
+                    )
+                    .await
+                {
+                    Ok(_) => drop(ctx.args.insert("deleteMessageResult".into(), true.into())),
+                    Err(e) => crate::error(format!("Twitch: {e}")),
+                }
+            }
+            // Resolve AutoMod Message (582)
+            582 => {
+                ctx.args.insert("resolveAutoModResult".into(), false.into());
+                let msg_id = self.expand(ctx, s(o, "messageId")).trim().to_string();
+                let action = match o.get("action") {
+                    Some(Value::Number(v)) => {
+                        if v.as_i64() == Some(1) {
+                            "DENY"
+                        } else {
+                            "ALLOW"
+                        }
+                    }
+                    _ => {
+                        let t = self.expand(ctx, s(o, "action")).trim().to_ascii_uppercase();
+                        if t == "1" || t == "DENY" || t == "DENIED" {
+                            "DENY"
+                        } else {
+                            "ALLOW"
+                        }
+                    }
+                };
+                let Some(tw) = self.twitch() else { return };
+                match tw
+                    .helix(
+                        "POST",
+                        "moderation/automod/message",
+                        vec![],
+                        Some(json!({"user_id": "{moderator_id}", "msg_id": msg_id, "action": action})),
+                        false,
+                        true,
+                    )
+                    .await
+                {
+                    Ok(_) => drop(ctx.args.insert("resolveAutoModResult".into(), true.into())),
+                    Err(e) => crate::error(format!("Twitch: {e}")),
+                }
+            }
+            // Add Blocked Term (583)
+            583 => {
+                ctx.args.insert("blockedTermResult".into(), false.into());
+                let term = self.expand(ctx, s(o, "text")).trim().to_string();
+                let Some(tw) = self.twitch() else { return };
+                match tw
+                    .helix(
+                        "POST",
+                        "moderation/blocked_terms",
+                        vec![
+                            ("broadcaster_id", "{broadcaster_id}"),
+                            ("moderator_id", "{moderator_id}"),
+                        ],
+                        Some(json!({"text": term})),
+                        false,
+                        true,
+                    )
+                    .await
+                {
+                    Ok(v) => {
+                        ctx.args.insert("blockedTermResult".into(), true.into());
+                        if let Some(d) = v.pointer("/data/0") {
+                            ctx.args.insert("blockedTermId".into(), d["id"].clone());
+                            ctx.args.insert("blockedTermText".into(), d["text"].clone());
+                        }
+                    }
+                    Err(e) => crate::error(format!("Twitch: {e}")),
+                }
+            }
+            // Remove Blocked Term (584)
+            584 => {
+                ctx.args.insert("removeBlockedTermResult".into(), false.into());
+                let term_id = self.expand(ctx, s(o, "termId")).trim().to_string();
+                let Some(tw) = self.twitch() else { return };
+                match tw
+                    .helix(
+                        "DELETE",
+                        "moderation/blocked_terms",
+                        vec![
+                            ("broadcaster_id", "{broadcaster_id}"),
+                            ("moderator_id", "{moderator_id}"),
+                            ("id", &term_id),
+                        ],
+                        None,
+                        false,
+                        true,
+                    )
+                    .await
+                {
+                    Ok(_) => drop(ctx.args.insert("removeBlockedTermResult".into(), true.into())),
+                    Err(e) => crate::error(format!("Twitch: {e}")),
+                }
+            }
+            // Get Blocked Terms (585)
+            585 => {
+                let Some(tw) = self.twitch() else { return };
+                match tw
+                    .helix(
+                        "GET",
+                        "moderation/blocked_terms",
+                        vec![
+                            ("broadcaster_id", "{broadcaster_id}"),
+                            ("moderator_id", "{moderator_id}"),
+                            ("first", "100"),
+                        ],
+                        None,
+                        false,
+                        true,
+                    )
+                    .await
+                {
+                    Ok(v) => {
+                        let items = v["data"].as_array().cloned().unwrap_or_default();
+                        ctx.args.insert("blockedTermCount".into(), (items.len() as u64).into());
+                        for (i, item) in items.iter().enumerate() {
+                            ctx.args.insert(format!("blockedTerm{i}.id"), item["id"].clone());
+                            ctx.args.insert(format!("blockedTerm{i}.text"), item["text"].clone());
+                        }
+                        ctx.args.insert("blockedTerms".into(), Value::Array(items));
+                    }
+                    Err(e) => crate::error(format!("Twitch: {e}")),
+                }
+            }
+            // Resolve Unban Request (586)
+            586 => {
+                ctx.args.insert("resolveUnbanRequestResult".into(), false.into());
+                let req_id = self.expand(ctx, s(o, "unbanRequestId")).trim().to_string();
+                let status = match o.get("status") {
+                    Some(Value::Number(v)) => {
+                        if v.as_i64() == Some(1) {
+                            "denied"
+                        } else {
+                            "approved"
+                        }
+                    }
+                    _ => {
+                        let t = self.expand(ctx, s(o, "status")).trim().to_ascii_lowercase();
+                        if t == "1" || t == "deny" || t == "denied" {
+                            "denied"
+                        } else {
+                            "approved"
+                        }
+                    }
+                };
+                let res_text = self.expand(ctx, s(o, "resolutionText")).trim().to_string();
+                let Some(tw) = self.twitch() else { return };
+                let mut q = vec![
+                    ("broadcaster_id", "{broadcaster_id}"),
+                    ("moderator_id", "{moderator_id}"),
+                    ("unban_request_id", req_id.as_str()),
+                    ("status", status),
+                ];
+                if !res_text.is_empty() {
+                    q.push(("resolution_text", res_text.as_str()));
+                }
+                match tw
+                    .helix("PATCH", "moderation/unban_requests", q, None, false, true)
+                    .await
+                {
+                    Ok(v) => {
+                        ctx.args.insert("resolveUnbanRequestResult".into(), true.into());
+                        ctx.args.insert(
+                            "unbanRequestStatus".into(),
+                            v.pointer("/data/0/status").cloned().unwrap_or_else(|| status.into()),
+                        );
+                    }
+                    Err(e) => crate::error(format!("Twitch: {e}")),
+                }
+            }
+            // Get Unban Requests (587)
+            587 => {
+                let status = match o.get("status") {
+                    Some(Value::Number(v)) => match v.as_i64().unwrap_or(0) {
+                        1 => "approved",
+                        2 => "denied",
+                        3 => "acknowledged",
+                        4 => "canceled",
+                        _ => "pending",
+                    }
+                    .to_string(),
+                    _ => {
+                        let t = self.expand(ctx, s(o, "status")).trim().to_ascii_lowercase();
+                        match t.as_str() {
+                            "1" | "approved" => "approved",
+                            "2" | "denied" => "denied",
+                            "3" | "acknowledged" => "acknowledged",
+                            "4" | "canceled" => "canceled",
+                            _ => "pending",
+                        }
+                        .to_string()
+                    }
+                };
+                let Some(tw) = self.twitch() else { return };
+                match tw
+                    .helix(
+                        "GET",
+                        "moderation/unban_requests",
+                        vec![
+                            ("broadcaster_id", "{broadcaster_id}"),
+                            ("moderator_id", "{moderator_id}"),
+                            ("status", status.as_str()),
+                            ("first", "100"),
+                        ],
+                        None,
+                        false,
+                        true,
+                    )
+                    .await
+                {
+                    Ok(v) => {
+                        let items = v["data"].as_array().cloned().unwrap_or_default();
+                        ctx.args.insert("unbanRequestCount".into(), (items.len() as u64).into());
+                        for (i, item) in items.iter().enumerate() {
+                            ctx.args.insert(format!("unbanRequest{i}.id"), item["id"].clone());
+                            ctx.args
+                                .insert(format!("unbanRequest{i}.userId"), item["user_id"].clone());
+                            ctx.args
+                                .insert(format!("unbanRequest{i}.userLogin"), item["user_login"].clone());
+                            ctx.args
+                                .insert(format!("unbanRequest{i}.userName"), item["user_name"].clone());
+                            ctx.args
+                                .insert(format!("unbanRequest{i}.status"), item["status"].clone());
+                            ctx.args.insert(format!("unbanRequest{i}.text"), item["text"].clone());
+                        }
+                        ctx.args.insert("unbanRequests".into(), Value::Array(items));
+                    }
+                    Err(e) => crate::error(format!("Twitch: {e}")),
+                }
+            }
+            // Unique Chat Mode (588)
+            588 => {
+                let status = b(o, "status", true);
+                let Some(tw) = self.twitch() else { return };
+                match tw
+                    .helix(
+                        "PATCH",
+                        "chat/settings",
+                        vec![
+                            ("broadcaster_id", "{broadcaster_id}"),
+                            ("moderator_id", "{moderator_id}"),
+                        ],
+                        Some(json!({"unique_chat_mode": status})),
+                        false,
+                        true,
+                    )
+                    .await
+                {
+                    Ok(v) => drop(
+                        ctx.args.insert(
+                            "uniqueModeEnabled".into(),
+                            v.pointer("/data/0/unique_chat_mode")
+                                .cloned()
+                                .unwrap_or_else(|| status.into()),
+                        ),
+                    ),
+                    Err(e) => crate::error(format!("Twitch: {e}")),
+                }
+            }
+            // Chat Delay (589)
+            589 => {
+                let status = b(o, "status", true);
+                let dur = self.duration_number(ctx, o, "duration").max(0.0) as u64;
+                let body = if status {
+                    let delay = match dur {
+                        0..=2 => 2,
+                        3..=4 => 4,
+                        _ => 6,
+                    };
+                    json!({"non_moderator_chat_delay": true, "non_moderator_chat_delay_duration": delay})
+                } else {
+                    json!({"non_moderator_chat_delay": false})
+                };
+                let Some(tw) = self.twitch() else { return };
+                match tw
+                    .helix(
+                        "PATCH",
+                        "chat/settings",
+                        vec![
+                            ("broadcaster_id", "{broadcaster_id}"),
+                            ("moderator_id", "{moderator_id}"),
+                        ],
+                        Some(body),
+                        false,
+                        true,
+                    )
+                    .await
+                {
+                    Ok(v) => {
+                        let d = &v["data"][0];
+                        ctx.args.insert(
+                            "chatDelayEnabled".into(),
+                            d.get("non_moderator_chat_delay")
+                                .cloned()
+                                .unwrap_or_else(|| status.into()),
+                        );
+                        if let Some(secs) = d.get("non_moderator_chat_delay_duration") {
+                            ctx.args.insert("chatDelayDuration".into(), secs.clone());
+                        }
+                    }
+                    Err(e) => crate::error(format!("Twitch: {e}")),
+                }
+            }
+            // Get Chat Settings (590)
+            590 => {
+                let Some(tw) = self.twitch() else { return };
+                match tw
+                    .helix(
+                        "GET",
+                        "chat/settings",
+                        vec![
+                            ("broadcaster_id", "{broadcaster_id}"),
+                            ("moderator_id", "{moderator_id}"),
+                        ],
+                        None,
+                        false,
+                        true,
+                    )
+                    .await
+                {
+                    Ok(v) => {
+                        let d = &v["data"][0];
+                        for (arg, key) in [
+                            ("emoteMode", "emote_mode"),
+                            ("followerMode", "follower_mode"),
+                            ("followerModeDuration", "follower_mode_duration"),
+                            ("slowMode", "slow_mode"),
+                            ("slowModeWaitTime", "slow_mode_wait_time"),
+                            ("subscriberMode", "subscriber_mode"),
+                            ("uniqueChatMode", "unique_chat_mode"),
+                            ("nonModeratorChatDelay", "non_moderator_chat_delay"),
+                            ("nonModeratorChatDelayDuration", "non_moderator_chat_delay_duration"),
+                        ] {
+                            ctx.args.insert(arg.into(), d[key].clone());
+                        }
+                    }
+                    Err(e) => crate::error(format!("Twitch: {e}")),
+                }
+            }
+            // Get AutoMod Settings (591)
+            591 => {
+                let Some(tw) = self.twitch() else { return };
+                match tw
+                    .helix(
+                        "GET",
+                        "moderation/automod/settings",
+                        vec![
+                            ("broadcaster_id", "{broadcaster_id}"),
+                            ("moderator_id", "{moderator_id}"),
+                        ],
+                        None,
+                        false,
+                        true,
+                    )
+                    .await
+                {
+                    Ok(v) => {
+                        let d = &v["data"][0];
+                        for (arg, key) in [
+                            ("automod.overallLevel", "overall_level"),
+                            ("automod.aggression", "aggression"),
+                            ("automod.bullying", "bullying"),
+                            ("automod.disability", "disability"),
+                            ("automod.misogyny", "misogyny"),
+                            ("automod.raceEthnicityOrReligion", "race_ethnicity_or_religion"),
+                            ("automod.sexBasedTerms", "sex_based_terms"),
+                            ("automod.sexualitySexOrGender", "sexuality_sex_or_gender"),
+                            ("automod.swearing", "swearing"),
+                        ] {
+                            ctx.args.insert(arg.into(), d[key].clone());
+                        }
+                    }
+                    Err(e) => crate::error(format!("Twitch: {e}")),
+                }
+            }
+            // Update AutoMod Settings (592)
+            592 => {
+                ctx.args.insert("updateAutoModSettingsResult".into(), false.into());
+                let Some(tw) = self.twitch() else { return };
+                let r = async {
+                    let cur = tw
+                        .helix(
+                            "GET",
+                            "moderation/automod/settings",
+                            vec![
+                                ("broadcaster_id", "{broadcaster_id}"),
+                                ("moderator_id", "{moderator_id}"),
+                            ],
+                            None,
+                            false,
+                            true,
+                        )
+                        .await?;
+                    let existing = &cur["data"][0];
+                    let mut body = serde_json::Map::new();
+                    for (field, api_key) in [
+                        ("aggression", "aggression"),
+                        ("bullying", "bullying"),
+                        ("disability", "disability"),
+                        ("misogyny", "misogyny"),
+                        ("raceEthnicityOrReligion", "race_ethnicity_or_religion"),
+                        ("sexBasedTerms", "sex_based_terms"),
+                        ("sexualitySexOrGender", "sexuality_sex_or_gender"),
+                        ("swearing", "swearing"),
+                    ] {
+                        let desired = match o.get(field) {
+                            Some(Value::Number(v)) => v.as_i64().filter(|x| (0..=4).contains(x)).map(|x| x as u64),
+                            Some(Value::String(st)) => self
+                                .expand(ctx, st)
+                                .trim()
+                                .parse::<i64>()
+                                .ok()
+                                .filter(|x| (0..=4).contains(x))
+                                .map(|x| x as u64),
+                            _ => None,
+                        };
+                        let val = desired.unwrap_or_else(|| existing[api_key].as_u64().unwrap_or(0));
+                        body.insert(api_key.into(), val.into());
+                    }
+                    tw.helix(
+                        "PUT",
+                        "moderation/automod/settings",
+                        vec![
+                            ("broadcaster_id", "{broadcaster_id}"),
+                            ("moderator_id", "{moderator_id}"),
+                        ],
+                        Some(Value::Object(body)),
+                        false,
+                        true,
+                    )
+                    .await
+                }
+                .await;
+                match r {
+                    Ok(v) => {
+                        ctx.args.insert("updateAutoModSettingsResult".into(), true.into());
+                        let d = &v["data"][0];
+                        for (arg, key) in [
+                            ("automod.overallLevel", "overall_level"),
+                            ("automod.aggression", "aggression"),
+                            ("automod.bullying", "bullying"),
+                            ("automod.disability", "disability"),
+                            ("automod.misogyny", "misogyny"),
+                            ("automod.raceEthnicityOrReligion", "race_ethnicity_or_religion"),
+                            ("automod.sexBasedTerms", "sex_based_terms"),
+                            ("automod.sexualitySexOrGender", "sexuality_sex_or_gender"),
+                            ("automod.swearing", "swearing"),
+                        ] {
+                            ctx.args.insert(arg.into(), d[key].clone());
+                        }
+                    }
+                    Err(e) => crate::error(format!("Twitch: {e}")),
+                }
+            }
+            // Check AutoMod Status (593)
+            593 => {
+                ctx.args.insert("autoModStatusResult".into(), false.into());
+                let mut msg_id = self.expand(ctx, s(o, "msgId")).trim().to_string();
+                if msg_id.is_empty() {
+                    msg_id = super::uuid();
+                }
+                let msg = self.expand(ctx, s(o, "message"));
+                let Some(tw) = self.twitch() else { return };
+                match tw
+                    .helix(
+                        "POST",
+                        "moderation/enforcements/status",
+                        vec![("broadcaster_id", "{broadcaster_id}")],
+                        Some(json!({"data": [{"msg_id": msg_id, "msg_text": msg}]})),
+                        false,
+                        true,
+                    )
+                    .await
+                {
+                    Ok(v) => {
+                        ctx.args.insert("autoModStatusResult".into(), true.into());
+                        let permitted = v
+                            .pointer("/data/0/is_permitted")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        ctx.args.insert("isPermitted".into(), permitted.into());
+                    }
+                    Err(e) => crate::error(format!("Twitch: {e}")),
+                }
+            }
+            // Get Banned Users (594)
+            594 => {
+                let login = self
+                    .expand(ctx, s(o, "userLogin"))
+                    .trim()
+                    .trim_start_matches('@')
+                    .to_string();
+                let Some(tw) = self.twitch() else { return };
+                let r = async {
+                    let uid = if login.is_empty() {
+                        None
+                    } else {
+                        Some(tw.resolve_user_id(&login).await?)
+                    };
+                    let mut q = vec![("broadcaster_id", "{broadcaster_id}"), ("first", "100")];
+                    if let Some(uid) = uid.as_deref() {
+                        q.push(("user_id", uid));
+                    }
+                    tw.helix("GET", "moderation/banned", q, None, false, true).await
+                }
+                .await;
+                match r {
+                    Ok(v) => {
+                        let items = v["data"].as_array().cloned().unwrap_or_default();
+                        ctx.args.insert("bannedUserCount".into(), (items.len() as u64).into());
+                        for (i, item) in items.iter().enumerate() {
+                            ctx.args
+                                .insert(format!("bannedUser{i}.userId"), item["user_id"].clone());
+                            ctx.args
+                                .insert(format!("bannedUser{i}.userLogin"), item["user_login"].clone());
+                            ctx.args
+                                .insert(format!("bannedUser{i}.userName"), item["user_name"].clone());
+                            ctx.args
+                                .insert(format!("bannedUser{i}.expiresAt"), item["expires_at"].clone());
+                            ctx.args.insert(format!("bannedUser{i}.reason"), item["reason"].clone());
+                            ctx.args
+                                .insert(format!("bannedUser{i}.moderatorName"), item["moderator_name"].clone());
+                        }
+                        ctx.args.insert("bannedUsers".into(), Value::Array(items));
+                    }
+                    Err(e) => crate::error(format!("Twitch: {e}")),
+                }
+            }
+            // Get Moderators (595)
+            595 => {
+                let Some(tw) = self.twitch() else { return };
+                match tw
+                    .helix(
+                        "GET",
+                        "moderation/moderators",
+                        vec![("broadcaster_id", "{broadcaster_id}"), ("first", "100")],
+                        None,
+                        false,
+                        true,
+                    )
+                    .await
+                {
+                    Ok(v) => {
+                        let items = v["data"].as_array().cloned().unwrap_or_default();
+                        ctx.args.insert("moderatorCount".into(), (items.len() as u64).into());
+                        for (i, item) in items.iter().enumerate() {
+                            ctx.args.insert(format!("moderator{i}.userId"), item["user_id"].clone());
+                            ctx.args
+                                .insert(format!("moderator{i}.userLogin"), item["user_login"].clone());
+                            ctx.args
+                                .insert(format!("moderator{i}.userName"), item["user_name"].clone());
+                        }
+                        ctx.args.insert("moderators".into(), Value::Array(items));
+                    }
+                    Err(e) => crate::error(format!("Twitch: {e}")),
+                }
+            }
+            // Get VIPs (596)
+            596 => {
+                let Some(tw) = self.twitch() else { return };
+                match tw
+                    .helix(
+                        "GET",
+                        "channels/vips",
+                        vec![("broadcaster_id", "{broadcaster_id}"), ("first", "100")],
+                        None,
+                        false,
+                        true,
+                    )
+                    .await
+                {
+                    Ok(v) => {
+                        let items = v["data"].as_array().cloned().unwrap_or_default();
+                        ctx.args.insert("vipCount".into(), (items.len() as u64).into());
+                        for (i, item) in items.iter().enumerate() {
+                            ctx.args.insert(format!("vip{i}.userId"), item["user_id"].clone());
+                            ctx.args.insert(format!("vip{i}.userLogin"), item["user_login"].clone());
+                            ctx.args.insert(format!("vip{i}.userName"), item["user_name"].clone());
+                        }
+                        ctx.args.insert("vips".into(), Value::Array(items));
+                    }
+                    Err(e) => crate::error(format!("Twitch: {e}")),
+                }
+            }
             1010 => {
                 let g = self.simple(ctx, s(o, "groupName"));
                 self.set_commands(|c| s(c, "group") == g, n(o, "state"));
@@ -3551,9 +4159,12 @@ impl Engine {
                 ctx.args.insert("bannedUserName".into(), user_id.clone().into());
                 ctx.args.insert("bannedUserType".into(), "youtube".into());
                 ctx.args.insert("bannedUserId".into(), user_id.clone().into());
-                match yt.ban_user(&broadcast, &user_id).await {
-                    Ok(_) => {
+                match yt.ban_user_tracked(&broadcast, &user_id, None).await {
+                    Ok(ban_id) => {
                         ctx.args.insert("banResult".into(), true.into());
+                        if !ban_id.is_empty() {
+                            ctx.args.insert("banId".into(), ban_id.into());
+                        }
                     }
                     Err(e) => {
                         crate::error(e);
@@ -3571,9 +4182,12 @@ impl Engine {
                 ctx.args.insert("bannedUserName".into(), user_id.clone().into());
                 ctx.args.insert("bannedUserType".into(), "youtube".into());
                 ctx.args.insert("bannedUserId".into(), user_id.clone().into());
-                match yt.timeout_user(&broadcast, &user_id, duration).await {
-                    Ok(_) => {
+                match yt.ban_user_tracked(&broadcast, &user_id, Some(duration)).await {
+                    Ok(ban_id) => {
                         ctx.args.insert("timeoutResult".into(), true.into());
+                        if !ban_id.is_empty() {
+                            ctx.args.insert("banId".into(), ban_id.into());
+                        }
                     }
                     Err(e) => {
                         crate::error(e);
@@ -3634,6 +4248,75 @@ impl Engine {
                 let yt = self.youtube_start();
                 match yt.run_commercial(&broadcast, duration).await {
                     Ok(_) => drop(ctx.args.insert("commercialSuccess".into(), true.into())),
+                    Err(e) => crate::error(e),
+                }
+            }
+            // 4015: Unban User
+            4015 => {
+                ctx.args.insert("unbanResult".into(), false.into());
+                let mut ban_id = self.expand(ctx, s(o, "banId")).trim().to_string();
+                let user_id = self.expand(ctx, s(o, "userId")).trim().to_string();
+                if ban_id.is_empty() && !user_id.is_empty() {
+                    let ids = crate::core::moderation::youtube_ban_ids(self, &user_id);
+                    if ids.len() == 1 {
+                        ban_id = ids[0].clone();
+                    } else if ids.len() > 1 {
+                        crate::error("YouTube Unban User: multiple tracked bans found; specify banId".into());
+                        return;
+                    }
+                }
+                if ban_id.is_empty() {
+                    crate::error("YouTube Unban User: banId is required (or a single tracked ban for userId)".into());
+                    return;
+                }
+                let yt = self.youtube_start();
+                match yt.remove_ban(&ban_id).await {
+                    Ok(_) => {
+                        ctx.args.insert("unbanResult".into(), true.into());
+                        ctx.args.insert("banId".into(), ban_id.into());
+                    }
+                    Err(e) => crate::error(e),
+                }
+            }
+            // 4016: Delete Message
+            4016 => {
+                ctx.args.insert("deleteMessageResult".into(), false.into());
+                let message_id = self.expand(ctx, s(o, "messageId")).trim().to_string();
+                if message_id.is_empty() {
+                    crate::error("YouTube Delete Message: messageId is required".into());
+                    return;
+                }
+                let yt = self.youtube_start();
+                match yt.delete_message(&message_id).await {
+                    Ok(_) => drop(ctx.args.insert("deleteMessageResult".into(), true.into())),
+                    Err(e) => crate::error(e),
+                }
+            }
+            // 4017: Add Moderator
+            4017 => {
+                ctx.args.insert("addModeratorResult".into(), false.into());
+                let broadcast = self.expand(ctx, s(o, "broadcast"));
+                let user_id = self.expand(ctx, s(o, "userId")).trim().to_string();
+                let yt = self.youtube_start();
+                match yt.add_moderator(&broadcast, &user_id).await {
+                    Ok(id) => {
+                        ctx.args.insert("addModeratorResult".into(), true.into());
+                        if !id.is_empty() {
+                            ctx.args.insert("moderatorId".into(), id.into());
+                        }
+                    }
+                    Err(e) => crate::error(e),
+                }
+            }
+            // 4018: Remove Moderator
+            4018 => {
+                ctx.args.insert("removeModeratorResult".into(), false.into());
+                let broadcast = self.expand(ctx, s(o, "broadcast"));
+                let moderator_id = self.expand(ctx, s(o, "moderatorId")).trim().to_string();
+                let user_id = self.expand(ctx, s(o, "userId")).trim().to_string();
+                let yt = self.youtube_start();
+                match yt.remove_moderator(&broadcast, &moderator_id, &user_id).await {
+                    Ok(_) => drop(ctx.args.insert("removeModeratorResult".into(), true.into())),
                     Err(e) => crate::error(e),
                 }
             }
@@ -3919,6 +4602,20 @@ impl Engine {
                     Err(e) => {
                         crate::error(e);
                     }
+                }
+            }
+            // 35044: Delete Message
+            35044 => {
+                ctx.args.insert("deleteMessageResult".into(), false.into());
+                let message_id = self.expand(ctx, s(o, "messageId")).trim().to_string();
+                if message_id.is_empty() {
+                    crate::error("Kick Delete Message: messageId is required".into());
+                    return;
+                }
+                let kick = self.kick_start();
+                match kick.delete_message(&message_id).await {
+                    Ok(_) => drop(ctx.args.insert("deleteMessageResult".into(), true.into())),
+                    Err(e) => crate::error(e),
                 }
             }
             // 35050: Run Commercial
@@ -4441,6 +5138,293 @@ impl Engine {
                         .await
                         .unwrap_or(false);
                 ctx.args.insert(var, exists.into());
+            }
+
+            // Cross-Platform Ban (99700), Timeout (99701), Unban (99702)
+            99700..=99702 => {
+                ctx.args.insert("moderationResult".into(), false.into());
+                let query = self.expand(ctx, s(o, "person"));
+                let link = if query.trim().is_empty() {
+                    crate::core::moderation::find_linked_person_from_args(self, &ctx.args)
+                } else {
+                    crate::core::moderation::find_linked_person(self, &query, "")
+                };
+                let Some(link) = link else {
+                    ctx.args.insert("linkedPersonFound".into(), false.into());
+                    crate::error(format!("Moderation: linked person not found ({query})"));
+                    return;
+                };
+                ctx.args.insert("linkedPersonFound".into(), true.into());
+                crate::core::moderation::populate_linked_person_args(&mut ctx.args, &link);
+
+                let unban = kind == 99702;
+                let duration = if kind == 99701 {
+                    (self.duration_number(ctx, o, "duration") as u64).max(1)
+                } else {
+                    0
+                };
+                let reason = if unban {
+                    String::new()
+                } else {
+                    self.expand(ctx, s(o, "reason"))
+                };
+                let on_tw = b(o, "twitch", true);
+                let on_ki = b(o, "kick", true);
+                let on_yt = b(o, "youtube", true);
+
+                let mut succeeded: Vec<String> = Vec::new();
+                let mut failed: Vec<String> = Vec::new();
+
+                if on_tw && !link.twitch.is_empty() {
+                    let res = if let Some(tw) = self.twitch() {
+                        if unban {
+                            tw.helix(
+                                "DELETE",
+                                "moderation/bans",
+                                vec![
+                                    ("broadcaster_id", "{broadcaster_id}"),
+                                    ("moderator_id", "{moderator_id}"),
+                                    ("user_id", &link.twitch),
+                                ],
+                                None,
+                                false,
+                                true,
+                            )
+                            .await
+                            .map(drop)
+                        } else {
+                            let mut data = json!({"user_id": link.twitch});
+                            if duration > 0 {
+                                data["duration"] = duration.into();
+                            }
+                            if !reason.is_empty() {
+                                data["reason"] = reason.clone().into();
+                            }
+                            tw.helix(
+                                "POST",
+                                "moderation/bans",
+                                vec![
+                                    ("broadcaster_id", "{broadcaster_id}"),
+                                    ("moderator_id", "{moderator_id}"),
+                                ],
+                                Some(json!({"data": data})),
+                                false,
+                                true,
+                            )
+                            .await
+                            .map(drop)
+                        }
+                    } else {
+                        Err("Twitch is not connected".to_string())
+                    };
+                    match res {
+                        Ok(()) => succeeded.push("twitch".into()),
+                        Err(e) => {
+                            crate::error(format!("Cross-platform Twitch: {e}"));
+                            failed.push("twitch".into());
+                        }
+                    }
+                }
+
+                if on_ki && !link.kick.is_empty() {
+                    let res = match link.kick.parse::<u64>().ok().filter(|id| *id != 0) {
+                        Some(uid) => {
+                            let kick = self.kick_start();
+                            if unban {
+                                kick.unban_user_id(uid).await
+                            } else {
+                                kick.ban_user_id(uid, (duration > 0).then_some(duration), &reason).await
+                            }
+                        }
+                        None => Err(format!("Invalid Kick user id: {}", link.kick)),
+                    };
+                    match res {
+                        Ok(()) => succeeded.push("kick".into()),
+                        Err(e) => {
+                            crate::error(format!("Cross-platform Kick: {e}"));
+                            failed.push("kick".into());
+                        }
+                    }
+                }
+
+                if on_yt && !link.youtube.is_empty() {
+                    let yt = self.youtube_start();
+                    let res = if unban {
+                        let bans = crate::core::moderation::youtube_ban_ids(self, &link.youtube);
+                        if bans.len() == 1 {
+                            yt.remove_ban(&bans[0]).await
+                        } else {
+                            Err("YouTube unban requires a single tracked ban ID".into())
+                        }
+                    } else {
+                        yt.ban_user_tracked("", &link.youtube, (duration > 0).then_some(duration))
+                            .await
+                            .map(drop)
+                    };
+                    match res {
+                        Ok(()) => succeeded.push("youtube".into()),
+                        Err(e) => {
+                            crate::error(format!("Cross-platform YouTube: {e}"));
+                            failed.push("youtube".into());
+                        }
+                    }
+                }
+
+                let ok = !succeeded.is_empty() && failed.is_empty();
+                ctx.args.insert("moderationResult".into(), ok.into());
+                ctx.args
+                    .insert("succeededCount".into(), (succeeded.len() as u64).into());
+                ctx.args.insert("failedCount".into(), (failed.len() as u64).into());
+                ctx.args.insert("succeededPlatforms".into(), json!(succeeded));
+                ctx.args.insert("failedPlatforms".into(), json!(failed));
+
+                if !succeeded.is_empty() || !failed.is_empty() {
+                    let mut ev_args = Obj::new();
+                    let op_name = if unban {
+                        "unban"
+                    } else if duration > 0 {
+                        "timeout"
+                    } else {
+                        "ban"
+                    };
+                    ev_args.insert("operation".into(), op_name.into());
+                    crate::core::moderation::populate_linked_person_args(&mut ev_args, &link);
+                    ev_args.insert("duration".into(), (if unban { 0 } else { duration }).into());
+                    ev_args.insert("reason".into(), reason.into());
+                    ev_args.insert("succeededCount".into(), (succeeded.len() as u64).into());
+                    ev_args.insert("failedCount".into(), (failed.len() as u64).into());
+                    ev_args.insert("succeededPlatforms".into(), json!(succeeded));
+                    ev_args.insert("failedPlatforms".into(), json!(failed));
+                    crate::core::moderation::emit_cross_moderation_applied(self, &ev_args);
+                }
+            }
+
+            // Lookup Linked Person (99703)
+            99703 => {
+                let query = self.expand(ctx, s(o, "person"));
+                let link = if query.trim().is_empty() {
+                    crate::core::moderation::find_linked_person_from_args(self, &ctx.args)
+                } else {
+                    crate::core::moderation::find_linked_person(self, &query, "")
+                };
+                ctx.args.insert("linkedPersonFound".into(), link.is_some().into());
+                if let Some(link) = link {
+                    crate::core::moderation::populate_linked_person_args(&mut ctx.args, &link);
+                }
+            }
+
+            // Link Platform Identity (99704)
+            99704 => {
+                ctx.args.insert("linkSuccess".into(), false.into());
+                let name = self.expand(ctx, s(o, "name"));
+                let twitch = self.expand(ctx, s(o, "twitch"));
+                let kick = self.expand(ctx, s(o, "kick"));
+                let youtube = self.expand(ctx, s(o, "youtube"));
+                let tiktok = self.expand(ctx, s(o, "tiktok"));
+                match crate::core::moderation::link_identity_from_action(self, &name, &twitch, &kick, &youtube, &tiktok)
+                {
+                    Ok(link) => {
+                        ctx.args.insert("linkSuccess".into(), true.into());
+                        crate::core::moderation::populate_linked_person_args(&mut ctx.args, &link);
+                        crate::host::changed();
+                    }
+                    Err(e) => crate::error(e),
+                }
+            }
+
+            // Unlink Platform Identity (99705)
+            99705 => {
+                ctx.args.insert("unlinkSuccess".into(), false.into());
+                let person = self.expand(ctx, s(o, "person"));
+                let platform = match o.get("platform") {
+                    Some(Value::Number(v)) => v.as_u64().unwrap_or(0).to_string(),
+                    _ => self.expand(ctx, s(o, "platform")),
+                };
+                match crate::core::moderation::unlink_identity_from_action(self, &person, &platform) {
+                    Ok(_) => {
+                        ctx.args.insert("unlinkSuccess".into(), true.into());
+                        crate::host::changed();
+                    }
+                    Err(e) => crate::error(e),
+                }
+            }
+
+            // Cross-Platform Delete Message (99706)
+            99706 => {
+                ctx.args.insert("deleteMessageResult".into(), false.into());
+                let mut msg_id = self.expand(ctx, s(o, "messageId")).trim().to_string();
+                if msg_id.is_empty() {
+                    msg_id = ctx
+                        .args
+                        .get("msgId")
+                        .or_else(|| ctx.args.get("messageId"))
+                        .map(text)
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string();
+                }
+                if msg_id.is_empty() {
+                    crate::error("Delete Message: messageId is required".into());
+                    return;
+                }
+                let mut platform = match o.get("platform") {
+                    Some(Value::Number(v)) => match v.as_u64().unwrap_or(0) {
+                        1 => "twitch".to_string(),
+                        2 => "kick".to_string(),
+                        3 => "youtube".to_string(),
+                        _ => String::new(),
+                    },
+                    _ => self.expand(ctx, s(o, "platform")).trim().to_ascii_lowercase(),
+                };
+                if platform.is_empty() || platform == "auto" || platform == "0" {
+                    platform = ctx
+                        .args
+                        .get("eventSource")
+                        .or_else(|| ctx.args.get("userType"))
+                        .or_else(|| ctx.args.get("platform"))
+                        .map(text)
+                        .unwrap_or_default()
+                        .trim()
+                        .to_ascii_lowercase();
+                }
+                match platform.as_str() {
+                    "twitch" => {
+                        let Some(tw) = self.twitch() else { return };
+                        match tw
+                            .helix(
+                                "DELETE",
+                                "moderation/chat",
+                                vec![
+                                    ("broadcaster_id", "{broadcaster_id}"),
+                                    ("moderator_id", "{moderator_id}"),
+                                    ("message_id", &msg_id),
+                                ],
+                                None,
+                                false,
+                                true,
+                            )
+                            .await
+                        {
+                            Ok(_) => drop(ctx.args.insert("deleteMessageResult".into(), true.into())),
+                            Err(e) => crate::error(format!("Twitch: {e}")),
+                        }
+                    }
+                    "kick" => {
+                        let kick = self.kick_start();
+                        match kick.delete_message(&msg_id).await {
+                            Ok(()) => drop(ctx.args.insert("deleteMessageResult".into(), true.into())),
+                            Err(e) => crate::error(e),
+                        }
+                    }
+                    "youtube" => {
+                        let yt = self.youtube_start();
+                        match yt.delete_message(&msg_id).await {
+                            Ok(()) => drop(ctx.args.insert("deleteMessageResult".into(), true.into())),
+                            Err(e) => crate::error(e),
+                        }
+                    }
+                    _ => crate::error(format!("Delete Message: unsupported platform '{platform}'")),
+                }
             }
 
             _ => {}

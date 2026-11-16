@@ -3,14 +3,13 @@
 
 Usage: dev/ui-shot.py PAGE [PAGE...] [--bin target/fast/Streamerz] [--out target/ui-shots]
                         [--size 1100x800] [--theme dark|light] [--config JSON-FILE]
-A page is a navigation id ("Queues", "Stream Apps"). A page may be followed by ":STEPS" (separated by ;) run after it loads: a frontend command
+The window shot is the one of the app started here (found by pid), on the hidden display :99. A page is a navigation id ("Queues", "Stream Apps"). A page may be followed by ":STEPS" (separated by ;) run after it loads: a frontend command
 or "click LABEL[#N]" (dblclick: twice) (the Nth match top to bottom), "wait SECONDS", "type TEXT" (into what has the focus), "at X Y" (a click there), "key NAME" (Return, Escape), for example "Queues:click Add". Each capture is PAGE-SIZE.png.
 """
 import argparse
 import glob
 import json
 import os
-import shutil
 import shutil
 import subprocess
 import sys
@@ -30,6 +29,7 @@ def main():
     parser.add_argument("--out", type=Path, default=Path("target/ui-shots"))
     parser.add_argument("--size", default="1100x800")
     parser.add_argument("--theme", default="dark")
+    parser.add_argument("--display", default=":99", help="the hidden display (never the real desktop)")
     parser.add_argument("--config", type=Path, help="extra settings merged into the fixture")
     parser.add_argument("--ask", action="append", default=[], help="a WebSocket request (JSON) sent once the app is up")
     parser.add_argument("--seed", type=Path, help="a folder copied next to the settings (backups, logs/crash-*)")
@@ -48,7 +48,7 @@ def main():
         path.write_text(json.dumps(config))
         if args.files:
             shutil.copytree(args.files, home, dirs_exist_ok=True)
-        env = dict(os.environ, DISPLAY=os.environ.get("DISPLAY", ":99"), STREAMERZ_DEV="1", STREAMERZ_DEV_PORT=str(smoke.PORT),
+        env = dict(os.environ, DISPLAY=args.display, STREAMERZ_DEV="1", STREAMERZ_DEV_PORT=str(smoke.PORT),
                    XDG_CONFIG_HOME=folder)
         env.pop("WAYLAND_DISPLAY", None)
         log = (args.out / "run.log").open("w")
@@ -79,16 +79,39 @@ def main():
             for request in args.ask:
                 print("ask", ws.ask(json.loads(request)))
             time.sleep(2)
+            def descendants(root):
+                """The pids of a process and everything it started (the window belongs to the renderer child)."""
+                found, queue = {str(root)}, [str(root)]
+                while queue:
+                    kids = subprocess.run(["pgrep", "-P", queue.pop()], capture_output=True, text=True).stdout.split()
+                    queue.extend(kid for kid in kids if kid not in found)
+                    found.update(kids)
+                return found
+
+            def own_window():
+                """The visible window of the app started here, by pid: another Streamerz window on the display is ignored."""
+                mine = descendants(app.pid)
+                for candidate in subprocess.run(["xdotool", "search", "--onlyvisible", "--name", "Streamerz"], env=env,
+                                                capture_output=True, text=True).stdout.split():
+                    owner = subprocess.run(["xdotool", "getwindowpid", candidate], env=env, capture_output=True,
+                                           text=True).stdout.strip()
+                    if owner in mine:
+                        return candidate
+                return None
+
             window = None
             for _ in range(50):
-                found = subprocess.run(["xdotool", "search", "--onlyvisible", "--name", "Streamerz"], env=env,
-                                       capture_output=True, text=True).stdout.split()
-                if found:
-                    window = found[0]
+                window = own_window()
+                if window:
                     break
                 time.sleep(0.2)
             if window:
                 subprocess.run(["xdotool", "windowsize", "--sync", window, str(width), str(height)], env=env)
+                time.sleep(0.3)
+                if f" {width}x{height} " not in ui("windows"):
+                    # The window did not follow the X resize (a narrow one, or a bare display): ask the app itself.
+                    ui(f"resize {width} {height}")
+                    time.sleep(0.3)
             else:
                 print("no window found; capturing at the default size")
             for entry in args.pages:
@@ -106,9 +129,8 @@ def main():
                     elif step.startswith("at "):
                         # A click at window coordinates, for what has no label to find (the status line).
                         x, y = step[3:].split()
-                        window = subprocess.run(["xdotool", "search", "--onlyvisible", "--name", "Streamerz"],
-                                                env=env, capture_output=True, text=True).stdout.split()[:1]
-                        subprocess.run(["xdotool", "mousemove", *(["--window", *window] if window else []), x, y, "click", "1"], env=env)
+                        window = own_window()
+                        subprocess.run(["xdotool", "mousemove", *(["--window", window] if window else []), x, y, "click", "1"], env=env)
                     elif step.startswith("key "):
                         subprocess.run(["xdotool", "key", step[4:]], env=env)
                     elif step.startswith(("click ", "dblclick ")):

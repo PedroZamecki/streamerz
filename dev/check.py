@@ -26,6 +26,7 @@ def main():
         ["cargo", "test", "--profile", "ci-test", "--locked", "--", "--ignored", "--list"],
         [python, "-P", "dev/locale.py", "check"],
         ["node", "--test", "dev/tiktok-extension.test.mjs"],
+        ["node", "--test", "dev/stream-check.test.mjs"],
         ["node", "dev/test-subathon-overlay.cjs"],
         [python, "-P", "-m", "unittest", "discover", "-s", "dev", "-p", "test_*.py"],
         [python, "-P", "dev/scan_secrets.py"],

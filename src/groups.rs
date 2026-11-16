@@ -331,8 +331,10 @@ impl Def {
 
     /// A slider's ends and step.
     pub fn range(&self) -> (f64, f64, f64) {
-        let (min, max) = (self.min.unwrap_or(0.0), self.max.unwrap_or(100.0));
-        (min, max.max(min), self.step.filter(|s| *s > 0.0).unwrap_or(1.0))
+        let min = self.min.filter(|v| v.is_finite()).unwrap_or(0.0);
+        let max = self.max.filter(|v| v.is_finite()).unwrap_or(100.0);
+        let step = self.step.filter(|s| s.is_finite() && *s > 0.0).unwrap_or(1.0);
+        (min, max.max(min), step)
     }
 
     /// A value typed as text (in a form), as this setting's. A choice is matched to its option, and a
@@ -400,6 +402,22 @@ impl Def {
             .collect::<Vec<_>>()
             .join("\n")
     }
+}
+
+/// Reason a slider definition's bounds or step are invalid, if any.
+pub fn slider_problem(d: &Def) -> Option<&'static str> {
+    if d.min.is_some_and(|v| !v.is_finite()) || d.max.is_some_and(|v| !v.is_finite()) {
+        return Some("slider bounds must be finite numbers");
+    }
+    let min = d.min.unwrap_or(0.0);
+    let max = d.max.unwrap_or(100.0);
+    if min > max {
+        return Some("slider minimum is greater than maximum");
+    }
+    if d.step.is_some_and(|s| !s.is_finite() || s <= 0.0) {
+        return Some("slider step must be above zero");
+    }
+    None
 }
 
 /// A file that belongs to a group (an overlay, say). It lives on disk, in the group's folder (see
@@ -547,6 +565,11 @@ impl Meta {
             if d.kind == Kind::Choice && d.options.is_empty() {
                 return Err(format!("{} has no options to choose from", d.name));
             }
+            if d.kind == Kind::Slider {
+                if let Some(reason) = slider_problem(d) {
+                    return Err(format!("{}: {reason}", d.name));
+                }
+            }
             if d.kind == Kind::List {
                 if d.columns.is_empty() {
                     return Err(format!("{} is a list with no columns", d.name));
@@ -572,6 +595,11 @@ impl Meta {
                     }
                     if column.kind == Kind::Choice && column.options.is_empty() {
                         return Err(format!("{}: the column {} has no options", d.name, column.name));
+                    }
+                    if column.kind == Kind::Slider {
+                        if let Some(reason) = slider_problem(column) {
+                            return Err(format!("{}: the column {} {reason}", d.name, column.name));
+                        }
                     }
                     if !column.accepts(&column.default) {
                         return Err(format!(
@@ -645,11 +673,106 @@ impl Meta {
     }
 }
 
+/// Reads a group's metadata, salvaging valid parts and reporting warnings for malformed options
+/// instead of silently dropping the entire group definition.
+pub fn inspect_meta(c: &Config, group: &str) -> (Meta, Vec<String>) {
+    let Some(raw) = c.action_groups.get(group) else {
+        return (Meta::default(), Vec::new());
+    };
+    let err = match serde_json::from_value::<Meta>(raw.clone()) {
+        Ok(meta) => return (meta, Vec::new()),
+        Err(err) => err,
+    };
+    let Some(obj) = raw.as_object() else {
+        return (
+            Meta::default(),
+            vec![crate::i18n::trf(
+                "group.warn_meta_unreadable",
+                &[("group", group), ("error", &err.to_string())],
+            )],
+        );
+    };
+    let mut salvaged = Meta::default();
+    let mut warnings = Vec::new();
+    fn field<T: serde::de::DeserializeOwned + Default>(
+        obj: &serde_json::Map<String, Value>,
+        key: &str,
+        group: &str,
+        warnings: &mut Vec<String>,
+    ) -> T {
+        let Some(v) = obj.get(key) else {
+            return T::default();
+        };
+        if v.is_null() {
+            return T::default();
+        }
+        match serde_json::from_value::<T>(v.clone()) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                warnings.push(crate::i18n::trf(
+                    "group.warn_meta_unreadable",
+                    &[("group", group), ("error", &format!("{key}: {e}"))],
+                ));
+                T::default()
+            }
+        }
+    }
+    salvaged.store = field(obj, "store", group, &mut warnings);
+    salvaged.description = field(obj, "description", group, &mut warnings);
+    salvaged.files = field(obj, "files", group, &mut warnings);
+    salvaged.permissions = field(obj, "permissions", group, &mut warnings);
+    salvaged.template = field(obj, "template", group, &mut warnings);
+    salvaged.commands = field(obj, "commands", group, &mut warnings);
+    salvaged.timers = field(obj, "timers", group, &mut warnings);
+    if let Some(raw_vars) = obj.get("variables") {
+        if let Some(items) = raw_vars.as_array() {
+            for (idx, item) in items.iter().enumerate() {
+                match serde_json::from_value::<Def>(item.clone()) {
+                    Ok(def) => salvaged.variables.push(def),
+                    Err(e) => {
+                        let name = item
+                            .get("label")
+                            .and_then(Value::as_str)
+                            .filter(|s| !s.is_empty())
+                            .or_else(|| item.get("name").and_then(Value::as_str).filter(|s| !s.is_empty()))
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| format!("#{}", idx + 1));
+                        let unknown_kind = item
+                            .get("kind")
+                            .and_then(Value::as_str)
+                            .filter(|k| serde_json::from_value::<Kind>(Value::String((*k).to_owned())).is_err());
+                        if let Some(kind) = unknown_kind {
+                            warnings.push(crate::i18n::trf(
+                                "group.warn_unknown_kind",
+                                &[("name", &name), ("kind", kind)],
+                            ));
+                        } else {
+                            warnings.push(crate::i18n::trf(
+                                "group.warn_bad_option",
+                                &[("name", &name), ("error", &e.to_string())],
+                            ));
+                        }
+                    }
+                }
+            }
+        } else if !raw_vars.is_null() {
+            warnings.push(crate::i18n::trf(
+                "group.warn_meta_unreadable",
+                &[("group", group), ("error", "variables must be an array")],
+            ));
+        }
+    }
+    if warnings.is_empty() {
+        warnings.push(crate::i18n::trf(
+            "group.warn_meta_unreadable",
+            &[("group", group), ("error", &err.to_string())],
+        ));
+    }
+    (salvaged, warnings)
+}
+
 pub fn meta(c: &Config, group: &str) -> Meta {
-    c.action_groups
-        .get(group)
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default()
+    inspect_meta(c, group).0
 }
 
 /// Where the files of every group are: `groups/<store>/` beside the settings.
@@ -1026,6 +1149,21 @@ pub fn rename(c: &mut Config, old: &str, new: &str) -> bool {
     ] {
         if let Some(v) = map.remove(old) {
             map.insert(new.into(), v);
+        }
+    }
+    if let Some(pages) = c
+        .action_groups
+        .get_mut(new)
+        .and_then(|meta| meta.get_mut("template"))
+        .and_then(|t| t.get_mut("pages"))
+        .and_then(Value::as_array_mut)
+    {
+        for page in pages {
+            if page.get("title").and_then(Value::as_str) == Some(old) {
+                if let Some(obj) = page.as_object_mut() {
+                    obj.insert("title".into(), new.into());
+                }
+            }
         }
     }
     true
@@ -1743,10 +1881,29 @@ mod tests {
         assert_eq!(read_file(&c, "Timer", "a.html").unwrap(), b"<p>x</p>");
         assert_eq!(read_file(&c, "Timer", "img/dot.svg").unwrap(), b"<svg/>");
         // A rename keeps the folder; a file taken off the list leaves the disk, with its folder.
+        let mut with_pages = meta(&c, "Timer");
+        with_pages.files.push(text_file("custom.html", "<p>y</p>"));
+        with_pages.template.pages = vec![
+            Page {
+                file: "a.html".into(),
+                title: "Timer".into(),
+                ..Default::default()
+            },
+            Page {
+                file: "custom.html".into(),
+                title: "Custom Title".into(),
+                ..Default::default()
+            },
+        ];
+        set_meta(&mut c, "Timer", with_pages).unwrap();
         assert!(rename(&mut c, "Timer", "Clock"));
         assert_eq!(folder(&c, "Clock").unwrap(), dir);
+        let renamed_pages = meta(&c, "Clock").template.pages;
+        assert_eq!(renamed_pages[0].title, "Clock");
+        assert_eq!(renamed_pages[1].title, "Custom Title");
         let mut less = meta(&c, "Clock");
         less.files.truncate(1);
+        less.template.pages.truncate(1);
         set_meta(&mut c, "Clock", less).unwrap();
         assert!(dir.join("a.html").is_file() && !dir.join("img").exists());
         remove(&mut c, "Clock");
@@ -1766,5 +1923,60 @@ mod tests {
         assert_eq!((m.description.as_str(), m.files[0].size), ("d", 3));
         assert_eq!(read_file(&c, "Old", "o.html").unwrap(), b"<b>");
         remove(&mut c, "Old");
+    }
+
+    #[test]
+    fn inspect_meta_salvages_valid_options_when_one_has_an_unknown_kind_or_bad_shape() {
+        let mut c = Config::default();
+        c.action_groups.insert(
+            "BrokenOverlay".into(),
+            json!({
+                "description": "overlay description",
+                "variables": [
+                    {"name": "volume", "label": "Volume", "kind": "slider", "default": 250, "min": 200, "max": 400},
+                    {"name": "mystery", "label": "Mystery option", "kind": "non_existent_widget", "default": "x"},
+                    {"name": "bad_min", "label": "Bad Min", "kind": "slider", "default": "not-a-number", "min": "oops"},
+                    {"name": "title", "label": "Title", "kind": "text", "default": "hello"}
+                ]
+            }),
+        );
+        let (salvaged, warnings) = inspect_meta(&c, "BrokenOverlay");
+        assert_eq!(salvaged.description, "overlay description");
+        assert_eq!(salvaged.variables.len(), 2);
+        assert_eq!(salvaged.variables[0].name, "volume");
+        assert_eq!(salvaged.variables[1].name, "title");
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings[0].contains("Mystery option") && warnings[0].contains("non_existent_widget"));
+        assert!(warnings[1].contains("Bad Min"));
+
+        c.action_groups.insert("NotAnObject".into(), json!("broken"));
+        let (fallback, obj_warnings) = inspect_meta(&c, "NotAnObject");
+        assert!(fallback.is_empty());
+        assert_eq!(obj_warnings.len(), 1);
+    }
+
+    #[test]
+    fn slider_problem_and_range_handle_invalid_bounds_and_min_above_hundred() {
+        let mut high = def("speed", Kind::Slider, json!(250));
+        high.min = Some(200.0);
+        high.max = Some(400.0);
+        assert_eq!(slider_problem(&high), None);
+        assert_eq!(high.range(), (200.0, 400.0, 1.0));
+
+        let mut inverted = def("bad", Kind::Slider, json!(10));
+        inverted.min = Some(80.0);
+        inverted.max = Some(20.0);
+        assert!(slider_problem(&inverted).is_some());
+        assert_eq!(inverted.range(), (80.0, 80.0, 1.0));
+
+        let mut non_pos_step = def("step0", Kind::Slider, json!(10));
+        non_pos_step.step = Some(0.0);
+        assert!(slider_problem(&non_pos_step).is_some());
+        assert_eq!(non_pos_step.range(), (0.0, 100.0, 1.0));
+
+        let mut nan = def("nan", Kind::Slider, json!(0));
+        nan.min = Some(f64::NAN);
+        assert!(slider_problem(&nan).is_some());
+        assert_eq!(nan.range(), (0.0, 100.0, 1.0));
     }
 }

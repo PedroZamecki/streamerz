@@ -409,3 +409,341 @@ Removes the suspicious mark from a user.
 ### Arguments
 
 None set.
+
+## Delete Message
+
+- Kind: sub-action
+- Code: 581
+- Type: TwitchDeleteMessage
+- Category: Twitch/Moderation
+- Needs: a Twitch login as a moderator of the channel
+
+Deletes a single chat message on Twitch by message ID.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Message ID | `messageId` | The UUID of the chat message to delete. |
+
+### Arguments
+
+- `deleteMessageResult`: true when Twitch deleted the message, else false.
+
+## Resolve AutoMod Message
+
+- Kind: sub-action
+- Code: 582
+- Type: TwitchResolveAutoModMessage
+- Category: Twitch/Moderation/AutoMod
+- Needs: a Twitch login as a moderator of the channel
+
+Approves or denies a message held by Twitch AutoMod.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Message ID | `messageId` | The held AutoMod message ID. |
+| Action | `action` | Allow (0) or Deny (1). |
+
+### Arguments
+
+- `resolveAutoModResult`: true when Twitch accepted the decision, else false.
+
+## Add Blocked Term
+
+- Kind: sub-action
+- Code: 583
+- Type: TwitchAddBlockedTerm
+- Category: Twitch/Moderation/Terms
+- Needs: a Twitch login as a moderator of the channel
+
+Adds a blocked term or phrase to the channel's AutoMod blocked terms list.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Term | `text` | The word or phrase to block. |
+
+### Arguments
+
+- `blockedTermResult`: true when added, else false.
+- `blockedTermId`: the created term's ID.
+- `blockedTermText`: the blocked term text.
+
+## Remove Blocked Term
+
+- Kind: sub-action
+- Code: 584
+- Type: TwitchRemoveBlockedTerm
+- Category: Twitch/Moderation/Terms
+- Needs: a Twitch login as a moderator of the channel
+
+Removes a blocked term from the channel by term ID.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Term ID | `termId` | The ID of the blocked term to remove. |
+
+### Arguments
+
+- `removeBlockedTermResult`: true when removed, else false.
+
+## Get Blocked Terms
+
+- Kind: sub-action
+- Code: 585
+- Type: TwitchGetBlockedTerms
+- Category: Twitch/Moderation/Terms
+- Needs: a Twitch login as a moderator of the channel
+
+Reads up to 100 blocked terms configured for the channel.
+
+### Fields
+
+None.
+
+### Arguments
+
+- `blockedTermCount`: number of blocked terms returned.
+- `blockedTerm0.id`, `blockedTerm0.text`, and so on: individual blocked terms.
+- `blockedTerms`: JSON array of the returned blocked term objects.
+
+## Resolve Unban Request
+
+- Kind: sub-action
+- Code: 586
+- Type: TwitchResolveUnbanRequest
+- Category: Twitch/Moderation/Unban Requests
+- Needs: a Twitch login as a moderator of the channel
+
+Approves or denies a Twitch unban request.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Unban request ID | `unbanRequestId` | The ID of the unban request. |
+| Decision | `status` | Approve (0) or Deny (1). |
+| Resolution text | `resolutionText` | Optional note sent with the decision. |
+
+### Arguments
+
+- `resolveUnbanRequestResult`: true when Twitch accepted the decision, else false.
+- `unbanRequestStatus`: resulting status string (`approved` or `denied`).
+
+## Get Unban Requests
+
+- Kind: sub-action
+- Code: 587
+- Type: TwitchGetUnbanRequests
+- Category: Twitch/Moderation/Unban Requests
+- Needs: a Twitch login as a moderator of the channel
+
+Lists Twitch unban requests filtered by status.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Status | `status` | Pending (0), Approved (1), Denied (2), Acknowledged (3), or Canceled (4). |
+
+### Arguments
+
+- `unbanRequestCount`: number of unban requests returned.
+- `unbanRequest0.id`, `unbanRequest0.userId`, `unbanRequest0.userLogin`, `unbanRequest0.userName`, `unbanRequest0.status`, `unbanRequest0.text`, and so on.
+- `unbanRequests`: JSON array of returned unban request objects.
+
+## Unique Chat Mode
+
+- Kind: sub-action
+- Code: 588
+- Type: TwitchUniqueChatMode
+- Category: Twitch/Moderation/Chat Modes
+- Needs: a Twitch login as a moderator of the channel
+
+Turns unique chat mode (formerly R9K) on or off in Twitch chat.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Enabled | `status` | On turns unique chat mode on, off turns it off. |
+
+### Arguments
+
+- `uniqueModeEnabled`: boolean reflecting the resulting unique chat mode state.
+
+## Chat Delay
+
+- Kind: sub-action
+- Code: 589
+- Type: TwitchChatDelay
+- Category: Twitch/Moderation/Chat Modes
+- Needs: a Twitch login as a moderator of the channel
+
+Turns non-moderator chat delay on or off and sets the delay duration (2, 4, or 6 seconds).
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Enabled | `status` | On turns chat delay on, off turns it off. |
+| Delay | `duration` | Delay in seconds (Twitch accepts 2, 4, or 6 seconds). |
+
+### Arguments
+
+- `chatDelayEnabled`: boolean reflecting whether chat delay is enabled.
+- `chatDelayDuration`: active delay duration in seconds when enabled.
+
+## Get Chat Settings
+
+- Kind: sub-action
+- Code: 590
+- Type: TwitchGetChatSettings
+- Category: Twitch/Moderation/Chat Modes
+- Needs: a Twitch login as a moderator of the channel
+
+Reads the current Twitch chat settings for the channel.
+
+### Fields
+
+None.
+
+### Arguments
+
+- `emoteMode`, `followerMode`, `followerModeDuration`, `slowMode`, `slowModeWaitTime`, `subscriberMode`, `uniqueChatMode`, `nonModeratorChatDelay`, `nonModeratorChatDelayDuration`.
+
+## Get AutoMod Settings
+
+- Kind: sub-action
+- Code: 591
+- Type: TwitchGetAutoModSettings
+- Category: Twitch/Moderation/AutoMod
+- Needs: a Twitch login as a moderator of the channel
+
+Reads the current Twitch AutoMod filtering levels for the channel.
+
+### Fields
+
+None.
+
+### Arguments
+
+- `automod.overallLevel`, `automod.aggression`, `automod.bullying`, `automod.disability`, `automod.misogyny`, `automod.raceEthnicityOrReligion`, `automod.sexBasedTerms`, `automod.sexualitySexOrGender`, `automod.swearing`.
+
+## Update AutoMod Settings
+
+- Kind: sub-action
+- Code: 592
+- Type: TwitchUpdateAutoModSettings
+- Category: Twitch/Moderation/AutoMod
+- Needs: a Twitch login as a moderator of the channel
+
+Updates one or more Twitch AutoMod category levels (0 to 4). Any field outside 0 to 4 (such as `-1` or empty) keeps its existing channel value.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Aggression | `aggression` | Filtering level 0 to 4 (or -1/empty to keep current). |
+| Bullying | `bullying` | Filtering level 0 to 4 (or -1/empty to keep current). |
+| Disability | `disability` | Filtering level 0 to 4 (or -1/empty to keep current). |
+| Misogyny | `misogyny` | Filtering level 0 to 4 (or -1/empty to keep current). |
+| Race/Ethnicity/Religion | `raceEthnicityOrReligion` | Filtering level 0 to 4 (or -1/empty to keep current). |
+| Sex-based terms | `sexBasedTerms` | Filtering level 0 to 4 (or -1/empty to keep current). |
+| Sexuality/Sex/Gender | `sexualitySexOrGender` | Filtering level 0 to 4 (or -1/empty to keep current). |
+| Swearing | `swearing` | Filtering level 0 to 4 (or -1/empty to keep current). |
+
+### Arguments
+
+- `updateAutoModSettingsResult`: true when Twitch updated the settings, else false.
+- `automod.overallLevel`, `automod.aggression`, `automod.bullying`, `automod.disability`, `automod.misogyny`, `automod.raceEthnicityOrReligion`, `automod.sexBasedTerms`, `automod.sexualitySexOrGender`, `automod.swearing`.
+
+## Check AutoMod Status
+
+- Kind: sub-action
+- Code: 593
+- Type: TwitchCheckAutoModStatus
+- Category: Twitch/Moderation/AutoMod
+- Needs: a Twitch login as the broadcaster
+
+Tests whether a message string would be permitted by Twitch AutoMod in the channel.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| Message ID | `msgId` | Optional ID for the check (generated automatically if empty). |
+| Message | `message` | Text to check against AutoMod. |
+
+### Arguments
+
+- `autoModStatusResult`: true when the check succeeded, else false.
+- `isPermitted`: true if AutoMod would permit the message, false if held.
+
+## Get Banned Users
+
+- Kind: sub-action
+- Code: 594
+- Type: TwitchGetBannedUsers
+- Category: Twitch/Moderation
+- Needs: a Twitch login as the broadcaster
+
+Reads banned and timed-out users for the channel, optionally filtered by a user login.
+
+### Fields
+
+| Field | Key | What it holds |
+| --- | --- | --- |
+| User login | `userLogin` | Optional login to filter for; leave empty to list up to 100 banned users. |
+
+### Arguments
+
+- `bannedUserCount`: number of banned users returned.
+- `bannedUser0.userId`, `bannedUser0.userLogin`, `bannedUser0.userName`, `bannedUser0.expiresAt`, `bannedUser0.reason`, `bannedUser0.moderatorName`, and so on.
+- `bannedUsers`: JSON array of returned ban entries.
+
+## Get Moderators
+
+- Kind: sub-action
+- Code: 595
+- Type: TwitchGetModerators
+- Category: Twitch/Moderation
+- Needs: a Twitch login as the broadcaster
+
+Reads up to 100 channel moderators.
+
+### Fields
+
+None.
+
+### Arguments
+
+- `moderatorCount`: number of moderators returned.
+- `moderator0.userId`, `moderator0.userLogin`, `moderator0.userName`, and so on.
+- `moderators`: JSON array of returned moderator entries.
+
+## Get VIPs
+
+- Kind: sub-action
+- Code: 596
+- Type: TwitchGetVips
+- Category: Twitch/Moderation
+- Needs: a Twitch login as the broadcaster
+
+Reads up to 100 channel VIPs.
+
+### Fields
+
+None.
+
+### Arguments
+
+- `vipCount`: number of VIPs returned.
+- `vip0.userId`, `vip0.userLogin`, `vip0.userName`, and so on.
+- `vips`: JSON array of returned VIP entries.

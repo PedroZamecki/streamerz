@@ -110,6 +110,37 @@ impl Default for UdpSettings {
     }
 }
 
+const RETRY_WS: u8 = 1 << 0;
+const RETRY_HTTP: u8 = 1 << 1;
+const RETRY_UDP: u8 = 1 << 2;
+const RETRY_STREAM_DECK: u8 = 1 << 3;
+
+static SERVER_RETRY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+static SERVER_RETRY_NOTIFY: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
+
+fn retry_notify() -> &'static tokio::sync::Notify {
+    SERVER_RETRY_NOTIFY.get_or_init(tokio::sync::Notify::new)
+}
+
+/// Ask `servers::run` to rebind a built-in server immediately (used by UI error recovery).
+#[allow(clippy::result_large_err)]
+pub fn trigger_server_retry(target: &str) -> crate::error::Result<()> {
+    let bit = match target {
+        "websocket" => RETRY_WS,
+        "http" => RETRY_HTTP,
+        "udp" => RETRY_UDP,
+        "stream_deck" => RETRY_STREAM_DECK,
+        _ => {
+            return Err(crate::error::StreamerzError::not_found(format!(
+                "unknown server '{target}'"
+            )))
+        }
+    };
+    SERVER_RETRY.fetch_or(bit, std::sync::atomic::Ordering::SeqCst);
+    retry_notify().notify_one();
+    Ok(())
+}
+
 /// Start the servers that are on, and restart them when their settings change.
 pub async fn run(e: Rc<Engine>) {
     if e.config().instance_id.is_empty() {
@@ -118,15 +149,21 @@ pub async fn run(e: Rc<Engine>) {
     let mut rx = e.subscribe();
     let mut running: [Option<tokio::task::AbortHandle>; 3] = Default::default();
     let mut extra: Vec<tokio::task::AbortHandle> = Vec::new();
+    let mut custom_error_keys: Vec<String> = Vec::new();
     let mut last = None;
     let mut last_extra = None;
     let mut deck: Option<(crate::streamdeck::Settings, Option<tokio::task::AbortHandle>)> = None;
+    let notify = retry_notify();
     loop {
+        let retry = SERVER_RETRY.swap(0, std::sync::atomic::Ordering::SeqCst);
         // The Stream Deck plugin's server: on only when turned on, restarted when its settings change.
         let now_deck = rx.borrow().stream_deck.clone();
-        if deck.as_ref().map(|d| &d.0) != Some(&now_deck) {
+        if deck.as_ref().map(|d| &d.0) != Some(&now_deck) || (retry & RETRY_STREAM_DECK) != 0 {
             if let Some(h) = deck.take().and_then(|d| d.1) {
                 h.abort();
+            }
+            if !now_deck.auto_start {
+                crate::error::clear_active("server.stream_deck");
             }
             let h = now_deck
                 .auto_start
@@ -141,11 +178,15 @@ pub async fn run(e: Rc<Engine>) {
             for h in extra.drain(..) {
                 h.abort();
             }
+            for key in custom_error_keys.drain(..) {
+                crate::error::clear_active(&key);
+            }
             let (clients, servers) = now_extra.clone();
             for c in clients.into_iter().filter(|c| flag(c, "autoConnect")) {
                 extra.push(tokio::task::spawn_local(ws_client(e.clone(), c)).abort_handle());
             }
             for s in servers.into_iter().filter(|s| flag(s, "autoStart")) {
+                custom_error_keys.push(format!("server.custom:{}", field(&s, "name")));
                 extra.push(tokio::task::spawn_local(custom_server(e.clone(), s)).abort_handle());
             }
             last_extra = Some(now_extra);
@@ -159,15 +200,18 @@ pub async fn run(e: Rc<Engine>) {
             .as_ref()
             .map(|previous: &(WsSettings, HttpSettings, UdpSettings)| &previous.0)
             != Some(&ws)
+            || (retry & RETRY_WS) != 0
         {
             if let Some(task) = running[0].take() {
                 task.abort();
             }
             if ws.auto_start {
                 running[0] = Some(tokio::task::spawn_local(websocket(e.clone(), ws)).abort_handle());
+            } else {
+                crate::error::clear_active("server.websocket");
             }
         }
-        if last.as_ref().map(|previous| &previous.1) != Some(&http) {
+        if last.as_ref().map(|previous| &previous.1) != Some(&http) || (retry & RETRY_HTTP) != 0 {
             if let Some(task) = running[1].take() {
                 task.abort();
                 if let Some(previous) = last.as_ref() {
@@ -176,14 +220,19 @@ pub async fn run(e: Rc<Engine>) {
             }
             if http.auto_start {
                 running[1] = Some(tokio::task::spawn_local(http_server(e.clone(), http)).abort_handle());
+            } else {
+                crate::core::status::clear_failure("http");
+                crate::error::clear_active("server.http");
             }
         }
-        if last.as_ref().map(|previous| &previous.2) != Some(&udp) {
+        if last.as_ref().map(|previous| &previous.2) != Some(&udp) || (retry & RETRY_UDP) != 0 {
             if let Some(task) = running[2].take() {
                 task.abort();
             }
             if udp.auto_start {
                 running[2] = Some(tokio::task::spawn_local(udp_server(e.clone(), udp)).abort_handle());
+            } else {
+                crate::error::clear_active("server.udp");
             }
         }
         last = Some(now);
@@ -192,8 +241,13 @@ pub async fn run(e: Rc<Engine>) {
         // Opt-in: the process list is watched only while Process Started or Stopped is used.
         e.processes_sync();
         e.midi_sync();
-        if rx.changed().await.is_err() {
-            return;
+        tokio::select! {
+            changed = rx.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+            }
+            _ = notify.notified() => {}
         }
     }
 }
@@ -363,10 +417,18 @@ async fn custom_server(e: Rc<Engine>, s: Obj) {
     let addr = field(&s, "address").to_string();
     let port = s.get("port").and_then(Value::as_u64).unwrap_or(0) as u16;
     let name = field(&s, "name").to_string();
+    let err_key = format!("server.custom:{name}");
     let l = match TcpListener::bind((addr.as_str(), port)).await {
         Ok(l) => l,
-        Err(err) => return crate::error(format!("custom server {name}: can't listen on {addr}:{port} ({err})")),
+        Err(err) => {
+            crate::error::record_active(
+                err_key,
+                crate::error::StreamerzError::custom_server_start(&name, &addr, port, &err.to_string()),
+            );
+            return;
+        }
     };
+    crate::error::clear_active(&err_key);
     crate::say(format!(
         "custom server {name} on ws://{addr}:{port}{}",
         field(&s, "endpoint")
@@ -512,7 +574,7 @@ fn ok(id: &Value, fields: Value) -> Value {
 }
 
 fn error(id: &Value, msg: &str) -> Value {
-    json!({"id": id, "status": "error", "error": msg})
+    crate::error::StreamerzError::from_message(msg).to_json_response(id)
 }
 
 /// Answer a WebSocket request (not Authenticate, Subscribe or UnSubscribe, which need the
@@ -634,6 +696,8 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
         | "StreamerzCoreQuit"
         | "StreamerzSelectPage"
         | "StreamerzWindowState"
+        | "StreamerzDismissError"
+        | "StreamerzRetryServer"
             if !authed && e.config().websockets.enable_auth =>
         {
             error(&id, "Authentication required to use this method")
@@ -643,6 +707,21 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
             Ok(value) => ok(&id, value),
             Err(message) => error(&id, &message),
         },
+        "StreamerzDismissError" => {
+            let key = get("key");
+            if key.is_empty() {
+                error(&id, "error key is required")
+            } else {
+                ok(&id, json!({"dismissed": crate::error::clear_active(key)}))
+            }
+        }
+        "StreamerzRetryServer" => {
+            let server = get("server");
+            match trigger_server_retry(server) {
+                Ok(()) => ok(&id, json!({"restarted": server})),
+                Err(err) => err.to_json_response(&id),
+            }
+        }
         "StreamerzCoreQuit" => {
             crate::host::quit();
             ok(&id, json!({"accepted": true}))
@@ -702,6 +781,8 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
                 crate::core::overlays::act(e, get("action"), get("itemId"))
             } else if crate::core::polls::supports(get("domain")) {
                 crate::core::polls::act(e, get("action"))
+            } else if crate::core::moderation::supports(get("domain")) {
+                crate::core::moderation::act(e, get("action"), get("itemId"))
             } else if crate::core::stream::supports(get("domain")) {
                 crate::core::stream::act(e, get("action"))
             } else if crate::core::accounts::supports(get("domain")) || get("domain") == "connections" {
@@ -1603,12 +1684,14 @@ async fn websocket(e: Rc<Engine>, s: WsSettings) {
     let l = match listener {
         Ok(l) => l,
         Err(err) => {
-            return crate::error(format!(
-                "WebSocket server: can't listen on {}:{} ({err})",
-                s.address, s.port
-            ))
+            crate::error::record_active(
+                "server.websocket",
+                crate::error::StreamerzError::websocket_server_start(&s.address, s.port, &err.to_string()),
+            );
+            return;
         }
     };
+    crate::error::clear_active("server.websocket");
     crate::say(format!(
         "WebSocket server on ws://{}:{}{}",
         s.address, s.port, s.endpoint
@@ -1646,6 +1729,76 @@ pub(crate) fn connectors(e: &Rc<Engine>) -> Value {
         "obs": {"started": e.obs().is_some(), "connections": obs},
         "spotify": {"enabled": c.spotify.enabled, "signedIn": !c.spotify.token.refresh_token.is_empty()},
     })
+}
+
+/// Development only: one platform API call through the running client and its login (Twitch Helix,
+/// Kick's official API, YouTube Data API), the answer as it came. Lets a test see what the platform
+/// says without copying a token out of the keyring.
+async fn platform_api(e: &Rc<Engine>, req: &Value) -> Result<Value, String> {
+    let method = match req["method"].as_str().unwrap_or("GET") {
+        "GET" => "GET",
+        "POST" => "POST",
+        "PATCH" => "PATCH",
+        "PUT" => "PUT",
+        "DELETE" => "DELETE",
+        _ => return Err("method must be GET, POST, PATCH, PUT or DELETE".into()),
+    };
+    let path = req["path"].as_str().unwrap_or_default().trim_start_matches('/');
+    let body = req.get("body").filter(|b| !b.is_null()).cloned();
+    let query: Vec<(String, String)> = req["query"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(k, v)| (k.clone(), v.as_str().map_or_else(|| v.to_string(), str::to_owned)))
+        .collect();
+    match req["platform"].as_str().unwrap_or_default() {
+        "twitch" => {
+            let twitch = e.twitch().ok_or("Twitch isn't connected")?;
+            let query = query.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+            twitch.helix(method, path, query, body, false, true).await
+        }
+        "kick" => {
+            let kick = e.kick().ok_or("Kick isn't connected")?;
+            let mut path = format!("/{path}");
+            for (n, (k, v)) in query.iter().enumerate() {
+                let sep = if n == 0 { '?' } else { '&' };
+                path.push_str(&format!(
+                    "{sep}{}={}",
+                    crate::commands::url_encode(k),
+                    crate::commands::url_encode(v)
+                ));
+            }
+            kick.api(method, &path, body).await
+        }
+        "youtube" => {
+            let token = crate::youtube::token(e, e.cfg_tx(), false, true).await?;
+            let mut url = format!("{}/{path}", crate::youtube::YOUTUBE_API_BASE);
+            for (n, (k, v)) in query.iter().enumerate() {
+                let sep = if n == 0 { '?' } else { '&' };
+                url.push_str(&format!(
+                    "{sep}{}={}",
+                    crate::commands::url_encode(k),
+                    crate::commands::url_encode(v)
+                ));
+            }
+            let mut headers = vec![("Authorization".to_string(), format!("Bearer {token}"))];
+            let bytes = match &body {
+                Some(b) => {
+                    headers.push(("Content-Type".to_string(), "application/json".to_string()));
+                    serde_json::to_vec(b).unwrap_or_default()
+                }
+                None => Vec::new(),
+            };
+            let r = crate::http::request(method, &url, &headers, &bytes).await?;
+            let v: Value = serde_json::from_slice(&r.body).unwrap_or_else(|_| Value::String(r.text()));
+            if (200..300).contains(&r.status) {
+                Ok(v)
+            } else {
+                Err(format!("YouTube HTTP {}: {v}", r.status))
+            }
+        }
+        _ => Err("platform must be twitch, kick or youtube".into()),
+    }
 }
 
 /// Channel search for the picker and MCP, including signed TikTok requests.
@@ -1819,6 +1972,18 @@ pub(crate) async fn request(e: &Rc<Engine>, req: &Value, auth_required: bool, au
                 }
             }
         }
+        "StreamerzPlatformApi" => {
+            if auth_required && !authed {
+                error(&id, "Authentication required to use this method")
+            } else if !e.dev() {
+                error(&id, "StreamerzPlatformApi needs STREAMERZ_DEV=1")
+            } else {
+                match platform_api(e, req).await {
+                    Ok(answer) => ok(&id, json!({"answer": answer})),
+                    Err(message) => error(&id, &message),
+                }
+            }
+        }
         "StreamerzTemplateCheck"
         | "StreamerzTemplateExport"
         | "StreamerzTemplateInspect"
@@ -1837,6 +2002,16 @@ pub(crate) async fn request(e: &Rc<Engine>, req: &Value, auth_required: bool, au
                 error(&id, "Authentication required to use this method")
             } else {
                 match crate::core::outputs::request(e, req).await {
+                    Ok(fields) => ok(&id, fields),
+                    Err(message) => error(&id, &message),
+                }
+            }
+        }
+        "StreamerzPreflight" => {
+            if auth_required && !authed {
+                error(&id, "Authentication required to use this method")
+            } else {
+                match crate::core::preflight::request(e, req).await {
                     Ok(fields) => ok(&id, fields),
                     Err(message) => error(&id, &message),
                 }
@@ -2024,11 +2199,16 @@ async fn http_server(e: Rc<Engine>, s: HttpSettings) {
         Err(err) => {
             crate::core::status::record_failure("http", crate::core::status::Failure::Bind);
             http_waiters(&s.address, s.port, false);
-            return crate::error(format!("HTTP server: can't listen on {}:{} ({err})", s.address, s.port));
+            crate::error::record_active(
+                "server.http",
+                crate::error::StreamerzError::http_server_start(&s.address, s.port, &err.to_string()),
+            );
+            return;
         }
     };
     let _bound = HttpBound::new(&s.address, s.port);
     crate::core::status::clear_failure("http");
+    crate::error::clear_active("server.http");
     crate::say(format!("HTTP server on http://{}:{}/", s.address, s.port));
     // The open connections (an overlay's live feed stays open) end with the server.
     let mut open = tokio::task::JoinSet::new();
@@ -2051,7 +2231,10 @@ async fn http_server(e: Rc<Engine>, s: HttpSettings) {
 fn http_answer(e: &Rc<Engine>, method: &str, path: &str, body: &[u8], signature: Option<&str>) -> (u16, Option<Value>) {
     let invalid = || {
         let msg = format!("'{method} {path}' is an invalid request");
-        (418, Some(json!({"status": "error", "error": msg})))
+        (
+            418,
+            Some(crate::error::StreamerzError::validation(msg).to_http_response(None)),
+        )
     };
     match (method, path) {
         ("GET", "/GetActions") => {
@@ -2082,7 +2265,10 @@ fn http_answer(e: &Rc<Engine>, method: &str, path: &str, body: &[u8], signature:
                     let data = json!({"message": err.to_string()});
                     return (
                         400,
-                        Some(json!({"status": "error", "error": "unable to parse data provided", "data": data})),
+                        Some(
+                            crate::error::StreamerzError::validation("unable to parse data provided")
+                                .to_http_response(Some(json!({"data": data}))),
+                        ),
                     );
                 }
             };
@@ -2092,7 +2278,10 @@ fn http_answer(e: &Rc<Engine>, method: &str, path: &str, body: &[u8], signature:
                 Some(_) => (204, None),
                 None => (
                     400,
-                    Some(json!({"status": "error", "error": "action not found", "data": {"action": a}})),
+                    Some(
+                        crate::error::StreamerzError::not_found("action not found")
+                            .to_http_response(Some(json!({"data": {"action": a}}))),
+                    ),
                 ),
             }
         }
@@ -2109,7 +2298,10 @@ fn http_answer(e: &Rc<Engine>, method: &str, path: &str, body: &[u8], signature:
                 | "treatstream" | "donordrive" | "pallygg" | "pally" | "shopify" | "streamloots" => {
                     match crate::donations::handle_webhook(e, p, body, signature) {
                         Ok(()) => (200, Some(json!({"status": "ok"}))),
-                        Err(err) => (400, Some(json!({"status": "error", "error": err}))),
+                        Err(err) => (
+                            400,
+                            Some(crate::error::StreamerzError::from_message(&err).to_http_response(None)),
+                        ),
                     }
                 }
                 _ => invalid(),
@@ -2225,8 +2417,15 @@ async fn udp_server(e: Rc<Engine>, s: UdpSettings) {
     // All interfaces, like Streamer.bot (devices on the network send these).
     let sock = match UdpSocket::bind(("0.0.0.0", s.port)).await {
         Ok(x) => x,
-        Err(err) => return crate::error(format!("UDP server: can't listen on port {} ({err})", s.port)),
+        Err(err) => {
+            crate::error::record_active(
+                "server.udp",
+                crate::error::StreamerzError::udp_server_start(s.port, &err.to_string()),
+            );
+            return;
+        }
     };
+    crate::error::clear_active("server.udp");
     crate::say(format!("UDP server on port {}", s.port));
     let mut buf = vec![0u8; 65536];
     loop {
@@ -2249,6 +2448,47 @@ async fn udp_server(e: Rc<Engine>, s: UdpSettings) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_raw_platform_call_goes_through_the_running_client_in_dev_mode_only() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(serde_json::json!({"actions": []}));
+            let fakes = crate::scenario::fakes::install(
+                &engine,
+                &serde_json::json!({"twitch": {"GET streams": {"data": [{"type": "live"}]}},
+                    "kick": {"GET /channels?slug=me": {"data": [{"slug": "me"}]}}}),
+                None,
+            );
+            let twitch = serde_json::json!({"request": "StreamerzPlatformApi", "id": "1", "platform": "twitch",
+                "path": "streams", "query": {"user_id": "{broadcaster_id}"}});
+            let refused = super::request(&engine, &twitch, false, true).await;
+            assert_eq!(
+                refused["status"], "error",
+                "a normal instance has no raw calls: {refused}"
+            );
+            assert!(fakes.calls.borrow().is_empty());
+            let answer = super::platform_api(&engine, &twitch).await.unwrap();
+            assert_eq!(answer["data"][0]["type"], "live");
+            assert_eq!(
+                fakes.calls.borrow()[0]["query"]["user_id"],
+                "{broadcaster_id}",
+                "the client fills in the channel"
+            );
+            let kick = serde_json::json!({"platform": "kick", "path": "/channels", "query": {"slug": "me"}});
+            assert_eq!(
+                super::platform_api(&engine, &kick).await.unwrap()["data"][0]["slug"],
+                "me"
+            );
+            for bad in [
+                serde_json::json!({"platform": "myspace", "path": "x"}),
+                serde_json::json!({"platform": "kick", "path": "x", "method": "TRACE"}),
+            ] {
+                assert!(super::platform_api(&engine, &bad).await.is_err(), "{bad}");
+            }
+            crate::scenario::fakes::uninstall();
+        });
+    }
+
     #[test]
     fn overlay_setup_waits_for_bind_and_reports_an_already_failed_listener() {
         let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
@@ -2318,6 +2558,29 @@ mod tests {
                 assert_eq!(reply["status"], "ok");
                 assert_eq!(reply["id"], which);
             }
+        });
+    }
+
+    #[test]
+    fn moderation_form_round_trip_rejects_changed_channel() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(serde_json::json!({"actions": []}));
+            let fakes = crate::scenario::fakes::install(&engine, &serde_json::json!({"twitch": {}}), None);
+            let form = super::answer(
+                &engine,
+                &serde_json::json!({"request":"StreamerzEntityForm", "kind":"moderation_twitch_ban"}),
+                true,
+            )
+            .unwrap();
+            assert_eq!(form["status"], "ok");
+            let kind = form["kind"].as_str().unwrap();
+            let edit = serde_json::json!({"request":"StreamerzEditEntity", "kind":kind, "changes":[{"field":0, "value":"viewer"}, {"field":1, "value":"60"}]});
+            engine.change(|c| c.twitch.channel = "another-channel".into());
+            let reply = super::answer(&engine, &edit, true).unwrap();
+            assert_eq!(reply["status"], "error");
+            assert!(fakes.calls.borrow().is_empty());
+            crate::scenario::fakes::uninstall();
         });
     }
 
@@ -3294,6 +3557,99 @@ mod tests {
             assert_eq!(engine.config().window.w, 1280);
             assert_eq!(engine.config().window.h, 900);
             assert!(engine.config().window.maximized);
+        });
+    }
+
+    #[test]
+    fn http_and_ws_bind_failure_records_and_clears_structured_error() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::error::clear_all_active_for_test();
+        crate::engine::tests::run(async {
+            let engine = crate::engine::tests::engine(serde_json::json!({"actions": []}));
+            let occupied_http = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let http_port = occupied_http.local_addr().unwrap().port();
+            let occupied_ws = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let ws_port = occupied_ws.local_addr().unwrap().port();
+
+            super::http_server(
+                engine.clone(),
+                super::HttpSettings {
+                    auto_start: true,
+                    address: "127.0.0.1".into(),
+                    port: http_port,
+                },
+            )
+            .await;
+            super::websocket(
+                engine.clone(),
+                super::WsSettings {
+                    auto_start: true,
+                    address: "127.0.0.1".into(),
+                    port: ws_port,
+                    ..Default::default()
+                },
+            )
+            .await;
+
+            let active = crate::error::active_list();
+            let http_err = active
+                .iter()
+                .find(|entry| entry.key == "server.http")
+                .expect("http bind error");
+            assert_eq!(http_err.error.code, "server.http.bind");
+            assert!(!http_err.error.title.is_empty());
+            assert!(http_err.error.description.contains(&http_port.to_string()));
+            assert!(!http_err.error.recommendation.is_empty());
+
+            let ws_err = active
+                .iter()
+                .find(|entry| entry.key == "server.websocket")
+                .expect("ws bind error");
+            assert_eq!(ws_err.error.code, "server.websocket.bind");
+            assert!(ws_err.error.description.contains(&ws_port.to_string()));
+
+            let dismiss = super::answer(
+                &engine,
+                &json!({"request": "StreamerzDismissError", "id": "d1", "key": "server.websocket"}),
+                true,
+            )
+            .unwrap();
+            assert_eq!(dismiss["status"], "ok");
+            assert_eq!(dismiss["dismissed"], true);
+            assert!(crate::error::active_list().iter().all(|e| e.key != "server.websocket"));
+
+            let retry_bad = super::answer(
+                &engine,
+                &json!({"request": "StreamerzRetryServer", "id": "r1", "server": "bogus"}),
+                true,
+            )
+            .unwrap();
+            assert_eq!(retry_bad["status"], "error");
+            assert_eq!(retry_bad["errorInfo"]["code"], "not_found");
+
+            let retry_ok = super::answer(
+                &engine,
+                &json!({"request": "StreamerzRetryServer", "id": "r2", "server": "http"}),
+                true,
+            )
+            .unwrap();
+            assert_eq!(retry_ok["status"], "ok");
+            assert_eq!(retry_ok["restarted"], "http");
+
+            // Dropping occupied listener allows http_server to bind and clear server.http.
+            drop(occupied_http);
+            let handle = tokio::task::spawn_local(super::http_server(
+                engine.clone(),
+                super::HttpSettings {
+                    auto_start: true,
+                    address: "127.0.0.1".into(),
+                    port: http_port,
+                },
+            ));
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            handle.abort();
+            assert!(crate::error::active_list().iter().all(|e| e.key != "server.http"));
+            crate::error::clear_all_active_for_test();
         });
     }
 }

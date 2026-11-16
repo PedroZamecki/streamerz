@@ -1,6 +1,9 @@
 //! A searchable tree with a button bar and a right-click menu, drawn from any model of nodes and
 //! buttons. The core decides what the rows and buttons mean; a page decides what a press does.
 use crate::i18n::tr;
+use crate::theme::{
+    CONTROL_HEIGHT, FONT_BODY, FONT_CAPTION, LINE_BODY, LINE_CAPTION, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XS,
+};
 use gpui_kit::component::{
     button::Button,
     input::{Input, InputEvent, InputState},
@@ -8,7 +11,7 @@ use gpui_kit::component::{
     menu::{ContextMenuExt, PopupMenuItem},
     switch::Switch,
     tree::{tree, TreeItem, TreeState},
-    ActiveTheme, Disableable, Icon, Sizable,
+    ActiveTheme, Disableable, Icon, Sizable, WindowExt,
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -54,6 +57,9 @@ pub struct Options {
     pub header: bool,
     /// Expand all and Collapse all beside the search box (a picker).
     pub fold_buttons: bool,
+    /// The page's header carries the buttons the model marks `"header": true`, so the bar under the tree
+    /// leaves them out (the Actions page: Add, Import, Templates).
+    pub in_header: bool,
 }
 
 pub struct TreePane {
@@ -61,12 +67,29 @@ pub struct TreePane {
     state: Entity<TreeState>,
     search: Option<Entity<InputState>>,
     external_filter: String,
+    visible_empty: bool,
     selected: Option<Node>,
     /// Folders the user turned away from their starting state.
     toggled: HashSet<String>,
     options: Options,
     id: SharedString,
+    header_view: Entity<HeaderButtons>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// A tree's page-wide buttons, drawn in the page's header.
+pub struct HeaderButtons(WeakEntity<TreePane>);
+impl Render for HeaderButtons {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        match self
+            .0
+            .upgrade()
+            .and_then(|pane| pane.update(cx, |pane, cx| pane.header_buttons(cx)))
+        {
+            Some(buttons) => buttons,
+            None => div().into_any_element(),
+        }
+    }
 }
 
 fn find<'a>(nodes: &'a Value, id: &str) -> Option<&'a Value> {
@@ -86,7 +109,7 @@ fn compact_of(options: Options, row: usize, per_row: f32, count: f32) -> bool {
         return true;
     }
     if options.width > 0. {
-        return (options.width - 8. * (count - 1.)) / count < 80.;
+        return (options.width - SPACE_SM * (count - 1.)) / count < 80.;
     }
     let _ = per_row;
     options.compact
@@ -114,6 +137,27 @@ fn node_of(value: &Value) -> Node {
 pub fn enabled(spec: &Value, node: Option<&Node>) -> bool {
     let needs = spec["needs"].as_array().map(Vec::as_slice).unwrap_or_default();
     needs.is_empty() || node.is_some_and(|node| needs.iter().any(|need| *need == node.kind.as_str()))
+}
+
+fn key_spec(key: &str, buttons: &[Value], node: &Node) -> Option<Value> {
+    if key == "f2" {
+        return ["rename", "group_rename", "edit"].iter().find_map(|id| {
+            buttons
+                .iter()
+                .find(|spec| spec["id"] == *id && enabled(spec, Some(node)))
+                .cloned()
+        });
+    }
+    let id = match key {
+        "enter" => "edit",
+        "delete" | "backspace" => "delete",
+        "space" => "toggle",
+        _ => return None,
+    };
+    buttons
+        .iter()
+        .find(|spec| spec["id"] == id && enabled(spec, Some(node)))
+        .cloned()
 }
 
 impl TreePane {
@@ -156,11 +200,17 @@ impl TreePane {
                 }
             }));
         }
+        let header_view = {
+            let weak = cx.entity().downgrade();
+            cx.new(|_| HeaderButtons(weak))
+        };
         let mut pane = Self {
             model,
+            header_view,
             state,
             search,
             external_filter: String::new(),
+            visible_empty: false,
             selected: None,
             toggled: HashSet::new(),
             options,
@@ -171,6 +221,10 @@ impl TreePane {
         pane
     }
 
+    /// The page-wide buttons as their own view, for the page's header.
+    pub fn header_view(&self) -> Entity<HeaderButtons> {
+        self.header_view.clone()
+    }
     pub fn selected(&self) -> Option<&Node> {
         self.selected.as_ref()
     }
@@ -256,6 +310,7 @@ impl TreePane {
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         let query = self.query(cx);
         let items = self.items(&self.model["nodes"], &query);
+        self.visible_empty = items.is_empty();
         let wanted = self.selected.as_ref().map(|node| node.id.clone());
         let mut found = None;
         self.state.update(cx, |state, cx| {
@@ -316,12 +371,57 @@ impl TreePane {
         }
     }
 
-    fn buttons(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// The buttons the model marks `"header": true`, in a row for the page's header (none unless the options
+    /// hand them over).
+    fn header_buttons(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.options.in_header {
+            return None;
+        }
+        let specs: Vec<Value> = self.model["buttons"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|spec| spec["header"] == true && spec["menuOnly"] != true)
+            .cloned()
+            .collect();
+        if specs.is_empty() {
+            return None;
+        }
+        let mut row = div().flex().items_center().gap(px(SPACE_SM)).flex_shrink_0();
+        for spec in specs {
+            let label = spec["label"].as_str().unwrap_or_default().to_owned();
+            let id = spec["id"].as_str().unwrap_or_default().to_owned();
+            row = row.child(
+                Button::new(SharedString::from(format!("{}-header-{id}", self.id)))
+                    .small()
+                    .h(px(CONTROL_HEIGHT))
+                    .flex_shrink_0()
+                    .icon(Icon::empty().path(format!("icons/{}.svg", spec["icon"].as_str().unwrap_or("circle"))))
+                    .label(label.clone())
+                    .accessibility_label(match self.model["title"].as_str() {
+                        Some(title) if !title.is_empty() => format!("{title}: {label}"),
+                        _ => label.clone(),
+                    })
+                    .tooltip(spec["tooltip"].as_str().map_or(label, str::to_owned))
+                    .disabled(!enabled(&spec, None))
+                    .on_click(cx.listener(move |pane, _, _, cx| {
+                        let node = pane.selected.clone();
+                        pane.press(spec.clone(), node, cx)
+                    })),
+            );
+        }
+        Some(row.into_any_element())
+    }
+
+    /// The button bar. `fill`: the buttons share the row's width (under a tree); otherwise they take the width
+    /// of their labels and wrap (the empty state).
+    fn buttons(&self, fill: bool, cx: &mut Context<Self>) -> Option<AnyElement> {
         let specs: Vec<Value> = self.model["buttons"]
             .as_array()
             .into_iter()
             .flatten()
             .filter(|spec| spec["menuOnly"] != true)
+            .filter(|spec| !(self.options.in_header && spec["header"] == true))
             .filter(|spec| !self.model["nodes"].as_array().is_some_and(Vec::is_empty) || enabled(spec, None))
             .filter(|spec| spec["hidden"] != true || enabled(spec, self.selected.as_ref()))
             .filter(|spec| {
@@ -336,14 +436,19 @@ impl TreePane {
         let requested = self.model["perRow"].as_u64().unwrap_or(4).max(1) as usize;
         // Wrap before folding so labelled actions remain available in an ordinary tree pane.
         let per_row = if self.options.width > 0. && !self.options.compact {
-            requested.min(((self.options.width + 8.) / 104.).floor().max(1.) as usize)
+            requested.min(((self.options.width + SPACE_SM) / 104.).floor().max(1.) as usize)
         } else {
             requested
         };
-        let mut column = div().flex().flex_col().gap(px(4.)).w_full().flex_shrink_0();
+        let per_row = if fill { per_row } else { specs.len() };
+        let mut column = div().flex().flex_col().gap(px(SPACE_SM)).w_full().flex_shrink_0();
         for (row, chunk) in specs.chunks(per_row).enumerate() {
-            let mut line = div().flex().gap_2().w_full();
-            let compact = compact_of(self.options, row, per_row as f32, chunk.len() as f32);
+            let mut line = div()
+                .flex()
+                .gap(px(SPACE_SM))
+                .w_full()
+                .when(!fill, |line| line.flex_wrap());
+            let compact = fill && compact_of(self.options, row, per_row as f32, chunk.len() as f32);
             for (at, spec) in chunk.iter().enumerate() {
                 let label = spec["label"].as_str().unwrap_or_default().to_owned();
                 let on = !self.options.idle && enabled(spec, self.selected.as_ref());
@@ -356,9 +461,8 @@ impl TreePane {
                         row * per_row + at
                     )))
                     .small()
-                    .h(px(28.))
-                    .flex_1()
-                    .min_w_0()
+                    .h(px(CONTROL_HEIGHT))
+                    .when(fill, |button| button.flex_1().min_w_0())
                     .icon(Icon::empty().path(format!("icons/{}.svg", spec["icon"].as_str().unwrap_or("circle"))))
                     .when(!compact, |button| button.label(label.clone()))
                     .accessibility_label(match self.model["title"].as_str() {
@@ -421,7 +525,9 @@ impl Render for TreePane {
                 ListItem::new(SharedString::from(format!("{id}-row-{ix}")))
                     .selected(selected)
                     .accessibility_label(item.label.to_string())
-                    .px_1()
+                    .px(px(SPACE_MD))
+                    .py(px(0.))
+                    .h(px(CONTROL_HEIGHT))
                     .on_click(move |event, _, cx| {
                         let clicks = event.click_count();
                         let node_id = node_id.clone();
@@ -432,7 +538,7 @@ impl Render for TreePane {
                             .id(SharedString::from(format!("{id}-line-{ix}")))
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(px(SPACE_SM))
                             .w_full()
                             // What the row is, on hover (an action: what starts it and what it runs, or full label).
                             .when_some(
@@ -449,8 +555,9 @@ impl Render for TreePane {
                                     })
                                 },
                             )
-                            .text_size(px(if value["kind"] == "action" { 12.5 } else { 13.5 }))
-                            .pl(px(entry.depth() as f32 * 14.))
+                            .text_size(px(FONT_BODY))
+                            .line_height(px(LINE_BODY))
+                            .pl(px(entry.depth() as f32 * SPACE_LG))
                             .text_color(color)
                             .when(value["toggle"].is_object(), |line| {
                                 let weak = toggle_owner.clone();
@@ -480,7 +587,7 @@ impl Render for TreePane {
                             })
                             .child(
                                 div()
-                                    .w(px(14.))
+                                    .w(px(SPACE_LG))
                                     .flex_shrink_0()
                                     .when(!has_folders, |slot| slot.w(px(0.)))
                                     .when(folder, |slot| {
@@ -525,8 +632,9 @@ impl Render for TreePane {
                                         .flex_shrink_0()
                                         .flex()
                                         .items_center()
-                                        .gap(px(3.))
-                                        .text_size(px(11.5))
+                                        .gap(px(SPACE_XS))
+                                        .text_size(px(FONT_CAPTION))
+                                        .line_height(px(LINE_CAPTION))
                                         .text_color(cx.theme().muted_foreground)
                                         .child(
                                             Icon::empty()
@@ -540,7 +648,8 @@ impl Render for TreePane {
                                 )
                             })
                             .when((value["kind"] == "trigger" && muted) || value["off"] == true, |row| {
-                                row.pr(px(16.)).child(Icon::empty().path("icons/power-off.svg").small())
+                                row.pr(px(SPACE_LG))
+                                    .child(Icon::empty().path("icons/power-off.svg").small())
                             }),
                     )
             }
@@ -579,20 +688,21 @@ impl Render for TreePane {
             menu
         });
         let empty = self.model["nodes"].as_array().is_none_or(Vec::is_empty);
-        // Keys on the selected row (the search box keeps its own): Enter edits, Delete deletes, Space switches.
+        // Keys on the selected row (the search box keeps its own): Enter/F2 edit/rename, Delete deletes, Space switches.
         let mut body = div()
             .size_full()
             .flex()
             .flex_col()
-            .gap(px(4.))
+            .gap(px(SPACE_SM))
             .min_h_0()
             .on_key_down(cx.listener(|pane, event: &KeyDownEvent, window, cx| {
-                let id = match event.keystroke.key.as_str() {
-                    "enter" => "edit",
-                    "delete" | "backspace" => "delete",
-                    "space" => "toggle",
-                    _ => return,
-                };
+                if event.keystroke.modifiers.control
+                    || event.keystroke.modifiers.alt
+                    || event.keystroke.modifiers.platform
+                    || window.has_active_dialog(cx)
+                {
+                    return;
+                }
                 let typing = pane
                     .search
                     .as_ref()
@@ -600,11 +710,8 @@ impl Render for TreePane {
                 let Some(node) = pane.selected.clone().filter(|_| !typing) else {
                     return;
                 };
-                let spec = pane.model["buttons"]
-                    .as_array()
-                    .and_then(|specs| specs.iter().find(|spec| spec["id"] == id))
-                    .cloned();
-                if let Some(spec) = spec {
+                let buttons = pane.model["buttons"].as_array().map(Vec::as_slice).unwrap_or_default();
+                if let Some(spec) = key_spec(event.keystroke.key.as_str(), buttons, &node) {
                     pane.press(spec, Some(node), cx);
                     cx.stop_propagation();
                 }
@@ -615,7 +722,7 @@ impl Render for TreePane {
                 .when(self.options.header, |field| field.flex_1())
                 .when(!self.options.header, |field| field.w_full().flex_shrink_0())
                 .min_w_0()
-                .h(px(26.))
+                .h(px(CONTROL_HEIGHT))
                 .child(
                     Input::new(search)
                         .small()
@@ -625,16 +732,16 @@ impl Render for TreePane {
                                 .small()
                                 .text_color(cx.theme().muted_foreground),
                         )
-                        .min_h(px(26.))
+                        .min_h(px(CONTROL_HEIGHT))
                         .bg(cx.theme().table)
-                        .text_size(px(13.))
+                        .text_size(px(FONT_BODY))
                         .aria_label(self.model["searchHint"].as_str().unwrap_or_default().to_owned()),
                 );
             let field = if self.options.fold_buttons {
                 let fold = |id: &'static str, icon: &str, tip: &'static str, open: bool| {
                     Button::new(id)
                         .small()
-                        .h(px(26.))
+                        .h(px(CONTROL_HEIGHT))
                         .icon(Icon::empty().path(format!("icons/{icon}.svg")))
                         .tooltip(tr(tip))
                         .accessibility_label(tr(tip))
@@ -643,7 +750,7 @@ impl Render for TreePane {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(4.))
+                    .gap(px(SPACE_SM))
                     .w_full()
                     .flex_shrink_0()
                     .child(field.flex_1().w_auto())
@@ -661,12 +768,12 @@ impl Render for TreePane {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(4.))
+                    .gap(px(SPACE_SM))
                     .w_full()
                     .flex_shrink_0()
                     .child(
                         div()
-                            .pr(px(12.))
+                            .pr(px(SPACE_MD))
                             .flex_shrink_0()
                             .text_color(cx.theme().foreground)
                             .child(self.model["title"].as_str().unwrap_or_default().to_owned()),
@@ -686,14 +793,12 @@ impl Render for TreePane {
                 .min_h_0()
                 .flex()
                 .flex_col()
-                .justify_center()
-                .gap_3()
-                .p_3()
+                .gap(px(SPACE_MD))
                 .child(super::notice::info(
                     self.model["empty"].as_str().unwrap_or_default(),
                     cx,
                 ));
-            if let Some(buttons) = self.buttons(cx) {
+            if let Some(buttons) = self.buttons(false, cx) {
                 state = state.child(buttons);
             }
             return body.child(state.context_menu(move |mut menu, _, _| {
@@ -722,33 +827,319 @@ impl Render for TreePane {
                 .border_color(cx.theme().input)
                 .bg(cx.theme().table)
                 .child(list)
-                .when(empty, |frame| {
+                .when(self.visible_empty, |frame| {
+                    let message = if self.query(cx).is_empty() {
+                        self.model["empty"].as_str().unwrap_or_default().to_owned()
+                    } else {
+                        tr("lists.no_matches").to_owned()
+                    };
                     frame.child(
                         div()
+                            .id(SharedString::from(format!("{}-empty-overlay", self.id)))
+                            .test_support()
+                            .aria_label(message.clone())
                             .absolute()
                             .inset_0()
-                            .p_3()
+                            .p(px(SPACE_MD))
                             .flex()
                             .items_center()
                             .justify_center()
                             .text_center()
                             .text_color(cx.theme().muted_foreground)
-                            .child(
-                                div().w_full().min_w_0().child(
-                                    if self.query(cx).is_empty() {
-                                        self.model["empty"].as_str().unwrap_or_default()
-                                    } else {
-                                        tr("lists.no_matches")
-                                    }
-                                    .to_owned(),
-                                ),
-                            ),
+                            .child(div().w_full().min_w_0().child(message)),
                     )
                 }),
         );
-        if let Some(buttons) = self.buttons(cx) {
+        if let Some(buttons) = self.buttons(true, cx) {
             body = body.child(buttons);
         }
         body
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::{key_spec, Node};
+    use serde_json::{json, Value};
+
+    fn node(kind: &str) -> Node {
+        Node {
+            id: format!("{kind}-1"),
+            kind: kind.into(),
+            label: kind.into(),
+            detail: Value::Null,
+            confirm: Value::Null,
+        }
+    }
+
+    #[test]
+    fn f2_picks_rename_group_rename_or_edit_for_node_kind() {
+        let buttons = vec![
+            json!({"id": "edit", "needs": ["action"]}),
+            json!({"id": "group_rename", "needs": ["group"]}),
+        ];
+        assert_eq!(
+            key_spec("f2", &buttons, &node("group")).map(|spec| spec["id"].clone()),
+            Some(json!("group_rename"))
+        );
+        assert_eq!(
+            key_spec("f2", &buttons, &node("action")).map(|spec| spec["id"].clone()),
+            Some(json!("edit"))
+        );
+        assert!(key_spec("enter", &buttons, &node("group")).is_none());
+
+        let with_rename = vec![
+            json!({"id": "edit", "needs": ["action"]}),
+            json!({"id": "rename", "needs": ["action"]}),
+        ];
+        assert_eq!(
+            key_spec("f2", &with_rename, &node("action")).map(|spec| spec["id"].clone()),
+            Some(json!("rename"))
+        );
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn matching_ids(pane: &super::TreePane, cx: &gpui_kit::App) -> Vec<String> {
+        fn collect(items: &[gpui_kit::component::tree::TreeItem], out: &mut Vec<String>) {
+            for item in items {
+                out.push(item.id.to_string());
+                collect(&item.children, out);
+            }
+        }
+        let query = pane.query(cx);
+        let items = pane.items(&pane.model["nodes"], &query);
+        let mut ids = Vec::new();
+        collect(&items, &mut ids);
+        ids
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn search_input(
+        pane: &super::TreePane,
+    ) -> Option<gpui_kit::Entity<gpui_kit::component::input::InputState>> {
+        pane.search.clone()
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn is_visible_empty(pane: &super::TreePane) -> bool {
+        pane.visible_empty
+    }
+
+    #[cfg(feature = "test-support")]
+    mod ui {
+        use super::super::{Options, TreePane};
+        use super::{is_visible_empty, matching_ids, search_input};
+        use gpui_kit::test::{TestQueryExt, TestWindowExt};
+        use gpui_kit::{
+            div, px, size, AppContext, Bounds, Entity, IntoElement, ParentElement, Render, Styled, TestAppContext,
+            Window, WindowBounds, WindowOptions,
+        };
+        use serde_json::json;
+
+        struct TreeHost(Entity<TreePane>);
+        impl Render for TreeHost {
+            fn render(&mut self, _: &mut Window, _: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+                div().size_full().p_4().child(self.0.clone())
+            }
+        }
+
+        fn open_tree(
+            model: serde_json::Value,
+            searchable: bool,
+            options: Options,
+            cx: &mut TestAppContext,
+        ) -> (gpui_kit::WindowHandle<gpui_kit::base::Root>, Entity<TreePane>) {
+            cx.update(|cx| {
+                gpui_kit::init(cx);
+                crate::theme::apply(true, cx);
+            });
+            let slot: std::rc::Rc<std::cell::RefCell<Option<Entity<TreePane>>>> =
+                std::rc::Rc::new(std::cell::RefCell::new(None));
+            let s = slot.clone();
+            let window = cx.update(|cx| {
+                let bounds = Bounds {
+                    origin: gpui_kit::Point::default(),
+                    size: size(px(480.), px(600.)),
+                };
+                let (window, _) = gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        ..Default::default()
+                    },
+                    cx,
+                    move |window, cx| {
+                        let pane = cx.new(|cx| TreePane::new("test", model, searchable, options, window, cx));
+                        *s.borrow_mut() = Some(pane.clone());
+                        cx.new(|_| TreeHost(pane))
+                    },
+                )
+                .expect("open test window");
+                window.downcast::<gpui_kit::base::Root>().expect("root window")
+            });
+            let pane = slot.borrow().clone().expect("pane created");
+            (window, pane)
+        }
+
+        fn type_text(
+            input: &gpui_kit::Entity<gpui_kit::component::input::InputState>,
+            text: &str,
+            window: &mut Window,
+            cx: &mut gpui_kit::App,
+        ) {
+            use gpui_kit::test::TestEventExt;
+            input.update(cx, |input, cx| input.focus(window, cx));
+            window.key_down("ctrl-a", false, cx);
+            window.key_up("ctrl-a", cx);
+            if text.is_empty() {
+                window.key_down("backspace", false, cx);
+                window.key_up("backspace", cx);
+            } else {
+                window.input(text, cx);
+            }
+        }
+
+        #[gpui_kit::test]
+        fn search_filters_labels_details_and_shows_empty_overlay(cx: &mut TestAppContext) {
+            let model = json!({
+                "title": "Pick Trigger",
+                "searchHint": "Search triggers",
+                "empty": "No triggers configured.",
+                "nodes": [
+                    {
+                        "id": "cat-twitch",
+                        "kind": "category",
+                        "label": "Twitch",
+                        "children": [
+                            {
+                                "id": "t-follow",
+                                "kind": "item",
+                                "label": "Follow",
+                                "detail": {"text": "Fires when a new follower arrives."}
+                            },
+                            {
+                                "id": "t-sub",
+                                "kind": "item",
+                                "label": "Subscription",
+                                "detail": {"text": "Fires when someone subscribes."}
+                            }
+                        ]
+                    },
+                    {
+                        "id": "cat-obs",
+                        "kind": "category",
+                        "label": "OBS Studio",
+                        "children": [
+                            {
+                                "id": "t-scene",
+                                "kind": "item",
+                                "label": "Scene Changed",
+                                "detail": {"text": "Active scene switched."}
+                            }
+                        ]
+                    }
+                ]
+            });
+            let (window, pane) = open_tree(
+                model,
+                true,
+                Options {
+                    closed: true,
+                    ..Options::default()
+                },
+                cx,
+            );
+            let no_matches = crate::i18n::tr("lists.no_matches");
+            let search = cx
+                .update_window(window.into(), |_, window, cx| {
+                    window.render_frame(cx);
+                    assert!(window.try_find_by_label(no_matches).is_none());
+                    assert_eq!(
+                        matching_ids(pane.read(cx), cx),
+                        vec!["cat-twitch", "t-follow", "t-sub", "cat-obs", "t-scene"]
+                    );
+                    let search = search_input(pane.read(cx)).expect("search input");
+                    // Search by item label filters tree and opens matching folder.
+                    type_text(&search, "Scene", window, cx);
+                    search
+                })
+                .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert_eq!(matching_ids(pane.read(cx), cx), vec!["cat-obs", "t-scene"]);
+                assert!(!is_visible_empty(pane.read(cx)));
+                assert!(window.try_find_by_label(no_matches).is_none());
+
+                // Search by detail text matches item.
+                type_text(&search, "follower", window, cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert_eq!(matching_ids(pane.read(cx), cx), vec!["cat-twitch", "t-follow"]);
+
+                // Zero matching items must display the no-matches overlay even when nodes is non-empty.
+                type_text(&search, "zzz-nomatch", window, cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert!(matching_ids(pane.read(cx), cx).is_empty());
+                assert!(is_visible_empty(pane.read(cx)));
+                let overlay = window
+                    .try_find_by_label(no_matches)
+                    .expect("no-matches overlay should render when search matches 0 items");
+                assert_eq!(overlay.label(), Some(no_matches));
+
+                // Clearing search restores all nodes and removes the overlay.
+                type_text(&search, "", window, cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert!(!is_visible_empty(pane.read(cx)));
+                assert!(window.try_find_by_label(no_matches).is_none());
+                assert_eq!(
+                    matching_ids(pane.read(cx), cx),
+                    vec!["cat-twitch", "t-follow", "t-sub", "cat-obs", "t-scene"]
+                );
+            })
+            .unwrap();
+        }
+
+        #[gpui_kit::test]
+        fn external_filter_updates_non_searchable_tree(cx: &mut TestAppContext) {
+            let model = json!({
+                "title": "Triggers",
+                "empty": "None",
+                "nodes": [
+                    {"id": "t1", "kind": "trigger", "label": "Chat Message"},
+                    {"id": "t2", "kind": "trigger", "label": "Channel Follow"}
+                ]
+            });
+            let (window, pane) = open_tree(model, false, Options::default(), cx);
+            let no_matches = crate::i18n::tr("lists.no_matches");
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                pane.update(cx, |pane, cx| pane.set_filter("Follow", cx));
+                window.render_frame(cx);
+                assert_eq!(matching_ids(pane.read(cx), cx), vec!["t2"]);
+                assert!(window.try_find_by_label(no_matches).is_none());
+
+                pane.update(cx, |pane, cx| pane.set_filter("zzz", cx));
+                window.render_frame(cx);
+                assert!(matching_ids(pane.read(cx), cx).is_empty());
+                assert!(window.try_find_by_label(no_matches).is_some());
+
+                pane.update(cx, |pane, cx| pane.set_filter("", cx));
+                window.render_frame(cx);
+                assert_eq!(matching_ids(pane.read(cx), cx), vec!["t1", "t2"]);
+                assert!(window.try_find_by_label(no_matches).is_none());
+            })
+            .unwrap();
+        }
     }
 }

@@ -482,6 +482,48 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("userLogin", "User login", Text),
             ("status", "Status", Pick(&["Monitored", "Restricted"])),
         ],
+        581 => &[("messageId", "Message ID", Text)],
+        582 => &[
+            ("messageId", "Message ID", Text),
+            ("action", "Action", Pick(&["Allow", "Deny"])),
+        ],
+        583 => &[("text", "Term", Text)],
+        584 => &[("termId", "Term ID", Text)],
+        585 | 590 | 591 | 595 | 596 => &[],
+        586 => &[
+            ("unbanRequestId", "Unban request ID", Text),
+            ("status", "Decision", Pick(&["Approve", "Deny"])),
+            ("resolutionText", "Resolution text", Text),
+        ],
+        587 => &[(
+            "status",
+            "Status",
+            Pick(&["Pending", "Approved", "Denied", "Acknowledged", "Canceled"]),
+        )],
+        588 => &[("status", "Enabled", Bool)],
+        589 => &[
+            ("status", "Enabled", Bool),
+            ("duration", "Delay (2, 4, or 6s)", Duration(1000)),
+        ],
+        592 => &[
+            ("aggression", "Aggression (0-4, -1: keep)", Int),
+            ("bullying", "Bullying (0-4, -1: keep)", Int),
+            ("disability", "Disability (0-4, -1: keep)", Int),
+            ("misogyny", "Misogyny (0-4, -1: keep)", Int),
+            (
+                "raceEthnicityOrReligion",
+                "Race/Ethnicity/Religion (0-4, -1: keep)",
+                Int,
+            ),
+            ("sexBasedTerms", "Sex-based terms (0-4, -1: keep)", Int),
+            ("sexualitySexOrGender", "Sexuality/Sex/Gender (0-4, -1: keep)", Int),
+            ("swearing", "Swearing (0-4, -1: keep)", Int),
+        ],
+        593 => &[
+            ("msgId", "Message ID (empty: auto)", Text),
+            ("message", "Message", Text),
+        ],
+        594 => &[("userLogin", "User login (empty: all)", Text)],
 
         120 => &[
             ("input", "Input", Text),
@@ -878,6 +920,17 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("broadcast", "Broadcast (empty: active)", Text),
             ("duration", "Duration (seconds)", Int),
         ],
+        4015 => &[("banId", "Ban ID", Text), ("userId", "User ID (tracked lookup)", Text)],
+        4016 => &[("messageId", "Message ID", Text)],
+        4017 => &[
+            ("broadcast", "Broadcast (empty: active)", Text),
+            ("userId", "User Channel ID", Text),
+        ],
+        4018 => &[
+            ("broadcast", "Broadcast (empty: active)", Text),
+            ("moderatorId", "Moderator ID", Text),
+            ("userId", "User Channel ID", Text),
+        ],
         35001 => &[
             ("text", "Message", Text),
             ("useBot", "Use Bot Account", Bool),
@@ -916,6 +969,7 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
             ("duration", "automation.duration_duration", Duration(1000)),
             ("reason", "Reason", Text),
         ],
+        35044 => &[("messageId", "Message ID", Text)],
         35101 | 35102 => &[("rewardId", "Reward", Entity("kick.rewards")), ("state", "State", Bool)],
         35103 => &[
             ("rewardId", "Reward", Entity("kick.rewards")),
@@ -1125,6 +1179,47 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         ],
         1039 => &[("file", "File", Text), ("variableName", "Variable Name", Text)],
         1040 => &[("folder", "Folder", Text), ("variableName", "Variable Name", Text)],
+        99700 => &[
+            ("person", "Linked Person (name, ID, or handle; empty: current)", Text),
+            ("twitch", "Twitch", Bool),
+            ("kick", "Kick", Bool),
+            ("youtube", "YouTube", Bool),
+            ("reason", "Reason", Text),
+        ],
+        99701 => &[
+            ("person", "Linked Person (name, ID, or handle; empty: current)", Text),
+            ("duration", "automation.duration_duration", Duration(1000)),
+            ("twitch", "Twitch", Bool),
+            ("kick", "Kick", Bool),
+            ("youtube", "YouTube", Bool),
+            ("reason", "Reason", Text),
+        ],
+        99702 => &[
+            ("person", "Linked Person (name, ID, or handle; empty: current)", Text),
+            ("twitch", "Twitch", Bool),
+            ("kick", "Kick", Bool),
+            ("youtube", "YouTube", Bool),
+        ],
+        99703 => &[("person", "Linked Person (name, ID, or handle; empty: current)", Text)],
+        99704 => &[
+            ("name", "Person Name", Text),
+            ("twitch", "Twitch User ID", Text),
+            ("kick", "Kick User ID", Text),
+            ("youtube", "YouTube Channel ID", Text),
+            ("tiktok", "TikTok Username", Text),
+        ],
+        99705 => &[
+            ("person", "Linked Person", Text),
+            (
+                "platform",
+                "Platform",
+                Pick(&["All", "Twitch", "Kick", "YouTube", "TikTok"]),
+            ),
+        ],
+        99706 => &[
+            ("platform", "Platform", Pick(&["Auto", "Twitch", "Kick", "YouTube"])),
+            ("messageId", "Message ID (empty: current)", Text),
+        ],
         99901 | 99902 | 99904 => &[("random", "Random", Bool)],
         99903 => &[
             ("values", "Values (one per line)", Lines),
@@ -1140,7 +1235,7 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
     Some(match kind {
         401 | 402 => &[("commandId", "Command", Command)],
         701 => &[("timerId", "Timer", Timer)],
-        702 | 706 | 99804..=99809 | 99825..=99826 | 99830..=99842 => &[],
+        702 | 706 | 99700..=99703 | 99804..=99809 | 99825..=99826 | 99830..=99842 => &[],
         709 | 711 | 712 => &[
             ("variableName", "Variable (none: any)", Text),
             ("persisted", "Persisted", Pick(PERSISTED)),
@@ -1187,12 +1282,12 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
             ("minCoins", "automation.min_coins", Int),
             ("maxCoins", "automation.max_coins", Int),
         ],
-        41001..=41013 => &[],
+        41001..=41016 => &[],
         101..=196
         | 451..=498
         | 4001..=4031
         | 35001..=35003
-        | 35008..=35027
+        | 35008..=35031
         | 202..=204
         | 206
         | 1202..=1205
@@ -1270,6 +1365,19 @@ mod tests {
 
         assert!(trigger_fields(35026).unwrap().is_empty());
         assert!(trigger_fields(35027).unwrap().is_empty());
-        assert!(trigger_fields(41013).unwrap().is_empty());
+        for code in [
+            581, 582, 583, 584, 586, 587, 588, 589, 592, 593, 594, 4015, 4016, 4017, 4018, 35044, 99700, 99701, 99702,
+            99703, 99704, 99705, 99706,
+        ] {
+            assert!(!sub_fields(code).unwrap().is_empty(), "sub_fields({code})");
+        }
+        for code in [585, 590, 591, 595, 596] {
+            assert!(sub_fields(code).unwrap().is_empty(), "sub_fields({code})");
+        }
+        for code in [
+            35028, 35029, 35030, 35031, 41013, 41014, 41015, 41016, 99700, 99701, 99702, 99703,
+        ] {
+            assert!(trigger_fields(code).unwrap().is_empty(), "trigger_fields({code})");
+        }
     }
 }

@@ -167,8 +167,9 @@ fn list(engine: &Rc<Engine>) -> Vec<Connection> {
 
 /// "3 of 5 connected" (plus the standby count, or a locked keyring) with the health it deserves.
 pub fn summary(engine: &Rc<Engine>) -> Value {
+    let active_errors = crate::error::active_list();
     if crate::secrets::is_locked() {
-        return json!({"health": "locked", "text": tr("conns.keyring_locked"), "up": 0, "total": 0, "connections": []});
+        return json!({"health": "locked", "text": tr("conns.keyring_locked"), "up": 0, "total": 0, "connections": [], "activeErrors": active_errors});
     }
     let connections = list(engine);
     let up = connections.iter().filter(|connection| connection.up).count();
@@ -204,7 +205,7 @@ pub fn summary(engine: &Rc<Engine>) -> Value {
             ),
         )
     };
-    json!({"health": health, "text": text, "up": up, "total": total,
+    json!({"health": health, "text": text, "up": up, "total": total, "activeErrors": active_errors,
         "connections": connections.iter().map(|connection| {
             // What it is doing, its health (the icon and colour), what hovering it explains, and what
             // its button does: a standby is connected and only waiting, so it checks; off connects.

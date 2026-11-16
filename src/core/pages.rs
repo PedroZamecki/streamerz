@@ -166,7 +166,6 @@ fn queues(engine: &Rc<Engine>) -> Vec<Value> {
     queue["empty"] = "".into();
     queue["addTop"] = true.into();
     queue["strip"] = true.into();
-    queue["tableHeight"] = (24 + 28 * all.len().min(8)).into();
     let pending_rows = pending
         .iter()
         .enumerate()
@@ -495,9 +494,10 @@ fn crashes() -> Value {
     );
     model["detail"] = "".into();
     model["selectFirst"] = true.into();
-    // A short table, and the report fills the rest of the page.
-    model["tableHeight"] = 192.into();
+    // A short table (six rows at most), and the report fills the rest of the page.
+    model["tableRows"] = 6.into();
     model["detailFill"] = true.into();
+    model["detailMono"] = true.into();
     model["strip"] = true.into();
     model
 }
@@ -528,6 +528,7 @@ fn groups(engine: &Rc<Engine>) -> Value {
         rows,
         vec![
             "add".into(),
+            "edit".into(),
             members,
             danger(confirm(
                 button("delete", "btn.delete", "trash-2", true),
@@ -584,6 +585,24 @@ pub fn add_group(engine: &Rc<Engine>, item: &crate::model::Obj) -> Result<Value,
         return Err(tr("lists.name_required").into());
     }
     Ok(json!({"saved": engine.add_group(&name, false)}))
+}
+
+pub fn rename_group(engine: &Rc<Engine>, item_id: &str, item: &crate::model::Obj) -> Result<Value, String> {
+    let name = text(item, "name").trim().to_owned();
+    if name.is_empty() {
+        return Err(tr("lists.name_required").into());
+    }
+    let mut found = false;
+    engine.change(|config| {
+        if let Some(group) = config.groups.iter_mut().find(|group| text(group, "id") == item_id) {
+            group.insert("name".into(), name.clone().into());
+            found = true;
+        }
+    });
+    if !found {
+        return Err("that group is gone".into());
+    }
+    Ok(json!({"saved": item_id}))
 }
 
 pub const USER_GROUP_FIELDS: &[crate::automation::schema::F] = &[("name", "Name", crate::automation::schema::W::Text)];
@@ -1260,7 +1279,7 @@ fn plugins(engine: &Rc<Engine>) -> Value {
         ],
     );
     model["detail"] = "".into();
-    model["detailHeight"] = 100.into();
+    model["detailHeight"] = 140.into();
     model["strip"] = true.into();
     model["perRow"] = 4.into();
     model
@@ -1330,6 +1349,18 @@ fn plugin_manifest(engine: &Rc<Engine>, id: &str) -> Result<crate::engine::plugi
 
 /// The fields of a kind whose item the core keeps outside the config: a global or a plugin's settings.
 pub fn external_fields(engine: &Rc<Engine>, kind: &str) -> Option<&'static [crate::automation::schema::F]> {
+    if let Some(fields) = super::moderation_suspicious::external_fields(kind) {
+        return Some(fields);
+    }
+    if let Some(fields) = super::moderation_chat::external_fields(kind) {
+        return Some(fields);
+    }
+    if let Some(fields) = super::moderation_settings::external_fields(kind) {
+        return Some(fields);
+    }
+    if let Some(fields) = super::moderation::external_fields(kind) {
+        return Some(fields);
+    }
     if let Some(fields) = super::polls::external_fields(kind) {
         return Some(fields);
     }
@@ -1355,6 +1386,18 @@ pub fn external_fields(engine: &Rc<Engine>, kind: &str) -> Option<&'static [crat
 
 /// The form for such a kind, with its current values; None for any other kind.
 pub fn external_form(engine: &Rc<Engine>, kind: &str, item_id: &str) -> Option<Result<Value, String>> {
+    if let Some(form) = super::moderation_suspicious::external_form(engine, kind) {
+        return Some(form);
+    }
+    if let Some(form) = super::moderation_chat::external_form(engine, kind) {
+        return Some(form);
+    }
+    if let Some(form) = super::moderation_settings::external_form(engine, kind) {
+        return Some(form);
+    }
+    if let Some(form) = super::moderation::external_form(engine, kind) {
+        return Some(form);
+    }
     if let Some(form) = super::polls::external_form(kind) {
         return Some(form);
     }
@@ -1373,8 +1416,24 @@ pub fn external_form(engine: &Rc<Engine>, kind: &str, item_id: &str) -> Option<R
         return Some(quote_item(engine, item_id).and_then(|item| crate::automation::entities::form_of("quote", item)));
     }
     if kind == "user_group" {
-        let item = json!({"id": "", "name": tr("lists.groups.new_group")});
-        return Some(crate::automation::entities::form_of("user_group", item));
+        let item = if item_id.is_empty() {
+            json!({"id": "", "name": tr("lists.groups.new_group")})
+        } else {
+            let config = engine.config();
+            let Some(group) = config.groups.iter().find(|group| text(group, "id") == item_id) else {
+                return Some(Err("that group is gone".into()));
+            };
+            json!({"id": item_id, "name": text(group, "name")})
+        };
+        return Some(
+            crate::automation::entities::form_of("user_group", item).map(|mut form| {
+                if !item_id.is_empty() {
+                    form["title"] = tr("btn.rename_group").into();
+                }
+                form["json"] = false.into();
+                form
+            }),
+        );
     }
     let id = kind.strip_prefix(PLUGIN_SETTINGS)?;
     Some((|| {
@@ -1415,6 +1474,18 @@ pub fn save_external(
     item_id: &str,
     item: crate::model::Obj,
 ) -> Option<Result<Value, String>> {
+    if let Some(saved) = super::moderation_suspicious::save_external(engine, kind, item.clone()) {
+        return Some(saved);
+    }
+    if let Some(saved) = super::moderation_chat::save_external(engine, kind, item.clone()) {
+        return Some(saved);
+    }
+    if let Some(saved) = super::moderation_settings::save_external(engine, kind, item.clone()) {
+        return Some(saved);
+    }
+    if let Some(saved) = super::moderation::save_external(engine, kind, item.clone()) {
+        return Some(saved);
+    }
     if let Some(saved) = super::polls::save_external(engine, kind, item.clone()) {
         return Some(saved);
     }
@@ -1431,7 +1502,11 @@ pub fn save_external(
         return Some(save_quote(engine, item_id, item));
     }
     if kind == "user_group" {
-        return Some(add_group(engine, &item));
+        return Some(if item_id.is_empty() {
+            add_group(engine, &item)
+        } else {
+            rename_group(engine, item_id, &item)
+        });
     }
     let id = kind.strip_prefix(PLUGIN_SETTINGS)?;
     let mut settings = item;
@@ -1775,6 +1850,34 @@ mod tests {
             engine.group_users(&id, &[who], true);
             let model = read(&engine, "groups").unwrap();
             assert_eq!(model["tables"][0]["rows"][0]["cells"][0], "Mods");
+            assert!(model["tables"][0]["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|action| action == "edit"));
+            let edit_form = external_form(&engine, "user_group", &id).unwrap().unwrap();
+            assert_eq!(edit_form["title"], tr("btn.rename_group"));
+            assert_eq!(edit_form["fields"][0]["value"], "Mods");
+            assert_eq!(edit_form["json"], false);
+            assert!(save_external(
+                &engine,
+                "user_group",
+                &id,
+                json!({"name": "  "}).as_object().unwrap().clone(),
+            )
+            .unwrap()
+            .is_err());
+            let saved = save_external(
+                &engine,
+                "user_group",
+                &id,
+                json!({"name": "VIPs"}).as_object().unwrap().clone(),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(saved["saved"], id);
+            let renamed_model = read(&engine, "groups").unwrap();
+            assert_eq!(renamed_model["tables"][0]["rows"][0]["cells"][0], "VIPs");
             let members = group_members(&engine, &id).unwrap();
             let member = members["tables"][0]["rows"][0]["id"].as_str().unwrap().to_owned();
             assert!(member.starts_with(&format!("{id}|twitch")));
@@ -1951,9 +2054,15 @@ mod tests {
             .unwrap();
         assert_eq!(restore["label"], tr("backups.restore_restart"));
         assert_eq!(model["guide"], tr("backups.restore_scope"));
+        // The scope note sits under the buttons, as a caption; no table has a fixed height in px.
+        assert_eq!(model["guideBelow"], true);
+        assert!(model["tableHeight"].is_null());
         let model = crashes();
         assert_eq!(model["detail"], "");
         assert_eq!(model["selectFirst"], true);
+        assert_eq!(model["tableRows"], 6);
+        assert_eq!(model["detailMono"], true);
+        assert!(model["tableHeight"].is_null());
     }
 
     #[test]

@@ -41,6 +41,10 @@ pub const T_KICK_SEVENTV_EMOTE_REMOVED: u32 = 35022;
 pub const T_KICK_VIEWER_COUNT_UPDATE: u32 = 35023;
 pub const T_KICK_REWARD_REDEMPTION: u32 = 35024;
 pub const T_KICK_KICKS_GIFTED: u32 = 35025;
+pub const T_KICK_MESSAGE_DELETED: u32 = 35028;
+pub const T_KICK_CHAT_MODE_CHANGED: u32 = 35029;
+pub const T_KICK_MESSAGE_PINNED: u32 = 35030;
+pub const T_KICK_MESSAGE_UNPINNED: u32 = 35031;
 
 thread_local! {
     /// The channel's rewards by id (Kick's own shape), as last read.
@@ -167,8 +171,18 @@ pub enum KickCmd {
         reason: String,
         resp: oneshot::Sender<Result<(), String>>,
     },
+    BanUserId {
+        user_id: u64,
+        duration: Option<u64>,
+        reason: String,
+        resp: oneshot::Sender<Result<(), String>>,
+    },
     UnbanUser {
         user_login: String,
+        resp: oneshot::Sender<Result<(), String>>,
+    },
+    UnbanUserId {
+        user_id: u64,
         resp: oneshot::Sender<Result<(), String>>,
     },
     TimeoutUser {
@@ -179,6 +193,10 @@ pub enum KickCmd {
     },
     UnTimeoutUser {
         user_login: String,
+        resp: oneshot::Sender<Result<(), String>>,
+    },
+    DeleteMessage {
+        message_id: String,
         resp: oneshot::Sender<Result<(), String>>,
     },
     GetStatus(oneshot::Sender<KickStatus>),
@@ -324,6 +342,19 @@ impl KickHandle {
         resp_rx.await.map_err(|_| "Request cancelled".to_string())?
     }
 
+    pub async fn ban_user_id(&self, user_id: u64, duration: Option<u64>, reason: &str) -> Result<(), String> {
+        let (resp, rx) = oneshot::channel();
+        self.tx
+            .send(KickCmd::BanUserId {
+                user_id,
+                duration,
+                reason: reason.to_string(),
+                resp,
+            })
+            .map_err(|_| "Kick runner is down".to_string())?;
+        rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
     pub async fn unban_user(&self, user_login: &str) -> Result<(), String> {
         let (resp_tx, resp_rx) = oneshot::channel();
         self.tx
@@ -333,6 +364,14 @@ impl KickHandle {
             })
             .map_err(|_| "Kick runner is down".to_string())?;
         resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    pub async fn unban_user_id(&self, user_id: u64) -> Result<(), String> {
+        let (resp, rx) = oneshot::channel();
+        self.tx
+            .send(KickCmd::UnbanUserId { user_id, resp })
+            .map_err(|_| "Kick runner is down".to_string())?;
+        rx.await.map_err(|_| "Request cancelled".to_string())?
     }
 
     pub async fn timeout_user(&self, user_login: &str, duration: u64, reason: &str) -> Result<(), String> {
@@ -353,6 +392,17 @@ impl KickHandle {
         self.tx
             .send(KickCmd::UnTimeoutUser {
                 user_login: user_login.to_string(),
+                resp: resp_tx,
+            })
+            .map_err(|_| "Kick runner is down".to_string())?;
+        resp_rx.await.map_err(|_| "Request cancelled".to_string())?
+    }
+
+    pub async fn delete_message(&self, message_id: &str) -> Result<(), String> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.tx
+            .send(KickCmd::DeleteMessage {
+                message_id: message_id.to_string(),
                 resp: resp_tx,
             })
             .map_err(|_| "Kick runner is down".to_string())?;
@@ -484,6 +534,17 @@ impl Runner {
                     let res = self.unban_user_api(&user_login).await;
                     let _ = resp.send(res);
                 }
+                KickCmd::UnbanUserId { user_id, resp } => {
+                    let _ = resp.send(self.unban_user_id_api(user_id).await);
+                }
+                KickCmd::BanUserId {
+                    user_id,
+                    duration,
+                    reason,
+                    resp,
+                } => {
+                    let _ = resp.send(self.ban_user_id_api(user_id, duration, &reason).await);
+                }
                 KickCmd::TimeoutUser {
                     user_login,
                     duration,
@@ -495,6 +556,10 @@ impl Runner {
                 }
                 KickCmd::UnTimeoutUser { user_login, resp } => {
                     let res = self.untimeout_user_api(&user_login).await;
+                    let _ = resp.send(res);
+                }
+                KickCmd::DeleteMessage { message_id, resp } => {
+                    let res = delete_message(&self.engine, &self.cfg, &message_id).await;
                     let _ = resp.send(res);
                 }
                 KickCmd::GetStatus(resp) => {
@@ -687,6 +752,18 @@ impl Runner {
         api(&token, "POST", "/moderation/bans", Some(body)).await.map(drop)
     }
 
+    async fn ban_user_id_api(&self, user_id: u64, seconds: Option<u64>, reason: &str) -> Result<(), String> {
+        let token = token(&self.engine, &self.cfg, false, false).await?;
+        let mut body = json!({"broadcaster_user_id": self.broadcaster_id(&token).await?, "user_id": user_id});
+        if let Some(seconds) = seconds {
+            body["duration"] = json!(seconds.div_ceil(60).clamp(1, 10080));
+        }
+        if !reason.is_empty() {
+            body["reason"] = json!(reason.chars().take(100).collect::<String>());
+        }
+        api(&token, "POST", "/moderation/bans", Some(body)).await.map(drop)
+    }
+
     async fn ban_user_api(&self, user_login: &str, reason: &str) -> Result<(), String> {
         self.ban(user_login, None, reason).await
     }
@@ -703,6 +780,12 @@ impl Runner {
             "broadcaster_user_id": self.broadcaster_id(&token).await?,
             "user_id": self.user_id(&token, user_login).await?,
         });
+        api(&token, "DELETE", "/moderation/bans", Some(body)).await.map(drop)
+    }
+
+    async fn unban_user_id_api(&self, user_id: u64) -> Result<(), String> {
+        let token = token(&self.engine, &self.cfg, false, false).await?;
+        let body = json!({"broadcaster_user_id": self.broadcaster_id(&token).await?, "user_id": user_id});
         api(&token, "DELETE", "/moderation/bans", Some(body)).await.map(drop)
     }
 
@@ -1580,7 +1663,36 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
     let now = || crate::fmt::date(&crate::fmt::now(), "o");
     // The Pusher event names, with and without their PHP namespace.
     match event.trim_start_matches("App\\Events\\") {
-        "ChatroomUpdatedEvent" => engine.set_chat_modes("kick", kick_chat_modes(&data)),
+        "ChatroomUpdatedEvent" => {
+            let modes = kick_chat_modes(&data);
+            engine.set_chat_modes("kick", modes);
+            let enabled = |key: &str| data[key].as_bool().or_else(|| data[key]["enabled"].as_bool());
+            if let Some(m) = modes {
+                args.insert("emoteMode".into(), m.emote_only.into());
+                args.insert("slowMode".into(), m.slow_seconds.is_some().into());
+                args.insert("slowModeInterval".into(), m.slow_seconds.unwrap_or(0).into());
+            } else {
+                if let Some(v) = enabled("emotes_mode") {
+                    args.insert("emoteMode".into(), v.into());
+                }
+                if let Some(v) = enabled("slow_mode") {
+                    args.insert("slowMode".into(), v.into());
+                }
+            }
+            if let Some(v) = enabled("subscribers_mode") {
+                args.insert("subscribersMode".into(), v.into());
+            }
+            if let Some(v) = enabled("followers_mode") {
+                args.insert("followersMode".into(), v.into());
+            }
+            kick(
+                engine,
+                T_KICK_CHAT_MODE_CHANGED,
+                "KickChatModeChanged",
+                "ChatModeChanged",
+                &args,
+            );
+        }
         "ChatMessageEvent" => {
             let content = data["content"].as_str().unwrap_or("").to_string();
             let msg_id = data["id"].as_str().unwrap_or("").to_string();
@@ -1765,6 +1877,11 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
                 .unwrap_or("")
                 .to_string();
             let cat = category(l);
+            crate::core::stream::pushed(
+                "kick",
+                Some(&title).filter(|t| !t.is_empty()).map(String::as_str),
+                cat.1.as_str(),
+            );
             let (old_title, old_cat) = STREAM.with_borrow_mut(|s| {
                 let old = (
                     std::mem::replace(&mut s.0, title.clone()),
@@ -1860,18 +1977,63 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
         }
         "PinnedMessageCreatedEvent" => {
             if let Some(p) = kick_pin(&data) {
+                args.insert("messageId".into(), p.msg_id.clone().into());
+                args.insert("user".into(), p.user.clone().into());
+                args.insert("message".into(), p.text.clone().into());
+                args.insert("pinnedBy".into(), p.by.clone().into());
+                if let Some(uid) = data.pointer("/message/sender/id").and_then(Value::as_u64) {
+                    args.insert("userId".into(), uid.into());
+                }
+                if let Some(dur) = data["duration"]
+                    .as_u64()
+                    .or_else(|| data["duration"].as_str().and_then(|s| s.parse().ok()))
+                {
+                    args.insert("duration".into(), dur.into());
+                }
                 engine.chat_pinned(p);
+                kick(
+                    engine,
+                    T_KICK_MESSAGE_PINNED,
+                    "KickMessagePinned",
+                    "MessagePinned",
+                    &args,
+                );
             }
         }
-        "PinnedMessageDeletedEvent" => engine.chat_unpinned("kick", ""),
+        "PinnedMessageDeletedEvent" => {
+            engine.chat_unpinned("kick", "");
+            if let Some(id) = data.pointer("/message/id").and_then(Value::as_str) {
+                args.insert("messageId".into(), id.into());
+            }
+            kick(
+                engine,
+                T_KICK_MESSAGE_UNPINNED,
+                "KickMessageUnpinned",
+                "MessageUnpinned",
+                &args,
+            );
+        }
         "MessageDeletedEvent" => {
-            engine.chat_remove(
-                "kick",
-                data.pointer("/message/id").and_then(Value::as_str).unwrap_or(""),
-                "",
+            let msg_id = data.pointer("/message/id").and_then(Value::as_str).unwrap_or("");
+            engine.chat_remove("kick", msg_id, "");
+            args.insert("messageId".into(), msg_id.into());
+            if let Some(deleted_by) = data
+                .pointer("/deleted_by/username")
+                .or_else(|| data.pointer("/moderator/username"))
+                .and_then(Value::as_str)
+            {
+                args.insert("deletedBy".into(), deleted_by.into());
+            }
+            kick(
+                engine,
+                T_KICK_MESSAGE_DELETED,
+                "KickMessageDeleted",
+                "MessageDeleted",
+                &args,
             );
         }
         "UserBannedEvent" => {
+            crate::core::moderation::kick_ban_event(engine, channel, &data);
             let id = &data["user"]["id"];
             engine.chat_remove(
                 "kick",
@@ -1890,10 +2052,22 @@ pub fn handle_kick_event(engine: &Rc<Engine>, channel: &str, event: &str, data_v
             args.insert("expiresAt".into(), data["expires_at"].clone());
             if data["permanent"] == true {
                 kick(engine, T_KICK_USER_BANNED, "KickUserBanned", "UserBanned", &args);
+                crate::core::moderation::emit_linked_moderation_event(
+                    engine,
+                    "kick",
+                    crate::core::moderation::LinkedModerationEvent::Banned,
+                    &args,
+                );
             } else {
                 // Pusher gives minutes; Streamer.bot's duration is seconds.
                 args.insert("duration".into(), (data["duration"].as_u64().unwrap_or(0) * 60).into());
                 kick(engine, T_KICK_USER_TIMED_OUT, "KickUserTimedOut", "UserTimedOut", &args);
+                crate::core::moderation::emit_linked_moderation_event(
+                    engine,
+                    "kick",
+                    crate::core::moderation::LinkedModerationEvent::TimedOut,
+                    &args,
+                );
             }
         }
         "KicksGifted" | "KicksGiftedEvent" => {

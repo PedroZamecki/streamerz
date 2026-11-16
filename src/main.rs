@@ -22,6 +22,7 @@ mod edit;
 mod emote_events;
 mod emotes;
 pub mod engine;
+pub mod error;
 mod examples;
 pub mod fileio;
 mod fmt;
@@ -221,6 +222,12 @@ pub struct Config {
     /// YouTube configuration.
     #[serde(default)]
     pub youtube: youtube::YouTubeConfig,
+    /// YouTube does not offer a ban-list API; these are bans created by this installation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub youtube_moderation_bans: Vec<core::moderation::YouTubeBan>,
+    /// Accounts explicitly linked by the user for cross-platform moderation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub moderation_links: Vec<core::moderation::LinkedPerson>,
     /// Spotify is opt-in and makes requests only when used.
     #[serde(default)]
     pub spotify: spotify::SpotifyConfig,
@@ -242,6 +249,9 @@ pub struct Config {
     /// Plugins by id (their file's name): on or off, and their settings.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub plugins: std::collections::BTreeMap<String, engine::plugins::PluginConfig>,
+    /// Per-output platform override and preflight requirement for discovered OBS streaming outputs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub obs_output_prefs: Vec<core::outputs::ObsOutputPref>,
     /// How the window shows dates and times (.NET patterns); empty follows the system.
     #[serde(skip_serializing_if = "String::is_empty")]
     date_format: String,
@@ -289,6 +299,8 @@ impl Default for Config {
             slobs: slobs::Settings::default(),
             kick: kick::KickConfig::default(),
             youtube: youtube::YouTubeConfig::default(),
+            youtube_moderation_bans: Vec::new(),
+            moderation_links: Vec::new(),
             spotify: spotify::SpotifyConfig::default(),
             tiktok: tiktok::TikTokConfig::default(),
             donations: donations::DonationsConfig::default(),
@@ -297,6 +309,7 @@ impl Default for Config {
             updates: update::Updates::default(),
             notifications: notify::Settings::default(),
             plugins: Default::default(),
+            obs_output_prefs: Vec::new(),
             date_format: String::new(),
             time_format: String::new(),
             rest: Map::new(),
@@ -548,6 +561,10 @@ pub fn set_debug_log(on: bool) {
     DEBUG_LOG.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+pub fn debug_log() -> bool {
+    DEBUG_LOG.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// What the window and tray show. Shared by the tasks.
 struct Status {
     /// The last LOG_LINES log lines (level, when in unix seconds, text), and how many were ever logged
@@ -618,51 +635,7 @@ fn log_tail_try(n: usize) -> Vec<String> {
 /// Print and keep for the window's log.
 /// Hide credentials a log line may carry (error bodies, URLs): the value after each marker.
 fn redact(line: &str) -> String {
-    const MARKERS: &[&str] = &[
-        "access_token",
-        "refresh_token",
-        "accesstoken",
-        "refreshtoken",
-        "client_secret",
-        "id_token",
-        "sessionid",
-        "token=",
-        "Bearer ",
-        "password",
-    ];
-    let lower = line.to_ascii_lowercase();
-    let mut cuts: Vec<(usize, usize)> = Vec::new();
-    for m in MARKERS {
-        let m = m.to_ascii_lowercase();
-        let mut from = 0;
-        while let Some(i) = lower[from..].find(&m) {
-            let mut j = from + i + m.len();
-            let b = line.as_bytes();
-            while j < b.len() && matches!(b[j], b'"' | b'\'' | b':' | b'=' | b' ') {
-                j += 1;
-            }
-            let start = j;
-            while j < b.len() && (b[j].is_ascii_alphanumeric() || b"._~+/-%=".contains(&b[j])) {
-                j += 1;
-            }
-            if j > start {
-                cuts.push((start, j));
-            }
-            from = j.max(from + i + 1);
-        }
-    }
-    cuts.sort_unstable();
-    let mut out = String::with_capacity(line.len());
-    let mut at = 0;
-    for (a, b) in cuts {
-        if a >= at {
-            out.push_str(&line[at..a]);
-            out.push_str("***");
-            at = b;
-        }
-    }
-    out.push_str(&line[at..]);
-    out
+    error::redact(line)
 }
 
 /// Logs `line` at `level`: printed, written to the log file, and kept for the Log page.
@@ -671,13 +644,16 @@ fn log(level: Level, line: String) {
         return;
     }
     let line = redact(&line);
-    if level == Level::Error {
+    if matches!(level, Level::Error | Level::Fatal) {
         engine::record_error(&line);
     }
     if !QUIET.load(std::sync::atomic::Ordering::Relaxed) {
         let _ = writeln!(std::io::stdout(), "[{}] {line}", level.tag());
     }
     crash::line(level, &line);
+    if level >= Level::Error {
+        crash::flush_log();
+    }
     CAPTURE.with_borrow_mut(|c| {
         if let Some(c) = c {
             c.push(line.clone());
@@ -691,6 +667,16 @@ fn log(level: Level, line: String) {
         s.logged += 1;
     });
     host::logged();
+}
+
+/// Log a message sent by the UI process under a distinct `[UI]` prefix.
+pub fn log_ui(level: Level, line: String) {
+    log(level, format!("[UI] {line}"));
+}
+
+/// Log a fatal UI crash event under `[FATAL] [UI]`.
+pub fn fatal_ui(line: String) {
+    log(Level::Fatal, format!("[UI] {line}"));
 }
 
 /// Something that happened, worth knowing.
@@ -711,6 +697,11 @@ fn warn(line: String) {
 /// Something failed: what was asked wasn't done.
 fn error(line: String) {
     log(Level::Error, line);
+}
+
+/// Log a structured `StreamerzError` using the shared error pattern.
+pub fn report_error(err: &error::StreamerzError) {
+    log(Level::Error, err.format_log());
 }
 
 /// Asked to end (logout, shutdown, `kill`, Ctrl+C): saves and quits like Quit does, so the next start
@@ -987,9 +978,13 @@ fn save(c: &Config) -> std::io::Result<()> {
 }
 
 fn save_value(v: serde_json::Value) -> std::io::Result<()> {
-    let r = write_value(&config_path(), v);
+    let path = config_path();
+    let r = write_value(&path, v);
     if let Err(e) = &r {
-        error(format!("can't save streamerz.json ({e})"));
+        let err = error::StreamerzError::config_save(&display_config_path(&path), &e.to_string());
+        error::record_active("config.save", err);
+    } else {
+        error::clear_active("config.save");
     }
     r
 }
@@ -1049,33 +1044,50 @@ fn wait_on_saves(queue: &Mutex<SaveQueue>, done: &std::sync::Condvar) {
     drop(done.wait_while(state, |q| q.busy).unwrap_or_else(|e| e.into_inner()));
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CorruptedConfig {
+    path: String,
+    detail: String,
+    recovered_backup: bool,
+}
+
 /// The config, else its `.bak`, else the defaults. Written back, so new settings show up in the
-/// file; an invalid file is left alone.
-fn load_from(path: &Path) -> Config {
-    let read = |p: &Path| {
-        std::fs::read_to_string(p).map(|s| {
-            serde_json::from_str::<serde_json::Value>(&s).and_then(|mut v| {
-                secrets::open(&mut v);
-                serde_json::from_value::<Config>(v)
-            })
-        })
+/// file; an invalid or unreadable file is left alone and reported as a `StreamerzError`.
+fn load_from_with_report(path: &Path) -> (Config, Option<CorruptedConfig>) {
+    enum ReadConfigError {
+        Io(std::io::Error),
+        Parse(serde_json::Error),
+    }
+    let read = |p: &Path| -> Result<Config, ReadConfigError> {
+        let text = std::fs::read_to_string(p).map_err(ReadConfigError::Io)?;
+        let mut value = serde_json::from_str::<serde_json::Value>(&text).map_err(ReadConfigError::Parse)?;
+        secrets::open(&mut value);
+        serde_json::from_value::<Config>(value).map_err(ReadConfigError::Parse)
+    };
+    let recover = |detail: String| -> (Config, Option<CorruptedConfig>) {
+        let report = |recovered_backup| CorruptedConfig {
+            path: display_config_path(path),
+            detail: detail.clone(),
+            recovered_backup,
+        };
+        match read(&with(path, ".bak")) {
+            Ok(mut backup) => {
+                backup.own_channels();
+                usergroups::migrate(&mut backup.groups);
+                warn("using its .bak, the previous version".into());
+                (backup, Some(report(true)))
+            }
+            Err(_) => {
+                warn("using the defaults".into());
+                (Config::default(), Some(report(false)))
+            }
+        }
     };
     let mut c = match read(path) {
-        Ok(Ok(c)) => c,
-        Err(_) => Config::default(),
-        Ok(Err(e)) => {
-            error(format!("{} is invalid ({e})", path.display()));
-            return match read(&with(path, ".bak")) {
-                Ok(Ok(c)) => {
-                    warn("using its .bak, the previous version".into());
-                    c
-                }
-                _ => {
-                    warn("using the defaults".into());
-                    Config::default()
-                }
-            };
-        }
+        Ok(c) => c,
+        Err(ReadConfigError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
+        Err(ReadConfigError::Io(e)) => return recover(e.to_string()),
+        Err(ReadConfigError::Parse(e)) => return recover(e.to_string()),
     };
     c.own_channels();
     usergroups::migrate(&mut c.groups);
@@ -1087,7 +1099,17 @@ fn load_from(path: &Path) -> Config {
         }
     }
     let _ = save_to(path, &c);
-    c
+    (c, None)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn load_from(path: &Path) -> Config {
+    let (config, corrupt) = load_from_with_report(path);
+    if let Some(corrupt) = corrupt {
+        let err = error::StreamerzError::corrupted_config(&corrupt.path, &corrupt.detail, corrupt.recovered_backup);
+        error::record_active("config.corrupted", err);
+    }
+    config
 }
 
 /// Start with Windows: a value under the user's Run registry key.
@@ -1337,6 +1359,7 @@ fn main() {
     if std::env::args_os().any(|arg| arg == "--frontend") {
         if let Err(error) = streamerz_frontend::run() {
             eprintln!("Streamerz frontend: {error}");
+            std::process::exit(1);
         }
         return;
     }
@@ -1374,8 +1397,9 @@ fn main() {
         match lock {
             Ok(lock) => Some(lock),
             Err(e) => {
-                // Already running (in the tray, most likely): bring its window up instead of nothing.
-                if !instance::show_running(&resolve_config_path(path.clone())) {
+                // Already running (in the tray, most likely): bring its window up unless started with --hidden.
+                if !args.iter().any(|a| a == "--hidden") && !instance::show_running(&resolve_config_path(path.clone()))
+                {
                     eprintln!("Streamerz could not acquire its instance lock: {e}");
                 }
                 return;
@@ -1442,7 +1466,7 @@ fn main() {
     // The pictures overlay pages may use are the window's own: handed over here, where both meet.
     overlays::pictures(streamerz_frontend::asset);
     backup::on_start();
-    let mut cfg = load_from(&config_path());
+    let (mut cfg, corrupt_config) = load_from_with_report(&config_path());
     tiktok_bridge::restore_pairing(&mut cfg);
     MEMORY_SAVER.store(cfg.memory_saver, std::sync::atomic::Ordering::Relaxed);
     cleanup_first_words();
@@ -1504,14 +1528,24 @@ fn main() {
     }
     notify::configure(cfg.notifications);
     i18n::set(&cfg.locale);
+    if let Some(corrupt) = corrupt_config {
+        let err = error::StreamerzError::corrupted_config(&corrupt.path, &corrupt.detail, corrupt.recovered_backup);
+        error::record_active("config.corrupted", err);
+    }
     set_debug_log(cfg.debug_log);
     fmt::set_shown_as(&cfg.date_format, &cfg.time_format);
     say(format!("config: {}", display_config_path(&config_path())));
     // ponytail: one runtime thread is plenty for a few sockets, and lighter than one per core.
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
+    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => {
+            let err = error::StreamerzError::unexpected(format!("Could not start async runtime: {e}"));
+            report_error(&err);
+            eprintln!("Streamerz: {err}");
+            cleanup_dev();
+            return;
+        }
+    };
     let (shell_tx, mut shell_rx) = tokio::sync::mpsc::unbounded_channel();
     let tray_sender = {
         let sender = shell_tx.clone();
@@ -1734,6 +1768,8 @@ mod tests {
 
     #[test]
     fn save_keeps_bak_and_unknown_fields() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::error::clear_all_active_for_test();
         let dir = std::env::temp_dir().join(format!("streamerz-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("streamerz.json");
@@ -1751,6 +1787,48 @@ mod tests {
         std::fs::write(&path, "{broken").unwrap();
         assert!(!load_from(&path).dark);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{broken");
+        crate::error::clear_all_active_for_test();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn corrupted_config_sets_structured_error_with_bak_and_io_error_recovery() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::error::clear_all_active_for_test();
+        let dir = std::env::temp_dir().join(format!("streamerz-corrupt-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("streamerz.json");
+
+        // 1. JSON parse corruption with a valid .bak recovers backup and records active error.
+        std::fs::write(&path, r#"{"dark":false}"#).unwrap();
+        let _ = load_from(&path);
+        std::fs::write(&path, "{broken json").unwrap();
+        let recovered = load_from(&path);
+        assert!(!recovered.dark);
+        let active = crate::error::active_list();
+        let entry = active
+            .iter()
+            .find(|item| item.key == "config.corrupted")
+            .expect("config.corrupted recorded");
+        assert_eq!(entry.error.code, "config.corrupted");
+        assert!(entry.error.description.contains(".bak"));
+        assert!(!entry.error.recommendation.is_empty());
+        assert_eq!(entry.error.action.as_ref().unwrap().target, "Backups");
+
+        // 2. Non-UTF8 IO read error without .bak falls back to defaults and preserves damaged bytes.
+        let io_dir = dir.join("no-bak");
+        std::fs::create_dir_all(&io_dir).unwrap();
+        let io_path = io_dir.join("streamerz.json");
+        std::fs::write(&io_path, b"\xff\xfe\xfd").unwrap();
+        let (cfg, report) = load_from_with_report(&io_path);
+        assert!(cfg.dark);
+        let report = report.expect("corrupted report");
+        assert!(!report.recovered_backup);
+        assert!(!report.detail.is_empty());
+        assert_eq!(std::fs::read(&io_path).unwrap(), b"\xff\xfe\xfd");
+
+        crate::error::clear_all_active_for_test();
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

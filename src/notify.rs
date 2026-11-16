@@ -43,6 +43,11 @@ pub fn send(kind: Kind, title: &str, body: &str) {
     if !enabled(kind) {
         return;
     }
+    critical(title, body);
+}
+
+/// Shows a critical notification regardless of category toggles (e.g., UI crash recovery).
+pub fn critical(title: &str, body: &str) {
     let (title, body) = (title.to_string(), body.to_string());
     tokio::task::spawn_local(async move {
         if let Err(e) = show(&title, &body).await {

@@ -64,6 +64,7 @@ pub fn supports(domain: &str) -> bool {
         || super::pages::supports(domain)
         || super::overlays::supports(domain)
         || super::polls::supports(domain)
+        || super::moderation::supports(domain)
         || super::stream::supports(domain)
         || super::sections::supports(domain)
 }
@@ -78,7 +79,8 @@ fn note_page(domain: &str) {
     if !is_page {
         return;
     }
-    crate::host::set_viewers_visible(domain == "chat");
+    // The Chat and Stream pages show viewer counts: the platforms are asked for them while one is open.
+    crate::host::set_viewers_visible(matches!(domain, "chat" | "stream"));
     thread_local! {
         static SHOWN: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
     }
@@ -136,6 +138,9 @@ pub fn read_request(engine: &Rc<Engine>, request: &Value) -> Result<Value, Strin
 }
 
 pub fn read(engine: &Rc<Engine>, domain: &str) -> Result<Value, String> {
+    if super::moderation::supports(domain) {
+        return super::moderation::read(engine);
+    }
     if super::overlays::supports(domain) {
         return super::overlays::read(engine, domain);
     }

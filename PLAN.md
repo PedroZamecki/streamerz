@@ -1,5 +1,16 @@
 # Streamerz plan
 
+## Moderation workspace
+
+See `docs/MODERATION-FEASIBILITY.md` for platform capabilities and verification gaps. Show the source and completeness of each list; never present observed history as a complete platform list. Keep platform operations in the core and expose them through MCP. The shared Show selector displays one moderation section at a time, keeping review queues, protection settings and linked accounts reachable without scrolling through every list.
+
+- [x] Add Twitch bans and timeouts, AutoMod review, unban requests, suspicious users and supported protection settings, using the documented APIs and EventSub.
+- [ ] Add Kick moderation actions and available activity, and investigate authenticated access to its dashboard lists and settings.
+- [x] Add YouTube moderation actions and locally known bans, preserving ban IDs and marking incomplete history.
+- [ ] Verify TikTok's authenticated LIVE moderation lists and actions, and integrate the verified capabilities through the browser bridge.
+- [x] Add explicitly linked platform identities and selected cross-platform actions with individual results.
+- [ ] Build the moderation workspace with shared controls, verify narrow and wide screenshots, test MCP and real services where available, and record results.
+
 Streamerz is a light stream automation app in Rust, built like songrequestz and tikstream: one small exe, GPUI window + tray,
 ~nothing idle. Same model as Streamer.bot (actions made of sub-actions, fired by triggers, with
 variables, commands, timers and queues), same data format (imports Streamer.bot exports, reads its
@@ -839,3 +850,73 @@ OBS settings and local destinations.
   and RTMP runtime objects. Linux tests, Windows type-check, workflow lint and audit pass (audit has
   eight maintenance warnings). The history scan records exact fingerprints for three already-redacted
   legacy benchmark commits; new paths and all credentials remain blocked, with eight regression tests.
+
+## Version 1.9.0: Stream page study and rework
+
+The study and its findings are in [docs/STREAM-PAGE.md](docs/STREAM-PAGE.md).
+
+- [x] Study what Twitch, Kick, YouTube and TikTok let the page read and change, at what cost and how
+  fresh, against the real channels.
+- [x] Live state on every card (since when, viewers), Ads, snooze, marker and clip off while off air.
+- [x] Titles, categories and lives pushed by Twitch and Kick update the page at once; platforms read
+  and changed side by side; YouTube through the Data API with description, tags, category, privacy
+  and stream health, paced for quota.
+- [x] Kick tags from the live and its missing ads permission said; TikTok's title from the room.
+- [x] Unchanged values aren't sent again.
+- [x] Tests on real platform answers, `platform_api` (MCP) and `dev/stream-check.mjs` against the
+  real channels.
+- [x] Expand the editors: YouTube category/privacy; Twitch language, branded content and editable
+  content labels. Preserve unrelated metadata and skip unchanged options. Add a combined live/viewer
+  summary and an Accounts route for Kick's ads permission notice.
+- [x] UI crashes are visible: renderer logs and panics reach the unified log, the window restores itself
+  (twice a minute at most) with a banner, and a crash loop pauses. Every failure is a `StreamerzError`
+  with title, description and recommendations, shown by one shared control ([docs/ERRORS.md](docs/ERRORS.md)).
+- [ ] Owner live acceptance on each platform (`dev/stream-check.mjs` and the checklist in
+  `docs/TESTING.md`), deferred at the owner's request. The owner will record the results after testing.
+- [ ] Measure hidden RSS and idle CPU with Twitch and OBS connected before closing the version.
+
+## Version 1.10.0: Overlay editor, sounds and voices
+
+The design, with the costs, codes and open questions, is in [docs/STUDIO_PLAN.md](docs/STUDIO_PLAN.md).
+Nothing loads until it is used: no thread, device, browser or download for someone who never uses it.
+
+- [ ] 1. The overlay page: the Overlays list opens an overlay's own page (Back to the list), with the
+  preview beside the tabs (Settings, Test, Media, Live, Alerts, Code) wide and above them narrow; a core
+  view (`overlay:<group>`) for MCP.
+- [ ] 2. Live preview: a headless Chromium streaming frames only on repaint (`Page.startScreencast`) while
+  the preview is on screen, clicks and keys passed on, backgrounds (see-through, dark, light, a picture,
+  the OBS scene once), Open preview in browser; closed when hidden.
+- [ ] 3. Drafts: every settings change goes to preview pages at once (reloading pages that don't use
+  `onSettings`), Save sends it to OBS, Revert drops it, leaving asks; Show on OBS while I edit.
+- [ ] 4. Test tab: any event or trigger with an editable, made-up form; bursts; this overlay, every
+  overlay or as a real event (`isTest`); saved sequences in `template.test`; replay of real events;
+  topics, countdowns and songs; what the page logged.
+- [ ] 5. Media tab and `controls/media.rs`: thumbnails, GIFs, video pictures, sounds with Play and a
+  waveform, fonts, Used by, Add by Browse or drop, Rename that follows, Replace, Delete that warns.
+- [ ] 6. Setting kinds: `date`, `time`, `datetime`, duration `presets`, `range`, `percent`, `position`,
+  `size`, `animation`, `easing`, `gradient`, `textStyle`, `sound`, `event`, `reward`, `gift`,
+  `usergroup`, `scene`, `source`, `code`, `json`, `button`, `hidden`, previews on `file`; Extra CSS;
+  `streamerz.place`, `animate`, `css`.
+- [ ] 7. Live controls: `meta.template.controls`, `streamerz.control`, the Live tab, a controls dock page,
+  Set Overlay Control (99881) and Overlay Control Changed (99881), MCP `overlay_control`.
+- [ ] 8. Sound player in the core (Symphonia and cpal or rodio, measured): opened on the first sound,
+  closed after the last, mixing, fades, named sounds, a monitor device.
+- [ ] 9. Sound sub-actions: Streamer.bot's 1, 7, 30001, 30002 and Streamerz's 99300 to 99306 (volume,
+  pause, resume, master volume, info, play in an overlay, device); triggers 99300 to 99302.
+- [ ] 10. Sounds page: Playing, Library, Board (and its dock), Voices, Output.
+- [ ] 11. System voices: Windows speech synthesis and Linux `espeak-ng`, through the player.
+- [ ] 12. Neural voices: `streamerz-voice` (sherpa-onnx) built by CI with its hash in Streamerz,
+  downloaded on request; the catalog with sizes, samples and licenses; downloads that resume and check.
+- [ ] 13. Speaking: queue and filters, a voice per viewer, Speak sub-actions 99320 to 99327, triggers
+  99320 and 99321, `streamerz.speak`, the Read chat aloud template.
+- [ ] 14. Make a voice: Mix voices (Kokoro), From a recording (Pocket TTS, with consent, verified
+  first), effects.
+- [ ] 15. Alert box: the runtime page, the queue with merges and controls, rules with conditions, media,
+  sound, voice, layout, animations and code, the Alerts tab editor, Play this rule.
+- [ ] 16. Examples: Alert box, Countdown to, Sound board dock, Read chat aloud, Scene banner; the current
+  ones updated.
+- [ ] 17. MCP and WebSocket for all of it, each with a test; docs (`OVERLAYS.md`, `SOUNDS.md`,
+  `VOICES.md`, `UI.md`, references, `MCP.md`, `TESTING.md`).
+- [ ] 18. Close: unit tests, scenarios, the smoke in English and pt_BR, real sounds and voices on Windows
+  and Linux, the alert box in OBS, hidden RSS and idle CPU before and after (and after a voice is
+  unloaded), Windows check.

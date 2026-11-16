@@ -155,6 +155,33 @@ pub fn sub_label(o: &Obj, names: &Names) -> String {
         35033 => v("tag"),
         43010 => v("title"),
         43011 | 43012 => v("msgId"),
+        582 => {
+            let act = if o.get("action").and_then(Value::as_i64) == Some(1) {
+                "Deny"
+            } else {
+                "Allow"
+            };
+            format!("{act} {}", v("messageId"))
+        }
+        586 => {
+            let act = if o.get("status").and_then(Value::as_i64) == Some(1) {
+                "Deny"
+            } else {
+                "Approve"
+            };
+            format!("{act} {}", v("unbanRequestId"))
+        }
+        588 => {
+            if o.get("status").and_then(Value::as_bool).unwrap_or(true) {
+                "Enable".into()
+            } else {
+                "Disable".into()
+            }
+        }
+        99700..=99703 => v("person"),
+        99704 => v("name"),
+        99705 => v("person"),
+        99706 => v("messageId"),
         _ => o
             .iter()
             .filter(|(k, _)| {
@@ -337,5 +364,31 @@ mod tests {
         let mut sub43011 = edit::new_sub(43011);
         sub43011.insert("msgId".into(), "msg123".into());
         assert_eq!(sub_label(&sub43011, &names), "Pin Comment: msg123");
+
+        let mut sub582 = edit::new_sub(582);
+        sub582.insert("messageId".into(), "m-1".into());
+        sub582.insert("action".into(), serde_json::json!(1));
+        assert_eq!(sub_label(&sub582, &names), "Resolve AutoMod Message: Deny m-1");
+
+        let mut sub586 = edit::new_sub(586);
+        sub586.insert("unbanRequestId".into(), "ub-1".into());
+        sub586.insert("status".into(), serde_json::json!(0));
+        assert_eq!(sub_label(&sub586, &names), "Resolve Unban Request: Approve ub-1");
+
+        let mut sub588 = edit::new_sub(588);
+        sub588.insert("status".into(), serde_json::json!(false));
+        assert_eq!(sub_label(&sub588, &names), "Unique Chat Mode: Disable");
+
+        let mut sub99700 = edit::new_sub(99700);
+        sub99700.insert("person".into(), "Troublemaker".into());
+        assert_eq!(sub_label(&sub99700, &names), "Ban User: Troublemaker");
+
+        let mut sub99704 = edit::new_sub(99704);
+        sub99704.insert("name".into(), "Alex".into());
+        assert_eq!(sub_label(&sub99704, &names), "Link Platform Identity: Alex");
+
+        let mut sub99706 = edit::new_sub(99706);
+        sub99706.insert("messageId".into(), "del-9".into());
+        assert_eq!(sub_label(&sub99706, &names), "Delete Message: del-9");
     }
 }

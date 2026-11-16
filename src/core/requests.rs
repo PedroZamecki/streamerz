@@ -1,7 +1,9 @@
 //! In-flight core requests share the existing runtime and may await host input independently.
 use crate::engine::Engine;
 use futures_util::{future::LocalBoxFuture, stream::FuturesUnordered, StreamExt};
-use serde_json::{json, Value};
+#[cfg(test)]
+use serde_json::json;
+use serde_json::Value;
 use std::rc::Rc;
 
 pub type Call = (Value, tokio::sync::oneshot::Sender<Value>);
@@ -10,7 +12,7 @@ pub struct Requests(FuturesUnordered<LocalBoxFuture<'static, Call>>);
 impl Requests {
     pub fn push(&mut self, engine: Rc<Engine>, (request, reply): Call) {
         if self.0.len() >= 64 {
-            let _ = reply.send(json!({"id": request["id"], "status": "error", "error": "Too many pending requests"}));
+            let _ = reply.send(crate::error::StreamerzError::too_many_requests().to_json_response(&request["id"]));
             return;
         }
         self.0.push(Box::pin(async move {

@@ -29,11 +29,14 @@ def main():
     parser.add_argument("--out", type=Path, default=Path("target/ui-smoke"))
     parser.add_argument("--theme", choices=("dark", "light"), default="dark")
     parser.add_argument("--locale", default="en_US", help="Another language runs only the layout checks (nothing cut off, dialogs reopen)")
+    parser.add_argument("--page", help="Limit layout-only checks to one page")
     parser.add_argument("--layout-only", action="store_true", help="Check page and dialog layouts without the mutation tests")
     parser.add_argument("--wine", action="store_true", help="Run a Windows executable in a dedicated Wine prefix")
     parser.add_argument("--wine-bin", default="wine", help="Wine executable to run a Windows build with")
     parser.add_argument("--wine-prefix", type=Path, default=Path("target/ui-wine"))
     args = parser.parse_args()
+    if args.page and not args.layout_only:
+        parser.error("--page requires --layout-only")
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     smoke.PORT = int(os.environ.get("STREAMERZ_SMOKE_PORT", "8098"))
@@ -43,7 +46,24 @@ def main():
         config = Path(source) / "streamerz"
         config.mkdir()
         # The fixture deliberately has a non-default name, so the handshake also verifies --config.
-        (config / "fixture.json").write_text(json.dumps({"start_hidden": False, "locale": args.locale, "theme": args.theme, "updates": "ignore", "instance_name": name, "websockets": {"port": smoke.PORT}}))
+        (config / "fixture.json").write_text(json.dumps({
+            "start_hidden": False,
+            "locale": args.locale,
+            "theme": args.theme,
+            "updates": "ignore",
+            "instance_name": name,
+            "websockets": {"port": smoke.PORT},
+            "action_groups": {
+                "BrokenOverlay": {
+                    "store": "broken-overlay",
+                    "files": [{"name": "index.html", "size": 0}],
+                    "variables": [
+                        {"name": "volume", "label": "High slider", "kind": "slider", "default": 250, "min": 200, "max": 400, "step": 10},
+                        {"name": "bad", "label": "Broken option", "kind": "non_existent_widget", "default": "x"}
+                    ]
+                }
+            }
+        }))
         env = dict(os.environ, DISPLAY=os.environ.get("DISPLAY", ":99"), XDG_CONFIG_HOME=source, STREAMERZ_DEV="1", STREAMERZ_DEV_PORT=str(smoke.PORT))
         env.pop("WAYLAND_DISPLAY", None)
         if args.wine:
@@ -85,11 +105,11 @@ def main():
                     while ui("pageready") != "true":
                         if time.monotonic() >= deadline: raise RuntimeError(f"page did not load: {name}")
                         time.sleep(.05)
-                def click(label, occurrence=0, role=None, button=1, count=1):
+                def click(label, occurrence=0, role=None, button=1, count=1, min_height=0):
                     deadline = time.monotonic() + 10
                     while time.monotonic() < deadline:
                         found = json.loads(ui("bounds " + label))
-                        matches = [entry for entry in found if entry["label"] == label and entry.get("enabled", True) and (role is None or role in entry["role"])]
+                        matches = [entry for entry in found if entry["label"] == label and entry.get("enabled", True) and (role is None or role in entry["role"]) and entry["h"] >= min_height]
                         if len(matches) > occurrence:
                             entry = matches[occurrence]
                             # A form can recenter after a reply or validation message. Use the current
@@ -168,7 +188,14 @@ def main():
                     return list(dict.fromkeys(result))
                 def native_window(renderer):
                     if not args.wine:
-                        return subprocess.check_output(["xdotool", "search", "--onlyvisible", "--pid", str(renderer)], env=env, text=True).splitlines()[0]
+                        deadline = time.monotonic() + 10
+                        while time.monotonic() < deadline:
+                            found = subprocess.run(["xdotool", "search", "--onlyvisible", "--pid", str(renderer)], env=env, text=True, capture_output=True)
+                            lines = [line for line in found.stdout.splitlines() if line.strip()]
+                            if found.returncode == 0 and lines:
+                                return lines[0]
+                            time.sleep(.05)
+                        raise RuntimeError(f"no visible native window for pid {renderer}")
                     candidates = subprocess.check_output(["xdotool", "search", "--onlyvisible", "--name", "Streamerz"], env=env, text=True).splitlines()
                     usable = []
                     for candidate in candidates:
@@ -209,14 +236,114 @@ def main():
                     if found:
                         shot(f"overflow-{where}")
                         raise AssertionError(f"cut off on {where}: {found}")
+                def footer_close():
+                    close = strings["dialogs.close"]
+                    return [e for e in json.loads(ui("bounds " + close)) if e["label"] == close and e["w"] > 30]
                 def layout_pass():
-                    for page in ("Accounts", "Commands", "Timers", "Files", "Stream Apps", "Servers", "Queues", "Globals", "History", "Backups", "Crashes", "Plugins", "Overlays", "Log", "Settings", "Donations", "MCP", "Groups", "Integrations", "Community", "Polls", "Stream", "Chat", "Actions"):
+                    for page in ("Accounts", "Commands", "Timers", "Files", "Stream Apps", "Servers", "Queues", "Globals", "History", "Backups", "Crashes", "Plugins", "Overlays", "Log", "Settings", "Donations", "MCP", "Groups", "Integrations", "Community", "Moderation", "Polls", "Stream", "Chat", "Actions"):
+                        if args.page and page.casefold() != args.page.casefold():
+                            continue
                         for width, height in ((1100, 800), (540, 700)):
                             resize(width, height)
                             load_page(page)
                             no_overflow(f"{page}-{width}")
+                            if page == "Commands" and args.locale == "en_US":
+                                headers = sorted((e for e in json.loads(ui("bounds ")) if "ColumnHeader" in e["role"]), key=lambda e: e["x"])
+                                assert headers, "Commands table headers missing"
+                                expected_w = width - (176 if width >= 700 else 52) - 32
+                                span = headers[-1]["x"] + headers[-1]["w"] - headers[0]["x"]
+                                assert abs(span - expected_w) <= 2, (width, expected_w, span, headers)
+                            if page == "Moderation" and args.locale == "en_US":
+                                # The Kick buttons were clipped when many list sections shared a page.
+                                deadline = time.monotonic() + 5
+                                while True:
+                                    visible = [entry for entry in json.loads(ui("bounds Ban or timeout"))
+                                               if entry.get("label") == "Ban or timeout" and entry.get("enabled", True)]
+                                    if len(visible) == 1 or time.monotonic() >= deadline:
+                                        break
+                                    time.sleep(.05)
+                                if len(visible) != 1:
+                                    shot(f"moderation-action-missing-{width}")
+                                assert len(visible) == 1, f"Moderation should show one section at {width}px: {visible}"
+                            if page == "Queues" and args.locale == "en_US":
+                                # A table is as tall as its rows: Pending follows the queues, not half a page below.
+                                marks = {entry["label"]: entry for label in ("Default", "Pending") for entry in json.loads(ui("bounds " + label)) if entry.get("label") == label}
+                                assert {"Default", "Pending"} <= marks.keys(), marks
+                                assert marks["Pending"]["y"] - marks["Default"]["y"] < 200, f"blank room between the Queues sections: {marks}"
                             if args.layout_only or args.locale != "en_US" or page == "Accounts":
                                 assert shot(f"{page.lower().replace(' ', '_')}-{width}") == (width, height)
+                            if page == "Commands" and args.locale == "en_US" and width == 540:
+                                resize(1100, 800)
+                                headers = sorted((e for e in json.loads(ui("bounds ")) if "ColumnHeader" in e["role"]), key=lambda e: e["x"])
+                                assert headers, "Commands table headers missing after grow"
+                                span = headers[-1]["x"] + headers[-1]["w"] - headers[0]["x"]
+                                assert abs(span - 892) <= 2, (span, headers)
+                            if page == "Overlays":
+                                click(strings["overlays.btn.examples"])
+                                deadline = time.monotonic() + 10
+                                while not footer_close() and time.monotonic() < deadline:
+                                    time.sleep(.05)
+                                assert footer_close(), f"the Examples dialog did not open at {width}px"
+                                time.sleep(.3)
+                                no_overflow(f"examples-{width}")
+                                add_label = strings["overlays.examples.add"]
+                                obs_label = strings["overlays.btn.add_to_obs"]
+                                add_btns = [e for e in json.loads(ui("bounds " + add_label)) if e["label"] == add_label and "Button" in e["role"]]
+                                obs_btns = [e for e in json.loads(ui("bounds " + obs_label)) if e["label"] == obs_label and "Button" in e["role"]]
+                                close_btn = footer_close()[0]
+                                assert len(add_btns) == 1 and len(obs_btns) == 1, (add_btns, obs_btns)
+                                assert add_btns[0]["w"] > 40 and obs_btns[0]["w"] > 40, (add_btns[0], obs_btns[0])
+                                assert abs(add_btns[0]["y"] - obs_btns[0]["y"]) < 4, (add_btns[0], obs_btns[0])
+                                assert add_btns[0]["y"] + add_btns[0]["h"] < close_btn["y"], (add_btns[0], close_btn)
+                                shot(f"examples-{width}")
+                                if width == 1100:
+                                    search_hint = strings["lists.search"]
+                                    search_boxes = [e for e in json.loads(ui("bounds " + search_hint)) if e["label"] == search_hint and "TextInput" in e["role"]]
+                                    assert search_boxes, "Examples dialog search box missing"
+                                    click(search_hint, occurrence=len(search_boxes) - 1, role="TextInput")
+                                    subprocess.run(["xdotool", "windowfocus", window], env=env, check=True)
+                                    subprocess.run(["xdotool", "type", "--clearmodifiers", "Spotify"], env=env, check=True)
+                                    time.sleep(.2)
+                                    assert any("Now playing" in e.get("label", "") or "Tocando agora" in e.get("label", "") for e in json.loads(ui("bounds "))), "Examples search did not filter to Now playing"
+                                    subprocess.run(["xdotool", "key", "ctrl+a", "BackSpace"], env=env, check=True)
+                                    time.sleep(.2)
+                                entry = footer_close()[0]
+                                subprocess.run(["xdotool", "mousemove", str(round(entry["x"] + entry["w"] / 2)), str(round(entry["y"] + entry["h"] / 2)), "click", "1"], env=env, check=True)
+                                deadline = time.monotonic() + 10
+                                while footer_close() and time.monotonic() < deadline:
+                                    time.sleep(.05)
+                                assert not footer_close(), "Close left the Examples dialog open"
+                            if page == "Stream":
+                                # Open real core forms without connecting accounts or starting a live.
+                                for kind in ("stream_info.twitch", "stream_info.youtube"):
+                                    assert ui("form " + kind) == "ok"
+                                    deadline = time.monotonic() + 10
+                                    while not any("cancel-form" in e.get("path", "") for e in json.loads(ui("bounds "))):
+                                        if time.monotonic() >= deadline:
+                                            raise RuntimeError(f"the {kind} form did not open")
+                                        time.sleep(.05)
+                                    no_overflow(f"{kind}-{width}")
+                                    shot(f"{kind}-{width}")
+                                    click(strings["dialogs.cancel"])
+                            if page == "Moderation":
+                                model = ws.ask({"request": "StreamerzCoreView", "domain": "moderation", "id": "moderation-sections"})
+                                assert model["status"] == "ok", model
+                                options = model["tabs"]["options"]
+                                def select_section(option):
+                                    click(option["label"], role="Tab")
+                                    deadline = time.monotonic() + 10
+                                    while ui("pageready") != "true" or ui("visiblelists") != option["id"]:
+                                        if time.monotonic() >= deadline:
+                                            shot(f"section-not-ready-{option['id']}-{width}")
+                                            raise AssertionError(f"Moderation section did not load: {option['id']}")
+                                        time.sleep(.05)
+                                for option in options:
+                                    select_section(option)
+                                    no_overflow(f"{option['id']}-{width}")
+                                    assert shot(f"{option['id']}-{width}") == (width, height)
+                                select_section(options[0])
+                    if args.page:
+                        return
                     # Every linked action must remain reachable, including beyond the first row.
                     action_names = [f"Layout action {number} with a longer name" for number in range(1, 4)]
                     layout_actions = []
@@ -250,9 +377,6 @@ def main():
                     # Close (that Close once skipped the dialog's cancel, and the page never opened it again).
                     resize(1100, 1000)
                     load_page("Accounts")
-                    close = strings["dialogs.close"]
-                    def footer_close():
-                        return [e for e in json.loads(ui("bounds " + close)) if e["label"] == close and e["w"] > 30]
                     for attempt in range(2):
                         resize(1100 if attempt == 0 else 640, 1000 if attempt == 0 else 900)
                         click(strings["btn.set_up"])
@@ -301,7 +425,7 @@ def main():
                             red, green, blue = captured.convert("RGB").getpixel((width - 3, height // 2))
                             assert (min(red, green, blue) > 200) if args.theme == "light" else (max(red, green, blue) < 80), (args.theme, red, green, blue)
                 # Pages built on the core's table and section models: each loads, draws and keeps its window size.
-                for page in ("Queues", "Globals", "History", "Backups", "Crashes", "Plugins", "Overlays", "Log", "Settings", "Donations", "MCP", "Groups", "Integrations", "Community", "Polls", "Stream", "Chat", "Actions"):
+                for page in ("Queues", "Globals", "History", "Backups", "Crashes", "Plugins", "Overlays", "Log", "Settings", "Donations", "MCP", "Groups", "Integrations", "Community", "Moderation", "Polls", "Stream", "Chat", "Actions"):
                     for width, height in ((1100, 800), (540, 700)):
                         resize(width, height)
                         load_page(page)
@@ -382,6 +506,19 @@ def main():
                 # The header's X is named Close too; a footer's Close button is wider.
                 assert not [e for e in json.loads(ui("bounds Close")) if e["label"] == "Close" and e["w"] > 30], "a Close button under the picker's own"
                 click("Cancel")
+                # Help opens a parsed Markdown notice with structured metadata and zero horizontal overflow.
+                assert ws.ask({"request": "StreamerzCoreAction", "domain": "actions", "action": "trigger_help", "itemId": trigger["saved"], "actionId": opened, "id": "trigger-help"})["status"] == "ok"
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    if [e for e in json.loads(ui("bounds ")) if "prompt-markdown" in e.get("path", "")] and [e for e in json.loads(ui("bounds OK")) if "answer-prompt" in e.get("path", "")]:
+                        break
+                    time.sleep(.05)
+                every = json.loads(ui("bounds "))
+                assert any("prompt-meta" in e.get("path", "") for e in every), "missing help metadata header"
+                assert any("prompt-markdown" in e.get("path", "") for e in every), "missing rendered markdown help body"
+                assert json.loads(ui("overflow")) == [], f"help dialog overflowed: {ui('overflow')}"
+                shot("trigger-help")
+                click("OK")
                 for operation, item in (("sub_toggle", sub["saved"]), ("trigger_toggle", trigger["saved"])):
                     done = ws.ask({"request": "StreamerzCoreAction", "domain": "actions", "action": operation, "itemId": item, "actionId": opened, "id": operation})
                     assert done["status"] == "ok", done
@@ -597,6 +734,156 @@ def main():
                     shot("core-input-restored")
                     click("OK")
                     assert response.result(timeout=10)["args"]["answer"] == "Streamer"
+                # Malformed overlay options warn visibly while keeping valid high-range sliders working.
+                for width, height in ((1100, 800), (540, 700)):
+                    resize(width, height)
+                    load_page("Overlays")
+                    click("BrokenOverlay", role="Cell")
+                    deadline = time.monotonic() + 10
+                    while not any(e["label"] == strings["btn.settings"] and e.get("enabled", True) and e["h"] >= 26 for e in json.loads(ui("bounds " + strings["btn.settings"]))):
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError("Overlays toolbar Settings button did not enable")
+                        time.sleep(.05)
+                    # The toolbar button is 28px high; the sidebar item with the same name is 24.
+                    click(strings["btn.settings"], min_height=26)
+                    deadline = time.monotonic() + 10
+                    while not any("cancel-form" in e.get("path", "") for e in json.loads(ui("bounds "))):
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError("BrokenOverlay settings form did not open")
+                        time.sleep(.05)
+                    tree_text = ui("tree")
+                    assert "High slider" in tree_text, tree_text
+                    assert "non_existent_widget" in tree_text, tree_text
+                    bounds = json.loads(ui("bounds "))
+                    assert any("Slider" in e["role"] for e in bounds), bounds
+                    assert any("Alert" in e["role"] and "non_existent_widget" in e["label"] for e in bounds), bounds
+                    no_overflow(f"broken-overlay-settings-{width}")
+                    shot(f"broken-overlay-settings-{width}")
+                    click(strings["dialogs.cancel"])
+                # F2 renames the selected overlay directly with autofocus and Enter-to-save; Rename button works too.
+                click("BrokenOverlay", role="Cell")
+                subprocess.run(["xdotool", "key", "F2"], env=env, check=True)
+                deadline = time.monotonic() + 10
+                while not any("cancel-form" in e.get("path", "") for e in json.loads(ui("bounds "))):
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("F2 did not open the overlay rename dialog")
+                    time.sleep(.05)
+                subprocess.run(["xdotool", "key", "ctrl+a", "BackSpace"], env=env, check=True)
+                subprocess.run(["xdotool", "type", "--clearmodifiers", "RenamedOverlay"], env=env, check=True)
+                subprocess.run(["xdotool", "key", "Return"], env=env, check=True)
+                deadline = time.monotonic() + 10
+                while any("cancel-form" in e.get("path", "") for e in json.loads(ui("bounds "))) or not any(
+                    r["cells"][1] == "RenamedOverlay"
+                    for r in ws.ask({"request": "StreamerzCoreView", "domain": "overlays", "id": "overlays-renamed"})["tables"][0]["rows"]
+                ):
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("F2 rename with Enter did not rename BrokenOverlay")
+                    time.sleep(.05)
+                click("RenamedOverlay", role="Cell")
+                click(strings["btn.rename"], min_height=26)
+                deadline = time.monotonic() + 10
+                while not any("cancel-form" in e.get("path", "") for e in json.loads(ui("bounds "))):
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("Rename button did not open the overlay rename dialog")
+                    time.sleep(.05)
+                subprocess.run(["xdotool", "key", "ctrl+a", "BackSpace"], env=env, check=True)
+                subprocess.run(["xdotool", "type", "--clearmodifiers", "BrokenOverlay"], env=env, check=True)
+                subprocess.run(["xdotool", "key", "Return"], env=env, check=True)
+                deadline = time.monotonic() + 10
+                while any("cancel-form" in e.get("path", "") for e in json.loads(ui("bounds "))) or not any(
+                    r["cells"][1] == "BrokenOverlay"
+                    for r in ws.ask({"request": "StreamerzCoreView", "domain": "overlays", "id": "overlays-restored"})["tables"][0]["rows"]
+                ):
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("Rename button did not rename RenamedOverlay back")
+                    time.sleep(.05)
+                warn_logs = ws.ask({"request": "GetLog", "lines": 100, "id": "warn-log"})["lines"]
+                assert any("[WARN]" in line and "BrokenOverlay" in line and "non_existent_widget" in line for line in warn_logs), warn_logs
+                # A real UI panic logs into the unified backend log, writes crash-ui-*.txt, keeps the backend alive,
+                # auto-restores with a dismissible recovery banner, and pauses after repeated crashes.
+                def wait_respawn(previous):
+                    deadline = time.monotonic() + 20
+                    while time.monotonic() < deadline:
+                        current = children()
+                        if len(current) == 1 and current[0] != previous:
+                            return current[0]
+                        time.sleep(.05)
+                    raise RuntimeError(f"UI did not auto-restore after crash of pid {previous}; children={children()}")
+                def trigger_panic(tag, msg):
+                    reply = ws.ask({"request": "StreamerzUi", "id": tag, "do": "panic " + msg})
+                    assert reply["status"] == "ok", reply
+                resize(1100, 800)
+                load_page("Commands")
+                first_renderer = renderer
+                trigger_panic("crash-1", "simulated smoke ui crash")
+                assert app.poll() is None, "UI panic stopped the backend"
+                assert ws.ask({"request": "GetInfo", "id": "alive-after-crash-1"})["status"] == "ok"
+                renderer = wait_respawn(first_renderer)
+                ui("windows")
+                window = native_window(renderer)
+                deadline = time.monotonic() + 10
+                while "simulated smoke ui crash" not in ui("tree") and time.monotonic() < deadline:
+                    time.sleep(.05)
+                assert "simulated smoke ui crash" in ui("tree"), ui("tree")
+                for width, height in ((540, 700), (1100, 800)):
+                    resize(width, height)
+                    no_overflow(f"ui-recovery-banner-{width}")
+                    assert shot(f"ui-recovery-banner-{width}") == (width, height)
+                click(strings["crash.ui_view_crashes"])
+                deadline = time.monotonic() + 10
+                while (ui("currentpage") != "Crashes" or ui("pageready") != "true") and time.monotonic() < deadline:
+                    time.sleep(.05)
+                assert ui("currentpage") == "Crashes"
+                crashes_model = ws.ask({"request": "StreamerzCoreView", "domain": "crashes", "id": "crashes-after-panic"})
+                assert crashes_model["status"] == "ok", crashes_model
+                crash_rows = crashes_model["tables"][0]["rows"]
+                assert any("simulated smoke ui crash" in row.get("detail", "") for row in crash_rows), crash_rows
+                assert any("UI page:" in row.get("detail", "") for row in crash_rows), crash_rows
+                ui_crash_rows = [row for row in crash_rows if "simulated smoke ui crash" in row.get("detail", "")]
+                context_txt = Path(ui_crash_rows[0]["id"]).with_name("context.txt").read_text()
+                assert "[UI] navigated to Commands" in context_txt, context_txt
+                shot("ui-crash-crashes-page")
+                click(strings["crash.ui_view_log"])
+                deadline = time.monotonic() + 10
+                while (ui("currentpage") != "Log" or ui("pageready") != "true") and time.monotonic() < deadline:
+                    time.sleep(.05)
+                assert ui("currentpage") == "Log"
+                unified_logs = ws.ask({"request": "GetLog", "lines": 200, "id": "unified-ui-log"})["lines"]
+                assert any("[FATAL] [UI]" in line and "simulated smoke ui crash" in line for line in unified_logs), unified_logs
+                close_matches = [e for e in json.loads(ui("bounds " + strings["dialogs.close"])) if e["label"] == strings["dialogs.close"] and "dismiss-crash-banner" in e.get("path", "")]
+                assert len(close_matches) == 1, close_matches
+                click(strings["dialogs.close"], role="Button")
+                assert not any("ui-recovery-banner" in e.get("path", "") for e in json.loads(ui("bounds "))), "recovery banner stayed open"
+                # Crash 2 still restores; Crash 3 stops auto-restore within the 60s window while keeping the backend alive.
+                second_renderer = renderer
+                trigger_panic("crash-2", "simulated smoke ui crash 2")
+                renderer = wait_respawn(second_renderer)
+                ui("windows")
+                window = native_window(renderer)
+                deadline = time.monotonic() + 10
+                while "simulated smoke ui crash 2" not in ui("tree") and time.monotonic() < deadline:
+                    time.sleep(.05)
+                assert "simulated smoke ui crash 2" in ui("tree"), ui("tree")
+                trigger_panic("crash-3", "simulated smoke ui crash 3")
+                deadline = time.monotonic() + 15
+                while children() and time.monotonic() < deadline:
+                    time.sleep(.05)
+                assert not children(), "3rd crash should not leave renderer running"
+                time.sleep(2)
+                assert not children(), f"crash loop did not pause auto-restore: {children()}"
+                assert app.poll() is None, "crash loop stopped the backend"
+                assert ws.ask({"request": "GetInfo", "id": "alive-after-crash-loop"})["status"] == "ok"
+                loop_logs = ws.ask({"request": "GetLog", "lines": 100, "id": "loop-log"})["lines"]
+                assert any("[ERROR]" in line and "auto-restore paused" in line for line in loop_logs), loop_logs
+                # Manual reopen still works and resets the recovery budget.
+                ui("toggle")
+                deadline = time.monotonic() + 15
+                while not children() and time.monotonic() < deadline:
+                    time.sleep(.05)
+                assert children(), "manual toggle did not reopen after crash loop"
+                ui("windows")
+                renderer = children()[0]
+                window = native_window(renderer)
                 load_page("Commands")
                 click("Hide")
                 deadline = time.monotonic() + 15

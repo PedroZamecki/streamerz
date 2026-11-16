@@ -115,3 +115,76 @@ None.
 ### When
 
 Each time a message arrives in the Kick chat, including the broadcaster's own messages.
+
+## Chat Mode Changed
+
+- Kind: trigger
+- Code: 35029
+- Type: KickChatModeChanged
+- Category: Kick/Chat
+- Needs: a Kick channel set
+
+Fires when Kick chatroom settings such as slow mode, followers-only, or subscribers-only mode are updated.
+
+### Fields
+
+None.
+
+### Arguments
+
+- `emoteMode`, `slowMode`, `slowModeInterval`, `followersMode`, `subscribersMode`: chatroom mode flags and slow mode interval.
+- `broadcastUser`, `broadcastUsername`, `broadcastUserId`: the broadcaster.
+
+### When
+
+When Kick sends a `ChatroomUpdatedEvent`.
+
+## Message Pinned
+
+- Kind: trigger
+- Code: 35030
+- Type: KickMessagePinned
+- Category: Kick/Chat
+- Needs: a Kick channel set
+
+Fires when a message is pinned in Kick chat.
+
+### Fields
+
+None.
+
+### Arguments
+
+- `messageId`: the pinned message ID.
+- `message`: the pinned message text.
+- `duration`: pin duration in seconds or minutes, if present.
+- `user`, `userId`: the sender of the pinned message.
+- `pinnedBy`: the moderator who pinned it, if provided.
+- `broadcastUser`, `broadcastUsername`, `broadcastUserId`: the broadcaster.
+
+### When
+
+When Kick sends a `PinnedMessageCreatedEvent`.
+
+## Message Unpinned
+
+- Kind: trigger
+- Code: 35031
+- Type: KickMessageUnpinned
+- Category: Kick/Chat
+- Needs: a Kick channel set
+
+Fires when the pinned message is removed in Kick chat.
+
+### Fields
+
+None.
+
+### Arguments
+
+- `messageId`: the unpinned message ID, if included.
+- `broadcastUser`, `broadcastUsername`, `broadcastUserId`: the broadcaster.
+
+### When
+
+When Kick sends a `PinnedMessageDeletedEvent`.

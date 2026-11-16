@@ -70,6 +70,7 @@ pub const BROADCASTER_SCOPES: &[&str] = &[
     "moderator:read:unban_requests",
     "moderator:manage:automod",
     "moderator:read:automod_settings",
+    "moderator:manage:automod_settings",
     "moderator:manage:shoutouts",
     "moderator:read:shoutouts",
     "moderator:read:suspicious_users",
@@ -77,6 +78,7 @@ pub const BROADCASTER_SCOPES: &[&str] = &[
     "moderator:read:chatters",
     // channel.moderate (shared chat bans and deletes) wants these too.
     "moderator:read:blocked_terms",
+    "moderator:manage:blocked_terms",
     "moderator:read:moderators",
     "moderator:read:vips",
     "channel:manage:moderators",
@@ -3368,12 +3370,28 @@ pub(crate) fn handle_notification(
         "channel.update" => {
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
-            let (title, game_id, game) = (
+            let (title, game_id, game, language) = (
                 es(event, "/title"),
                 es(event, "/category_id"),
                 es(event, "/category_name"),
+                es(event, "/language"),
             );
+            let labels: Option<Vec<String>> = event.get("content_classification_labels").and_then(|v| {
+                v.as_array().map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
+            });
             let art = |id: &str| format!("https://static-cdn.jtvnw.net/ttv-boxart/{id}-144x192.jpg");
+            crate::core::stream::pushed_twitch(
+                Some(title),
+                Some(game),
+                (!language.is_empty()).then_some(language),
+                labels,
+            );
             let (old_title, (old_id, old_game)) = SEEN.with_borrow_mut(|s| {
                 let old = (s.title.clone(), s.game.clone());
                 s.title = title.into();
@@ -3409,6 +3427,7 @@ pub(crate) fn handle_notification(
             populate_broadcaster_vars(&mut args, broadcaster);
             let length = event["duration_seconds"].as_u64().unwrap_or(0);
             let auto = event["is_automatic"].as_bool().unwrap_or(false);
+            crate::core::stream::ad_started("twitch", length);
             for (k, v) in [
                 ("duration", length.into()),
                 ("length", length.into()),
@@ -3441,6 +3460,12 @@ pub(crate) fn handle_notification(
                     "UserBanned",
                     &args,
                 );
+                crate::core::moderation::emit_linked_moderation_event(
+                    engine,
+                    "twitch",
+                    crate::core::moderation::LinkedModerationEvent::Banned,
+                    &args,
+                );
             } else {
                 let (from, to) = (es(event, "/banned_at"), es(event, "/ends_at"));
                 args.insert("endsAt".into(), to.into());
@@ -3457,6 +3482,12 @@ pub(crate) fn handle_notification(
                     "User Timed Out",
                     "Twitch/Moderation",
                     "UserTimedOut",
+                    &args,
+                );
+                crate::core::moderation::emit_linked_moderation_event(
+                    engine,
+                    "twitch",
+                    crate::core::moderation::LinkedModerationEvent::TimedOut,
                     &args,
                 );
             }
@@ -3481,6 +3512,12 @@ pub(crate) fn handle_notification(
                 "User Untimed Out",
                 "Twitch/Moderation",
                 "UserUntimedOut",
+                &args,
+            );
+            crate::core::moderation::emit_linked_moderation_event(
+                engine,
+                "twitch",
+                crate::core::moderation::LinkedModerationEvent::Unbanned,
                 &args,
             );
         }
@@ -3546,6 +3583,7 @@ pub(crate) fn handle_notification(
             engine.emit("Twitch", "VipRemoved", || json!(args));
         }
         "channel.shield_mode.begin" => {
+            crate::core::moderation::shield_event(engine, event, true);
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
             engine.fire(
@@ -3559,6 +3597,7 @@ pub(crate) fn handle_notification(
             engine.emit("Twitch", "ShieldModeBegin", || json!(args));
         }
         "channel.shield_mode.end" => {
+            crate::core::moderation::shield_event(engine, event, false);
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
             engine.fire(
@@ -3918,6 +3957,7 @@ pub(crate) fn handle_notification(
             );
         }
         "channel.moderate" => {
+            crate::core::moderation_activity::event(engine, event);
             // Only shared chat's: this channel's own come as their own events.
             let source = es(event, "/source_broadcaster_user_id");
             if source.is_empty() || source == broadcaster.user_id {
@@ -3975,8 +4015,32 @@ pub(crate) fn handle_notification(
                 args.insert("endsAt".into(), t.into());
             }
             go(engine, code, name, "Twitch/Shared Chat", ev, &args);
+            match action {
+                "shared_chat_ban" => crate::core::moderation::emit_linked_moderation_event(
+                    engine,
+                    "twitch",
+                    crate::core::moderation::LinkedModerationEvent::Banned,
+                    &args,
+                ),
+                "shared_chat_timeout" => crate::core::moderation::emit_linked_moderation_event(
+                    engine,
+                    "twitch",
+                    crate::core::moderation::LinkedModerationEvent::TimedOut,
+                    &args,
+                ),
+                "shared_chat_unban" | "shared_chat_untimeout" => {
+                    crate::core::moderation::emit_linked_moderation_event(
+                        engine,
+                        "twitch",
+                        crate::core::moderation::LinkedModerationEvent::Unbanned,
+                        &args,
+                    );
+                }
+                _ => {}
+            }
         }
         "automod.message.hold" | "automod.message.update" => {
+            crate::core::moderation::automod_event(engine, event, sub_type.ends_with("hold"));
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
             event_user(&mut args, event, "user");
@@ -4113,6 +4177,7 @@ pub(crate) fn handle_notification(
             );
         }
         "channel.suspicious_user.update" => {
+            crate::core::moderation_suspicious::event(engine, event, false);
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
             event_user(&mut args, event, "user");
@@ -4128,6 +4193,7 @@ pub(crate) fn handle_notification(
             );
         }
         "channel.suspicious_user.message" => {
+            crate::core::moderation_suspicious::event(engine, event, true);
             let mut args = Obj::new();
             populate_broadcaster_vars(&mut args, broadcaster);
             event_user(&mut args, event, "user");
@@ -4636,6 +4702,15 @@ pub fn commercials_possible() -> bool {
         .ok()
         .and_then(|t| t.clone())
         .is_none_or(|t| t == "partner" || t == "affiliate")
+}
+
+/// Whether the channel is a Twitch Partner (e.g. stream delay setting).
+pub fn is_partner() -> bool {
+    CHANNEL_TYPE
+        .lock()
+        .ok()
+        .and_then(|t| t.clone())
+        .is_some_and(|t| t == "partner")
 }
 
 /// How a custom reward is drawn in the chat.

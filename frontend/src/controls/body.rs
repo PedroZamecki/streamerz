@@ -5,7 +5,7 @@ use gpui_kit::*;
 
 /// The icon tone of buttons (dimmer than their label).
 pub fn icon_tone(cx: &App) -> Hsla {
-    rgb(if cx.theme().is_dark() { 0xbdbdbe } else { 0x434345 }).into()
+    crate::theme::icon_tone(cx)
 }
 
 /// Put it in a button with `.child(...)`, not `.label(...)`, so the label keeps the page's 13px size.
@@ -14,7 +14,7 @@ pub fn button_body(icon: Option<&str>, label: Option<String>, cx: &App) -> Div {
         .flex()
         .items_center()
         .gap_2()
-        .text_size(px(13.))
+        .text_size(px(crate::theme::FONT_BODY))
         .when_some(icon, |body, icon| {
             body.child(
                 Icon::empty()

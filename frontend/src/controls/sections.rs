@@ -1,6 +1,10 @@
 //! Pages of sections of labelled rows, drawn from a core model. Every change is a core request.
 use super::form::Form;
 use crate::send;
+use crate::theme::{
+    self, CONTROL_HEIGHT, FONT_BODY, FONT_CAPTION, FONT_SECTION_TITLE, LINE_BODY, LINE_CAPTION, LINE_SECTION_TITLE,
+    SECTION_GAP, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XS,
+};
 use gpui_kit::component::{
     button::Button,
     input::{Input, InputEvent, InputState},
@@ -12,6 +16,12 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+
+/// The quiet column of labels in an account's lines, and the width of a platform's name on its card.
+const LABEL_WIDTH: f32 = 112.;
+const PLATFORM_NAME_WIDTH: f32 = 96.;
+/// A person's picture beside a value.
+const PICTURE: f32 = 24.;
 
 /// Asks the page to show another page.
 pub struct Navigate(pub String);
@@ -33,9 +43,11 @@ pub struct Sections {
     opening: bool,
     /// That button's label: the dialog's title when its model has none (Chat settings once had none).
     opening_title: String,
-    error: String,
+    error: Option<crate::error::StreamerzError>,
     /// A narrow window: Settings stacks a row's control under its text.
     compact: bool,
+    /// The title of the page these sections fill (set by the page; empty in a dialog or inside a list).
+    page_title: String,
     subscriptions: Vec<Subscription>,
 }
 
@@ -56,8 +68,9 @@ impl Sections {
             opening: false,
             opening_title: String::new(),
             finder: None,
-            error: String::new(),
+            error: None,
             compact: false,
+            page_title: String::new(),
             subscriptions: Vec::new(),
         };
         if let Some(search) = this.search.clone() {
@@ -70,6 +83,13 @@ impl Sections {
         }
         this.update_model(model, window, cx);
         this
+    }
+    /// The page these sections fill: a heading shows only when there is more than one section, and never
+    /// repeats the page's title.
+    pub fn set_page(&mut self, title: String) {
+        if self.page_title != title {
+            self.page_title = title;
+        }
     }
     pub fn update_model(&mut self, model: Value, window: &mut Window, cx: &mut Context<Self>) {
         for section in model["sections"].as_array().into_iter().flatten() {
@@ -192,23 +212,22 @@ impl Sections {
             }
             return false;
         }
-        if value["status"] == "error" {
-            let error = value["error"].as_str().unwrap_or_default().to_owned();
+        if let Some(err) = crate::error::StreamerzError::from_response(&value) {
             if matches!(operation, "save" | "json") {
                 if let Some(form) = &self.form {
                     form.update(cx, |form, cx| {
                         form.pending = false;
-                        form.error = error;
+                        form.error = Some(err);
                         cx.notify();
                     });
                 }
             } else {
-                self.error = error;
+                self.error = Some(err);
             }
             cx.notify();
             return operation == "set";
         }
-        self.error.clear();
+        self.error = None;
         match operation {
             "dialog-view" => {
                 if let Some(dialog) = &self.dialog {
@@ -229,13 +248,27 @@ impl Sections {
                     .filter(|title| !title.is_empty())
                     .map_or_else(|| std::mem::take(&mut self.opening_title), str::to_owned);
                 let nested = cx.new(|cx| Sections::new(value, format!("{}:dialog", self.route), window, cx));
+                self.subscriptions
+                    .push(cx.subscribe(&nested, |this, _, event: &Navigate, cx| {
+                        this.dialog = None;
+                        cx.emit(Navigate(event.0.clone()));
+                    }));
                 self.dialog = Some(nested.clone());
                 let owner = cx.entity().downgrade();
-                window.open_dialog(cx, move |dialog, _, cx| {
+                window.open_dialog(cx, move |dialog, window, cx| {
                     let owner = owner.clone();
                     let close = crate::controls::dialog::close_footer(cx);
-                    crate::controls::dialog::shell(dialog, title.clone(), 560., cx)
-                        .child(crate::controls::dialog::body(nested.clone()))
+                    let max_body = crate::controls::dialog::fit_height(180., 180., 680., window);
+                    crate::controls::dialog::shell(dialog, title.clone(), 560., window, cx)
+                        .child(crate::controls::dialog::body(
+                            div()
+                                .id("dialog-sections")
+                                .w_full()
+                                .max_h(px(max_body))
+                                .overflow_y_scroll()
+                                .pr(px(crate::theme::SPACE_XS))
+                                .child(nested.clone()),
+                        ))
                         .footer(close)
                         .on_cancel(move |_, _, cx| {
                             let _ = owner.update(cx, |sections, _| sections.dialog = None);
@@ -249,8 +282,8 @@ impl Sections {
                 let form = cx.new(|cx| Form::new(value, format!("{}:save", self.route), window, cx));
                 self.form = Some(form.clone());
                 let owner = cx.entity().downgrade();
-                window.open_dialog(cx, move |dialog, _, cx| {
-                    crate::controls::dialog::shell(dialog, title.clone(), 560., cx)
+                window.open_dialog(cx, move |dialog, window, cx| {
+                    crate::controls::dialog::shell(dialog, title.clone(), 560., window, cx)
                         .child(crate::controls::dialog::body(form.clone()))
                         .footer(form.read(cx).buttons_view())
                         .on_cancel({
@@ -288,9 +321,9 @@ impl Sections {
                 let finder = cx.new(|cx| super::find::Finder::new(model, self.route.clone(), window, cx));
                 self.finder = Some(finder.clone());
                 let owner = cx.entity().downgrade();
-                window.open_dialog(cx, move |dialog, _, cx| {
+                window.open_dialog(cx, move |dialog, window, cx| {
                     let owner = owner.clone();
-                    crate::controls::dialog::shell(dialog, title.clone(), 560., cx)
+                    crate::controls::dialog::shell(dialog, title.clone(), 560., window, cx)
                         .child(crate::controls::dialog::body(finder.clone()))
                         .footer(finder.read(cx).buttons_view())
                         .on_cancel(move |_, _, cx| {
@@ -350,16 +383,16 @@ impl Sections {
                     index,
                 ))
                 .small()
-                .h(px(26.))
+                .h(px(CONTROL_HEIGHT))
                 .font_weight(FontWeight::NORMAL)
                 .min_w(px(if icon_only {
-                    36.
+                    CONTROL_HEIGHT
                 } else if label.chars().count() > 5 {
                     120.
                 } else {
                     90.
                 }))
-                .when(icon_only, |button| button.w(px(36.)))
+                .when(icon_only, |button| button.w(px(CONTROL_HEIGHT)))
                 // A column of equal buttons, each as wide as its label needs past that.
                 .when(roomy && !compact, |button| {
                     button.min_w(px(if list.len() == 1 { 150. } else { 114. }))
@@ -391,7 +424,7 @@ impl Sections {
                     .items_center()
                     .gap_2()
                     .flex_shrink_0()
-                    .when(roomy, |line| line.px(px(4.)))
+                    .when(roomy, |line| line.px(px(SPACE_XS)))
                     .when(roomy && control["button"].is_object(), |line| {
                         line.w(px(180.)).justify_start()
                     });
@@ -420,7 +453,7 @@ impl Sections {
                                 Select::new(select)
                                     .small()
                                     .icon(Icon::empty().path("icons/chevrons-up-down.svg").size(px(16.)))
-                                    .when(roomy, |select| select.h(px(26.))),
+                                    .h(px(CONTROL_HEIGHT)),
                             ),
                     );
                 }
@@ -436,6 +469,7 @@ impl Sections {
                     .child(
                         Input::new(input)
                             .small()
+                            .min_h(px(CONTROL_HEIGHT))
                             .aria_label(row["label"].as_str().unwrap_or_default().to_owned()),
                     )
                     .into_any_element(),
@@ -456,7 +490,7 @@ fn card_frame(index: usize, content: Div, cx: &App) -> Stateful<Div> {
         .id(("card", index))
         .flex()
         .flex_col()
-        .p_4()
+        .p(px(SPACE_LG))
         .flex_1()
         .min_w_0()
         .rounded(px(8.))
@@ -471,12 +505,13 @@ fn chip(icon: Option<&str>, text: String, cx: &App) -> Div {
     div()
         .flex()
         .items_center()
-        .gap_1()
-        .h(px(22.))
-        .px_2()
-        .rounded(px(11.))
+        .gap(px(SPACE_XS))
+        .h(px(LINE_CAPTION + SPACE_SM))
+        .px(px(SPACE_SM))
+        .rounded(px((LINE_CAPTION + SPACE_SM) / 2.))
         .bg(cx.theme().muted)
-        .text_size(px(12.))
+        .text_size(px(FONT_CAPTION))
+        .line_height(px(LINE_CAPTION))
         .text_color(cx.theme().foreground)
         .max_w(px(260.))
         .when_some(icon, |chip, icon| {
@@ -517,8 +552,8 @@ impl Sections {
         let mut header = div()
             .flex()
             .items_center()
-            .gap_2()
-            .h(px(24.))
+            .gap(px(SPACE_SM))
+            .h(px(LINE_SECTION_TITLE))
             .when_some(section["brand"].as_str(), |header, brand| {
                 header.child(super::body::brand_logo(
                     SharedString::from(format!("card-brand-{index}")),
@@ -530,8 +565,9 @@ impl Sections {
             .child(
                 div()
                     .font_weight(FontWeight::BOLD)
-                    .text_size(px(15.))
-                    .text_color(crate::theme::strong(cx))
+                    .text_size(px(FONT_SECTION_TITLE))
+                    .line_height(px(LINE_SECTION_TITLE))
+                    .text_color(theme::strong(cx))
                     .child(section["title"].as_str().unwrap_or_default().to_owned()),
             )
             .child(div().flex_1());
@@ -541,9 +577,10 @@ impl Sections {
                     .id(("card-state", index))
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(px(SPACE_XS))
                     .flex_shrink_0()
-                    .text_size(px(12.5))
+                    .text_size(px(FONT_CAPTION))
+                    .line_height(px(LINE_CAPTION))
                     .text_color(color)
                     .child(Icon::empty().path(format!("icons/{icon}.svg")).size(px(14.)))
                     .child(state["text"].as_str().unwrap_or_default().to_owned())
@@ -554,13 +591,13 @@ impl Sections {
                     }),
             );
         }
-        let mut body = div().flex().flex_col().gap_2().flex_1();
+        let mut body = div().flex().flex_col().gap(px(SPACE_SM)).flex_1();
         if let Some(headline) = section["headline"].as_str() {
             let muted = section["headlineMuted"] == true;
             body = body.child(
                 div()
-                    .text_size(px(15.))
-                    .line_height(px(20.))
+                    .text_size(px(FONT_SECTION_TITLE))
+                    .line_height(px(LINE_SECTION_TITLE))
                     .line_clamp(2)
                     .text_color(if muted {
                         crate::theme::quiet(cx)
@@ -576,7 +613,7 @@ impl Sections {
                 div()
                     .flex()
                     .flex_wrap()
-                    .gap(px(6.))
+                    .gap(px(SPACE_SM))
                     .children(chips.iter().map(|chip_spec| {
                         chip(
                             chip_spec["icon"].as_str(),
@@ -588,13 +625,18 @@ impl Sections {
         }
         for line in section["lines"].as_array().into_iter().flatten() {
             let muted = line["muted"] == true;
+            let (size, height) = if muted {
+                (FONT_CAPTION, LINE_CAPTION)
+            } else {
+                (FONT_BODY, LINE_BODY)
+            };
             body = body.child(
                 div()
                     .flex()
                     .items_start()
-                    .gap_2()
-                    .text_size(px(12.5))
-                    .line_height(px(17.))
+                    .gap(px(SPACE_SM))
+                    .text_size(px(size))
+                    .line_height(px(height))
                     .text_color(if muted {
                         crate::theme::quiet(cx)
                     } else {
@@ -602,12 +644,12 @@ impl Sections {
                     })
                     .when_some(line["icon"].as_str(), |line, icon| {
                         line.child(
-                            Icon::empty()
-                                .path(format!("icons/{icon}.svg"))
-                                .size(px(14.))
-                                .text_color(super::body::icon_tone(cx))
-                                .mt(px(1.5))
-                                .flex_shrink_0(),
+                            div().h(px(height)).flex().items_center().flex_shrink_0().child(
+                                Icon::empty()
+                                    .path(format!("icons/{icon}.svg"))
+                                    .size(px(14.))
+                                    .text_color(super::body::icon_tone(cx)),
+                            ),
                         )
                     })
                     .child(
@@ -620,8 +662,8 @@ impl Sections {
         let mut footer = div()
             .flex()
             .flex_wrap()
-            .gap_2()
-            .pt_3()
+            .gap(px(SPACE_SM))
+            .pt(px(SPACE_MD))
             .border_t_1()
             .border_color(theme.border);
         for (button_index, spec) in section["buttons"]
@@ -635,7 +677,7 @@ impl Sections {
             let id = spec["id"].as_str().unwrap_or_default().to_owned();
             let mut widget = Button::new((SharedString::from(format!("card-{index}-{id}")), button_index))
                 .small()
-                .h(px(26.))
+                .h(px(CONTROL_HEIGHT))
                 .font_weight(FontWeight::NORMAL)
                 .child(super::body::button_body(spec["icon"].as_str(), Some(label.clone()), cx))
                 .disabled(spec["enabled"] == false)
@@ -655,7 +697,7 @@ impl Sections {
                 .flex()
                 .flex_col()
                 .flex_1()
-                .gap_3()
+                .gap(px(SPACE_MD))
                 .child(header)
                 .child(body)
                 .child(footer),
@@ -665,28 +707,77 @@ impl Sections {
     }
 }
 
+/// The parts of a page, to set the gap above each one (docs/UI.md, "Page frame").
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Part {
+    /// A message from the core, above everything.
+    Error,
+    /// A row of buttons or a search box under the guide.
+    Toolbar,
+    /// What the page is for, right under its header.
+    Guide,
+    /// A section or a grid of cards.
+    Content,
+    /// A quiet note under the content.
+    Note,
+}
+
+/// The gap above `part` when `before` comes right above it: 12 under a guide and above a note, 8 under a
+/// toolbar or a message, 16 between sections.
+fn gap_above(before: Part, part: Part) -> f32 {
+    match (before, part) {
+        (_, Part::Note) | (Part::Guide, _) => SPACE_MD,
+        (Part::Error | Part::Toolbar, _) => SPACE_SM,
+        _ => SECTION_GAP,
+    }
+}
+
+/// A row that is only a few words of text (an introduction), maybe with buttons beside it.
+fn only_text(row: &Value) -> bool {
+    row["about"].as_str().is_some_and(|about| !about.is_empty())
+        && row["label"].as_str().is_none_or(str::is_empty)
+        && row["value"].is_null()
+        && row["status"].is_null()
+}
+
+/// Text on lines of its own, in `size` and `height`, quiet.
+fn quiet_lines(text: &str, size: f32, height: f32, cx: &App) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .text_size(px(size))
+        .line_height(px(height))
+        .text_color(theme::quiet(cx))
+        .children(text.split('\n').map(|line| div().child(line.to_owned())))
+}
+
+/// `el` in `block`, `gap` px under what is there.
+fn stack<P: ParentElement>(mut block: P, gap: f32, el: impl IntoElement) -> P {
+    block.extend([div().mt(px(gap)).w_full().child(el).into_any_element()]);
+    block
+}
+
 impl Render for Sections {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.compact = f32::from(window.viewport_size().width) < 700.;
         // Settings is laid out roomier than the other pages.
         let roomy = self.domain == "settings";
-        let mut page = div()
-            .id(SharedString::from(format!("sections-{}", self.domain)))
-            .flex()
-            .flex_col()
-            .gap(px(if roomy { 2. } else { 4. }))
-            .w_full();
-        if !self.error.is_empty() {
-            page = page.child(super::notice::error(&self.error, cx));
+        let mut parts: Vec<(Part, AnyElement)> = Vec::new();
+        if let Some(err) = &self.error {
+            parts.push((Part::Error, super::notice::error(err, cx).into_any_element()));
         }
         let mut sections = self.model["sections"].as_array().cloned().unwrap_or_default();
         if let Some(search) = &self.search {
-            page = page.child(
+            parts.push((
+                Part::Toolbar,
                 Input::new(search)
                     .small()
+                    .min_h(px(CONTROL_HEIGHT))
                     .prefix(Icon::empty().path("icons/search.svg").small())
-                    .aria_label(self.model["searchHint"].as_str().unwrap_or_default().to_owned()),
-            );
+                    .aria_label(self.model["searchHint"].as_str().unwrap_or_default().to_owned())
+                    .into_any_element(),
+            ));
             let query = search.read(cx).value().trim().to_lowercase();
             if !query.is_empty() {
                 for section in &mut sections {
@@ -707,7 +798,16 @@ impl Render for Sections {
                 }
                 sections.retain(|section| section["rows"].as_array().is_some_and(|rows| !rows.is_empty()));
                 if sections.is_empty() {
-                    page = page.child(super::notice::info(crate::i18n::tr("lists.no_matches"), cx));
+                    let msg = crate::i18n::tr("lists.no_matches");
+                    parts.push((
+                        Part::Content,
+                        div()
+                            .id("sections-no-matches")
+                            .test_support()
+                            .aria_label(msg)
+                            .child(super::notice::info(msg, cx))
+                            .into_any_element(),
+                    ));
                 }
             }
         }
@@ -721,7 +821,7 @@ impl Render for Sections {
         let mut wide = false;
         let grid = |cards: &mut Vec<AnyElement>, wide: &mut bool| {
             let columns = if std::mem::take(wide) { wide_columns } else { columns };
-            let mut grid = div().flex().flex_col().gap_3().w_full().pt_2();
+            let mut grid = div().flex().flex_col().gap(px(SPACE_MD)).w_full();
             let mut drained: Vec<AnyElement> = std::mem::take(cards);
             while !drained.is_empty() {
                 let rest = drained.split_off(drained.len().min(columns));
@@ -730,7 +830,7 @@ impl Render for Sections {
                 let short = columns - row_cards.len();
                 let row = div()
                     .flex()
-                    .gap_3()
+                    .gap(px(SPACE_MD))
                     .w_full()
                     .children(
                         row_cards
@@ -740,7 +840,7 @@ impl Render for Sections {
                     .children((0..short).map(|_| div().flex_1()));
                 grid = grid.child(row);
             }
-            grid
+            grid.into_any_element()
         };
         for (section_index, section) in sections.iter().enumerate() {
             // A card of rows draws its section as usual, inside the card's frame.
@@ -751,65 +851,106 @@ impl Render for Sections {
                 continue;
             }
             if !cards.is_empty() && !boxed {
-                page = page.child(grid(&mut cards, &mut wide));
+                parts.push((Part::Content, grid(&mut cards, &mut wide)));
             }
-            let mut block = div().flex().flex_col().gap(px(if roomy { 2. } else { 4. })).w_full();
             let title = section["title"].as_str().unwrap_or_default().to_owned();
             let titled = !title.is_empty();
             // A platform's section: its brand and state on the heading's line.
             let plat = section["inline"] == true && section["brand"].is_string();
+            // A heading shows only on a page with more than one section, and never repeats the page's
+            // title; a platform's (with its state) always does.
+            let carries_state = section["inline"] == true && section["rows"][0]["status"].is_object();
+            let framed = !self.page_title.is_empty();
+            let heading_shown = !framed
+                || plat
+                || carries_state
+                || (sections.len() > 1 && title.to_lowercase() != self.page_title.to_lowercase());
+            // An inline section puts its first row's state and button on the heading's line.
+            let inline = section["inline"] == true;
+            let mut rows = section["rows"].as_array().map_or(&[][..], Vec::as_slice);
+            // The page's introduction goes under its header as the guide; its buttons, as a toolbar.
+            if section_index == 0 && !titled && !boxed && rows.first().is_some_and(only_text) {
+                let lead = &rows[0];
+                parts.push((
+                    Part::Guide,
+                    quiet_lines(lead["about"].as_str().unwrap_or_default(), FONT_BODY, LINE_BODY, cx)
+                        .into_any_element(),
+                ));
+                if lead["control"].is_object() {
+                    let key = format!("~{section_index}.0");
+                    parts.push((
+                        Part::Toolbar,
+                        div().flex().child(self.control(lead, &key, cx)).into_any_element(),
+                    ));
+                }
+                rows = &rows[1..];
+                if rows.is_empty() {
+                    continue;
+                }
+            }
+            // A note under the cards stays quiet and small.
+            if after_cards
+                && !titled
+                && !boxed
+                && rows.len() == 1
+                && only_text(&rows[0])
+                && !rows[0]["control"].is_object()
+            {
+                parts.push((
+                    Part::Note,
+                    quiet_lines(
+                        rows[0]["about"].as_str().unwrap_or_default(),
+                        FONT_CAPTION,
+                        LINE_CAPTION,
+                        cx,
+                    )
+                    .into_any_element(),
+                ));
+                continue;
+            }
+            let mut block = div().flex().flex_col().w_full();
+            // Whether anything is in the block yet, and whether only its heading is.
+            let (mut placed, mut after_heading) = (false, false);
             let mut heading = div()
                 .flex()
                 .items_center()
-                .gap_2()
-                .h(px(if roomy { 34. } else { 24. }))
+                .gap(px(SPACE_SM))
+                .h(px(LINE_SECTION_TITLE))
                 .font_weight(FontWeight::BOLD)
-                .text_size(px(15.))
-                .text_color(crate::theme::strong(cx))
-                .when(plat && !boxed, |heading| {
-                    heading.when(section_index > 0, |heading| heading.mt(px(18.)))
-                });
+                .text_size(px(FONT_SECTION_TITLE))
+                .line_height(px(LINE_SECTION_TITLE))
+                .text_color(theme::strong(cx));
             if let Some(brand) = section["brand"].as_str() {
                 heading = heading.child(
                     img(format!("brands/{brand}.svg"))
                         .id(SharedString::from(format!("brand-{brand}")))
-                        .size(px(if plat {
-                            18.
-                        } else if section["inline"] == true {
-                            22.
-                        } else {
-                            20.
-                        }))
+                        .size(px(LINE_SECTION_TITLE))
                         .flex_shrink_0(),
                 );
             } else if let Some(icon) = section["icon"].as_str().filter(|icon| !icon.is_empty()) {
                 heading = heading.child(Icon::empty().path(format!("icons/{icon}.svg")).small());
             }
-            // An inline section puts its first row's state and button on the heading's line.
-            let inline = section["inline"] == true;
-            let mut rows = section["rows"].as_array().map_or(&[][..], Vec::as_slice);
-            if !title.is_empty() && !self.route.ends_with(":dialog") {
+            if !title.is_empty() && heading_shown && !self.route.ends_with(":dialog") {
                 if let (true, Some(first)) = (inline, rows.first().filter(|row| row["status"].is_object())) {
                     let (icon, color) =
                         super::health::appearance(first["status"]["health"].as_str().unwrap_or_default(), cx);
                     heading = heading
-                        .h(px(26.))
-                        .text_size(cx.theme().font_size)
+                        .h(px(CONTROL_HEIGHT))
                         .child(
                             div()
-                                .min_w(px(if plat { 83. } else { 110. }))
+                                .min_w(px(if plat { PLATFORM_NAME_WIDTH } else { LABEL_WIDTH }))
                                 .flex_shrink_0()
-                                .when(plat, |name| name.text_size(px(14.)))
                                 .child(title),
                         )
                         .child(
                             div()
                                 .flex()
                                 .items_center()
-                                .gap_2()
+                                .gap(px(SPACE_SM))
                                 .flex_1()
                                 .font_weight(FontWeight::NORMAL)
-                                .text_size(px(13.5))
+                                .text_size(px(FONT_BODY))
+                                .line_height(px(LINE_BODY))
                                 .text_color(color)
                                 .min_w_0()
                                 .overflow_hidden()
@@ -836,6 +977,8 @@ impl Render for Sections {
                             div()
                                 .flex()
                                 .font_weight(FontWeight::NORMAL)
+                                .text_size(px(FONT_BODY))
+                                .line_height(px(LINE_BODY))
                                 .child(self.control(first, &key, cx)),
                         );
                     }
@@ -844,6 +987,7 @@ impl Render for Sections {
                     heading = heading.child(title);
                 }
                 block = block.child(heading);
+                (placed, after_heading) = (true, true);
             }
             // A flow section lays its inputs side by side on one line, each with its label.
             let flow = section["flow"] == true;
@@ -862,7 +1006,7 @@ impl Render for Sections {
                         div()
                             .flex()
                             .items_center()
-                            .gap_2()
+                            .gap(px(SPACE_SM))
                             .flex_1()
                             .min_w_0()
                             .child(div().flex_shrink_0().child(label))
@@ -870,6 +1014,7 @@ impl Render for Sections {
                                 div().flex_1().min_w_0().child(
                                     Input::new(input)
                                         .small()
+                                        .min_h(px(CONTROL_HEIGHT))
                                         .aria_label(row["label"].as_str().unwrap_or_default().to_owned()),
                                 ),
                             )
@@ -878,19 +1023,24 @@ impl Render for Sections {
                     continue;
                 }
                 if !flowing.is_empty() {
-                    block = block.child(div().flex().gap_3().w_full().min_h(px(30.)).children(flowing.drain(..)));
+                    let line = div()
+                        .flex()
+                        .gap(px(SPACE_MD))
+                        .w_full()
+                        .min_h(px(CONTROL_HEIGHT))
+                        .children(flowing.drain(..));
+                    block = stack(block, if placed { SPACE_SM } else { 0. }, line);
+                    (placed, after_heading) = (true, false);
                 }
-                // An introduction alone in its row gets a two line box.
+                // An introduction alone in its row: a note under its heading sits close to it.
                 let about_only = !about.is_empty()
                     && (!titled || inline)
                     && label.is_empty()
                     && row["value"].is_null()
                     && row["status"].is_null()
                     && !row["control"].is_object();
-                let mut text = div().flex().flex_col().flex_1().min_w_0().gap_0p5();
-                if row["logo"] == true {
-                    text = text.font_weight(FontWeight::BOLD).text_size(px(15.));
-                }
+                let logo = row["logo"] == true;
+                let mut text = div().flex().flex_col().flex_1().min_w_0();
                 let value = row["value"].as_str().map(str::to_owned);
                 // A platform's channel is one wide button: it shows the channel and opens the picker.
                 let pick = row["control"]["buttons"][0].clone();
@@ -906,10 +1056,10 @@ impl Render for Sections {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(11.))
+                            .gap(px(SPACE_MD))
                             .child(
                                 div()
-                                    .w(px(107.))
+                                    .w(px(LABEL_WIDTH))
                                     .flex_shrink_0()
                                     .text_right()
                                     .text_color(cx.theme().muted_foreground)
@@ -918,8 +1068,8 @@ impl Render for Sections {
                             .child(
                                 Button::new((SharedString::from(format!("{key}-pick")), 0usize))
                                     .small()
-                                    .text_size(px(13.))
-                                    .h(px(26.))
+                                    .text_size(px(FONT_BODY))
+                                    .h(px(CONTROL_HEIGHT))
                                     .w(px(220.))
                                     .when(face.is_none(), |button| {
                                         button.icon(Icon::empty().path("icons/search.svg")).label(value.clone())
@@ -929,7 +1079,7 @@ impl Render for Sections {
                                             div()
                                                 .flex()
                                                 .items_center()
-                                                .gap_2()
+                                                .gap(px(SPACE_SM))
                                                 .child(
                                                     img(face).size(px(18.)).rounded_full().object_fit(ObjectFit::Cover),
                                                 )
@@ -948,6 +1098,8 @@ impl Render for Sections {
                                     .id(SharedString::from(format!("about-{key}")))
                                     .min_w_0()
                                     .truncate()
+                                    .text_size(px(FONT_CAPTION))
+                                    .line_height(px(LINE_CAPTION))
                                     .text_color(cx.theme().muted_foreground)
                                     .child(about.clone())
                                     .when(!about_tip.is_empty(), |el| {
@@ -965,10 +1117,10 @@ impl Render for Sections {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(if plat { 11. } else { 12. }))
+                            .gap(px(SPACE_MD))
                             .child(
                                 div()
-                                    .w(px(if plat { 107. } else { 110. }))
+                                    .w(px(LABEL_WIDTH))
                                     .flex_shrink_0()
                                     .when(plat, |label| label.text_right())
                                     .text_color(cx.theme().muted_foreground)
@@ -980,7 +1132,7 @@ impl Render for Sections {
                                     .min_w_0()
                                     .flex()
                                     .items_center()
-                                    .gap_2()
+                                    .gap(px(SPACE_SM))
                                     .when(
                                         plat && (key.ends_with(".account") || key.ends_with(".bot"))
                                             && row["picture"].is_null(),
@@ -988,7 +1140,7 @@ impl Render for Sections {
                                         |line| {
                                             line.child(
                                                 div()
-                                                    .size(px(24.))
+                                                    .size(px(PICTURE))
                                                     .flex_shrink_0()
                                                     .flex()
                                                     .items_center()
@@ -1008,7 +1160,7 @@ impl Render for Sections {
                                         line.child(
                                             img(std::path::PathBuf::from(file))
                                                 .id(SharedString::from(format!("picture-{key}")))
-                                                .size(px(if plat { 24. } else { 20. }))
+                                                .size(px(if plat { PICTURE } else { 20. }))
                                                 .rounded_full()
                                                 .flex_shrink_0()
                                                 .object_fit(ObjectFit::Cover),
@@ -1038,10 +1190,10 @@ impl Render for Sections {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(11.))
+                            .gap(px(SPACE_MD))
                             .child(
                                 div()
-                                    .w(px(107.))
+                                    .w(px(LABEL_WIDTH))
                                     .flex_shrink_0()
                                     .text_right()
                                     .text_color(cx.theme().muted_foreground)
@@ -1051,18 +1203,17 @@ impl Render for Sections {
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap(px(7.))
+                                    .gap(px(SPACE_SM))
                                     .flex_1()
                                     .min_w_0()
-                                    .when(row["picture"].is_null(), |line| line.pl(px(34.)))
+                                    .when(row["picture"].is_null(), |line| line.pl(px(PICTURE + SPACE_SM)))
                                     .when_some(row["picture"].as_str(), |line, file| {
                                         line.child(
                                             img(std::path::PathBuf::from(file))
                                                 .id(SharedString::from(format!("picture-{key}")))
-                                                .size(px(24.))
+                                                .size(px(PICTURE))
                                                 .rounded_full()
                                                 .flex_shrink_0()
-                                                .mr(px(3.))
                                                 .object_fit(ObjectFit::Cover),
                                         )
                                     })
@@ -1094,8 +1245,7 @@ impl Render for Sections {
                         div()
                             .flex()
                             .items_center()
-                            .gap_2()
-                            .text_size(px(13.5))
+                            .gap(px(SPACE_SM))
                             .text_color(color)
                             .child(Icon::empty().path(format!("icons/{icon}.svg")).small().flex_shrink_0())
                             .child(
@@ -1108,47 +1258,36 @@ impl Render for Sections {
                 } else if !label.is_empty() {
                     text = text.child(
                         div()
-                            .when(roomy, |label| label.h(px(19.)).line_height(px(15.)))
+                            .when(logo, |label| {
+                                label
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_size(px(FONT_SECTION_TITLE))
+                                    .line_height(px(LINE_SECTION_TITLE))
+                            })
                             .child(label),
                     );
                 }
                 if !about.is_empty() && !channel {
                     text = text.child(
-                        div()
-                            .when(!roomy, |about| about.px(px(3.)).text_size(px(13.4)))
-                            .when(about_only && !roomy, |about| {
-                                about.min_h(px(36.)).flex().flex_col().justify_center()
-                            })
-                            .when(about_only && !roomy && section_index > 0 && !after_cards, |about| {
-                                about.mt(px(4.)).line_height(px(17.))
-                            })
-                            // Under cards: a quiet note, close to them.
-                            .when(about_only && after_cards, |about| about.mt(px(6.)).line_height(px(17.)))
-                            .when(roomy, |about| {
-                                about.relative().top(px(-1.)).text_size(px(12.)).line_height(px(14.))
-                            })
-                            .text_color(crate::theme::quiet(cx))
-                            .children(about.split('\n').map(|line| div().child(line.to_owned()))),
+                        quiet_lines(&about, FONT_CAPTION, LINE_CAPTION, cx)
+                            .when(!about_only, |about| about.mt(px(SPACE_XS))),
                     );
                 }
                 let mut line = div()
                     .flex()
                     .items_center()
-                    .gap(px(if roomy { 16. } else { 12. }))
-                    .min_h(px(26.))
+                    .gap(px(if roomy { SPACE_LG } else { SPACE_MD }))
+                    .min_h(px(CONTROL_HEIGHT))
                     .w_full();
                 // Narrow: a select or buttons go under the text, a switch stays beside it.
                 let stacked = roomy && self.compact && row["control"].is_object() && row["control"]["type"] != "switch";
                 if stacked {
-                    line = line.flex_col().items_stretch().gap(px(0.)).pb(px(14.));
+                    line = line.flex_col().items_stretch().gap(px(SPACE_SM));
                 }
-                if roomy {
-                    text = text.pb(px(if stacked { 7. } else { 12. }));
-                    if row["logo"] == true {
-                        text = text.self_start();
-                    }
+                if roomy && logo {
+                    text = text.self_start();
                 }
-                if row["logo"] == true {
+                if logo {
                     line = line
                         .min_h(px(64.))
                         .child(img("brands/streamerz.svg").id("app-logo").size(px(56.)).flex_shrink_0());
@@ -1156,14 +1295,14 @@ impl Render for Sections {
                     line = line.child(super::body::brand_logo(
                         SharedString::from(format!("logo-{key}")),
                         brand,
-                        px(28.),
+                        px(CONTROL_HEIGHT),
                         cx,
                     ));
                 } else if let Some(icon) = row["icon"].as_str().filter(|i| !i.is_empty()) {
                     line = line.child(super::body::brand_logo(
                         SharedString::from(format!("logo-{key}")),
                         icon,
-                        px(28.),
+                        px(CONTROL_HEIGHT),
                         cx,
                     ));
                 }
@@ -1182,21 +1321,194 @@ impl Render for Sections {
                 if beside {
                     line = line.child(div().ml_auto().max_w_full().child(self.control(row, &key, cx)));
                 }
-                block = block.child(line);
+                let gap = match (placed, after_heading && about_only) {
+                    (false, _) => 0.,
+                    (true, true) => SPACE_XS,
+                    (true, false) => SPACE_SM,
+                };
+                block = stack(block, gap, line);
+                (placed, after_heading) = (true, false);
             }
             if !flowing.is_empty() {
-                block = block.child(div().flex().gap_3().w_full().min_h(px(30.)).children(flowing.drain(..)));
+                let line = div()
+                    .flex()
+                    .gap(px(SPACE_MD))
+                    .w_full()
+                    .min_h(px(CONTROL_HEIGHT))
+                    .children(flowing.drain(..));
+                block = stack(block, if placed { SPACE_SM } else { 0. }, line);
             }
             if boxed {
                 wide = true;
                 cards.push(card_frame(section_index, block, cx).into_any_element());
             } else {
-                page = page.child(block);
+                parts.push((Part::Content, block.into_any_element()));
             }
         }
         if !cards.is_empty() {
-            page = page.child(grid(&mut cards, &mut wide));
+            parts.push((Part::Content, grid(&mut cards, &mut wide)));
         }
-        page.pb_4()
+        let mut page = div()
+            .id(SharedString::from(format!("sections-{}", self.domain)))
+            .flex()
+            .flex_col()
+            .w_full();
+        let mut before = None;
+        for (part, el) in parts {
+            let gap = before.map_or(0., |before| gap_above(before, part));
+            page = stack(page, gap, el);
+            before = Some(part);
+        }
+        page
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{gap_above, only_text, Part};
+    use serde_json::json;
+
+    #[test]
+    fn gaps_follow_the_page_pattern() {
+        // A guide is 12 from what follows, a toolbar 8, sections 16 apart, a note 12 under its content.
+        assert_eq!(gap_above(Part::Guide, Part::Content), 12.);
+        assert_eq!(gap_above(Part::Guide, Part::Toolbar), 12.);
+        assert_eq!(gap_above(Part::Toolbar, Part::Content), 8.);
+        assert_eq!(gap_above(Part::Error, Part::Content), 8.);
+        assert_eq!(gap_above(Part::Content, Part::Content), 16.);
+        assert_eq!(gap_above(Part::Content, Part::Note), 12.);
+    }
+
+    #[test]
+    fn an_introduction_is_a_row_of_only_text() {
+        assert!(only_text(&json!({"about": "Pick whose chat to read."})));
+        assert!(only_text(&json!({"about": "Hint", "control": {"type": "buttons"}})));
+        assert!(!only_text(&json!({"about": "Hint", "label": "Theme"})));
+        assert!(!only_text(&json!({"about": "Hint", "value": "x"})));
+        assert!(!only_text(&json!({"label": "Theme"})));
+    }
+
+    #[cfg(feature = "test-support")]
+    mod ui {
+        use super::super::Sections;
+        use gpui_kit::test::{TestEventExt, TestQueryExt, TestWindowExt};
+        use gpui_kit::{
+            div, px, size, AppContext, Bounds, Entity, IntoElement, ParentElement, Render, Styled, TestAppContext,
+            Window, WindowBounds, WindowOptions,
+        };
+        use serde_json::json;
+
+        struct SectionsHost(Option<Entity<Sections>>);
+        impl Render for SectionsHost {
+            fn render(&mut self, _: &mut Window, _: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+                div().size_full().p_4().children(self.0.clone())
+            }
+        }
+
+        #[gpui_kit::test]
+        fn search_filters_sections_by_title_label_about_tip_and_shows_no_matches(cx: &mut TestAppContext) {
+            cx.update(|cx| {
+                gpui_kit::init(cx);
+                crate::theme::apply(true, cx);
+            });
+            let model = json!({
+                "domain": "settings",
+                "searchHint": "Search settings",
+                "sections": [
+                    {
+                        "title": "Appearance",
+                        "rows": [
+                            {"key": "theme", "label": "Theme", "about": "Dark or light", "tip": "Restart not needed"}
+                        ]
+                    },
+                    {
+                        "title": "Audio",
+                        "rows": [
+                            {"key": "device", "label": "Microphone", "about": "Input device", "tip": "USB audio supported"}
+                        ]
+                    }
+                ]
+            });
+            let host_slot: std::rc::Rc<std::cell::RefCell<Option<Entity<SectionsHost>>>> =
+                std::rc::Rc::new(std::cell::RefCell::new(None));
+            let s = host_slot.clone();
+            let window = cx.update(|cx| {
+                let bounds = Bounds {
+                    origin: gpui_kit::Point::default(),
+                    size: size(px(800.), px(600.)),
+                };
+                let (window, _) = gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        ..Default::default()
+                    },
+                    cx,
+                    move |_, cx| {
+                        let host = cx.new(|_| SectionsHost(None));
+                        *s.borrow_mut() = Some(host.clone());
+                        host
+                    },
+                )
+                .expect("open test window");
+                window.downcast::<gpui_kit::base::Root>().expect("root window")
+            });
+            let host = host_slot.borrow().clone().expect("host created");
+            let sections = cx
+                .update_window(window.into(), |_, window, cx| {
+                    let sections = cx.new(|cx| Sections::new(model, "settings".into(), window, cx));
+                    host.update(cx, |host, cx| {
+                        host.0 = Some(sections.clone());
+                        cx.notify();
+                    });
+                    sections
+                })
+                .unwrap();
+            let no_matches = crate::i18n::tr("lists.no_matches");
+
+            let type_query = |text: &str, sections: &Entity<Sections>, window: &mut Window, cx: &mut gpui_kit::App| {
+                let search = sections.read(cx).search.clone().expect("search input");
+                search.update(cx, |input, cx| input.focus(window, cx));
+                window.key_down("ctrl-a", false, cx);
+                window.key_up("ctrl-a", cx);
+                if text.is_empty() {
+                    window.key_down("backspace", false, cx);
+                    window.key_up("backspace", cx);
+                } else {
+                    window.input(text, cx);
+                }
+            };
+
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert!(window.try_find_by_label(no_matches).is_none());
+                // Search by row tip keeps Audio (no no-matches notice).
+                type_query("USB audio", &sections, window, cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert!(window.try_find_by_label(no_matches).is_none());
+
+                // Unmatched query renders the shared no-matches notice.
+                type_query("zzz-nomatch", &sections, window, cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert!(window.try_find_by_label(no_matches).is_some());
+
+                // Clearing search restores sections and hides no-matches notice.
+                type_query("", &sections, window, cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert!(window.try_find_by_label(no_matches).is_none());
+            })
+            .unwrap();
+        }
     }
 }

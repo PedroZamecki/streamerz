@@ -3,10 +3,11 @@
 //! @name typed in the box works too (for what can't be searched). The core supplies the model (`finder`),
 //! searches (`StreamerzSearchChannels`) and reads the pick (`<platform>.set_channel`, `.own_channel`).
 use crate::send;
+use crate::theme::{CONTROL_HEIGHT, FONT_CAPTION, LINE_CAPTION, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XS};
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
-    ActiveTheme, Disableable, Icon, WindowExt,
+    ActiveTheme, Disableable, Icon, Sizable, WindowExt,
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -125,12 +126,11 @@ impl Finder {
         if number != self.asked {
             return;
         }
-        if value["status"] == "error" {
+        if let Some(err) = crate::error::StreamerzError::from_response(&value) {
             self.rows.clear();
             self.selected = None;
-            // Shown as a sentence (the core's errors start in lower case).
-            let error = value["error"].as_str().unwrap_or_default();
-            let mut chars = error.chars();
+            let text = err.summary_line();
+            let mut chars = text.chars();
             self.status = chars
                 .next()
                 .map(|first| first.to_uppercase().chain(chars).collect())
@@ -211,6 +211,7 @@ impl Finder {
     /// The finder's buttons, for its dialog's footer: "Use my own channel" apart, OK and Cancel at the right.
     fn buttons(&self, cx: &mut Context<Self>) -> Div {
         let own = Button::new("find-own")
+            .h(px(CONTROL_HEIGHT))
             .icon(Icon::empty().path("icons/user.svg"))
             .label(self.label("own"))
             .on_click(cx.listener(|finder, _, window, cx| finder.own(window, cx)))
@@ -218,9 +219,10 @@ impl Finder {
         let typed = !self.input.read(cx).value().trim().is_empty();
         let right = div()
             .flex()
-            .gap_2()
+            .gap(px(SPACE_SM))
             .child(
                 Button::new("find-ok")
+                    .h(px(CONTROL_HEIGHT))
                     .primary()
                     .label(self.label("ok"))
                     .disabled(self.selected.is_none() && !typed)
@@ -228,6 +230,7 @@ impl Finder {
             )
             .child(
                 Button::new("find-cancel")
+                    .h(px(CONTROL_HEIGHT))
                     .label(self.label("cancel"))
                     .on_click(|_, window, cx| crate::controls::dialog::dismiss(window, cx)),
             );
@@ -240,15 +243,17 @@ impl Finder {
 }
 
 impl Render for Finder {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let muted = theme.muted_foreground;
         let header = div()
             .flex()
             .items_center()
-            .gap_2()
-            .px_2()
-            .text_size(px(12.))
+            .gap(px(SPACE_SM))
+            .px(px(SPACE_MD))
+            .text_size(px(FONT_CAPTION))
+            .line_height(px(LINE_CAPTION))
+            .font_weight(FontWeight::BOLD)
             .text_color(muted)
             .child(div().w(px(24.)).flex_shrink_0())
             .child(div().flex_1().min_w_0().child(self.label("channel")))
@@ -256,7 +261,7 @@ impl Render for Finder {
             .child(div().w(px(56.)).flex_shrink_0());
         let mut list = div()
             .id("find-rows")
-            .h(px(260.))
+            .h(px(super::dialog::fit_height(280., 140., 300., window)))
             .overflow_y_scroll()
             .flex()
             .flex_col()
@@ -271,7 +276,7 @@ impl Render for Finder {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .px_6()
+                    .px(px(SPACE_LG))
                     .text_color(muted)
                     // A long message (an error) wraps inside the list, centred.
                     .child(div().w_full().text_center().child(self.status.clone())),
@@ -285,9 +290,9 @@ impl Render for Finder {
                     .id(("find-row", at))
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .h(px(36.))
-                    .px_2()
+                    .gap(px(SPACE_SM))
+                    .h(px(CONTROL_HEIGHT))
+                    .px(px(SPACE_MD))
                     .flex_shrink_0()
                     .cursor_pointer()
                     .when(selected, |line| line.bg(theme.muted))
@@ -339,7 +344,7 @@ impl Render for Finder {
                     .child(div().w(px(56.)).flex_shrink_0().when(row["live"] == true, |live| {
                         live.flex()
                             .items_center()
-                            .gap_1()
+                            .gap(px(SPACE_XS))
                             .text_color(theme.danger)
                             .child(div().size(px(7.)).rounded_full().bg(theme.danger))
                             .child(self.label("live"))
@@ -362,12 +367,20 @@ impl Render for Finder {
             .id("channel-finder")
             .flex()
             .flex_col()
-            .gap_2()
-            .child(Input::new(&self.input))
+            .gap(px(SPACE_SM))
+            .child(Input::new(&self.input).small().min_h(px(CONTROL_HEIGHT)))
             .when(self.model["searchable"] == true, |column| {
                 column.child(header).child(list)
             })
-            .when_some(note, |column, note| column.child(div().text_color(muted).child(note)))
+            .when_some(note, |column, note| {
+                column.child(
+                    div()
+                        .text_size(px(FONT_CAPTION))
+                        .line_height(px(LINE_CAPTION))
+                        .text_color(muted)
+                        .child(note),
+                )
+            })
     }
 }
 
@@ -379,5 +392,117 @@ impl Render for FinderButtons {
             Some(finder) => finder.update(cx, |finder, cx| finder.buttons(cx)).into_any_element(),
             None => div().into_any_element(),
         }
+    }
+}
+
+#[cfg(all(test, feature = "test-support"))]
+mod tests {
+    use super::Finder;
+    use gpui_kit::test::{TestEventExt, TestWindowExt};
+    use gpui_kit::{
+        div, px, size, AppContext, Bounds, Entity, IntoElement, ParentElement, Render, Styled, TestAppContext, Window,
+        WindowBounds, WindowOptions,
+    };
+    use serde_json::json;
+
+    struct FinderHost(Entity<Finder>);
+    impl Render for FinderHost {
+        fn render(&mut self, _: &mut Window, _: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+            div().size_full().p_4().child(self.0.clone())
+        }
+    }
+
+    #[gpui_kit::test]
+    fn channel_finder_drops_stale_results_and_clears_on_empty_query(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::theme::apply(true, cx);
+        });
+        let model = json!({
+            "platform": "twitch",
+            "searchable": true,
+            "placeholder": "Search channels",
+            "typed": "",
+            "labels": {
+                "empty": "Type to search.",
+                "searching": "Searching...",
+                "none": "Nothing found.",
+                "channel": "Channel",
+                "followers": "Followers",
+                "live": "LIVE",
+                "own": "Use my own channel",
+                "ok": "OK",
+                "cancel": "Cancel"
+            }
+        });
+        let slot: std::rc::Rc<std::cell::RefCell<Option<Entity<Finder>>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let s = slot.clone();
+        let window = cx.update(|cx| {
+            let bounds = Bounds {
+                origin: gpui_kit::Point::default(),
+                size: size(px(640.), px(520.)),
+            };
+            let (window, _) = gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    ..Default::default()
+                },
+                cx,
+                move |window, cx| {
+                    let finder = cx.new(|cx| Finder::new(model, "accounts".into(), window, cx));
+                    *s.borrow_mut() = Some(finder.clone());
+                    cx.new(|_| FinderHost(finder))
+                },
+            )
+            .expect("open test window");
+            window.downcast::<gpui_kit::base::Root>().expect("root window")
+        });
+        let finder = slot.borrow().clone().expect("finder created");
+
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            finder.update(cx, |finder, cx| finder.focus(window, cx));
+            window.input("streamer", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            let asked = finder.read(cx).asked;
+            // Stale response with older search number is ignored.
+            finder.update(cx, |finder, cx| {
+                finder.found(
+                    asked.saturating_sub(1),
+                    json!({"channels": [{"handle": "old", "name": "Old"}]}),
+                    cx,
+                );
+            });
+            assert!(finder.read(cx).rows.is_empty());
+
+            // Matching response populates rows and selects the first result.
+            finder.update(cx, |finder, cx| {
+                finder.found(
+                    asked,
+                    json!({"channels": [{"handle": "streamerz", "name": "Streamerz", "detail": "100"}]}),
+                    cx,
+                );
+            });
+            assert_eq!(finder.read(cx).rows.len(), 1);
+            assert_eq!(finder.read(cx).selected, Some(0));
+
+            // Clearing the query clears rows and restores the empty prompt.
+            window.key_down("ctrl-a", false, cx);
+            window.key_up("ctrl-a", cx);
+            window.key_down("backspace", false, cx);
+            window.key_up("backspace", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, _, cx| {
+            assert!(finder.read(cx).rows.is_empty());
+            assert_eq!(finder.read(cx).selected, None);
+            assert_eq!(finder.read(cx).status, "Type to search.");
+        })
+        .unwrap();
     }
 }
