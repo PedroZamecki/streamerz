@@ -1,0 +1,1340 @@
+[
+  {
+    "name": "twitch: moderation tools (messages, terms, requests, chat and AutoMod settings, lists)",
+    "fakes": {
+      "twitch": {
+        "resolve": {
+          "troll": "666"
+        },
+        "POST moderation/blocked_terms": {
+          "data": [
+            {
+              "id": "t1",
+              "text": "badword"
+            }
+          ]
+        },
+        "GET moderation/blocked_terms": {
+          "data": [
+            {
+              "id": "t1",
+              "text": "badword"
+            },
+            {
+              "id": "t2",
+              "text": "worse"
+            }
+          ]
+        },
+        "PATCH moderation/unban_requests": {
+          "data": [
+            {
+              "id": "ur1",
+              "status": "denied"
+            }
+          ]
+        },
+        "GET moderation/unban_requests": {
+          "data": [
+            {
+              "id": "ur1",
+              "user_id": "666",
+              "user_login": "troll",
+              "user_name": "Troll",
+              "status": "pending",
+              "text": "sorry"
+            }
+          ]
+        },
+        "GET chat/settings": {
+          "data": [
+            {
+              "emote_mode": true,
+              "follower_mode": false,
+              "follower_mode_duration": 0,
+              "slow_mode": true,
+              "slow_mode_wait_time": 30,
+              "subscriber_mode": false,
+              "unique_chat_mode": true,
+              "non_moderator_chat_delay": false,
+              "non_moderator_chat_delay_duration": null
+            }
+          ]
+        },
+        "GET moderation/automod/settings": {
+          "data": [
+            {
+              "overall_level": 0,
+              "aggression": 1,
+              "bullying": 2,
+              "disability": 0,
+              "misogyny": 0,
+              "race_ethnicity_or_religion": 0,
+              "sex_based_terms": 0,
+              "sexuality_sex_or_gender": 0,
+              "swearing": 1
+            }
+          ]
+        },
+        "PUT moderation/automod/settings": {
+          "data": [
+            {
+              "overall_level": 0,
+              "aggression": 3,
+              "bullying": 2,
+              "disability": 0,
+              "misogyny": 0,
+              "race_ethnicity_or_religion": 0,
+              "sex_based_terms": 0,
+              "sexuality_sex_or_gender": 0,
+              "swearing": 1
+            }
+          ]
+        },
+        "POST moderation/enforcements/status": {
+          "data": [
+            {
+              "msg_id": "x1",
+              "is_permitted": true
+            }
+          ]
+        },
+        "GET moderation/banned": {
+          "data": [
+            {
+              "user_id": "666",
+              "user_login": "troll",
+              "user_name": "Troll",
+              "expires_at": "",
+              "reason": "spam",
+              "moderator_name": "Mod"
+            }
+          ]
+        },
+        "GET moderation/moderators": {
+          "data": [
+            {
+              "user_id": "3",
+              "user_login": "mod",
+              "user_name": "Mod"
+            }
+          ]
+        },
+        "GET channels/vips": {
+          "data": [
+            {
+              "user_id": "4",
+              "user_login": "vip",
+              "user_name": "Vip"
+            }
+          ]
+        }
+      }
+    },
+    "actions": [
+      {
+        "name": "delete",
+        "subActions": [
+          {
+            "type": 581,
+            "messageId": "m1"
+          }
+        ]
+      },
+      {
+        "name": "automod",
+        "subActions": [
+          {
+            "type": 582,
+            "messageId": "m2",
+            "action": "Deny"
+          },
+          {
+            "type": 593,
+            "msgId": "x1",
+            "message": "hello"
+          }
+        ]
+      },
+      {
+        "name": "terms",
+        "subActions": [
+          {
+            "type": 583,
+            "text": "badword"
+          },
+          {
+            "type": 584,
+            "termId": "t1"
+          },
+          {
+            "type": 585
+          }
+        ]
+      },
+      {
+        "name": "requests",
+        "subActions": [
+          {
+            "type": 586,
+            "unbanRequestId": "ur1",
+            "status": "Deny",
+            "resolutionText": "no"
+          },
+          {
+            "type": 587,
+            "status": "Pending"
+          }
+        ]
+      },
+      {
+        "name": "modes",
+        "subActions": [
+          {
+            "type": 588,
+            "status": false
+          },
+          {
+            "type": 589,
+            "status": true,
+            "duration": 4
+          },
+          {
+            "type": 590
+          }
+        ]
+      },
+      {
+        "name": "settings",
+        "subActions": [
+          {
+            "type": 591
+          },
+          {
+            "type": 592,
+            "aggression": 3
+          }
+        ]
+      },
+      {
+        "name": "lists",
+        "subActions": [
+          {
+            "type": 594,
+            "userLogin": "troll"
+          },
+          {
+            "type": 595
+          },
+          {
+            "type": 596
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "delete"
+      },
+      {
+        "run": "automod"
+      },
+      {
+        "run": "terms"
+      },
+      {
+        "run": "requests"
+      },
+      {
+        "run": "modes"
+      },
+      {
+        "run": "settings"
+      },
+      {
+        "run": "lists"
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "call": "DELETE moderation/chat",
+          "query": {
+            "message_id": "m1"
+          }
+        },
+        {
+          "call": "POST moderation/automod/message",
+          "body": {
+            "msg_id": "m2",
+            "action": "DENY"
+          }
+        },
+        {
+          "call": "POST moderation/enforcements/status",
+          "body": {
+            "data": [
+              {
+                "msg_id": "x1",
+                "msg_text": "hello"
+              }
+            ]
+          }
+        },
+        {
+          "call": "POST moderation/blocked_terms",
+          "body": {
+            "text": "badword"
+          }
+        },
+        {
+          "call": "DELETE moderation/blocked_terms",
+          "query": {
+            "id": "t1"
+          }
+        },
+        {
+          "call": "GET moderation/blocked_terms"
+        },
+        {
+          "call": "PATCH moderation/unban_requests",
+          "query": {
+            "unban_request_id": "ur1",
+            "status": "denied",
+            "resolution_text": "no"
+          }
+        },
+        {
+          "call": "GET moderation/unban_requests",
+          "query": {
+            "status": "pending"
+          }
+        },
+        {
+          "call": "PATCH chat/settings",
+          "body": {
+            "unique_chat_mode": false
+          }
+        },
+        {
+          "call": "PATCH chat/settings",
+          "body": {
+            "non_moderator_chat_delay": true,
+            "non_moderator_chat_delay_duration": 4
+          }
+        },
+        {
+          "call": "GET chat/settings"
+        },
+        {
+          "call": "GET moderation/automod/settings"
+        },
+        {
+          "call": "GET moderation/automod/settings"
+        },
+        {
+          "call": "PUT moderation/automod/settings",
+          "body": {
+            "aggression": 3,
+            "bullying": 2,
+            "swearing": 1
+          }
+        },
+        {
+          "call": "GET moderation/banned",
+          "query": {
+            "user_id": "666"
+          }
+        },
+        {
+          "call": "GET moderation/moderators"
+        },
+        {
+          "call": "GET channels/vips"
+        }
+      ],
+      "runs": [
+        {
+          "action": "delete",
+          "after": {
+            "deleteMessageResult": true
+          }
+        },
+        {
+          "action": "automod",
+          "after": {
+            "resolveAutoModResult": true,
+            "autoModStatusResult": true,
+            "isPermitted": true
+          }
+        },
+        {
+          "action": "terms",
+          "after": {
+            "blockedTermResult": true,
+            "blockedTermId": "t1",
+            "removeBlockedTermResult": true,
+            "blockedTermCount": 2,
+            "blockedTerm1.text": "worse"
+          }
+        },
+        {
+          "action": "requests",
+          "after": {
+            "resolveUnbanRequestResult": true,
+            "unbanRequestStatus": "denied",
+            "unbanRequestCount": 1,
+            "unbanRequest0.userLogin": "troll",
+            "unbanRequest0.text": "sorry"
+          }
+        },
+        {
+          "action": "modes",
+          "after": {
+            "uniqueModeEnabled": false,
+            "chatDelayEnabled": true,
+            "emoteMode": true,
+            "slowModeWaitTime": 30,
+            "uniqueChatMode": true
+          }
+        },
+        {
+          "action": "settings",
+          "after": {
+            "updateAutoModSettingsResult": true,
+            "automod.aggression": 3,
+            "automod.bullying": 2
+          }
+        },
+        {
+          "action": "lists",
+          "after": {
+            "bannedUserCount": 1,
+            "bannedUser0.userLogin": "troll",
+            "bannedUser0.reason": "spam",
+            "moderatorCount": 1,
+            "moderator0.userLogin": "mod",
+            "vipCount": 1,
+            "vip0.userName": "Vip"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "kick: delete a message",
+    "fakes": {
+      "kick": {}
+    },
+    "actions": [
+      {
+        "name": "del",
+        "subActions": [
+          {
+            "type": 35044,
+            "messageId": "k-msg-1"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "del"
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "kick",
+          "call": "deleteMessage",
+          "messageId": "k-msg-1"
+        }
+      ],
+      "runs": [
+        {
+          "action": "del",
+          "after": {
+            "deleteMessageResult": true
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "youtube: unban, delete a message, add and remove a moderator",
+    "fakes": {
+      "youtube": {}
+    },
+    "actions": [
+      {
+        "name": "yt",
+        "subActions": [
+          {
+            "type": 4015,
+            "banId": "ban-1"
+          },
+          {
+            "type": 4016,
+            "messageId": "yt-msg-1"
+          },
+          {
+            "type": 4017,
+            "broadcast": "video1",
+            "userId": "UCmod"
+          },
+          {
+            "type": 4018,
+            "broadcast": "video1",
+            "moderatorId": "mod-9",
+            "userId": "UCmod"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "yt"
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "youtube",
+          "call": "removeBan",
+          "id": "ban-1"
+        },
+        {
+          "platform": "youtube",
+          "call": "deleteMessage",
+          "messageId": "yt-msg-1"
+        },
+        {
+          "platform": "youtube",
+          "call": "addModerator",
+          "broadcast": "video1",
+          "userId": "UCmod"
+        },
+        {
+          "platform": "youtube",
+          "call": "removeModerator",
+          "broadcast": "video1",
+          "moderatorId": "mod-9",
+          "userId": "UCmod"
+        }
+      ],
+      "runs": [
+        {
+          "action": "yt",
+          "after": {
+            "unbanResult": true,
+            "banId": "ban-1",
+            "deleteMessageResult": true,
+            "addModeratorResult": true,
+            "moderatorId": "fake-mod-id",
+            "removeModeratorResult": true
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "core: cross-platform ban, timeout, unban and linked person lookup",
+    "config": {
+      "moderation_links": [
+        {
+          "id": "p1",
+          "name": "Troll",
+          "twitch": "666",
+          "kick": "777",
+          "youtube": "UCtroll",
+          "tiktok": ""
+        }
+      ]
+    },
+    "fakes": {
+      "twitch": {},
+      "kick": {},
+      "youtube": {}
+    },
+    "actions": [
+      {
+        "name": "ban",
+        "subActions": [
+          {
+            "type": 99700,
+            "person": "Troll",
+            "reason": "spam"
+          }
+        ]
+      },
+      {
+        "name": "timeout",
+        "subActions": [
+          {
+            "type": 99701,
+            "person": "Troll",
+            "duration": 60,
+            "reason": "calm",
+            "youtube": false
+          }
+        ]
+      },
+      {
+        "name": "unban",
+        "subActions": [
+          {
+            "type": 99702,
+            "person": "p1",
+            "youtube": false
+          }
+        ]
+      },
+      {
+        "name": "lookup",
+        "subActions": [
+          {
+            "type": 99703,
+            "person": "UCtroll"
+          }
+        ]
+      },
+      {
+        "name": "missing",
+        "subActions": [
+          {
+            "type": 99702,
+            "person": "nobody"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "ban"
+      },
+      {
+        "run": "timeout"
+      },
+      {
+        "run": "unban"
+      },
+      {
+        "run": "lookup"
+      },
+      {
+        "run": "missing"
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "twitch",
+          "call": "POST moderation/bans",
+          "body": {
+            "data": {
+              "user_id": "666",
+              "reason": "spam"
+            }
+          }
+        },
+        {
+          "platform": "kick",
+          "call": "banId",
+          "userId": 777,
+          "reason": "spam"
+        },
+        {
+          "platform": "youtube",
+          "call": "ban",
+          "userId": "UCtroll"
+        },
+        {
+          "platform": "twitch",
+          "call": "POST moderation/bans",
+          "body": {
+            "data": {
+              "user_id": "666",
+              "duration": 60,
+              "reason": "calm"
+            }
+          }
+        },
+        {
+          "platform": "kick",
+          "call": "banId",
+          "userId": 777,
+          "duration": 60
+        },
+        {
+          "platform": "twitch",
+          "call": "DELETE moderation/bans",
+          "query": {
+            "user_id": "666"
+          }
+        },
+        {
+          "platform": "kick",
+          "call": "unbanId",
+          "userId": 777
+        }
+      ],
+      "runs": [
+        {
+          "action": "ban",
+          "after": {
+            "moderationResult": true,
+            "succeededCount": 3,
+            "failedCount": 0,
+            "linkedPersonName": "Troll"
+          }
+        },
+        {
+          "action": "timeout",
+          "after": {
+            "moderationResult": true,
+            "succeededCount": 2
+          }
+        },
+        {
+          "action": "unban",
+          "after": {
+            "moderationResult": true,
+            "succeededCount": 2
+          }
+        },
+        {
+          "action": "lookup",
+          "after": {
+            "linkedPersonFound": true,
+            "linkedTwitchId": "666",
+            "linkedKickId": "777"
+          }
+        },
+        {
+          "action": "missing",
+          "after": {
+            "moderationResult": false,
+            "linkedPersonFound": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "core: link and unlink identities, then delete a message on each platform",
+    "fakes": {
+      "twitch": {},
+      "kick": {},
+      "youtube": {}
+    },
+    "actions": [
+      {
+        "name": "link",
+        "subActions": [
+          {
+            "type": 99704,
+            "name": "Alex",
+            "twitch": "11",
+            "kick": "22",
+            "youtube": "UCalex",
+            "tiktok": "@alex_tt"
+          }
+        ]
+      },
+      {
+        "name": "unlink",
+        "subActions": [
+          {
+            "type": 99705,
+            "person": "Alex",
+            "platform": "Kick"
+          }
+        ]
+      },
+      {
+        "name": "delete",
+        "subActions": [
+          {
+            "type": 99706,
+            "platform": "Twitch",
+            "messageId": "tw-1"
+          },
+          {
+            "type": 99706,
+            "platform": "Kick",
+            "messageId": "ki-1"
+          },
+          {
+            "type": 99706,
+            "platform": "YouTube",
+            "messageId": "yt-1"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "run": "link"
+      },
+      {
+        "run": "unlink"
+      },
+      {
+        "run": "delete"
+      }
+    ],
+    "expect": {
+      "calls": [
+        {
+          "platform": "twitch",
+          "call": "DELETE moderation/chat",
+          "query": {
+            "message_id": "tw-1"
+          }
+        },
+        {
+          "platform": "kick",
+          "call": "deleteMessage",
+          "messageId": "ki-1"
+        },
+        {
+          "platform": "youtube",
+          "call": "deleteMessage",
+          "messageId": "yt-1"
+        }
+      ],
+      "runs": [
+        {
+          "action": "link",
+          "after": {
+            "linkSuccess": true,
+            "linkedPersonName": "Alex",
+            "linkedTikTokId": "alex_tt"
+          }
+        },
+        {
+          "action": "unlink",
+          "after": {
+            "unlinkSuccess": true
+          }
+        },
+        {
+          "action": "delete",
+          "after": {
+            "deleteMessageResult": true
+          }
+        }
+      ],
+      "config": {
+        "moderation_links": [
+          {
+            "name": "Alex",
+            "twitch": "11",
+            "kick": "",
+            "youtube": "UCalex",
+            "tiktok": "alex_tt"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "core: linked accounts raise their own triggers from platform moderation events",
+    "config": {
+      "moderation_links": [
+        {
+          "id": "p1",
+          "name": "Troll",
+          "twitch": "666",
+          "kick": "777",
+          "youtube": "UCtroll",
+          "tiktok": ""
+        }
+      ]
+    },
+    "actions": [
+      {
+        "name": "linked-ban",
+        "triggers": [
+          {
+            "type": 99701
+          }
+        ],
+        "subActions": [
+          {
+            "type": 10,
+            "text": "linked-ban %linkedPersonName% %sourcePlatform%"
+          }
+        ]
+      },
+      {
+        "name": "linked-timeout",
+        "triggers": [
+          {
+            "type": 99702
+          }
+        ],
+        "subActions": [
+          {
+            "type": 10,
+            "text": "linked-timeout %linkedPersonName% %sourcePlatform%"
+          }
+        ]
+      },
+      {
+        "name": "linked-unban",
+        "triggers": [
+          {
+            "type": 99703
+          }
+        ],
+        "subActions": [
+          {
+            "type": 10,
+            "text": "linked-unban %linkedPersonName% %sourcePlatform%"
+          }
+        ]
+      },
+      {
+        "name": "applied",
+        "triggers": [
+          {
+            "type": 99700
+          }
+        ],
+        "subActions": [
+          {
+            "type": 10,
+            "text": "applied %operation% %succeededCount%"
+          }
+        ]
+      },
+      {
+        "name": "cross",
+        "subActions": [
+          {
+            "type": 99700,
+            "person": "Troll",
+            "kick": false,
+            "youtube": false
+          }
+        ]
+      }
+    ],
+    "fakes": {
+      "twitch": {},
+      "kick": {}
+    },
+    "steps": [
+      {
+        "event": {
+          "platform": "twitch",
+          "type": "channel.ban",
+          "data": {
+            "user_id": "666",
+            "user_login": "troll",
+            "user_name": "Troll",
+            "moderator_user_id": "3",
+            "moderator_user_login": "mod",
+            "moderator_user_name": "Mod",
+            "reason": "spam",
+            "is_permanent": true
+          }
+        },
+        "ran": 1
+      },
+      {
+        "event": {
+          "platform": "twitch",
+          "type": "channel.ban",
+          "data": {
+            "user_id": "666",
+            "user_login": "troll",
+            "user_name": "Troll",
+            "moderator_user_id": "3",
+            "moderator_user_login": "mod",
+            "moderator_user_name": "Mod",
+            "reason": "",
+            "is_permanent": false,
+            "banned_at": "2026-01-01T00:00:00Z",
+            "ends_at": "2026-01-01T00:10:00Z"
+          }
+        },
+        "ran": 1
+      },
+      {
+        "event": {
+          "platform": "twitch",
+          "type": "channel.unban",
+          "data": {
+            "user_id": "666",
+            "user_login": "troll",
+            "user_name": "Troll",
+            "moderator_user_id": "3",
+            "moderator_user_login": "mod",
+            "moderator_user_name": "Mod"
+          }
+        },
+        "ran": 1
+      },
+      {
+        "event": {
+          "platform": "twitch",
+          "type": "channel.ban",
+          "data": {
+            "user_id": "999",
+            "user_login": "stranger",
+            "user_name": "Stranger",
+            "moderator_user_id": "3",
+            "moderator_user_login": "mod",
+            "moderator_user_name": "Mod",
+            "reason": "",
+            "is_permanent": true
+          }
+        },
+        "ran": 0
+      },
+      {
+        "run": "cross",
+        "ran": 1
+      }
+    ],
+    "expect": {
+      "chat": [
+        "linked-ban Troll twitch",
+        "linked-timeout Troll twitch",
+        "linked-unban Troll twitch",
+        "applied ban 1"
+      ],
+      "runs": [
+        {
+          "action": "linked-ban"
+        },
+        {
+          "action": "linked-timeout"
+        },
+        {
+          "action": "linked-unban"
+        },
+        {
+          "action": "cross"
+        },
+        {
+          "action": "applied"
+        }
+      ]
+    }
+  },
+  {
+    "name": "kick: deleted, pinned and unpinned messages and chat mode changes",
+    "actions": [
+      {
+        "name": "deleted",
+        "triggers": [
+          {
+            "type": 35028
+          }
+        ],
+        "subActions": [
+          {
+            "type": 10,
+            "text": "deleted"
+          }
+        ]
+      },
+      {
+        "name": "modes",
+        "triggers": [
+          {
+            "type": 35029
+          }
+        ],
+        "subActions": [
+          {
+            "type": 10,
+            "text": "modes"
+          }
+        ]
+      },
+      {
+        "name": "pinned",
+        "triggers": [
+          {
+            "type": 35030
+          }
+        ],
+        "subActions": [
+          {
+            "type": 10,
+            "text": "pinned"
+          }
+        ]
+      },
+      {
+        "name": "unpinned",
+        "triggers": [
+          {
+            "type": 35031
+          }
+        ],
+        "subActions": [
+          {
+            "type": 10,
+            "text": "unpinned"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "event": {
+          "platform": "kick",
+          "type": "App\\Events\\MessageDeletedEvent",
+          "channel": "streamer",
+          "data": {
+            "message": {
+              "id": "m1"
+            },
+            "deleted_by": {
+              "username": "Mod"
+            }
+          }
+        },
+        "ran": 1
+      },
+      {
+        "event": {
+          "platform": "kick",
+          "type": "App\\Events\\ChatroomUpdatedEvent",
+          "channel": "streamer",
+          "data": {
+            "emotes_mode": {
+              "enabled": true
+            },
+            "slow_mode": {
+              "enabled": true,
+              "message_interval": 10
+            },
+            "subscribers_mode": {
+              "enabled": false
+            },
+            "followers_mode": {
+              "enabled": false
+            }
+          }
+        },
+        "ran": 1
+      },
+      {
+        "event": {
+          "platform": "kick",
+          "type": "App\\Events\\PinnedMessageCreatedEvent",
+          "channel": "streamer",
+          "data": {
+            "message": {
+              "id": "m2",
+              "content": "hi",
+              "sender": {
+                "id": 5,
+                "username": "Ana"
+              }
+            },
+            "duration": "120",
+            "pinnedBy": {
+              "username": "Mod"
+            }
+          }
+        },
+        "ran": 1
+      },
+      {
+        "event": {
+          "platform": "kick",
+          "type": "App\\Events\\PinnedMessageDeletedEvent",
+          "channel": "streamer",
+          "data": {
+            "message": {
+              "id": "m2"
+            }
+          }
+        },
+        "ran": 1
+      }
+    ],
+    "expect": {
+      "chat": [
+        "deleted",
+        "modes",
+        "pinned",
+        "unpinned"
+      ],
+      "runs": [
+        {
+          "action": "deleted",
+          "args": {
+            "messageId": "m1",
+            "deletedBy": "Mod"
+          }
+        },
+        {
+          "action": "modes",
+          "args": {
+            "emoteMode": true,
+            "slowMode": true,
+            "slowModeInterval": 10
+          }
+        },
+        {
+          "action": "pinned",
+          "args": {
+            "messageId": "m2",
+            "user": "Ana",
+            "pinnedBy": "Mod",
+            "duration": 120
+          }
+        },
+        {
+          "action": "unpinned",
+          "args": {
+            "messageId": "m2"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "tiktok: deleted, pinned and unpinned messages",
+    "actions": [
+      {
+        "name": "deleted",
+        "triggers": [
+          {
+            "type": 41014
+          }
+        ],
+        "subActions": [
+          {
+            "type": 10,
+            "text": "deleted"
+          }
+        ]
+      },
+      {
+        "name": "pinned",
+        "triggers": [
+          {
+            "type": 41015
+          }
+        ],
+        "subActions": [
+          {
+            "type": 10,
+            "text": "pinned"
+          }
+        ]
+      },
+      {
+        "name": "unpinned",
+        "triggers": [
+          {
+            "type": 41016
+          }
+        ],
+        "subActions": [
+          {
+            "type": 10,
+            "text": "unpinned"
+          }
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "event": {
+          "platform": "tiktok",
+          "type": "roomPin",
+          "channel": "streamer",
+          "data": {
+            "action": 1,
+            "pinMsgId": "p1",
+            "chatMessage": {
+              "msgId": "t1",
+              "uniqueId": "ana_tt",
+              "nickname": "Ana",
+              "userId": "u1",
+              "comment": "pin me"
+            },
+            "operator": {
+              "nickname": "Mod"
+            }
+          }
+        },
+        "ran": 1
+      },
+      {
+        "event": {
+          "platform": "tiktok",
+          "type": "roomPin",
+          "channel": "streamer",
+          "data": {
+            "action": 2,
+            "pinMsgId": "p1",
+            "chatMessage": {
+              "msgId": "t1",
+              "uniqueId": "ana_tt",
+              "nickname": "Ana",
+              "userId": "u1",
+              "comment": "pin me"
+            },
+            "operator": {
+              "nickname": "Mod"
+            }
+          }
+        },
+        "ran": 1
+      },
+      {
+        "event": {
+          "platform": "tiktok",
+          "type": "messageDelete",
+          "channel": "streamer",
+          "data": {
+            "deleteMsgIds": [
+              "t1"
+            ],
+            "deleteUserIds": [
+              "u1"
+            ]
+          }
+        },
+        "ran": 1
+      }
+    ],
+    "expect": {
+      "chat": [
+        "pinned",
+        "unpinned",
+        "deleted"
+      ],
+      "runs": [
+        {
+          "action": "pinned",
+          "args": {
+            "messageId": "t1",
+            "pinnedBy": "Mod"
+          }
+        },
+        {
+          "action": "unpinned"
+        },
+        {
+          "action": "deleted",
+          "args": {
+            "messageId": "t1",
+            "userId": "u1"
+          }
+        }
+      ]
+    }
+  }
+]

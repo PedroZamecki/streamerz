@@ -149,6 +149,17 @@ pub fn new_sub(kind: u64) -> Obj {
         128 | 99900 => {
             o.insert("subActions".into(), json!([]));
         }
+        99700 | 99702 => {
+            o.insert("twitch".into(), true.into());
+            o.insert("kick".into(), true.into());
+            o.insert("youtube".into(), true.into());
+        }
+        99701 => {
+            o.insert("duration".into(), 600.into());
+            o.insert("twitch".into(), true.into());
+            o.insert("kick".into(), true.into());
+            o.insert("youtube".into(), true.into());
+        }
         _ => {}
     }
     for (k, v) in [

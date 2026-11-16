@@ -55,6 +55,7 @@ pub fn trigger_clean_title(name: &str) -> String {
         .or_else(|| name.strip_prefix("StreamElements"))
         .or_else(|| name.strip_prefix("StreamerBotRemoteInstance"))
         .or_else(|| name.strip_prefix("RemoteInstance"))
+        .or_else(|| name.strip_prefix("CrossPlatform"))
         .or_else(|| name.strip_prefix("VTubeStudio"))
         .or_else(|| name.strip_prefix("CrowdControl"))
         .or_else(|| name.strip_prefix("Throwing"))
@@ -239,11 +240,11 @@ pub fn trigger_categorize(name: &str) -> String {
     }
     // Kick
     else if let Some(rest) = name.strip_prefix("Kick") {
-        if rest.contains("Chat") || rest.contains("FirstWord") {
+        if rest.contains("Chat") || rest.contains("FirstWord") || rest.contains("Mode") || rest.contains("inned") {
             "Kick/Chat".into()
         } else if rest.contains("Sub") {
             "Kick/Subscriptions".into()
-        } else if rest.contains("Ban") || rest.contains("TimeOut") {
+        } else if rest.contains("Ban") || rest.contains("TimeOut") || rest.contains("Deleted") {
             "Kick/Moderation".into()
         } else if rest.contains("Reward") {
             "Kick/Rewards".into()
@@ -255,7 +256,7 @@ pub fn trigger_categorize(name: &str) -> String {
     }
     // TikTok
     else if let Some(rest) = name.strip_prefix("TikTok") {
-        if rest.contains("Chat") || rest.contains("Pin") {
+        if rest.contains("Chat") || rest.contains("Pin") || rest.contains("inned") || rest.contains("Deleted") {
             "TikTok/Chat".into()
         } else if rest.contains("Gift") {
             "TikTok/Gifts & Coins".into()
@@ -370,7 +371,9 @@ pub fn trigger_categorize(name: &str) -> String {
         "Servers & Remote/Custom Webhooks".into()
     }
     // Core & System
-    else if name.starts_with("ChatWindow") {
+    else if name.starts_with("CrossPlatform") {
+        "Core/Moderation".into()
+    } else if name.starts_with("ChatWindow") {
         "Core/Chat Window".into()
     } else if name.starts_with("Command") {
         "Core/Commands".into()
@@ -689,5 +692,36 @@ mod tests {
         assert!(desc35027.contains("ad break ends"));
         let desc41013 = trigger_description(41013, "TikTokRoomPin", "Room Pin", "TikTok/Chat");
         assert!(desc41013.contains("pinned or unpinned"));
+
+        assert_eq!(trigger_categorize("KickMessageDeleted"), "Kick/Moderation");
+        assert_eq!(trigger_categorize("KickChatModeChanged"), "Kick/Chat");
+        assert_eq!(trigger_categorize("KickMessagePinned"), "Kick/Chat");
+        assert_eq!(trigger_categorize("KickMessageUnpinned"), "Kick/Chat");
+        assert_eq!(trigger_categorize("TikTokMessageDeleted"), "TikTok/Chat");
+        assert_eq!(trigger_categorize("TikTokMessagePinned"), "TikTok/Chat");
+        assert_eq!(trigger_categorize("TikTokMessageUnpinned"), "TikTok/Chat");
+        for name in [
+            "CrossPlatformModerationApplied",
+            "CrossPlatformLinkedUserBanned",
+            "CrossPlatformLinkedUserTimedOut",
+            "CrossPlatformLinkedUserUnbanned",
+        ] {
+            assert_eq!(trigger_categorize(name), "Core/Moderation");
+            assert_eq!(
+                trigger_clean_title(name),
+                name.strip_prefix("CrossPlatform")
+                    .map(|r| {
+                        let mut out = String::new();
+                        for (i, ch) in r.chars().enumerate() {
+                            if i > 0 && ch.is_uppercase() {
+                                out.push(' ');
+                            }
+                            out.push(ch);
+                        }
+                        out
+                    })
+                    .unwrap()
+            );
+        }
     }
 }
