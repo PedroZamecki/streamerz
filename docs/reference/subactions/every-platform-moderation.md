@@ -5,7 +5,7 @@ Moderation that acts on each platform picked, or on the one the trigger came fro
 ## Timeout User
 
 - Kind: sub-action
-- Code: 99705
+- Code: 99725
 - Type: AllTimeoutUser
 - Category: Every Platform/Moderation
 - Needs: the logins of the platforms it acts on (each one is skipped, with a log line, when it can't)
@@ -32,7 +32,7 @@ Times someone out on each platform picked (Twitch, Kick, YouTube). This sub-acti
 ## Remove Timeout
 
 - Kind: sub-action
-- Code: 99706
+- Code: 99726
 - Type: AllRemoveTimeout
 - Category: Every Platform/Moderation
 - Needs: the logins of the platforms it acts on (each one is skipped, with a log line, when it can't)
@@ -53,7 +53,7 @@ Ends someone's timeout on each platform picked (Twitch, Kick, YouTube when Strea
 ## Ban User
 
 - Kind: sub-action
-- Code: 99707
+- Code: 99727
 - Type: AllBanUser
 - Category: Every Platform/Moderation
 - Needs: the logins of the platforms it acts on (each one is skipped, with a log line, when it can't)
@@ -79,7 +79,7 @@ Bans someone on each platform picked (Twitch, Kick, YouTube). This sub-action is
 ## Unban User
 
 - Kind: sub-action
-- Code: 99708
+- Code: 99728
 - Type: AllUnbanUser
 - Category: Every Platform/Moderation
 - Needs: the logins of the platforms it acts on (each one is skipped, with a log line, when it can't)

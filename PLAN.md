@@ -848,7 +848,7 @@ out). Streamerz-only sub-actions that work on every platform sit beside the per-
 moderation waits for a live test in a later version.
 
 Streamerz-only codes (kept on export, skipped by Streamer.bot, said so in their description):
-99500-99599 Twitch, 99600-99649 Kick, 99650-99699 YouTube, 99450-99499 TikTok, 99700-99749 every
+99500-99599 Twitch, 99600-99649 Kick, 99650-99699 YouTube, 99450-99499 TikTok, 99720-99749 every
 platform. Names follow Streamer.bot's (`TwitchDeleteChatMessage`, as its C# method is called).
 
 ### Sub-action editor UX (every sub-action, old and new)

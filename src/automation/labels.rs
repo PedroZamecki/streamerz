@@ -178,7 +178,7 @@ pub fn sub_label(o: &Obj, names: &Names) -> String {
         format!("{what}: {}", short(&detail))
     };
     // Every platform: which ones, by name.
-    if (99700..=99749).contains(&k) {
+    if (99720..=99749).contains(&k) {
         let picked: Vec<&str> = o
             .get("platforms")
             .and_then(Value::as_array)

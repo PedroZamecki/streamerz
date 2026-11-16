@@ -5,7 +5,7 @@ Chat sub-actions that act on each platform picked, or on the one the trigger cam
 ## Send Message
 
 - Kind: sub-action
-- Code: 99700
+- Code: 99720
 - Type: AllSendMessage
 - Category: Every Platform/Chat
 - Needs: the logins of the platforms it acts on (each one is skipped, with a log line, when it can't)
@@ -32,7 +32,7 @@ None set.
 ## Reply to Message
 
 - Kind: sub-action
-- Code: 99701
+- Code: 99721
 - Type: AllReplyToMessage
 - Category: Every Platform/Chat
 - Needs: the logins of the platforms it acts on (each one is skipped, with a log line, when it can't)
@@ -55,7 +55,7 @@ None set.
 ## Delete Message
 
 - Kind: sub-action
-- Code: 99702
+- Code: 99722
 - Type: AllDeleteMessage
 - Category: Every Platform/Chat
 - Needs: the logins of the platforms it acts on (each one is skipped, with a log line, when it can't)
@@ -79,7 +79,7 @@ Deletes the message that started the action, on its platform (Twitch, Kick, YouT
 ## Pin Message
 
 - Kind: sub-action
-- Code: 99703
+- Code: 99723
 - Type: AllPinMessage
 - Category: Every Platform/Chat
 - Needs: the logins of the platforms it acts on (each one is skipped, with a log line, when it can't)
@@ -100,7 +100,7 @@ None set.
 ## Unpin Message
 
 - Kind: sub-action
-- Code: 99704
+- Code: 99724
 - Type: AllUnpinMessage
 - Category: Every Platform/Chat
 - Needs: the logins of the platforms it acts on (each one is skipped, with a log line, when it can't)
@@ -118,7 +118,7 @@ None set.
 ## Shoutout
 
 - Kind: sub-action
-- Code: 99712
+- Code: 99732
 - Type: AllShoutout
 - Category: Every Platform/Chat
 - Needs: the logins of the platforms it acts on (each one is skipped, with a log line, when it can't)

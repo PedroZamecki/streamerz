@@ -278,24 +278,24 @@
     }, "youtube": {}},
     "actions": [
       {"name": "all", "subActions": [
-        {"type": 99700, "platforms": ["twitch", "kick"], "text": "hi all"},
-        {"type": 99701, "messageId": "%msgId%", "text": "thanks"},
-        {"type": 99705, "platforms": ["twitch", "kick"], "userLogin": "troll", "duration": 600, "reason": "spam"},
-        {"type": 99707, "platforms": ["kick"], "userLogin": "troll"},
-        {"type": 99708, "platforms": ["twitch"], "userLogin": "troll"},
-        {"type": 99706, "platforms": ["kick"], "userLogin": "troll"},
-        {"type": 99709, "platforms": ["kick"], "title": "New title"},
-        {"type": 99710, "platforms": ["kick"], "category": "just chatting"},
-        {"type": 99711, "platforms": ["twitch", "kick"]},
-        {"type": 99712, "platforms": ["kick"], "userLogin": "pal", "text": "Follow @pal"},
-        {"type": 99713, "platforms": ["kick"], "userLogin": "pal"}
+        {"type": 99720, "platforms": ["twitch", "kick"], "text": "hi all"},
+        {"type": 99721, "messageId": "%msgId%", "text": "thanks"},
+        {"type": 99725, "platforms": ["twitch", "kick"], "userLogin": "troll", "duration": 600, "reason": "spam"},
+        {"type": 99727, "platforms": ["kick"], "userLogin": "troll"},
+        {"type": 99728, "platforms": ["twitch"], "userLogin": "troll"},
+        {"type": 99726, "platforms": ["kick"], "userLogin": "troll"},
+        {"type": 99729, "platforms": ["kick"], "title": "New title"},
+        {"type": 99730, "platforms": ["kick"], "category": "just chatting"},
+        {"type": 99731, "platforms": ["twitch", "kick"]},
+        {"type": 99732, "platforms": ["kick"], "userLogin": "pal", "text": "Follow @pal"},
+        {"type": 99733, "platforms": ["kick"], "userLogin": "pal"}
       ]},
       {"name": "here", "subActions": [
-        {"type": 99702, "messageId": "%msgId%"},
-        {"type": 99703, "messageId": "%msgId%", "duration": 0},
-        {"type": 99704}
+        {"type": 99722, "messageId": "%msgId%"},
+        {"type": 99723, "messageId": "%msgId%", "duration": 0},
+        {"type": 99724}
       ]},
-      {"name": "nowhere", "subActions": [{"type": 99709, "title": "x"}]}
+      {"name": "nowhere", "subActions": [{"type": 99729, "title": "x"}]}
     ],
     "steps": [
       {"run": "all", "args": {"msgId": "y9", "user": "Ana", "userType": "youtube"}},

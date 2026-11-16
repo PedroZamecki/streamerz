@@ -5,7 +5,7 @@ The stream on each platform picked, or on the one the trigger came from.
 ## Set Stream Title
 
 - Kind: sub-action
-- Code: 99709
+- Code: 99729
 - Type: AllSetStreamTitle
 - Category: Every Platform/Stream
 - Needs: the logins of the platforms it acts on (each one is skipped, with a log line, when it can't)
@@ -26,7 +26,7 @@ Sets the stream title on each platform picked. This sub-action is Streamerz only
 ## Set Category
 
 - Kind: sub-action
-- Code: 99710
+- Code: 99730
 - Type: AllSetCategory
 - Category: Every Platform/Stream
 - Needs: the logins of the platforms it acts on (each one is skipped, with a log line, when it can't)
@@ -47,7 +47,7 @@ Sets the category on each platform picked (Twitch, Kick). This sub-action is Str
 ## Get Stream Info
 
 - Kind: sub-action
-- Code: 99711
+- Code: 99731
 - Type: AllGetStreamInfo
 - Category: Every Platform/Stream
 - Needs: the logins of the platforms it acts on (each one is skipped, with a log line, when it can't)

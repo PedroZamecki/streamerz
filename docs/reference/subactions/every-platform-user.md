@@ -5,7 +5,7 @@ Looks people up on each platform picked, or on the one the trigger came from.
 ## Get User Info for Target
 
 - Kind: sub-action
-- Code: 99713
+- Code: 99733
 - Type: AllGetUserInfoForTarget
 - Category: Every Platform/User
 - Needs: the logins of the platforms it acts on (each one is skipped, with a log line, when it can't)

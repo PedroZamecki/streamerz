@@ -1,6 +1,6 @@
 //! Platform tools: what Streamer.bot only offers as C# methods or not at all, and the sub-actions that
 //! act on every platform at once (PLAN.md, Version 1.9.0). Streamerz-only codes: 99450-99499 TikTok,
-//! 99500-99599 Twitch, 99600-99649 Kick, 99650-99699 YouTube, 99700-99749 every platform.
+//! 99500-99599 Twitch, 99600-99649 Kick, 99650-99699 YouTube, 99720-99749 every platform.
 
 use super::{b, n, new_state, s, Ctx, Engine};
 use crate::model::Obj;
@@ -442,7 +442,7 @@ impl Engine {
             520..=531 => self.guest_star(ctx, o, kind).await,
             99600..=99649 => self.kick_tool(ctx, o, kind).await,
             99650..=99699 => self.youtube_tool(ctx, o, kind).await,
-            99700..=99713 => {
+            99720..=99733 => {
                 self.every_platform(ctx, o, kind).await;
                 Ok(())
             }
@@ -1670,7 +1670,7 @@ impl Engine {
             }
         }
         // Stream info for several platforms: live on any, viewers added up.
-        if kind == 99711 && multi {
+        if kind == 99731 && multi {
             let any = platforms
                 .iter()
                 .any(|p| ctx.args.get(&format!("{p}IsLive")).and_then(Value::as_bool) == Some(true));
@@ -1692,10 +1692,10 @@ impl Engine {
         // YouTube acts on channel ids: the name is looked up among the people its chat has seen.
         let youtube_id = || self.youtube_channel_id(ctx, &self.expand(ctx, s(o, "userLogin")));
         let code: u64 = match (kind, platform) {
-            (99700, _) | (99701, "youtube" | "tiktok") => {
+            (99720, _) | (99721, "youtube" | "tiktok") => {
                 let mut text = field("text");
                 // A reply where the platform has no replies: the name in front.
-                if kind == 99701 {
+                if kind == 99721 {
                     let to = ctx.args.get("user").map(crate::vars::text).unwrap_or_default();
                     if !to.is_empty() {
                         text = format!("@{to} {}", crate::vars::text(&text)).into();
@@ -1711,7 +1711,7 @@ impl Engine {
                     _ => 43001,
                 }
             }
-            (99701, "twitch" | "kick") => {
+            (99721, "twitch" | "kick") => {
                 set("text", field("text"));
                 set("replyId", field("messageId"));
                 set("useBot", field("useBot"));
@@ -1722,7 +1722,7 @@ impl Engine {
                     35002
                 }
             }
-            (99702, "twitch" | "kick" | "youtube") => {
+            (99722, "twitch" | "kick" | "youtube") => {
                 set("messageId", field("messageId"));
                 match platform {
                     "twitch" => 99500,
@@ -1730,21 +1730,21 @@ impl Engine {
                     _ => 99650,
                 }
             }
-            (99703, "twitch") => {
+            (99723, "twitch") => {
                 set("messageId", field("messageId"));
                 set("duration", field("duration"));
                 576
             }
-            (99703, "tiktok") => {
+            (99723, "tiktok") => {
                 set("msgId", field("messageId"));
                 43011
             }
-            (99704, "twitch") => 578,
-            (99704, "tiktok") => {
+            (99724, "twitch") => 578,
+            (99724, "tiktok") => {
                 set("msgId", Value::String("%msgId%".into()));
                 43012
             }
-            (99705, "twitch" | "kick") => {
+            (99725, "twitch" | "kick") => {
                 set("userLogin", field("userLogin"));
                 set("duration", field("duration"));
                 set("reason", field("reason"));
@@ -1754,21 +1754,21 @@ impl Engine {
                     35042
                 }
             }
-            (99705, "youtube") => {
+            (99725, "youtube") => {
                 set("userId", youtube_id().into());
                 set("duration", field("duration"));
                 4009
             }
-            (99706 | 99708, "twitch" | "kick") => {
+            (99726 | 99728, "twitch" | "kick") => {
                 set("userLogin", field("userLogin"));
                 match (kind, platform) {
-                    (99706, "twitch") => 513,
-                    (99708, "twitch") => 512,
-                    (99706, _) => 35043,
+                    (99726, "twitch") => 513,
+                    (99728, "twitch") => 512,
+                    (99726, _) => 35043,
                     _ => 35041,
                 }
             }
-            (99707, "twitch" | "kick") => {
+            (99727, "twitch" | "kick") => {
                 set("userLogin", field("userLogin"));
                 set("reason", field("reason"));
                 if platform == "twitch" {
@@ -1777,20 +1777,20 @@ impl Engine {
                     35040
                 }
             }
-            (99707, "youtube") => {
+            (99727, "youtube") => {
                 set("userId", youtube_id().into());
                 4008
             }
-            (99706 | 99708, "youtube") => {
+            (99726 | 99728, "youtube") => {
                 set("userLogin", youtube_id().into());
                 99651
             }
-            (99711, "youtube") => 99661,
-            (99713, "youtube") => {
+            (99731, "youtube") => 99661,
+            (99733, "youtube") => {
                 set("userLogin", field("userLogin"));
                 99662
             }
-            (99709, _) => {
+            (99729, _) => {
                 set("title", field("title"));
                 match platform {
                     "twitch" => 15,
@@ -1799,24 +1799,24 @@ impl Engine {
                     _ => 43010,
                 }
             }
-            (99710, "twitch") => {
+            (99730, "twitch") => {
                 set("source", 0.into());
                 set("game", field("category"));
                 16
             }
-            (99710, "kick") => {
+            (99730, "kick") => {
                 set("source", 0.into());
                 set("categoryName", field("category"));
                 35031
             }
-            (99711, "twitch") => 99515,
-            (99711, "kick") => 99606,
-            (99711, "tiktok") => 43003,
-            (99712, "twitch") => {
+            (99731, "twitch") => 99515,
+            (99731, "kick") => 99606,
+            (99731, "tiktok") => 43003,
+            (99732, "twitch") => {
                 set("userLogin", field("userLogin"));
                 29
             }
-            (99712, _) => {
+            (99732, _) => {
                 // No shoutouts elsewhere: a message naming them.
                 let text = crate::vars::text(&field("text"));
                 if text.trim().is_empty() {
@@ -1829,7 +1829,7 @@ impl Engine {
                     _ => 43001,
                 }
             }
-            (99713, "twitch" | "kick") => {
+            (99733, "twitch" | "kick") => {
                 set("userLogin", field("userLogin"));
                 if platform == "twitch" {
                     50
@@ -1837,7 +1837,7 @@ impl Engine {
                     35011
                 }
             }
-            (99713, "tiktok") => {
+            (99733, "tiktok") => {
                 set("userLogin", field("userLogin"));
                 99454
             }
