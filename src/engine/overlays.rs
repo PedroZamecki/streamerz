@@ -4,7 +4,8 @@
 //! Anything else is published by the Overlay sub-action. A topic nobody listens to costs a map entry.
 
 use super::Engine;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
+use std::rc::Rc;
 
 /// The most topics kept, so a loop that publishes endless names can't grow the memory.
 const MAX_TOPICS: usize = 64;
@@ -81,6 +82,95 @@ impl Engine {
                 engine.overlay_publish("ad", json!({"running": false, "duration": seconds}));
             }
         });
+    }
+}
+
+/// Drafts: the settings an overlay's editor changed and has not saved. They reach only the pages opened
+/// as a preview (`?preview` in their address): OBS keeps showing the saved ones until Save.
+impl Engine {
+    /// The unsaved values of an overlay (empty: none).
+    pub fn overlay_draft(&self, group: &str) -> Map<String, Value> {
+        self.overlay_drafts.borrow().get(group).cloned().unwrap_or_default()
+    }
+
+    /// The settings a preview page of `group` shows: the saved ones with the draft over them.
+    pub fn overlay_preview_settings(&self, group: &str) -> Value {
+        let draft = self.overlay_draft(group);
+        crate::overlays::settings_with(&self.config(), group, &draft)
+    }
+
+    fn draft_changed(&self, group: &str) {
+        let settings = self.overlay_preview_settings(group);
+        self.emit("Draft", group, || settings);
+    }
+
+    /// Change some settings of an overlay's draft, each checked against its setting. The preview pages
+    /// follow at once.
+    pub fn overlay_draft_set(&self, group: &str, values: &Map<String, Value>) -> Result<(), String> {
+        let meta = crate::groups::meta(&self.config(), group);
+        for (name, value) in values {
+            let def = meta
+                .variables
+                .iter()
+                .find(|d| &d.name == name)
+                .ok_or_else(|| format!("{group} has no setting {name}"))?;
+            if !def.accepts(value) {
+                return Err(format!("{} is not a {}", def.label, def.kind.name()));
+            }
+        }
+        {
+            let mut drafts = self.overlay_drafts.borrow_mut();
+            let draft = drafts.entry(group.to_string()).or_default();
+            let saved = crate::groups::values(&self.config(), group);
+            for (name, value) in values {
+                // A value put back as it is saved is no change.
+                if saved.get(name) == Some(value) {
+                    draft.remove(name);
+                } else {
+                    draft.insert(name.clone(), value.clone());
+                }
+            }
+            if draft.is_empty() {
+                drafts.remove(group);
+            }
+        }
+        self.draft_changed(group);
+        Ok(())
+    }
+
+    /// Keep the draft: its values are saved and every page, OBS too, shows them.
+    pub fn overlay_draft_save(self: &Rc<Self>, group: &str) -> Result<usize, String> {
+        let Some(draft) = self.overlay_drafts.borrow_mut().remove(group) else {
+            return Ok(0);
+        };
+        let mut values = crate::groups::values(&self.config(), group);
+        let changed = draft.len();
+        values.extend(draft);
+        let mut result = Ok(());
+        self.change(|c| result = crate::groups::set_values(c, group, values));
+        self.draft_changed(group);
+        result.map(|_| changed)
+    }
+
+    /// Drop the draft (or one setting of it): the preview pages show the saved values again.
+    pub fn overlay_draft_revert(&self, group: &str, only: Option<&str>) {
+        {
+            let mut drafts = self.overlay_drafts.borrow_mut();
+            match only {
+                Some(name) => {
+                    if let Some(draft) = drafts.get_mut(group) {
+                        draft.remove(name);
+                        if draft.is_empty() {
+                            drafts.remove(group);
+                        }
+                    }
+                }
+                None => {
+                    drafts.remove(group);
+                }
+            }
+        }
+        self.draft_changed(group);
     }
 }
 

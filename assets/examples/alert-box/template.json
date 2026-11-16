@@ -1,0 +1,685 @@
+{
+  "format": 1,
+  "name": "Alert box",
+  "meta": {
+    "description": "Every follow, sub, gift, cheer, Super Chat and raid of every platform, set up entirely in Settings: rules with conditions say what plays (a picture, GIF or video, a sound and a text), a queue shows them one after another, and the place, look and animations are settings. Pause, skip and replay it from an action or a dock.",
+    "variables": [
+      {
+        "name": "rules",
+        "label": "Rules",
+        "kind": "list",
+        "section": "Rules",
+        "columns": [
+          {
+            "name": "when",
+            "label": "When",
+            "kind": "choice",
+            "options": [
+              "Any",
+              "Follow",
+              "Sub",
+              "Resub",
+              "Gift sub",
+              "Gift bomb",
+              "Cheer",
+              "Raid",
+              "Super Chat",
+              "Super Sticker",
+              "Member",
+              "TikTok gift",
+              "Share",
+              "Reward",
+              "Power-up"
+            ],
+            "default": "Any"
+          },
+          {
+            "name": "from",
+            "label": "From",
+            "kind": "choice",
+            "options": [
+              "Any",
+              "Twitch",
+              "YouTube",
+              "Kick",
+              "TikTok"
+            ],
+            "default": "Any"
+          },
+          {
+            "name": "min",
+            "label": "At least",
+            "kind": "number",
+            "default": 0
+          },
+          {
+            "name": "max",
+            "label": "At most",
+            "kind": "number",
+            "default": 0
+          },
+          {
+            "name": "text",
+            "label": "Text",
+            "kind": "text",
+            "default": "%user%: %event%"
+          },
+          {
+            "name": "picture",
+            "label": "Picture",
+            "kind": "text",
+            "default": ""
+          },
+          {
+            "name": "sound",
+            "label": "Sound",
+            "kind": "text",
+            "default": ""
+          },
+          {
+            "name": "volume",
+            "label": "Volume",
+            "kind": "slider",
+            "min": 0,
+            "max": 100,
+            "step": 5,
+            "default": 80
+          },
+          {
+            "name": "seconds",
+            "label": "Seconds",
+            "kind": "number",
+            "default": 6
+          },
+          {
+            "name": "weight",
+            "label": "Weight",
+            "kind": "integer",
+            "default": 1
+          }
+        ],
+        "default": [
+          {
+            "when": "Follow",
+            "from": "Any",
+            "min": 0,
+            "max": 0,
+            "text": "%user% followed!",
+            "picture": "img/star.svg",
+            "sound": "sounds/chime.wav",
+            "volume": 80,
+            "seconds": 6,
+            "weight": 1
+          },
+          {
+            "when": "Sub",
+            "from": "Any",
+            "min": 0,
+            "max": 0,
+            "text": "%user% subscribed!",
+            "picture": "img/star.svg",
+            "sound": "sounds/chime.wav",
+            "volume": 80,
+            "seconds": 6,
+            "weight": 1
+          },
+          {
+            "when": "Resub",
+            "from": "Any",
+            "min": 0,
+            "max": 0,
+            "text": "%user% is back for %amount% months!",
+            "picture": "img/star.svg",
+            "sound": "sounds/chime.wav",
+            "volume": 80,
+            "seconds": 6,
+            "weight": 1
+          },
+          {
+            "when": "Gift bomb",
+            "from": "Any",
+            "min": 0,
+            "max": 0,
+            "text": "%user% gifted %amount% subs!",
+            "picture": "img/star.svg",
+            "sound": "sounds/chime.wav",
+            "volume": 80,
+            "seconds": 8,
+            "weight": 1
+          },
+          {
+            "when": "Gift sub",
+            "from": "Any",
+            "min": 0,
+            "max": 0,
+            "text": "%user% gifted a sub to %gift%",
+            "picture": "img/star.svg",
+            "sound": "sounds/chime.wav",
+            "volume": 80,
+            "seconds": 6,
+            "weight": 1
+          },
+          {
+            "when": "Cheer",
+            "from": "Any",
+            "min": 1000,
+            "max": 0,
+            "text": "%user% cheered %amount% bits!",
+            "picture": "img/star.svg",
+            "sound": "sounds/chime.wav",
+            "volume": 100,
+            "seconds": 9,
+            "weight": 1
+          },
+          {
+            "when": "Cheer",
+            "from": "Any",
+            "min": 0,
+            "max": 0,
+            "text": "%user% cheered %amount% bits",
+            "picture": "img/star.svg",
+            "sound": "sounds/chime.wav",
+            "volume": 80,
+            "seconds": 6,
+            "weight": 1
+          },
+          {
+            "when": "Raid",
+            "from": "Any",
+            "min": 0,
+            "max": 0,
+            "text": "%user% is raiding with %amount% viewers!",
+            "picture": "img/star.svg",
+            "sound": "sounds/chime.wav",
+            "volume": 80,
+            "seconds": 9,
+            "weight": 1
+          },
+          {
+            "when": "Super Chat",
+            "from": "Any",
+            "min": 0,
+            "max": 0,
+            "text": "%user% sent a Super Chat of %amount%",
+            "picture": "img/star.svg",
+            "sound": "sounds/chime.wav",
+            "volume": 80,
+            "seconds": 6,
+            "weight": 1
+          },
+          {
+            "when": "Member",
+            "from": "Any",
+            "min": 0,
+            "max": 0,
+            "text": "%user% is now a member!",
+            "picture": "img/star.svg",
+            "sound": "sounds/chime.wav",
+            "volume": 80,
+            "seconds": 6,
+            "weight": 1
+          },
+          {
+            "when": "TikTok gift",
+            "from": "Any",
+            "min": 0,
+            "max": 0,
+            "text": "%user% sent %gift%",
+            "picture": "",
+            "sound": "sounds/chime.wav",
+            "volume": 80,
+            "seconds": 5,
+            "weight": 1
+          },
+          {
+            "when": "Reward",
+            "from": "Any",
+            "min": 0,
+            "max": 0,
+            "text": "%user% redeemed %gift%",
+            "picture": "",
+            "sound": "",
+            "volume": 80,
+            "seconds": 6,
+            "weight": 1
+          },
+          {
+            "when": "Any",
+            "from": "Any",
+            "min": 0,
+            "max": 0,
+            "text": "%user%: %event%",
+            "picture": "",
+            "sound": "",
+            "volume": 80,
+            "seconds": 5,
+            "weight": 1
+          }
+        ],
+        "description": "One alert a line: When | From | At least | At most | Text | Picture | Sound | Volume | Seconds | Weight. The first rule that matches plays (or one by weight, below). At most 0 has no end. The text fills in %user%, %amount%, %event%, %message%, %gift%, %months%, %tier%, %coins% and %platform%. Picture and Sound are files of this overlay (img/star.svg) or web addresses; a video plays muted, its sound is the rule's Sound."
+      },
+      {
+        "name": "pick",
+        "label": "Which rule plays",
+        "kind": "choice",
+        "options": [
+          "The first that matches",
+          "One of the matching rules, by weight"
+        ],
+        "default": "The first that matches"
+      },
+      {
+        "name": "platforms",
+        "label": "From",
+        "kind": "platforms",
+        "default": [
+          "twitch",
+          "youtube",
+          "kick",
+          "tiktok"
+        ],
+        "description": "The platforms whose events it shows"
+      },
+      {
+        "name": "mode",
+        "label": "Queue",
+        "kind": "choice",
+        "section": "Queue",
+        "options": [
+          "One at a time",
+          "Together",
+          "Newest replaces"
+        ],
+        "default": "One at a time"
+      },
+      {
+        "name": "together",
+        "label": "At most together",
+        "kind": "integer",
+        "default": 3,
+        "showIf": {
+          "setting": "mode",
+          "is": "Together"
+        }
+      },
+      {
+        "name": "gap",
+        "label": "Pause between alerts (seconds)",
+        "kind": "slider",
+        "min": 0,
+        "max": 10,
+        "step": 0.5,
+        "default": 0.5
+      },
+      {
+        "name": "maxWait",
+        "label": "Drop an alert waiting longer than (seconds)",
+        "kind": "slider",
+        "min": 0,
+        "max": 600,
+        "step": 10,
+        "default": 0,
+        "description": "0 keeps every alert until it shows"
+      },
+      {
+        "name": "mergeGifts",
+        "label": "A gift bomb is one alert",
+        "kind": "boolean",
+        "default": true,
+        "description": "Its single gifts don't show one by one"
+      },
+      {
+        "name": "combos",
+        "label": "A TikTok combo grows on one alert",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "position",
+        "label": "Place",
+        "kind": "choice",
+        "section": "Place and look",
+        "options": [
+          "Top left",
+          "Top",
+          "Top right",
+          "Left",
+          "Center",
+          "Right",
+          "Bottom left",
+          "Bottom",
+          "Bottom right"
+        ],
+        "default": "Center"
+      },
+      {
+        "name": "offsetX",
+        "label": "Move sideways (px)",
+        "kind": "slider",
+        "min": -800,
+        "max": 800,
+        "step": 10,
+        "default": 0
+      },
+      {
+        "name": "offsetY",
+        "label": "Move up and down (px)",
+        "kind": "slider",
+        "min": -500,
+        "max": 500,
+        "step": 10,
+        "default": 0
+      },
+      {
+        "name": "layout",
+        "label": "Layout",
+        "kind": "choice",
+        "options": [
+          "Picture above",
+          "Picture at the left",
+          "Picture at the right",
+          "Picture behind",
+          "Text only",
+          "Picture only"
+        ],
+        "default": "Picture above"
+      },
+      {
+        "name": "scale",
+        "label": "Size (%)",
+        "kind": "slider",
+        "min": 50,
+        "max": 300,
+        "step": 5,
+        "default": 100
+      },
+      {
+        "name": "mediaSize",
+        "label": "Picture size",
+        "kind": "slider",
+        "min": 3,
+        "max": 40,
+        "step": 1,
+        "default": 8
+      },
+      {
+        "name": "font",
+        "label": "Font",
+        "kind": "font",
+        "default": ""
+      },
+      {
+        "name": "textColor",
+        "label": "Text color",
+        "kind": "color",
+        "default": "#ffffff"
+      },
+      {
+        "name": "accent",
+        "label": "Names and numbers",
+        "kind": "choice",
+        "options": [
+          "Platform color",
+          "Accent color"
+        ],
+        "default": "Platform color"
+      },
+      {
+        "name": "accentColor",
+        "label": "Accent color",
+        "kind": "color",
+        "default": "#a78bfa",
+        "showIf": {
+          "setting": "accent",
+          "is": "Accent color"
+        }
+      },
+      {
+        "name": "card",
+        "label": "Card behind the text",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "cardColor",
+        "label": "Card color",
+        "kind": "color",
+        "default": "#18181bd9",
+        "showIf": {
+          "setting": "card",
+          "is": true
+        }
+      },
+      {
+        "name": "radius",
+        "label": "Rounded corners",
+        "kind": "slider",
+        "min": 0,
+        "max": 40,
+        "step": 1,
+        "default": 18,
+        "showIf": {
+          "setting": "card",
+          "is": true
+        }
+      },
+      {
+        "name": "outline",
+        "label": "Outline the text",
+        "kind": "boolean",
+        "default": false,
+        "description": "For alerts without a card, over a busy game"
+      },
+      {
+        "name": "showMessage",
+        "label": "What they wrote",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "animIn",
+        "label": "Comes in with",
+        "kind": "choice",
+        "section": "Motion and sound",
+        "options": [
+          "Pop",
+          "Fade",
+          "Slide up",
+          "Slide down",
+          "Slide left",
+          "Slide right",
+          "Zoom",
+          "Bounce",
+          "Flip",
+          "Shake",
+          "None"
+        ],
+        "default": "Pop"
+      },
+      {
+        "name": "animOut",
+        "label": "Goes out with",
+        "kind": "choice",
+        "options": [
+          "Pop",
+          "Fade",
+          "Slide up",
+          "Slide down",
+          "Slide left",
+          "Slide right",
+          "Zoom",
+          "Bounce",
+          "Flip",
+          "Shake",
+          "None"
+        ],
+        "default": "Fade"
+      },
+      {
+        "name": "animMs",
+        "label": "Animation (ms)",
+        "kind": "slider",
+        "min": 100,
+        "max": 2000,
+        "step": 50,
+        "default": 600
+      },
+      {
+        "name": "volume",
+        "label": "Volume of every sound",
+        "kind": "slider",
+        "min": 0,
+        "max": 100,
+        "step": 5,
+        "default": 100
+      },
+      {
+        "name": "untilSound",
+        "label": "Stay as long as the sound plays",
+        "kind": "boolean",
+        "default": true
+      },
+      {
+        "name": "controlTopic",
+        "label": "Control topic",
+        "kind": "text",
+        "section": "Code",
+        "default": "alertbox",
+        "description": "An action or a dock controls the box with the Overlay sub-action: this topic and {\"do\": \"pause\"}, resume, skip, replay, clear, mute or unmute. The box tells its state in <topic>.state. Reload the page after changing it"
+      },
+      {
+        "name": "extraCss",
+        "label": "Extra CSS",
+        "kind": "lines",
+        "default": "",
+        "description": "Added to the page as it is: .alert, .card, .media, .title, .hl, .said"
+      },
+      {
+        "name": "cardHtml",
+        "label": "Card HTML",
+        "kind": "lines",
+        "default": "",
+        "description": "Your own HTML for every alert instead of the built-in one, with %user%, %amount%, %event%, %message%, %gift%, %picture%... filled in as text"
+      }
+    ],
+    "files": [
+      {
+        "name": "index.html"
+      },
+      {
+        "name": "img/star.svg"
+      },
+      {
+        "name": "sounds/chime.wav"
+      }
+    ],
+    "permissions": [
+      "alerts.read"
+    ],
+    "template": {
+      "id": "streamerz.example.alert-box",
+      "version": "1.0.0",
+      "author": "Streamerz",
+      "pages": [
+        {
+          "file": "index.html",
+          "title": "Alert box",
+          "width": 1280,
+          "height": 720
+        }
+      ],
+      "test": {
+        "events": [
+          [
+            "Chat.Alert",
+            {
+              "platform": "twitch",
+              "user": "Ana",
+              "userId": "test-ana",
+              "event": "cheered 1500 bits",
+              "icon": "gem",
+              "kind": "cheer",
+              "trigger": "Test",
+              "args": {
+                "bits": 1500
+              },
+              "text": "Take my bits!",
+              "time": "12:00",
+              "badges": [],
+              "parts": [
+                {
+                  "t": "Take my bits!"
+                }
+              ]
+            }
+          ],
+          [
+            "Chat.Alert",
+            {
+              "platform": "youtube",
+              "user": "Bea",
+              "userId": "test-bea",
+              "event": "sent a Super Chat of $20.00",
+              "icon": "badge-dollar-sign",
+              "kind": "superchat",
+              "trigger": "Test",
+              "args": {
+                "amount": 20,
+                "amountString": "$20.00"
+              },
+              "text": "Love the stream",
+              "time": "12:00",
+              "badges": [],
+              "parts": [
+                {
+                  "t": "Love the stream"
+                }
+              ]
+            }
+          ],
+          [
+            "Chat.Alert",
+            {
+              "platform": "kick",
+              "user": "Cy",
+              "userId": "test-cy",
+              "event": "is raiding with 42 viewers",
+              "icon": "swords",
+              "kind": "raid",
+              "trigger": "Test",
+              "args": {
+                "viewers": 42
+              },
+              "text": "",
+              "time": "12:00",
+              "badges": [],
+              "parts": []
+            }
+          ],
+          [
+            "Chat.Alert",
+            {
+              "platform": "tiktok",
+              "user": "Dee",
+              "userId": "test-dee",
+              "event": "sent Rose x3",
+              "icon": "gift",
+              "kind": "gift",
+              "trigger": "Test",
+              "args": {
+                "giftName": "Rose",
+                "giftId": 5655,
+                "repeatCount": 3,
+                "coins": 3
+              },
+              "text": "",
+              "time": "12:00",
+              "badges": [],
+              "parts": []
+            }
+          ]
+        ]
+      }
+    }
+  }
+}

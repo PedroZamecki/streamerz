@@ -641,7 +641,15 @@ pub fn list(c: &Config) -> Vec<(String, String)> {
 /// A group's settings as its pages get them: a `file` setting is the address the file is served at
 /// (a web address stays as it is, none stays empty), so a page uses it in `src` or `url()` as it comes.
 pub fn settings(c: &Config, group: &str) -> Value {
+    settings_with(c, group, &serde_json::Map::new())
+}
+
+/// The settings as a preview page gets them: `draft` (unsaved values) over the saved ones.
+pub fn settings_with(c: &Config, group: &str, draft: &serde_json::Map<String, Value>) -> Value {
     let mut values = groups::values(c, group);
+    for (name, value) in draft {
+        values.insert(name.clone(), value.clone());
+    }
     for d in groups::meta(c, group).variables {
         if d.kind != groups::Kind::File {
             continue;
@@ -768,7 +776,30 @@ impl Served {
     }
 }
 
+/// The overlay a path under `/overlays/` belongs to (not the built-in pictures).
+pub fn group_of(path: &str) -> Option<String> {
+    let rest = path.trim_start_matches("/overlays").trim_matches('/');
+    let group = crate::donations::urlencoding_decode(rest.split('/').next()?);
+    (!group.is_empty() && group != BUILT_IN).then_some(group)
+}
+
+/// Whether a page was opened as a preview (`?preview` in its address): it shows the editor's draft.
+pub fn is_preview(query: &str) -> bool {
+    query.split('&').any(|p| p == "preview" || p.starts_with("preview="))
+}
+
+/// A page's address for the editor's preview: it shows the settings not saved yet.
+pub fn preview_url(c: &Config, group: &str, file: &str) -> String {
+    format!("{}?preview=1", url(c, group, file))
+}
+
+#[cfg(test)]
 pub fn file(c: &Config, path: &str) -> Served {
+    file_with(c, path, &serde_json::Map::new())
+}
+
+/// A file of an overlay; a page has `draft` over its saved settings (empty for a page that isn't a preview).
+pub fn file_with(c: &Config, path: &str, draft: &serde_json::Map<String, Value>) -> Served {
     let rest = path.trim_start_matches("/overlays").trim_matches('/');
     if rest.is_empty() {
         return Served::Bytes(200, "text/html; charset=utf-8", index(c).into_bytes());
@@ -791,7 +822,7 @@ pub fn file(c: &Config, path: &str) -> Served {
     };
     if kind.starts_with("text/html") {
         let html = String::from_utf8_lossy(&bytes);
-        let settings = settings(c, &group);
+        let settings = settings_with(c, &group, draft);
         return Served::Bytes(
             200,
             kind,
@@ -1085,6 +1116,9 @@ pub fn permitted(c: &Config, mut subs: Subs, query: &str) -> Subs {
     // What the Overlays page's Test sends reaches the pages of that overlay alone, and so does the
     // word that one of its files was saved.
     if known && !subs.is_empty() {
+        if is_preview(query) {
+            subs.insert("Draft".into(), std::iter::once(group.clone()).collect());
+        }
         subs.insert("Test".into(), std::iter::once(group.clone()).collect());
         subs.insert("Reload".into(), std::iter::once(group).collect());
     }
@@ -1413,6 +1447,126 @@ mod tests {
                     .as_bytes(),
             );
             assert_eq!(status, 403, "it may read alerts, not lines");
+        });
+    }
+
+    #[test]
+    fn a_draft_reaches_preview_pages_only_until_it_is_saved() {
+        use crate::engine::tests::{engine, run};
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        run(async {
+            let e = engine(json!({"actions": []}));
+            e.change(|c| {
+                groups::create(c, "Box");
+                let m = groups::Meta {
+                    description: "d".into(),
+                    variables: vec![
+                        groups::Def {
+                            name: "color".into(),
+                            label: "Color".into(),
+                            kind: groups::Kind::Color,
+                            default: json!("#000000"),
+                            ..Default::default()
+                        },
+                        groups::Def {
+                            name: "size".into(),
+                            label: "Size".into(),
+                            kind: groups::Kind::Slider,
+                            default: json!(10),
+                            min: Some(0.0),
+                            max: Some(100.0),
+                            ..Default::default()
+                        },
+                    ],
+                    files: vec![groups::File {
+                        name: "index.html".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                };
+                groups::set_meta(c, "Box", m).unwrap();
+            });
+            let who = format!("group=Box&token={}", token(&e.config(), "Box"));
+            let wanted = "events=Settings.Box";
+            let (obs_tx, mut obs) = tokio::sync::mpsc::unbounded_channel();
+            let (preview_tx, mut preview) = tokio::sync::mpsc::unbounded_channel();
+            e.listen(
+                1,
+                &permitted(&e.config(), subscriptions(wanted), &format!("{wanted}&{who}")),
+                &obs_tx,
+            );
+            let q = format!("{wanted}&{who}&preview=1");
+            e.listen(2, &permitted(&e.config(), subscriptions(&q), &q), &preview_tx);
+            let next = |rx: &mut tokio::sync::mpsc::UnboundedReceiver<Arc<str>>| {
+                rx.try_recv().ok().map(|m| serde_json::from_str::<Value>(&m).unwrap())
+            };
+
+            let mut values = serde_json::Map::new();
+            values.insert("color".into(), json!("#ff0000"));
+            e.overlay_draft_set("Box", &values).unwrap();
+            let m = next(&mut preview).expect("the preview hears the draft");
+            assert_eq!(
+                (m["event"]["source"].as_str(), m["data"]["color"].as_str()),
+                (Some("Draft"), Some("#ff0000"))
+            );
+            assert!(next(&mut obs).is_none(), "OBS doesn't");
+            assert_eq!(settings(&e.config(), "Box")["color"], "#000000", "nothing is saved");
+
+            // A page opened as a preview starts with the draft; one opened plainly with the saved values.
+            let draft = e.overlay_draft("Box");
+            let served =
+                |d: &serde_json::Map<String, Value>| match file_with(&e.config(), "/overlays/Box/index.html", d) {
+                    Served::Bytes(_, _, body) => String::from_utf8(body).unwrap(),
+                    Served::Disk(..) => String::new(),
+                };
+            assert!(served(&draft).contains("#ff0000") && !served(&serde_json::Map::new()).contains("#ff0000"));
+            assert!(is_preview("preview=1") && is_preview("a=b&preview") && !is_preview("previews=1"));
+            assert_eq!(group_of("/overlays/Box/index.html").as_deref(), Some("Box"));
+            assert_eq!(group_of("/overlays/-/guide"), None);
+
+            // A value that isn't one of the setting's is refused; one put back as saved is no change.
+            values.insert("size".into(), json!(500));
+            assert!(e.overlay_draft_set("Box", &values).is_err());
+            let mut back = serde_json::Map::new();
+            back.insert("size".into(), json!(10));
+            e.change(|c| {
+                let mut v = groups::values(c, "Box");
+                v.insert("size".into(), json!(10));
+                groups::set_values(c, "Box", v).unwrap();
+            });
+            while next(&mut preview).is_some() {}
+            while next(&mut obs).is_some() {}
+            e.overlay_draft_set("Box", &back).unwrap();
+            assert_eq!(e.overlay_draft("Box").len(), 1, "only the color is a change");
+            let m = next(&mut preview).unwrap();
+            assert_eq!(
+                m["data"]["color"], "#ff0000",
+                "the preview keeps the draft over saved values"
+            );
+
+            // Revert one setting, then save: every page has the saved value, and the draft is gone.
+            e.overlay_draft_revert("Box", Some("color"));
+            assert!(e.overlay_draft("Box").is_empty());
+            assert_eq!(next(&mut preview).unwrap()["data"]["color"], "#000000");
+            e.overlay_draft_set(
+                "Box",
+                &values.iter().take(1).map(|(k, v)| (k.clone(), v.clone())).collect(),
+            )
+            .unwrap();
+            assert_eq!(e.overlay_draft_save("Box").unwrap(), 1);
+            assert!(e.overlay_draft("Box").is_empty());
+            assert_eq!(settings(&e.config(), "Box")["color"], "#ff0000");
+            let heard: Vec<Value> = std::iter::from_fn(|| next(&mut obs)).collect();
+            assert!(
+                heard
+                    .iter()
+                    .any(|m| m["event"]["source"] == "Settings" && m["data"]["color"] == "#ff0000"),
+                "{heard:?}"
+            );
+            assert!(
+                !heard.iter().any(|m| m["event"]["source"] == "Draft"),
+                "OBS never hears a draft"
+            );
         });
     }
 

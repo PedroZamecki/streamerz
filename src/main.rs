@@ -57,6 +57,7 @@ pub mod servers;
 mod slash;
 mod slobs;
 mod songrequests;
+mod sound;
 mod spotify;
 mod storage;
 mod streamdeck;

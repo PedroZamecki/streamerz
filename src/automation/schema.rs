@@ -1091,6 +1091,34 @@ pub fn sub_fields(kind: u64) -> Option<&'static [F]> {
         ],
         21009 => &[("deckId", "Deck ID", Text), ("deckName", "Deck Name", Text)],
         21010 => &[("deckId", "Deck ID", Text), ("deckName", "Deck Name", Text)],
+        1 => &[
+            ("soundFile", "Sound file", Text),
+            ("device", "Audio device", Suggest("sound.devices")),
+            ("volume", "Volume (0 to 100)", Int),
+            ("finishBeforeContinuing", "Finish playing before continuing", Bool),
+            ("soundName", "Sound name", Text),
+            ("useFileNameAsName", "Use the file name as the name", Bool),
+        ],
+        7 => &[
+            ("folder", "Folder", Text),
+            ("recursive", "Include its folders", Bool),
+            ("avoidRepeats", "Not the same sound twice in a row", Bool),
+            ("device", "Audio device", Suggest("sound.devices")),
+            ("volume", "Volume (0 to 100)", Int),
+            ("finishBeforeContinuing", "Finish playing before continuing", Bool),
+            ("soundName", "Sound name", Text),
+            ("useFileNameAsName", "Use the file name as the name", Bool),
+        ],
+        30001 => &[],
+        30002 => &[("soundName", "Sound name", Text)],
+        99300 => &[
+            ("soundName", "Sound name (empty: every sound)", Text),
+            ("volume", "Volume (0 to 100)", Int),
+            ("fadeMs", "Fade", Duration(1)),
+        ],
+        99301 | 99302 => &[("soundName", "Sound name (empty: every sound)", Text)],
+        99303 => &[("volume", "Volume (0 to 100)", Int), ("fadeMs", "Fade", Duration(1))],
+        99304 => &[("soundFile", "Sound file", Text)],
         3 => &[
             ("file", "File", Text),
             ("text", "Text", Multi),
@@ -1140,7 +1168,7 @@ pub fn trigger_fields(kind: u64) -> Option<&'static [F]> {
     Some(match kind {
         401 | 402 => &[("commandId", "Command", Command)],
         701 => &[("timerId", "Timer", Timer)],
-        702 | 706 | 99804..=99809 | 99825..=99826 | 99830..=99842 => &[],
+        702 | 706 | 99300 | 99301 | 99804..=99809 | 99825..=99826 | 99830..=99842 => &[],
         709 | 711 | 712 => &[
             ("variableName", "Variable (none: any)", Text),
             ("persisted", "Persisted", Pick(PERSISTED)),

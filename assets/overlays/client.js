@@ -1,5 +1,8 @@
 (() => {
   const C = __STREAMERZ__;
+  // Opened by the overlay editor as a preview (`?preview` in the address): it shows the settings being
+  // changed before they are saved, and listens for them even when the page asks for nothing else.
+  const preview = new URLSearchParams(location.search).has("preview");
   const topics = new Set(), events = new Set(), handlers = Object.create(null), last = Object.create(null);
   let source, timer;
   const fire = (key, value, name) => (handlers[key] || []).forEach(f => {
@@ -17,6 +20,7 @@
       topics: [...topics].join(","), events: [...events].join(","), group: C.group, token: C.token,
       page: decodeURIComponent(location.pathname),
     });
+    if (preview) q.set("preview", "1");
     const ws = (source = new WebSocket((C.server || location.origin).replace(/^http/, "ws") + "/overlays/events?" + q));
     // Streamerz closed or restarted: try again in a moment (a timer only while it is away).
     ws.onclose = () => {
@@ -43,7 +47,16 @@
       } else if (e.source === "Reload") {
         // A file of this overlay was saved (in an editor, by an assistant): the page loads again.
         location.reload();
+      } else if (e.source === "Draft") {
+        // The editor changed a setting (not saved yet): a page that follows its settings shows it at
+        // once, any other page loads again with it.
+        if (!(handlers["event:Settings." + C.group] || []).length) return location.reload();
+        Object.keys(streamerz.settings).forEach(k => delete streamerz.settings[k]);
+        Object.assign(streamerz.settings, d.data);
+        fire("event:Settings." + C.group, streamerz.settings);
       } else if (e.source === "Settings") {
+        // A preview page shows the draft: the saved settings come back through Draft.
+        if (preview) return;
         Object.keys(streamerz.settings).forEach(k => delete streamerz.settings[k]);
         Object.assign(streamerz.settings, d.data);
         fire("event:Settings." + e.type, streamerz.settings);
@@ -280,5 +293,8 @@
       return streamerz;
     },
   };
+  streamerz.preview = preview;
   window.streamerz = streamerz;
+  // A preview listens for the editor's draft even when the page asks for nothing else.
+  if (preview) events.add("Settings." + C.group) && connect();
 })();

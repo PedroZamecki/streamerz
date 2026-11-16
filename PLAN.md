@@ -855,3 +855,57 @@ The study and its findings are in [docs/STREAM-PAGE.md](docs/STREAM-PAGE.md).
 - [x] Tests on real platform answers, `platform_api` (MCP) and `dev/stream-check.mjs` against the
   real channels.
 - [ ] Verify while live on each platform (`dev/stream-check.mjs`), and measure hidden RSS and idle CPU.
+
+## Version 1.9.0: Overlay editor, sounds and voices
+
+The design, with the costs, codes and open questions, is in [docs/STUDIO_PLAN.md](docs/STUDIO_PLAN.md).
+Nothing loads until it is used: no thread, device, browser or download for someone who never uses it.
+
+- [ ] 1. The overlay page: the Overlays list opens an overlay's own page (Back to the list), with the
+  preview beside the tabs (Settings, Test, Media, Live, Alerts, Code) wide and above them narrow; a core
+  view (`overlay:<group>`) for MCP.
+- [ ] 2. Live preview: a headless Chromium streaming frames only on repaint (`Page.startScreencast`) while
+  the preview is on screen, clicks and keys passed on, backgrounds (see-through, dark, light, a picture,
+  the OBS scene once), Open preview in browser; closed when hidden.
+- [ ] 3. Drafts: every settings change goes to preview pages at once (reloading pages that don't use
+  `onSettings`), Save sends it to OBS, Revert drops it, leaving asks; Show on OBS while I edit. Done in
+  the core: `?preview=1` pages, the `Draft` feed, `streamerz.preview`, the request op `draft` and MCP
+  `overlay_draft`, checked in a browser; the editor's form and the leaving question come with phase 1.
+- [ ] 4. Test tab: any event or trigger with an editable, made-up form; bursts; this overlay, every
+  overlay or as a real event (`isTest`); saved sequences in `template.test`; replay of real events;
+  topics, countdowns and songs; what the page logged.
+- [ ] 5. Media tab and `controls/media.rs`: thumbnails, GIFs, video pictures, sounds with Play and a
+  waveform, fonts, Used by, Add by Browse or drop, Rename that follows, Replace, Delete that warns.
+- [ ] 6. Setting kinds: `date`, `time`, `datetime`, duration `presets`, `range`, `percent`, `position`,
+  `size`, `animation`, `easing`, `gradient`, `textStyle`, `sound`, `event`, `reward`, `gift`,
+  `usergroup`, `scene`, `source`, `code`, `json`, `button`, `hidden`, previews on `file`; Extra CSS;
+  `streamerz.place`, `animate`, `css`.
+- [ ] 7. Live controls: `meta.template.controls`, `streamerz.control`, the Live tab, a controls dock page,
+  Set Overlay Control (99881) and Overlay Control Changed (99881), MCP `overlay_control`.
+- [ ] 8. Sound player in the core: opened on the first sound, closed after the last, mixing, fades, named
+  sounds (done: `src/sound.rs`, Symphonia with PulseAudio by dlopen and WASAPI, no audio crate); the
+  monitor device and the device list on Linux come with the Sounds page.
+- [ ] 9. Sound sub-actions: Streamer.bot's 1, 7, 30001, 30002 and Streamerz's 99300 to 99306 (volume,
+  pause, resume, master volume, info, play in an overlay, device); triggers 99300 to 99302. Done: 1, 7,
+  30001, 30002, 99300 to 99304, triggers 99300 and 99301, `StreamerzSound` and the MCP tools `sounds`,
+  `sound_play`, `sound_stop`; 99305, 99306 and 99302 come with live controls and the Sounds page.
+- [ ] 10. Sounds page: Playing, Library, Board (and its dock), Voices, Output.
+- [ ] 11. System voices: Windows speech synthesis and Linux `espeak-ng`, through the player.
+- [ ] 12. Neural voices: `streamerz-voice` (sherpa-onnx) built by CI with its hash in Streamerz,
+  downloaded on request; the catalog with sizes, samples and licenses; downloads that resume and check.
+- [ ] 13. Speaking: queue and filters, a voice per viewer, Speak sub-actions 99320 to 99327, triggers
+  99320 and 99321, `streamerz.speak`, the Read chat aloud template.
+- [ ] 14. Make a voice: Mix voices (Kokoro), From a recording (Pocket TTS, with consent, verified
+  first), effects.
+- [ ] 15. Alert box: the runtime page, the queue with merges and controls, rules with conditions, media,
+  sound, voice, layout, animations and code, the Alerts tab editor, Play this rule. Done: the example
+  Alert box (rules as a `list` setting, weights, the queue, gift bomb and TikTok combo merges, a control
+  topic, place, layout, animations, sound, Extra CSS and Card HTML), 44 browser checks with drafts; the Alerts tab
+  editing the same rules, voice and Play this rule are still to do.
+- [ ] 16. Examples: Alert box, Countdown to, Sound board dock, Read chat aloud, Scene banner; the current
+  ones updated.
+- [ ] 17. MCP and WebSocket for all of it, each with a test; docs (`OVERLAYS.md`, `SOUNDS.md`,
+  `VOICES.md`, `UI.md`, references, `MCP.md`, `TESTING.md`).
+- [ ] 18. Close: unit tests, scenarios, the smoke in English and pt_BR, real sounds and voices on Windows
+  and Linux, the alert box in OBS, hidden RSS and idle CPU before and after (and after a voice is
+  unloaded), Windows check.

@@ -913,6 +913,7 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
         | "StreamerzCountdown"
         | "StreamerzOverlays"
         | "StreamerzOverlayPublish"
+        | "StreamerzSound"
         | "StreamerzManageActionGroup"
         | "StreamerzActionGroups"
         | "StreamerzGroupIcon"
@@ -1068,6 +1069,10 @@ pub(crate) fn answer(e: &Rc<Engine>, req: &Value, authed: bool) -> Option<Value>
                 json!({"overlays": files, "topics": topics, "base": crate::overlays::base(&e.config())}),
             )
         }
+        "StreamerzSound" => match crate::sound::request(req) {
+            Ok(v) => ok(&id, v),
+            Err(m) => error(&id, &m),
+        },
         "StreamerzOverlayPublish" => {
             let topic = get("topic").trim();
             if topic.is_empty() {
@@ -2250,7 +2255,12 @@ async fn http_one(e: &Rc<Engine>, mut tcp: TcpStream) -> std::io::Result<()> {
             }
             return crate::overlays::events(e, tcp, query).await;
         }
-        let served = crate::overlays::file(&e.config(), path);
+        // A page opened as a preview shows the editor's draft.
+        let draft = crate::overlays::group_of(path)
+            .filter(|_| crate::overlays::is_preview(query))
+            .map(|group| e.overlay_draft(&group))
+            .unwrap_or_default();
+        let served = crate::overlays::file_with(&e.config(), path, &draft);
         return match served {
             crate::overlays::Served::Bytes(status, kind, body) => {
                 crate::overlays::respond(&mut tcp, status, kind, &body).await

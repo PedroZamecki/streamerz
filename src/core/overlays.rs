@@ -1415,6 +1415,35 @@ pub async fn request(engine: &Rc<Engine>, req: &Value) -> Result<Value, String> 
     // What was put in a folder by hand counts before anything is read or changed.
     sync(engine);
     match text("op").as_str() {
+        // The editor's unsaved settings: `action` get (the default), set (with `values`), save or
+        // revert (one `setting`, or all). Only preview pages show them; save sends them to every page.
+        "draft" => {
+            known()?;
+            match text("action").as_str() {
+                "" | "get" => {}
+                "set" => {
+                    let values = req["values"].as_object().ok_or("values must be an object")?;
+                    engine.overlay_draft_set(&overlay, values)?;
+                }
+                "save" => {
+                    engine.overlay_draft_save(&overlay)?;
+                }
+                "revert" => {
+                    let setting = text("setting");
+                    engine.overlay_draft_revert(&overlay, (!setting.is_empty()).then_some(setting.as_str()));
+                }
+                other => return Err(format!("unknown draft action {other}: get, set, save or revert")),
+            }
+            let config = engine.config();
+            let first = groups::meta(&config, &overlay)
+                .files
+                .iter()
+                .find(|f| groups::is_page(&f.name))
+                .map(|f| f.name.clone())
+                .unwrap_or_default();
+            Ok(json!({"draft": engine.overlay_draft(&overlay), "settings": engine.overlay_preview_settings(&overlay),
+                "preview": overlays::preview_url(&config, &overlay, &first)}))
+        }
         "list" => {
             let config = engine.config();
             let all: Vec<Value> = groups::all(&config)

@@ -40,6 +40,10 @@ require an enabled, signed-in integration, except `spotify_local`, which reads a
 Windows media session. OBS requests and Spotify playback and queue controls act
 on real applications, including in dev mode. Disabled integrations remain off.
 
+`sounds` lists what Streamerz plays now, its outputs and master volume, and pauses, resumes or turns
+down sounds by name; `sound_play` and `sound_stop` play and stop a file. They use this computer's real
+speakers and fire no trigger (see `docs/SOUNDS.md`).
+
 `agents` discovers clients. `agent_setup` changes the selected client's config;
 ask the user before changing another program. `tiktok_bridge` status is read-only;
 install, login and remove affect the user's browser setup. `tiktok_gifts` reads

@@ -83,6 +83,7 @@ page. Each one is short and commented, made to be read:
 | Credits roll | Selected names from the stream scroll once or repeat | one HTTP read of `/GetCredits`, a `list` of sections, a browser animation |
 | Song request queue | Upcoming requests from the Song requests (Spotify) action template, or another template | `streamerz.on`, the topic `songrequests.queue` or your own published array |
 | Alerts | A card for each follow, sub, gift, cheer, Super Chat, raid and reward, in its platform's color, with who did it | `streamerz.alerts`, `streamerz.avatar`, `streamerz.logo` |
+| Alert box | Every alert of every platform as you set it up: rules with conditions (bits, viewers, months, coins), a picture, GIF or video, a sound and a text each, in a queue, at the place and with the animations you pick; pause, skip and replay from an action | `streamerz.alerts` with `kind` and `args`, a `list` of rules, sounds and pictures of the overlay, a control topic, your own CSS and HTML |
 | TikTok gifts | Each gift on your TikTok Live, with a count that grows through a combo | `streamerz.event("TikTok.Gift")` |
 | Poll | One poll for every platform: `!poll Question \| One \| Two`, viewers vote by typing a number. Comes with its commands, actions and a dock to run it from | topics set by an action, `streamerz.chat`, `streamerz.say`, a second page |
 | Prize wheel | A wheel with your own slices, each with its chances. `!spin` turns it and the result goes to the chat | a topic set by an action, a `list` setting |
@@ -93,6 +94,20 @@ page. Each one is short and commented, made to be read:
 
 Their source is in `assets/examples/<name>`: a `template.json` and a `files` folder, exactly what a
 `.streamerz` file holds when unpacked. `dev/test-examples.mjs` opens each one in a browser.
+
+**Alert box** is set up entirely in Settings. Each line of **Rules** is one alert: When (the kind of
+event), From (a platform or Any), At least and At most (the bits of a cheer, the viewers of a raid,
+the subs of a gift bomb, the months of a resub, the money of a Super Chat, the coins of a TikTok gift;
+0 at most has no end), the Text (with `%user%`, `%amount%`, `%event%`, `%message%`, `%gift%`,
+`%months%`, `%tier%`, `%coins%` and `%platform%`), a Picture and a Sound (files of the overlay, such
+as `img/star.svg` and `sounds/chime.wav`, or web addresses; a video plays muted), the Volume, the
+Seconds it stays and a Weight. The first rule that matches plays, or one of the matching rules by
+weight. Put your files in its folder (**Open folder**) and name them in a rule. The queue shows one
+alert at a time, several together, or only the newest; a gift bomb is one alert and a TikTok combo
+grows on its card. An action controls it with the **Overlay** sub-action: topic `alertbox`, value
+`{"do": "pause"}` (or `resume`, `skip`, `replay`, `clear`, `mute`, `unmute`), and the box says what it
+is doing in the topic `alertbox.state`. **Extra CSS** and **Card HTML** change its look without
+touching its page.
 
 Subathon starts on installation. Run **Subathon: reset** in Actions to apply a new starting time.
 The maximum is applied by the next reset or addition. Its Clock ID setting connects the page and its
@@ -204,6 +219,7 @@ Streamerz adds `window.streamerz` to the top of the page:
 | `streamerz.publish(topic, value)` | Sets a topic for every page listening with `on()`. |
 | `streamerz.log(text)` | A line in Streamerz's log (OBS has no console to look at). |
 | `streamerz.testing` | True while the page handles what **Test** sent: a page that keeps a count (the Goal bar) shows it but does not keep it. |
+| `streamerz.preview` | True on a page opened as a preview (its address ends in `?preview=1`): it shows the settings being changed before they are saved, and loads again by itself when it doesn't follow `onSettings`. OBS's pages keep the saved ones. |
 
 The calls that ask Streamerz for something return a Promise, rejected with the reason when refused.
 
@@ -285,6 +301,8 @@ An assistant builds, tries and shares an overlay with no window at all:
    made-up data, and gives a PNG with what its console said and its script's errors (with the line of
    the file). `overlay_test` sends made-up data (or exactly the events and topics given) to the pages
    already open; `overlay_inspect` says what the open pages listen to, got and logged.
+   `overlay_draft` changes settings without saving them: only pages opened as a preview (`?preview=1`)
+   show the draft, until it is saved (every page, OBS too) or reverted.
 4. `overlay_add_to_obs` makes the browser source in OBS; `overlay_connect` connects a group of actions
    (or disconnects it); `overlay_delete` deletes a file or the whole overlay.
 5. Actions are built with `describe`, `new_action` and `save` (their `group` is the overlay's name), and
