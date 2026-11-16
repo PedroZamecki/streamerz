@@ -286,16 +286,16 @@ An assistant builds, tries and shares an overlay with no window at all:
    the file). `overlay_test` sends made-up data (or exactly the events and topics given) to the pages
    already open; `overlay_inspect` says what the open pages listen to, got and logged.
 4. `overlay_add_to_obs` makes the browser source in OBS; `overlay_connect` connects a group of actions
-   (or disconnects it); `overlay_delete` deletes a file or the whole overlay.
+   (or disconnects it); `overlay_rename` renames an overlay (and its connected group); `overlay_delete` deletes a file or the whole overlay.
 5. Actions are built with `describe`, `new_action` and `save` (their `group` is the overlay's name), and
    tried with `fire_trigger` and `inject_chat`.
 6. `template_check`, `template_export`, `template_inspect` and `template_import` share it as a
    `.streamerz` file. `overlay_publish` sets a topic.
 
-The same is the WebSocket request `StreamerzOverlay` with an `op` (`list`, `read`, `save`, `delete`,
-`test`, `inspect`, `obs`, `connect`, `disconnect`, `examples`, `add_example`, `shot`). The Overlays page
+The same is the WebSocket request `StreamerzOverlay` with an `op` (`list`, `read`, `save`, `rename`,
+`delete`, `test`, `inspect`, `obs`, `connect`, `disconnect`, `examples`, `add_example`, `shot`). The Overlays page
 is `core_view` and `core_action` with the domain `overlays`, and its forms are `entity_form` kinds
-`overlay:new`, `overlay:import`, `overlay:settings:<row>`, `overlay:page:<row>`,
+`overlay:new`, `overlay:import`, `overlay:rename:<row>`, `overlay:settings:<row>`, `overlay:page:<row>`,
 `overlay:connect:<row>` and `overlay:export:<row>`.
 
 ## Development checks

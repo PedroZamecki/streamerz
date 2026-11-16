@@ -82,6 +82,46 @@ pub fn sync(engine: &Rc<Engine>) {
     }
 }
 
+fn example_summary(about: &Value) -> String {
+    let mut parts = Vec::new();
+    let count_part = |n: u64, singular: &'static str, plural: &'static str, out: &mut Vec<String>| match n {
+        0 => {}
+        1 => out.push(tr(singular).to_owned()),
+        n => out.push(trf(plural, &[("count", &n.to_string())])),
+    };
+    count_part(
+        about["pages"].as_array().map_or(0, Vec::len) as u64,
+        "overlays.examples.page",
+        "overlays.examples.pages",
+        &mut parts,
+    );
+    count_part(
+        about["settings"].as_u64().unwrap_or(0),
+        "overlays.examples.setting",
+        "overlays.examples.settings",
+        &mut parts,
+    );
+    count_part(
+        about["actions"].as_u64().unwrap_or(0),
+        "overlays.examples.action",
+        "overlays.examples.actions",
+        &mut parts,
+    );
+    count_part(
+        about["commands"].as_u64().unwrap_or(0),
+        "overlays.examples.command",
+        "overlays.examples.commands",
+        &mut parts,
+    );
+    count_part(
+        about["timers"].as_u64().unwrap_or(0),
+        "overlays.examples.timer",
+        "overlays.examples.timers",
+        &mut parts,
+    );
+    parts.join(" · ")
+}
+
 /// The bundled examples: what each one is, and whether it is already here.
 fn read_examples(engine: &Rc<Engine>) -> Result<Value, String> {
     let config = engine.config();
@@ -93,25 +133,46 @@ fn read_examples(engine: &Rc<Engine>) -> Result<Value, String> {
             Some("same") => tr("overlays.examples.added"),
             _ => "",
         };
-        rows.push(json!({"id": example.slug, "name": about["name"], "enabled": true,
-            "can": {"add_example": about["installed"]["state"] != "same", "example_obs": about["pages"].as_array().is_some_and(|pages| pages.iter().any(|page| page["dock"] != true))},
-            "detail": about["about"], "detailOk": true,
-            "cells": [about["name"], about["about"], state]}));
+        let mut row = json!({
+            "id": example.slug,
+            "name": about["name"],
+            "enabled": true,
+            "can": {
+                "add_example": about["installed"]["state"] != "same",
+                "example_obs": about["pages"].as_array().is_some_and(|pages| pages.iter().any(|page| page["dock"] != true))
+            },
+            "detail": about["about"],
+            "detailTitle": about["name"],
+            "detailOk": true,
+            "cells": [about["name"], about["about"], state]
+        });
+        if !state.is_empty() {
+            row["detailBadge"] = state.into();
+        }
+        let summary = example_summary(&about);
+        if !summary.is_empty() {
+            row["detailNote"] = summary.into();
+        }
+        rows.push(row);
     }
+    let mut about_col = column("about", "overlays.header.about", 280);
+    about_col["hidden"] = true.into();
     let mut table = json!({"kind": "overlay_example", "title": tr("overlays.examples.title"), "what": "",
     "domain": EXAMPLES, "guide": tr("overlays.examples.guide"),
     "columns": [
-        column("name", "overlays.header.example", 150),
-        column("about", "overlays.header.about", 280),
-        column("state", "overlays.header.state", 90),
+        column("name", "overlays.header.example", 170),
+        about_col,
+        column("state", "overlays.header.state", 88),
     ],
-    "rows": rows, "empty": "", "search": false, "showTitle": false,
+    "rows": rows, "empty": "", "search": true, "showTitle": false,
     "actions": [button("add_example", "overlays.examples.add", "plus", true),
         {"id":"example_obs", "label":tr("overlays.btn.add_to_obs"), "icon":"monitor-play", "needs":"row", "form":"overlay:example_obs:"}]});
-    table["perRow"] = 1.into();
+    table["perRow"] = 2.into();
     table["titleless"] = true.into();
-    table["detail"] = "".into();
-    table["detailHeight"] = 44.into();
+    table["selectFirst"] = true.into();
+    table["dialogWidth"] = 760.into();
+    table["detailSide"] = true.into();
+    table["detail"] = tr("overlays.examples.selection_hint").into();
     Ok(json!({"domain": EXAMPLES, "tables": [table]}))
 }
 
@@ -384,6 +445,7 @@ pub fn read(engine: &Rc<Engine>, domain: &str) -> Result<Value, String> {
         button("open", "overlays.btn.open", "external-link", true),
         tip(button("test", "overlays.btn.test", "play", true), "overlays.test.tip"),
         tip(button("inspect", "overlays.btn.inspect", "activity", true), "overlays.inspect.tip"),
+        form_button("rename", "btn.rename", "pencil", true),
         form_button("settings", "btn.settings", "settings", true),
         form_button("page", "overlays.btn.page", "ruler", true),
         tip(form_button("connect", "overlays.btn.connect", "link", true), "overlays.connect.tip"),
@@ -398,7 +460,7 @@ pub fn read(engine: &Rc<Engine>, domain: &str) -> Result<Value, String> {
     ]});
     table["strip"] = true.into();
     table["detail"] = "".into();
-    table["detailHeight"] = 64.into();
+    table["detailHeight"] = 120.into();
     Ok(json!({"domain": DOMAIN, "tables": [table]}))
 }
 
@@ -734,6 +796,24 @@ pub fn form_for(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     let config = engine.config();
     match name.as_str() {
         "example_obs" | "obs_setup" => obs_setup_form(engine, &name, &id),
+        "rename" => {
+            let (group, _) = row(engine, &id)?;
+            let hint = if groups::listed(&config, &group) {
+                tr("overlays.rename.hint_connected")
+            } else {
+                tr("overlays.rename.hint")
+            };
+            let mut out = form(
+                kind,
+                trf("overlays.rename.title", &[("name", &group)]),
+                hint,
+                vec![field("name", tr("dialogs.name"), "text", group.into())],
+            );
+            out["focusField"] = 0.into();
+            out["okLabel"] = tr("btn.rename").into();
+            out["json"] = false.into();
+            Ok(out)
+        }
         "settings" => {
             let (group, _) = row(engine, &id)?;
             let mut form = super::actions::group_settings_form(&config, &group);
@@ -891,6 +971,23 @@ pub fn edit_form(engine: &Rc<Engine>, request: &Value, preview: bool) -> Result<
     }
     let text = |key: &str| item[key].as_str().unwrap_or_default().trim().to_owned();
     match name.as_str() {
+        "rename" => {
+            let (group, file) = row(engine, &id)?;
+            let wanted = text("name");
+            if wanted.is_empty() {
+                return Err(tr("lists.name_required").into());
+            }
+            if wanted == group {
+                return Ok(json!({"saved": row_id(&group, &file)}));
+            }
+            let mut renamed = false;
+            engine.change(|config| renamed = groups::rename(config, &group, &wanted));
+            if renamed {
+                Ok(json!({"saved": row_id(&wanted, &file)}))
+            } else {
+                Err(tr("overlays.rename_exists").into())
+            }
+        }
         "example_obs" | "obs_setup" => {
             let raw = id.split_once('|').map_or(id.as_str(), |(id, _)| id);
             let destination = text("destination");
@@ -1393,6 +1490,7 @@ fn save(config: &mut crate::Config, req: &Value) -> Result<Value, String> {
 /// | `list` | | every overlay: its pages and addresses, permissions, open pages, connected actions |
 /// | `read` | `overlay`, `file?` | its settings (declared and set), files and pages; with `file`, that file's `text` (or `content`, base64) |
 /// | `save` | `overlay`, `files?` `{name: text}`, `filesBase64?`, `remove?` `[name]`, `settings?`, `values?`, `permissions?`, `pages?`, `description?`, `requires?`, `test?`, `dock?`, `connect?` | makes it or changes what is given; `checks` is what to look at |
+/// | `rename` | `overlay`, `name` | renames the overlay and its connected group of actions |
 /// | `delete` | `overlay`, `file?` | the file, or the whole overlay (its connected actions stay in Actions) |
 /// | `test` | `overlay`, `rounds?`, or `events?` `[[name, data]]` and `topics?` `{name: value}` | sends the made-up chat, events, gift and song (or exactly what is given) to its open pages |
 /// | `inspect` | `overlay` | its open pages and what each listens to, the last messages sent, what the pages logged, their errors |
@@ -1462,6 +1560,21 @@ pub async fn request(engine: &Rc<Engine>, req: &Value) -> Result<Value, String> 
             let mut result = Err(String::new());
             engine.change(|config| result = save(config, req));
             result
+        }
+        "rename" => {
+            known()?;
+            let wanted = text("name");
+            if wanted.is_empty() {
+                return Err(tr("lists.name_required").into());
+            }
+            if wanted != overlay {
+                let mut renamed = false;
+                engine.change(|config| renamed = groups::rename(config, &overlay, &wanted));
+                if !renamed {
+                    return Err(tr("overlays.rename_exists").into());
+                }
+            }
+            Ok(described(&engine.config(), &wanted))
         }
         "delete" => {
             known()?;
@@ -1608,7 +1721,7 @@ pub async fn request(engine: &Rc<Engine>, req: &Value) -> Result<Value, String> 
             })
             .await
         }
-        other => Err(format!("no overlay op {other}: list, read, save, delete, test, inspect, obs, connect, disconnect, examples, add_example, shot")),
+        other => Err(format!("no overlay op {other}: list, read, save, rename, delete, test, inspect, obs, connect, disconnect, examples, add_example, shot")),
     }
 }
 
@@ -2014,6 +2127,150 @@ mod tests {
                 e.change(|c| groups::remove(c, name));
             }
             assert_eq!(names, [poll["name"].as_str().unwrap()]);
+        });
+    }
+
+    #[test]
+    fn overlays_can_be_renamed_through_form_and_request() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        run(async {
+            let e = engine(json!({"actions": []}));
+            let made = edit_form(
+                &e,
+                &json!({"kind": "overlay:new", "changes": [{"field": 0, "value": "Clock"}]}),
+                false,
+            )
+            .unwrap();
+            let id = made["saved"].as_str().unwrap().to_owned();
+            assert_eq!(id, "Clock:index.html");
+
+            // Rename action is exposed on the table with a pencil icon.
+            let table = read(&e, DOMAIN).unwrap();
+            let rename_btn = table["tables"][0]["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["id"] == "rename")
+                .unwrap();
+            assert_eq!(rename_btn["icon"], "pencil");
+            assert_eq!(rename_btn["form"], "overlay:rename:");
+            assert_eq!(rename_btn["needs"], "row");
+
+            // Form opens prefilled, focused, and non-JSON.
+            let form = form_for(&e, &json!({"kind": format!("overlay:rename:{id}")})).unwrap();
+            assert_eq!(form["focusField"], 0);
+            assert_eq!(form["json"], false);
+            assert_eq!(form["fields"][0]["value"], "Clock");
+            assert_eq!(form["hint"], tr("overlays.rename.hint"));
+
+            // Connect to a group and verify connected hint and full rename preservation.
+            request(&e, &json!({"op": "connect", "overlay": "Clock"}))
+                .await
+                .unwrap();
+            e.change(|c| {
+                c.actions.actions.push(crate::model::Action {
+                    id: "a1".into(),
+                    name: "Tick".into(),
+                    group: "Clock".into(),
+                    enabled: true,
+                    ..Default::default()
+                });
+            });
+            let connected_form = form_for(&e, &json!({"kind": format!("overlay:rename:{id}")})).unwrap();
+            assert_eq!(connected_form["hint"], tr("overlays.rename.hint_connected"));
+
+            // Empty name fails, unchanged succeeds cleanly, new name renames overlay, page title, and connected group.
+            assert!(edit_form(
+                &e,
+                &json!({"kind": format!("overlay:rename:{id}"), "changes": [{"field": 0, "value": "   "}]}),
+                false,
+            )
+            .is_err());
+            let same = edit_form(
+                &e,
+                &json!({"kind": format!("overlay:rename:{id}"), "changes": [{"field": 0, "value": "Clock"}]}),
+                false,
+            )
+            .unwrap();
+            assert_eq!(same["saved"], "Clock:index.html");
+
+            let saved = edit_form(
+                &e,
+                &json!({"kind": format!("overlay:rename:{id}"), "changes": [{"field": 0, "value": "Stream Clock"}]}),
+                false,
+            )
+            .unwrap();
+            assert_eq!(saved["saved"], "Stream Clock:index.html");
+            let config = e.config();
+            assert!(!groups::exists(&config, "Clock"));
+            assert!(groups::has_overlay(&config, "Stream Clock"));
+            assert!(groups::listed(&config, "Stream Clock"));
+            assert_eq!(config.actions.actions[0].group, "Stream Clock");
+            assert_eq!(
+                overlays::page_of(&config, "Stream Clock", "index.html").title,
+                "Stream Clock"
+            );
+            drop(config);
+
+            // Duplicate name is rejected on both form and request.
+            e.change(|c| {
+                groups::create(c, "Taken");
+            });
+            assert!(edit_form(
+                &e,
+                &json!({"kind": "overlay:rename:Stream Clock:index.html", "changes": [{"field": 0, "value": "Taken"}]}),
+                false,
+            )
+            .is_err());
+            assert!(
+                request(&e, &json!({"op": "rename", "overlay": "Stream Clock", "name": "Taken"}))
+                    .await
+                    .is_err()
+            );
+            assert!(
+                request(&e, &json!({"op": "rename", "overlay": "Missing", "name": "Other"}))
+                    .await
+                    .is_err()
+            );
+
+            let renamed = request(
+                &e,
+                &json!({"op": "rename", "overlay": "Stream Clock", "name": "Desk Clock"}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(renamed["name"], "Desk Clock");
+            assert!(groups::has_overlay(&e.config(), "Desk Clock"));
+
+            e.change(|c| {
+                groups::remove(c, "Desk Clock");
+                groups::remove(c, "Taken");
+            });
+        });
+    }
+
+    #[test]
+    fn examples_model_uses_side_detail_search_and_keeps_cells_contract() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let e = crate::engine::tests::engine(json!({"actions": []}));
+            let model = read(&e, EXAMPLES).unwrap();
+            let table = &model["tables"][0];
+            assert_eq!(table["search"], true);
+            assert_eq!(table["selectFirst"], true);
+            assert_eq!(table["detailSide"], true);
+            assert_eq!(table["dialogWidth"], 760);
+            assert_eq!(table["perRow"], 2);
+            assert_eq!(table["columns"][1]["key"], "about");
+            assert_eq!(table["columns"][1]["hidden"], true);
+            let rows = table["rows"].as_array().unwrap();
+            assert!(!rows.is_empty());
+            for row in rows {
+                assert_eq!(row["detailTitle"], row["name"]);
+                assert!(row["detail"].as_str().is_some_and(|s| !s.is_empty()));
+                assert!(row["detailNote"].as_str().is_some_and(|s| !s.is_empty()));
+                assert_eq!(row["cells"].as_array().unwrap().len(), 3);
+            }
         });
     }
 }
