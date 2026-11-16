@@ -540,6 +540,7 @@ async fn run_conn_loop(
                                     field_matches(t, "connectionId", &info.id)
                                 });
                                 engine.emit("ObsStudio", "Connected", || json!(args));
+                                crate::core::preflight::on_obs_connected(&engine, &info.id);
                                 tokio::task::spawn_local(publish_catalog(engine.clone(), info.id.clone()));
                                 break;
                             }
@@ -716,6 +717,7 @@ async fn publish_catalog(engine: Rc<Engine>, connection: String) {
 
 fn fire_disconnected(engine: &Rc<Engine>, info: &ObsConnInfo) {
     crate::core::outputs::reset_connection(&info.id);
+    crate::core::stream::obs_changed();
     let args = obs_args(info);
     engine.fire(T_OBS_DISCONNECTED, "ObsDisconnected", "OBS Studio", "obs", &args, |t| {
         field_matches(t, "connectionId", &info.id)
@@ -805,6 +807,10 @@ pub(crate) fn handle_obs_message(
                         .pointer("/eventData/outputState")
                         .and_then(Value::as_str)
                         .unwrap_or("");
+                    if state == "OBS_WEBSOCKET_OUTPUT_STARTING" {
+                        crate::core::preflight::on_obs_stream_starting(engine, &info.id, None);
+                        return;
+                    }
                     if state != "OBS_WEBSOCKET_OUTPUT_STARTED" && state != "OBS_WEBSOCKET_OUTPUT_STOPPED" {
                         return;
                     }
@@ -812,6 +818,7 @@ pub(crate) fn handle_obs_message(
                     let info_id = info.id.clone();
                     if active {
                         engine.notify_stream_started();
+                        crate::core::stream::obs_changed();
                         engine.fire(
                             T_OBS_STREAMING_STARTED,
                             "ObsStreamingStarted",
@@ -822,6 +829,7 @@ pub(crate) fn handle_obs_message(
                         );
                         engine.emit("ObsStudio", "StreamingStarted", || json!(args));
                     } else {
+                        crate::core::stream::obs_changed();
                         engine.fire(
                             T_OBS_STREAMING_STOPPED,
                             "ObsStreamingStopped",
@@ -877,6 +885,15 @@ pub(crate) fn handle_obs_message(
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string();
+                    if (vendor_name == "aitum-multistream" || vendor_name == "aitum-stream-suite")
+                        && v_ev_type == "output_started"
+                    {
+                        let out_name = d
+                            .pointer("/eventData/eventData/name")
+                            .or_else(|| d.pointer("/eventData/eventData/output_name"))
+                            .and_then(Value::as_str);
+                        crate::core::preflight::on_obs_stream_starting(engine, &info.id, out_name);
+                    }
                     let info_id = info.id.clone();
                     let mut args = args.clone();
                     args.insert("obsVendorEvent.vendor".into(), vendor_name.clone().into());
