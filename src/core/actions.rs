@@ -90,6 +90,10 @@ fn confirm(value: Value, question: &str, label: &'static str) -> Value {
 fn only(value: Value) -> Value {
     with(value, "hidden", true)
 }
+/// Drawn in the page's header rather than the bar under the tree (the menu keeps it).
+fn header(value: Value) -> Value {
+    with(value, "header", true)
+}
 /// Only in the context menu.
 fn menu_only(value: Value) -> Value {
     with(value, "menuOnly", true)
@@ -189,7 +193,7 @@ fn action_tree(config: &crate::Config) -> Value {
     nodes.extend(sorted.iter().filter(|action| action.group.is_empty()).map(row));
     let plain = |value: Value| value;
     let buttons = vec![
-        form(button("add", "btn.add", "plus", &[]), "act:action_add"),
+        header(form(button("add", "btn.add", "plus", &[]), "act:action_add")),
         form(button("edit", "btn.edit", "pencil", &["action"]), "act:action_edit"),
         form(
             button("duplicate", "btn.duplicate", "copy", &["action"]),
@@ -205,16 +209,16 @@ fn action_tree(config: &crate::Config) -> Value {
             "btn.delete",
         ),
         op(button("test", "btn.test", "play", &["action"]), "action_run"),
-        form(button("import", "btn.import", "download", &[]), "act:import"),
+        header(form(button("import", "btn.import", "download", &[]), "act:import")),
         form(button("export", "btn.export", "upload", &[]), "act:export"),
-        with(
+        header(with(
             form(
                 picker_for(button("templates", "btn.templates", "layout-template", &[]), "template"),
                 "act:template_add",
             ),
             "tooltip",
             tr("actions.templates_tooltip"),
-        ),
+        )),
         form(
             button("add_group", "btn.add_group", "folder-plus", &[]),
             "act:group_add",
@@ -244,7 +248,7 @@ fn action_tree(config: &crate::Config) -> Value {
             "btn.delete_group",
         )),
     ];
-    json!({"title": tr("actions.heading"), "searchHint": tr("actions.search_actions"), "empty": tr("actions.empty_actions"), "perRow": 5,
+    json!({"title": tr("actions.heading"), "searchHint": tr("actions.search_actions"), "empty": tr("actions.empty_actions"), "perRow": 6,
         "nodes": nodes, "buttons": buttons.into_iter().map(plain).collect::<Vec<_>>()})
 }
 
@@ -1138,6 +1142,9 @@ pub fn form_for(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
     let part = |at: usize| parts.get(at).map(String::as_str).unwrap_or_default();
     let simple = |parts: &[String], title: String, fields: &[F], item: Obj, hint: &str| {
         let mut out = model(&config, kind_of(parts), title, hint, fields, item);
+        if out["fields"][0]["widget"]["kind"] == "text" {
+            out["focusField"] = 0.into();
+        }
         out["json"] = false.into();
         out
     };
@@ -1219,6 +1226,7 @@ pub fn form_for(engine: &Rc<Engine>, request: &Value) -> Result<Value, String> {
                 ACTION_FIELDS,
                 action_item(action),
             );
+            out["focusField"] = 0.into();
             out["json"] = false.into();
             Ok(out)
         }
@@ -1678,33 +1686,59 @@ fn save_form(engine: &Rc<Engine>, parts: &[String], item: Obj) -> Result<Value, 
 // Group settings: the description and the values by form, the definitions, files and members as JSON.
 
 pub(super) fn group_settings_form(config: &crate::Config, group: &str) -> Value {
-    let meta = crate::groups::meta(config, group);
+    let (meta, mut warnings) = crate::groups::inspect_meta(config, group);
     let values = crate::groups::values(config, group);
+    let stored = config.action_group_variables.get(group).and_then(Value::as_object);
+    let mut meta_issue_noted = false;
     let mut fields = vec![json!({"key": "description", "label": tr("dialogs.export.description"),
         "widget": {"kind": "multi"}, "holds": "text", "value": meta.description})];
     for def in &meta.variables {
-        let label = if def.label.is_empty() {
+        let label = if def.label.trim().is_empty() {
             def.name.clone()
         } else {
             def.label.clone()
         };
+        if let Some(raw) = stored.and_then(|obj| obj.get(&def.name)) {
+            if !def.accepts(raw) {
+                warnings.push(trf(
+                    "group.warn_invalid_value",
+                    &[("name", &label), ("kind", def.kind.name())],
+                ));
+            }
+        }
         let value = values.get(&def.name).cloned().unwrap_or(Value::Null);
         let mut field = match def.kind {
             crate::groups::Kind::Boolean => json!({"key": def.name, "label": label, "widget": {"kind": "bool"},
                 "holds": "true/false", "value": value.as_bool().unwrap_or(false)}),
-            crate::groups::Kind::Choice => json!({"key": def.name, "label": label,
-                "widget": {"kind": "pick", "options": def.options},
-                "holds": "one of the options",
-                "value": def.options.iter().position(|option| value.as_str() == Some(option)).unwrap_or(0)}),
+            crate::groups::Kind::Choice => {
+                if def.options.is_empty() {
+                    meta_issue_noted = true;
+                    warnings.push(trf("group.warn_empty_choice", &[("name", &label)]));
+                }
+                json!({"key": def.name, "label": label,
+                    "widget": {"kind": "pick", "options": def.options},
+                    "holds": "one of the options",
+                    "value": def.options.iter().position(|option| value.as_str() == Some(option)).unwrap_or(0)})
+            }
             crate::groups::Kind::Color => json!({"key": def.name, "label": label, "widget": {"kind": "color"},
                 "holds": "a colour as #rrggbb or #rrggbbaa",
                 "value": value.as_str().or(def.default.as_str()).unwrap_or("#ffffff")}),
             crate::groups::Kind::Slider => {
+                if crate::groups::slider_problem(def).is_some() {
+                    meta_issue_noted = true;
+                    warnings.push(trf("group.warn_slider_range", &[("name", &label)]));
+                }
                 let (min, max, step) = def.range();
+                let initial = value
+                    .as_f64()
+                    .or_else(|| def.default.as_f64())
+                    .filter(|n| n.is_finite())
+                    .unwrap_or(min)
+                    .clamp(min, max);
                 json!({"key": def.name, "label": label,
                     "widget": {"kind": "slider", "min": min, "max": max, "step": step},
                     "holds": format!("a number from {min} to {max}"),
-                    "value": value.as_f64().or(def.default.as_f64()).unwrap_or(min)})
+                    "value": initial})
             }
             crate::groups::Kind::Lines => json!({"key": def.name, "label": label, "widget": {"kind": "multi"},
                 "holds": "text, one item per line", "value": value.as_str().unwrap_or_default()}),
@@ -1714,6 +1748,14 @@ pub(super) fn group_settings_form(config: &crate::Config, group: &str) -> Value 
             // One of the overlay's files, or one typed (a file of this computer to bring in, or a web
             // address): the list, with Other and Browse.
             crate::groups::Kind::File => {
+                let current = value.as_str().unwrap_or_default();
+                if !current.is_empty()
+                    && !current.starts_with("http://")
+                    && !current.starts_with("https://")
+                    && !meta.files.iter().any(|f| f.name == current)
+                {
+                    warnings.push(trf("group.warn_missing_file", &[("name", &label), ("file", current)]));
+                }
                 let choices: Vec<Value> = meta
                     .files
                     .iter()
@@ -1724,7 +1766,7 @@ pub(super) fn group_settings_form(config: &crate::Config, group: &str) -> Value 
                     "browse": if def.accept == "image" { "image" } else { "file" },
                     "placeholder": tr("forms.file.placeholder"),
                     "holds": "the name of one of its files, the path of a file to bring in, or a web address",
-                    "value": value.as_str().unwrap_or_default()})
+                    "value": current})
             }
             crate::groups::Kind::Platforms => {
                 let options: Vec<Value> = crate::groups::PLATFORMS
@@ -1737,6 +1779,16 @@ pub(super) fn group_settings_form(config: &crate::Config, group: &str) -> Value 
             }
             // One of the actions connected to the overlay, by its id.
             crate::groups::Kind::Action => {
+                let current = value.as_str().unwrap_or_default();
+                if !current.is_empty()
+                    && !config
+                        .actions
+                        .actions
+                        .iter()
+                        .any(|a| a.group == group && a.id == current)
+                {
+                    warnings.push(trf("group.warn_missing_action", &[("name", &label), ("id", current)]));
+                }
                 let choices: Vec<Value> = config
                     .actions
                     .actions
@@ -1746,10 +1798,14 @@ pub(super) fn group_settings_form(config: &crate::Config, group: &str) -> Value 
                     .collect();
                 json!({"key": def.name, "label": label, "widget": {"kind": "text"}, "choices": choices, "strict": true,
                     "holds": "the id of one of its actions, or empty",
-                    "value": value.as_str().unwrap_or_default()})
+                    "value": current})
             }
             // Rows typed a line each, the cells between bars: the columns are said in the empty box.
             crate::groups::Kind::List => {
+                if def.columns.is_empty() {
+                    meta_issue_noted = true;
+                    warnings.push(trf("group.warn_empty_list", &[("name", &label)]));
+                }
                 let columns: Vec<&str> = def.columns.iter().map(|c| c.label.as_str()).collect();
                 let cells = columns.join(&format!(" {} ", crate::groups::CELLS));
                 json!({"key": def.name, "label": label, "widget": {"kind": "multi"},
@@ -1775,23 +1831,65 @@ pub(super) fn group_settings_form(config: &crate::Config, group: &str) -> Value 
         // Shown only while another field has a value: that field's place in the form, and the value
         // as its control holds it (a choice by its place in the list).
         if let Some(when) = &def.show_if {
-            if let Some(at) = meta.variables.iter().position(|other| other.name == when.setting) {
+            if let Some(at) = meta
+                .variables
+                .iter()
+                .position(|other| other.name == when.setting && other.name != def.name)
+            {
                 let other = &meta.variables[at];
-                let equals = match other.kind {
-                    crate::groups::Kind::Choice => {
-                        json!(other.options.iter().position(|o| when.is.as_str() == Some(o)))
-                    }
-                    _ => when.is.clone(),
-                };
-                field["showIf"] = json!({"field": at + 1, "equals": equals});
+                if other.kind == crate::groups::Kind::Choice
+                    && !other.options.iter().any(|o| when.is.as_str() == Some(o.as_str()))
+                {
+                    meta_issue_noted = true;
+                    warnings.push(trf(
+                        "group.warn_show_if_option",
+                        &[("name", &label), ("setting", &when.setting)],
+                    ));
+                } else if !other.accepts(&when.is) {
+                    meta_issue_noted = true;
+                    warnings.push(trf(
+                        "group.warn_show_if_value",
+                        &[("name", &label), ("setting", &when.setting)],
+                    ));
+                } else {
+                    let equals = match other.kind {
+                        crate::groups::Kind::Choice => {
+                            json!(other.options.iter().position(|o| when.is.as_str() == Some(o)))
+                        }
+                        _ => when.is.clone(),
+                    };
+                    field["showIf"] = json!({"field": at + 1, "equals": equals});
+                }
+            } else {
+                meta_issue_noted = true;
+                warnings.push(trf(
+                    "group.warn_show_if_missing",
+                    &[("name", &label), ("setting", &when.setting)],
+                ));
             }
         }
         fields.push(field);
     }
+    if !meta_issue_noted {
+        if let Err(err) = meta.validate() {
+            warnings.push(trf("group.warn_meta_invalid", &[("error", &err)]));
+        }
+    }
+    let mut deduped = Vec::new();
+    for w in warnings {
+        if !deduped.contains(&w) {
+            crate::warn(format!("Group '{group}': {w}"));
+            deduped.push(w);
+        }
+    }
     let item = json!({"id": "", "description": meta.description});
-    json!({"kind": kind_of(&["act".into(), "group_settings".into(), group.into()]),
+    let mut out = json!({"kind": kind_of(&["act".into(), "group_settings".into(), group.into()]),
         "title": trf("group.settings_title", &[("name", group)]), "hint": tr("group.hint"),
-        "new": item, "item": item, "fields": fields})
+        "new": item, "item": item, "fields": fields});
+    if !deduped.is_empty() {
+        out["warnings"] = json!(deduped);
+    }
+    out
 }
 
 fn platform_name(platform: &str) -> &'static str {
@@ -2144,13 +2242,20 @@ fn step(action: &mut Action, id: &str, how: &str) -> Result<(), String> {
 }
 
 fn help(kind: &str, code: u32, fallback: String) -> Result<Value, String> {
-    let (title, body) = match crate::docs::entry(kind, code) {
-        Some(entry) => (entry.title, entry.text),
-        None if !fallback.is_empty() => (String::new(), fallback),
-        None => return Err(tr("actions.no_help").into()),
-    };
-    super::prompts::notice(title, body);
-    accepted()
+    if let Some(doc) = crate::docs::help(kind, code) {
+        let meta = doc
+            .meta
+            .into_iter()
+            .map(|(key, value)| super::prompts::NoticeMeta { key, value })
+            .collect();
+        super::prompts::markdown_notice(doc.title, meta, doc.body);
+        return accepted();
+    }
+    if !fallback.is_empty() {
+        super::prompts::markdown_notice(String::new(), Vec::new(), fallback);
+        return accepted();
+    }
+    Err(tr("actions.no_help").into())
 }
 
 /// One operation of the page. Row ids come from the models above.
@@ -3227,6 +3332,121 @@ mod tests {
             assert!(!engine.config().actions.actions[0].enabled);
 
             crate::core::undo::clear();
+        });
+    }
+
+    #[test]
+    fn group_settings_form_warns_and_preserves_valid_options_on_broken_overlay_or_group_defs() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            let mut config = crate::Config::default();
+            config.action_groups.insert(
+                "BrokenOverlay".into(),
+                json!({
+                    "description": "Overlay settings",
+                    "variables": [
+                        {"name": "high_slider", "label": "High Slider", "kind": "slider", "default": 50, "min": 200, "max": 400},
+                        {"name": "inverted_slider", "label": "Inverted Slider", "kind": "slider", "default": 90, "min": 80, "max": 20},
+                        {"name": "mystery", "label": "Mystery Option", "kind": "non_existing_kind", "default": "x"},
+                        {"name": "empty_choice", "label": "Empty Choice", "kind": "choice", "default": "a", "options": []},
+                        {"name": "empty_list", "label": "Empty List", "kind": "list", "default": [], "columns": []},
+                        {"name": "missing_file", "label": "Missing File", "kind": "file", "default": "ghost.png"},
+                        {"name": "missing_action", "label": "Missing Action", "kind": "action", "default": "deleted-act"},
+                        {"name": "bad_show_if_missing", "label": "Dependent Missing", "kind": "text", "default": "", "showIf": {"setting": "nope", "is": "x"}},
+                        {"name": "mode", "label": "Mode", "kind": "choice", "default": "Fast", "options": ["Fast", "Slow"]},
+                        {"name": "bad_show_if_opt", "label": "Dependent Option", "kind": "text", "default": "", "showIf": {"setting": "mode", "is": "Turbo"}},
+                        {"name": "bad_value", "label": "Count", "kind": "integer", "default": 1}
+                    ]
+                }),
+            );
+            config.action_group_variables.insert(
+                "BrokenOverlay".into(),
+                json!({"bad_value": "not-an-integer", "high_slider": 50}),
+            );
+
+            let form = group_settings_form(&config, "BrokenOverlay");
+            let warnings = form["warnings"].as_array().expect("warnings should be present");
+            let joined = warnings.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n");
+            assert!(joined.contains("Mystery Option"), "{joined}");
+            assert!(joined.contains("Inverted Slider"), "{joined}");
+            assert!(joined.contains("Empty Choice"), "{joined}");
+            assert!(joined.contains("Empty List"), "{joined}");
+            assert!(joined.contains("ghost.png"), "{joined}");
+            assert!(joined.contains("deleted-act"), "{joined}");
+            assert!(joined.contains("Dependent Missing"), "{joined}");
+            assert!(joined.contains("Dependent Option"), "{joined}");
+            assert!(joined.contains("Count"), "{joined}");
+
+            // Valid slider with min > 100 is preserved cleanly and its initial value is clamped into [200, 400].
+            let fields = form["fields"].as_array().unwrap();
+            let high = fields.iter().find(|f| f["key"] == "high_slider").unwrap();
+            assert_eq!(high["widget"]["min"], 200.0);
+            assert_eq!(high["widget"]["max"], 400.0);
+            assert_eq!(high["value"], 200.0);
+
+            let log_tail = crate::log_tail_tagged(30).join("\n");
+            assert!(log_tail.contains("[WARN] Group 'BrokenOverlay':"), "{log_tail}");
+        });
+    }
+
+    #[test]
+    fn trigger_and_sub_action_help_emit_markdown_notices_with_metadata_and_body() {
+        let _lock = crate::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::engine::tests::run(async {
+            for prompt in crate::core::prompts::list() {
+                let _ = crate::core::prompts::answer(prompt.id, Value::Null);
+            }
+            let engine = crate::engine::tests::engine(json!({
+                "actions": [{
+                    "id": "a1",
+                    "name": "Toast Test",
+                    "triggers": [{"id": "t1", "type": 708, "enabled": true}],
+                    "subActions": [{"id": "s1", "type": 123, "enabled": true, "variableName": "x", "value": "1"}]
+                }]
+            }));
+            let res = ask(
+                &engine,
+                json!({
+                    "request": "StreamerzCoreAction",
+                    "domain": "actions",
+                    "action": "trigger_help",
+                    "actionId": "a1",
+                    "itemId": "t1"
+                }),
+            );
+            assert_eq!(res["status"], "ok", "{res}");
+            let prompts = crate::core::prompts::list();
+            assert_eq!(prompts.len(), 1);
+            let serialized = serde_json::to_value(&prompts[0]).unwrap();
+            assert_eq!(serialized["title"], "Toast Activation");
+            assert_eq!(serialized["markdown"], true);
+            assert_eq!(serialized["meta"][0]["key"], "Kind");
+            assert_eq!(serialized["meta"][0]["value"], "trigger");
+            let body = serialized["text"].as_str().unwrap();
+            assert!(!body.starts_with("## "));
+            assert!(!body.contains("- Kind:"));
+            assert!(body.contains("### Fields"));
+            crate::core::prompts::answer(prompts[0].id, Value::Null).unwrap();
+
+            let res = ask(
+                &engine,
+                json!({
+                    "request": "StreamerzCoreAction",
+                    "domain": "actions",
+                    "action": "sub_help",
+                    "actionId": "a1",
+                    "itemId": "s1"
+                }),
+            );
+            assert_eq!(res["status"], "ok", "{res}");
+            let prompts = crate::core::prompts::list();
+            assert_eq!(prompts.len(), 1);
+            let serialized = serde_json::to_value(&prompts[0]).unwrap();
+            assert_eq!(serialized["title"], "Set Argument");
+            assert_eq!(serialized["markdown"], true);
+            let body = serialized["text"].as_str().unwrap();
+            assert!(body.contains("| Field | Key | What it holds |"));
+            crate::core::prompts::answer(prompts[0].id, Value::Null).unwrap();
         });
     }
 }
